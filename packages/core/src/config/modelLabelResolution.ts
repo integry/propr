@@ -1,6 +1,7 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
-import { toProprOpenCodeModelId, shortHash } from '../agents/impl/openCodeModelIds.js';
+import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
+import { shortHash } from '@propr/shared';
 import { ALL_MODELS, MODEL_INFO_MAP, type AgentType } from './modelDefinitions.js';
 import {
     MODEL_ALIASES,
@@ -133,15 +134,26 @@ function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }
 }
 
 function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
-    const colonIdx = label.indexOf(':');
-    if (colonIdx <= 0 || colonIdx >= label.length - 1) {
+    // Try ~ separator first (dynamic labels), then : (settings UI values)
+    let sepIdx = label.indexOf('~');
+    if (sepIdx <= 0 || sepIdx >= label.length - 1) {
+        sepIdx = label.indexOf(':');
+    }
+    if (sepIdx <= 0 || sepIdx >= label.length - 1) {
         return null;
     }
 
-    const explicitAlias = label.substring(0, colonIdx);
-    const explicitModel = label.substring(colonIdx + 1);
+    const explicitAlias = label.substring(0, sepIdx);
+    const explicitModel = label.substring(sepIdx + 1);
     const resolvedModel = resolveModelAlias(explicitModel);
-    const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
+
+    // Exact alias match first, then prefix match for truncated aliases in dynamic labels
+    let agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
+    if (!agent && explicitAlias.length >= 3) {
+        agent = agents.find(a =>
+            a.config.alias.toLowerCase().startsWith(explicitAlias.toLowerCase())
+        );
+    }
     if (!agent) {
         return null;
     }
@@ -156,8 +168,6 @@ function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentCo
         return { agentAlias: agent.config.alias, model: supportedModel };
     }
 
-    // Hashed dynamic labels (e.g. "opencode-provi-<hash>") can't match by name;
-    // recover the original model by matching the hash suffix against supported models.
     const hashMatch = resolveByHashedModelLabel(explicitModel, agent.config);
     if (hashMatch) {
         return { agentAlias: agent.config.alias, model: hashMatch };

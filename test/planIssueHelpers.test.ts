@@ -33,9 +33,9 @@ test('getLlmLabel emits explicit dynamic labels for configured OpenCode provider
   ]);
 
   try {
-    assert.strictEqual(await getLlmLabel('openai/gpt-5.5'), 'llm-opencode:opencode-openai/gpt-5.5');
-    assert.strictEqual(await getLlmLabel('opencode-openai/gpt-5.5'), 'llm-opencode:opencode-openai/gpt-5.5');
-    assert.strictEqual(await getLlmLabel('opencode-go/qwen3.7-max'), 'llm-opencode:opencode-go/qwen3.7-max');
+    assert.strictEqual(await getLlmLabel('openai/gpt-5.5'), 'llm-opencode~opencode-openai/gpt-5.5');
+    assert.strictEqual(await getLlmLabel('opencode-openai/gpt-5.5'), 'llm-opencode~opencode-openai/gpt-5.5');
+    assert.strictEqual(await getLlmLabel('opencode-go/qwen3.7-max'), 'llm-opencode~opencode-go/qwen3.7-max');
   } finally {
     ensureInitialized.mock.restore();
     getAllAgents.mock.restore();
@@ -65,7 +65,7 @@ test('getLlmLabel hashes long dynamic labels to fit GitHub limits', async () => 
     const label = await getLlmLabel(longModel);
     assert.ok(label);
     assert.ok(label.length <= 50);
-    assert.match(label, /^llm-opencode:/);
+    assert.match(label, /^llm-opencode~/);
   } finally {
     ensureInitialized.mock.restore();
     getAllAgents.mock.restore();

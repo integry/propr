@@ -4,7 +4,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
 import type { AgentConfig } from '../types.js';
-export { normalizeOpenCodeCliModelName, shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId } from './openCodeModelIds.js';
+export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId } from './openCodeModelIds.js';
 export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
 import { toOpenCodeExternalModelId } from './openCodeModelIds.js';

@@ -98,7 +98,7 @@ async function getConfiguredDefaultModel(): Promise<string> {
  * Gets the LLM GitHub label for a given model name.
  * Falls back to the default agent's model if model_name is null.
  */
-export async function getLlmLabel(modelName: string | null): Promise<string | null> {
+export async function getLlmLabel(modelName: string | null, agentAlias?: string | null): Promise<string | null> {
   const effectiveModel = modelName || await getConfiguredDefaultModel();
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
   if (modelInfo?.githubLabel) return modelInfo.githubLabel;
@@ -106,12 +106,17 @@ export async function getLlmLabel(modelName: string | null): Promise<string | nu
   try {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
-    const agent = registry.getAllAgents().find(a =>
-      a.config.supportedModels.some(model => {
-        if (model.toLowerCase() === effectiveModel.toLowerCase()) return true;
-        return a.config.type === 'opencode' && model.toLowerCase() === toProprOpenCodeModelId(effectiveModel).toLowerCase();
-      })
-    );
+
+    let agent = agentAlias ? registry.getAgentByAlias(agentAlias) : undefined;
+    if (!agent) {
+      agent = registry.getAllAgents().find(a =>
+        a.config.supportedModels.some(model => {
+          if (model.toLowerCase() === effectiveModel.toLowerCase()) return true;
+          return a.config.type === 'opencode' && model.toLowerCase() === toProprOpenCodeModelId(effectiveModel).toLowerCase();
+        })
+      );
+    }
+
     const labelModel = agent?.config.type === 'opencode' ? toProprOpenCodeModelId(effectiveModel) : effectiveModel;
     return agent ? buildDynamicLlmLabel(agent.config.alias, labelModel) : null;
   } catch (err) {
@@ -128,10 +133,10 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
 }> {
   const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, labelLogger, draftId, planIssue, models } = params;
 
-  const oldLlmLabel = await getLlmLabel(planIssue.model_name);
+  const oldLlmLabel = await getLlmLabel(planIssue.model_name, planIssue.agent_alias);
   const newLlmLabels = new Set<string>();
   for (const m of models) {
-    const label = await getLlmLabel(m.model_name);
+    const label = await getLlmLabel(m.model_name, m.agent_alias);
     if (label) newLlmLabels.add(label);
   }
 
@@ -153,7 +158,11 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
     labelsToAdd
   );
 
-  await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
+  try {
+    await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
+  } catch (err) {
+    labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; webhook/polling will process the labeled issue');
+  }
 
   const primaryModel = models[0];
   await updatePlanIssue(draftId, issueNumber, {
@@ -179,9 +188,9 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
   autoMergeEnabled: boolean;
   epicLabel: string | null;
 }> {
-  const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, draftId, planIssue } = params;
+  const { octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge, labelLogger, draftId, planIssue } = params;
 
-  const llmLabel = await getLlmLabel(planIssue.model_name);
+  const llmLabel = await getLlmLabel(planIssue.model_name, planIssue.agent_alias);
   const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
 
   if (epicLabelName) {
@@ -198,7 +207,11 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
     labelsToAdd
   );
 
-  await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
+  try {
+    await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
+  } catch (err) {
+    labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; webhook/polling will process the labeled issue');
+  }
 
   // Update status and also persist agent_alias/model_name if provided
   const updateData: Record<string, unknown> = { status: PlanIssueStatus.PROCESSING };

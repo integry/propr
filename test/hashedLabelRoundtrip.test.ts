@@ -31,7 +31,7 @@ test('hashed dynamic labels round-trip through resolveLlmLabel', async () => {
   try {
     const label = buildDynamicLlmLabel('opencode', longModel);
     assert.ok(label.length <= 50, `Label should fit in 50 chars, got ${label.length}`);
-    assert.match(label, /^llm-opencode:/, 'Should start with llm-opencode:');
+    assert.match(label, /^llm-opencode~/, 'Should start with llm-opencode~');
 
     // Strip llm- prefix as resolveLlmLabel expects
     const stripped = label.replace(/^llm-/, '');
@@ -44,6 +44,23 @@ test('hashed dynamic labels round-trip through resolveLlmLabel', async () => {
     const longAliasLabel = buildDynamicLlmLabel(longAlias, 'opencode-openai/gpt-5.5');
     assert.ok(longAliasLabel.length <= 50, `Long alias label should fit in 50 chars, got ${longAliasLabel.length}`);
     assert.match(longAliasLabel, /^llm-/, 'Should start with llm-');
+
+    // Verify long alias labels resolve via prefix matching
+    const longAliasAgentConfigs = [
+      ...mockAgentConfigs,
+      { config: { id: 'opencode-agent-2', type: 'opencode' as const, alias: longAlias, enabled: true, supportedModels: ['opencode-openai/gpt-5.5'] } }
+    ];
+    registry.getAllAgents = () => longAliasAgentConfigs as any;
+    registry.getAgentByAlias = (alias: string) => longAliasAgentConfigs.find(a => a.config.alias === alias) as any;
+
+    const longAliasStripped = longAliasLabel.replace(/^llm-/, '');
+    const longAliasResult = await resolveLlmLabel(longAliasStripped);
+    assert.strictEqual(longAliasResult.agentAlias, longAlias, 'Should resolve truncated alias to the full alias agent');
+    assert.strictEqual(longAliasResult.model, 'opencode-openai/gpt-5.5', 'Should resolve to correct model for long alias');
+
+    // Restore original configs for remaining tests
+    registry.getAllAgents = () => mockAgentConfigs as any;
+    registry.getAgentByAlias = (alias: string) => mockAgentConfigs.find(a => a.config.alias === alias) as any;
 
     // Short model with short alias should produce non-hashed label
     const shortLabel = buildDynamicLlmLabel('opencode', 'opencode-openai/gpt-5.5');

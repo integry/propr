@@ -305,7 +305,7 @@ export class OpenCodeAgent implements Agent {
     private createAnalysisTempDir(prefix: string): string {
         const root = (process.env.OPENCODE_ANALYSIS_ROOT || DEFAULT_OPENCODE_ANALYSIS_ROOT).replace(/\/+$/, '');
         fs.mkdirSync(root, { recursive: true, mode: 0o755 });
-        fs.chmodSync(root, 0o755);
+        try { fs.chmodSync(root, 0o755); } catch { /* best-effort */ }
         return fs.mkdtempSync(`${root}/${prefix}`);
     }
 

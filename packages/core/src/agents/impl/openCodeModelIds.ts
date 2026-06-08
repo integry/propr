@@ -11,6 +11,7 @@ export function toProprOpenCodeModelId(modelName: string): string {
 
 export function toOpenCodeExternalModelId(modelName: string): string {
     const withoutRoutePrefix = modelName.startsWith('opencode:') ? modelName.slice('opencode:'.length) : modelName;
+    // opencode-go/ is a native OpenCode Go model prefix, not a ProPR routing prefix — keep it as-is
     if (withoutRoutePrefix.startsWith('opencode-') && !withoutRoutePrefix.startsWith('opencode-go/')) {
         const unprefixed = withoutRoutePrefix.slice('opencode-'.length);
         return unprefixed.includes('/') ? unprefixed : `opencode/${unprefixed}`;
@@ -22,4 +23,3 @@ export function normalizeOpenCodeCliModelName(modelName: string): string {
     return toOpenCodeExternalModelId(modelName);
 }
 
-export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';

@@ -248,9 +248,10 @@ function normalizeOpenCodeModelIds(agent: AgentConfig): boolean {
         return false;
     }
 
-    const normalizedModels = agent.supportedModels.map(toProprOpenCodeModelId);
+    const normalizedModels = [...new Set(agent.supportedModels.map(toProprOpenCodeModelId))];
     const normalizedDefaultModel = agent.defaultModel ? toProprOpenCodeModelId(agent.defaultModel) : agent.defaultModel;
-    const migrated = normalizedModels.some((model, index) => model !== agent.supportedModels[index]) ||
+    const migrated = normalizedModels.length !== agent.supportedModels.length ||
+        normalizedModels.some((model, index) => model !== agent.supportedModels[index]) ||
         normalizedDefaultModel !== agent.defaultModel;
 
     if (!migrated) {
