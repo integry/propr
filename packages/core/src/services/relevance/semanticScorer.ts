@@ -62,7 +62,8 @@ function getMaxChunkTokens(modelId?: string): number {
   }
 
   // Handle agent:model format (e.g., 'antigravity:antigravity-gemini-2.5-flash')
-  const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
+  const colonIdx = modelId.indexOf(':');
+  const effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
   const modelInfo = MODEL_INFO_MAP[effectiveModelId];
 
   if (modelInfo?.maxTokens) {

@@ -19,10 +19,7 @@ export function toOpenCodeExternalModelId(modelName: string): string {
 }
 
 export function normalizeOpenCodeCliModelName(modelName: string): string {
-    const externalModelId = toOpenCodeExternalModelId(modelName);
-    if (externalModelId.startsWith('opencode/')) return externalModelId;
-    const slashIndex = externalModelId.indexOf('/');
-    return slashIndex > 0 ? externalModelId.slice(slashIndex + 1) : externalModelId;
+    return toOpenCodeExternalModelId(modelName);
 }
 
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';

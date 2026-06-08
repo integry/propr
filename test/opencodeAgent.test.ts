@@ -296,8 +296,8 @@ describe('OpenCodeAgent Docker args', () => {
         assert.strictEqual(openAiArgs[openAiArgs.indexOf('--model') + 1], 'openai/gpt-5.5');
         assert.strictEqual(goArgs[goArgs.indexOf('--model') + 1], 'opencode-go/qwen3.7-max');
         assert.strictEqual(freeArgs[freeArgs.indexOf('--model') + 1], 'opencode/minimax-m3-free');
-        assert.strictEqual(normalizeOpenCodeCliModelName('opencode-openai/gpt-5.5'), 'gpt-5.5');
-        assert.strictEqual(normalizeOpenCodeCliModelName('opencode:openai/gpt-5.5'), 'gpt-5.5');
+        assert.strictEqual(normalizeOpenCodeCliModelName('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
+        assert.strictEqual(normalizeOpenCodeCliModelName('opencode:openai/gpt-5.5'), 'openai/gpt-5.5');
         assert.strictEqual(toProprOpenCodeModelId('openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
         assert.strictEqual(toProprOpenCodeModelId('opencode/minimax-m3-free'), 'opencode-minimax-m3-free');
         assert.strictEqual(toProprOpenCodeModelId('opencode-go/qwen3.7-max'), 'opencode-go/qwen3.7-max');

@@ -86,10 +86,9 @@ test('getEffectiveTokenLimit - agent:model format handling', async (t) => {
     });
 
     await t.test('handles edge case of model ID containing multiple colons', () => {
-        // A model ID like "agent:model:with:colons" extracts only the first segment after colon
-        // This tests the split(':')[1] behavior which gets "model" (not "model:with:colons")
+        // A model ID like "agent:model:with:colons" extracts everything after the first colon
         const result = getEffectiveTokenLimit('agent:model:with:colons', 50);
-        // Since "model" won't be found in MODEL_INFO_MAP, it should use default
+        // Since "model:with:colons" won't be found in MODEL_INFO_MAP, it should use default
         const defaultResult = getEffectiveTokenLimit(undefined, 50);
         assert.strictEqual(result, defaultResult, 'Should use default for unknown model segment after extracting');
     });

@@ -35,9 +35,10 @@ export function getEffectiveTokenLimit(modelId: string | undefined, level: Conte
 
   if (modelId) {
     // Handle agent:model format if present
-    const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
+    const colonIdx = modelId.indexOf(':');
+    const effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
     const modelInfo = MODEL_INFO_MAP[effectiveModelId];
-    
+
     if (modelInfo?.maxTokens) {
       limit = modelInfo.maxTokens;
     } else if (MODEL_LIMITS[effectiveModelId]) {
@@ -59,7 +60,8 @@ export function getModelHardLimit(modelId: string | undefined): number {
 
   if (modelId) {
     // Handle agent:model format if present
-    const effectiveModelId = modelId.includes(':') ? modelId.split(':')[1] : modelId;
+    const colonIdx = modelId.indexOf(':');
+    const effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
     const modelInfo = MODEL_INFO_MAP[effectiveModelId];
 
     if (modelInfo?.maxTokens) {

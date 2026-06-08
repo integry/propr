@@ -38,6 +38,20 @@ test('hashed dynamic labels round-trip through resolveLlmLabel', async () => {
     const result = await resolveLlmLabel(stripped);
     assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to opencode agent');
     assert.strictEqual(result.model, longModel, 'Should recover the original long model ID via hash');
+
+    // Test with a long agent alias that exceeds the label budget
+    const longAlias = 'my-custom-opencode-agent-with-a-very-long-name';
+    const longAliasLabel = buildDynamicLlmLabel(longAlias, 'opencode-openai/gpt-5.5');
+    assert.ok(longAliasLabel.length <= 50, `Long alias label should fit in 50 chars, got ${longAliasLabel.length}`);
+    assert.match(longAliasLabel, /^llm-/, 'Should start with llm-');
+
+    // Short model with short alias should produce non-hashed label
+    const shortLabel = buildDynamicLlmLabel('opencode', 'opencode-openai/gpt-5.5');
+    assert.ok(shortLabel.length <= 50, `Short label should fit in 50 chars, got ${shortLabel.length}`);
+    const shortStripped = shortLabel.replace(/^llm-/, '');
+    const shortResult = await resolveLlmLabel(shortStripped);
+    assert.strictEqual(shortResult.agentAlias, 'opencode', 'Short label should resolve to opencode agent');
+    assert.strictEqual(shortResult.model, 'opencode-openai/gpt-5.5', 'Short label should resolve to correct model');
   } finally {
     registry.getAllAgents = originalGetAllAgents;
     registry.getDefaultAgent = originalGetDefaultAgent;
