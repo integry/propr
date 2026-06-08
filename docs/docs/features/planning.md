@@ -59,7 +59,7 @@ This keeps the agent useful without letting a rough plan turn directly into repo
 After approval, ProPR can run the planned work in a controlled way:
 
 - Implement one planned issue
-- Implement all approved issues in a plan
+- Use Epic PR auto-merge to run planned issues sequentially
 - Track each run as a task record
 - Link generated pull requests back to the source plan
 - Continue work later from the same planning context

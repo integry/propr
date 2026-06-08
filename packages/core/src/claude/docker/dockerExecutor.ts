@@ -200,7 +200,11 @@ export function executeDockerCommand(command: string, args: string[], options: D
             state.timedOut = true;
             const containerToStop = state.containerId.value || namedContainer;
             if (containerToStop) {
-                void stopDockerContainer(containerToStop, 10);
+                void stopDockerContainer(containerToStop, 10).then((stopResult) => {
+                    if (!stopResult.success) {
+                        logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after timeout');
+                    }
+                });
             }
             child.kill('SIGTERM');
             setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);

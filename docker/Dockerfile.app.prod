@@ -55,7 +55,9 @@ WORKDIR /usr/src/app
 #   curl/jq  — deploy-pr.sh script
 RUN apk add --no-cache git sudo docker-cli curl jq tini \
     && mkdir -p /tmp/git-processor \
-    && git config --system --add safe.directory '*'
+    && git config --system --add safe.directory /usr/src/app/repos \
+    && git config --system --add safe.directory /tmp/pr-worktrees \
+    && git config --system --add safe.directory /tmp/git-processor
 
 # Copy built artifacts and pruned dependencies from the builder.
 COPY --from=builder /build/node_modules ./node_modules

@@ -44,17 +44,6 @@ export interface EpicPRParams {
   labelLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
-export interface ProcessIssueParams {
-  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-  owner: string;
-  repo: string;
-  draftId: string;
-  issue: { issue_number: number; model_name: string | null };
-  implementLabel: string;
-  epicLabelName: string | null;
-  autoMerge: boolean;
-}
-
 async function enqueueIssueImplementationJob(params: {
   owner: string;
   repo: string;
@@ -77,17 +66,6 @@ async function enqueueIssueImplementationJob(params: {
     removeOnComplete: true,
     removeOnFail: true
   });
-}
-
-export interface BatchProcessParams {
-  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-  owner: string;
-  repo: string;
-  draftId: string;
-  pendingIssues: Array<{ issue_number: number; model_name: string | null }>;
-  implementLabel: string;
-  epicLabelName: string | null;
-  autoMerge: boolean;
 }
 
 /**
@@ -313,56 +291,4 @@ export async function getOrCreateEpicLabel(params: GetOrCreateEpicLabelParams): 
   }
 
   return epicLabelName;
-}
-
-export async function processIssueForImplementation(params: ProcessIssueParams): Promise<{ issueNumber: number; success: boolean; error?: string }> {
-  const { octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge } = params;
-
-  try {
-    const llmLabel = await getLlmLabel(issue.model_name);
-    const labelsToAdd = llmLabel ? [implementLabel, llmLabel] : [implementLabel];
-
-    if (epicLabelName) {
-      labelsToAdd.push(epicLabelName);
-    }
-
-    if (autoMerge) {
-      labelsToAdd.push('auto-merge');
-    }
-
-    await safeUpdateLabels(
-      { octokit, owner, repo, issueNumber: issue.issue_number, logger: logger.withCorrelation(`implement-batch-${draftId}-${issue.issue_number}`) },
-      [`${implementLabel}-processing`, `${implementLabel}-done`],
-      labelsToAdd
-    );
-    await enqueueIssueImplementationJob({ owner, repo, issueNumber: issue.issue_number, triggeringLabel: implementLabel });
-    await updatePlanIssue(draftId, issue.issue_number, { status: PlanIssueStatus.PROCESSING });
-    return { issueNumber: issue.issue_number, success: true };
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : 'Unknown error';
-    return { issueNumber: issue.issue_number, success: false, error: errMsg };
-  }
-}
-
-export async function processBatchIssues(params: BatchProcessParams): Promise<{
-  results: Array<{ issueNumber: number; success: boolean; error?: string }>;
-  queuedCount: number;
-}> {
-  const { octokit, owner, repo, draftId, pendingIssues, implementLabel, epicLabelName, autoMerge } = params;
-  const results: Array<{ issueNumber: number; success: boolean; error?: string }> = [];
-
-  // When auto-merge is enabled with an epic, only trigger the first issue.
-  // The rest will be triggered sequentially as each PR is merged.
-  // This prevents merge conflicts from parallel processing.
-  const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssues[0]] : pendingIssues;
-
-  for (const issue of issuesToProcess) {
-    const result = await processIssueForImplementation({
-      octokit, owner, repo, draftId, issue, implementLabel, epicLabelName, autoMerge
-    });
-    results.push(result);
-  }
-
-  const queuedCount = (autoMerge && epicLabelName) ? pendingIssues.length - 1 : 0;
-  return { results, queuedCount };
 }

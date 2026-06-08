@@ -17,8 +17,8 @@ import {
   type PlanIssue,
 } from "../../packages/cli/src/api/plans.js";
 import {
-  implementAllIssues,
-  type ImplementAllIssuesResponse,
+  implementIssue,
+  type ImplementIssueResponse,
 } from "../../packages/cli/src/api/implement.js";
 
 // ---------------------------------------------------------------------------
@@ -348,18 +348,24 @@ export async function waitForPlanIssueCondition(
 }
 
 /**
- * Triggers implementation with sequential processing and verifies the behavior.
+ * Triggers the first pending issue with Epic PR auto-merge enabled.
  *
  * @param draftId - The plan draft ID
  * @param client - API client
- * @returns Result of implement-all with sequential processing
+ * @returns Result of the single issue implementation request
  */
 export async function triggerSequentialImplementation(
   draftId: string,
   client: ApiClient,
-): Promise<ImplementAllIssuesResponse> {
-  const result = await implementAllIssues(
+): Promise<ImplementIssueResponse> {
+  const issues = await listPlanIssues(draftId, client);
+  const firstPendingIssue = issues.find((issue) => issue.status === "pending");
+  if (!firstPendingIssue) {
+    throw new Error(`No pending issues found for draft ${draftId}`);
+  }
+  const result = await implementIssue(
     draftId,
+    firstPendingIssue.issue_number,
     { useEpic: true, autoMerge: true },
     client,
   );

@@ -9,7 +9,6 @@ import {
 import { getLlmLabel, getOrCreateEpicLabel } from './planIssueHelpers.js';
 import { buildEffectiveIssueUltrafixUpdate, resolveIssueForImplementation } from './planIssueRouteUtils.js';
 
-const IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE = 5;
 const ULTRAFIX_SETTINGS_PERSIST_BATCH_SIZE = 5;
 
 type PlanIssueConfigState = {
@@ -186,116 +185,6 @@ export async function updateIssueConfigWithRollback(params: {
     }
     throw error;
   }
-}
-
-export async function syncPendingIssueConfigs(params: {
-  draftId: string;
-  repository: string;
-  pendingIssues: Array<{
-    issue_number: number;
-    agent_alias?: string | null;
-    model_name?: string | null;
-  }>;
-  updates: {
-    agent_alias?: string | null;
-    model_name?: string | null;
-  };
-}): Promise<void> {
-  if (params.pendingIssues.length === 0) return;
-
-  const octokit = params.updates.model_name !== undefined
-    ? await getAuthenticatedOctokit()
-    : undefined;
-  const updatedIssues: typeof params.pendingIssues = [];
-
-  try {
-    for (let index = 0; index < params.pendingIssues.length; index += IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE) {
-      const issueBatch = params.pendingIssues.slice(index, index + IMPLEMENT_ALL_CONFIG_SYNC_BATCH_SIZE);
-      const batchResults = await Promise.allSettled(issueBatch.map(async (issue) => {
-        await updateIssueConfigWithRollback({
-          draftId: params.draftId,
-          issueNumber: issue.issue_number,
-          repository: params.repository,
-          currentIssue: issue,
-          updates: params.updates,
-          octokit
-        });
-        return issue;
-      }));
-
-      let batchFailure: unknown;
-      for (const result of batchResults) {
-        if (result.status === 'fulfilled') {
-          updatedIssues.push(result.value);
-          continue;
-        }
-        if (batchFailure === undefined) {
-          batchFailure = result.reason;
-        }
-      }
-
-      if (batchFailure !== undefined) {
-        throw batchFailure;
-      }
-    }
-  } catch (error) {
-    const rollbackFailures: Array<{ issueNumber: number; error: string }> = [];
-
-    for (let index = updatedIssues.length - 1; index >= 0; index -= 1) {
-      const issue = updatedIssues[index];
-
-      try {
-        await updateIssueConfigWithRollback({
-          draftId: params.draftId,
-          issueNumber: issue.issue_number,
-          repository: params.repository,
-          currentIssue: resolveIssueConfigState(issue, params.updates),
-          updates: buildIssueConfigRollbackUpdates(issue, params.updates),
-          octokit
-        });
-      } catch (rollbackError) {
-        rollbackFailures.push({
-          issueNumber: issue.issue_number,
-          error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-        });
-        logger.error(
-          {
-            draftId: params.draftId,
-            issueNumber: issue.issue_number,
-            error: (rollbackError as Error).message
-          },
-          'Failed to roll back plan issue config after batch sync failure'
-        );
-      }
-    }
-
-    if (rollbackFailures.length > 0) {
-      throw new IssueConfigSyncReconciliationError(
-        'Failed to fully roll back synced issue config updates; manual reconciliation required',
-        {
-          draftId: params.draftId,
-          repository: params.repository,
-          originalError: error instanceof Error ? error.message : String(error),
-          rollbackFailures
-        }
-      );
-    }
-
-    throw error;
-  }
-}
-
-export function filterIssuesNeedingConfigSync<T extends PlanIssueConfigState & { issue_number: number }>(params: {
-  pendingIssues: Array<T>;
-  updates: PlanIssueConfigState;
-}): Array<T> {
-  return params.pendingIssues.filter((issue) => (
-    params.updates.agent_alias !== undefined
-    && (issue.agent_alias ?? null) !== (params.updates.agent_alias ?? null)
-  ) || (
-    params.updates.model_name !== undefined
-    && (issue.model_name ?? null) !== (params.updates.model_name ?? null)
-  ));
 }
 
 export async function persistEffectiveUltrafixSettings<T extends PlanIssueUltrafixState>(params: {

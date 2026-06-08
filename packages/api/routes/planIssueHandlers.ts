@@ -13,28 +13,23 @@ import { PlanIssueStatus } from '@propr/core';
 import {
   handleMultiAgentImplementation,
   handleSingleAgentImplementation,
-  processBatchIssues,
   type ImplementIssueContext
 } from './planIssueHelpers.js';
 import {
-  filterIssuesNeedingConfigSync,
   buildIssueConfigRollbackUpdates,
   IssueConfigSyncReconciliationError,
   persistEffectiveUltrafixSettings,
   resolveEpicLabel,
-  syncPendingIssueConfigs,
   updateIssueConfigWithRollback
 } from './planIssueConfigSync.js';
 import {
   buildIssueUpdate,
   ContextConfigParseError,
-  normalizeOptionalConfigString,
   parseContextConfig,
   parseImplementationSettingsOverrides,
   resolveIssueForResponse,
   resolveImplementationSettings,
   type UpdateIssueRequestBody,
-  validateOptionalConfigString,
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
 import type { OwnershipResult } from './plannerHelpers/index.js';
@@ -130,71 +125,6 @@ function sendIssueConfigSyncReconciliationError(res: Response, error: IssueConfi
   });
 }
 
-async function loadPendingIssuesForImplementation(params: {
-  draftId: string;
-  repository: string;
-  existingIssues: PlanIssue[];
-  agent_alias: string | null | undefined;
-  model_name: string | null | undefined;
-}): Promise<PlanIssue[]> {
-  const { draftId, repository, existingIssues, agent_alias, model_name } = params;
-  const pendingIssues = existingIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
-  if (agent_alias === undefined && model_name === undefined) {
-    return pendingIssues;
-  }
-  const pendingIssuesNeedingConfigSync = filterIssuesNeedingConfigSync({
-    pendingIssues,
-    updates: { agent_alias, model_name }
-  });
-  await syncPendingIssueConfigs({
-    draftId,
-    repository,
-    pendingIssues: pendingIssuesNeedingConfigSync,
-    updates: { agent_alias, model_name }
-  });
-  const updatedIssues = await getPlanIssuesByDraft(draftId);
-  return updatedIssues.filter(issue => issue.status === PlanIssueStatus.PENDING);
-}
-
-async function implementPendingIssues(params: {
-  draftId: string;
-  owner: string;
-  repo: string;
-  pendingIssuesForImplementation: PlanIssue[];
-  contextConfig: ReturnType<typeof parseContextConfig>;
-  implementLabel: string;
-  autoMerge: boolean;
-  epicLabelName: string | null;
-}): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
-  const {
-    draftId,
-    owner,
-    repo,
-    pendingIssuesForImplementation,
-    contextConfig,
-    implementLabel,
-    autoMerge,
-    epicLabelName
-  } = params;
-  const octokit = await getAuthenticatedOctokit();
-  const issuesToProcess = (autoMerge && epicLabelName) ? [pendingIssuesForImplementation[0]] : pendingIssuesForImplementation;
-  const results: Array<{ issueNumber: number; success: boolean; error?: string }> = [];
-  for (const issue of issuesToProcess) {
-    const [resolvedIssue] = await persistEffectiveUltrafixSettings({ draftId, issues: [issue], contextConfig });
-    const batchResult = await processBatchIssues({
-      octokit,
-      owner,
-      repo,
-      draftId,
-      pendingIssues: [resolvedIssue],
-      implementLabel,
-      epicLabelName,
-      autoMerge
-    });
-    results.push(...batchResult.results);
-  }
-  return results;
-}
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
     try {
@@ -319,66 +249,6 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       }
       console.error('Update issue error:', error);
       res.status(500).json({ error: 'Failed to update issue' });
-    }
-  };
-}
-export function createImplementAllIssuesHandler(deps: PlanIssueDeps) {
-  return async function implementAllIssues(req: Request, res: Response): Promise<void> {
-    const draftId = req.params.id;
-    try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-      const draft = ownership.draft!;
-      const repository = draft.repository as string;
-      const [owner, repo] = repository.split('/');
-      if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
-      const contextConfig = parseContextConfig(draft.context_config);
-      const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
-      if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }
-      const agentAliasError = validateOptionalConfigString(req.body.agent_alias, 'agent_alias');
-      if (agentAliasError) { res.status(400).json({ error: agentAliasError }); return; }
-      const modelNameError = validateOptionalConfigString(req.body.model_name, 'model_name');
-      if (modelNameError) { res.status(400).json({ error: modelNameError }); return; }
-      const agent_alias = normalizeOptionalConfigString(req.body.agent_alias);
-      const model_name = normalizeOptionalConfigString(req.body.model_name);
-      const { useEpic, autoMerge } = resolveImplementationSettings(implementationSettings, contextConfig);
-      const existingIssues = await getPlanIssuesByDraft(draftId);
-      const pendingIssuesForImplementation = await loadPendingIssuesForImplementation({ draftId, repository, existingIssues, agent_alias, model_name });
-      if (pendingIssuesForImplementation.length === 0) {
-        res.json({ success: true, message: 'No pending issues to implement', implemented: 0 });
-        return;
-      }
-      const processingLabels = await loadPrimaryProcessingLabels();
-      const implementLabel = processingLabels[0] || 'AI';
-      const correlationId = `implement-all-${draftId}`;
-      const labelLogger = logger.withCorrelation(correlationId);
-      const epicLabelName = await resolveEpicLabel(useEpic, { draftId, owner, repo, draft: draft as Record<string, unknown>, firstIssueNumber: pendingIssuesForImplementation[0].issue_number, contextConfig, correlationId, labelLogger });
-      const results = await implementPendingIssues({ draftId, owner, repo, pendingIssuesForImplementation, contextConfig, implementLabel, autoMerge: autoMerge as boolean, epicLabelName });
-      const queuedCount = (autoMerge && epicLabelName) ? pendingIssuesForImplementation.length - 1 : 0;
-      const successCount = results.filter(r => r.success).length;
-      const failedCount = results.filter(r => !r.success).length;
-      const queuedMessage = queuedCount > 0 ? ` (${queuedCount} more queued for sequential processing)` : '';
-      res.json({
-        success: failedCount === 0,
-        message: `Implemented ${successCount} issues${failedCount > 0 ? `, ${failedCount} failed` : ''}${queuedMessage}`,
-        implemented: successCount,
-        failed: failedCount,
-        queued: queuedCount,
-        results,
-        epicLabel: epicLabelName,
-        autoMergeEnabled: autoMerge as boolean
-      });
-    } catch (error) {
-      if (error instanceof ContextConfigParseError) {
-        res.status(409).json({ error: error.message });
-        return;
-      }
-      if (error instanceof IssueConfigSyncReconciliationError) {
-        sendIssueConfigSyncReconciliationError(res, error);
-        return;
-      }
-      console.error('Implement all issues error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issues' });
     }
   };
 }

@@ -25,6 +25,5 @@ export * from './handlers/index.js';
 export {
   createGetIssuesHandler,
   createImplementIssueHandler,
-  createUpdateIssueHandler,
-  createImplementAllIssuesHandler
+  createUpdateIssueHandler
 } from '../planIssueHandlers.js';
