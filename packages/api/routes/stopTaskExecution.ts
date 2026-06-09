@@ -315,17 +315,13 @@ async function setAbortSignalIfNeeded(params: {
     ...(cancellation.metadata ? { metadata: cancellation.metadata } : {}),
   });
 
-  for (const taskId of taskIds) {
-    await redisClient.set(`worker:abort:${taskId}`, abortPayload, { EX: 3600 });
-  }
+  await Promise.all(taskIds.map((taskId) => redisClient.set(`worker:abort:${taskId}`, abortPayload, { EX: 3600 })));
 
   logger.info({ taskIds, requestedBy, reasonCode: cancellation.code }, 'Abort signal set for task execution');
 }
 
 async function clearAbortSignals(redisClient: RedisClientLike, taskIds: string[]): Promise<void> {
-  for (const taskId of taskIds) {
-    await redisClient.del(`worker:abort:${taskId}`);
-  }
+  await Promise.all(taskIds.map((taskId) => redisClient.del(`worker:abort:${taskId}`)));
 }
 
 function shouldRemoveQueueJobBeforeAbort(activity: ReturnType<typeof getStopTaskActivity>): boolean {

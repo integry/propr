@@ -96,7 +96,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         if (stderr) {
           logger.debug({ containerId: containerMetadata.containerId, stderr }, 'Docker logs wrote to stderr');
         }
-        res.send(formatDockerLogsResponse(stdout));
+        res.send(stdout);
       } catch (err) {
         if (isDockerNoSuchContainerError(err)) {
           res.status(404).json({ error: 'Container no longer exists', containerId: containerMetadata.containerId });
@@ -132,7 +132,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       res.json(formatStopTaskRouteResponse(result));
     } catch (error) {
       if (isStopTaskExecutionError(error)) {
-        res.status(error.status).json(error.body);
+        res.status(error.status).json(sanitizeStopErrorBody(error.body));
         return;
       }
       logger.error({ error: getErrorLogFields(error) }, 'Error in /api/task/:taskId/stop');
@@ -163,6 +163,18 @@ async function stopTaskWithFallbackQueueScan(
       forceQueueScan: true,
     });
   }
+}
+
+const SAFE_STOP_ERROR_KEYS = new Set(['error', 'message', 'taskId', 'success']);
+
+function sanitizeStopErrorBody(body: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const key of Object.keys(body)) {
+    if (SAFE_STOP_ERROR_KEYS.has(key)) {
+      sanitized[key] = body[key];
+    }
+  }
+  return sanitized;
 }
 
 function isTaskNotFoundStopError(error: unknown): error is StopTaskExecutionError {
@@ -311,10 +323,6 @@ function formatDockerContainerStatus(state: DockerContainerState): string {
   return typeof state.Status === 'string' && state.Status.length > 0
     ? state.Status
     : 'stopped';
-}
-
-function formatDockerLogsResponse(stdout: string): string {
-  return stdout;
 }
 
 function formatDockerContainerStateDescription(state: DockerContainerState): string {

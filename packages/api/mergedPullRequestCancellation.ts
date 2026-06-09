@@ -123,7 +123,7 @@ export async function cancelMergedPullRequestTasks(
     }
   }
 
-  const failures = buildFinalFailures(remainingTasks, failuresByTaskId, new Map());
+  const failures = buildFinalFailures(remainingTasks, failuresByTaskId);
   throw new Error(`Failed to cancel ${failures.length} merged PR task(s): ${failures.map(formatMergeTaskCancellationFailure).join('; ')}`);
 }
 
@@ -217,10 +217,8 @@ async function stopMergeTasks(params: {
 function buildFinalFailures(
   finalActiveTasks: MergeTaskActivity[],
   retryFailures: Map<string, MergeTaskCancellationFailure>,
-  initialFailures: Map<string, MergeTaskCancellationFailure>,
 ): MergeTaskCancellationFailure[] {
   return finalActiveTasks.map((task) => retryFailures.get(task.taskId)
-    ?? initialFailures.get(task.taskId)
     ?? buildUnverifiedStopFailure(task.taskId));
 }
 

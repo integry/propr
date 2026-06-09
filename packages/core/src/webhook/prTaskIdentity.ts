@@ -73,7 +73,11 @@ export function getTaskIdFromQueueJob(queueJob: QueueJobIdentityLike): string | 
 export function normalizeTaskId(taskId: string): string {
   if (taskId.startsWith('issue-')) {
     const parts = taskId.replace(/^issue-/, '').split('-');
-    parts.pop();
+    const lastSegment = parts[parts.length - 1];
+    if (parts.length > 1 && lastSegment && /^[0-9a-f]+$/i.test(lastSegment)) {
+      parts.pop();
+      return parts.join('-');
+    }
     return parts.join('-');
   }
 

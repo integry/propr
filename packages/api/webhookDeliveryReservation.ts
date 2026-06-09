@@ -45,31 +45,11 @@ export async function releaseDeliveryReservationForRetry(params: {
     failureContext,
   } = params;
 
+  let released = false;
   try {
-    const retryReservationOpened = await openDeliveryReservationForRetry({
-      redis,
-      deliveryKey,
-      reservationToken,
-      payload,
-      rawDeliveryId,
-      rawEvent,
-      correlationId,
-      log,
-      failureContext,
-    });
-    return { released: false, retryReservationOpened };
+    await redis.del(deliveryKey);
+    released = true;
   } catch (releaseError) {
-    const retryReservationOpened = await openDeliveryReservationForRetry({
-      redis,
-      deliveryKey,
-      reservationToken,
-      payload,
-      rawDeliveryId,
-      rawEvent,
-      correlationId,
-      log,
-      failureContext,
-    });
     log.error({
       correlationId,
       deliveryId: rawDeliveryId,
@@ -77,10 +57,21 @@ export async function releaseDeliveryReservationForRetry(params: {
       repository: payload.repository?.full_name,
       prNumber: payload.pull_request?.number,
       error: (releaseError as Error).message,
-      deliveryReservationRetryOpened: retryReservationOpened,
     }, `Failed to release webhook delivery reservation after ${failureContext}`);
-    return { released: false, retryReservationOpened };
   }
+
+  const retryReservationOpened = await openDeliveryReservationForRetry({
+    redis,
+    deliveryKey,
+    reservationToken,
+    payload,
+    rawDeliveryId,
+    rawEvent,
+    correlationId,
+    log,
+    failureContext,
+  });
+  return { released, retryReservationOpened };
 }
 
 export async function reserveRetryableDeliveryReservation(params: {

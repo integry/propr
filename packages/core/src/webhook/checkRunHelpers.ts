@@ -768,10 +768,10 @@ async function addQueuedPrJobsFromLiveQueueScan(params: {
                     getTaskIdFromQueueJob(job),
                 ]);
             }
-            start += jobs.length;
             if (jobs.length < PR_QUEUE_SCAN_PAGE_SIZE) {
                 break;
             }
+            start += PR_QUEUE_SCAN_PAGE_SIZE;
             if (scannedJobs >= PR_QUEUE_SCAN_MAX_JOBS) {
                 log.warn({
                     repository,
@@ -869,7 +869,7 @@ export async function hasActiveTasksForPR(
     try {
         const taskList = await getActiveTasksForPR(repository, prNumber, {
             ...deps,
-            forceQueueScan: deps.forceQueueScan ?? true,
+            forceQueueScan: deps.forceQueueScan ?? false,
         });
         return {
             hasActive: taskList.length > 0,
