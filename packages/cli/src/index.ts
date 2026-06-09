@@ -18,6 +18,16 @@ import {
   createStatusCommand,
   createQueueCommand,
   createInitCommand,
+  createCheckCommand,
+  createStartCommand,
+  createStackStatusCommand,
+  createStopCommand,
+  createUiCommand,
+  createDocsCommand,
+  createTankCommand,
+  createRelayCommand,
+  runChecks,
+  printChecks,
 } from "./commands/index.js";
 
 // Re-export configuration module for programmatic use
@@ -79,19 +89,25 @@ const program = new Command();
 
 program
   .name("propr")
-  .description("CLI for interacting with the ProPR backend - AI-powered automated implementation of GitHub issues and pull requests")
+  .description("ProPR control plane + backend client - run a local stack and implement GitHub issues with AI agents")
   .version(packageJson.version ?? "0.0.0")
   .option("-p, --project <project>", "Specify the target project (owner/repo)")
   .addHelpText("before", `
 ProPR CLI - AI-Powered GitHub Issue Implementation
 
-ProPR enables automated implementation of GitHub issues using AI agents.
-This CLI provides commands to manage plans, tasks, repositories, and agents.
+Run a local ProPR Docker stack (check / init / start / status / stop) and
+drive the backend (plans, issues, tasks, repos, agents).
 `)
   .addHelpText("after", `
-Quick Start:
+Quick Start (local stack):
+  $ propr                           Verify the environment (same as 'propr check')
+  $ propr init stack                Scaffold .env + data/logs/repos, detect agents
+  $ propr start                     Start the stack with a live dashboard
+  $ propr status                    Show local stack status
+  $ propr stop                      Stop the stack
+
+Quick Start (backend client):
   $ propr remote <url>              Set the backend API URL
-  $ propr init                      Scaffold .propr repo setup files
   $ propr login <token>             Authenticate with GitHub
   $ propr use <owner/repo>          Set default project
   $ propr plan list                 View available implementation plans
@@ -112,17 +128,18 @@ Examples:
   $ propr status
 
 Command Groups:
+  Control Plane:  check, init [repo|stack], start, status, stop, ui, docs, tank
+  GitHub Relay:   relay [enroll|list|revoke]
   Configuration:  remote, use, login, logout
-  Local Setup:    init
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
   Tasks:          task [list|get|stop|delete|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
-  Agents:         agent [list|add|delete]
+  Agents:         agent [list|add|enable|disable|delete]
   Settings:       setting [get|update]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
-  System:         status, queue
+  Backend:        remote-status, queue
 
 For more information on a command, run:
   $ propr <command> --help
@@ -297,7 +314,17 @@ Example:
     }
   });
 
-// Register command groups
+// Control-plane commands (local Docker stack)
+program.addCommand(createCheckCommand());
+program.addCommand(createStartCommand());
+program.addCommand(createStackStatusCommand());
+program.addCommand(createStopCommand());
+program.addCommand(createUiCommand());
+program.addCommand(createDocsCommand());
+program.addCommand(createTankCommand());
+program.addCommand(createRelayCommand());
+
+// Setup + backend client command groups
 program.addCommand(createInitCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
@@ -307,14 +334,28 @@ program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());
 program.addCommand(createLogCommand());
 program.addCommand(createTodoCommand());
-program.addCommand(createStatusCommand());
+program.addCommand(createStatusCommand()); // backend health → `propr remote-status`
 program.addCommand(createQueueCommand());
 
-program.parse();
-
-// If no command is provided, show help
+// Bare `propr` (no args): run the environment check, then hint at next steps.
 if (!process.argv.slice(2).length) {
-  console.log("ProPR CLI - Interact with the ProPR backend");
-  console.log("");
-  console.log("Run 'propr --help' for usage information.");
+  void (async () => {
+    try {
+      const outcome = await runChecks();
+      printChecks(outcome);
+      console.log("");
+      if (outcome.results.some((r) => r.name === "Stack config (.env)" && r.status !== "ok")) {
+        console.log("Next: `propr init stack` to scaffold a stack, then `propr start`.");
+      } else {
+        console.log("Next: `propr start` to launch the stack  ·  `propr --help` for all commands.");
+      }
+      process.exit(outcome.anyFail ? 1 : 0);
+    } catch (error) {
+      console.error(`Error: ${(error as Error).message}`);
+      console.log("Run 'propr --help' for usage information.");
+      process.exit(1);
+    }
+  })();
+} else {
+  program.parse();
 }

@@ -10,6 +10,7 @@ import {
   listAgents,
   addAgent,
   deleteAgent,
+  setAgentEnabled,
   AgentConfig,
   AgentType,
   AGENT_TYPES,
@@ -373,6 +374,53 @@ Examples:
         }
       }
     );
+
+  // agent enable / disable
+  const applyEnabled = async (alias: string, enabled: boolean): Promise<void> => {
+    try {
+      const result = await setAgentEnabled(alias, enabled);
+      if (result.success) {
+        console.log(`Agent '${alias}' ${enabled ? "enabled" : "disabled"}.`);
+      } else {
+        console.error(`Failed to ${enabled ? "enable" : "disable"} agent '${alias}'`);
+        process.exit(1);
+      }
+    } catch (error) {
+      const msg = (error as Error).message;
+      if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch failed")) {
+        console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
+      } else if (msg.includes("not found")) {
+        console.error(`Error: Agent '${alias}' not found`);
+      } else if (msg.includes("401") || msg.includes("unauthorized")) {
+        console.error("Error: Unauthorized. Please run 'propr login' first.");
+      } else {
+        console.error(`Error updating agent: ${msg}`);
+      }
+      process.exit(1);
+    }
+  };
+
+  agent
+    .command("enable <alias>")
+    .description("Enable an agent (requires the stack to be running)")
+    .addHelpText("after", `
+Example:
+  $ propr agent enable claude-prod
+`)
+    .action(async (alias: string) => {
+      await applyEnabled(alias, true);
+    });
+
+  agent
+    .command("disable <alias>")
+    .description("Disable an agent (requires the stack to be running)")
+    .addHelpText("after", `
+Example:
+  $ propr agent disable claude-prod
+`)
+    .action(async (alias: string) => {
+      await applyEnabled(alias, false);
+    });
 
   // agent delete
   agent

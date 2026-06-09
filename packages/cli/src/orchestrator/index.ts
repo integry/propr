@@ -1,0 +1,94 @@
+/**
+ * Orchestrator loader.
+ *
+ * The orchestration core lives in a dependency-free `.mjs` shared with the
+ * production launcher image (docker/launcher/orchestrator.mjs). At CLI build
+ * time it is copied next to the compiled output (see scripts/copy-assets.mjs);
+ * here we resolve and dynamically import it, typed via ./types.ts.
+ */
+
+import { existsSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import type { OrchestratorConfig, OrchestratorModule } from "./types.js";
+import type { ConfigManager } from "../config/index.js";
+
+export type {
+  OrchestratorConfig,
+  OrchestratorModule,
+  ServiceState,
+  StackStatus,
+  ValidationResult,
+} from "./types.js";
+
+let cached: OrchestratorModule | undefined;
+
+/**
+ * Candidate locations for orchestrator.mjs, in priority order:
+ *   1. Bundled next to this module (dist/orchestrator/ or src/orchestrator/).
+ *   2. Repo-checkout fallback: docker/launcher/orchestrator.mjs walking up.
+ */
+function resolveOrchestratorPath(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const bundled = join(here, "orchestrator.mjs");
+  if (existsSync(bundled)) return bundled;
+
+  // Walk up looking for docker/launcher/orchestrator.mjs (dev / source tree).
+  let dir = here;
+  for (let i = 0; i < 8; i += 1) {
+    const candidate = join(dir, "docker", "launcher", "orchestrator.mjs");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  throw new Error(
+    "Could not locate orchestrator.mjs. Run `npm run build` in packages/cli to bundle it, " +
+      "or run from a ProPR source checkout."
+  );
+}
+
+/** Resolve the bundled manifest.json path (sits next to orchestrator.mjs). */
+function resolveManifestPath(orchestratorPath: string): string | undefined {
+  const manifest = join(dirname(orchestratorPath), "manifest.json");
+  return existsSync(manifest) ? manifest : undefined;
+}
+
+/** Loads (and caches) the orchestrator module. */
+export async function loadOrchestrator(): Promise<OrchestratorModule> {
+  if (cached) return cached;
+  const path = resolveOrchestratorPath();
+  cached = (await import(pathToFileURL(path).href)) as OrchestratorModule;
+  return cached;
+}
+
+/**
+ * Determine the stack root directory (where .env, data/, logs/, repos/ live).
+ * Precedence: explicit flag → PROPR_ROOT env → saved config stackRoot → cwd.
+ */
+export function resolveStackRoot(
+  configManager: ConfigManager | undefined,
+  flagRoot?: string
+): string {
+  if (flagRoot) return resolve(flagRoot);
+  if (process.env.PROPR_ROOT) return resolve(process.env.PROPR_ROOT);
+  const saved = configManager?.getStackRoot();
+  if (saved) return resolve(saved);
+  return process.cwd();
+}
+
+/**
+ * Convenience: load the orchestrator and resolve a host config for the given
+ * (or resolved) stack root.
+ */
+export async function getHostConfig(opts: {
+  configManager?: ConfigManager;
+  root?: string;
+}): Promise<{ orch: OrchestratorModule; cfg: OrchestratorConfig; rootDir: string }> {
+  const orch = await loadOrchestrator();
+  const rootDir = resolveStackRoot(opts.configManager, opts.root);
+  const manifestPath = resolveManifestPath(resolveOrchestratorPath());
+  const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath });
+  return { orch, cfg, rootDir };
+}

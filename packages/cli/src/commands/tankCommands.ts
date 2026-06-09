@@ -1,0 +1,62 @@
+/**
+ * `propr tank on|off` — toggle Agent Tank LLM usage tracking.
+ *
+ * Agent Tank is an external service, not a stack container, so this is a backend
+ * setting flip routed through the running ProPR API.
+ */
+
+import { Command } from "commander";
+import { getAgentTank, setAgentTank } from "../api/agentTank.js";
+
+function parseState(value: string): boolean {
+  const v = value.toLowerCase();
+  if (v === "on" || v === "enable" || v === "true") return true;
+  if (v === "off" || v === "disable" || v === "false") return false;
+  throw new Error(`expected 'on' or 'off', got '${value}'`);
+}
+
+function handleApiError(error: unknown): never {
+  const msg = (error as Error).message;
+  if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch failed")) {
+    console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
+  } else if (msg.includes("401") || msg.includes("unauthorized")) {
+    console.error("Error: Unauthorized. Please run 'propr login' first.");
+  } else {
+    console.error(`Error updating Agent Tank: ${msg}`);
+  }
+  process.exit(1);
+}
+
+export function createTankCommand(): Command {
+  const tank = new Command("tank")
+    .description("Toggle Agent Tank LLM usage tracking (requires the stack running)")
+    .argument("[state]", "on or off (omit to show current setting)")
+    .option("--url <url>", "Agent Tank service URL")
+    .addHelpText("after", `
+Examples:
+  $ propr tank              # show current setting
+  $ propr tank on
+  $ propr tank off
+  $ propr tank on --url http://127.0.0.1:3456
+`)
+    .action(async (state: string | undefined, options: { url?: string }) => {
+      try {
+        if (!state) {
+          const current = await getAgentTank();
+          console.log(`Agent Tank: ${current.enabled ? "on" : "off"}${current.url ? `  (${current.url})` : ""}`);
+          return;
+        }
+        const enable = parseState(state);
+        const result = await setAgentTank(enable, options.url);
+        console.log(`Agent Tank ${result.enabled ? "enabled" : "disabled"}${result.url ? `  (${result.url})` : ""}.`);
+      } catch (error) {
+        if (error instanceof Error && /expected 'on' or 'off'/.test(error.message)) {
+          console.error(`Error: ${error.message}`);
+          process.exit(1);
+        }
+        handleApiError(error);
+      }
+    });
+
+  return tank;
+}
