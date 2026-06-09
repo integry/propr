@@ -14,6 +14,7 @@ interface FileRemovalPlan {
 }
 
 const FILE_TOKEN_BUDGET_SAFETY_RATIO = 0.98;
+const CONTEXT_FILL_STOP_RATIO = 0.99;
 const MIN_FIXED_OVERHEAD_TOKENS = 2_000;
 const FIXED_OVERHEAD_LIMIT_RATIO = 0.05;
 
@@ -43,6 +44,17 @@ export function planFilesToRemoveForTokenLimit(
   }));
   const rawFileTokens = filesWithTokens.reduce((sum, file) => sum + file.tokens, 0);
   const rawNonFileTokens = Math.max(0, totalTokens - rawFileTokens);
+  if (rawFileTokens === 0 && totalTokens > tiktokenLimit && filesWithTokens.length > 0) {
+    const leastRelevantFile = filesWithTokens[filesWithTokens.length - 1];
+    return {
+      filesToRemove: [leastRelevantFile.path],
+      tokensFreed: 0,
+      nonFileTokens: totalTokens,
+      targetFileTokens: 0,
+      estimatedRemainingTokens: totalTokens,
+    };
+  }
+
   const fixedOverheadLimit = Math.max(
     MIN_FIXED_OVERHEAD_TOKENS,
     Math.floor(tiktokenLimit * FIXED_OVERHEAD_LIMIT_RATIO),
@@ -59,12 +71,17 @@ export function planFilesToRemoveForTokenLimit(
     Math.floor((tiktokenLimit - nonFileTokens) * FILE_TOKEN_BUDGET_SAFETY_RATIO),
   );
 
-  // Remove from the tail (least relevant) first so large high-relevance files are kept.
-  const keptFiles = new Set(filesWithEffectiveTokens.map(f => f.path));
-  let keptTokens = filesWithEffectiveTokens.reduce((sum, f) => sum + f.effectiveTokens, 0);
-  for (let i = filesWithEffectiveTokens.length - 1; i >= 0 && keptTokens > targetFileTokens; i--) {
-    keptFiles.delete(filesWithEffectiveTokens[i].path);
-    keptTokens -= filesWithEffectiveTokens[i].effectiveTokens;
+  const keptFiles = new Set<string>();
+  let keptTokens = 0;
+  const stopAtTokens = Math.floor(targetFileTokens * CONTEXT_FILL_STOP_RATIO);
+  for (const file of filesWithEffectiveTokens) {
+    if (keptTokens >= stopAtTokens) {
+      break;
+    }
+    if (keptTokens + file.effectiveTokens <= targetFileTokens) {
+      keptFiles.add(file.path);
+      keptTokens += file.effectiveTokens;
+    }
   }
 
   let filesToRemove = filesWithEffectiveTokens

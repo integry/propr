@@ -52,6 +52,24 @@ test('treats large formatted output deltas as file expansion instead of fixed ov
   assert.equal(plan.estimatedRemainingTokens <= 5_000, true);
 });
 
+test('skips oversized priority files and keeps later files that fit', () => {
+  const files = ['top.css', 'too-large.html', 'third.ts', 'fourth.ts'];
+  const plan = planFilesToRemoveForTokenLimit(
+    files,
+    {
+      'top.css': 115_000,
+      'too-large.html': 900_000,
+      'third.ts': 100_000,
+      'fourth.ts': 100_000,
+    },
+    1_215_000,
+    980_000,
+  );
+
+  assert.deepEqual(plan.filesToRemove, ['too-large.html']);
+  assert.equal(plan.estimatedRemainingTokens <= 980_000, true);
+});
+
 test('removes at least one file when token counts are unavailable', () => {
   const plan = planFilesToRemoveForTokenLimit(
     ['a.ts', 'b.ts'],
