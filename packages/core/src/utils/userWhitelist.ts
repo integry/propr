@@ -25,7 +25,7 @@ export function isGithubUserWhitelisted(login: string | undefined | null): boole
         return false;
     }
     const exact = login.toLowerCase();
-    const normalized = login.replace('[bot]', '').toLowerCase();
+    const normalized = login.replace(/\[bot\]$/i, '').toLowerCase();
     return whitelist.some((entry) => {
         const candidate = entry.toLowerCase();
         return candidate === exact || candidate === normalized;

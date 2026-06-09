@@ -33,7 +33,9 @@ function resolveAuthMode(): AuthMode {
     if (explicit === 'demo') return 'demo';
     if (explicit === 'relay') return 'relay';
     if (explicit === 'app') return 'app';
-    if (relayUrl) return 'relay';
+    // Inferred relay requires both URL and token so a stray placeholder URL
+    // doesn't shadow a fully valid GitHub App configuration.
+    if (relayUrl && relayToken) return 'relay';
     if (appId && privateKeyPath && installationId) return 'app';
     return 'none';
 }

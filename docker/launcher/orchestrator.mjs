@@ -190,8 +190,10 @@ export function resolveConfig(env = process.env, overrides = {}) {
 /**
  * Host CLI convenience: env file, data, logs and repos all live under a single
  * root dir; the local path IS the host path (no container indirection).
+ * `cliOverrides` lets the CLI pass in persisted config (e.g. docsEnabled from
+ * ConfigManager) that should take precedence over env/defaults.
  */
-export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, manifestPath } = {}) {
+export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, manifestPath, cliOverrides = {} } = {}) {
     return resolveConfig(env, {
         envFileLocal: join(rootDir, '.env'),
         envFileHost: join(rootDir, '.env'),
@@ -199,6 +201,7 @@ export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, 
         hostLogs: join(rootDir, 'logs'),
         hostRepos: join(rootDir, 'repos'),
         manifestPath,
+        ...cliOverrides,
     });
 }
 
@@ -361,7 +364,10 @@ export function ensureServiceImage(cfg, service, onLog) {
     if (!tag) return;
     if (imagePresentLocally(tag)) return;
     onLog?.(`  · pulling ${tag}`);
-    docker(['pull', tag], { capture: true });
+    const res = docker(['pull', tag], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Failed to pull ${tag}: ${(res.stderr || '').trim()}`);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -493,10 +499,20 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {
     return getStackStatus(cfg);
 }
 
-/** Stop every container belonging to this stack (discovered by label). */
-export function stopStack(cfg, { remove = true, onLog } = {}) {
+/** Stop every container belonging to this stack (discovered by label + legacy name pattern). */
+export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } = {}) {
     const res = docker(['ps', '-a', '--filter', `label=propr.stack=${cfg.stack}`, '--format', '{{.Names}}'], { capture: true });
-    const names = res.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    const names = new Set(res.stdout.split('\n').map((s) => s.trim()).filter(Boolean));
+
+    // Also discover legacy containers that were created before labeling was added
+    // (named <stack>-<service> but missing the propr.stack label).
+    for (const service of SERVICES) {
+        const legacyName = `${cfg.stack}-${service}`;
+        if (!names.has(legacyName) && containerExists(cfg, legacyName)) {
+            names.add(legacyName);
+        }
+    }
+
     for (const name of names) {
         try {
             docker(['stop', '-t', '10', name], { capture: true });
@@ -504,6 +520,15 @@ export function stopStack(cfg, { remove = true, onLog } = {}) {
             onLog?.(`  [ok] stopped ${name}`);
         } catch (e) {
             onLog?.(`  ! failed to stop ${name}: ${e.message}`);
+        }
+    }
+
+    if (removeNetwork) {
+        try {
+            docker(['network', 'rm', cfg.network], { capture: true });
+            onLog?.(`  [ok] removed network ${cfg.network}`);
+        } catch {
+            // Network may not exist or may still be in use — not fatal.
         }
     }
 }

@@ -13,7 +13,7 @@ export interface AgentTankSettings {
   url?: string;
 }
 
-const DEFAULT_AGENT_TANK_URL = "http://0.0.0.0:3456";
+const DEFAULT_AGENT_TANK_URL = "http://127.0.0.1:3456";
 
 /** Fetch the current Agent Tank settings. */
 export async function getAgentTank(client?: ApiClient): Promise<AgentTankSettings> {

@@ -254,6 +254,8 @@ function validateRelayUrl(url: string): string | null {
  * Verify the GitHub credentials the backend needs to boot. The daemon/worker/api
  * import @propr/core's githubAuth, which hard-exits unless one of these is true:
  * demo mode, a (future) token relay, or a configured GitHub App + readable key.
+ *
+ * GH_AUTH_MODE takes precedence over inference, matching the backend's behavior.
  */
 function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
@@ -264,16 +266,25 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
     return out;
   }
 
-  // Relay mode (path 2): vendor-brokered installation tokens, no private key.
+  // Honor explicit GH_AUTH_MODE to match the backend's resolveAuthMode().
+  const explicitMode = (val("GH_AUTH_MODE") ?? "").trim().toLowerCase();
+  if (explicitMode === "demo") {
+    out.push({ name: "GitHub auth", status: "ok", detail: "demo mode (GH_AUTH_MODE=demo) — GitHub access disabled" });
+    return out;
+  }
+
+  // Relay mode: explicit GH_AUTH_MODE=relay, or inferred when both URL+token are present.
   const relayUrl = val(RELAY_URL_KEY);
-  if (relayUrl) {
-    const urlError = validateRelayUrl(relayUrl);
+  const relayToken = val(RELAY_TOKEN_KEY);
+  const useRelay = explicitMode === "relay" || (explicitMode !== "app" && relayUrl && relayToken);
+  if (useRelay) {
+    const urlError = relayUrl ? validateRelayUrl(relayUrl) : `${RELAY_URL_KEY} must be set for relay mode`;
     out.push(
       urlError
         ? { name: "GitHub auth mode", status: "fail", detail: urlError, fix: "Use an https:// relay URL (http only for localhost)." }
         : { name: "GitHub auth mode", status: "ok", detail: `token relay (${relayUrl})` }
     );
-    if (!val(RELAY_TOKEN_KEY)) {
+    if (!relayToken) {
       out.push({
         name: "Relay credential",
         status: "fail",

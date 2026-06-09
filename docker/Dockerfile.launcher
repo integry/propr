@@ -8,9 +8,10 @@
 #   docker run --rm \
 #     -v /var/run/docker.sock:/var/run/docker.sock \
 #     -v $PWD/.env:/app/.env:ro \
-#     -v $PWD/data:/app/data \
-#     -v $PWD/logs:/app/logs \
-#     -v $PWD/repos:/app/repos \
+#     -e PROPR_ENV_FILE=$PWD/.env \
+#     -e PROPR_DATA_DIR=$PWD/data \
+#     -e PROPR_LOGS_DIR=$PWD/logs \
+#     -e PROPR_REPOS_DIR=$PWD/repos \
 #     propr/launcher:<version>
 
 FROM node:20-alpine

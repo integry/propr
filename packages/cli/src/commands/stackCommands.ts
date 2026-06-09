@@ -77,7 +77,7 @@ Examples:
         }
 
         console.log("Stopping ProPR stack…");
-        orch.stopStack(cfg, { remove: !options.keep, onLog: (l) => console.log(l) });
+        orch.stopStack(cfg, { remove: !options.keep, removeNetwork: !options.keep, onLog: (l) => console.log(l) });
         console.log(options.keep ? "Stack stopped (containers kept)." : "Stack stopped and removed.");
       } catch (error) {
         console.error(`Error stopping stack: ${(error as Error).message}`);

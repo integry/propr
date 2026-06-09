@@ -53,6 +53,10 @@ export interface DetectedIssue {
     // the label (webhook), or the issue author (polling, where the labeler is not
     // cheaply known). Used to enforce the user whitelist.
     triggeredBy?: string;
+    // How this issue was detected: 'webhook' (label event) or 'polling'.
+    // Polling cannot determine who applied the label, so the whitelist check is
+    // relaxed — label presence on a repo is treated as sufficient authorization.
+    source?: 'webhook' | 'polling';
 }
 
 export type IssueProcessor = (issue: DetectedIssue, correlationId: string) => Promise<void>;
@@ -153,7 +157,8 @@ async function handleIssuesEvent(
             createdAt: payload.issue.created_at,
             updatedAt: payload.issue.updated_at,
             // The user who applied the label (falls back to the issue author).
-            triggeredBy: payload.sender?.login ?? payload.issue.user?.login
+            triggeredBy: payload.sender?.login ?? payload.issue.user?.login,
+            source: 'webhook'
         };
 
         await processDetectedIssue(issue, correlationId);

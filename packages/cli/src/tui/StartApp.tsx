@@ -16,6 +16,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { ChildProcess } from "node:child_process";
 import type { OrchestratorConfig, OrchestratorModule, StackStatus, ServiceState } from "../orchestrator/index.js";
+import type { ConfigManager } from "../config/index.js";
 
 const POLL_INTERVAL_MS = 1500;
 const LOG_LINES = 14;
@@ -23,6 +24,7 @@ const LOG_LINES = 14;
 interface Props {
   orch: OrchestratorModule;
   cfg: OrchestratorConfig;
+  configManager?: ConfigManager;
   onResult: (outcome: "background" | "stopped") => void;
 }
 
@@ -38,7 +40,7 @@ function glyph(s: ServiceState): string {
   return "○";
 }
 
-export function StartApp({ orch, cfg, onResult }: Props): React.ReactElement {
+export function StartApp({ orch, cfg, configManager, onResult }: Props): React.ReactElement {
   const { exit } = useApp();
   const [status, setStatus] = useState<StackStatus>(() => orch.getStackStatus(cfg));
   const [selected, setSelected] = useState(0);
@@ -143,9 +145,11 @@ export function StartApp({ orch, cfg, onResult }: Props): React.ReactElement {
       try {
         if (ui?.running) {
           orch.stopService(cfg, "ui", { remove: true });
+          configManager?.setUiEnabled(false);
           setMessage("UI stopped");
         } else {
           orch.startService(cfg, "ui");
+          configManager?.setUiEnabled(true);
           setMessage("UI started");
         }
         setStatus(orch.getStackStatus(cfg));

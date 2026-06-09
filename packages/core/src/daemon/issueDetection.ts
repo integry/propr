@@ -69,7 +69,12 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
     // configured). Prevents a non-whitelisted repo collaborator from kicking off
     // a bot-executed job by labeling an issue.
-    if (!isGithubUserWhitelisted(issue.triggeredBy)) {
+    //
+    // For polling-detected issues, the true label-applier is unknown — we only
+    // know the issue author. Since only repo collaborators can apply labels,
+    // label presence is treated as sufficient authorization for polling.
+    const skipWhitelist = issue.source === 'polling';
+    if (!skipWhitelist && !isGithubUserWhitelisted(issue.triggeredBy)) {
         correlatedLogger.info({
             issueNumber: issue.number,
             repository: repoFullName,
@@ -273,9 +278,11 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             labels: issue.labels.map(l => typeof l === 'string' ? l : l.name),
             createdAt: issue.created_at,
             updatedAt: issue.updated_at,
-            // Polling cannot cheaply tell who applied the label, so gate on the
-            // issue author as the best available signal.
-            triggeredBy: issue.user?.login
+            // Polling cannot cheaply tell who applied the label; the issue author
+            // is the best available signal but source:'polling' tells the whitelist
+            // check to be lenient (label presence is the authorization).
+            triggeredBy: issue.user?.login,
+            source: 'polling'
         }));
     } catch (error) {
         const err = error as Error & { status?: number };

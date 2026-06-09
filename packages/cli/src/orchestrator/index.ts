@@ -80,7 +80,9 @@ export function resolveStackRoot(
 
 /**
  * Convenience: load the orchestrator and resolve a host config for the given
- * (or resolved) stack root.
+ * (or resolved) stack root. When a ConfigManager is provided, persisted CLI
+ * settings (docsEnabled, uiEnabled) are forwarded as overrides so `propr start`
+ * honors `propr docs on` / `propr ui off`.
  */
 export async function getHostConfig(opts: {
   configManager?: ConfigManager;
@@ -89,6 +91,10 @@ export async function getHostConfig(opts: {
   const orch = await loadOrchestrator();
   const rootDir = resolveStackRoot(opts.configManager, opts.root);
   const manifestPath = resolveManifestPath(resolveOrchestratorPath());
-  const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath });
+  const cliOverrides: Record<string, unknown> = {};
+  if (opts.configManager) {
+    cliOverrides.docsEnabled = opts.configManager.getDocsEnabled();
+  }
+  const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };
 }

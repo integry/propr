@@ -66,7 +66,7 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
   // Hand off to the live dashboard. Loaded dynamically so the non-TTY path never
   // pulls in ink/react.
   const { renderDashboard } = await import("./app.js");
-  const outcome = await renderDashboard({ orch, cfg });
+  const outcome = await renderDashboard({ orch, cfg, configManager });
 
   if (outcome === "stopped") {
     console.log("Stack stopped.");
