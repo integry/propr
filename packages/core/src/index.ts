@@ -166,7 +166,9 @@ export { mineGitHistory, mineGitHistoryWithLLM, getCommitHistory, formatCommitLo
 export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, SemanticMinerResponse, SemanticMiningOptions } from './services/relevance/gitMiner.js';
 export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
-export type { FileSummary, DirectorySummary, GitFileInfo, IndexingOptions } from './services/relevance/summaryMiner.js';
+export type { FileSummary, DirectorySummary, IndexingOptions } from './services/relevance/summaryMiner.js';
+export { scanProcessableGitFiles, shouldProcessFilePath, isProcessableFile } from './services/relevance/summaryFileFilter.js';
+export type { GitFileInfo } from './services/relevance/summaryFileFilter.js';
 export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';
 export { buildSummaryContext } from './services/relevance/contextBuilder.js';
 export type { ContextBuildOptions, SmartContextResult } from './services/relevance/contextBuilder.js';

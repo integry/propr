@@ -13,6 +13,7 @@ import {
 } from './summaryMinerHelpers.js';
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
+import { scanProcessableGitFiles, type GitFileInfo } from './summaryFileFilter.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -41,11 +42,6 @@ export interface DirectorySummary {
   last_updated_at: Date;
 }
 
-export interface GitFileInfo {
-  path: string;
-  blobHash: string;
-}
-
 export interface IndexingOptions {
   correlationId?: string;
   fullName?: string; // repository full name for status tracking
@@ -54,42 +50,6 @@ export interface IndexingOptions {
 }
 
 // --- Constants ---
-
-const SUMMARIZABLE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-  '.py', '.pyx', '.pyi',
-  '.java', '.kt', '.scala',
-  '.go',
-  '.rs',
-  '.c', '.cpp', '.cc', '.h', '.hpp',
-  '.cs',
-  '.rb',
-  '.php',
-  '.swift',
-  '.vue', '.svelte',
-  '.sql',
-  '.sh', '.bash', '.zsh',
-  '.yaml', '.yml',
-  '.json',
-  '.md', '.mdx',
-  '.html', '.css', '.scss', '.less'
-]);
-
-const EXCLUDED_PATHS = [
-  'node_modules/',
-  'vendor/',
-  'dist/',
-  'build/',
-  '.git/',
-  '__pycache__/',
-  '.next/',
-  '.nuxt/',
-  'coverage/',
-  '.cache/',
-  'target/',
-  'bin/',
-  'obj/'
-];
 
 /**
  * Common icon file paths to check for in the repository.
@@ -256,7 +216,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     await updateRepositoryStatus(fullName, 'indexing', branch);
 
     // 4. Scan files using git ls-files --stage
-    const gitFiles = await scanGitFiles(repoPath, correlatedLogger);
+    const gitFiles = await scanProcessableGitFiles(repoPath, correlatedLogger);
     correlatedLogger.info({ fileCount: gitFiles.length }, 'Scanned git files');
 
     // 5. Filter and identify staleness
@@ -380,68 +340,6 @@ async function handleIndexingError(
 }
 
 // --- Phase A: Setup & Staleness Check ---
-
-/**
- * Scans all tracked files in the repository using git ls-files --stage
- */
-async function scanGitFiles(
-  repoPath: string,
-  log: Logger
-): Promise<GitFileInfo[]> {
-  const git: SimpleGit = simpleGit(repoPath);
-
-  try {
-    // git ls-files --stage returns: mode hash stage path
-    const output = await git.raw(['ls-files', '--stage']);
-
-    if (!output.trim()) {
-      return [];
-    }
-
-    const files: GitFileInfo[] = [];
-
-    for (const line of output.split('\n')) {
-      if (!line.trim()) continue;
-
-      // Format: "100644 <blob-hash> 0\t<path>"
-      const match = line.match(/^\d+\s+([a-f0-9]+)\s+\d+\t(.+)$/);
-      if (!match) continue;
-
-      const [, blobHash, filePath] = match;
-
-      // Filter by extension and excluded paths
-      if (!shouldProcessFile(filePath)) {
-        continue;
-      }
-
-      files.push({
-        path: filePath,
-        blobHash
-      });
-    }
-
-    return files;
-  } catch (error) {
-    log.error({ error: (error as Error).message }, 'Failed to scan git files');
-    return [];
-  }
-}
-
-/**
- * Determines if a file should be processed based on extension and path
- */
-function shouldProcessFile(filePath: string): boolean {
-  // Check excluded paths
-  for (const excluded of EXCLUDED_PATHS) {
-    if (filePath.includes(excluded)) {
-      return false;
-    }
-  }
-
-  // Check extension
-  const ext = path.extname(filePath).toLowerCase();
-  return SUMMARIZABLE_EXTENSIONS.has(ext);
-}
 
 interface IdentifyStaleFilesOptions {
   branch: string;

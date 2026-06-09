@@ -7,7 +7,7 @@ import type { IndexingJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
-import { indexRepo, updateRepositoryStatus } from '@propr/core';
+import { indexRepo, scanProcessableGitFiles, updateRepositoryStatus } from '@propr/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
 import type { RepoToMonitor } from '@propr/core';
 import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@propr/core';
@@ -136,13 +136,38 @@ function shouldIndexRepository(repoStatus: RepoStatus | undefined, currentHash?:
     return { shouldIndex: false, reason: 'up to date' };
 }
 
-async function hasIndexedFileSummaries(repoName: string, branch: string): Promise<boolean> {
-    const result = await db('file_summaries')
-        .where('path', 'like', `${repoName}/%`)
-        .andWhere({ branch })
-        .count<{ count: number | string }>('path as count')
-        .first();
-    return Number(result?.count || 0) > 0;
+async function getIndexCompleteness(repoName: string, repoPath: string, branch: string, log: Logger): Promise<{
+    complete: boolean;
+    indexedCount: number;
+    processableCount: number;
+    missingCount: number;
+}> {
+    const processableFiles = await scanProcessableGitFiles(repoPath, log);
+    const processablePaths = processableFiles.map(file => `${repoName}/${file.path}`);
+
+    if (processablePaths.length === 0) {
+        return { complete: true, indexedCount: 0, processableCount: 0, missingCount: 0 };
+    }
+
+    const CHUNK_SIZE = 500;
+    let indexedCount = 0;
+    for (let i = 0; i < processablePaths.length; i += CHUNK_SIZE) {
+        const chunk = processablePaths.slice(i, i + CHUNK_SIZE);
+        const result = await db('file_summaries')
+            .whereIn('path', chunk)
+            .andWhere({ branch })
+            .count<{ count: number | string }>('path as count')
+            .first();
+        indexedCount += Number(result?.count || 0);
+    }
+
+    const missingCount = processablePaths.length - indexedCount;
+    return {
+        complete: missingCount === 0,
+        indexedCount,
+        processableCount: processablePaths.length,
+        missingCount
+    };
 }
 
 /**
@@ -286,9 +311,13 @@ async function processRepositoryForIndexing(
 
     const decision = shouldIndexRepository(repoStatus, currentHash);
 
-    if (!decision.shouldIndex && repoStatus?.indexing_status === 'completed' && !await hasIndexedFileSummaries(repoName, branch)) {
-        decision.shouldIndex = true;
-        decision.reason = 'completed index has no summaries';
+    if (!decision.shouldIndex && repoStatus?.indexing_status === 'completed') {
+        const completeness = await getIndexCompleteness(repoName, repoPath, branch, log);
+        if (!completeness.complete) {
+            decision.shouldIndex = true;
+            decision.reason = 'completed index is missing summaries';
+            log.info({ repository: repoName, branch, ...completeness }, 'Completed index is incomplete, queueing reindex');
+        }
     }
 
     if (!decision.shouldIndex) {

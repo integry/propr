@@ -1,31 +1,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import path from 'path';
 
 process.env.NODE_ENV = 'test';
 
 // --- Re-implementations of private functions for testing ---
 // These mirror the logic in summaryMiner.ts and summaryMinerDirectories.ts
-
-const SUMMARIZABLE_EXTENSIONS = new Set([
-    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-    '.py', '.pyx', '.pyi',
-    '.java', '.kt', '.scala',
-    '.go',
-    '.rs',
-    '.c', '.cpp', '.cc', '.h', '.hpp',
-    '.cs',
-    '.rb',
-    '.php',
-    '.swift',
-    '.vue', '.svelte',
-    '.sql',
-    '.sh', '.bash', '.zsh',
-    '.yaml', '.yml',
-    '.json',
-    '.md', '.mdx',
-    '.html', '.css', '.scss', '.less'
-]);
 
 const EXCLUDED_PATHS = [
     'node_modules/',
@@ -49,8 +28,7 @@ function shouldProcessFile(filePath: string): boolean {
             return false;
         }
     }
-    const ext = path.extname(filePath).toLowerCase();
-    return SUMMARIZABLE_EXTENSIONS.has(ext);
+    return true;
 }
 
 function extractDirectories(filePaths: string[]): string[] {
@@ -147,20 +125,12 @@ function findStaleDirs(
 // --- Tests ---
 
 describe('Summary Miner - shouldProcessFile', () => {
-    test('accepts supported source files', () => {
+    test('accepts source files without requiring a known extension', () => {
         assert.ok(shouldProcessFile('src/app.ts'));
         assert.ok(shouldProcessFile('lib/utils.py'));
-        assert.ok(shouldProcessFile('main.go'));
-        assert.ok(shouldProcessFile('App.java'));
-        assert.ok(shouldProcessFile('server.rs'));
-    });
-
-    test('rejects unsupported file types', () => {
-        assert.ok(!shouldProcessFile('image.png'));
-        assert.ok(!shouldProcessFile('data.csv'));
-        assert.ok(!shouldProcessFile('archive.zip'));
-        assert.ok(!shouldProcessFile('binary.exe'));
-        assert.ok(!shouldProcessFile('font.woff'));
+        assert.ok(shouldProcessFile('release-site-src/src/pages/index.astro'));
+        assert.ok(shouldProcessFile('scripts/deploy'));
+        assert.ok(shouldProcessFile('config/custom.framework'));
     });
 
     test('rejects files in excluded directories', () => {
