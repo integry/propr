@@ -7,6 +7,7 @@ import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
+import { isGithubUserWhitelisted } from '../utils/userWhitelist.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
 
 export type { DetectedIssue };
@@ -21,6 +22,7 @@ interface GitHubIssue {
     created_at: string;
     updated_at: string;
     pull_request?: unknown;
+    user?: { login: string } | null;
 }
 
 interface GitHubSearchResponse {
@@ -61,6 +63,18 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             issueLabels: issue.labels,
             expectedLabels: primaryProcessingLabels
         }, 'Issue does not have any primary processing label, skipping');
+        return;
+    }
+
+    // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
+    // configured). Prevents a non-whitelisted repo collaborator from kicking off
+    // a bot-executed job by labeling an issue.
+    if (!isGithubUserWhitelisted(issue.triggeredBy)) {
+        correlatedLogger.info({
+            issueNumber: issue.number,
+            repository: repoFullName,
+            triggeredBy: issue.triggeredBy ?? null
+        }, 'Trigger actor not in whitelist, skipping');
         return;
     }
 
@@ -258,7 +272,10 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             repoName: repo,
             labels: issue.labels.map(l => typeof l === 'string' ? l : l.name),
             createdAt: issue.created_at,
-            updatedAt: issue.updated_at
+            updatedAt: issue.updated_at,
+            // Polling cannot cheaply tell who applied the label, so gate on the
+            // issue author as the best available signal.
+            triggeredBy: issue.user?.login
         }));
     } catch (error) {
         const err = error as Error & { status?: number };

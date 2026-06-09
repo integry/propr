@@ -49,6 +49,10 @@ export interface DetectedIssue {
     labels: string[];
     createdAt: string;
     updatedAt: string;
+    // GitHub login of the actor that triggered processing — the user who applied
+    // the label (webhook), or the issue author (polling, where the labeler is not
+    // cheaply known). Used to enforce the user whitelist.
+    triggeredBy?: string;
 }
 
 export type IssueProcessor = (issue: DetectedIssue, correlationId: string) => Promise<void>;
@@ -147,7 +151,9 @@ async function handleIssuesEvent(
             repoName: repo,
             labels: payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [],
             createdAt: payload.issue.created_at,
-            updatedAt: payload.issue.updated_at
+            updatedAt: payload.issue.updated_at,
+            // The user who applied the label (falls back to the issue author).
+            triggeredBy: payload.sender?.login ?? payload.issue.user?.login
         };
 
         await processDetectedIssue(issue, correlationId);
