@@ -230,7 +230,7 @@ export class AntigravityAgent implements Agent {
     }
 
     private buildAntigravityShellCommand(): string {
-        return ['set -e', 'prompt="$(cat)"', `exec ${this.getCliCommand()} --dangerously-skip-permissions "$@" --print "$prompt"`].join('\n');
+        return ['set -e', `exec ${this.getCliCommand()} --dangerously-skip-permissions --print "$@"`].join('\n');
     }
 
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {

@@ -117,7 +117,8 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
         assert.equal(args[entrypointIndex + 1], '/bin/bash');
         assert.equal(args[entrypointIndex + 2], '-lc');
         assert.match(args[entrypointIndex + 3], /--dangerously-skip-permissions/);
-        assert.match(args[entrypointIndex + 3], /--print "\$prompt"/);
+        assert.match(args[entrypointIndex + 3], /--print "\$@"/);
+        assert.doesNotMatch(args[entrypointIndex + 3], /prompt="\$\(cat\)"/);
         assert.equal(args[entrypointIndex + 4], 'propr-antigravity');
         assert.ok(!args.includes('--output-format'));
         assert.ok(!args.includes('--yolo'));
