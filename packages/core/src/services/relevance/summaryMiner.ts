@@ -232,12 +232,26 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
-      correlatedLogger.info('No files need processing, all summaries up to date');
+      correlatedLogger.info('No files need processing, all file summaries up to date');
+      // File summaries are current, but directory summaries may still be missing
+      // from a prior run where directory aggregation failed. Run aggregation
+      // (hash-gated, so it's a no-op when directories are also current) so those
+      // gaps recover incrementally instead of requiring a full reindex.
+      await ensureIndexingProgress(fullName, branch);
+      const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
+
       // Clear any stale cancellation flag that may have arrived during setup
       await clearIndexingCancellation(fullName, branch);
       await clearIndexingProgress(fullName, branch);
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
+
+      if (dirResult.failedBatches > 0) {
+        await updateRepositoryStatus(fullName, 'failed', branch);
+        try { await publishIndexingStatus(fullName, branch, 'failed'); } catch { /* best-effort */ }
+        correlatedLogger.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
+      } else {
+        await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+        try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
+      }
       return;
     }
 
@@ -264,18 +278,22 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     // Phase C: Directory Aggregation (if files were processed or deleted)
+    let dirFailedBatches = 0;
     if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
       await ensureIndexingProgress(fullName, branch);
-      await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
+      const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
+      dirFailedBatches = dirResult.failedBatches;
     }
 
     // Phase D: Cleanup - Mark status based on results
-    if (batchResult.failedBatches > 0) {
-      // Some batches failed - mark as failed so it will be retried
+    if (batchResult.failedBatches > 0 || dirFailedBatches > 0) {
+      // Some file or directory batches failed - mark as failed so it will be retried.
+      // Successful summaries are already persisted, so the retry only reprocesses
+      // the missing files/directories (no full reindex required).
       await updateRepositoryStatus(fullName, 'failed', branch);
       try { await publishIndexingStatus(fullName, branch, 'failed'); } catch { /* best-effort */ }
       correlatedLogger.warn(
-        { repoPath, fullName, branch, ...batchResult },
+        { repoPath, fullName, branch, ...batchResult, dirFailedBatches },
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {

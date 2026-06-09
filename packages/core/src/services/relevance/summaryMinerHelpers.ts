@@ -16,6 +16,18 @@ import { aggregateDirectories } from './summaryMinerDirectories.js';
 import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, publishProgress } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isProcessableFile } from './summaryFileFilter.js';
+import { withRetry } from '../../utils/retryHandler.js';
+
+// Retry transient agent failures (network blips, rate limits, 5xx) before
+// counting a batch as failed. Persistent errors (quota exhaustion, malformed
+// output) fall through after a bounded number of attempts so the run still
+// finishes promptly. See isRetryableError in retryHandler for classification.
+const SUMMARIZATION_RETRY = {
+  maxAttempts: 3,
+  baseDelay: 2000,
+  maxDelay: 15000,
+  exponentialBase: 2,
+} as const;
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -320,16 +332,21 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   let errorMessage: string | undefined;
 
   try {
-    const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
-    if (!analysisResult.success) {
-      throw new Error(analysisResult.error || 'Summarization agent analysis failed');
-    }
-    const response = analysisResult.response;
-    const summaries = parseBatchResponse(response);
-
-    if (summaries.length === 0) {
-      throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
-    }
+    const summaries = await withRetry(
+      async () => {
+        const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
+        if (!analysisResult.success) {
+          throw new Error(analysisResult.error || 'Summarization agent analysis failed');
+        }
+        const parsed = parseBatchResponse(analysisResult.response);
+        if (parsed.length === 0) {
+          throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
+        }
+        return parsed;
+      },
+      SUMMARIZATION_RETRY,
+      `batch_summarization:${fullName}`
+    );
 
     // Save summaries to DB with the actual model used
     await saveBatchSummaries({ fullName, batch, summaries, modelUsed, branch });
