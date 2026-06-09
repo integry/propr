@@ -355,7 +355,9 @@ describe('OpenCodeAgent Docker args', () => {
 
         assert.ok(shellIndex > -1);
         assert.strictEqual(args[shellIndex + 1], '-lc');
-        assert.match(args[shellIndex + 2], /opencode run "\$@" -- "\$prompt"/);
+        assert.match(args[shellIndex + 2], /cat > "\$prompt_file"/);
+        assert.match(args[shellIndex + 2], /opencode run "\$@" --file "\$prompt_file"/);
+        assert.doesNotMatch(args[shellIndex + 2], /prompt="\$\(cat\)"/);
         assert.strictEqual(args[shellIndex + 3], 'propr-opencode-direct');
         assert.ok(!args.includes('opencode-run'));
         assert.strictEqual(args[args.indexOf('--format') + 1], 'json');

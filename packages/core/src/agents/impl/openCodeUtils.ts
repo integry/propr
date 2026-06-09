@@ -85,7 +85,7 @@ function buildOpenCodeCommandArgs(promptMode: 'file' | 'direct'): string[] {
         return [
             '/bin/sh',
             '-lc',
-            'prompt="$(cat)"; out="$(mktemp)"; opencode run "$@" -- "$prompt" > "$out"; status=$?; cat "$out"; if [ "$status" -ne 0 ] || ! grep -q \'"type":"text"\' "$out"; then latest="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"; [ -n "$latest" ] && tail -80 "$latest" >&2; fi; rm -f "$out"; exit "$status"',
+            'prompt_file="$(mktemp -t opencode-analysis-prompt.XXXXXX.md)"; out="$(mktemp)"; cleanup() { rm -f "$prompt_file" "$out"; }; trap cleanup EXIT; cat > "$prompt_file"; opencode run "$@" --file "$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run. Follow the instructions in that file exactly." > "$out"; status=$?; cat "$out"; if [ "$status" -ne 0 ] || ! grep -q \'"type":"text"\' "$out"; then latest="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"; [ -n "$latest" ] && tail -80 "$latest" >&2; fi; exit "$status"',
             'propr-opencode-direct',
             '--format',
             'json',
