@@ -15,6 +15,7 @@ export const EFFECTIVE_MAX_RATIO = 0.98;
 // Tiktoken (cl100k_base) underestimates tokens for code/XML content.
 // Tests show actual Claude tokens are ~36% higher than tiktoken estimates.
 export const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
+export const CODEX_CLI_CONTEXT_LIMIT = 240000;
 
 export const MODEL_LIMITS: Record<string, number> = {
   'default': 200000,
@@ -30,19 +31,34 @@ export const MODEL_LIMITS: Record<string, number> = {
   'claude-haiku-4-5-20251001': 200000,
 };
 
+function shouldApplyCodexCliLimit(agentAlias: string, modelId: string): boolean {
+  const normalizedModelId = modelId.toLowerCase();
+  return agentAlias === 'codex' && (
+    normalizedModelId.startsWith('gpt-') ||
+    normalizedModelId.includes('codex')
+  );
+}
+
 export function getEffectiveTokenLimit(modelId: string | undefined, level: ContextLevel): number {
   let limit = MODEL_LIMITS['default'];
+  let agentAlias = '';
+  let effectiveModelId = '';
 
   if (modelId) {
     // Handle agent:model format if present
     const colonIdx = modelId.indexOf(':');
-    const effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
+    agentAlias = colonIdx >= 0 ? modelId.substring(0, colonIdx).toLowerCase() : '';
+    effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
     const modelInfo = MODEL_INFO_MAP[effectiveModelId];
 
     if (modelInfo?.maxTokens) {
       limit = modelInfo.maxTokens;
     } else if (MODEL_LIMITS[effectiveModelId]) {
       limit = MODEL_LIMITS[effectiveModelId];
+    }
+
+    if (shouldApplyCodexCliLimit(agentAlias, effectiveModelId)) {
+      limit = Math.min(limit, CODEX_CLI_CONTEXT_LIMIT);
     }
   }
 
@@ -57,17 +73,24 @@ export function getEffectiveTokenLimit(modelId: string | undefined, level: Conte
  */
 export function getModelHardLimit(modelId: string | undefined): number {
   let limit = MODEL_LIMITS['default'];
+  let agentAlias = '';
+  let effectiveModelId = '';
 
   if (modelId) {
     // Handle agent:model format if present
     const colonIdx = modelId.indexOf(':');
-    const effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
+    agentAlias = colonIdx >= 0 ? modelId.substring(0, colonIdx).toLowerCase() : '';
+    effectiveModelId = colonIdx >= 0 ? modelId.substring(colonIdx + 1) : modelId;
     const modelInfo = MODEL_INFO_MAP[effectiveModelId];
 
     if (modelInfo?.maxTokens) {
       limit = modelInfo.maxTokens;
     } else if (MODEL_LIMITS[effectiveModelId]) {
       limit = MODEL_LIMITS[effectiveModelId];
+    }
+
+    if (shouldApplyCodexCliLimit(agentAlias, effectiveModelId)) {
+      limit = Math.min(limit, CODEX_CLI_CONTEXT_LIMIT);
     }
   }
 

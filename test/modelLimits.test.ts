@@ -79,6 +79,12 @@ test('getEffectiveTokenLimit - agent:model format handling', async (t) => {
         assert.strictEqual(codexResult, geminiResult, 'Agent prefix should not affect result');
     });
 
+    await t.test('caps Codex agent routed models to the Codex CLI usable context', () => {
+        assert.strictEqual(getModelHardLimit('codex:gpt-5.5'), Math.floor(240000 * 0.98));
+        assert.strictEqual(getEffectiveTokenLimit('codex:gpt-5.5', 70), Math.floor(240000 * 0.70 * 0.98));
+        assert.strictEqual(getModelHardLimit('gpt-5.5'), Math.floor(1050000 * 0.98));
+    });
+
     await t.test('handles model ID without agent prefix', () => {
         // Direct model ID without colon
         const result = getEffectiveTokenLimit('claude-opus-4-5-20251101', 50);
