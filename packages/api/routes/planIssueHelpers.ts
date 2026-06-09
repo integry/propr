@@ -117,8 +117,17 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
       );
     }
 
-    const labelModel = agent?.config.type === 'opencode' ? toProprOpenCodeModelId(effectiveModel) : effectiveModel;
-    return agent ? buildDynamicLlmLabel(agent.config.alias, labelModel) : null;
+    if (!agent) return null;
+
+    const labelModel = agent.config.type === 'opencode' ? toProprOpenCodeModelId(effectiveModel) : effectiveModel;
+    const modelSupported = agent.config.supportedModels.some(m =>
+      m.toLowerCase() === labelModel.toLowerCase() || m.toLowerCase() === effectiveModel.toLowerCase()
+    );
+    if (!modelSupported) {
+      logger.warn({ agentAlias: agent.config.alias, model: labelModel }, 'Agent does not support the specified model, skipping label');
+      return null;
+    }
+    return buildDynamicLlmLabel(agent.config.alias, labelModel);
   } catch (err) {
     logger.warn({ modelName: effectiveModel, error: (err as Error).message }, 'Failed to resolve dynamic LLM label');
     return null;
@@ -161,7 +170,7 @@ export async function handleMultiAgentImplementation(params: MultiAgentParams): 
   try {
     await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
   } catch (err) {
-    labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; webhook/polling will process the labeled issue');
+    labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; relies on webhook or polling being enabled to process the labeled issue');
   }
 
   const primaryModel = models[0];
@@ -210,7 +219,7 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
   try {
     await enqueueIssueImplementationJob({ owner, repo, issueNumber, triggeringLabel: implementLabel });
   } catch (err) {
-    labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; webhook/polling will process the labeled issue');
+    labelLogger.warn({ error: (err as Error).message }, 'Issue enqueue failed; relies on webhook or polling being enabled to process the labeled issue');
   }
 
   // Update status and also persist agent_alias/model_name if provided

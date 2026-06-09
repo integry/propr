@@ -147,12 +147,15 @@ function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentCo
     const explicitModel = label.substring(sepIdx + 1);
     const resolvedModel = resolveModelAlias(explicitModel);
 
-    // Exact alias match first, then prefix match for truncated aliases in dynamic labels
+    // Exact alias match first, then unambiguous prefix match for truncated aliases in dynamic labels
     let agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
     if (!agent && explicitAlias.length >= 3) {
-        agent = agents.find(a =>
+        const candidates = agents.filter(a =>
             a.config.alias.toLowerCase().startsWith(explicitAlias.toLowerCase())
         );
+        if (candidates.length === 1) {
+            agent = candidates[0];
+        }
     }
     if (!agent) {
         return null;
@@ -180,8 +183,15 @@ function resolveByHashedModelLabel(hashedLabel: string, config: AgentConfig): st
     const dashIdx = hashedLabel.lastIndexOf('-');
     if (dashIdx <= 0) return null;
     const labelHash = hashedLabel.substring(dashIdx + 1);
+    const visiblePrefix = hashedLabel.substring(0, dashIdx).toLowerCase();
     for (const model of config.supportedModels) {
-        if (shortHash(model) === labelHash) return model;
+        if (shortHash(model) !== labelHash) continue;
+        // Verify visible model prefix matches to reduce collision risk
+        if (visiblePrefix) {
+            const normalizedModel = model.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
+            if (!normalizedModel.startsWith(visiblePrefix)) continue;
+        }
+        return model;
     }
     return null;
 }

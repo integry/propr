@@ -9,6 +9,7 @@ export function normalizeAgentAlias(alias: string): string {
 
 function normalizeSupportedModel(agentType: AgentConfig['type'], model: string): string {
   const trimmed = model.trim();
+  if (trimmed === 'default') return trimmed;
   return agentType === 'opencode' ? toProprOpenCodeModelId(trimmed) : trimmed;
 }
 

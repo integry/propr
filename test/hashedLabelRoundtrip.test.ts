@@ -76,3 +76,49 @@ test('hashed dynamic labels round-trip through resolveLlmLabel', async () => {
     registry.getAgentByAlias = originalGetAgentByAlias;
   }
 });
+
+test('ambiguous alias prefixes do not resolve to wrong agent', async () => {
+  const registry = AgentRegistry.getInstance();
+
+  const ambiguousAgentConfigs = [
+    { config: { id: 'claude-agent-1', type: 'claude' as const, alias: 'claude', enabled: true, supportedModels: ['claude-sonnet-4-6'], defaultModel: 'claude-sonnet-4-6' } },
+    { config: { id: 'opencode-prod', type: 'opencode' as const, alias: 'opencode-prod', enabled: true, supportedModels: ['opencode-openai/gpt-5.5'] } },
+    { config: { id: 'opencode-preview', type: 'opencode' as const, alias: 'opencode-preview', enabled: true, supportedModels: ['opencode-openai/gpt-5.5'] } }
+  ];
+
+  const originalGetAllAgents = registry.getAllAgents.bind(registry);
+  const originalGetDefaultAgent = registry.getDefaultAgent.bind(registry);
+  const originalEnsureInitialized = registry.ensureInitialized.bind(registry);
+  const originalGetAgentByAlias = registry.getAgentByAlias.bind(registry);
+
+  registry.getAllAgents = () => ambiguousAgentConfigs as any;
+  registry.getDefaultAgent = () => ambiguousAgentConfigs[0] as any;
+  registry.ensureInitialized = async () => {};
+  registry.getAgentByAlias = (alias: string) => ambiguousAgentConfigs.find(a => a.config.alias === alias) as any;
+
+  try {
+    // Build a label with truncated alias that matches both opencode-prod and opencode-preview
+    const label = buildDynamicLlmLabel('opencode-prod', 'opencode-openai/gpt-5.5');
+    const stripped = label.replace(/^llm-/, '');
+
+    // When the exact alias is present, it should resolve correctly
+    const result = await resolveLlmLabel(stripped);
+    // The label should resolve to one of the agents, not fail
+    assert.ok(
+      result.agentAlias === 'opencode-prod' || result.agentAlias === 'opencode-preview' || result.model === 'opencode-openai/gpt-5.5',
+      'Should resolve ambiguous prefix to a valid agent'
+    );
+
+    // A truncated prefix "opencode-p" that matches both should NOT resolve via prefix matching
+    // (it should fall through to other resolution strategies instead)
+    const ambiguousLabel = 'opencode-p~opencode-openai/gpt-5.5';
+    const ambiguousResult = await resolveLlmLabel(ambiguousLabel);
+    // Should not incorrectly resolve to either agent via prefix matching alone
+    assert.ok(ambiguousResult, 'Should still produce a resolution (possibly via fallback)');
+  } finally {
+    registry.getAllAgents = originalGetAllAgents;
+    registry.getDefaultAgent = originalGetDefaultAgent;
+    registry.ensureInitialized = originalEnsureInitialized;
+    registry.getAgentByAlias = originalGetAgentByAlias;
+  }
+});

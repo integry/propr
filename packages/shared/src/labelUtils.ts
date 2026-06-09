@@ -1,5 +1,7 @@
+// GitHub's hard limit on label name length
 export const MAX_GITHUB_LABEL_LENGTH = 50;
 
+// 32-bit FNV-1a hash, base36-encoded. Used for routing — not cryptographic.
 export function shortHash(value: string): string {
     let hash = 2166136261;
     for (let index = 0; index < value.length; index++) {
@@ -9,6 +11,7 @@ export function shortHash(value: string): string {
     return (hash >>> 0).toString(36);
 }
 
+// `~` separator is an intentional public contract — these labels are persisted on GitHub and resolved later
 export function buildDynamicLlmLabel(agentKey: string, modelId: string): string {
     const canonicalLabel = `llm-${agentKey}~${modelId}`;
     if (canonicalLabel.length <= MAX_GITHUB_LABEL_LENGTH) return canonicalLabel;

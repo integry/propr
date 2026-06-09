@@ -32,13 +32,12 @@ export function planFilesToRemoveForTokenLimit(
     Math.floor((tiktokenLimit - nonFileTokens) * FILE_TOKEN_BUDGET_SAFETY_RATIO),
   );
 
-  const keptFiles = new Set<string>();
-  let keptTokens = 0;
-  for (const file of filesWithTokens) {
-    if (keptTokens + file.tokens <= targetFileTokens) {
-      keptFiles.add(file.path);
-      keptTokens += file.tokens;
-    }
+  // Remove from the tail (least relevant) first so large high-relevance files are kept
+  const keptFiles = new Set(filesWithTokens.map(f => f.path));
+  let keptTokens = filesWithTokens.reduce((sum, f) => sum + f.tokens, 0);
+  for (let i = filesWithTokens.length - 1; i >= 0 && keptTokens > targetFileTokens; i--) {
+    keptFiles.delete(filesWithTokens[i].path);
+    keptTokens -= filesWithTokens[i].tokens;
   }
 
   let filesToRemove = filesWithTokens

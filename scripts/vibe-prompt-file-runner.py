@@ -7,9 +7,19 @@ import sys
 
 from rich import print as rprint
 
-from vibe.cli.entrypoint import parse_arguments
-from vibe.core.config.harness_files import init_harness_files_manager
-from vibe.core.trusted_folders import trusted_folders_manager
+try:
+    from vibe.cli.entrypoint import parse_arguments
+    from vibe.core.config.harness_files import init_harness_files_manager
+    from vibe.core.trusted_folders import trusted_folders_manager
+except ImportError as exc:
+    print(
+        f"Failed to import Vibe internals: {exc}\n"
+        "This script depends on private Vibe APIs (vibe.cli.entrypoint, "
+        "vibe.core.config.harness_files, vibe.core.trusted_folders). "
+        "Ensure the installed Vibe version is compatible.",
+        file=__import__("sys").stderr,
+    )
+    __import__("sys").exit(2)
 
 
 def main() -> None:
