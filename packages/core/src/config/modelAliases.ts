@@ -58,6 +58,13 @@ export interface LlmLabelResolution {
  * Use opus45/sonnet45 aliases for older Claude Code versions.
  */
 const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
+    // Fable aliases (top tier, above Opus)
+    'fable': 'claude-fable-5',
+    'fable5': 'claude-fable-5',
+    'fable-5': 'claude-fable-5',
+    'claude-fable': 'claude-fable-5',
+    'claude-fable-5': 'claude-fable-5',
+
     // Default aliases point to latest tier models
     'opus': 'claude-opus-4-8',
     'claude-opus': 'claude-opus-4-8',

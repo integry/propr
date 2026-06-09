@@ -24,6 +24,7 @@ const {
 test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
         // Default aliases point to the latest tier models
+        assert.strictEqual(resolveModelAlias('fable'), 'claude-fable-5');
         assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-4-8');
         assert.strictEqual(resolveModelAlias('sonnet'), 'claude-sonnet-4-6');
         // Explicit 4.5 aliases
@@ -61,6 +62,10 @@ test('Model Aliases Configuration', async (t) => {
     });
 
     await t.test('should handle explicit version aliases', () => {
+        // Fable aliases
+        assert.strictEqual(resolveModelAlias('fable5'), 'claude-fable-5');
+        assert.strictEqual(resolveModelAlias('fable-5'), 'claude-fable-5');
+        assert.strictEqual(resolveModelAlias('claude-fable-5'), 'claude-fable-5');
         // 4.8/4.7/4.6 aliases
         assert.strictEqual(resolveModelAlias('opus48'), 'claude-opus-4-8');
         assert.strictEqual(resolveModelAlias('opus47'), 'claude-opus-4-7');
@@ -83,7 +88,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
@@ -620,7 +625,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
