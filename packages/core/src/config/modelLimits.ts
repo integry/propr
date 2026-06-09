@@ -15,7 +15,7 @@ export const EFFECTIVE_MAX_RATIO = 0.98;
 // Tiktoken (cl100k_base) underestimates tokens for code/XML content.
 // Tests show actual Claude tokens are ~36% higher than tiktoken estimates.
 export const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
-export const CODEX_CLI_CONTEXT_LIMIT = 240000;
+export const CODEX_CLI_CONTEXT_LIMIT = 160000;
 
 export const MODEL_LIMITS: Record<string, number> = {
   'default': 200000,
