@@ -8,6 +8,7 @@ import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
+import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
 import './authTypes.js';
 
@@ -114,6 +115,18 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         app.get('/api/auth/github/callback',
             passport.authenticate('github', { failureRedirect: '/login' }),
             (req: Request, res: Response) => {
+                // Reject logins from users not on the access whitelist, before a
+                // session is usable. (No-op when no whitelist is configured.)
+                if (!isUserWhitelisted(req.user?.username)) {
+                    req.logout(() => {
+                        req.session.destroy(() => {
+                            res.clearCookie('connect.sid');
+                            res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
+                        });
+                    });
+                    return;
+                }
+
                 // Check for stored redirect URL (for PR preview environments)
                 const redirectTo = (req.session as session.Session & { redirectTo?: string }).redirectTo;
                 if (redirectTo) {
@@ -182,6 +195,11 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
             return;
         }
 
+        if (!isUserWhitelisted(req.user?.username)) {
+            res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+            return;
+        }
+
         // Proactively refresh token in background if needed
         // Don't block the request, let it continue while refresh happens
         refreshGitHubTokenIfNeeded(req).catch((err) => {
@@ -200,6 +218,10 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
         try {
             const user = await validateGitHubToken(token);
             if (user) {
+                if (!isUserWhitelisted(user.username)) {
+                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+                    return;
+                }
                 // Populate req.user so downstream handlers work the same way
                 (req as Request & { user: GitHubUser }).user = user;
                 return next();
