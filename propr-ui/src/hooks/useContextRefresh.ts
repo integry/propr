@@ -1,81 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { getDraft, previewContext, PreviewResult, Granularity, PlannerAttachment, SmartFileSelection, PendingPreviewResult, DraftContextConfig } from '../api/proprApi';
+import { getDraft, previewContext, PreviewResult, Granularity, PlannerAttachment, PendingPreviewResult, DraftContextConfig } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
+import { simulateContextLevel, isSignificantPromptChange, DEFAULT_MODEL_MAX_TOKENS } from './contextRefreshUtils';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
-/** Delay before auto-refreshing context after source changes (ms) */
 const SOURCE_REFRESH_DELAY = 20000;
-const WORD_OVERLAP_THRESHOLD = 0.5;
-
-/** Tiktoken to Claude token ratio for estimation */
-const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
-/** Default model max tokens (200K for Claude) */
-const DEFAULT_MODEL_MAX_TOKENS = 200000;
-
-const extractWords = (prompt: string) => (prompt.toLowerCase().match(/\b[\w'-]+\b/g) ?? []);
-
-/**
- * Simulate file selection for a given context level using cached fileTokenCounts.
- * Returns the filtered smartSelection and updated stats.
- */
-function simulateContextLevel(
-  originalData: PreviewResult,
-  contextLevel: number,
-  modelMaxTokens: number = DEFAULT_MODEL_MAX_TOKENS
-): PreviewResult {
-  const fileTokenCounts = originalData.fileTokenCounts;
-  if (!fileTokenCounts || Object.keys(fileTokenCounts).length === 0) {
-    return originalData;
-  }
-
-  // Calculate target token limit based on context level (0-100)
-  const targetTokenLimit = Math.floor(modelMaxTokens * (contextLevel / 100) * 0.98);
-  const targetTiktokenLimit = Math.floor(targetTokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
-
-  // Get the original smartSelection excluding context-repo files (those are always included)
-  const contextRepoFiles = originalData.smartSelection.filter(f => f.source === 'context-repo');
-  const repoFiles = originalData.smartSelection.filter(f => f.source !== 'context-repo');
-
-  // Sort by score descending (most relevant first), then by tokens ascending (smaller files preferred for tie-breaking)
-  const sortedFiles = [...repoFiles].sort((a, b) => {
-    const scoreDiff = (b.score ?? 0) - (a.score ?? 0);
-    if (scoreDiff !== 0) return scoreDiff;
-    return (fileTokenCounts[a.path] ?? 0) - (fileTokenCounts[b.path] ?? 0);
-  });
-
-  // Select files that fit within the token budget
-  const selectedFiles: SmartFileSelection[] = [];
-  let currentTokens = 0;
-
-  for (const file of sortedFiles) {
-    const fileTokens = fileTokenCounts[file.path] ?? 0;
-    if (currentTokens + fileTokens <= targetTiktokenLimit) {
-      selectedFiles.push(file);
-      currentTokens += fileTokens;
-    }
-  }
-
-  // Calculate new stats
-  const estimatedActualTokens = Math.ceil(currentTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const attachmentTokens = originalData.stats.attachmentTokens ?? 0;
-  const totalTokens = estimatedActualTokens + attachmentTokens;
-
-  // Rough cost estimate (using Claude pricing)
-  const costEstimate = (totalTokens / 1_000_000) * 3 + (4000 / 1_000_000) * 15;
-
-  return {
-    ...originalData,
-    smartSelection: [...selectedFiles, ...contextRepoFiles],
-    stats: {
-      ...originalData.stats,
-      totalTokens,
-      fileCount: selectedFiles.length,
-      costEstimate,
-      maxTokens: Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO)
-    }
-  };
-}
 
 const isPendingPreview = (result: PreviewResult | PendingPreviewResult): result is PendingPreviewResult =>
   'pending' in result && result.pending === true;
@@ -100,29 +30,6 @@ function getCompletedPreviewFromDraft(contextConfig: unknown, previewRequestId: 
     fileTokenCounts: config.contextCache?.fileTokenCounts
   };
 }
-
-/**
- * Determine if a prompt change is significant enough to warrant auto-refresh.
- * Considers length delta and word overlap to filter out small typo/punctuation tweaks.
- */
-const isSignificantPromptChange = (prevPrompt: string, nextPrompt: string): boolean => {
-  if (prevPrompt === nextPrompt) return false;
-
-  const lengthDiff = Math.abs(prevPrompt.length - nextPrompt.length);
-  const baseLength = Math.max(prevPrompt.length, 1);
-  if (lengthDiff > 20 || (lengthDiff / baseLength) > 0.2) return true;
-
-  const prevWords = new Set(extractWords(prevPrompt));
-  const nextWords = new Set(extractWords(nextPrompt));
-
-  if (!prevWords.size && !nextWords.size) return false;
-
-  let overlap = 0;
-  prevWords.forEach(word => { if (nextWords.has(word)) overlap += 1; });
-  const overlapRatio = overlap / Math.max(prevWords.size, nextWords.size, 1);
-
-  return overlapRatio < WORD_OVERLAP_THRESHOLD;
-};
 
 export interface PreviewState {
   isLoading: boolean;
