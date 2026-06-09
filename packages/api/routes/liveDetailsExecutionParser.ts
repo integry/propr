@@ -34,35 +34,48 @@ export function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<C
   return { events, todos, currentTask };
 }
 
+function appendModelSourceEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
+  if (rawEvent.source !== 'MODEL') return false;
+  if (rawEvent.type === 'PLANNER_RESPONSE' && typeof rawEvent.content === 'string' && rawEvent.content.trim()) {
+    context.events.push({ type: 'thought', content: rawEvent.content, timestamp: context.timestamp });
+  }
+  return true;
+}
+
+function appendRawItemEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
+  if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
+    context.events.push({ type: 'thought', content: rawEvent.item.text, timestamp: context.timestamp });
+    return true;
+  }
+  if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
+    context.setTodos(mapTodoItems(rawEvent.item.items));
+    return true;
+  }
+  return false;
+}
+
+function appendRawEventByType(rawEvent: RawExecutionEvent, row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
+  if (rawEvent.type === 'tool_use') {
+    context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
+    return true;
+  }
+  if (rawEvent.type === 'error') {
+    context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || row.content || 'Execution error', isError: true, timestamp: context.timestamp });
+    return true;
+  }
+  return false;
+}
+
 function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
   if (!row.metadata) return false;
   try {
     const rawEvent = JSON.parse(row.metadata) as RawExecutionEvent;
-    if (rawEvent.source === 'MODEL') {
-      if (rawEvent.type === 'PLANNER_RESPONSE' && typeof rawEvent.content === 'string' && rawEvent.content.trim()) {
-        context.events.push({ type: 'thought', content: rawEvent.content, timestamp: context.timestamp });
-      }
-      return true;
-    }
+    if (appendModelSourceEvent(rawEvent, context)) return true;
     if (rawEvent.source === 'USER_EXPLICIT' || rawEvent.source === 'SYSTEM') return true;
     if (appendMetadataMessageEvent(rawEvent, context)) return true;
-    if (rawEvent.type === 'tool_use') {
-      context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
-      return true;
-    }
-    if (rawEvent.type === 'error') {
-      context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || row.content || 'Execution error', isError: true, timestamp: context.timestamp });
-      return true;
-    }
+    if (appendRawEventByType(rawEvent, row, context)) return true;
     if (appendCommandExecutionEvents(rawEvent, context.timestamp, context.events)) return true;
-    if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
-      context.events.push({ type: 'thought', content: rawEvent.item.text, timestamp: context.timestamp });
-      return true;
-    }
-    if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
-      context.setTodos(mapTodoItems(rawEvent.item.items));
-      return true;
-    }
+    return appendRawItemEvent(rawEvent, context);
   } catch (error) {
     console.error('[live-details] Failed to parse execution detail metadata:', error);
   }
