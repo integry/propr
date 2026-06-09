@@ -31,6 +31,49 @@ interface GitHubSearchResponse {
     };
 }
 
+interface TimelineEvent {
+    event: string;
+    actor?: { login: string } | null;
+    label?: { name: string };
+}
+
+/**
+ * Look up who most recently applied one of the given labels by walking the
+ * issue timeline backwards. Returns the actor login, or undefined when the
+ * labeler cannot be determined (API error, event pruned, etc.).
+ */
+async function resolveLabelApplier(
+    octokit: PaginatedOctokitInstance,
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    targetLabels: string[]
+): Promise<string | undefined> {
+    try {
+        const events = await octokit.paginate(
+            'GET /repos/{owner}/{repo}/issues/{issue_number}/timeline',
+            { owner, repo, issue_number: issueNumber, per_page: 100 }
+        ) as TimelineEvent[];
+
+        // Walk backwards to find the most recent "labeled" event for a target label.
+        for (let i = events.length - 1; i >= 0; i--) {
+            const ev = events[i];
+            if (
+                ev.event === 'labeled' &&
+                ev.label?.name &&
+                targetLabels.includes(ev.label.name) &&
+                ev.actor?.login
+            ) {
+                return ev.actor.login;
+            }
+        }
+    } catch {
+        // Timeline API errors (permissions, 404, rate-limit) are non-fatal;
+        // the caller falls back to the issue author.
+    }
+    return undefined;
+}
+
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<void> {
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
@@ -67,12 +110,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     }
 
     // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
-    // configured). Prevents a non-whitelisted repo collaborator from kicking off
-    // a bot-executed job by labeling an issue.
-    //
-    // For polling-detected issues, triggeredBy is the issue author (the true
-    // label-applier is unknown). This is an imperfect proxy but still enforces
-    // the whitelist rather than bypassing it entirely.
+    // configured). For webhooks this is the label applier (sender); for polling
+    // it is resolved from the issue timeline, falling back to the issue author.
     if (!isGithubUserWhitelisted(issue.triggeredBy)) {
         correlatedLogger.info({
             issueNumber: issue.number,
@@ -268,21 +307,30 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             count: response.data.items.length
         }, `Found ${response.data.items.length} matching issues.`);
 
-        return response.data.items.map(issue => ({
-            id: issue.id,
-            number: issue.number,
-            title: issue.title,
-            url: issue.html_url,
-            repoOwner: owner,
-            repoName: repo,
-            labels: issue.labels.map(l => typeof l === 'string' ? l : l.name),
-            createdAt: issue.created_at,
-            updatedAt: issue.updated_at,
-            // Polling cannot cheaply tell who applied the label; the issue
-            // author is the best available proxy for whitelist checks.
-            triggeredBy: issue.user?.login,
-            source: 'polling'
-        }));
+        const detected: DetectedIssue[] = [];
+        for (const issue of response.data.items) {
+            const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
+            // Resolve the actual label applier via the timeline API so polling
+            // has the same whitelist semantics as webhooks. Falls back to the
+            // issue author when the timeline lookup fails or returns nothing.
+            const labelApplier = await resolveLabelApplier(
+                octokit, owner, repo, issue.number, primaryProcessingLabels
+            );
+            detected.push({
+                id: issue.id,
+                number: issue.number,
+                title: issue.title,
+                url: issue.html_url,
+                repoOwner: owner,
+                repoName: repo,
+                labels,
+                createdAt: issue.created_at,
+                updatedAt: issue.updated_at,
+                triggeredBy: labelApplier ?? issue.user?.login,
+                source: 'polling'
+            });
+        }
+        return detected;
     } catch (error) {
         const err = error as Error & { status?: number };
         handleError(error, `fetch_issues_${repoFullName}`, { correlationId });

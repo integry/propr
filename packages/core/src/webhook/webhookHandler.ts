@@ -50,12 +50,11 @@ export interface DetectedIssue {
     createdAt: string;
     updatedAt: string;
     // GitHub login of the actor that triggered processing — the user who applied
-    // the label (webhook), or the issue author (polling, where the labeler is not
-    // cheaply known). Used to enforce the user whitelist.
+    // the label (webhook sender), or the label applier resolved from the issue
+    // timeline (polling, with issue author as fallback). Used to enforce the
+    // user whitelist.
     triggeredBy?: string;
     // How this issue was detected: 'webhook' (label event) or 'polling'.
-    // Polling cannot determine who applied the label, so the whitelist check is
-    // relaxed — label presence on a repo is treated as sufficient authorization.
     source?: 'webhook' | 'polling';
 }
 
