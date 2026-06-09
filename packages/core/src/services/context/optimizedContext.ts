@@ -5,6 +5,65 @@
 import { pack } from 'repomix';
 import type { GenerateOptimizedContextOptions } from './types.js';
 
+interface FileRemovalPlan {
+  filesToRemove: string[];
+  tokensFreed: number;
+  nonFileTokens: number;
+  targetFileTokens: number;
+  estimatedRemainingTokens: number;
+}
+
+const FILE_TOKEN_BUDGET_SAFETY_RATIO = 0.98;
+
+export function planFilesToRemoveForTokenLimit(
+  currentFiles: string[],
+  fileTokenCounts: Record<string, number>,
+  totalTokens: number,
+  tiktokenLimit: number,
+): FileRemovalPlan {
+  const filesWithTokens = currentFiles.map(path => ({
+    path,
+    tokens: fileTokenCounts[path] || 0,
+  }));
+  const totalFileTokens = filesWithTokens.reduce((sum, file) => sum + file.tokens, 0);
+  const nonFileTokens = Math.max(0, totalTokens - totalFileTokens);
+  const targetFileTokens = Math.max(
+    0,
+    Math.floor((tiktokenLimit - nonFileTokens) * FILE_TOKEN_BUDGET_SAFETY_RATIO),
+  );
+
+  const keptFiles = new Set<string>();
+  let keptTokens = 0;
+  for (const file of filesWithTokens) {
+    if (keptTokens + file.tokens <= targetFileTokens) {
+      keptFiles.add(file.path);
+      keptTokens += file.tokens;
+    }
+  }
+
+  let filesToRemove = filesWithTokens
+    .filter(file => !keptFiles.has(file.path))
+    .map(file => file.path);
+  let tokensFreed = filesWithTokens
+    .filter(file => !keptFiles.has(file.path))
+    .reduce((sum, file) => sum + file.tokens, 0);
+
+  if (filesToRemove.length === 0 && totalTokens > tiktokenLimit && filesWithTokens.length > 0) {
+    const leastRelevantFile = filesWithTokens[filesWithTokens.length - 1];
+    filesToRemove = [leastRelevantFile.path];
+    tokensFreed = leastRelevantFile.tokens;
+    keptTokens = Math.max(0, keptTokens - leastRelevantFile.tokens);
+  }
+
+  return {
+    filesToRemove,
+    tokensFreed,
+    nonFileTokens,
+    targetFileTokens,
+    estimatedRemainingTokens: nonFileTokens + keptTokens,
+  };
+}
+
 export async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
   const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, writeOutput, noopClipboard } = options;
   let currentFiles = [...initialFiles];
@@ -37,49 +96,9 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
       'Context still exceeds token limit, removing least relevant files'
     );
 
-    // Files are ordered by relevance (most relevant first), so remove from the end
-    // Remove a portion of files each iteration to progressively reduce context
     const fileTokensInResult = result.fileTokenCounts as Record<string, number>;
-
-    // Calculate total tokens in files
-    const totalFileTokens = currentFiles.reduce((sum, f) => sum + (fileTokensInResult[f] || 0), 0);
-
-    // If overage is larger than total file tokens, we can't fix it by removing files alone
-    // In that case, remove ~30% of files per iteration to make progress
-    const tokensToFree = Math.min(overage * 1.1, totalFileTokens * 0.3);
-
-    // Sort all files by a combined score of relevance (position) and size
-    // Files at the end of the list are least relevant
-    const filesWithScore = currentFiles.map((f, index) => ({
-      path: f,
-      tokens: fileTokensInResult[f] || 0,
-      relevanceScore: currentFiles.length - index, // Higher = more relevant
-    }));
-
-    // Sort by: least relevant first, then by largest first within similar relevance
-    filesWithScore.sort((a, b) => {
-      // Primary: relevance (lower = remove first)
-      const relevanceDiff = a.relevanceScore - b.relevanceScore;
-      if (Math.abs(relevanceDiff) > currentFiles.length * 0.2) return relevanceDiff;
-      // Secondary: size (larger = remove first to free more tokens)
-      return b.tokens - a.tokens;
-    });
-
-    let tokensFreed = 0;
-    const filesToRemove: string[] = [];
-
-    for (const file of filesWithScore) {
-      if (tokensFreed >= tokensToFree) break;
-      filesToRemove.push(file.path);
-      tokensFreed += file.tokens;
-    }
-
-    // Ensure we remove at least some files to make progress
-    if (filesToRemove.length === 0 && currentFiles.length > 0) {
-      // Remove at least the least relevant file
-      filesToRemove.push(filesWithScore[0].path);
-      tokensFreed = filesWithScore[0].tokens;
-    }
+    const removalPlan = planFilesToRemoveForTokenLimit(currentFiles, fileTokensInResult, result.totalTokens, tiktokenLimit);
+    const { filesToRemove, tokensFreed } = removalPlan;
 
     if (filesToRemove.length === 0) {
       contextLogger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
@@ -87,7 +106,14 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
     }
 
     contextLogger.info(
-      { removingFiles: filesToRemove.length, tokensFreed, filesToRemove: filesToRemove.slice(0, 5) },
+      {
+        removingFiles: filesToRemove.length,
+        tokensFreed,
+        nonFileTokens: removalPlan.nonFileTokens,
+        targetFileTokens: removalPlan.targetFileTokens,
+        estimatedRemainingTokens: removalPlan.estimatedRemainingTokens,
+        filesToRemove: filesToRemove.slice(0, 5),
+      },
       'Removing least relevant files to fit within token limit'
     );
 
