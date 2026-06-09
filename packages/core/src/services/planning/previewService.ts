@@ -382,7 +382,7 @@ export async function generateContextPreview(options: GenerateContextPreviewOpti
  * Called by generateContextPreview after coalescing check.
  */
 async function generateContextPreviewInternal(options: GenerateContextPreviewOptions): Promise<PreviewResult> {
-  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken, excludedFiles } = options;
+  const { draftId, prompt, baseBranch, granularity, contextLevel = DEFAULT_CONTEXT_LEVEL, compress = false, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken, excludedFiles, previewRequestId } = options;
   const targetTokenLimit = getEffectiveTokenLimit(generationModel, contextLevel);
   const maxTokenLimit = getEffectiveTokenLimit(generationModel, MAX_CONTEXT_LEVEL);
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -488,18 +488,27 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
     fileScores
   };
 
-  await db('task_drafts').where({ draft_id: draftId }).update({
-    initial_prompt: prompt,
-    name: truncateToSentences(prompt),
-    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextRepositories, contextCache: cacheMetadata }),
-    generated_context: fullContext,
-    updated_at: db.fn.now()
-  });
-
-  return buildPreviewResult({
+  const previewResult = buildPreviewResult({
     simulatedTokens, attachmentTokens, smartSummaryTokens, additionalContextTokens, additionalContextFiles,
     additionalContextFilesIncluded, targetTokenLimit, generationModel, repomixContextLength: repomixContext.length,
     simulatedIncludedFiles, smartSelection, costEstimate, warnings, correlatedLogger, canUseCache: !!canUseCache,
     fileTokenCounts: filteredFileTokenCounts
   });
+
+  const lastPreview = {
+    success: previewResult.success,
+    stats: previewResult.stats,
+    smartSelection: previewResult.smartSelection,
+    warnings: previewResult.warnings
+  };
+
+  await db('task_drafts').where({ draft_id: draftId }).update({
+    initial_prompt: prompt,
+    name: truncateToSentences(prompt),
+    context_config: JSON.stringify({ baseBranch, granularity, contextLevel, compress, manualFiles, autoFiles: autoFilePaths, contextRepositories, excludedFiles, contextCache: cacheMetadata, lastPreview, lastPreviewRequestId: previewRequestId }),
+    generated_context: fullContext,
+    updated_at: db.fn.now()
+  });
+
+  return previewResult;
 }

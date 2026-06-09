@@ -79,6 +79,10 @@ export interface TaskDraftConfig {
   contextRepositories?: ContextRepository[];
   /** Cached context to avoid regeneration */
   contextCache?: ContextCache;
+  /** Last completed preview result, excluding bulky per-file token counts already stored in contextCache */
+  lastPreview?: Omit<PreviewResult, 'fileTokenCounts'>;
+  /** Request id for the last completed preview result */
+  lastPreviewRequestId?: string;
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') - overrides global setting */
   generationModel?: string;
 }
@@ -173,6 +177,8 @@ export interface GenerateContextPreviewOptions {
   githubToken?: string;
   /** Files to exclude from the generated context */
   excludedFiles?: string[];
+  /** Request id used by async preview callers to correlate websocket completion */
+  previewRequestId?: string;
 }
 
 export interface Base64Image {

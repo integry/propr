@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { previewContext, PreviewResult, Granularity, PlannerAttachment, SmartFileSelection } from '../api/proprApi';
+import { getDraft, previewContext, PreviewResult, Granularity, PlannerAttachment, SmartFileSelection, PendingPreviewResult, DraftContextConfig } from '../api/proprApi';
+import { useSocket } from '../contexts/useSocket';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
@@ -76,6 +77,30 @@ function simulateContextLevel(
   };
 }
 
+const isPendingPreview = (result: PreviewResult | PendingPreviewResult): result is PendingPreviewResult =>
+  'pending' in result && result.pending === true;
+
+function parseDraftContextConfig(value: unknown): DraftContextConfig | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as DraftContextConfig;
+    } catch {
+      return null;
+    }
+  }
+  return value as DraftContextConfig;
+}
+
+function getCompletedPreviewFromDraft(contextConfig: unknown, previewRequestId: string): PreviewResult | null {
+  const config = parseDraftContextConfig(contextConfig);
+  if (!config?.lastPreview || config.lastPreviewRequestId !== previewRequestId) return null;
+  return {
+    ...config.lastPreview,
+    fileTokenCounts: config.contextCache?.fileTokenCounts
+  };
+}
+
 /**
  * Determine if a prompt change is significant enough to warrant auto-refresh.
  * Considers length delta and word overlap to filter out small typo/punctuation tweaks.
@@ -138,6 +163,7 @@ interface UseContextRefreshOptions {
 }
 
 export function useContextRefresh({ draftId, config, onBranchError }: UseContextRefreshOptions) {
+  const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
   const [preview, setPreview] = useState<PreviewState>({
     isLoading: false,
     data: null,
@@ -171,6 +197,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const fullPreviewDataRef = useRef<PreviewResult | null>(null);
   // Track whether we've auto-paused after the first successful context fetch
   const hasAutoPausedRef = useRef<boolean>(false);
+  const pendingPreviewRequestIdRef = useRef<string | null>(null);
 
   // Reset auto-pause tracking when draftId changes so it re-triggers for new drafts
   useEffect(() => {
@@ -194,6 +221,32 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     };
   }, []);
+
+  const markPreviewComplete = useCallback((result: PreviewResult) => {
+    pendingPreviewRequestIdRef.current = null;
+    lastFetchedSourceRef.current = {
+      prompt: configRef.current.prompt,
+      baseBranch: configRef.current.baseBranch,
+      filesLength: configRef.current.files.length,
+      compress: configRef.current.compress,
+      manualFilesLength: configRef.current.manualFiles.length
+    };
+    justFetchedRef.current = true;
+    fullPreviewDataRef.current = result;
+    setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
+    if (!hasAutoPausedRef.current) {
+      hasAutoPausedRef.current = true;
+      setIsPaused(true);
+    }
+  }, []);
+
+  const loadCompletedPreview = useCallback(async (previewRequestId: string): Promise<boolean> => {
+    const draft = await getDraft(draftId);
+    const completedPreview = getCompletedPreviewFromDraft(draft.context_config, previewRequestId);
+    if (!completedPreview) return false;
+    markPreviewComplete(completedPreview);
+    return true;
+  }, [draftId, markPreviewComplete]);
 
   const clearCountdown = useCallback(() => {
     if (sourceRefreshTimerRef.current) {
@@ -249,26 +302,10 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         excludedFiles: currentConfig.excludedFiles.length > 0 ? currentConfig.excludedFiles : undefined
       }, controller.signal);
 
-      lastFetchedSourceRef.current = {
-        prompt: currentConfig.prompt,
-        baseBranch: currentConfig.baseBranch,
-        filesLength: currentConfig.files.length,
-        compress: currentConfig.compress,
-        manualFilesLength: currentConfig.manualFiles.length
-      };
-
-      // Mark that we just fetched to prevent source change effect from re-triggering
-      justFetchedRef.current = true;
-
-      // Store the full preview data for local context level simulation
-      fullPreviewDataRef.current = result;
-
-      setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
-
-      // Auto-pause after the first successful context fetch
-      if (!hasAutoPausedRef.current) {
-        hasAutoPausedRef.current = true;
-        setIsPaused(true);
+      if (isPendingPreview(result)) {
+        pendingPreviewRequestIdRef.current = result.previewRequestId;
+      } else {
+        markPreviewComplete(result);
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -276,7 +313,47 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       setPreview(prev => ({ ...prev, isLoading: false, error: errorMessage }));
       if (errorMessage.toLowerCase().includes('branch')) onBranchError(errorMessage);
     }
-  }, [draftId, clearCountdown, onBranchError]);
+  }, [draftId, clearCountdown, onBranchError, markPreviewComplete]);
+
+  useEffect(() => {
+    if (!draftId || !preview.isLoading || !pendingPreviewRequestIdRef.current) return;
+
+    const interval = setInterval(() => {
+      const previewRequestId = pendingPreviewRequestIdRef.current;
+      if (!previewRequestId) return;
+      loadCompletedPreview(previewRequestId).catch(() => { /* Keep waiting for socket or next poll. */ });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [draftId, preview.isLoading, loadCompletedPreview]);
+
+  useEffect(() => {
+    if (!draftId || !preview.isLoading || !pendingPreviewRequestIdRef.current || !isConnected) return;
+    subscribeToDraft(draftId);
+    const unsubscribe = onDraftUpdate((payload) => {
+      if (payload.draftId !== draftId || payload.step !== 'context') return;
+      if (payload.status === 'failed') {
+        pendingPreviewRequestIdRef.current = null;
+        setPreview(prev => ({
+          ...prev,
+          isLoading: false,
+          error: typeof payload.data?.error === 'string' ? payload.data.error : 'Failed to fetch preview'
+        }));
+        return;
+      }
+      if (payload.status !== 'completed') return;
+      const previewRequestId = pendingPreviewRequestIdRef.current;
+      if (!previewRequestId || payload.data?.previewRequestId !== previewRequestId) return;
+      loadCompletedPreview(previewRequestId).catch((error) => {
+        setPreview(prev => ({ ...prev, isLoading: false, error: (error as Error).message || 'Failed to load completed preview' }));
+      });
+    });
+
+    return () => {
+      unsubscribeFromDraft(draftId);
+      unsubscribe();
+    };
+  }, [draftId, preview.isLoading, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, loadCompletedPreview]);
 
   const startCountdown = useCallback(() => {
     clearCountdown();
