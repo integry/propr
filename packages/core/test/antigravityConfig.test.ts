@@ -14,7 +14,8 @@ import { getModelHardLimit } from '../src/config/modelLimits.js';
 import { resolveLlmLabel, resolveModelAlias } from '../src/config/modelAliases.js';
 import { AgentRegistry } from '../src/agents/AgentRegistry.js';
 import { AntigravityAgent } from '../src/agents/impl/AntigravityAgent.js';
-import { parseAntigravityJsonl } from '../src/agents/impl/utils/antigravityOutputParser.js';
+import { filterAntigravityAnalysisEvents, parseAntigravityJsonl } from '../src/agents/impl/utils/antigravityOutputParser.js';
+import type { AntigravityOutputEvent } from '../src/agents/impl/utils/antigravityOutputParser.js';
 import type { Agent, AgentConfig } from '../src/agents/types.js';
 import { db } from '../src/db/connection.js';
 
@@ -161,6 +162,51 @@ test('Antigravity output parser reads real transcript JSONL events', () => {
     assert.equal(parsed.conversationLog.length, 2);
 });
 
+test('Antigravity output parser accepts camelCase result token stats', () => {
+    const parsed = parseAntigravityJsonl(JSON.stringify({
+        type: 'result',
+        status: 'success',
+        stats: { inputTokens: 12, outputTokens: 4 },
+        timestamp: '2026-06-06T09:40:25Z'
+    }));
+
+    assert.deepEqual(parsed.tokenUsage, { input_tokens: 12, output_tokens: 4 });
+});
+
+test('Antigravity display log keeps planner analysis and drops tool output', () => {
+    const transcript: AntigravityOutputEvent[] = [
+        {
+            step_index: 2,
+            source: 'MODEL',
+            type: 'PLANNER_RESPONSE',
+            status: 'DONE',
+            created_at: '2026-06-09T10:37:04Z',
+            content: 'I will inspect the stylesheet.'
+        },
+        {
+            step_index: 3,
+            source: 'MODEL',
+            type: 'VIEW_FILE',
+            status: 'DONE',
+            created_at: '2026-06-09T10:37:04Z',
+            content: 'Created At: 2026-06-09T10:37:04Z\n750: .quick-table{'
+        },
+        {
+            step_index: 8,
+            source: 'MODEL',
+            type: 'CODE_ACTION',
+            status: 'DONE',
+            created_at: '2026-06-09T10:37:10Z',
+            content: '[diff_block_start]\n+  margin-bottom:22px;'
+        }
+    ];
+
+    const filtered = filterAntigravityAnalysisEvents(transcript);
+
+    assert.equal(filtered.length, 1);
+    assert.deepEqual(filtered[0], transcript[0]);
+});
+
 test('Antigravity session recovery reads last conversation cache and transcript', async () => {
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'antigravity-config-'));
     const previousConfigPath = process.env.ANTIGRAVITY_CONFIG_PATH;
@@ -190,7 +236,7 @@ test('Antigravity session recovery reads last conversation cache and transcript'
 
         const agent = new AntigravityAgent(createAntigravityConfig());
         const recovered = await (agent as unknown as {
-            readPersistedSessionOutput(worktreePath: string): Promise<{ sessionId?: string; summary?: string; conversationLog: unknown[] }>;
+            readPersistedSessionOutput(worktreePath: string): Promise<{ sessionId?: string; summary?: string; conversationLog: unknown[]; tokenUsage?: { input_tokens?: number; output_tokens?: number } }>;
         }).readPersistedSessionOutput('/tmp/worktree');
 
         assert.equal(recovered.sessionId, sessionId);

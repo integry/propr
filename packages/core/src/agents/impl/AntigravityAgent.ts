@@ -14,8 +14,10 @@ import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import {
     parseAntigravityJsonl, aggregateDeltaMessages, convertEventToClaudeFormat,
+    filterAntigravityAnalysisEvents,
     type AntigravityOutputEvent
 } from './utils/antigravityOutputParser.js';
+import { estimateTokens } from '../../utils/tokenCalculation.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -111,7 +113,7 @@ export class AntigravityAgent implements Agent {
         const parsed = this.resolveSessionOutput(result.stdout, worktreePath, onSessionId);
         const { response, modelUsed } = await parsed;
 
-        const finalTokenUsage = (response.tokenUsage.input_tokens || response.tokenUsage.output_tokens) ? response.tokenUsage : undefined;
+        const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.conversationLog);
         const resolvedModel = response.modelUsed || effectiveModel || 'unknown';
         const agentResult: AgentExecutionResult = {
             success: result.exitCode === 0, executionTimeMs: executionTime,
@@ -133,10 +135,41 @@ export class AntigravityAgent implements Agent {
         const sessionOutput = await this.readPersistedSessionOutput(worktreePath, parsedOutput.sessionId);
         const sessionId = sessionOutput.sessionId || parsedOutput.sessionId;
         const summary = sessionOutput.summary || parsedOutput.summary;
-        const conversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
+        const rawConversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
+        const conversationLog = filterAntigravityAnalysisEvents(rawConversationLog);
+        const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
+        const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
         if (sessionId && onSessionId) onSessionId(sessionId);
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
-        return { response: { sessionId, summary, conversationLog, tokenUsage: parsedOutput.tokenUsage, modelUsed: parsedOutput.modelUsed }, modelUsed: parsedOutput.modelUsed };
+        return { response: { sessionId, summary, conversationLog, tokenUsage, modelUsed }, modelUsed };
+    }
+
+    private mergeTokenUsage(
+        primary: { input_tokens?: number; output_tokens?: number },
+        fallback?: { input_tokens?: number; output_tokens?: number }
+    ): { input_tokens?: number; output_tokens?: number } {
+        return {
+            input_tokens: primary.input_tokens ?? fallback?.input_tokens,
+            output_tokens: primary.output_tokens ?? fallback?.output_tokens
+        };
+    }
+
+    private resolveTokenUsage(
+        reported: { input_tokens?: number; output_tokens?: number },
+        prompt: string,
+        summary: string | undefined,
+        conversationLog: AntigravityOutputEvent[]
+    ): { input_tokens?: number; output_tokens?: number } | undefined {
+        if (reported.input_tokens || reported.output_tokens) return reported;
+        const outputText = conversationLog
+            .map(event => 'content' in event && typeof event.content === 'string' ? event.content : '')
+            .filter(Boolean)
+            .join('\n\n') || summary || '';
+        const inputTokens = estimateTokens(prompt);
+        const outputTokens = estimateTokens(outputText);
+        return inputTokens || outputTokens
+            ? { input_tokens: inputTokens, output_tokens: outputTokens }
+            : undefined;
     }
 
     private async persistImplementationLog(opts: {
@@ -287,14 +320,14 @@ export class AntigravityAgent implements Agent {
         return undefined;
     }
 
-    private async readPersistedSessionOutput(worktreePath: string, parsedSessionId?: string): Promise<{ sessionId: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[] }> {
+    private async readPersistedSessionOutput(worktreePath: string, parsedSessionId?: string): Promise<{ sessionId: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: { input_tokens?: number; output_tokens?: number }; modelUsed?: string }> {
         const sessionId = parsedSessionId || await this.readLastConversationId(worktreePath);
         if (!sessionId) return { sessionId: undefined, summary: undefined, conversationLog: [] };
         const transcriptPath = path.join(this.getHostConfigPath(), 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
         try {
             const transcript = await fs.promises.readFile(transcriptPath, 'utf8');
             const parsed = parseAntigravityJsonl(transcript);
-            return { sessionId, summary: parsed.summary, conversationLog: parsed.conversationLog };
+            return { sessionId, summary: parsed.summary, conversationLog: parsed.conversationLog, tokenUsage: parsed.tokenUsage, modelUsed: parsed.modelUsed };
         } catch (error) {
             logger.debug({ sessionId, transcriptPath, error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read Antigravity transcript');
             return { sessionId, summary: undefined, conversationLog: [] };

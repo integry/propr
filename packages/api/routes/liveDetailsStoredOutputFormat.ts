@@ -17,6 +17,7 @@ interface StoredExecutionOutputLine {
   reasoning_content?: unknown;
   tool_calls?: unknown;
   tool_call_id?: string;
+  source?: string;
 }
 
 export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'unknown';
@@ -24,6 +25,7 @@ export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode'
 const CODEX_STORED_OUTPUT_TYPES = new Set([
   'message',
   'tool_use',
+  'tool_result',
   'error',
   'result',
   'turn.started',
@@ -33,6 +35,7 @@ const CODEX_STORED_OUTPUT_TYPES = new Set([
   'item.completed'
 ]);
 const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
+const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT', 'SYSTEM']);
 
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   const wholeDocumentFormat = detectWholeDocumentStoredOutputFormat(output.trim());
@@ -115,6 +118,7 @@ function getDeferredStoredOutputFormat(parsed: StoredExecutionOutputLine): Store
 }
 
 function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
+  if (typeof parsed.source === 'string' && ANTIGRAVITY_TRANSCRIPT_SOURCES.has(parsed.source) && typeof parsed.type === 'string') return true;
   return (parsed.type === 'init' || parsed.type === 'message' || parsed.type === 'result')
     && hasAntigravityModel(parsed);
 }

@@ -69,6 +69,7 @@ interface CodexItem {
 const MAX_CONTENT_LENGTH = 2000;
 const OPEN_CODE_TOOL_USE_TYPES = ['tool_use', 'tool', 'tool_call'];
 const OPEN_CODE_TOOL_RESULT_TYPES = ['tool_result', 'tool_response'];
+const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT', 'SYSTEM']);
 
 /**
  * Truncate long content strings
@@ -204,10 +205,17 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
  * Process Antigravity events (message, tool_use, tool_result, result)
  */
 function processAntigravityEvent(
-  event: { type?: string; role?: string; delta?: boolean; content?: string; tool_name?: string; parameters?: unknown; tool_id?: string; output?: string; result?: unknown; status?: string; stats?: { input_tokens?: number; output_tokens?: number } },
+  event: { type?: string; source?: string; role?: string; delta?: boolean; content?: string; tool_name?: string; parameters?: unknown; tool_id?: string; output?: string; result?: unknown; status?: string; stats?: { input_tokens?: number; output_tokens?: number; inputTokens?: number; outputTokens?: number } },
   timestamp: string,
   state: ParseState
 ): void {
+  if (event.source === 'MODEL') {
+    flushPendingMessage(state, timestamp);
+    if (event.type === 'PLANNER_RESPONSE' && event.content) {
+      state.events.push({ type: 'thought' as const, content: event.content, timestamp });
+    }
+    return;
+  }
   if (event.type === 'message' && event.role === 'assistant') {
     if (event.delta) {
       state.pendingAssistantMessage += event.content || '';
@@ -222,24 +230,15 @@ function processAntigravityEvent(
   }
   if (event.type === 'tool_use') {
     flushPendingMessage(state, timestamp);
-    state.events.push({ type: 'tool_use' as const, toolName: event.tool_name, input: event.parameters as Record<string, unknown> | undefined, id: event.tool_id, timestamp });
     return;
   }
   if (event.type === 'tool_result') {
-    const result = textFromValue(event.output) || textFromValue(event.result) || '';
-    state.events.push({
-      type: 'tool_result' as const,
-      toolUseId: event.tool_id,
-      result: truncateContent(result),
-      isError: event.status === 'error',
-      timestamp
-    });
     return;
   }
   if (event.type === 'result' && event.stats) {
     flushPendingMessage(state, timestamp);
-    state.tokenUsage.input_tokens += event.stats.input_tokens ?? 0;
-    state.tokenUsage.output_tokens += event.stats.output_tokens ?? 0;
+    state.tokenUsage.input_tokens += event.stats.input_tokens ?? event.stats.inputTokens ?? 0;
+    state.tokenUsage.output_tokens += event.stats.output_tokens ?? event.stats.outputTokens ?? 0;
   }
 }
 
@@ -568,9 +567,14 @@ function isAntigravityStreamEvent(
     parameters?: unknown;
     tool_id?: unknown;
     output?: unknown;
+    source?: unknown;
+    content?: unknown;
   },
   state: ParseState
 ): boolean {
+  if (typeof event.source === 'string' && ANTIGRAVITY_TRANSCRIPT_SOURCES.has(event.source) && typeof event.type === 'string') {
+    return true;
+  }
   if (event.type === 'init') {
     return hasAntigravityModelMetadata(event);
   }
@@ -600,7 +604,7 @@ function isAntigravityStreamEvent(
 function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
-    const timestamp = event.timestamp || getNextSyntheticTimestamp(state);
+    const timestamp = event.created_at || event.timestamp || getNextSyntheticTimestamp(state);
 
     if (isAntigravityStreamEvent(event, state)) {
       state.antigravityStreamActive = true;

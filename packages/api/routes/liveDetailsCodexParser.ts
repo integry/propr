@@ -1,5 +1,5 @@
 import fs from 'fs-extra';
-import { parseCodexStreamOutput, parseVibeConversationLog } from '@propr/core';
+import { filterAntigravityAnalysisEvents, parseAntigravityJsonl, parseCodexStreamOutput, parseVibeConversationLog } from '@propr/core';
 import type { TokenUsage, ConversationResult, TodoItem, PendingSubagent } from './liveDetailsTypes.js';
 
 export type { TokenUsage, ConversationResult, TodoItem, PendingSubagent };
@@ -24,6 +24,7 @@ interface Message {
   type?: string; timestamp?: string;
   message?: { content?: ClaudeMessageContent[]; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+  antigravity?: { source?: string; type?: string };
 }
 type MessageUsage = NonNullable<Message['usage']>;
 interface ContentBlock { type: string; text?: string; content?: unknown; }
@@ -297,6 +298,12 @@ function parseLine(
     const timestamp = message.timestamp || new Date().toISOString();
     const context = { events, timestamp, pendingSubagents };
     const usage = message.usage || message.message?.usage;
+    if (message.antigravity) {
+      if (message.antigravity.source === 'MODEL' && message.antigravity.type === 'PLANNER_RESPONSE' && message.message?.content) {
+        return parseAssistantContent(message.message.content, context, usage);
+      }
+      return usage ? { tokenUsage: buildTokenUsage(usage) } : {};
+    }
     if (message.type === 'assistant' && message.message?.content) {
       return parseAssistantContent(message.message.content, context, usage);
     }
@@ -388,6 +395,27 @@ export function parseCodexOutputToConversationResult(output: string): Conversati
 
   const currentTask = deriveCurrentTask(todos);
   return { events, todos, currentTask, tokenUsage: buildCodexTokenUsage(parsed) };
+}
+
+export function parseAntigravityOutputToConversationResult(output: string): ConversationResult | null {
+  const parsed = parseAntigravityJsonl(output);
+  const events = filterAntigravityAnalysisEvents(parsed.conversationLog).map(event => ({
+    type: 'thought',
+    content: 'content' in event && typeof event.content === 'string' ? event.content : '',
+    timestamp: 'created_at' in event ? event.created_at : 'timestamp' in event ? event.timestamp : undefined
+  })).filter(event => event.content);
+  const hasTokens = (parsed.tokenUsage.input_tokens ?? 0) > 0 || (parsed.tokenUsage.output_tokens ?? 0) > 0;
+  return events.length || hasTokens ? {
+    events,
+    todos: [],
+    currentTask: null,
+    tokenUsage: hasTokens ? {
+      input_tokens: parsed.tokenUsage.input_tokens ?? 0,
+      output_tokens: parsed.tokenUsage.output_tokens ?? 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0
+    } : null
+  } : null;
 }
 
 export function parseVibeOutputToConversationResult(output: string): ConversationResult | null {

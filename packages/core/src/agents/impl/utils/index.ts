@@ -38,6 +38,8 @@ export {
     parseAntigravityJsonl,
     aggregateDeltaMessages,
     convertEventToClaudeFormat,
+    filterAntigravityAnalysisEvents,
+    isAntigravityAnalysisEvent,
     ANTIGRAVITY_MODEL_LABELS,
     type AntigravityOutputEvent,
     type AntigravityParsedOutput,

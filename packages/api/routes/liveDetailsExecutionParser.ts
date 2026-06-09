@@ -11,7 +11,11 @@ import {
 } from './liveDetailsCodexParser.js';
 
 export interface ExecutionDetailRow { event_type: string; event_timestamp: string; content: string | null; is_error: number | boolean | null; tool_name: string | null; tool_input: string | null; metadata: string | null; }
-interface RawExecutionEvent { type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string; item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> }; }
+interface RawExecutionEvent {
+  type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
+  source?: string;
+  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
+}
 
 export function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<ConversationResult, 'tokenUsage'> {
   const events: Array<Record<string, unknown>> = [];
@@ -34,6 +38,13 @@ function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessage
   if (!row.metadata) return false;
   try {
     const rawEvent = JSON.parse(row.metadata) as RawExecutionEvent;
+    if (rawEvent.source === 'MODEL') {
+      if (rawEvent.type === 'PLANNER_RESPONSE' && typeof rawEvent.content === 'string' && rawEvent.content.trim()) {
+        context.events.push({ type: 'thought', content: rawEvent.content, timestamp: context.timestamp });
+      }
+      return true;
+    }
+    if (rawEvent.source === 'USER_EXPLICIT' || rawEvent.source === 'SYSTEM') return true;
     if (appendMetadataMessageEvent(rawEvent, context)) return true;
     if (rawEvent.type === 'tool_use') {
       context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });

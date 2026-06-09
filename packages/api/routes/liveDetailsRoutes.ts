@@ -9,6 +9,7 @@ import {
   isConversationResultEmpty,
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
+  parseAntigravityOutputToConversationResult,
   parseCodexOutputToConversationResult,
   parseVibeOutputToConversationResult,
   type ConversationResult
@@ -267,7 +268,8 @@ function parseStoredOutputWithFormat(output: string, format: StoredOutputFormat,
 }
 function parseStoredOutputForFormat(output: string, format: StoredOutputFormat): ConversationResult | null {
   if (format === 'claude') return parseClaudeOutputToConversationResult(output);
-  if (format === 'codex' || format === 'antigravity') return parseCodexOutputToConversationResult(output);
+  if (format === 'codex') return parseCodexOutputToConversationResult(output);
+  if (format === 'antigravity') return parseAntigravityOutputToConversationResult(output);
   if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
   if (format === 'vibe') return parseVibeOutputToConversationResult(output);
   return null;

@@ -1,6 +1,12 @@
 import { test } from 'node:test';
+import { after } from 'node:test';
 import assert from 'node:assert';
 import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
+
+after(async () => {
+    const { db } = await import('@propr/core');
+    await db.destroy();
+});
 
 test('parseRedisOutput normalizes Antigravity stream JSON events', () => {
     const parsed = parseRedisOutput([
@@ -14,9 +20,7 @@ test('parseRedisOutput normalizes Antigravity stream JSON events', () => {
     ]);
 
     assert.deepStrictEqual(parsed.events, [
-        { type: 'thought', content: 'I will inspect the repo.', timestamp: '2026-06-05T13:00:03.000Z' },
-        { type: 'tool_use', toolName: 'read_file', input: { path: 'package.json' }, id: 'tool-1', timestamp: '2026-06-05T13:00:03.000Z' },
-        { type: 'tool_result', toolUseId: 'tool-1', result: 'package.json contents', isError: false, timestamp: '2026-06-05T13:00:04.000Z' },
+        { type: 'thought', content: 'I will inspect the repo.', timestamp: '2026-06-05T13:00:01.000Z' },
         { type: 'thought', content: 'Done.', timestamp: '2026-06-05T13:00:05.000Z' }
     ]);
     assert.deepStrictEqual(parsed.tokenUsage, {
@@ -27,13 +31,23 @@ test('parseRedisOutput normalizes Antigravity stream JSON events', () => {
     });
 });
 
-test('parseRedisOutput handles Antigravity tool_result output and error status', () => {
+test('parseRedisOutput suppresses Antigravity tool_result output', () => {
     const parsed = parseRedisOutput([
         JSON.stringify({ type: 'tool_result', tool_id: 'tool-2', status: 'error', output: 'command failed', timestamp: '2026-06-05T13:00:04.000Z' })
     ]);
 
+    assert.deepStrictEqual(parsed.events, []);
+});
+
+test('parseRedisOutput renders only Antigravity planner transcript items', () => {
+    const parsed = parseRedisOutput([
+        JSON.stringify({ step_index: 2, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-06-09T10:37:04Z', content: 'I will inspect the repo.' }),
+        JSON.stringify({ step_index: 3, source: 'MODEL', type: 'VIEW_FILE', status: 'DONE', created_at: '2026-06-09T10:37:05Z', content: 'Created At: 2026-06-09T10:37:05Z\npackage contents' }),
+        JSON.stringify({ step_index: 4, source: 'MODEL', type: 'CODE_ACTION', status: 'DONE', created_at: '2026-06-09T10:37:06Z', content: '[diff_block_start]\n+change' })
+    ]);
+
     assert.deepStrictEqual(parsed.events, [
-        { type: 'tool_result', toolUseId: 'tool-2', result: 'command failed', isError: true, timestamp: '2026-06-05T13:00:04.000Z' }
+        { type: 'thought', content: 'I will inspect the repo.', timestamp: '2026-06-09T10:37:04Z' }
     ]);
 });
 
