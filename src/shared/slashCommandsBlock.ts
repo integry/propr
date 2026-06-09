@@ -18,5 +18,6 @@ export function buildSlashCommandsBlock(): string {
         '',
         '</details>',
         '',
+        '',
     ].join('\n');
 }
