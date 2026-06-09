@@ -47,14 +47,15 @@ interface TimelineEvent {
  * attacker who applies the trigger label to a whitelisted user's issue
  * could bypass the whitelist whenever the timeline lookup fails.
  */
-async function resolveLabelApplier(
-    octokit: PaginatedOctokitInstance,
-    owner: string,
-    repo: string,
-    issueNumber: number,
-    targetLabels: string[],
-    log?: Logger
-): Promise<string | null> {
+async function resolveLabelApplier(opts: {
+    octokit: PaginatedOctokitInstance;
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    targetLabels: string[];
+    log?: Logger;
+}): Promise<string | null> {
+    const { octokit, owner, repo, issueNumber, targetLabels, log } = opts;
     const normalizedTargetLabels = targetLabels.map(l => l.toLowerCase());
     try {
         const events = await octokit.paginate(
@@ -328,9 +329,9 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             // processing by labeling an issue authored by a whitelisted user).
             let triggeredBy: string | undefined = issue.user?.login;
             if (hasWhitelist) {
-                const labelApplier = await resolveLabelApplier(
-                    octokit, owner, repo, issue.number, primaryProcessingLabels, correlatedLogger
-                );
+                const labelApplier = await resolveLabelApplier({
+                    octokit, owner, repo, issueNumber: issue.number, targetLabels: primaryProcessingLabels, log: correlatedLogger
+                });
                 if (labelApplier === null) {
                     correlatedLogger.info(
                         { issueNumber: issue.number, repository: repoFullName },
