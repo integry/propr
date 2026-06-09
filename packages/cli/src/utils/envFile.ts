@@ -25,7 +25,7 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
     const pattern = new RegExp(`^\\s*(export\\s+)?${escapeRegExp(key)}\\s*=`);
     const index = lines.findIndex((line) => pattern.test(line));
     const safe = /[\s#"'\\$`\n]/.test(value)
-      ? `"${value.replace(/[\\"$`]/g, "\\$&")}"`
+      ? `"${value.replace(/[\\"$`\n]/g, (ch) => ch === "\n" ? "\\n" : `\\${ch}`)}"`
       : value;
     const assignment = `${key}=${safe}`;
     if (index >= 0) {

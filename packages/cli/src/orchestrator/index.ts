@@ -94,6 +94,7 @@ export async function getHostConfig(opts: {
   const cliOverrides: Record<string, unknown> = {};
   if (opts.configManager) {
     cliOverrides.docsEnabled = opts.configManager.getDocsEnabled();
+    cliOverrides.uiEnabled = opts.configManager.getUiEnabled();
   }
   const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };
