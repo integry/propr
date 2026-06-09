@@ -172,12 +172,10 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     // For 'HEAD', use origin/HEAD (the remote's default branch), not local HEAD
     // (which is whatever branch happens to be checked out locally).
     const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
-    currentHeadHash = await git.revparse([refToResolve]);
+    currentHeadHash = (await git.raw(['-c', 'safe.directory=*', 'rev-parse', refToResolve])).trim();
     // Get the commit message for the HEAD commit
-    const logResult = await git.log({ maxCount: 1, from: refToResolve });
-    if (logResult.latest) {
-      currentHeadCommitMessage = logResult.latest.message;
-    }
+    const logResult = await git.raw(['-c', 'safe.directory=*', 'log', '-1', '--format=%s', refToResolve]);
+    currentHeadCommitMessage = logResult.trim() || undefined;
   } catch (hashError) {
     correlatedLogger.warn({ error: (hashError as Error).message, branch }, 'Failed to resolve branch hash or commit message');
   }

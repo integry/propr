@@ -79,7 +79,7 @@ export async function scanGitFiles(repoPath: string, log: Logger): Promise<GitFi
   const git = simpleGit(repoPath);
 
   try {
-    const output = await git.raw(['ls-files', '--stage']);
+    const output = await git.raw(['-c', 'safe.directory=*', 'ls-files', '--stage']);
 
     if (!output.trim()) {
       return [];
