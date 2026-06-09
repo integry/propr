@@ -9,11 +9,10 @@ import {
   isConversationResultEmpty,
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
-  parseAntigravityOutputToConversationResult,
   parseCodexOutputToConversationResult,
-  parseVibeOutputToConversationResult,
   type ConversationResult
 } from './liveDetailsCodexParser.js';
+import { parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
 import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
