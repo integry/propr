@@ -18,7 +18,7 @@ export const CHARS_PER_TOKEN = 3;
 /** Buffer for Claude Code overhead */
 export const CLAUDE_CODE_OVERHEAD = 5000;
 
-/** Codex CLI planner calls need a lower practical input budget than the model catalog advertises. */
+/** Codex CLI planner calls are capped to the usable input budget, after output reservation. */
 export const CODEX_RAW_INPUT_LIMIT_CHARS = CODEX_CLI_CONTEXT_LIMIT * CHARS_PER_TOKEN;
 
 /** Leave room for agent-specific prompt suffixes added after planner validation. */

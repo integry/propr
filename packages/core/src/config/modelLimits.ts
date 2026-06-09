@@ -15,7 +15,9 @@ export const EFFECTIVE_MAX_RATIO = 0.98;
 // Tiktoken (cl100k_base) underestimates tokens for code/XML content.
 // Tests show actual Claude tokens are ~36% higher than tiktoken estimates.
 export const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
-export const CODEX_CLI_CONTEXT_LIMIT = 160000;
+// Codex/OpenAI reasoning models reserve ~128K tokens for output/tooling, so the
+// usable input cap is materially lower than the advertised 400K context window.
+export const CODEX_CLI_CONTEXT_LIMIT = 272000;
 
 export const MODEL_LIMITS: Record<string, number> = {
   'default': 200000,

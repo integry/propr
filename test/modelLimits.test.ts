@@ -80,8 +80,8 @@ test('getEffectiveTokenLimit - agent:model format handling', async (t) => {
     });
 
     await t.test('caps Codex agent routed models to the Codex CLI usable context', () => {
-        assert.strictEqual(getModelHardLimit('codex:gpt-5.5'), Math.floor(160000 * 0.98));
-        assert.strictEqual(getEffectiveTokenLimit('codex:gpt-5.5', 70), Math.floor(160000 * 0.70 * 0.98));
+        assert.strictEqual(getModelHardLimit('codex:gpt-5.5'), Math.floor(272000 * 0.98));
+        assert.strictEqual(getEffectiveTokenLimit('codex:gpt-5.5', 70), Math.floor(272000 * 0.70 * 0.98));
         assert.strictEqual(getModelHardLimit('gpt-5.5'), Math.floor(1050000 * 0.98));
     });
 
