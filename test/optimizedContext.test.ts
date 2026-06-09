@@ -34,6 +34,24 @@ test('removes all files when non-file overhead already exceeds the limit', () =>
   assert.equal(plan.targetFileTokens, 0);
 });
 
+test('treats large formatted output deltas as file expansion instead of fixed overhead', () => {
+  const plan = planFilesToRemoveForTokenLimit(
+    ['critical.html', 'useful.html', 'optional.html', 'least-relevant.html'],
+    {
+      'critical.html': 1_000,
+      'useful.html': 1_000,
+      'optional.html': 1_000,
+      'least-relevant.html': 1_000,
+    },
+    10_000,
+    5_000,
+  );
+
+  assert.equal(plan.targetFileTokens > 0, true);
+  assert.deepEqual(plan.filesToRemove, ['useful.html', 'optional.html', 'least-relevant.html']);
+  assert.equal(plan.estimatedRemainingTokens <= 5_000, true);
+});
+
 test('removes at least one file when token counts are unavailable', () => {
   const plan = planFilesToRemoveForTokenLimit(
     ['a.ts', 'b.ts'],

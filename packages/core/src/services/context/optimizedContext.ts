@@ -14,6 +14,8 @@ interface FileRemovalPlan {
 }
 
 const FILE_TOKEN_BUDGET_SAFETY_RATIO = 0.98;
+const MIN_FIXED_OVERHEAD_TOKENS = 2_000;
+const FIXED_OVERHEAD_LIMIT_RATIO = 0.05;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildCompactRepomixConfig(baseConfig: any) {
@@ -39,33 +41,44 @@ export function planFilesToRemoveForTokenLimit(
     path,
     tokens: fileTokenCounts[path] || 0,
   }));
-  const totalFileTokens = filesWithTokens.reduce((sum, file) => sum + file.tokens, 0);
-  const nonFileTokens = Math.max(0, totalTokens - totalFileTokens);
+  const rawFileTokens = filesWithTokens.reduce((sum, file) => sum + file.tokens, 0);
+  const rawNonFileTokens = Math.max(0, totalTokens - rawFileTokens);
+  const fixedOverheadLimit = Math.max(
+    MIN_FIXED_OVERHEAD_TOKENS,
+    Math.floor(tiktokenLimit * FIXED_OVERHEAD_LIMIT_RATIO),
+  );
+  const nonFileTokens = Math.min(rawNonFileTokens, fixedOverheadLimit);
+  const formattedFileTokens = rawFileTokens + Math.max(0, rawNonFileTokens - nonFileTokens);
+  const fileTokenScale = rawFileTokens > 0 ? formattedFileTokens / rawFileTokens : 1;
+  const filesWithEffectiveTokens = filesWithTokens.map(file => ({
+    ...file,
+    effectiveTokens: Math.ceil(file.tokens * fileTokenScale),
+  }));
   const targetFileTokens = Math.max(
     0,
     Math.floor((tiktokenLimit - nonFileTokens) * FILE_TOKEN_BUDGET_SAFETY_RATIO),
   );
 
   // Remove from the tail (least relevant) first so large high-relevance files are kept.
-  const keptFiles = new Set(filesWithTokens.map(f => f.path));
-  let keptTokens = filesWithTokens.reduce((sum, f) => sum + f.tokens, 0);
-  for (let i = filesWithTokens.length - 1; i >= 0 && keptTokens > targetFileTokens; i--) {
-    keptFiles.delete(filesWithTokens[i].path);
-    keptTokens -= filesWithTokens[i].tokens;
+  const keptFiles = new Set(filesWithEffectiveTokens.map(f => f.path));
+  let keptTokens = filesWithEffectiveTokens.reduce((sum, f) => sum + f.effectiveTokens, 0);
+  for (let i = filesWithEffectiveTokens.length - 1; i >= 0 && keptTokens > targetFileTokens; i--) {
+    keptFiles.delete(filesWithEffectiveTokens[i].path);
+    keptTokens -= filesWithEffectiveTokens[i].effectiveTokens;
   }
 
-  let filesToRemove = filesWithTokens
+  let filesToRemove = filesWithEffectiveTokens
     .filter(file => !keptFiles.has(file.path))
     .map(file => file.path);
-  let tokensFreed = filesWithTokens
+  let tokensFreed = filesWithEffectiveTokens
     .filter(file => !keptFiles.has(file.path))
-    .reduce((sum, file) => sum + file.tokens, 0);
+    .reduce((sum, file) => sum + file.effectiveTokens, 0);
 
-  if (filesToRemove.length === 0 && totalTokens > tiktokenLimit && filesWithTokens.length > 0) {
-    const leastRelevantFile = filesWithTokens[filesWithTokens.length - 1];
+  if (filesToRemove.length === 0 && totalTokens > tiktokenLimit && filesWithEffectiveTokens.length > 0) {
+    const leastRelevantFile = filesWithEffectiveTokens[filesWithEffectiveTokens.length - 1];
     filesToRemove = [leastRelevantFile.path];
-    tokensFreed = leastRelevantFile.tokens;
-    keptTokens = Math.max(0, keptTokens - leastRelevantFile.tokens);
+    tokensFreed = leastRelevantFile.effectiveTokens;
+    keptTokens = Math.max(0, keptTokens - leastRelevantFile.effectiveTokens);
   }
 
   return {
