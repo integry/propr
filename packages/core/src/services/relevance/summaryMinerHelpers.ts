@@ -321,6 +321,9 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
 
   try {
     const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
+    if (!analysisResult.success) {
+      throw new Error(analysisResult.error || 'Summarization agent analysis failed');
+    }
     const response = analysisResult.response;
     const summaries = parseBatchResponse(response);
 

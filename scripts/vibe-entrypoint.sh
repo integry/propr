@@ -193,12 +193,13 @@ format_command_for_log() {
 
 expand_vibe_prompt_file_args() {
     EXPANDED_VIBE_ARGS=()
+    VIBE_PROMPT_FILE_TO_INJECT=""
     if [ $# -eq 0 ] || [ "$1" != "vibe" ]; then
         EXPANDED_VIBE_ARGS=("$@")
         return
     fi
 
-    EXPANDED_VIBE_ARGS=("$1")
+    EXPANDED_VIBE_ARGS=("propr-vibe-prompt-file")
     shift
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -211,7 +212,7 @@ expand_vibe_prompt_file_args() {
                     echo "Prompt file not found: $2" >&2
                     exit 2
                 fi
-                EXPANDED_VIBE_ARGS+=("-p" "$(cat "$2")")
+                VIBE_PROMPT_FILE_TO_INJECT="$2"
                 shift 2
                 ;;
             --prompt-file=*)
@@ -220,7 +221,7 @@ expand_vibe_prompt_file_args() {
                     echo "Prompt file not found: $prompt_file" >&2
                     exit 2
                 fi
-                EXPANDED_VIBE_ARGS+=("-p" "$(cat "$prompt_file")")
+                VIBE_PROMPT_FILE_TO_INJECT="$prompt_file"
                 shift
                 ;;
             *)
@@ -229,6 +230,10 @@ expand_vibe_prompt_file_args() {
                 ;;
         esac
     done
+
+    if [ -z "$VIBE_PROMPT_FILE_TO_INJECT" ]; then
+        EXPANDED_VIBE_ARGS=("vibe" "${EXPANDED_VIBE_ARGS[@]:1}")
+    fi
 }
 
 if [ -z "$GH_TOKEN" ]; then
@@ -302,13 +307,22 @@ if [ $# -gt 0 ]; then
         cd /home/node/workspace
         if [ "$VIBE_READ_ONLY_CONFIG" = "1" ]; then
             echo "Running Vibe as root in read-only analysis sandbox" >&2
+            if [ -n "$VIBE_PROMPT_FILE_TO_INJECT" ]; then
+                exec env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" PROPR_VIBE_PROMPT_FILE="$VIBE_PROMPT_FILE_TO_INJECT" "$@"
+            fi
             exec env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
         echo "Switching to node user..." >&2
         if command -v su-exec >/dev/null 2>&1; then
+            if [ -n "$VIBE_PROMPT_FILE_TO_INJECT" ]; then
+                exec su-exec node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" PROPR_VIBE_PROMPT_FILE="$VIBE_PROMPT_FILE_TO_INJECT" "$@"
+            fi
             exec su-exec node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
         if command -v sudo >/dev/null 2>&1; then
+            if [ -n "$VIBE_PROMPT_FILE_TO_INJECT" ]; then
+                exec sudo -E -u node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" PROPR_VIBE_PROMPT_FILE="$VIBE_PROMPT_FILE_TO_INJECT" "$@"
+            fi
             exec sudo -E -u node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
         echo "Cannot switch to node user: sudo or su-exec is required" >&2
