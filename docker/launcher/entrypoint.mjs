@@ -11,15 +11,19 @@ import {
     startStack, stopStack, getStackStatus, getServiceLogs,
 } from './orchestrator.mjs';
 
-const cfg = resolveConfig(process.env);
+let cfg;
+let stackStarted = false;
 
 function shutdown(code = 0) {
     console.log('\nshutting down…');
-    stopStack(cfg, { remove: true, onLog: (l) => console.log(l) });
+    if (cfg && stackStarted) {
+        stopStack(cfg, { remove: true, onLog: (l) => console.log(l) });
+    }
     process.exit(code);
 }
 
 async function main() {
+    cfg = resolveConfig(process.env);
     console.log(`propr launcher ${cfg.manifest.version}`);
     console.log(`  stack: ${cfg.stack}`);
     console.log(`  network: ${cfg.network}`);
@@ -53,6 +57,7 @@ async function main() {
 
     console.log('\nstarting containers…');
     startStack(cfg, { ui: true, docs: cfg.docsEnabled, onLog: (l) => console.log(l) });
+    stackStarted = true;
 
     console.log('\n[ok] stack up. streaming logs... (Ctrl-C to stop)');
     for (const svc of getStackStatus(cfg).services) {

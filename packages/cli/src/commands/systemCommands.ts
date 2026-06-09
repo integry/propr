@@ -188,7 +188,7 @@ function displayQueueStats(stats: QueueStats): void {
  * HTTP. The top-level `propr status` now reports the local Docker stack, so this
  * backend health view is exposed as `remote-status`.
  */
-export function createStatusCommand(): Command {
+export function createRemoteStatusCommand(): Command {
   return new Command("remote-status")
     .description("Display the health status of a remote ProPR backend (API, Redis, daemon, worker)")
     .option("--json", "Output raw JSON response")

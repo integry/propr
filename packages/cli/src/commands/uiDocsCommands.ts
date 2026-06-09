@@ -29,13 +29,6 @@ async function toggleService(service: ServiceName, stateArg: string, root?: stri
     process.exit(1);
   }
 
-  // Persist desired state first so it survives restarts.
-  if (service === "ui") {
-    await configManager.setUiEnabled(enable);
-  } else {
-    await configManager.setDocsEnabled(enable);
-  }
-
   if (enable) {
     console.log(`Starting ${service}…`);
     orch.startService(cfg, service, { onLog: (l) => console.log(l) });
@@ -45,6 +38,13 @@ async function toggleService(service: ServiceName, stateArg: string, root?: stri
     console.log(`Stopping ${service}…`);
     orch.stopService(cfg, service, { remove: true, onLog: (l) => console.log(l) });
     console.log(`${service} stopped.`);
+  }
+
+  // Persist desired state after the action succeeds so it survives restarts.
+  if (service === "ui") {
+    await configManager.setUiEnabled(enable);
+  } else {
+    await configManager.setDocsEnabled(enable);
   }
 }
 

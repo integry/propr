@@ -22,6 +22,7 @@ export type {
 } from "./types.js";
 
 let cached: OrchestratorModule | undefined;
+let cachedPath: string | undefined;
 
 /**
  * Candidate locations for orchestrator.mjs, in priority order:
@@ -58,8 +59,8 @@ function resolveManifestPath(orchestratorPath: string): string | undefined {
 /** Loads (and caches) the orchestrator module. */
 export async function loadOrchestrator(): Promise<OrchestratorModule> {
   if (cached) return cached;
-  const path = resolveOrchestratorPath();
-  cached = (await import(pathToFileURL(path).href)) as OrchestratorModule;
+  cachedPath = resolveOrchestratorPath();
+  cached = (await import(pathToFileURL(cachedPath).href)) as OrchestratorModule;
   return cached;
 }
 
@@ -90,7 +91,7 @@ export async function getHostConfig(opts: {
 }): Promise<{ orch: OrchestratorModule; cfg: OrchestratorConfig; rootDir: string }> {
   const orch = await loadOrchestrator();
   const rootDir = resolveStackRoot(opts.configManager, opts.root);
-  const manifestPath = resolveManifestPath(resolveOrchestratorPath());
+  const manifestPath = resolveManifestPath(cachedPath ?? resolveOrchestratorPath());
   const cliOverrides: Record<string, unknown> = {};
   if (opts.configManager) {
     cliOverrides.docsEnabled = opts.configManager.getDocsEnabled();

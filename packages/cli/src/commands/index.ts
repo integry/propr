@@ -12,7 +12,7 @@ export { createAgentCommand } from "./agentCommands.js";
 export { createSettingCommand } from "./settingCommands.js";
 export { createLogCommand } from "./logCommands.js";
 export { createTodoCommand } from "./todoCommands.js";
-export { createStatusCommand, createQueueCommand } from "./systemCommands.js";
+export { createRemoteStatusCommand, createQueueCommand } from "./systemCommands.js";
 export { createInitCommand } from "./initCommands.js";
 
 // Control-plane commands (local Docker stack)

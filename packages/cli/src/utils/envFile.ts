@@ -6,7 +6,7 @@
  * (comments, blank lines, commented examples) are preserved.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -36,4 +36,9 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
   }
 
   writeFileSync(envPath, `${lines.join("\n")}\n`, "utf-8");
+  try {
+    chmodSync(envPath, 0o600);
+  } catch {
+    // Best-effort — may fail on Windows or non-owned files.
+  }
 }

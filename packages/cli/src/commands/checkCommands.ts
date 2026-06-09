@@ -164,8 +164,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   }
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
-  const envPath2 = join(rootDir, ".env");
-  const fileEnv = existsSync(envPath2) ? orch.readEnvFile(envPath2) : {};
+  const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
   for (const r of checkGithubAuth(fileEnv, cfg)) results.push(r);
 
   // 8. Vibe / bind-path validation from the orchestrator
@@ -377,10 +376,8 @@ export function printChecks(outcome: ChecksOutcome): void {
     }
   }
   console.log("─".repeat(60));
-  const counts = outcome.results.reduce(
-    (acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }),
-    {} as Record<CheckStatus, number>
-  );
+  const counts: Record<CheckStatus, number> = { ok: 0, warn: 0, fail: 0 };
+  for (const r of outcome.results) counts[r.status] = (counts[r.status] ?? 0) + 1;
   console.log(`${counts.ok ?? 0} ok, ${counts.warn ?? 0} warning(s), ${counts.fail ?? 0} failure(s)`);
 }
 

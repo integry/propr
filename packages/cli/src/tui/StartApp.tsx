@@ -103,7 +103,7 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
     logProcRef.current?.kill();
     setMessage("Stopping stack…");
     try {
-      orch.stopStack(cfg, { remove: true });
+      orch.stopStack(cfg, { remove: true, removeNetwork: true });
     } catch {
       /* ignore — report outcome regardless */
     }
@@ -145,11 +145,11 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
       try {
         if (ui?.running) {
           orch.stopService(cfg, "ui", { remove: true });
-          configManager?.setUiEnabled(false);
+          configManager?.setUiEnabled(false).catch(() => {});
           setMessage("UI stopped");
         } else {
           orch.startService(cfg, "ui");
-          configManager?.setUiEnabled(true);
+          configManager?.setUiEnabled(true).catch(() => {});
           setMessage("UI started");
         }
         setStatus(orch.getStackStatus(cfg));

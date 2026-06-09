@@ -8,7 +8,7 @@
  */
 
 import { Command } from "commander";
-import { existsSync, copyFileSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, copyFileSync, chmodSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -97,6 +97,11 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
       );
     }
     copyFileSync(example, envPath);
+    try {
+      chmodSync(envPath, 0o600);
+    } catch {
+      // Best-effort — may fail on Windows or non-owned files.
+    }
     result.envCreated = true;
   }
 

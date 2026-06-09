@@ -31,9 +31,9 @@ private key. Instead the stack fetches short-lived installation tokens from a
 vendor-run **relay**, authenticated by a durable per-installation credential.
 
 ```bash
-PROPR_GH_RELAY_URL=https://relay.propr.dev   # https required (http only for localhost)
-PROPR_GH_RELAY_TOKEN=your_relay_token        # durable credential issued for your installation
-GH_INSTALLATION_ID=987654                    # optional; which installation
+PROPR_GH_RELAY_URL=https://relay.propr.dev/v1  # https required (http only for localhost), include version prefix
+PROPR_GH_RELAY_TOKEN=your_relay_token          # durable credential issued for your installation
+GH_INSTALLATION_ID=987654                      # optional; which installation
 ```
 
 No private key is required. The relay token is issued during enrollment (you log
@@ -61,7 +61,7 @@ workers do not operate.
 The relay is a vendor-run service that holds the shared App's private key. A
 self-hosted (own) relay must implement this contract:
 
-- **Request:** `POST <PROPR_GH_RELAY_URL>/installation-token`
+- **Request:** `POST <PROPR_GH_RELAY_URL>/installation-token` (PROPR_GH_RELAY_URL includes the version prefix, e.g. `https://relay.propr.dev/v1`)
   - Header: `Authorization: Bearer <PROPR_GH_RELAY_TOKEN>`
   - Body: `{ "installationId": "<id>" }` (optional; the relay may infer the
     installation from the credential)

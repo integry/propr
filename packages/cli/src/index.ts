@@ -15,7 +15,7 @@ import {
   createSettingCommand,
   createLogCommand,
   createTodoCommand,
-  createStatusCommand,
+  createRemoteStatusCommand,
   createQueueCommand,
   createInitCommand,
   createCheckCommand,
@@ -334,7 +334,7 @@ program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());
 program.addCommand(createLogCommand());
 program.addCommand(createTodoCommand());
-program.addCommand(createStatusCommand()); // backend health → `propr remote-status`
+program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
 
 // Bare `propr` (no args): run the environment check, then hint at next steps.
@@ -344,7 +344,7 @@ if (!process.argv.slice(2).length) {
       const outcome = await runChecks();
       printChecks(outcome);
       console.log("");
-      if (outcome.results.some((r) => r.name === "Stack config (.env)" && r.status !== "ok")) {
+      if (outcome.results.some((r) => r.name.startsWith("Stack config") && r.status !== "ok")) {
         console.log("Next: `propr init stack` to scaffold a stack, then `propr start`.");
       } else {
         console.log("Next: `propr start` to launch the stack  ·  `propr --help` for all commands.");

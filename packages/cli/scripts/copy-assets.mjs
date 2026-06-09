@@ -47,9 +47,12 @@ const assets = [
   },
 ];
 
+const isPack = process.env.npm_lifecycle_event === "prepack";
 let copied = 0;
+const missing = [];
 for (const asset of assets) {
   if (!existsSync(asset.src)) {
+    missing.push(asset.src);
     console.warn(`copy-assets: source not found, skipping: ${asset.src}`);
     continue;
   }
@@ -58,6 +61,12 @@ for (const asset of assets) {
     copyFileSync(asset.src, dest);
     copied += 1;
   }
+}
+
+if (isPack && missing.length > 0) {
+  console.error(`copy-assets: aborting pack — ${missing.length} required source(s) missing:`);
+  for (const m of missing) console.error(`  ${m}`);
+  process.exit(1);
 }
 
 console.log(`copy-assets: copied ${copied} file(s) into the CLI package.`);
