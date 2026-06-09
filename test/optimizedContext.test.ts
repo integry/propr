@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { planFilesToRemoveForTokenLimit } from '../packages/core/src/services/context/optimizedContext.ts';
+import { buildCompactRepomixConfig, planFilesToRemoveForTokenLimit } from '../packages/core/src/services/context/optimizedContext.ts';
 
 test('plans a direct cut to fit the context token budget', () => {
   const files = ['important.ts', 'useful.ts', 'huge.html', 'least-relevant.html'];
@@ -43,4 +43,22 @@ test('removes at least one file when token counts are unavailable', () => {
   );
 
   assert.deepEqual(plan.filesToRemove, ['b.ts']);
+});
+
+test('compact repomix config disables metadata before files are dropped', () => {
+  const compactConfig = buildCompactRepomixConfig({
+    output: {
+      fileSummary: true,
+      directoryStructure: true,
+      includeFullDirectoryStructure: true,
+      topFilesLength: 10,
+      tokenCountTree: true,
+    },
+  });
+
+  assert.equal(compactConfig.output.fileSummary, false);
+  assert.equal(compactConfig.output.directoryStructure, false);
+  assert.equal(compactConfig.output.includeFullDirectoryStructure, false);
+  assert.equal(compactConfig.output.topFilesLength, 0);
+  assert.equal(compactConfig.output.tokenCountTree, true);
 });

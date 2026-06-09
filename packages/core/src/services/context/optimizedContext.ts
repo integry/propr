@@ -15,6 +15,20 @@ interface FileRemovalPlan {
 
 const FILE_TOKEN_BUDGET_SAFETY_RATIO = 0.98;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function buildCompactRepomixConfig(baseConfig: any) {
+  return {
+    ...baseConfig,
+    output: {
+      ...baseConfig.output,
+      fileSummary: false,
+      directoryStructure: false,
+      includeFullDirectoryStructure: false,
+      topFilesLength: 0,
+    },
+  };
+}
+
 export function planFilesToRemoveForTokenLimit(
   currentFiles: string[],
   fileTokenCounts: Record<string, number>,
@@ -32,7 +46,7 @@ export function planFilesToRemoveForTokenLimit(
     Math.floor((tiktokenLimit - nonFileTokens) * FILE_TOKEN_BUDGET_SAFETY_RATIO),
   );
 
-  // Remove from the tail (least relevant) first so large high-relevance files are kept
+  // Remove from the tail (least relevant) first so large high-relevance files are kept.
   const keptFiles = new Set(filesWithTokens.map(f => f.path));
   let keptTokens = filesWithTokens.reduce((sum, f) => sum + f.tokens, 0);
   for (let i = filesWithTokens.length - 1; i >= 0 && keptTokens > targetFileTokens; i--) {
@@ -66,6 +80,7 @@ export function planFilesToRemoveForTokenLimit(
 export async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
   const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, writeOutput, noopClipboard } = options;
   let currentFiles = [...initialFiles];
+  const optimizedBaseConfig = buildCompactRepomixConfig(baseConfig);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let result: any;
   let iterations = 0;
@@ -73,7 +88,7 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
   // Keep iterating until context fits or no files remain
   while (currentFiles.length > 0) {
     iterations++;
-    const limitedConfig = { ...baseConfig, include: currentFiles };
+    const limitedConfig = { ...optimizedBaseConfig, include: currentFiles };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     result = await (pack as any)([repoPath], limitedConfig, () => {}, {
       writeOutputToDisk: writeOutput,
@@ -121,18 +136,18 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
   }
 
   if (currentFiles.length === 0) {
-    contextLogger.warn('All files removed, running final pack with empty file list');
-    // Run one final pack with no files to get minimal context (just XML structure)
-    const emptyConfig = { ...baseConfig, include: [] };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    result = await (pack as any)([repoPath], emptyConfig, () => {}, {
-      writeOutputToDisk: writeOutput,
-      copyToClipboardIfEnabled: noopClipboard,
-    });
-    contextLogger.info(
-      { totalTokens: result.totalTokens, tiktokenLimit },
-      'Generated minimal context with no files'
-    );
+    contextLogger.warn({ initialFiles: initialFiles.length }, 'All files removed after compact context reduction');
+    if (initialFiles.length > 0) {
+      const fallbackFiles = [initialFiles[0]];
+      contextLogger.warn({ fallbackFiles }, 'Retrying with the highest-priority file instead of returning empty context');
+      const fallbackConfig = { ...optimizedBaseConfig, include: fallbackFiles };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      result = await (pack as any)([repoPath], fallbackConfig, () => {}, {
+        writeOutputToDisk: writeOutput,
+        copyToClipboardIfEnabled: noopClipboard,
+      });
+      currentFiles = fallbackFiles;
+    }
   }
 
   return { result, currentFiles };
