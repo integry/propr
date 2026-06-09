@@ -222,10 +222,11 @@ function isTruthy(value: string | undefined): boolean {
   return value !== undefined && TRUTHY.has(value.trim().toLowerCase());
 }
 
-// Matches the unedited .env.example placeholders (your_app_id, path/to/..., etc.)
+// Matches the unedited .env.example placeholders (your_app_id, path/to/..., etc.).
+// Anchored to avoid false-positives on org names that happen to contain "your_".
 function isPlaceholder(value: string | undefined): boolean {
   if (!value || value.trim() === "") return true;
-  return /your_|path\/to|changeme|xxxx|example\.com/i.test(value);
+  return /^your_|^\.?\/path\/to|changeme|xxxx|example\.com/i.test(value.trim());
 }
 
 // Forward-compatible relay env names (see the token-relay plan). Presence of the

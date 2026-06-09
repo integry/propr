@@ -9,18 +9,12 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
+import { parseOnOffState } from "../utils/index.js";
 
 type ServiceName = "ui" | "docs";
 
-function parseState(value: string): boolean {
-  const v = value.toLowerCase();
-  if (v === "on" || v === "enable" || v === "true") return true;
-  if (v === "off" || v === "disable" || v === "false") return false;
-  throw new Error(`expected 'on' or 'off', got '${value}'`);
-}
-
 async function toggleService(service: ServiceName, stateArg: string, root?: string): Promise<void> {
-  const enable = parseState(stateArg);
+  const enable = parseOnOffState(stateArg);
   const configManager = await createConfigManager();
   const { orch, cfg } = await getHostConfig({ configManager, root });
 

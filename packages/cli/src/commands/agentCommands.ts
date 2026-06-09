@@ -15,6 +15,7 @@ import {
   AgentType,
   AGENT_TYPES,
 } from "../api/agents.js";
+import { ApiError, NetworkError, NotFoundError, UnauthorizedError } from "../api/errors.js";
 import {
   printOutput,
   readJsonInput,
@@ -386,15 +387,16 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      const msg = (error as Error).message;
-      if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch failed")) {
+      if (error instanceof NetworkError) {
         console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
-      } else if (msg.includes("not found")) {
+      } else if (error instanceof NotFoundError || (error instanceof Error && error.message.includes("not found"))) {
         console.error(`Error: Agent '${alias}' not found`);
-      } else if (msg.includes("401") || msg.includes("unauthorized")) {
+      } else if (error instanceof UnauthorizedError) {
         console.error("Error: Unauthorized. Please run 'propr login' first.");
+      } else if (error instanceof ApiError) {
+        console.error(`Error updating agent: ${error.message}`);
       } else {
-        console.error(`Error updating agent: ${msg}`);
+        console.error(`Error updating agent: ${(error as Error).message}`);
       }
       process.exit(1);
     }

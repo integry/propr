@@ -55,3 +55,9 @@ export {
 } from './usageTypes.js';
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
+
+// Export user whitelist helpers
+export {
+  getGithubUserWhitelist,
+  isGithubUserWhitelisted,
+} from './userWhitelist.js';

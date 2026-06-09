@@ -49,10 +49,10 @@ export interface DetectedIssue {
     labels: string[];
     createdAt: string;
     updatedAt: string;
-    // GitHub login of the actor that triggered processing — the user who applied
-    // the label (webhook sender), or the label applier resolved from the issue
-    // timeline (polling, with issue author as fallback). Used to enforce the
-    // user whitelist.
+    // GitHub login of the actor that triggered processing — the webhook sender
+    // or the label applier resolved from the issue timeline (polling). Used to
+    // enforce the user whitelist. When the actor cannot be determined the issue
+    // is skipped (fail closed) — see resolveLabelApplier in issueDetection.ts.
     triggeredBy?: string;
     // How this issue was detected: 'webhook' (label event) or 'polling'.
     source?: 'webhook' | 'polling';
@@ -155,8 +155,10 @@ async function handleIssuesEvent(
             labels: payload.issue.labels?.map(l => typeof l === 'string' ? l : l.name) ?? [],
             createdAt: payload.issue.created_at,
             updatedAt: payload.issue.updated_at,
-            // The user who applied the label (falls back to the issue author).
-            triggeredBy: payload.sender?.login ?? payload.issue.user?.login,
+            // Fail closed: use only the webhook sender (the label applier).
+            // Do NOT fall back to the issue author — see resolveLabelApplier
+            // doc comment in issueDetection.ts for the threat model.
+            triggeredBy: payload.sender?.login,
             source: 'webhook'
         };
 

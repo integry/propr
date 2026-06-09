@@ -7,13 +7,7 @@
 
 import { Command } from "commander";
 import { getAgentTank, setAgentTank } from "../api/agentTank.js";
-
-function parseState(value: string): boolean {
-  const v = value.toLowerCase();
-  if (v === "on" || v === "enable" || v === "true") return true;
-  if (v === "off" || v === "disable" || v === "false") return false;
-  throw new Error(`expected 'on' or 'off', got '${value}'`);
-}
+import { parseOnOffState } from "../utils/index.js";
 
 function handleApiError(error: unknown): never {
   const msg = (error as Error).message;
@@ -46,7 +40,7 @@ Examples:
           console.log(`Agent Tank: ${current.enabled ? "on" : "off"}${current.url ? `  (${current.url})` : ""}`);
           return;
         }
-        const enable = parseState(state);
+        const enable = parseOnOffState(state);
         const result = await setAgentTank(enable, options.url);
         console.log(`Agent Tank ${result.enabled ? "enabled" : "disabled"}${result.url ? `  (${result.url})` : ""}.`);
       } catch (error) {

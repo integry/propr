@@ -120,7 +120,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
     // configured). For webhooks this is the label applier (sender); for polling
-    // it is resolved from the issue timeline, falling back to the issue author.
+    // it is resolved from the issue timeline (fail closed if unknown).
     if (!isGithubUserWhitelisted(issue.triggeredBy)) {
         correlatedLogger.info({
             issueNumber: issue.number,

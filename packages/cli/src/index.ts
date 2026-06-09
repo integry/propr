@@ -125,7 +125,7 @@ Examples:
   $ propr plan create "Add dark mode toggle" --wait
   $ propr issue implement abc123/1 --wait --auto-merge
   $ propr task list -s processing
-  $ propr status
+  $ propr remote-status
 
 Command Groups:
   Control Plane:  check, init [repo|stack], start, status, stop, ui, docs, tank

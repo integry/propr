@@ -141,7 +141,8 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
       return;
     }
     if (input === "u") {
-      const ui = services.find((s) => s.service === "ui");
+      const freshServices = orch.getStackStatus(cfg).services;
+      const ui = freshServices.find((s) => s.service === "ui");
       try {
         if (ui?.running) {
           orch.stopService(cfg, "ui", { remove: true });

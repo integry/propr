@@ -56,6 +56,7 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
   const { relayUrl, relayToken, installationId } = strategyOptions;
   const endpoint = `${relayUrl.replace(/\/+$/, '')}/installation-token`;
   const cache: { token: string | null; expiresAt: number } = { token: null, expiresAt: 0 };
+  let pendingFetch: Promise<string> | null = null;
 
   async function fetchToken(): Promise<string> {
     let response: Response;
@@ -96,7 +97,9 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
     if (cache.token && Date.now() < cache.expiresAt - REFRESH_MARGIN_MS) {
       return cache.token;
     }
-    return fetchToken();
+    if (pendingFetch) return pendingFetch;
+    pendingFetch = fetchToken().finally(() => { pendingFetch = null; });
+    return pendingFetch;
   }
 
   const auth = (async (): Promise<RelayInstallationAuthentication> => {
