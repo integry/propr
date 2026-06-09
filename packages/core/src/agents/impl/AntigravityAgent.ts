@@ -25,7 +25,7 @@ import os from 'os';
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
-const DEFAULT_ANTIGRAVITY_TIMEOUT_MS = 300000;
+const DEFAULT_ANTIGRAVITY_TIMEOUT_MS = 3600000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.gemini';
