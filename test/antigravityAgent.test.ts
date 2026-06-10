@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.js';
+import { toAntigravityCliModelId } from '../packages/core/src/agents/impl/antigravityModelIds.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 
 process.env.NODE_ENV = 'test';
@@ -56,5 +57,50 @@ describe('AntigravityAgent Docker args', () => {
         } finally {
             fs.rmSync(tempHome, { recursive: true, force: true });
         }
+    });
+
+    test('passes the native CLI model name (without antigravity- prefix) to --model', () => {
+        const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-model-'));
+        fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
+
+        try {
+            const agent = createAgent(path.join(tempHome, '.gemini'));
+            const args = (agent as unknown as {
+                buildDockerArgs(params: {
+                    worktreePath: string;
+                    githubToken: string;
+                    modelName?: string;
+                    issueNumber: number;
+                }): string[];
+            }).buildDockerArgs({
+                worktreePath: '/tmp/worktree',
+                githubToken: '',
+                modelName: 'antigravity-gpt-oss-120b-medium',
+                issueNumber: 0
+            });
+
+            const modelIdx = args.indexOf('--model');
+            assert.ok(modelIdx >= 0, '--model flag should be present');
+            assert.strictEqual(args[modelIdx + 1], 'gpt-oss-120b-medium');
+            assert.ok(!args.includes('antigravity-gpt-oss-120b-medium'), 'prefixed id must not be passed to the CLI');
+        } finally {
+            fs.rmSync(tempHome, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('toAntigravityCliModelId', () => {
+    test('strips the antigravity- namespace prefix', () => {
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gpt-oss-120b-medium'), 'gpt-oss-120b-medium');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'gemini-3.5-flash-high');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-4.6-thinking'), 'claude-opus-4.6-thinking');
+    });
+
+    test('strips an optional antigravity: route prefix before the namespace prefix', () => {
+        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.1-pro-low'), 'gemini-3.1-pro-low');
+    });
+
+    test('leaves an already-native model name unchanged', () => {
+        assert.strictEqual(toAntigravityCliModelId('gemini-3.5-flash-high'), 'gemini-3.5-flash-high');
     });
 });

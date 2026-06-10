@@ -18,6 +18,7 @@ import {
     type AntigravityOutputEvent
 } from './utils/antigravityOutputParser.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
+import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -284,7 +285,10 @@ export class AntigravityAgent implements Agent {
             this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
         ];
         if (modelName) {
-            const cleanModelName = modelName.startsWith(`${runtimeName}:`) ? modelName.slice(`${runtimeName}:`.length) : modelName;
+            // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
+            // to the Antigravity CLI's native model name. Passing the prefixed id
+            // makes `agy` fall back to its default model.
+            const cleanModelName = toAntigravityCliModelId(modelName);
             dockerArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         } else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }

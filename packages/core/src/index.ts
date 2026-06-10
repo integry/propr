@@ -254,6 +254,7 @@ export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
 export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId } from './agents/impl/openCodeUtils.js';
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
+export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export type {
