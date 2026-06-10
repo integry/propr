@@ -12,6 +12,7 @@ import {
   aggregateDirectories
 } from './summaryMinerHelpers.js';
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
+import type { IndexingPhase } from '@propr/shared';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
 import { scanProcessableGitFiles, type GitFileInfo } from './summaryFileFilter.js';
 
@@ -146,6 +147,33 @@ async function discoverRepoIcon(repoPath: string, log: Logger): Promise<string |
   return null;
 }
 
+interface HeadInfo {
+  hash?: string;
+  commitMessage?: string;
+}
+
+async function resolveHeadInfo(repoPath: string, branch: string, log: Logger): Promise<HeadInfo> {
+  try {
+    const git: SimpleGit = simpleGit(repoPath);
+    const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
+    const hash = (await git.raw(['-c', 'safe.directory=*', 'rev-parse', refToResolve])).trim();
+    const logResult = await git.raw(['-c', 'safe.directory=*', 'log', '-1', '--format=%s', refToResolve]);
+    const commitMessage = logResult.trim() || undefined;
+    return { hash, commitMessage };
+  } catch (error) {
+    log.warn({ error: (error as Error).message, branch }, 'Failed to resolve branch hash or commit message');
+    return {};
+  }
+}
+
+async function safePublishIndexingStatus(fullName: string, branch: string, status: IndexingPhase): Promise<void> {
+  try {
+    await publishIndexingStatus(fullName, branch, status);
+  } catch {
+    // best-effort
+  }
+}
+
 // --- Main Export ---
 
 /**
@@ -162,23 +190,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
   const fullName = options.fullName || path.basename(repoPath);
   const branch = options.branch || 'HEAD';
 
-  // Get the hash and commit message of the configured branch for tracking indexed state
-  // (same repo can be tracked multiple times with different branches)
-  let currentHeadHash: string | undefined;
-  let currentHeadCommitMessage: string | undefined;
-  try {
-    const git: SimpleGit = simpleGit(repoPath);
-    // Use origin refs to get the remote branch state, not the local checkout state.
-    // For 'HEAD', use origin/HEAD (the remote's default branch), not local HEAD
-    // (which is whatever branch happens to be checked out locally).
-    const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
-    currentHeadHash = (await git.raw(['-c', 'safe.directory=*', 'rev-parse', refToResolve])).trim();
-    // Get the commit message for the HEAD commit
-    const logResult = await git.raw(['-c', 'safe.directory=*', 'log', '-1', '--format=%s', refToResolve]);
-    currentHeadCommitMessage = logResult.trim() || undefined;
-  } catch (hashError) {
-    correlatedLogger.warn({ error: (hashError as Error).message, branch }, 'Failed to resolve branch hash or commit message');
-  }
+  const { hash: currentHeadHash, commitMessage: currentHeadCommitMessage } = await resolveHeadInfo(repoPath, branch, correlatedLogger);
 
   try {
     // Phase A: Setup & Staleness Check
@@ -246,11 +258,11 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
       if (dirResult.failedBatches > 0) {
         await updateRepositoryStatus(fullName, 'failed', branch);
-        try { await publishIndexingStatus(fullName, branch, 'failed'); } catch { /* best-effort */ }
+        await safePublishIndexingStatus(fullName, branch, 'failed');
         correlatedLogger.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
       } else {
         await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-        try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
+        await safePublishIndexingStatus(fullName, branch, 'completed');
       }
       return;
     }
@@ -291,14 +303,14 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       // Successful summaries are already persisted, so the retry only reprocesses
       // the missing files/directories (no full reindex required).
       await updateRepositoryStatus(fullName, 'failed', branch);
-      try { await publishIndexingStatus(fullName, branch, 'failed'); } catch { /* best-effort */ }
+      await safePublishIndexingStatus(fullName, branch, 'failed');
       correlatedLogger.warn(
         { repoPath, fullName, branch, ...batchResult, dirFailedBatches },
         'Repository indexing completed with failures - will retry on next scan'
       );
     } else {
       await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
+      await safePublishIndexingStatus(fullName, branch, 'completed');
       correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
     }
 
@@ -331,7 +343,7 @@ async function handleIndexingError(
     await updateRepositoryStatus(repoName, 'idle', errorBranch);
     // Publish idle now that the worker has fully stopped — this is the authoritative
     // terminal event so clients won't see stale progress updates afterward.
-    try { await publishIndexingStatus(repoName, errorBranch, 'idle'); } catch { /* best-effort */ }
+    await safePublishIndexingStatus(repoName, errorBranch, 'idle');
     return;
   }
 
@@ -344,7 +356,7 @@ async function handleIndexingError(
   // Set status to failed
   try {
     await updateRepositoryStatus(repoName, 'failed', errorBranch);
-    try { await publishIndexingStatus(repoName, errorBranch, 'failed'); } catch { /* best-effort */ }
+    await safePublishIndexingStatus(repoName, errorBranch, 'failed');
   } catch (statusError) {
     correlatedLogger.error(
       { error: (statusError as Error).message },
