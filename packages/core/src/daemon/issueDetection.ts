@@ -70,31 +70,28 @@ async function resolveLabelApplier(opts: {
     targetLabels: string[];
     log?: Logger;
 }): Promise<string | null> {
-    const { octokit, owner, repo, issueNumber, targetLabels, log } = opts;
+    const { octokit, owner, repo, issueNumber, targetLabels } = opts;
     const normalizedTargetLabels = targetLabels.map(l => l.toLowerCase());
-    try {
-        const events = await octokit.paginate(
-            'GET /repos/{owner}/{repo}/issues/{issue_number}/timeline',
-            { owner, repo, issue_number: issueNumber, per_page: 100 }
-        ) as TimelineEvent[];
+    // Let API errors propagate — the caller (resolveLabelApplierCached) decides
+    // whether to cache the result. Errors must NOT be cached because the cache key
+    // only rotates when the issue's updatedAt changes, which would stall the issue
+    // indefinitely after a transient failure (rate limit, network blip).
+    const events = await octokit.paginate(
+        'GET /repos/{owner}/{repo}/issues/{issue_number}/timeline',
+        { owner, repo, issue_number: issueNumber, per_page: 100 }
+    ) as TimelineEvent[];
 
-        // Walk backwards to find the most recent "labeled" event for a target label.
-        for (let i = events.length - 1; i >= 0; i--) {
-            const ev = events[i];
-            if (
-                ev.event === 'labeled' &&
-                ev.label?.name &&
-                normalizedTargetLabels.includes(ev.label.name.toLowerCase()) &&
-                ev.actor?.login
-            ) {
-                return ev.actor.login;
-            }
+    // Walk backwards to find the most recent "labeled" event for a target label.
+    for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (
+            ev.event === 'labeled' &&
+            ev.label?.name &&
+            normalizedTargetLabels.includes(ev.label.name.toLowerCase()) &&
+            ev.actor?.login
+        ) {
+            return ev.actor.login;
         }
-    } catch (err) {
-        log?.warn(
-            { owner, repo, issueNumber, error: (err as Error).message },
-            'Timeline API lookup failed — actor unknown, will skip issue (fail closed)'
-        );
     }
     return null;
 }
@@ -112,13 +109,24 @@ async function resolveLabelApplierCached(opts: {
     const cached = labelApplierCache.get(cacheKey);
     if (cached !== undefined) return cached;
 
-    const result = await resolveLabelApplier(opts);
-    if (labelApplierCache.size >= LABEL_APPLIER_CACHE_MAX) {
-        const first = labelApplierCache.keys().next().value;
-        if (first !== undefined) labelApplierCache.delete(first);
+    try {
+        const result = await resolveLabelApplier(opts);
+        // FIFO eviction — oldest-inserted key is dropped (not LRU).
+        if (labelApplierCache.size >= LABEL_APPLIER_CACHE_MAX) {
+            const first = labelApplierCache.keys().next().value;
+            if (first !== undefined) labelApplierCache.delete(first);
+        }
+        labelApplierCache.set(cacheKey, result);
+        return result;
+    } catch (err) {
+        // Transient API error (rate limit, network blip). Return null (fail closed)
+        // but do NOT cache so the issue is retried on the next poll cycle.
+        opts.log?.warn(
+            { owner: opts.owner, repo: opts.repo, issueNumber: opts.issueNumber, error: (err as Error).message },
+            'Timeline API lookup failed — actor unknown, will skip issue (fail closed). Will retry on next poll.'
+        );
+        return null;
     }
-    labelApplierCache.set(cacheKey, result);
-    return result;
 }
 
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<void> {

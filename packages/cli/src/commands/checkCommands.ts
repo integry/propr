@@ -29,6 +29,7 @@ interface CheckResult {
 interface AgentDescriptor {
   type: string;
   hostDirKey: keyof OrchestratorConfig;
+  envKey: string;
   defaultDir: string;
   imageKey: string;
   bin: string;
@@ -37,13 +38,13 @@ interface AgentDescriptor {
 function agentDescriptors(): AgentDescriptor[] {
   const home = homedir();
   return [
-    { type: "claude", hostDirKey: "hostClaudeDir", defaultDir: join(home, ".claude"), imageKey: "agent-claude", bin: "claude" },
-    { type: "codex", hostDirKey: "hostCodexDir", defaultDir: join(home, ".codex"), imageKey: "agent-codex", bin: "codex" },
-    { type: "antigravity", hostDirKey: "hostAntigravityDir", defaultDir: join(home, ".gemini"), imageKey: "agent-antigravity", bin: "gemini" },
-    { type: "opencode", hostDirKey: "hostOpencodeXdgDir", defaultDir: join(home, ".config", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
-    { type: "opencode-legacy", hostDirKey: "hostOpencodeLegacyDir", defaultDir: join(home, ".opencode"), imageKey: "agent-opencode", bin: "opencode" },
-    { type: "opencode-data", hostDirKey: "hostOpencodeDataDir", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
-    { type: "vibe", hostDirKey: "hostVibeDir", defaultDir: join(home, ".vibe"), imageKey: "agent-vibe", bin: "vibe" },
+    { type: "claude", hostDirKey: "hostClaudeDir", envKey: "HOST_CLAUDE_DIR", defaultDir: join(home, ".claude"), imageKey: "agent-claude", bin: "claude" },
+    { type: "codex", hostDirKey: "hostCodexDir", envKey: "HOST_CODEX_DIR", defaultDir: join(home, ".codex"), imageKey: "agent-codex", bin: "codex" },
+    { type: "antigravity", hostDirKey: "hostAntigravityDir", envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini"), imageKey: "agent-antigravity", bin: "gemini" },
+    { type: "opencode", hostDirKey: "hostOpencodeXdgDir", envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
+    { type: "opencode-legacy", hostDirKey: "hostOpencodeLegacyDir", envKey: "HOST_OPENCODE_LEGACY_DIR", defaultDir: join(home, ".opencode"), imageKey: "agent-opencode", bin: "opencode" },
+    { type: "opencode-data", hostDirKey: "hostOpencodeDataDir", envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
+    { type: "vibe", hostDirKey: "hostVibeDir", envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe"), imageKey: "agent-vibe", bin: "vibe" },
   ];
 }
 
@@ -161,7 +162,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         name: `Agent creds: ${agent.type}`,
         status: "warn",
         detail: `${dir} not found — ${agent.type} will not authenticate`,
-        fix: `Log in with the ${agent.type} CLI on this host, or set HOST_${agent.type.toUpperCase()}_DIR in .env.`,
+        fix: `Log in with the ${agent.type} CLI on this host, or set ${agent.envKey} in .env.`,
       });
     }
   }

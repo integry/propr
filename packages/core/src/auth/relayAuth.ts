@@ -89,7 +89,8 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
     }
 
     cache.token = data.token;
-    cache.expiresAt = data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + DEFAULT_TOKEN_TTL_MS;
+    const parsed = data.expires_at ? new Date(data.expires_at).getTime() : NaN;
+    cache.expiresAt = Number.isNaN(parsed) ? Date.now() + DEFAULT_TOKEN_TTL_MS : parsed;
     return data.token;
   }
 
@@ -115,8 +116,12 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
       return await request(endpointOptions as EndpointOptions);
     } catch (error) {
       if ((error as { status?: number }).status === 401) {
+        // Invalidate and retry once with a fresh token (edge-of-expiry race).
         cache.token = null;
         cache.expiresAt = 0;
+        const freshToken = await getToken();
+        endpointOptions.headers.authorization = `token ${freshToken}`;
+        return await request(endpointOptions as EndpointOptions);
       }
       throw error;
     }

@@ -9,7 +9,7 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
-import { parseOnOffState } from "../utils/index.js";
+import { parseOnOffState, ParseStateError } from "../utils/index.js";
 
 type ServiceName = "ui" | "docs";
 
@@ -57,6 +57,10 @@ Examples:
       try {
         await toggleService(service, state, options.root);
       } catch (error) {
+        if (error instanceof ParseStateError) {
+          console.error(`Error: ${error.message}`);
+          process.exit(1);
+        }
         console.error(`Error toggling ${service}: ${(error as Error).message}`);
         process.exit(1);
       }

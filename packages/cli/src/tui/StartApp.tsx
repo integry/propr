@@ -16,6 +16,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { ChildProcess } from "node:child_process";
 import type { OrchestratorConfig, OrchestratorModule, StackStatus, ServiceState } from "../orchestrator/index.js";
+import { stateGlyph } from "../orchestrator/format.js";
 import type { ConfigManager } from "../config/index.js";
 
 const POLL_INTERVAL_MS = 1500;
@@ -34,11 +35,7 @@ function stateColor(s: ServiceState): string {
   return "yellow";
 }
 
-function glyph(s: ServiceState): string {
-  if (!s.exists) return "·";
-  if (s.running) return "●";
-  return "○";
-}
+const glyph = stateGlyph;
 
 export function StartApp({ orch, cfg, configManager, onResult }: Props): React.ReactElement {
   const { exit } = useApp();

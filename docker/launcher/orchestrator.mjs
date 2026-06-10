@@ -537,7 +537,7 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 // status
 // ---------------------------------------------------------------------------
 
-/** Per-service state for the whole stack, discovered via `docker ps` labels. */
+/** Per-service state for the whole stack, discovered via `docker ps` labels + legacy name fallback. */
 export function getStackStatus(cfg) {
     const res = docker([
         'ps', '-a',
@@ -549,6 +549,24 @@ export function getStackStatus(cfg) {
     for (const line of res.stdout.split('\n').filter(Boolean)) {
         const [name, state, status, ports] = line.split('\t');
         byName.set(name, { state, status, ports: ports || '' });
+    }
+
+    // Also discover legacy containers created before labeling was added (named
+    // <stack>-<service> but missing the propr.stack label). Mirrors the fallback
+    // in stopStack so status accurately reflects what ports are actually bound.
+    for (const service of SERVICES) {
+        const name = `${cfg.stack}-${service}`;
+        if (!byName.has(name) && containerExists(cfg, name)) {
+            const inspect = docker([
+                'ps', '-a',
+                '--filter', `name=^${name}$`,
+                '--format', '{{.State}}\t{{.Status}}\t{{.Ports}}',
+            ], { capture: true });
+            const parts = inspect.stdout.trim().split('\t');
+            if (parts[0]) {
+                byName.set(name, { state: parts[0], status: parts[1] || '', ports: parts[2] || '' });
+            }
+        }
     }
 
     const services = SERVICES.map((service) => {

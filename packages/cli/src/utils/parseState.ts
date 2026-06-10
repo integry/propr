@@ -1,6 +1,6 @@
 export class ParseStateError extends Error {
   constructor(value: string) {
-    super(`expected 'on' or 'off', got '${value}'`);
+    super(`expected on/off (or enable/disable, true/false), got '${value}'`);
     this.name = "ParseStateError";
   }
 }

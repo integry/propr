@@ -5,7 +5,7 @@
 
 import type { StackStatus, ServiceState } from "./types.js";
 
-function stateGlyph(s: ServiceState): string {
+export function stateGlyph(s: ServiceState): string {
   if (!s.exists) return "·";
   if (s.running) return "●";
   return "○";
