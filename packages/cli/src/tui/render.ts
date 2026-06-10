@@ -45,7 +45,9 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
   }
 
   const ui = configManager.getUiEnabled();
-  const docs = configManager.getDocsEnabled();
+  // Use the explicit CLI override (propr docs on/off) if set, otherwise fall
+  // back to the resolved config which honors DOCS_ENABLED from .env.
+  const docs = configManager.get("docsEnabled") ?? cfg.docsEnabled;
 
   console.log("\nStarting containers…");
   orch.ensureNetwork(cfg, (l) => console.log(l));

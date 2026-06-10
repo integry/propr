@@ -120,7 +120,10 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                 if (!isUserWhitelisted(req.user?.username)) {
                     req.logout(() => {
                         req.session.destroy(() => {
-                            res.clearCookie('connect.sid');
+                            res.clearCookie('connect.sid', {
+                                domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+                                path: '/',
+                            });
                             res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
                         });
                     });
@@ -162,7 +165,10 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                 if (sessionErr) {
                     console.error('Session destroy error:', sessionErr);
                 }
-                res.clearCookie('connect.sid');
+                res.clearCookie('connect.sid', {
+                    domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+                    path: '/',
+                });
                 res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
             });
         });

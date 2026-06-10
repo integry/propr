@@ -41,6 +41,8 @@ function agentDescriptors(): AgentDescriptor[] {
     { type: "codex", hostDirKey: "hostCodexDir", defaultDir: join(home, ".codex"), imageKey: "agent-codex", bin: "codex" },
     { type: "antigravity", hostDirKey: "hostAntigravityDir", defaultDir: join(home, ".gemini"), imageKey: "agent-antigravity", bin: "gemini" },
     { type: "opencode", hostDirKey: "hostOpencodeXdgDir", defaultDir: join(home, ".config", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
+    { type: "opencode-legacy", hostDirKey: "hostOpencodeLegacyDir", defaultDir: join(home, ".opencode"), imageKey: "agent-opencode", bin: "opencode" },
+    { type: "opencode-data", hostDirKey: "hostOpencodeDataDir", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
     { type: "vibe", hostDirKey: "hostVibeDir", defaultDir: join(home, ".vibe"), imageKey: "agent-vibe", bin: "vibe" },
   ];
 }
@@ -190,10 +192,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     results.push({ name: "Config warning", status: "warn", detail: warn });
   }
   for (const err of validation.errors) {
-    // env file / data dir absence is already covered above; surface vibe-style errors only
-    if (/vibe|VIBE/.test(err)) {
-      results.push({ name: "Config error", status: "fail", detail: err });
-    }
+    // env file absence is already surfaced by step 4 above; skip the duplicate.
+    if (/env file path is not set/i.test(err)) continue;
+    results.push({ name: "Config error", status: "fail", detail: err });
   }
 
   // 10. Deep verify (opt-in): image/CLI smoke test per selected agent

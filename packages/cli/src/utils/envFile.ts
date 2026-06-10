@@ -24,9 +24,21 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
   for (const [key, value] of Object.entries(vars)) {
     const pattern = new RegExp(`^\\s*(export\\s+)?${escapeRegExp(key)}\\s*=`);
     const index = lines.findIndex((line) => pattern.test(line));
-    const safe = /[\s#"'\\$`\n]/.test(value)
-      ? `"${value.replace(/[\\"$`\n]/g, (ch) => ch === "\n" ? "\\n" : `\\${ch}`)}"`
-      : value;
+    const needsQuoting = /[\s#"'\\$`\n]/.test(value);
+    let safe: string;
+    if (!needsQuoting) {
+      safe = value;
+    } else if (!value.includes("'")) {
+      // Single quotes: literal in both dotenv and docker --env-file (no
+      // escape processing), so the value round-trips identically.
+      safe = `'${value}'`;
+    } else {
+      // Fallback: double quotes with escaping. docker --env-file strips
+      // outer quotes but does NOT process backslash escapes, so values
+      // containing $, `, or \ will read differently via --env-file vs
+      // dotenv. This path is rare (value contains both ' and special chars).
+      safe = `"${value.replace(/[\\"$`\n]/g, (ch) => ch === "\n" ? "\\n" : `\\${ch}`)}"`;
+    }
     const assignment = `${key}=${safe}`;
     if (index >= 0) {
       lines[index] = assignment;

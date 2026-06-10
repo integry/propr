@@ -160,8 +160,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     // configured). For webhooks this is the label applier (sender); for polling
     // it is resolved from the issue timeline (fail closed if unknown).
     if (!isGithubUserWhitelisted(issue.triggeredBy)) {
-        const level = issue.triggeredBy ? 'info' : 'warn';
-        correlatedLogger[level]({
+        correlatedLogger.warn({
             issueNumber: issue.number,
             repository: repoFullName,
             triggeredBy: issue.triggeredBy ?? null,

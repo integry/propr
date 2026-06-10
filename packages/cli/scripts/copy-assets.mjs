@@ -39,10 +39,11 @@ const assets = [
     ],
   },
   {
+    // Renamed to avoid npm's default exclusion of .env* files from tarballs.
     src: join(repoRoot, ".env.example"),
     dests: [
-      join(cliDir, "src", "assets", ".env.example"),
-      join(cliDir, "dist", "assets", ".env.example"),
+      join(cliDir, "src", "assets", "env.example.txt"),
+      join(cliDir, "dist", "assets", "env.example.txt"),
     ],
   },
 ];

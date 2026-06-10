@@ -22,8 +22,11 @@ interface DetectedCred {
 /** Resolve the bundled .env.example, falling back to a repo checkout. */
 function resolveEnvExample(): string | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
-  const bundled = join(here, "..", "assets", ".env.example");
+  // Bundled copy is renamed to avoid npm's .env* exclusion from tarballs.
+  const bundled = join(here, "..", "assets", "env.example.txt");
   if (existsSync(bundled)) return bundled;
+  const bundledLegacy = join(here, "..", "assets", ".env.example");
+  if (existsSync(bundledLegacy)) return bundledLegacy;
 
   let dir = here;
   for (let i = 0; i < 8; i += 1) {
