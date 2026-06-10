@@ -170,16 +170,12 @@ Examples:
         console.log("");
         console.log(`Total: ${result.agents.length} agent(s)`);
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
-        ) {
-          console.error(
-            "Error: Unauthorized. Please run 'propr login' first."
-          );
+        if (error instanceof UnauthorizedError) {
+          console.error("Error: Unauthorized. Please run 'propr login' first.");
+        } else if (error instanceof NetworkError) {
+          console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
         } else {
-          console.error(`Error listing agents: ${errorMessage}`);
+          console.error(`Error listing agents: ${(error as Error).message}`);
         }
         process.exit(1);
       }
@@ -358,18 +354,14 @@ Examples:
             process.exit(1);
           }
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
-            console.error(
-              "Error: Unauthorized. Please run 'propr login' first."
-            );
-          } else if (errorMessage.includes("already exists")) {
-            console.error(`Error: ${errorMessage}`);
+          if (error instanceof UnauthorizedError) {
+            console.error("Error: Unauthorized. Please run 'propr login' first.");
+          } else if (error instanceof NetworkError) {
+            console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
+          } else if (error instanceof ApiError && (error as Error).message.includes("already exists")) {
+            console.error(`Error: ${(error as Error).message}`);
           } else {
-            console.error(`Error adding agent: ${errorMessage}`);
+            console.error(`Error adding agent: ${(error as Error).message}`);
           }
           process.exit(1);
         }
@@ -464,18 +456,14 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
-        ) {
-          console.error(
-            "Error: Unauthorized. Please run 'propr login' first."
-          );
-        } else if (errorMessage.includes("not found")) {
+        if (error instanceof UnauthorizedError) {
+          console.error("Error: Unauthorized. Please run 'propr login' first.");
+        } else if (error instanceof NotFoundError) {
           console.error(`Error: Agent '${alias}' not found`);
+        } else if (error instanceof NetworkError) {
+          console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
         } else {
-          console.error(`Error deleting agent: ${errorMessage}`);
+          console.error(`Error deleting agent: ${(error as Error).message}`);
         }
         process.exit(1);
       }

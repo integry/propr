@@ -6,7 +6,7 @@
  * (comments, blank lines, commented examples) are preserved.
  */
 
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -37,9 +37,15 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
 
   const isNew = !existsSync(envPath);
   writeFileSync(envPath, `${lines.join("\n")}\n`, { encoding: "utf-8", mode: isNew ? 0o600 : undefined });
-  try {
-    chmodSync(envPath, 0o600);
-  } catch {
-    // Best-effort — may fail on Windows or non-owned files.
+  if (!isNew) {
+    try {
+      const before = statSync(envPath).mode & 0o777;
+      if (before !== 0o600) {
+        chmodSync(envPath, 0o600);
+        console.error(`Note: tightened ${envPath} permissions from ${before.toString(8)} to 600 (secrets file).`);
+      }
+    } catch {
+      // Best-effort — may fail on Windows or non-owned files.
+    }
   }
 }

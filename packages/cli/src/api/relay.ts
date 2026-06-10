@@ -37,11 +37,16 @@ function baseUrl(options: RelayClientOptions): string {
   return options.baseUrl.replace(/\/+$/, "");
 }
 
+interface RelayRequestInit {
+  notFoundMessage?: string;
+}
+
 async function relayRequest<T>(
   options: RelayClientOptions,
   path: string,
   method: string,
-  body?: unknown
+  body?: unknown,
+  init?: RelayRequestInit
 ): Promise<T> {
   let response: Response;
   try {
@@ -74,8 +79,8 @@ async function relayRequest<T>(
         "You are not authorized for this installation. Confirm the shared GitHub App is installed and you have access to it."
       );
     }
-    if (response.status === 404 && path.includes("revoke")) {
-      throw new Error("Relay token not found (already revoked or wrong token id).");
+    if (response.status === 404 && init?.notFoundMessage) {
+      throw new Error(init.notFoundMessage);
     }
     throw new Error(`Relay request failed (HTTP ${response.status}${code ? ` ${code}` : ""}).`);
   }
@@ -109,8 +114,11 @@ export function revokeRelayToken(
   options: RelayClientOptions,
   params: { installationId: string | number; tokenId: string }
 ): Promise<{ status: string; token_id: string }> {
-  return relayRequest<{ status: string; token_id: string }>(options, "/relay-tokens/revoke", "POST", {
-    installation_id: params.installationId,
-    token_id: params.tokenId,
-  });
+  return relayRequest<{ status: string; token_id: string }>(
+    options,
+    "/relay-tokens/revoke",
+    "POST",
+    { installation_id: params.installationId, token_id: params.tokenId },
+    { notFoundMessage: "Relay token not found (already revoked or wrong token id)." }
+  );
 }

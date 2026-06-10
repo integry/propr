@@ -168,7 +168,23 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
   for (const r of checkGithubAuth(fileEnv, cfg)) results.push(r);
 
-  // 8. Vibe / bind-path validation from the orchestrator
+  // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
+  const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
+  const whitelistEntries = (whitelistRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const authMode = (process.env.GH_AUTH_MODE ?? fileEnv.GH_AUTH_MODE ?? "").trim().toLowerCase();
+  const isDemo = isTruthy(process.env.PROPR_DEMO_MODE ?? fileEnv.PROPR_DEMO_MODE) || authMode === "demo";
+  if (whitelistEntries.length === 0 && !isDemo) {
+    results.push({
+      name: "User whitelist",
+      status: "warn",
+      detail: "GITHUB_USER_WHITELIST is not set — any GitHub user can trigger processing and access the API",
+      fix: "Set GITHUB_USER_WHITELIST to a comma-separated list of allowed GitHub usernames in .env.",
+    });
+  } else if (whitelistEntries.length > 0) {
+    results.push({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed` });
+  }
+
+  // 9. Vibe / bind-path validation from the orchestrator
   const validation = orch.validateEnv(cfg);
   for (const warn of validation.warnings) {
     results.push({ name: "Config warning", status: "warn", detail: warn });
@@ -180,7 +196,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     }
   }
 
-  // 9. Deep verify (opt-in): image/CLI smoke test per selected agent
+  // 10. Deep verify (opt-in): image/CLI smoke test per selected agent
   if (options.verify && daemonUp) {
     const selected = options.agents && options.agents.length
       ? agentDescriptors().filter((a) => options.agents!.includes(a.type))

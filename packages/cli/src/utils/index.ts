@@ -20,4 +20,4 @@ export {
 } from "./io.js";
 export type { FormatOutputOptions } from "./io.js";
 
-export { parseOnOffState } from "./parseState.js";
+export { parseOnOffState, ParseStateError } from "./parseState.js";

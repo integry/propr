@@ -93,7 +93,13 @@ export async function getHostConfig(opts: {
 }): Promise<{ orch: OrchestratorModule; cfg: OrchestratorConfig; rootDir: string }> {
   const orch = await loadOrchestrator();
   const rootDir = resolveStackRoot(opts.configManager, opts.root);
-  const manifestPath = resolveManifestPath(cachedPath ?? resolveOrchestratorPath());
+  const orchPath = cachedPath ?? resolveOrchestratorPath();
+  const manifestPath = resolveManifestPath(orchPath);
+  if (!manifestPath) {
+    throw new Error(
+      `Could not locate manifest.json (expected next to ${orchPath}). Run \`npm run build\` in packages/cli to bundle it.`
+    );
+  }
   const cliOverrides: Record<string, unknown> = {};
   if (opts.configManager) {
     const docsExplicit = opts.configManager.get("docsEnabled");

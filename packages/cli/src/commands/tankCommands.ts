@@ -8,7 +8,7 @@
 import { Command } from "commander";
 import { getAgentTank, setAgentTank } from "../api/agentTank.js";
 import { NetworkError, UnauthorizedError } from "../api/errors.js";
-import { parseOnOffState } from "../utils/index.js";
+import { parseOnOffState, ParseStateError } from "../utils/index.js";
 
 function handleApiError(error: unknown): never {
   if (error instanceof NetworkError) {
@@ -44,7 +44,7 @@ Examples:
         const result = await setAgentTank(enable, options.url);
         console.log(`Agent Tank ${result.enabled ? "enabled" : "disabled"}${result.url ? `  (${result.url})` : ""}.`);
       } catch (error) {
-        if (error instanceof Error && /expected 'on' or 'off'/.test(error.message)) {
+        if (error instanceof ParseStateError) {
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }

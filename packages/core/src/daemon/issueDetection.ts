@@ -12,6 +12,15 @@ import type { DetectedIssue } from '../webhook/webhookHandler.js';
 
 export type { DetectedIssue };
 
+// Cache resolved label-applier per issue to avoid N+1 timeline API calls on
+// every poll cycle. Keyed by "owner/repo#number:updatedAt" so the entry is
+// invalidated whenever the issue changes.
+const labelApplierCache = new Map<string, string | null>();
+const LABEL_APPLIER_CACHE_MAX = 500;
+
+function getLabelApplierCacheKey(owner: string, repo: string, issueNumber: number, updatedAt: string): string {
+    return `${owner}/${repo}#${issueNumber}:${updatedAt}`;
+}
 
 interface GitHubIssue {
     id: number;
@@ -46,6 +55,12 @@ interface TimelineEvent {
  * issue) rather than falling back to the issue author — otherwise an
  * attacker who applies the trigger label to a whitelisted user's issue
  * could bypass the whitelist whenever the timeline lookup fails.
+ *
+ * Trade-off: because we use the *most recent* labeled event, a
+ * non-whitelisted user who toggles the label after a whitelisted user
+ * will block processing (fail-closed). This is safe but means an
+ * adversary can suppress processing by repeatedly toggling the label.
+ * The mitigation is branch-protection rules on who can apply labels.
  */
 async function resolveLabelApplier(opts: {
     octokit: PaginatedOctokitInstance;
@@ -82,6 +97,28 @@ async function resolveLabelApplier(opts: {
         );
     }
     return null;
+}
+
+async function resolveLabelApplierCached(opts: {
+    octokit: PaginatedOctokitInstance;
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    updatedAt: string;
+    targetLabels: string[];
+    log?: Logger;
+}): Promise<string | null> {
+    const cacheKey = getLabelApplierCacheKey(opts.owner, opts.repo, opts.issueNumber, opts.updatedAt);
+    const cached = labelApplierCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    const result = await resolveLabelApplier(opts);
+    if (labelApplierCache.size >= LABEL_APPLIER_CACHE_MAX) {
+        const first = labelApplierCache.keys().next().value;
+        if (first !== undefined) labelApplierCache.delete(first);
+    }
+    labelApplierCache.set(cacheKey, result);
+    return result;
 }
 
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<void> {
@@ -325,20 +362,21 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
         for (const issue of response.data.items) {
             const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
 
-            // When a whitelist is configured, resolve who applied the trigger label
-            // so polling has the same security semantics as webhooks. If the timeline
-            // lookup fails, fail closed: skip the issue rather than falling back to
-            // the issue author (which could let a non-whitelisted user trigger
-            // processing by labeling an issue authored by a whitelisted user).
+            // triggeredBy semantics: when no whitelist is set, we record the issue
+            // author for informational purposes. When a whitelist IS set, we resolve
+            // the label applier from the timeline to match webhook semantics (which
+            // uses the webhook sender). This means the field's meaning varies by
+            // source — callers should not compare across sources.
             let triggeredBy: string | undefined = issue.user?.login;
             if (hasWhitelist) {
-                const labelApplier = await resolveLabelApplier({
-                    octokit, owner, repo, issueNumber: issue.number, targetLabels: primaryProcessingLabels, log: correlatedLogger
+                const labelApplier = await resolveLabelApplierCached({
+                    octokit, owner, repo, issueNumber: issue.number,
+                    updatedAt: issue.updated_at, targetLabels: primaryProcessingLabels, log: correlatedLogger
                 });
                 if (labelApplier === null) {
                     correlatedLogger.warn(
                         { issueNumber: issue.number, repository: repoFullName },
-                        'Could not determine label applier — skipping issue (fail closed). This issue will be re-skipped on every poll cycle until the timeline event is available.'
+                        'Could not determine label applier — skipping issue (fail closed). Will re-check when the issue is next updated.'
                     );
                     continue;
                 }
