@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
-import { parseTruthyEnvValue } from '@propr/shared';
+import { parseTruthyEnvValue, validateRelayUrl } from '@propr/shared';
 import { createRelayAuth } from './relayAuth.js';
 
 interface InstallationAuth {
@@ -38,20 +38,6 @@ function resolveAuthMode(): AuthMode {
     if (relayUrl && relayToken) return 'relay';
     if (appId && privateKeyPath && installationId) return 'app';
     return 'none';
-}
-
-function validateRelayUrl(url: string): string | null {
-    let parsed: URL;
-    try {
-        parsed = new URL(url);
-    } catch {
-        return `PROPR_GH_RELAY_URL ("${url}") is not a valid URL.`;
-    }
-    const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1';
-    if (parsed.protocol !== 'https:' && !isLocalhost) {
-        return 'PROPR_GH_RELAY_URL must use https:// (http is only allowed for localhost).';
-    }
-    return null;
 }
 
 const authMode = resolveAuthMode();

@@ -5,8 +5,10 @@
  * and the PR-comment command gate. One allowlist (GITHUB_USER_WHITELIST)
  * governs every surface.
  *
- * An empty/unset whitelist means open access. Matching is case-insensitive
- * and tolerant of a trailing "[bot]" suffix.
+ * An empty/unset whitelist means open access. Matching is case-insensitive.
+ * Bot accounts (trailing "[bot]") require an explicit `name[bot]` entry —
+ * a plain `name` entry does NOT match `name[bot]`, preventing a GitHub App
+ * whose slug matches a whitelisted username from passing the gate.
  */
 
 export function getGithubUserWhitelist(): string[] {
@@ -24,10 +26,6 @@ export function isGithubUserWhitelisted(login: string | undefined | null): boole
     if (!login) {
         return false;
     }
-    const exact = login.toLowerCase();
-    const normalized = login.replace(/\[bot\]$/i, '').toLowerCase();
-    return whitelist.some((entry) => {
-        const candidate = entry.toLowerCase();
-        return candidate === exact || candidate === normalized;
-    });
+    const lower = login.toLowerCase();
+    return whitelist.some((entry) => entry.toLowerCase() === lower);
 }

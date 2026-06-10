@@ -61,3 +61,6 @@ export {
   getGithubUserWhitelist,
   isGithubUserWhitelisted,
 } from './userWhitelist.js';
+
+// Export relay URL validation
+export { validateRelayUrl } from './validateRelayUrl.js';

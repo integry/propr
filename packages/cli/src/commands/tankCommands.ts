@@ -7,16 +7,16 @@
 
 import { Command } from "commander";
 import { getAgentTank, setAgentTank } from "../api/agentTank.js";
+import { NetworkError, UnauthorizedError } from "../api/errors.js";
 import { parseOnOffState } from "../utils/index.js";
 
 function handleApiError(error: unknown): never {
-  const msg = (error as Error).message;
-  if (msg.includes("ECONNREFUSED") || msg.includes("network") || msg.includes("fetch failed")) {
+  if (error instanceof NetworkError) {
     console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
-  } else if (msg.includes("401") || msg.includes("unauthorized")) {
+  } else if (error instanceof UnauthorizedError) {
     console.error("Error: Unauthorized. Please run 'propr login' first.");
   } else {
-    console.error(`Error updating Agent Tank: ${msg}`);
+    console.error(`Error updating Agent Tank: ${(error as Error).message}`);
   }
   process.exit(1);
 }

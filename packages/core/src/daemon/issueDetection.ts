@@ -123,12 +123,15 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     // configured). For webhooks this is the label applier (sender); for polling
     // it is resolved from the issue timeline (fail closed if unknown).
     if (!isGithubUserWhitelisted(issue.triggeredBy)) {
-        correlatedLogger.info({
+        const level = issue.triggeredBy ? 'info' : 'warn';
+        correlatedLogger[level]({
             issueNumber: issue.number,
             repository: repoFullName,
             triggeredBy: issue.triggeredBy ?? null,
             source: issue.source
-        }, 'Trigger actor not in whitelist, skipping');
+        }, issue.triggeredBy
+            ? 'Trigger actor not in whitelist, skipping'
+            : 'No triggeredBy on issue — skipping (fail closed). Check that all DetectedIssue producers populate triggeredBy.');
         return;
     }
 
@@ -333,9 +336,9 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     octokit, owner, repo, issueNumber: issue.number, targetLabels: primaryProcessingLabels, log: correlatedLogger
                 });
                 if (labelApplier === null) {
-                    correlatedLogger.info(
+                    correlatedLogger.warn(
                         { issueNumber: issue.number, repository: repoFullName },
-                        'Could not determine label applier — skipping issue (fail closed)'
+                        'Could not determine label applier — skipping issue (fail closed). This issue will be re-skipped on every poll cycle until the timeline event is available.'
                     );
                     continue;
                 }

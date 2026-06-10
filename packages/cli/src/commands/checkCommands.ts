@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { validateRelayUrl } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
@@ -234,22 +235,6 @@ function isPlaceholder(value: string | undefined): boolean {
 const RELAY_URL_KEY = "PROPR_GH_RELAY_URL";
 const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
 
-// Mirrors the backend's relay URL validation (packages/core/src/auth/githubAuth.ts):
-// https required except for localhost.
-function validateRelayUrl(url: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return `${RELAY_URL_KEY} ("${url}") is not a valid URL`;
-  }
-  const isLocalhost = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
-  if (parsed.protocol !== "https:" && !isLocalhost) {
-    return `${RELAY_URL_KEY} must use https:// (http only allowed for localhost)`;
-  }
-  return null;
-}
-
 /**
  * Verify the GitHub credentials the backend needs to boot. The daemon/worker/api
  * import @propr/core's githubAuth, which hard-exits unless one of these is true:
@@ -378,8 +363,8 @@ export function printChecks(outcome: ChecksOutcome): void {
   }
   console.log("─".repeat(60));
   const counts: Record<CheckStatus, number> = { ok: 0, warn: 0, fail: 0 };
-  for (const r of outcome.results) counts[r.status] = (counts[r.status] ?? 0) + 1;
-  console.log(`${counts.ok ?? 0} ok, ${counts.warn ?? 0} warning(s), ${counts.fail ?? 0} failure(s)`);
+  for (const r of outcome.results) counts[r.status]++;
+  console.log(`${counts.ok} ok, ${counts.warn} warning(s), ${counts.fail} failure(s)`);
 }
 
 /** Creates the `check` command. */

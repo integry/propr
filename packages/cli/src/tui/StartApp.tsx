@@ -146,11 +146,11 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
       try {
         if (ui?.running) {
           orch.stopService(cfg, "ui", { remove: true });
-          configManager?.setUiEnabled(false).catch(() => {});
+          configManager?.setUiEnabled(false).catch((e: Error) => setMessage(`UI stopped (config save failed: ${e.message})`));
           setMessage("UI stopped");
         } else {
           orch.startService(cfg, "ui");
-          configManager?.setUiEnabled(true).catch(() => {});
+          configManager?.setUiEnabled(true).catch((e: Error) => setMessage(`UI started (config save failed: ${e.message})`));
           setMessage("UI started");
         }
         setStatus(orch.getStackStatus(cfg));

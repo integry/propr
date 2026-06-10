@@ -70,7 +70,10 @@ async function main() {
     await new Promise(() => {});
 }
 
-main().catch((e) => {
-    console.error('launcher failed:', e.message);
-    shutdown(1);
-});
+// Guard against accidental execution on import (e.g. from tests).
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+    main().catch((e) => {
+        console.error('launcher failed:', e.message);
+        shutdown(1);
+    });
+}

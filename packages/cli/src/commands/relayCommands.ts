@@ -11,6 +11,7 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { validateRelayUrl } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { loadOrchestrator, resolveStackRoot } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
@@ -27,19 +28,6 @@ interface RelayContext {
   relayBaseUrl: string;
   installationId: string;
   client: RelayClientOptions;
-}
-
-function validateRelayUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error(`Invalid relay URL: ${url}`);
-  }
-  const isLocalhost = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
-  if (parsed.protocol !== "https:" && !isLocalhost) {
-    throw new Error("Relay URL must use https:// (http is only allowed for localhost).");
-  }
 }
 
 async function resolveContext(options: {
@@ -60,7 +48,10 @@ async function resolveContext(options: {
       "No relay URL. Pass --url <https://relay/v1> or set PROPR_GH_RELAY_URL in .env (run `propr init stack` first)."
     );
   }
-  validateRelayUrl(relayBaseUrl);
+  const urlError = validateRelayUrl(relayBaseUrl);
+  if (urlError) {
+    throw new Error(urlError);
+  }
 
   const installationId =
     options.installation ?? process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID;
