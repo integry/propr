@@ -85,7 +85,14 @@ function buildOpenCodeCommandArgs(promptMode: 'file' | 'direct'): string[] {
         return [
             '/bin/sh',
             '-lc',
-            'prompt_file="$(mktemp -t opencode-analysis-prompt.XXXXXX.md)"; out="$(mktemp)"; cleanup() { rm -f "$prompt_file" "$out"; }; trap cleanup EXIT; cat > "$prompt_file"; opencode run "$@" --file "$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run. Follow the instructions in that file exactly." > "$out"; status=$?; cat "$out"; if [ "$status" -ne 0 ] || ! grep -q \'"type":"text"\' "$out"; then latest="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"; [ -n "$latest" ] && tail -80 "$latest" >&2; fi; exit "$status"',
+            // Write the prompt file INSIDE the workspace (OpenCode's project root,
+            // cwd=/home/node/workspace) rather than /tmp. OpenCode treats paths
+            // outside the project root as `external_directory`, whose permission is
+            // "ask" — auto-rejected in this non-interactive run — so a /tmp prompt
+            // file makes `--file` fail to read. The workspace is mounted rw for
+            // analysis, and the file is dot-prefixed and cleaned up on exit. The
+            // `out` capture file can stay in /tmp since OpenCode never reads it.
+            'prompt_file="$(mktemp "${PWD:-/home/node/workspace}/.opencode-analysis-prompt.XXXXXX.md")"; out="$(mktemp)"; cleanup() { rm -f "$prompt_file" "$out"; }; trap cleanup EXIT; cat > "$prompt_file"; opencode run "$@" --file "$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run. Follow the instructions in that file exactly." > "$out"; status=$?; cat "$out"; if [ "$status" -ne 0 ] || ! grep -q \'"type":"text"\' "$out"; then latest="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"; [ -n "$latest" ] && tail -80 "$latest" >&2; fi; exit "$status"',
             'propr-opencode-direct',
             '--format',
             'json',
