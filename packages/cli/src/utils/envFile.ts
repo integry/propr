@@ -35,7 +35,8 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
     }
   }
 
-  writeFileSync(envPath, `${lines.join("\n")}\n`, "utf-8");
+  const isNew = !existsSync(envPath);
+  writeFileSync(envPath, `${lines.join("\n")}\n`, { encoding: "utf-8", mode: isNew ? 0o600 : undefined });
   try {
     chmodSync(envPath, 0o600);
   } catch {

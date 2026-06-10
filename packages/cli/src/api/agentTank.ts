@@ -33,12 +33,8 @@ export async function setAgentTank(
   // Preserve the existing URL when the caller doesn't pass one.
   let resolvedUrl = url;
   if (!resolvedUrl) {
-    try {
-      const current = await getAgentTank(apiClient);
-      resolvedUrl = current.url || DEFAULT_AGENT_TANK_URL;
-    } catch {
-      resolvedUrl = DEFAULT_AGENT_TANK_URL;
-    }
+    const current = await getAgentTank(apiClient);
+    resolvedUrl = current.url || DEFAULT_AGENT_TANK_URL;
   }
 
   await apiClient.post("/api/config/agent-tank", { body: { enabled, url: resolvedUrl } });

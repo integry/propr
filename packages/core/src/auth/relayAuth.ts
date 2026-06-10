@@ -111,7 +111,15 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
     const token = await getToken();
     const endpointOptions = request.endpoint.merge(route as Route, parameters);
     endpointOptions.headers.authorization = `token ${token}`;
-    return request(endpointOptions as EndpointOptions);
+    try {
+      return await request(endpointOptions as EndpointOptions);
+    } catch (error) {
+      if ((error as { status?: number }).status === 401) {
+        cache.token = null;
+        cache.expiresAt = 0;
+      }
+      throw error;
+    }
   };
 
   return auth;

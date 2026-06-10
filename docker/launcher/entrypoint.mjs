@@ -6,6 +6,7 @@
 // logic lives in orchestrator.mjs (shared with the `propr` CLI); this file is a
 // thin wrapper that wires it up for the containerized, log-streaming use case.
 
+import { pathToFileURL } from 'node:url';
 import {
     resolveConfig, validateEnv, ensureNetwork, pullImages,
     startStack, stopStack, getStackStatus, getServiceLogs,
@@ -71,7 +72,7 @@ async function main() {
 }
 
 // Guard against accidental execution on import (e.g. from tests).
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     main().catch((e) => {
         console.error('launcher failed:', e.message);
         shutdown(1);

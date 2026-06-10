@@ -1,4 +1,4 @@
-const LOCALHOST_HOSTS = ['localhost', '127.0.0.1', '::1'];
+const LOCALHOST_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
 /**
  * Validate a relay URL: must be parseable and use https (http allowed for localhost).

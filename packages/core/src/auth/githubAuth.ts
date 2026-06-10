@@ -33,6 +33,9 @@ function resolveAuthMode(): AuthMode {
     if (explicit === 'demo') return 'demo';
     if (explicit === 'relay') return 'relay';
     if (explicit === 'app') return 'app';
+    if (explicit) {
+        console.warn(`WARNING: GH_AUTH_MODE="${process.env.GH_AUTH_MODE}" is not a recognized value (expected "app", "relay", or "demo"). Falling back to auto-detection.`);
+    }
     // Inferred relay requires both URL and token so a stray placeholder URL
     // doesn't shadow a fully valid GitHub App configuration.
     if (relayUrl && relayToken) return 'relay';
@@ -67,22 +70,31 @@ if (authMode === 'relay') {
         });
     }
 } else if (authMode === 'app') {
-    try {
-        privateKey = fs.readFileSync(path.resolve(privateKeyPath as string), 'utf8');
+    const missingAppVars = [
+        !appId && 'GH_APP_ID',
+        !privateKeyPath && 'GH_PRIVATE_KEY_PATH',
+        !installationId && 'GH_INSTALLATION_ID',
+    ].filter(Boolean);
+    if (missingAppVars.length > 0) {
+        fatalConfigError(`ERROR: App auth mode requires ${missingAppVars.join(', ')} to be set.`);
+    } else {
+        try {
+            privateKey = fs.readFileSync(path.resolve(privateKeyPath as string), 'utf8');
 
-        appOctokit = new PaginatedOctokit({
-            authStrategy: createAppAuth,
-            auth: {
-                appId,
-                privateKey,
-                installationId,
-            },
-        });
-    } catch (error) {
-        console.error('Failed to read GitHub App private key:', (error as Error).message);
-        console.error('Ensure GH_PRIVATE_KEY_PATH is set correctly in your .env file and points to a valid private key file.');
-        if (process.env.NODE_ENV !== 'test') {
-            process.exit(1);
+            appOctokit = new PaginatedOctokit({
+                authStrategy: createAppAuth,
+                auth: {
+                    appId,
+                    privateKey,
+                    installationId,
+                },
+            });
+        } catch (error) {
+            console.error('Failed to read GitHub App private key:', (error as Error).message);
+            console.error('Ensure GH_PRIVATE_KEY_PATH is set correctly in your .env file and points to a valid private key file.');
+            if (process.env.NODE_ENV !== 'test') {
+                process.exit(1);
+            }
         }
     }
 } else if (authMode === 'none' && process.env.NODE_ENV !== 'test') {

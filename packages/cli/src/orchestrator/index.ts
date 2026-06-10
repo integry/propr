@@ -96,7 +96,10 @@ export async function getHostConfig(opts: {
   const manifestPath = resolveManifestPath(cachedPath ?? resolveOrchestratorPath());
   const cliOverrides: Record<string, unknown> = {};
   if (opts.configManager) {
-    cliOverrides.docsEnabled = opts.configManager.getDocsEnabled();
+    const docsExplicit = opts.configManager.get("docsEnabled");
+    if (docsExplicit !== undefined) {
+      cliOverrides.docsEnabled = docsExplicit;
+    }
   }
   const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };

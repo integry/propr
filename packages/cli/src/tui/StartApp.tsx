@@ -184,7 +184,7 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
             <Text inverse={i === selected}>
               <Text color={stateColor(s)}>{glyph(s)} </Text>
               <Text>{s.service.padEnd(nameWidth)} </Text>
-              <Text dimColor>{(s.exists ? s.state : "absent").padEnd(9)} </Text>
+              <Text dimColor>{(s.exists ? s.state : "absent").padEnd(10)} </Text>
               <Text>{s.exists ? s.status : "not created"}</Text>
               {s.ports ? <Text dimColor>  {s.ports}</Text> : null}
             </Text>

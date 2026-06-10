@@ -25,6 +25,7 @@ async function toggleService(service: ServiceName, stateArg: string, root?: stri
 
   if (enable) {
     console.log(`Starting ${service}…`);
+    orch.ensureNetwork(cfg, (l: string) => console.log(l));
     orch.startService(cfg, service, { onLog: (l) => console.log(l) });
     const port = service === "ui" ? cfg.uiPort : cfg.docsPort;
     console.log(`${service} is up on http://localhost:${port}`);
