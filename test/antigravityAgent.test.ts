@@ -59,7 +59,7 @@ describe('AntigravityAgent Docker args', () => {
         }
     });
 
-    test('passes the native CLI model name (without antigravity- prefix) to --model', () => {
+    test('passes the prompt as the first positional arg, before --model, with the native model name', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-model-'));
         fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
 
@@ -69,20 +69,32 @@ describe('AntigravityAgent Docker args', () => {
                 buildDockerArgs(params: {
                     worktreePath: string;
                     githubToken: string;
+                    prompt?: string;
                     modelName?: string;
                     issueNumber: number;
                 }): string[];
             }).buildDockerArgs({
                 worktreePath: '/tmp/worktree',
                 githubToken: '',
+                prompt: 'Summarize this repo',
                 modelName: 'antigravity-gpt-oss-120b-medium',
                 issueNumber: 0
             });
 
+            // Model must be the native CLI name, never the namespaced id.
             const modelIdx = args.indexOf('--model');
             assert.ok(modelIdx >= 0, '--model flag should be present');
             assert.strictEqual(args[modelIdx + 1], 'gpt-oss-120b-medium');
             assert.ok(!args.includes('antigravity-gpt-oss-120b-medium'), 'prefixed id must not be passed to the CLI');
+
+            // The prompt must be the positional arg immediately after the `$0`
+            // placeholder ('propr-antigravity') so `agy --print "$@"` receives it
+            // as the value of --print, and it must come BEFORE --model.
+            const argvStart = args.indexOf('propr-antigravity');
+            assert.ok(argvStart >= 0, 'propr-antigravity $0 placeholder should be present');
+            assert.strictEqual(args[argvStart + 1], 'Summarize this repo', 'prompt must be the first positional arg');
+            const promptIdx = args.indexOf('Summarize this repo');
+            assert.ok(promptIdx >= 0 && promptIdx < modelIdx, 'prompt must precede --model');
         } finally {
             fs.rmSync(tempHome, { recursive: true, force: true });
         }

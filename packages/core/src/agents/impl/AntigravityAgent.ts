@@ -78,12 +78,12 @@ export class AntigravityAgent implements Agent {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, prompt, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
+                    timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath,
                     taskId, streamToRedis: true
                 })
             );
@@ -213,13 +213,13 @@ export class AntigravityAgent implements Agent {
         const suffix = responseFormat === 'json'
             ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
             : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
-        const stdinData = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        const fullPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, taskId, executionType });
+            const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', prompt: fullPrompt, modelName: effectiveModel, issueNumber: 0, taskId, executionType });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData, taskId }),
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, taskId }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
             const executionTimeMs = Date.now() - startTime;
@@ -267,8 +267,8 @@ export class AntigravityAgent implements Agent {
         return ['set -e', `exec ${this.getCliCommand()} --dangerously-skip-permissions --print "$@"`].join('\n');
     }
 
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType } = params;
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; prompt?: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
+        const { worktreePath, githubToken, prompt, modelName, issueNumber, environment, taskId, executionType } = params;
         const configPath = this.getHostConfigPath();
         const envVars: string[] = [];
         if (this.config.envVars) { for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`); }
@@ -284,6 +284,14 @@ export class AntigravityAgent implements Agent {
             '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
             this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
         ];
+        // The prompt MUST be the first positional arg: the shell runs
+        // `agy ... --print "$@"`, and `agy`'s --print/-p flag takes the prompt as
+        // its value (it does NOT read stdin). If the prompt isn't here, --print
+        // swallows the following --model flag as its value and the model is never
+        // applied (everything routes to the default model).
+        if (prompt) {
+            dockerArgs.push(prompt);
+        }
         if (modelName) {
             // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
             // to the Antigravity CLI's native model name. Passing the prefixed id
