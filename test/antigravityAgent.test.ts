@@ -102,14 +102,24 @@ describe('AntigravityAgent Docker args', () => {
 });
 
 describe('toAntigravityCliModelId', () => {
-    test('strips the antigravity- namespace prefix', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gpt-oss-120b-medium'), 'gpt-oss-120b-medium');
+    test('maps Gemini ids keeping version dots', () => {
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'gemini-3.5-flash-high');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-4.6-thinking'), 'claude-opus-4.6-thinking');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.1-pro-low'), 'gemini-3.1-pro-low');
     });
 
-    test('strips an optional antigravity: route prefix before the namespace prefix', () => {
+    test('maps Claude ids with the irregular per-model scheme', () => {
+        // Sonnet thinking model has NO -thinking suffix; Opus thinking model does.
+        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-sonnet-4.6-thinking'), 'claude-sonnet-4-6');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-4.6-thinking'), 'claude-opus-4-6-thinking');
+    });
+
+    test('maps GPT-OSS id', () => {
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gpt-oss-120b-medium'), 'gpt-oss-120b-medium');
+    });
+
+    test('strips an optional antigravity: route prefix before mapping', () => {
         assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.1-pro-low'), 'gemini-3.1-pro-low');
+        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-claude-sonnet-4.6-thinking'), 'claude-sonnet-4-6');
     });
 
     test('leaves an already-native model name unchanged', () => {
