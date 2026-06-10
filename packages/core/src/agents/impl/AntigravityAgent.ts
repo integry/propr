@@ -227,10 +227,15 @@ export class AntigravityAgent implements Agent {
 
             if (result.exitCode === 0 || summary) {
                 const analysisText = (summary || '').trim();
-                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel, executionTimeMs, inputTokens: tokenUsage.input_tokens, outputTokens: tokenUsage.output_tokens, usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
+                // agy --print emits plain text with no token stats, so
+                // parseAntigravityJsonl returns empty usage. Estimate from the
+                // full prompt and the response so reviews / summaries / pr-comments
+                // still report (estimated) token counts and cost, matching the
+                // executeTask path. Reported counts win when present.
+                const antigravityTokenUsage = this.resolveTokenUsage(tokenUsage, fullPrompt, analysisText, []);
+                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel, executionTimeMs, inputTokens: antigravityTokenUsage?.input_tokens, outputTokens: antigravityTokenUsage?.output_tokens, estimatedTokens: !(tokenUsage.input_tokens || tokenUsage.output_tokens), usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
 
                 const usage = formatUsageMetrics(usageMetrics);
-                const antigravityTokenUsage = (tokenUsage.input_tokens || tokenUsage.output_tokens) ? { input_tokens: tokenUsage.input_tokens, output_tokens: tokenUsage.output_tokens } : undefined;
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType, modelUsed: effectiveModel, executionTimeMs, success: true, tokenUsage: antigravityTokenUsage,
                     sessionId, draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
