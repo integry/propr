@@ -59,7 +59,7 @@ describe('AntigravityAgent Docker args', () => {
         }
     });
 
-    test('passes the prompt as the first positional arg, before --model, with the native model name', () => {
+    test('passes the prompt as the first positional arg, before --model, with the CLI display-name model', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-model-'));
         fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
 
@@ -81,10 +81,10 @@ describe('AntigravityAgent Docker args', () => {
                 issueNumber: 0
             });
 
-            // Model must be the native CLI name, never the namespaced id.
+            // Model must be the CLI display name, never the namespaced id.
             const modelIdx = args.indexOf('--model');
             assert.ok(modelIdx >= 0, '--model flag should be present');
-            assert.strictEqual(args[modelIdx + 1], 'gpt-oss-120b-medium');
+            assert.strictEqual(args[modelIdx + 1], 'GPT-OSS 120B (Medium)');
             assert.ok(!args.includes('antigravity-gpt-oss-120b-medium'), 'prefixed id must not be passed to the CLI');
 
             // The prompt must be the positional arg immediately after the `$0`
@@ -102,24 +102,17 @@ describe('AntigravityAgent Docker args', () => {
 });
 
 describe('toAntigravityCliModelId', () => {
-    test('maps Gemini ids keeping version dots', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'gemini-3.5-flash-high');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.1-pro-low'), 'gemini-3.1-pro-low');
-    });
-
-    test('maps Claude ids with the irregular per-model scheme', () => {
-        // Sonnet thinking model has NO -thinking suffix; Opus thinking model does.
-        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-sonnet-4.6-thinking'), 'claude-sonnet-4-6');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-4.6-thinking'), 'claude-opus-4-6-thinking');
-    });
-
-    test('maps GPT-OSS id', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gpt-oss-120b-medium'), 'gpt-oss-120b-medium');
+    test('maps ProPR ids to the CLI display names accepted by --model', () => {
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'Gemini 3.5 Flash (High)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.1-pro-high'), 'Gemini 3.1 Pro (High)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-sonnet-4.6-thinking'), 'Claude Sonnet 4.6 (Thinking)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-claude-opus-4.6-thinking'), 'Claude Opus 4.6 (Thinking)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gpt-oss-120b-medium'), 'GPT-OSS 120B (Medium)');
     });
 
     test('strips an optional antigravity: route prefix before mapping', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.1-pro-low'), 'gemini-3.1-pro-low');
-        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-claude-sonnet-4.6-thinking'), 'claude-sonnet-4-6');
+        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.1-pro-low'), 'Gemini 3.1 Pro (Low)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-claude-sonnet-4.6-thinking'), 'Claude Sonnet 4.6 (Thinking)');
     });
 
     test('leaves an already-native model name unchanged', () => {
