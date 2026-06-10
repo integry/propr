@@ -34,3 +34,37 @@ export function normalizeOpenCodeCliModelName(modelName: string): string {
     return toOpenCodeExternalModelId(modelName);
 }
 
+// `opencode-go/*` are OpenCode's native (paid) models. They are NOT in ProPR's
+// curated model catalog, so they have no configured openRouterId and pricing
+// lookups miss. Their OpenRouter slug is `<provider>/<name>`, where the provider
+// is inferred from the model-name prefix. Verified against the OpenRouter catalog
+// for the current opencode-go set (deepseek, mimo→xiaomi, minimax, glm→z-ai,
+// kimi→moonshotai, qwen). Add a prefix here when OpenCode introduces a new family.
+const OPENCODE_GO_PROVIDER_BY_PREFIX: ReadonlyArray<readonly [string, string]> = [
+    ['deepseek-', 'deepseek'],
+    ['mimo-', 'xiaomi'],
+    ['minimax-', 'minimax'],
+    ['glm-', 'z-ai'],
+    ['kimi-', 'moonshotai'],
+    ['qwen', 'qwen'],
+];
+
+/**
+ * Maps a native `opencode-go/<name>` model id to its OpenRouter slug
+ * (`<provider>/<name>`) for pricing lookups. Returns null for non-opencode-go
+ * ids or unknown providers (caller should fall back to the raw id).
+ *   'opencode-go/deepseek-v4-pro'          -> 'deepseek/deepseek-v4-pro'
+ *   'opencode:opencode-go/minimax-m3'      -> 'minimax/minimax-m3'
+ */
+export function toOpenCodeGoOpenRouterId(modelName: string): string | null {
+    const withoutRoutePrefix = modelName.startsWith('opencode:')
+        ? modelName.slice('opencode:'.length)
+        : modelName;
+    if (!withoutRoutePrefix.startsWith('opencode-go/')) return null;
+    const name = withoutRoutePrefix.slice('opencode-go/'.length);
+    for (const [prefix, provider] of OPENCODE_GO_PROVIDER_BY_PREFIX) {
+        if (name.startsWith(prefix)) return `${provider}/${name}`;
+    }
+    return null;
+}
+

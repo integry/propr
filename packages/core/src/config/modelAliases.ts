@@ -1,6 +1,6 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
-import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
+import { toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../agents/impl/openCodeModelIds.js';
 import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS, AGENT_MODELS, type AgentType } from './modelDefinitions.js';
 
 export type ModelAlias = string;
@@ -113,7 +113,12 @@ const MODEL_ALIASES: Record<ModelAlias, ModelId> = {
  */
 function getOpenRouterId(internalModelId: ModelId): string {
     const modelInfo = MODEL_INFO_MAP[internalModelId];
-    return modelInfo?.openRouterId ?? internalModelId;
+    if (modelInfo?.openRouterId) return modelInfo.openRouterId;
+    // Native opencode-go/* models aren't in the curated catalog; derive their
+    // OpenRouter slug so pricing/cost still resolves.
+    const openCodeGoId = toOpenCodeGoOpenRouterId(internalModelId);
+    if (openCodeGoId) return openCodeGoId;
+    return internalModelId;
 }
 
 function isOpenCodeModelId(modelId: string): boolean {

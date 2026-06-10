@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
@@ -265,6 +265,27 @@ describe('OpenCodeAgent JSONL parsing', () => {
         assert.strictEqual(normalizeOpenCodeTimestamp(1714867200000, 'fallback'), '2024-05-05T00:00:00.000Z');
         assert.strictEqual(normalizeOpenCodeTimestamp(Number.NaN, 'fallback'), 'fallback');
         assert.strictEqual(normalizeOpenCodeTimestamp('not-a-date', 'fallback'), 'fallback');
+    });
+});
+
+describe('toOpenCodeGoOpenRouterId', () => {
+    test('derives OpenRouter slug for opencode-go models by provider prefix', () => {
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/deepseek-v4-pro'), 'deepseek/deepseek-v4-pro');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/mimo-v2.5-pro'), 'xiaomi/mimo-v2.5-pro');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/minimax-m3'), 'minimax/minimax-m3');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/glm-5.1'), 'z-ai/glm-5.1');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/kimi-k2.6'), 'moonshotai/kimi-k2.6');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/qwen3.7-max'), 'qwen/qwen3.7-max');
+    });
+
+    test('strips an optional opencode: route prefix', () => {
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode:opencode-go/deepseek-v4-flash'), 'deepseek/deepseek-v4-flash');
+    });
+
+    test('returns null for non-opencode-go ids and unknown providers', () => {
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-minimax-m3-free'), null);
+        assert.strictEqual(toOpenCodeGoOpenRouterId('claude-opus-4-8'), null);
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/unknownprovider-1'), null);
     });
 });
 
