@@ -113,3 +113,44 @@ describe('toAntigravityCliModelId', () => {
         assert.strictEqual(toAntigravityCliModelId('gemini-3.5-flash-high'), 'gemini-3.5-flash-high');
     });
 });
+
+describe('AntigravityAgent token estimation', () => {
+    type Estimate = { input_tokens?: number; output_tokens?: number } | undefined;
+    interface TokenAgent {
+        resolveTokenUsage(
+            reported: { input_tokens?: number; output_tokens?: number },
+            prompt: string,
+            summary: string | undefined,
+            conversationLog: unknown[]
+        ): Estimate;
+    }
+    const agent = createAgent('/tmp/nonexistent') as unknown as TokenAgent;
+
+    test('reported counts always win', () => {
+        const usage = agent.resolveTokenUsage({ input_tokens: 1000, output_tokens: 200 }, 'p', 's', []);
+        assert.deepStrictEqual(usage, { input_tokens: 1000, output_tokens: 200 });
+    });
+
+    test('estimates from the full transcript (file views/searches as input, planner/code as output)', () => {
+        const events = [
+            { source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'x'.repeat(400) },   // input
+            { source: 'MODEL', type: 'VIEW_FILE', content: 'y'.repeat(8000) },           // input (bulk)
+            { source: 'MODEL', type: 'GREP_SEARCH', content: 'z'.repeat(4000) },         // input
+            { source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'a'.repeat(800) },     // output
+            { source: 'MODEL', type: 'CODE_ACTION', content: 'b'.repeat(1200) },         // output
+        ];
+        const usage = agent.resolveTokenUsage({}, 'prompt', 'summary', events)!;
+        assert.ok(usage, 'should produce an estimate');
+        // Input dominates (file view + grep ~12.4K chars) and far exceeds the old
+        // prompt-only estimate; output reflects planner + code (~2K chars).
+        assert.ok(usage.input_tokens! > 2000, `input should reflect file context, got ${usage.input_tokens}`);
+        assert.ok(usage.output_tokens! > 300, `output should reflect planner+code, got ${usage.output_tokens}`);
+        assert.ok(usage.input_tokens! > usage.output_tokens!, 'agentic runs are input-heavy');
+    });
+
+    test('falls back to prompt + summary when no transcript content (plain-text output)', () => {
+        const usage = agent.resolveTokenUsage({}, 'p'.repeat(4000), 's'.repeat(800), [])!;
+        assert.ok(usage.input_tokens! > usage.output_tokens!, 'prompt is input, summary is output');
+        assert.ok(usage.output_tokens! > 0);
+    });
+});

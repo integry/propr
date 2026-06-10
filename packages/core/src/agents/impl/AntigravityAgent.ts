@@ -114,7 +114,7 @@ export class AntigravityAgent implements Agent {
         const parsed = this.resolveSessionOutput(result.stdout, worktreePath, onSessionId);
         const { response, modelUsed } = await parsed;
 
-        const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.conversationLog);
+        const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const resolvedModel = response.modelUsed || effectiveModel || 'unknown';
         const agentResult: AgentExecutionResult = {
             success: result.exitCode === 0, executionTimeMs: executionTime,
@@ -142,7 +142,10 @@ export class AntigravityAgent implements Agent {
         const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
         if (sessionId && onSessionId) onSessionId(sessionId);
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
-        return { response: { sessionId, summary, conversationLog, tokenUsage, modelUsed }, modelUsed };
+        // rawConversationLog (full agentic trace: file views, searches, command
+        // output, code edits) is kept for token estimation; conversationLog stays
+        // filtered to the displayed assistant responses.
+        return { response: { sessionId, summary, conversationLog, rawConversationLog, tokenUsage, modelUsed }, modelUsed };
     }
 
     private mergeTokenUsage(
@@ -155,6 +158,15 @@ export class AntigravityAgent implements Agent {
         };
     }
 
+    /**
+     * agy reports no token usage, so estimate from the full transcript. The model
+     * AUTHORS planner responses, code edits, and assistant messages (output); it
+     * CONSUMES the prompt, file views, search results, command output, and history
+     * (input). Counting only the prompt + final messages undercounts agentic runs
+     * by ~10-100x. Reported counts win when present. This is an estimate (it can't
+     * capture cumulative re-read context across agentic turns), but it lands in the
+     * right order of magnitude instead of near zero.
+     */
     private resolveTokenUsage(
         reported: { input_tokens?: number; output_tokens?: number },
         prompt: string,
@@ -162,15 +174,41 @@ export class AntigravityAgent implements Agent {
         conversationLog: AntigravityOutputEvent[]
     ): { input_tokens?: number; output_tokens?: number } | undefined {
         if (reported.input_tokens || reported.output_tokens) return reported;
-        const outputText = conversationLog
-            .map(event => 'content' in event && typeof event.content === 'string' ? event.content : '')
-            .filter(Boolean)
-            .join('\n\n') || summary || '';
-        const inputTokens = estimateTokens(prompt);
+
+        let inputText = '';
+        let outputText = '';
+        for (const event of conversationLog) {
+            const content = 'content' in event && typeof event.content === 'string' ? event.content : '';
+            if (!content) continue;
+            if (this.isModelAuthoredEvent(event)) outputText += `${content}\n`;
+            else inputText += `${content}\n`;
+        }
+
+        // Fallbacks when the transcript has no usable content (e.g. plain-text
+        // --print output, as in the analyze path): estimate from prompt + summary.
+        if (!inputText && !outputText) {
+            inputText = prompt;
+            outputText = summary || '';
+        } else if (!inputText) {
+            inputText = prompt; // transcript had only model output; still count the prompt
+        }
+
+        const inputTokens = estimateTokens(inputText);
         const outputTokens = estimateTokens(outputText);
         return inputTokens || outputTokens
             ? { input_tokens: inputTokens, output_tokens: outputTokens }
             : undefined;
+    }
+
+    /** Whether a transcript event's content was authored by the model (output) vs consumed by it (input). */
+    private isModelAuthoredEvent(event: AntigravityOutputEvent): boolean {
+        const role = (event as { role?: string }).role;
+        if (role === 'assistant') return true;
+        const type = (event as { type?: string }).type;
+        // PLANNER_RESPONSE = model's text; CODE_ACTION = edits the model wrote.
+        // VIEW_FILE / GREP_SEARCH / RUN_COMMAND content is dominated by results the
+        // model reads, so treat those as input.
+        return type === 'PLANNER_RESPONSE' || type === 'CODE_ACTION';
     }
 
     private async persistImplementationLog(opts: {
