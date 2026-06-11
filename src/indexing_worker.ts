@@ -136,15 +136,6 @@ function shouldIndexRepository(repoStatus: RepoStatus | undefined, currentHash?:
     return { shouldIndex: false, reason: 'up to date' };
 }
 
-async function hasIndexedFileSummaries(repoName: string, branch: string): Promise<boolean> {
-    const result = await db('file_summaries')
-        .where('path', 'like', `${repoName}/%`)
-        .andWhere({ branch })
-        .count<{ count: number | string }>('path as count')
-        .first();
-    return Number(result?.count || 0) > 0;
-}
-
 /**
  * Clone a repository and return its local path
  */
@@ -207,7 +198,6 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
         }
     );
 
-    await updateRepositoryStatus(repoName, 'indexing', branch);
     log.info({ repository: repoName, branch, reason, jobCorrelationId }, 'Queued repository for indexing');
 }
 
@@ -279,17 +269,12 @@ async function processRepositoryForIndexing(
         // For 'HEAD', use origin/HEAD (the remote's default branch), not local HEAD
         // (which is whatever branch happens to be checked out locally).
         const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
-        currentHash = await git.revparse([refToResolve]);
+        currentHash = (await git.raw(['-c', 'safe.directory=*', 'rev-parse', refToResolve])).trim();
     } catch (hashError) {
         log.warn({ repository: repoName, branch, error: (hashError as Error).message }, 'Failed to get branch hash');
     }
 
     const decision = shouldIndexRepository(repoStatus, currentHash);
-
-    if (!decision.shouldIndex && repoStatus?.indexing_status === 'completed' && !await hasIndexedFileSummaries(repoName, branch)) {
-        decision.shouldIndex = true;
-        decision.reason = 'completed index has no summaries';
-    }
 
     if (!decision.shouldIndex) {
         log.debug({ repository: repoName, branch, reason: decision.reason, currentHash, lastIndexedHash: repoStatus?.last_indexed_hash }, 'Skipping repository');

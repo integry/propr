@@ -36,7 +36,8 @@ RUN git config --global user.name "ProPR Vibe Bot" \
     && git config --global --add safe.directory '*'
 
 COPY --chown=node:node scripts/vibe-entrypoint.sh /home/node/vibe-entrypoint.sh
+COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
 USER root
-RUN chmod +x /home/node/vibe-entrypoint.sh
+RUN chmod +x /home/node/vibe-entrypoint.sh /usr/local/bin/propr-vibe-prompt-file
 
 ENTRYPOINT ["/home/node/vibe-entrypoint.sh"]

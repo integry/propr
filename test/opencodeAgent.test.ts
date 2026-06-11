@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
@@ -25,8 +25,8 @@ function createAgent(): OpenCodeAgent {
         enabled: true,
         dockerImage: 'propr/agent-opencode:latest',
         configPath: '/tmp/opencode-config',
-        supportedModels: ['opencode/minimax-m3-free'],
-        defaultModel: 'opencode/minimax-m3-free'
+        supportedModels: ['opencode-minimax-m3-free'],
+        defaultModel: 'opencode-minimax-m3-free'
     };
     return new OpenCodeAgent(config);
 }
@@ -62,7 +62,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
         assert.strictEqual(parsed.summary, 'hello world');
         assert.strictEqual(parsed.sessionId, 'session-a');
-        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
     });
 
     test('prefers assistant message text over unrelated delta shapes', () => {
@@ -73,7 +73,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'first');
-        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
     });
 
     test('does not duplicate text when message and event-level content match', () => {
@@ -100,7 +100,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
         assert.strictEqual(parsed.summary, 'partial');
         assert.strictEqual(parsed.error, 'rate limited');
-        assert.strictEqual(parsed.modelUsed, 'initial/model');
+        assert.strictEqual(parsed.modelUsed, 'opencode-initial/model');
     });
 
     test('parses OpenCode provider/server error streams', () => {
@@ -121,7 +121,7 @@ describe('OpenCodeAgent JSONL parsing', () => {
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'hello world');
-        assert.strictEqual(parsed.modelUsed, 'opencode/minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
     });
 
     test('preserves repeated stream text from separate events', () => {
@@ -268,6 +268,27 @@ describe('OpenCodeAgent JSONL parsing', () => {
     });
 });
 
+describe('toOpenCodeGoOpenRouterId', () => {
+    test('derives OpenRouter slug for opencode-go models by provider prefix', () => {
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/deepseek-v4-pro'), 'deepseek/deepseek-v4-pro');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/mimo-v2.5-pro'), 'xiaomi/mimo-v2.5-pro');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/minimax-m3'), 'minimax/minimax-m3');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/glm-5.1'), 'z-ai/glm-5.1');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/kimi-k2.6'), 'moonshotai/kimi-k2.6');
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/qwen3.7-max'), 'qwen/qwen3.7-max');
+    });
+
+    test('strips an optional opencode: route prefix', () => {
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode:opencode-go/deepseek-v4-flash'), 'deepseek/deepseek-v4-flash');
+    });
+
+    test('returns null for non-opencode-go ids and unknown providers', () => {
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-minimax-m3-free'), null);
+        assert.strictEqual(toOpenCodeGoOpenRouterId('claude-opus-4-8'), null);
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/unknownprovider-1'), null);
+    });
+});
+
 describe('OpenCodeAgent prompt building', () => {
     test('includes system instructions, safety rules, and retry context', () => {
         const prompt = buildOpenCodePrompt({
@@ -285,20 +306,34 @@ describe('OpenCodeAgent prompt building', () => {
 });
 
 describe('OpenCodeAgent Docker args', () => {
-    test('only strips the opencode route prefix from model names', () => {
+    test('normalizes model names for the OpenCode CLI', () => {
         const agent = createAgent();
         const routedArgs = buildDockerArgs(agent, 'opencode:provider:model');
-        const qualifiedArgs = buildDockerArgs(agent, 'provider:model');
+        const openAiArgs = buildDockerArgs(agent, 'openai/gpt-5.5');
+        const goArgs = buildDockerArgs(agent, 'opencode-go/qwen3.7-max');
+        const freeArgs = buildDockerArgs(agent, 'opencode-minimax-m3-free');
 
         assert.strictEqual(routedArgs[routedArgs.indexOf('--model') + 1], 'provider:model');
-        assert.strictEqual(qualifiedArgs[qualifiedArgs.indexOf('--model') + 1], 'provider:model');
+        assert.strictEqual(openAiArgs[openAiArgs.indexOf('--model') + 1], 'openai/gpt-5.5');
+        assert.strictEqual(goArgs[goArgs.indexOf('--model') + 1], 'opencode-go/qwen3.7-max');
+        assert.strictEqual(freeArgs[freeArgs.indexOf('--model') + 1], 'opencode/minimax-m3-free');
+        assert.strictEqual(normalizeOpenCodeCliModelName('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
+        assert.strictEqual(normalizeOpenCodeCliModelName('opencode:openai/gpt-5.5'), 'openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeModelId('openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeModelId('opencode/minimax-m3-free'), 'opencode-minimax-m3-free');
+        assert.strictEqual(toProprOpenCodeModelId('opencode-go/qwen3.7-max'), 'opencode-go/qwen3.7-max');
+        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
+        assert.strictEqual(toOpenCodeExternalModelId('opencode-minimax-m3-free'), 'opencode/minimax-m3-free');
         assert.ok(routedArgs.includes('--name'));
-        assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-12345678$/);
+        assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-opencode-provider-model-12345678$/);
+        assert.match(openAiArgs[openAiArgs.indexOf('--name') + 1], /openai-gpt-5.5-12345678$/);
+        assert.match(goArgs[goArgs.indexOf('--name') + 1], /opencode-go-qwen3.7-max-12345678$/);
         assert.ok(routedArgs.includes('--dangerously-skip-permissions'));
     });
 
     test('uses opencode-run wrapper and JSON output mode', () => {
-        const args = buildDockerArgs(createAgent(), 'opencode/minimax-m3-free');
+        const args = buildDockerArgs(createAgent(), 'opencode-minimax-m3-free');
         const imageIndex = args.indexOf('propr/agent-opencode:latest');
 
         assert.ok(imageIndex > -1);
@@ -330,7 +365,7 @@ describe('OpenCodeAgent Docker args', () => {
             worktreePath: '/tmp/worktree',
             githubToken: 'token',
             issueNumber: 0,
-            modelName: 'openai/gpt-5.5',
+            modelName: 'opencode-openai/gpt-5.5',
             readOnlyWorkspace: false,
             allowDangerousPermissions: false,
             promptMode: 'direct',
@@ -341,7 +376,9 @@ describe('OpenCodeAgent Docker args', () => {
 
         assert.ok(shellIndex > -1);
         assert.strictEqual(args[shellIndex + 1], '-lc');
-        assert.match(args[shellIndex + 2], /opencode run "\$@" -- "\$prompt"/);
+        assert.match(args[shellIndex + 2], /cat > "\$prompt_file"/);
+        assert.match(args[shellIndex + 2], /opencode run "\$@" --file "\$prompt_file"/);
+        assert.doesNotMatch(args[shellIndex + 2], /prompt="\$\(cat\)"/);
         assert.strictEqual(args[shellIndex + 3], 'propr-opencode-direct');
         assert.ok(!args.includes('opencode-run'));
         assert.strictEqual(args[args.indexOf('--format') + 1], 'json');
@@ -372,7 +409,7 @@ describe('OpenCodeAgent Docker args', () => {
         const agent = createAgent();
         agent.config.configPath = configPath;
 
-        const args = buildDockerArgs(agent, 'opencode/minimax-m3-free');
+        const args = buildDockerArgs(agent, 'opencode-minimax-m3-free');
 
         assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode:rw`));
         assert.strictEqual(args[args.lastIndexOf('-e') + 1], 'XDG_DATA_HOME=/home/node/.local/share');
@@ -399,5 +436,21 @@ describe('OpenCodeAgent Docker args', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
         assert.match(script, /opencode run "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
+    });
+
+    test('prevents duplicate opencode- prefix on round-trip conversions', () => {
+        assert.strictEqual(toProprOpenCodeModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeModelId('opencode-minimax-m3-free'), 'opencode-minimax-m3-free');
+        assert.strictEqual(toProprOpenCodeModelId('opencode:opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
+        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-minimax-m3-free'), 'opencode-minimax-m3-free');
+
+        // Repeated normalization should be idempotent
+        const once = toProprOpenCodeModelId('openai/gpt-5.5');
+        const twice = toProprOpenCodeModelId(once);
+        const thrice = toProprOpenCodeModelId(twice);
+        assert.strictEqual(once, 'opencode-openai/gpt-5.5');
+        assert.strictEqual(twice, 'opencode-openai/gpt-5.5');
+        assert.strictEqual(thrice, 'opencode-openai/gpt-5.5');
     });
 });

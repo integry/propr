@@ -50,7 +50,7 @@ describe("CLI OpenCode agent support", () => {
       {
         alias: "opencode",
         type: "opencode",
-        models: ["opencode/minimax-m3-free"],
+        models: ["opencode-minimax-m3-free"],
       },
       client
     );
@@ -65,8 +65,8 @@ describe("CLI OpenCode agent support", () => {
         enabled: true,
         dockerImage: "propr/agent-opencode:latest",
         configPath: "/root/.config/opencode",
-        supportedModels: ["opencode/minimax-m3-free"],
-        defaultModel: "opencode/minimax-m3-free",
+        supportedModels: ["opencode-minimax-m3-free"],
+        defaultModel: "opencode-minimax-m3-free",
       }],
     });
   });

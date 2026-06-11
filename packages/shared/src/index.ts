@@ -64,3 +64,5 @@ export {
 
 // Export relay URL validation
 export { validateRelayUrl } from './validateRelayUrl.js';
+
+export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';

@@ -1,103 +1,41 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { previewContext, PreviewResult, Granularity, PlannerAttachment, SmartFileSelection } from '../api/proprApi';
+import { getDraft, previewContext, PreviewResult, Granularity, PlannerAttachment, PendingPreviewResult, DraftContextConfig } from '../api/proprApi';
+import { useSocket } from '../contexts/useSocket';
+import { simulateContextLevel, isSignificantPromptChange, DEFAULT_MODEL_MAX_TOKENS } from './contextRefreshUtils';
 
 const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_\-./]+$/;
 const DEBOUNCE_DELAY = 800;
-/** Delay before auto-refreshing context after source changes (ms) */
 const SOURCE_REFRESH_DELAY = 20000;
-const WORD_OVERLAP_THRESHOLD = 0.5;
 
-/** Tiktoken to Claude token ratio for estimation */
-const TIKTOKEN_TO_CLAUDE_RATIO = 1.36;
-/** Default model max tokens (200K for Claude) */
-const DEFAULT_MODEL_MAX_TOKENS = 200000;
+const isPendingPreview = (result: PreviewResult | PendingPreviewResult): result is PendingPreviewResult =>
+  'pending' in result && result.pending === true;
 
-const extractWords = (prompt: string) => (prompt.toLowerCase().match(/\b[\w'-]+\b/g) ?? []);
-
-/**
- * Simulate file selection for a given context level using cached fileTokenCounts.
- * Returns the filtered smartSelection and updated stats.
- */
-function simulateContextLevel(
-  originalData: PreviewResult,
-  contextLevel: number,
-  modelMaxTokens: number = DEFAULT_MODEL_MAX_TOKENS
-): PreviewResult {
-  const fileTokenCounts = originalData.fileTokenCounts;
-  if (!fileTokenCounts || Object.keys(fileTokenCounts).length === 0) {
-    return originalData;
-  }
-
-  // Calculate target token limit based on context level (0-100)
-  const targetTokenLimit = Math.floor(modelMaxTokens * (contextLevel / 100) * 0.98);
-  const targetTiktokenLimit = Math.floor(targetTokenLimit / TIKTOKEN_TO_CLAUDE_RATIO);
-
-  // Get the original smartSelection excluding context-repo files (those are always included)
-  const contextRepoFiles = originalData.smartSelection.filter(f => f.source === 'context-repo');
-  const repoFiles = originalData.smartSelection.filter(f => f.source !== 'context-repo');
-
-  // Sort by score descending (most relevant first), then by tokens ascending (smaller files preferred for tie-breaking)
-  const sortedFiles = [...repoFiles].sort((a, b) => {
-    const scoreDiff = (b.score ?? 0) - (a.score ?? 0);
-    if (scoreDiff !== 0) return scoreDiff;
-    return (fileTokenCounts[a.path] ?? 0) - (fileTokenCounts[b.path] ?? 0);
-  });
-
-  // Select files that fit within the token budget
-  const selectedFiles: SmartFileSelection[] = [];
-  let currentTokens = 0;
-
-  for (const file of sortedFiles) {
-    const fileTokens = fileTokenCounts[file.path] ?? 0;
-    if (currentTokens + fileTokens <= targetTiktokenLimit) {
-      selectedFiles.push(file);
-      currentTokens += fileTokens;
+function parseDraftContextConfig(value: unknown): DraftContextConfig | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as DraftContextConfig;
+    } catch {
+      return null;
     }
   }
+  return value as DraftContextConfig;
+}
 
-  // Calculate new stats
-  const estimatedActualTokens = Math.ceil(currentTokens * TIKTOKEN_TO_CLAUDE_RATIO);
-  const attachmentTokens = originalData.stats.attachmentTokens ?? 0;
-  const totalTokens = estimatedActualTokens + attachmentTokens;
-
-  // Rough cost estimate (using Claude pricing)
-  const costEstimate = (totalTokens / 1_000_000) * 3 + (4000 / 1_000_000) * 15;
-
+function getCompletedPreviewFromDraft(contextConfig: unknown, previewRequestId: string): PreviewResult | null {
+  const config = parseDraftContextConfig(contextConfig);
+  if (!config?.lastPreview || config.lastPreviewRequestId !== previewRequestId) return null;
   return {
-    ...originalData,
-    smartSelection: [...selectedFiles, ...contextRepoFiles],
-    stats: {
-      ...originalData.stats,
-      totalTokens,
-      fileCount: selectedFiles.length,
-      costEstimate,
-      maxTokens: Math.ceil(targetTokenLimit * TIKTOKEN_TO_CLAUDE_RATIO)
-    }
+    ...config.lastPreview,
+    fileTokenCounts: config.contextCache?.fileTokenCounts
   };
 }
 
-/**
- * Determine if a prompt change is significant enough to warrant auto-refresh.
- * Considers length delta and word overlap to filter out small typo/punctuation tweaks.
- */
-const isSignificantPromptChange = (prevPrompt: string, nextPrompt: string): boolean => {
-  if (prevPrompt === nextPrompt) return false;
-
-  const lengthDiff = Math.abs(prevPrompt.length - nextPrompt.length);
-  const baseLength = Math.max(prevPrompt.length, 1);
-  if (lengthDiff > 20 || (lengthDiff / baseLength) > 0.2) return true;
-
-  const prevWords = new Set(extractWords(prevPrompt));
-  const nextWords = new Set(extractWords(nextPrompt));
-
-  if (!prevWords.size && !nextWords.size) return false;
-
-  let overlap = 0;
-  prevWords.forEach(word => { if (nextWords.has(word)) overlap += 1; });
-  const overlapRatio = overlap / Math.max(prevWords.size, nextWords.size, 1);
-
-  return overlapRatio < WORD_OVERLAP_THRESHOLD;
-};
+function getPreviewErrorFromDraft(contextConfig: unknown, previewRequestId: string): string | null {
+  const config = parseDraftContextConfig(contextConfig);
+  if (config?.lastPreviewRequestId !== previewRequestId) return null;
+  return typeof config.lastPreviewError === 'string' ? config.lastPreviewError : null;
+}
 
 export interface PreviewState {
   isLoading: boolean;
@@ -138,6 +76,7 @@ interface UseContextRefreshOptions {
 }
 
 export function useContextRefresh({ draftId, config, onBranchError }: UseContextRefreshOptions) {
+  const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
   const [preview, setPreview] = useState<PreviewState>({
     isLoading: false,
     data: null,
@@ -149,6 +88,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const [timeUntilRefresh, setTimeUntilRefresh] = useState<number | null>(null);
   const [isContextStale, setIsContextStale] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [pendingPreviewRequestId, setPendingPreviewRequestId] = useState<string | null>(null);
   // Track if countdown was started - prevents auto-fetch when context is stale but countdown hasn't begun
   const [countdownStarted, setCountdownStarted] = useState<boolean>(false);
 
@@ -171,6 +111,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   const fullPreviewDataRef = useRef<PreviewResult | null>(null);
   // Track whether we've auto-paused after the first successful context fetch
   const hasAutoPausedRef = useRef<boolean>(false);
+  const pendingPreviewRequestIdRef = useRef<string | null>(null);
 
   // Reset auto-pause tracking when draftId changes so it re-triggers for new drafts
   useEffect(() => {
@@ -194,6 +135,41 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     };
   }, []);
+
+  const markPreviewComplete = useCallback((result: PreviewResult) => {
+    pendingPreviewRequestIdRef.current = null;
+    setPendingPreviewRequestId(null);
+    lastFetchedSourceRef.current = {
+      prompt: configRef.current.prompt,
+      baseBranch: configRef.current.baseBranch,
+      filesLength: configRef.current.files.length,
+      compress: configRef.current.compress,
+      manualFilesLength: configRef.current.manualFiles.length
+    };
+    justFetchedRef.current = true;
+    fullPreviewDataRef.current = result;
+    setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
+    if (!hasAutoPausedRef.current) {
+      hasAutoPausedRef.current = true;
+      setIsPaused(true);
+    }
+  }, []);
+
+  const loadCompletedPreview = useCallback(async (previewRequestId: string): Promise<boolean> => {
+    const draft = await getDraft(draftId);
+    const previewError = getPreviewErrorFromDraft(draft.context_config, previewRequestId);
+    if (previewError) {
+      pendingPreviewRequestIdRef.current = null;
+      setPendingPreviewRequestId(null);
+      setPreview(prev => ({ ...prev, isLoading: false, error: previewError }));
+      if (previewError.toLowerCase().includes('branch')) onBranchError(previewError);
+      return true;
+    }
+    const completedPreview = getCompletedPreviewFromDraft(draft.context_config, previewRequestId);
+    if (!completedPreview) return false;
+    markPreviewComplete(completedPreview);
+    return true;
+  }, [draftId, markPreviewComplete, onBranchError]);
 
   const clearCountdown = useCallback(() => {
     if (sourceRefreshTimerRef.current) {
@@ -229,6 +205,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     abortControllerRef.current = controller;
 
     setPreview(prev => ({ ...prev, isLoading: true, error: null }));
+    pendingPreviewRequestIdRef.current = null;
+    setPendingPreviewRequestId(null);
 
     try {
       // Combine attachment file names and manual file paths
@@ -249,26 +227,11 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         excludedFiles: currentConfig.excludedFiles.length > 0 ? currentConfig.excludedFiles : undefined
       }, controller.signal);
 
-      lastFetchedSourceRef.current = {
-        prompt: currentConfig.prompt,
-        baseBranch: currentConfig.baseBranch,
-        filesLength: currentConfig.files.length,
-        compress: currentConfig.compress,
-        manualFilesLength: currentConfig.manualFiles.length
-      };
-
-      // Mark that we just fetched to prevent source change effect from re-triggering
-      justFetchedRef.current = true;
-
-      // Store the full preview data for local context level simulation
-      fullPreviewDataRef.current = result;
-
-      setPreview({ isLoading: false, data: result, error: null, lastSynced: new Date() });
-
-      // Auto-pause after the first successful context fetch
-      if (!hasAutoPausedRef.current) {
-        hasAutoPausedRef.current = true;
-        setIsPaused(true);
+      if (isPendingPreview(result)) {
+        pendingPreviewRequestIdRef.current = result.previewRequestId;
+        setPendingPreviewRequestId(result.previewRequestId);
+      } else {
+        markPreviewComplete(result);
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -276,7 +239,47 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       setPreview(prev => ({ ...prev, isLoading: false, error: errorMessage }));
       if (errorMessage.toLowerCase().includes('branch')) onBranchError(errorMessage);
     }
-  }, [draftId, clearCountdown, onBranchError]);
+  }, [draftId, clearCountdown, onBranchError, markPreviewComplete]);
+
+  useEffect(() => {
+    if (!draftId || !preview.isLoading || !pendingPreviewRequestId) return;
+
+    loadCompletedPreview(pendingPreviewRequestId).catch(() => { /* Keep waiting for socket or next poll. */ });
+    const interval = setInterval(() => {
+      loadCompletedPreview(pendingPreviewRequestId).catch(() => { /* Keep waiting for socket or next poll. */ });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [draftId, preview.isLoading, pendingPreviewRequestId, loadCompletedPreview]);
+
+  useEffect(() => {
+    if (!draftId || !preview.isLoading || !pendingPreviewRequestId || !isConnected) return;
+    subscribeToDraft(draftId);
+    const unsubscribe = onDraftUpdate((payload) => {
+      if (payload.draftId !== draftId || payload.step !== 'context') return;
+      if (payload.status === 'failed') {
+        if (payload.data?.previewRequestId !== pendingPreviewRequestId) return;
+        pendingPreviewRequestIdRef.current = null;
+        setPendingPreviewRequestId(null);
+        setPreview(prev => ({
+          ...prev,
+          isLoading: false,
+          error: typeof payload.data?.error === 'string' ? payload.data.error : 'Failed to fetch preview'
+        }));
+        return;
+      }
+      if (payload.status !== 'completed') return;
+      if (payload.data?.previewRequestId !== pendingPreviewRequestId) return;
+      loadCompletedPreview(pendingPreviewRequestId).catch((error) => {
+        setPreview(prev => ({ ...prev, isLoading: false, error: (error as Error).message || 'Failed to load completed preview' }));
+      });
+    });
+
+    return () => {
+      unsubscribeFromDraft(draftId);
+      unsubscribe();
+    };
+  }, [draftId, preview.isLoading, pendingPreviewRequestId, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, loadCompletedPreview]);
 
   const startCountdown = useCallback(() => {
     clearCountdown();

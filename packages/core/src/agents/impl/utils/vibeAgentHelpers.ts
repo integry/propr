@@ -319,12 +319,15 @@ export function cleanupTempFile(filePath: string | undefined): void {
     } catch { /* best-effort cleanup */ }
 }
 
-export function buildVibeContainerName(alias: string, taskType: string, taskId: string | undefined): string {
+export function buildVibeContainerName(alias: string, taskType: string, taskId: string | undefined, modelName?: string): string {
     const uniqueSuffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), uniqueSuffix);
     const sanitizedAlias = sanitizeDockerNamePart(alias, 'vibe');
     const sanitizedType = sanitizeDockerNamePart(taskType, 'task');
-    return `${sanitizedAlias}-${sanitizedType}-${shortTaskId}`.slice(0, 128);
+    const sanitizedModel = modelName ? `${sanitizeDockerNamePart(modelName, 'model')}-` : '';
+    const suffix = `-${shortTaskId}`;
+    const prefix = `${sanitizedAlias}-${sanitizedType}-${sanitizedModel}`.slice(0, Math.max(1, 128 - suffix.length)).replace(/[^a-zA-Z0-9]+$/, '');
+    return `${prefix}${suffix}`;
 }
 
 export function ensureAnalysisWorkspace(): string {

@@ -2,7 +2,7 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
-  updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges
+  updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, db
 } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 import { getEnabledResummarizationTargets } from './indexingRouteHelpers.js';
@@ -186,6 +186,22 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
     return { success: false, error: 'Indexing job already queued for this repository and branch' };
   }
 
+  // Resume-on-failure: a full reindex requested while the repo is in a 'failed'
+  // state should continue the existing index (reuse summaries already produced,
+  // only process the missing/changed files) rather than reprocessing every file
+  // from scratch. Partial progress from the failed run is preserved, recovery is
+  // far cheaper, and it won't re-fail on files that already succeeded.
+  let effectiveFullReindex = fullReindex;
+  if (fullReindex) {
+    const repoRow = await db('repositories')
+      .where({ full_name: repository, branch: effectiveBranch })
+      .first() as { indexing_status?: string } | undefined;
+    if (repoRow?.indexing_status === 'failed') {
+      effectiveFullReindex = false;
+      console.log(`Full reindex requested for failed repo ${repository} (${effectiveBranch}); resuming existing index instead of starting over`);
+    }
+  }
+
   const [owner, name] = repository.split('/');
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: 'installation' }) as { token: string };
@@ -204,7 +220,7 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
   const job = await queue.add(
     'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex, baseBranch },
+    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch },
     { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
   );
   await updateRepositoryStatus(repository, 'indexing', effectiveBranch);

@@ -7,6 +7,7 @@ import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { startDirectoryPhase, updateDirectoryProgress, publishProgress, isIndexingCancelled } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { withRetry } from '../../utils/retryHandler.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 import type { IndexingProgress } from './indexingCancellation.js';
 import type { SummarizationAgentConfig } from './summaryMinerHelpers.js';
@@ -21,6 +22,21 @@ const BATCH_TOKEN_RATIO = 0.5;
 const MAX_DIRS_PER_BATCH = 20;
 const DIRECTORY_PROGRESS_PERCENT_STEP = 5;
 
+// Retry transient agent failures (network blips, rate limits, 5xx) before
+// treating a directory batch as failed. Mirrors the file-batch retry policy.
+const SUMMARIZATION_RETRY = {
+  maxAttempts: 3,
+  baseDelay: 2000,
+  maxDelay: 15000,
+  exponentialBase: 2,
+} as const;
+
+export interface AggregateDirectoriesResult {
+  totalBatches: number;
+  failedBatches: number;
+  dirsProcessed: number;
+}
+
 export interface AggregateDirectoriesOptions {
   fullName: string;
   agent: Agent;
@@ -31,7 +47,7 @@ export interface AggregateDirectoriesOptions {
 }
 
 /** Aggregates file summaries into directory summaries (bottom-up), batching multiple directories per API call. */
-export async function aggregateDirectories(options: AggregateDirectoriesOptions): Promise<void> {
+export async function aggregateDirectories(options: AggregateDirectoriesOptions): Promise<AggregateDirectoriesResult> {
   const { fullName, agent, log, modelOverride, resolveSummarizationConfig, branch = 'HEAD' } = options;
   const fileSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
@@ -40,7 +56,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
 
   if (fileSummaries.length === 0) {
     log.debug('No file summaries to aggregate');
-    return;
+    return { totalBatches: 0, failedBatches: 0, dirsProcessed: 0 };
   }
 
   const directories = new Set(extractDirectories(fileSummaries.map(f => f.path)));
@@ -57,6 +73,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
 
   let totalBatches = 0;
+  let failedBatches = 0;
   let dirsProcessed = 0;
   const initialConfig: SummarizationAgentConfig = { agent, modelOverride, effectiveModel: modelId };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
@@ -87,6 +104,13 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
         modelOverride: currentConfig.modelOverride, fullName
       });
 
+      // A batch that produced no summaries at all failed to aggregate; surface
+      // it so indexRepo keeps the repo in 'failed' state and retries the
+      // missing directories on the next scan instead of marking it complete.
+      if (!results.some(r => r.summary)) {
+        failedBatches++;
+      }
+
       for (const result of results) {
         await saveBatchResult(result, batch, branch, dirSummaryCache);
         dirsProcessed++;
@@ -96,7 +120,9 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   }
 
   await deleteStaleDirectorySummaries(fullName, branch, directories, log);
-  log.info({ directoryCount: totalDirs, batchCount: totalBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
+  log.info({ directoryCount: totalDirs, batchCount: totalBatches, failedBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
+
+  return { totalBatches, failedBatches, dirsProcessed };
 }
 
 function logDirectoryBatchAgentIfChanged(log: Logger, initialConfig: SummarizationAgentConfig, currentConfig: SummarizationAgentConfig): void {
@@ -220,8 +246,21 @@ async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Pro
   let results: DirectoryResult[] = [];
 
   try {
-    const analysisResult = await agent.analyze(prompt, { model: modelOverride, responseFormat: 'json' });
-    results = parseBatchDirectoryResponse(analysisResult.response, directories.map(d => d.dirPath));
+    results = await withRetry(
+      async () => {
+        const analysisResult = await agent.analyze(prompt, { model: modelOverride, responseFormat: 'json' });
+        if (!analysisResult.success) {
+          throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
+        }
+        const parsed = parseBatchDirectoryResponse(analysisResult.response, directories.map(d => d.dirPath));
+        if (!parsed.some(r => r.summary !== null)) {
+          throw new Error(`No valid directory summaries parsed for batch of ${directories.length} directories`);
+        }
+        return parsed;
+      },
+      SUMMARIZATION_RETRY,
+      `directory_aggregation:${fullName}`
+    );
     success = results.some(r => r.summary !== null);
     log.debug({ batchSize: directories.length, successCount: results.filter(r => r.summary).length }, 'Processed directory batch');
   } catch (error) {

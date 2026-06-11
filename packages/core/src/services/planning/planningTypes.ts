@@ -4,6 +4,7 @@
  */
 
 import type { LogFn } from 'pino';
+import { CODEX_CLI_CONTEXT_LIMIT } from '../../config/modelLimits.js';
 import type { ContextLevel } from '../../config/modelLimits.js';
 import type { Attachment } from '../attachmentService.js';
 import type { StepStatus } from '@propr/shared';
@@ -17,11 +18,11 @@ export const CHARS_PER_TOKEN = 3;
 /** Buffer for Claude Code overhead */
 export const CLAUDE_CODE_OVERHEAD = 5000;
 
-/** Codex CLI currently rejects turn/start inputs above 1,048,576 raw characters. */
-export const CODEX_RAW_INPUT_LIMIT_CHARS = 1_048_576;
+/** Codex CLI planner calls are capped to the usable input budget, after output reservation. */
+export const CODEX_RAW_INPUT_LIMIT_CHARS = CODEX_CLI_CONTEXT_LIMIT * CHARS_PER_TOKEN;
 
 /** Leave room for agent-specific prompt suffixes added after planner validation. */
-export const CODEX_RAW_INPUT_SAFETY_MARGIN_CHARS = 48_576;
+export const CODEX_RAW_INPUT_SAFETY_MARGIN_CHARS = 30_000;
 
 /** Planner prompt cap for Codex-backed analysis calls. */
 export const CODEX_PLANNER_INPUT_LIMIT_CHARS = CODEX_RAW_INPUT_LIMIT_CHARS - CODEX_RAW_INPUT_SAFETY_MARGIN_CHARS;
@@ -78,6 +79,12 @@ export interface TaskDraftConfig {
   contextRepositories?: ContextRepository[];
   /** Cached context to avoid regeneration */
   contextCache?: ContextCache;
+  /** Last completed preview result, excluding bulky per-file token counts already stored in contextCache */
+  lastPreview?: Omit<PreviewResult, 'fileTokenCounts'>;
+  /** Request id for the last completed preview result */
+  lastPreviewRequestId?: string;
+  /** Request-scoped error for the last failed async preview */
+  lastPreviewError?: string;
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') - overrides global setting */
   generationModel?: string;
 }
@@ -172,6 +179,8 @@ export interface GenerateContextPreviewOptions {
   githubToken?: string;
   /** Files to exclude from the generated context */
   excludedFiles?: string[];
+  /** Request id used by async preview callers to correlate websocket completion */
+  previewRequestId?: string;
 }
 
 export interface Base64Image {

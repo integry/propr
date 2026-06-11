@@ -16,6 +16,7 @@ import type { CallLLMOptions, CallLLMForPlanResult } from './types.js';
 
 /** Default model for plan generation (high capability) */
 const DEFAULT_GENERATION_MODEL = 'opus';
+const MAX_JSON_REPAIR_RESPONSE_CHARS = 20000;
 
 export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
   const { draftId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL, granularity } = opts;
@@ -100,6 +101,15 @@ export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPl
   } catch (error) {
     if (error instanceof JsonParseError) {
       correlatedLogger.warn({ error: error.message, responseLength: response.length }, 'Failed to parse LLM response, attempting repair');
+
+      if (response.length > MAX_JSON_REPAIR_RESPONSE_CHARS) {
+        correlatedLogger.warn({
+          error: error.message,
+          responseLength: response.length,
+          maxRepairResponseChars: MAX_JSON_REPAIR_RESPONSE_CHARS
+        }, 'Skipping JSON repair for oversized LLM response');
+        throw new PlanningFailedError(`Failed to parse plan: ${error.message}`);
+      }
 
       // Try to repair the JSON by asking the same LLM to fix it
       const repairPrompt = `The following JSON array is malformed and cannot be parsed.

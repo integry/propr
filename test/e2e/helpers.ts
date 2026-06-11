@@ -17,8 +17,8 @@ import {
   type PlanIssue,
 } from "../../packages/cli/src/api/plans.js";
 import {
-  implementAllIssues,
-  type ImplementAllIssuesResponse,
+  implementIssue,
+  type ImplementIssueResponse,
 } from "../../packages/cli/src/api/implement.js";
 
 // ---------------------------------------------------------------------------
@@ -145,12 +145,25 @@ export async function createAndGeneratePlan(
     if (current.status === "draft" && sawGenerating) break;
   }
 
-  if (!sawGenerating || lastStatus === "failed") {
+  const currentPlan = await getPlan(plan.draft_id, client);
+  if (!sawGenerating || currentPlan.status === "failed") {
+    return { planId: plan.draft_id, issues: [] };
+  }
+  if (currentPlan.status !== "review") {
+    console.log(`    Plan ${plan.draft_id.substring(0, 8)} not ready to finalize: ${currentPlan.status}`);
     return { planId: plan.draft_id, issues: [] };
   }
 
   await finalizePlan(plan.draft_id, client);
-  const issues = await listPlanIssues(plan.draft_id, client);
+  const finalizedPlan = await getPlan(plan.draft_id, client);
+  const expectedIssueCount = Array.isArray(finalizedPlan.plan_json) ? finalizedPlan.plan_json.length : 1;
+  const issues = await waitForPlanIssueCondition(
+    plan.draft_id,
+    client,
+    (currentIssues) => currentIssues.length >= Math.max(1, expectedIssueCount),
+    120_000,
+    3_000,
+  );
   return { planId: plan.draft_id, issues };
 }
 
@@ -174,9 +187,7 @@ export async function waitForTasks(
       const task = taskList.tasks.find(
         (t) =>
           t.issueNumber === r.issueNumber &&
-          // When multiple models implement the same issue, match by model name in task ID
-          (!results.some((o) => o !== r && o.taskId === null && o.issueNumber === r.issueNumber) ||
-            t.id.includes(r.model_name.split("-")[0])),
+          (t.modelName === r.model_name || t.id.includes(r.model_name)),
       );
       if (task && !results.some((o) => o !== r && o.taskId === task.id)) {
         r.taskId = task.id;
@@ -337,18 +348,24 @@ export async function waitForPlanIssueCondition(
 }
 
 /**
- * Triggers implementation with sequential processing and verifies the behavior.
+ * Triggers the first pending issue with Epic PR auto-merge enabled.
  *
  * @param draftId - The plan draft ID
  * @param client - API client
- * @returns Result of implement-all with sequential processing
+ * @returns Result of the single issue implementation request
  */
 export async function triggerSequentialImplementation(
   draftId: string,
   client: ApiClient,
-): Promise<ImplementAllIssuesResponse> {
-  const result = await implementAllIssues(
+): Promise<ImplementIssueResponse> {
+  const issues = await listPlanIssues(draftId, client);
+  const firstPendingIssue = issues.find((issue) => issue.status === "pending");
+  if (!firstPendingIssue) {
+    throw new Error(`No pending issues found for draft ${draftId}`);
+  }
+  const result = await implementIssue(
     draftId,
+    firstPendingIssue.issue_number,
     { useEpic: true, autoMerge: true },
     client,
   );

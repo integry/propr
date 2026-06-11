@@ -11,6 +11,7 @@ const AGENT_DOCKERFILES: Record<string, string> = {
     'claude': 'Dockerfile.claude',
     'codex': 'Dockerfile.codex',
     'antigravity': 'Dockerfile.antigravity',
+    'opencode': 'Dockerfile.opencode',
     'vibe': 'Dockerfile.vibe'
 };
 

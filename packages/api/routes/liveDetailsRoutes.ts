@@ -10,9 +10,9 @@ import {
   parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
-  parseVibeOutputToConversationResult,
   type ConversationResult
 } from './liveDetailsCodexParser.js';
+import { parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
 import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
@@ -267,7 +267,8 @@ function parseStoredOutputWithFormat(output: string, format: StoredOutputFormat,
 }
 function parseStoredOutputForFormat(output: string, format: StoredOutputFormat): ConversationResult | null {
   if (format === 'claude') return parseClaudeOutputToConversationResult(output);
-  if (format === 'codex' || format === 'antigravity') return parseCodexOutputToConversationResult(output);
+  if (format === 'codex') return parseCodexOutputToConversationResult(output);
+  if (format === 'antigravity') return parseAntigravityOutputToConversationResult(output);
   if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
   if (format === 'vibe') return parseVibeOutputToConversationResult(output);
   return null;

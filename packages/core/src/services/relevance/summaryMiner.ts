@@ -12,7 +12,9 @@ import {
   aggregateDirectories
 } from './summaryMinerHelpers.js';
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
+import type { IndexingPhase } from '@propr/shared';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
+import { scanProcessableGitFiles, type GitFileInfo } from './summaryFileFilter.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -41,11 +43,6 @@ export interface DirectorySummary {
   last_updated_at: Date;
 }
 
-export interface GitFileInfo {
-  path: string;
-  blobHash: string;
-}
-
 export interface IndexingOptions {
   correlationId?: string;
   fullName?: string; // repository full name for status tracking
@@ -54,42 +51,6 @@ export interface IndexingOptions {
 }
 
 // --- Constants ---
-
-const SUMMARIZABLE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-  '.py', '.pyx', '.pyi',
-  '.java', '.kt', '.scala',
-  '.go',
-  '.rs',
-  '.c', '.cpp', '.cc', '.h', '.hpp',
-  '.cs',
-  '.rb',
-  '.php',
-  '.swift',
-  '.vue', '.svelte',
-  '.sql',
-  '.sh', '.bash', '.zsh',
-  '.yaml', '.yml',
-  '.json',
-  '.md', '.mdx',
-  '.html', '.css', '.scss', '.less'
-]);
-
-const EXCLUDED_PATHS = [
-  'node_modules/',
-  'vendor/',
-  'dist/',
-  'build/',
-  '.git/',
-  '__pycache__/',
-  '.next/',
-  '.nuxt/',
-  'coverage/',
-  '.cache/',
-  'target/',
-  'bin/',
-  'obj/'
-];
 
 /**
  * Common icon file paths to check for in the repository.
@@ -186,6 +147,91 @@ async function discoverRepoIcon(repoPath: string, log: Logger): Promise<string |
   return null;
 }
 
+interface HeadInfo {
+  hash?: string;
+  commitMessage?: string;
+}
+
+async function resolveHeadInfo(repoPath: string, branch: string, log: Logger): Promise<HeadInfo> {
+  try {
+    const git: SimpleGit = simpleGit(repoPath);
+    const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
+    const hash = (await git.raw(['-c', 'safe.directory=*', 'rev-parse', refToResolve])).trim();
+    const logResult = await git.raw(['-c', 'safe.directory=*', 'log', '-1', '--format=%s', refToResolve]);
+    const commitMessage = logResult.trim() || undefined;
+    return { hash, commitMessage };
+  } catch (error) {
+    log.warn({ error: (error as Error).message, branch }, 'Failed to resolve branch hash or commit message');
+    return {};
+  }
+}
+
+async function safePublishIndexingStatus(fullName: string, branch: string, status: IndexingPhase): Promise<void> {
+  try {
+    await publishIndexingStatus(fullName, branch, status);
+  } catch {
+    // best-effort
+  }
+}
+
+interface IndexingCompletionOptions {
+  repoPath: string;
+  fullName: string;
+  branch: string;
+  currentHeadHash?: string;
+  currentHeadCommitMessage?: string;
+  iconPath: string | null;
+  batchResult: { filesProcessed: number; failedBatches: number; totalBatches: number };
+  dirFailedBatches: number;
+  log: Logger;
+}
+
+async function handleNoFilesToProcess(options: {
+  fullName: string;
+  branch: string;
+  currentHeadHash?: string;
+  currentHeadCommitMessage?: string;
+  iconPath: string | null;
+  agent: Agent;
+  modelOverride: string | undefined;
+  resolveSummarizationConfig: () => Promise<AgentSetupResult & { customPrompt?: string }>;
+  log: Logger;
+}): Promise<void> {
+  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, resolveSummarizationConfig, log } = options;
+  log.info('No files need processing, all file summaries up to date');
+  await ensureIndexingProgress(fullName, branch);
+  const dirResult = await aggregateDirectories({ fullName, agent, log, modelOverride, resolveSummarizationConfig, branch });
+  await clearIndexingCancellation(fullName, branch);
+  await clearIndexingProgress(fullName, branch);
+
+  if (dirResult.failedBatches > 0) {
+    await updateRepositoryStatus(fullName, 'failed', branch);
+    await safePublishIndexingStatus(fullName, branch, 'failed');
+    log.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
+    return;
+  }
+
+  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+  await safePublishIndexingStatus(fullName, branch, 'completed');
+}
+
+async function finalizeIndexing(options: IndexingCompletionOptions): Promise<void> {
+  const { repoPath, fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, batchResult, dirFailedBatches, log } = options;
+  if (batchResult.failedBatches > 0 || dirFailedBatches > 0) {
+    await updateRepositoryStatus(fullName, 'failed', branch);
+    await safePublishIndexingStatus(fullName, branch, 'failed');
+    log.warn(
+      { repoPath, fullName, branch, ...batchResult, dirFailedBatches },
+      'Repository indexing completed with failures - will retry on next scan'
+    );
+    return;
+  }
+
+  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+  await safePublishIndexingStatus(fullName, branch, 'completed');
+  log.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
+}
+
 // --- Main Export ---
 
 /**
@@ -202,25 +248,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
   const fullName = options.fullName || path.basename(repoPath);
   const branch = options.branch || 'HEAD';
 
-  // Get the hash and commit message of the configured branch for tracking indexed state
-  // (same repo can be tracked multiple times with different branches)
-  let currentHeadHash: string | undefined;
-  let currentHeadCommitMessage: string | undefined;
-  try {
-    const git: SimpleGit = simpleGit(repoPath);
-    // Use origin refs to get the remote branch state, not the local checkout state.
-    // For 'HEAD', use origin/HEAD (the remote's default branch), not local HEAD
-    // (which is whatever branch happens to be checked out locally).
-    const refToResolve = branch === 'HEAD' ? 'origin/HEAD' : `origin/${branch}`;
-    currentHeadHash = await git.revparse([refToResolve]);
-    // Get the commit message for the HEAD commit
-    const logResult = await git.log({ maxCount: 1, from: refToResolve });
-    if (logResult.latest) {
-      currentHeadCommitMessage = logResult.latest.message;
-    }
-  } catch (hashError) {
-    correlatedLogger.warn({ error: (hashError as Error).message, branch }, 'Failed to resolve branch hash or commit message');
-  }
+  const { hash: currentHeadHash, commitMessage: currentHeadCommitMessage } = await resolveHeadInfo(repoPath, branch, correlatedLogger);
 
   try {
     // Phase A: Setup & Staleness Check
@@ -256,7 +284,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     await updateRepositoryStatus(fullName, 'indexing', branch);
 
     // 4. Scan files using git ls-files --stage
-    const gitFiles = await scanGitFiles(repoPath, correlatedLogger);
+    const gitFiles = await scanProcessableGitFiles(repoPath, correlatedLogger);
     correlatedLogger.info({ fileCount: gitFiles.length }, 'Scanned git files');
 
     // 5. Filter and identify staleness
@@ -274,12 +302,17 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
-      correlatedLogger.info('No files need processing, all summaries up to date');
-      // Clear any stale cancellation flag that may have arrived during setup
-      await clearIndexingCancellation(fullName, branch);
-      await clearIndexingProgress(fullName, branch);
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
+      await handleNoFilesToProcess({
+        fullName,
+        branch,
+        currentHeadHash,
+        currentHeadCommitMessage,
+        iconPath,
+        agent,
+        modelOverride,
+        resolveSummarizationConfig,
+        log: correlatedLogger
+      });
       return;
     }
 
@@ -306,25 +339,25 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     // Phase C: Directory Aggregation (if files were processed or deleted)
+    let dirFailedBatches = 0;
     if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
       await ensureIndexingProgress(fullName, branch);
-      await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
+      const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
+      dirFailedBatches = dirResult.failedBatches;
     }
 
     // Phase D: Cleanup - Mark status based on results
-    if (batchResult.failedBatches > 0) {
-      // Some batches failed - mark as failed so it will be retried
-      await updateRepositoryStatus(fullName, 'failed', branch);
-      try { await publishIndexingStatus(fullName, branch, 'failed'); } catch { /* best-effort */ }
-      correlatedLogger.warn(
-        { repoPath, fullName, branch, ...batchResult },
-        'Repository indexing completed with failures - will retry on next scan'
-      );
-    } else {
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-      try { await publishIndexingStatus(fullName, branch, 'completed'); } catch { /* best-effort */ }
-      correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
-    }
+    await finalizeIndexing({
+      repoPath,
+      fullName,
+      branch,
+      currentHeadHash,
+      currentHeadCommitMessage,
+      iconPath,
+      batchResult,
+      dirFailedBatches,
+      log: correlatedLogger
+    });
 
     // Clear cancellation flag and progress on successful completion
     await clearIndexingCancellation(fullName, branch);
@@ -355,7 +388,7 @@ async function handleIndexingError(
     await updateRepositoryStatus(repoName, 'idle', errorBranch);
     // Publish idle now that the worker has fully stopped — this is the authoritative
     // terminal event so clients won't see stale progress updates afterward.
-    try { await publishIndexingStatus(repoName, errorBranch, 'idle'); } catch { /* best-effort */ }
+    await safePublishIndexingStatus(repoName, errorBranch, 'idle');
     return;
   }
 
@@ -368,7 +401,7 @@ async function handleIndexingError(
   // Set status to failed
   try {
     await updateRepositoryStatus(repoName, 'failed', errorBranch);
-    try { await publishIndexingStatus(repoName, errorBranch, 'failed'); } catch { /* best-effort */ }
+    await safePublishIndexingStatus(repoName, errorBranch, 'failed');
   } catch (statusError) {
     correlatedLogger.error(
       { error: (statusError as Error).message },
@@ -380,68 +413,6 @@ async function handleIndexingError(
 }
 
 // --- Phase A: Setup & Staleness Check ---
-
-/**
- * Scans all tracked files in the repository using git ls-files --stage
- */
-async function scanGitFiles(
-  repoPath: string,
-  log: Logger
-): Promise<GitFileInfo[]> {
-  const git: SimpleGit = simpleGit(repoPath);
-
-  try {
-    // git ls-files --stage returns: mode hash stage path
-    const output = await git.raw(['ls-files', '--stage']);
-
-    if (!output.trim()) {
-      return [];
-    }
-
-    const files: GitFileInfo[] = [];
-
-    for (const line of output.split('\n')) {
-      if (!line.trim()) continue;
-
-      // Format: "100644 <blob-hash> 0\t<path>"
-      const match = line.match(/^\d+\s+([a-f0-9]+)\s+\d+\t(.+)$/);
-      if (!match) continue;
-
-      const [, blobHash, filePath] = match;
-
-      // Filter by extension and excluded paths
-      if (!shouldProcessFile(filePath)) {
-        continue;
-      }
-
-      files.push({
-        path: filePath,
-        blobHash
-      });
-    }
-
-    return files;
-  } catch (error) {
-    log.error({ error: (error as Error).message }, 'Failed to scan git files');
-    return [];
-  }
-}
-
-/**
- * Determines if a file should be processed based on extension and path
- */
-function shouldProcessFile(filePath: string): boolean {
-  // Check excluded paths
-  for (const excluded of EXCLUDED_PATHS) {
-    if (filePath.includes(excluded)) {
-      return false;
-    }
-  }
-
-  // Check extension
-  const ext = path.extname(filePath).toLowerCase();
-  return SUMMARIZABLE_EXTENSIONS.has(ext);
-}
 
 interface IdentifyStaleFilesOptions {
   branch: string;

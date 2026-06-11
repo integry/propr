@@ -14,6 +14,7 @@ export type {
   SmartFileSelection,
   PreviewStats,
   PreviewResult,
+  PendingPreviewResult,
   PreviewOptions,
   PlanGenerationOptions,
   CreateDraftOptions,
@@ -37,6 +38,7 @@ import type {
   ContextStats,
   PreviewOptions,
   PreviewResult,
+  PendingPreviewResult,
   PlanGenerationOptions,
   CreateDraftOptions,
   DraftWithPlan,
@@ -123,7 +125,7 @@ export const generatePlan = async (draftId: string, options?: PlanGenerationOpti
   await handleApiResponse(response);
 };
 
-export const previewContext = async (options: PreviewOptions, signal?: AbortSignal): Promise<PreviewResult> => {
+export const previewContext = async (options: PreviewOptions, signal?: AbortSignal): Promise<PreviewResult | PendingPreviewResult> => {
   const response = await apiFetch(`${API_BASE_URL}/api/planner/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

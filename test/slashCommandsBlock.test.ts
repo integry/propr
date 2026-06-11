@@ -25,6 +25,11 @@ describe('buildSlashCommandsBlock', () => {
         assert.ok(result.includes('| Command | Description | Example |'));
     });
 
+    test('ends with a blank line after the details block', () => {
+        const result = buildSlashCommandsBlock();
+        assert.ok(result.endsWith('</details>\n\n'), 'Should leave a blank line before the next markdown paragraph');
+    });
+
     test('each command row has three columns', () => {
         const result = buildSlashCommandsBlock();
         const lines = result.split('\n');

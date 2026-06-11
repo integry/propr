@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
-import { getAgentRegistry, loadAgents, type Agent, type AgentRegistry } from '@propr/core';
+import { getAgentRegistry, loadAgents, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, type Agent, type AgentRegistry } from '@propr/core';
 import { AGENT_DEFAULTS } from '@propr/shared';
 
 const execFileAsync = promisify(execFile);
@@ -64,7 +64,8 @@ async function discoverOpenCodeModels(agentId?: string): Promise<string[]> {
   return stdout
     .split(/\r?\n/)
     .map(line => line.trim())
-    .filter(line => line && !line.includes(' ') && line.includes('/'));
+    .filter(line => line && !line.includes(' ') && line.includes('/'))
+    .map(toProprOpenCodeExternalModelId);
 }
 
 async function hasLocalDockerImage(image: string): Promise<boolean> {
@@ -98,6 +99,13 @@ async function resolveChatAgent(registry: AgentRegistry, agentIdOrAlias: string)
     config.enabled && (config.id === agentIdOrAlias || config.alias === agentIdOrAlias)
   );
   return savedAgent ? registry.createAgentFromConfig(savedAgent) : undefined;
+}
+
+function canonicalChatModel(agent: Agent, model: string | undefined): string {
+  const fallbackModel = model || agent.config.defaultModel || 'default';
+  return agent.config.type === 'opencode' && fallbackModel !== 'default'
+    ? toProprOpenCodeModelId(fallbackModel)
+    : fallbackModel;
 }
 
 export function createAgentRoutes() {
@@ -157,7 +165,7 @@ export function createAgentRoutes() {
             results.push({
               agentId: query.agentId,
               agentAlias: agent.config.alias,
-              model: analysisResult.modelUsed || query.model || 'default',
+              model: canonicalChatModel(agent, analysisResult.modelUsed || query.model),
               response: analysisResult.response,
               error: analysisResult.success === false ? (analysisResult.error || 'Analysis failed') : undefined,
               durationMs: Date.now() - start
@@ -166,7 +174,7 @@ export function createAgentRoutes() {
             results.push({
               agentId: query.agentId,
               agentAlias: agent.config.alias,
-              model: query.model || 'default',
+              model: canonicalChatModel(agent, query.model),
               error: (err as Error).message,
               durationMs: Date.now() - start
             });

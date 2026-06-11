@@ -64,6 +64,16 @@ export interface ImplementIssueResponse {
    * The task ID for polling status (if available).
    */
   taskId?: string;
+
+  /**
+   * Whether auto-merge was enabled for this issue implementation.
+   */
+  autoMergeEnabled?: boolean;
+
+  /**
+   * The epic label name if an epic was created.
+   */
+  epicLabel?: string | null;
 }
 
 /**
@@ -383,134 +393,6 @@ export async function getTaskStatus(
   const response = await apiClient.get<TaskStatusResponse>(endpoint);
 
   return parseTaskStatus(response.data);
-}
-
-/**
- * Options for implementing all issues in a plan.
- */
-export interface ImplementAllIssuesOptions {
-  /**
-   * The agent alias to use for all issues.
-   */
-  agent_alias?: string;
-
-  /**
-   * The model name to use for all issues.
-   */
-  model_name?: string;
-
-  /**
-   * Whether to create an Epic PR to collect all issue PRs.
-   */
-  useEpic?: boolean;
-
-  /**
-   * Whether to auto-merge individual PRs into the Epic PR.
-   * When combined with useEpic, enables sequential processing.
-   */
-  autoMerge?: boolean;
-}
-
-/**
- * Response from implement all issues endpoint.
- */
-export interface ImplementAllIssuesResponse {
-  /**
-   * Whether the implementation request was successful.
-   */
-  success: boolean;
-
-  /**
-   * A message describing the result.
-   */
-  message: string;
-
-  /**
-   * Number of issues that were implemented (triggered).
-   */
-  implemented: number;
-
-  /**
-   * Number of issues that failed to implement.
-   */
-  failed: number;
-
-  /**
-   * Number of issues queued for sequential processing.
-   */
-  queued: number;
-
-  /**
-   * Detailed results for each issue.
-   */
-  results: Array<{ issueNumber: number; success: boolean; error?: string }>;
-
-  /**
-   * The epic label name if an epic was created.
-   */
-  epicLabel: string | null;
-
-  /**
-   * Whether auto-merge is enabled.
-   */
-  autoMergeEnabled: boolean;
-}
-
-/**
- * Triggers implementation for all pending issues in a plan.
- *
- * When useEpic and autoMerge are both true, this enables sequential processing:
- * only the first issue is implemented immediately, and subsequent issues are
- * queued to be triggered as each PR is merged. This prevents merge conflicts.
- *
- * @param draftId - The unique identifier of the plan draft.
- * @param options - Optional configuration for the implementation.
- * @param client - Optional ApiClient instance. If not provided, one will be created.
- * @returns A promise resolving to the implementation response.
- *
- * @example
- * ```typescript
- * // Implement all issues with default settings (parallel processing)
- * const result = await implementAllIssues("draft-123");
- * console.log(`Implemented ${result.implemented} issues`);
- *
- * // Implement with Epic PR and sequential processing
- * const result = await implementAllIssues("draft-123", {
- *   useEpic: true,
- *   autoMerge: true
- * });
- * console.log(`Implemented: ${result.implemented}, Queued: ${result.queued}`);
- * ```
- */
-export async function implementAllIssues(
-  draftId: string,
-  options: ImplementAllIssuesOptions = {},
-  client?: ApiClient
-): Promise<ImplementAllIssuesResponse> {
-  const apiClient = client ?? (await createApiClient());
-
-  const body: Record<string, unknown> = {};
-
-  if (options.agent_alias !== undefined) {
-    body.agent_alias = options.agent_alias;
-  }
-  if (options.model_name !== undefined) {
-    body.model_name = options.model_name;
-  }
-  if (options.useEpic !== undefined) {
-    body.useEpic = options.useEpic;
-  }
-  if (options.autoMerge !== undefined) {
-    body.autoMerge = options.autoMerge;
-  }
-
-  const endpoint = `/api/planner/drafts/${encodeURIComponent(draftId)}/issues/implement-all`;
-
-  const response = await apiClient.post<ImplementAllIssuesResponse>(endpoint, {
-    body,
-  });
-
-  return response.data;
 }
 
 /**

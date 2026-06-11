@@ -137,7 +137,8 @@ export function buildSmartSelection(
  */
 export function getModelDisplayInfo(generationModel: string | undefined): { modelName?: string; modelMaxContextTokens?: number } {
   if (!generationModel) return {};
-  const effectiveModelId = generationModel.includes(':') ? generationModel.split(':')[1] : generationModel;
+  const colonIdx = generationModel.indexOf(':');
+  const effectiveModelId = colonIdx >= 0 ? generationModel.substring(colonIdx + 1) : generationModel;
   const modelInfo = MODEL_INFO_MAP[effectiveModelId];
   if (!modelInfo) return {};
   return { modelName: modelInfo.name, modelMaxContextTokens: modelInfo.maxTokens };

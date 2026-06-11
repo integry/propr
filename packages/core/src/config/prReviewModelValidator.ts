@@ -1,6 +1,7 @@
 import { resolveModelAlias } from './modelAliases.js';
 import { MODEL_INFO_MAP } from './modelDefinitions.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
+import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 
 export interface PrReviewModelValidationResult {
     valid: boolean;
@@ -31,8 +32,9 @@ export async function validatePrReviewModelValue(model: string): Promise<PrRevie
         if (!agent.config.enabled) {
             return { valid: false, error: `pr_review_model agent "${agentAlias}" is not enabled` };
         }
-        const modelSupported = agent.config.supportedModels.some(
-            (m: string) => m.toLowerCase() === resolved.toLowerCase()
+        const candidates = agent.config.type === 'opencode' ? [resolved, toProprOpenCodeModelId(resolved)] : [resolved];
+        const modelSupported = agent.config.supportedModels.some((m: string) =>
+            candidates.some(candidate => m.toLowerCase() === candidate.toLowerCase())
         );
         if (!modelSupported) {
             return { valid: false, error: `pr_review_model "${model}": model "${modelPart}" is not supported by agent "${agentAlias}"` };
@@ -43,9 +45,10 @@ export async function validatePrReviewModelValue(model: string): Promise<PrRevie
         await registry.ensureInitialized();
         const allAgents = registry.getAllAgents();
         const canRun = allAgents.some(a =>
-            a.config.enabled && a.config.supportedModels.some(
-                (m: string) => m.toLowerCase() === resolved.toLowerCase()
-            )
+            a.config.enabled && a.config.supportedModels.some((m: string) => {
+                const candidates = a.config.type === 'opencode' ? [resolved, toProprOpenCodeModelId(resolved)] : [resolved];
+                return candidates.some(candidate => m.toLowerCase() === candidate.toLowerCase());
+            })
         );
         if (!canRun) {
             if (!MODEL_INFO_MAP[resolved]) {
