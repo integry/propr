@@ -1,3 +1,4 @@
+// URL.hostname returns brackets for IPv6, e.g. '[::1]'.
 const LOCALHOST_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
 /**

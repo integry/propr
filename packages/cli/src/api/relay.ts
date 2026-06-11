@@ -50,13 +50,16 @@ async function relayRequest<T>(
 ): Promise<T> {
   let response: Response;
   try {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${options.githubToken}`,
+      accept: "application/json",
+    };
+    if (body !== undefined) {
+      headers["content-type"] = "application/json";
+    }
     response = await fetch(`${baseUrl(options)}${path}`, {
       method,
-      headers: {
-        authorization: `Bearer ${options.githubToken}`,
-        "content-type": "application/json",
-        accept: "application/json",
-      },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (error) {

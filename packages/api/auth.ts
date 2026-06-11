@@ -202,7 +202,15 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
         }
 
         if (!isUserWhitelisted(req.user?.username)) {
-            res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+            req.logout(() => {
+                req.session.destroy(() => {
+                    res.clearCookie('connect.sid', {
+                        domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+                        path: '/',
+                    });
+                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+                });
+            });
             return;
         }
 

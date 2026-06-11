@@ -18,7 +18,8 @@ export interface DashboardProps {
 export async function renderDashboard(props: DashboardProps): Promise<"background" | "stopped"> {
   const result: { outcome: "background" | "stopped" } = { outcome: "background" };
   const instance = render(
-    <StartApp orch={props.orch} cfg={props.cfg} configManager={props.configManager} onResult={(o) => { result.outcome = o; }} />
+    <StartApp orch={props.orch} cfg={props.cfg} configManager={props.configManager} onResult={(o) => { result.outcome = o; }} />,
+    { exitOnCtrlC: false },
   );
   await instance.waitUntilExit();
   return result.outcome;

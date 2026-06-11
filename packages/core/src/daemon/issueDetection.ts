@@ -165,8 +165,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     }
 
     // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
-    // configured). For webhooks this is the label applier (sender); for polling
-    // it is resolved from the issue timeline (fail closed if unknown).
+    // configured). For webhooks this is the webhook sender; for polling it is
+    // the label applier resolved from the issue timeline (fail closed if unknown).
     if (!isGithubUserWhitelisted(issue.triggeredBy)) {
         correlatedLogger.warn({
             issueNumber: issue.number,
@@ -369,11 +369,10 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
         for (const issue of response.data.items) {
             const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
 
-            // triggeredBy semantics: when no whitelist is set, we record the issue
-            // author for informational purposes. When a whitelist IS set, we resolve
-            // the label applier from the timeline to match webhook semantics (which
-            // uses the webhook sender). This means the field's meaning varies by
-            // source — callers should not compare across sources.
+            // When a whitelist is configured, resolve the label applier from
+            // the issue timeline (matches webhook semantics which uses the
+            // webhook sender). When no whitelist is set, the issue author is
+            // used for informational/logging purposes only.
             let triggeredBy: string | undefined = issue.user?.login;
             if (hasWhitelist) {
                 const labelApplier = await resolveLabelApplierCached({
@@ -383,7 +382,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                 if (labelApplier === null) {
                     correlatedLogger.warn(
                         { issueNumber: issue.number, repository: repoFullName },
-                        'Could not determine label applier — skipping issue (fail closed). Will re-check when the issue is next updated.'
+                        'Could not determine label applier — skipping issue (fail closed). Will retry on next poll cycle if the timeline lookup failed, or when the issue is next updated.'
                     );
                     continue;
                 }

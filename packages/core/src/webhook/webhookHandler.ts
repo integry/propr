@@ -49,10 +49,12 @@ export interface DetectedIssue {
     labels: string[];
     createdAt: string;
     updatedAt: string;
-    // GitHub login of the actor that triggered processing — the webhook sender
-    // or the label applier resolved from the issue timeline (polling). Used to
-    // enforce the user whitelist. When the actor cannot be determined the issue
-    // is skipped (fail closed) — see resolveLabelApplier in issueDetection.ts.
+    // GitHub login of the actor that triggered processing. For webhooks: the
+    // sender (label applier). For polling with a whitelist: the label applier
+    // resolved from the issue timeline. For polling without a whitelist: the
+    // issue author (informational only). When the actor cannot be determined
+    // the issue is skipped (fail closed) — see resolveLabelApplier in
+    // issueDetection.ts.
     triggeredBy?: string;
     // How this issue was detected: 'webhook' (label event) or 'polling'.
     source?: 'webhook' | 'polling';

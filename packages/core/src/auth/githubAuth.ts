@@ -74,7 +74,7 @@ if (authMode === 'relay') {
         !appId && 'GH_APP_ID',
         !privateKeyPath && 'GH_PRIVATE_KEY_PATH',
         !installationId && 'GH_INSTALLATION_ID',
-    ].filter(Boolean);
+    ].filter(Boolean) as string[];
     if (missingAppVars.length > 0) {
         fatalConfigError(`ERROR: App auth mode requires ${missingAppVars.join(', ')} to be set.`);
     } else {

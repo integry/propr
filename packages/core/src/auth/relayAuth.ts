@@ -83,7 +83,12 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
       throw new Error(`GitHub token relay returned HTTP ${response.status} for ${endpoint}.`);
     }
 
-    const data = (await response.json()) as RelayTokenResponse;
+    let data: RelayTokenResponse;
+    try {
+      data = (await response.json()) as RelayTokenResponse;
+    } catch {
+      throw new Error(`GitHub token relay returned non-JSON response from ${endpoint}.`);
+    }
     if (!data?.token) {
       throw new Error('GitHub token relay response did not include a token.');
     }

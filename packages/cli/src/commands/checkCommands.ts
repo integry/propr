@@ -187,14 +187,15 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     results.push({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed` });
   }
 
-  // 9. Vibe / bind-path validation from the orchestrator
+  // 9. Config validation from the orchestrator (bind paths, vibe dirs, etc.)
   const validation = orch.validateEnv(cfg);
   for (const warn of validation.warnings) {
     results.push({ name: "Config warning", status: "warn", detail: warn });
   }
   for (const err of validation.errors) {
-    // env file absence is already surfaced by step 4 above; skip the duplicate.
+    // env file / data dir absence is already surfaced by steps 4–6 above; skip duplicates.
     if (/env file path is not set/i.test(err)) continue;
+    if (/data directory.*is not set/i.test(err)) continue;
     results.push({ name: "Config error", status: "fail", detail: err });
   }
 
@@ -242,10 +243,9 @@ function isTruthy(value: string | undefined): boolean {
 }
 
 // Matches the unedited .env.example placeholders (your_app_id, path/to/..., etc.).
-// Anchored to avoid false-positives on org names that happen to contain "your_".
 function isPlaceholder(value: string | undefined): boolean {
   if (!value || value.trim() === "") return true;
-  return /^your_|^\.?\/path\/to|changeme|xxxx|example\.com/i.test(value.trim());
+  return /^your_|^\.?\/path\/to|^changeme$|xxxx|^example\.com$/i.test(value.trim());
 }
 
 // Forward-compatible relay env names (see the token-relay plan). Presence of the
