@@ -68,6 +68,10 @@ export function validateTaskId(taskId: unknown): ValidationResult {
     return { valid: false, error: 'Task ID contains invalid characters' };
   }
 
+  if (/^\.+$/.test(trimmed)) {
+    return { valid: false, error: 'Task ID cannot be a dot path segment' };
+  }
+
   return { valid: true };
 }
 

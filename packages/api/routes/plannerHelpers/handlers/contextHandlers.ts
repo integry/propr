@@ -13,8 +13,7 @@ import {
   loadSettings,
   getEventPublisher,
   parseGenerationTrace,
-  buildDraftUpdateTraceSnapshot,
-  updateTrace
+  buildDraftUpdateTraceSnapshot
 } from '@propr/core';
 import type { Granularity } from '@propr/core';
 import type { OwnershipResult } from '../types.js';
@@ -58,6 +57,28 @@ function buildUpdatedConfig(options: BuildUpdatedConfigOptions): Record<string, 
   if (requestGenerationModel) updatedConfig.generationModel = requestGenerationModel;
   if (excludedFiles !== undefined) updatedConfig.excludedFiles = excludedFiles;
   return updatedConfig;
+}
+
+async function storePreviewFailure(
+  db: Knex | undefined,
+  draftId: string,
+  previewRequestId: string,
+  error: string
+): Promise<void> {
+  if (!db) return;
+  const draft = await db('task_drafts').where({ draft_id: draftId }).select('context_config').first();
+  let contextConfig: Record<string, unknown> = {};
+  try {
+    contextConfig = typeof draft?.context_config === 'string'
+      ? JSON.parse(draft.context_config)
+      : (draft?.context_config || {});
+  } catch {
+    contextConfig = {};
+  }
+  await db('task_drafts').where({ draft_id: draftId }).update({
+    context_config: JSON.stringify({ ...contextConfig, lastPreviewRequestId: previewRequestId, lastPreviewError: error }),
+    updated_at: db.fn.now()
+  });
 }
 
 export function createPreviewContextHandler(deps: PreviewContextDeps) {
@@ -105,19 +126,6 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         .then(async (result) => {
           const eventPublisher = getEventPublisher();
           const draftWithTrace = deps.db ? await deps.db('task_drafts').where({ draft_id: draftId }).select('generation_trace', 'context_config').first() : null;
-          if (deps.db && draftWithTrace?.context_config) {
-            try {
-              const contextConfig = typeof draftWithTrace.context_config === 'string'
-                ? JSON.parse(draftWithTrace.context_config)
-                : draftWithTrace.context_config;
-              await deps.db('task_drafts').where({ draft_id: draftId }).update({
-                context_config: JSON.stringify({ ...contextConfig, lastPreviewRequestId: previewRequestId }),
-                updated_at: deps.db.fn.now()
-              });
-            } catch {
-              // The preview result is still valid; the client fallback poll just may not match this request id.
-            }
-          }
           const generationTrace = buildDraftUpdateTraceSnapshot(parseGenerationTrace(draftWithTrace?.generation_trace));
           await eventPublisher.publishDraftUpdate({
             draftId,
@@ -135,16 +143,14 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         })
         .catch(async (error) => {
           console.error('Preview context background error:', error);
-          await updateTrace(draftId, 'context', 'failed', {
-            error: error instanceof Error ? error.message : 'Failed to preview context',
-            previewRequestId
-          });
+          const errorMessage = error instanceof Error ? error.message : 'Failed to preview context';
+          await storePreviewFailure(deps.db, draftId, previewRequestId, errorMessage);
           const eventPublisher = getEventPublisher();
           await eventPublisher.publishDraftUpdate({
             draftId,
             step: 'context',
             status: 'failed',
-            data: { error: error instanceof Error ? error.message : 'Failed to preview context' },
+            data: { error: errorMessage, previewRequestId },
             draftStatus: 'generating'
           });
         });

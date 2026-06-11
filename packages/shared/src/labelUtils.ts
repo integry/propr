@@ -18,14 +18,16 @@ export function buildDynamicLlmLabel(agentKey: string, modelId: string): string 
 
     const hash = shortHash(modelId);
     const maxAliasLength = Math.max(1, MAX_GITHUB_LABEL_LENGTH - `llm-~-x-${hash}`.length);
-    const labelAlias = agentKey
+    const sanitizedAlias = agentKey
         .replace(/[^a-zA-Z0-9_.-]/g, '-')
         .slice(0, maxAliasLength)
-        .replace(/[^a-zA-Z0-9]+$/, '') || 'agent';
+        .replace(/[^a-zA-Z0-9]+$/, '');
+    const labelAlias = sanitizedAlias || 'agent'.slice(0, maxAliasLength);
     const prefixBudget = MAX_GITHUB_LABEL_LENGTH - `llm-${labelAlias}~-${hash}`.length;
+    const fallbackPrefix = 'model'.slice(0, Math.max(1, prefixBudget));
     const modelPrefix = modelId
         .replace(/[^a-zA-Z0-9_.-]/g, '-')
         .slice(0, Math.max(1, prefixBudget))
         .replace(/[^a-zA-Z0-9]+$/, '');
-    return `llm-${labelAlias}~${modelPrefix || 'model'}-${hash}`;
+    return `llm-${labelAlias}~${modelPrefix || fallbackPrefix}-${hash}`;
 }

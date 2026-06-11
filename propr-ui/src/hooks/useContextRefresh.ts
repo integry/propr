@@ -31,6 +31,12 @@ function getCompletedPreviewFromDraft(contextConfig: unknown, previewRequestId: 
   };
 }
 
+function getPreviewErrorFromDraft(contextConfig: unknown, previewRequestId: string): string | null {
+  const config = parseDraftContextConfig(contextConfig);
+  if (config?.lastPreviewRequestId !== previewRequestId) return null;
+  return typeof config.lastPreviewError === 'string' ? config.lastPreviewError : null;
+}
+
 export interface PreviewState {
   isLoading: boolean;
   data: PreviewResult | null;
@@ -151,11 +157,19 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
 
   const loadCompletedPreview = useCallback(async (previewRequestId: string): Promise<boolean> => {
     const draft = await getDraft(draftId);
+    const previewError = getPreviewErrorFromDraft(draft.context_config, previewRequestId);
+    if (previewError) {
+      pendingPreviewRequestIdRef.current = null;
+      setPendingPreviewRequestId(null);
+      setPreview(prev => ({ ...prev, isLoading: false, error: previewError }));
+      if (previewError.toLowerCase().includes('branch')) onBranchError(previewError);
+      return true;
+    }
     const completedPreview = getCompletedPreviewFromDraft(draft.context_config, previewRequestId);
     if (!completedPreview) return false;
     markPreviewComplete(completedPreview);
     return true;
-  }, [draftId, markPreviewComplete]);
+  }, [draftId, markPreviewComplete, onBranchError]);
 
   const clearCountdown = useCallback(() => {
     if (sourceRefreshTimerRef.current) {
@@ -244,6 +258,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
     const unsubscribe = onDraftUpdate((payload) => {
       if (payload.draftId !== draftId || payload.step !== 'context') return;
       if (payload.status === 'failed') {
+        if (payload.data?.previewRequestId !== pendingPreviewRequestId) return;
         pendingPreviewRequestIdRef.current = null;
         setPendingPreviewRequestId(null);
         setPreview(prev => ({

@@ -12,4 +12,6 @@ test('validateTaskId still rejects unsafe path characters', () => {
   assert.equal(validateTaskId('bad/task').valid, false);
   assert.equal(validateTaskId('bad task').valid, false);
   assert.equal(validateTaskId('bad:task').valid, false);
+  assert.equal(validateTaskId('.').valid, false);
+  assert.equal(validateTaskId('..').valid, false);
 });

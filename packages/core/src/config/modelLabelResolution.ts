@@ -271,6 +271,10 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     if (explicitLabelMatch) {
         return explicitLabelMatch;
     }
+    if (label.includes('~')) {
+        const defaultAgent = registry.getDefaultAgent();
+        return { agentAlias: defaultAgent?.config.alias || 'default', model: label };
+    }
 
     const lowerLabel = label.toLowerCase();
     const fullLabel = `llm-${lowerLabel}`;

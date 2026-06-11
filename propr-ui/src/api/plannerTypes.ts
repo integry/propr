@@ -160,6 +160,7 @@ export interface DraftContextConfig {
   contextCache?: { fileTokenCounts?: Record<string, number> };
   lastPreview?: Omit<PreviewResult, 'fileTokenCounts'>;
   lastPreviewRequestId?: string;
+  lastPreviewError?: string;
   /** Whether to create an Epic PR to collect all issue PRs */
   useEpic?: boolean;
   /** Whether to auto-merge individual PRs into the Epic PR */

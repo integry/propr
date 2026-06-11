@@ -1,4 +1,4 @@
-import { MODEL_INFO_MAP } from './modelDefinitions.js';
+import { CODEX_MODELS, MODEL_INFO_MAP } from './modelDefinitions.js';
 
 export type ContextLevel = number;
 
@@ -35,10 +35,8 @@ export const MODEL_LIMITS: Record<string, number> = {
 
 function shouldApplyCodexCliLimit(agentAlias: string, modelId: string): boolean {
   const normalizedModelId = modelId.toLowerCase();
-  return agentAlias === 'codex' && (
-    normalizedModelId.startsWith('gpt-') ||
-    normalizedModelId.includes('codex')
-  );
+  return CODEX_MODELS.some(model => model.id.toLowerCase() === normalizedModelId) ||
+    (agentAlias === 'codex' && (normalizedModelId.startsWith('gpt-') || normalizedModelId.includes('codex')));
 }
 
 export function getEffectiveTokenLimit(modelId: string | undefined, level: ContextLevel): number {

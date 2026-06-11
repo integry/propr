@@ -83,6 +83,8 @@ export interface TaskDraftConfig {
   lastPreview?: Omit<PreviewResult, 'fileTokenCounts'>;
   /** Request id for the last completed preview result */
   lastPreviewRequestId?: string;
+  /** Request-scoped error for the last failed async preview */
+  lastPreviewError?: string;
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') - overrides global setting */
   generationModel?: string;
 }

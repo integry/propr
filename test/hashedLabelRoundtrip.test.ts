@@ -103,22 +103,27 @@ test('ambiguous alias prefixes do not resolve to wrong agent', async () => {
 
     // When the exact alias is present, it should resolve correctly
     const result = await resolveLlmLabel(stripped);
-    // The label should resolve to one of the agents, not fail
-    assert.ok(
-      result.agentAlias === 'opencode-prod' || result.agentAlias === 'opencode-preview' || result.model === 'opencode-openai/gpt-5.5',
-      'Should resolve ambiguous prefix to a valid agent'
-    );
+    assert.strictEqual(result.agentAlias, 'opencode-prod');
+    assert.strictEqual(result.model, 'opencode-openai/gpt-5.5');
 
     // A truncated prefix "opencode-p" that matches both should NOT resolve via prefix matching
     // (it should fall through to other resolution strategies instead)
     const ambiguousLabel = 'opencode-p~opencode-openai/gpt-5.5';
     const ambiguousResult = await resolveLlmLabel(ambiguousLabel);
-    // Should not incorrectly resolve to either agent via prefix matching alone
-    assert.ok(ambiguousResult, 'Should still produce a resolution (possibly via fallback)');
+    assert.notStrictEqual(ambiguousResult.agentAlias, 'opencode-prod');
+    assert.notStrictEqual(ambiguousResult.agentAlias, 'opencode-preview');
   } finally {
     registry.getAllAgents = originalGetAllAgents;
     registry.getDefaultAgent = originalGetDefaultAgent;
     registry.ensureInitialized = originalEnsureInitialized;
     registry.getAgentByAlias = originalGetAgentByAlias;
   }
+});
+
+test('dynamic label builder clamps degenerate long aliases to GitHub limit', async () => {
+  const label = buildDynamicLlmLabel(
+    'agent-alias-that-consumes-the-entire-label-budget',
+    '////model-name-that-starts-with-punctuation-and-then-keeps-going'
+  );
+  assert.ok(label.length <= 50, `Label should fit in 50 chars, got ${label.length}`);
 });

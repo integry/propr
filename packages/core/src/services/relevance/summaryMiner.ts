@@ -174,6 +174,64 @@ async function safePublishIndexingStatus(fullName: string, branch: string, statu
   }
 }
 
+interface IndexingCompletionOptions {
+  repoPath: string;
+  fullName: string;
+  branch: string;
+  currentHeadHash?: string;
+  currentHeadCommitMessage?: string;
+  iconPath: string | null;
+  batchResult: { filesProcessed: number; failedBatches: number; totalBatches: number };
+  dirFailedBatches: number;
+  log: Logger;
+}
+
+async function handleNoFilesToProcess(options: {
+  fullName: string;
+  branch: string;
+  currentHeadHash?: string;
+  currentHeadCommitMessage?: string;
+  iconPath: string | null;
+  agent: Agent;
+  modelOverride: string | undefined;
+  resolveSummarizationConfig: () => Promise<AgentSetupResult & { customPrompt?: string }>;
+  log: Logger;
+}): Promise<void> {
+  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, resolveSummarizationConfig, log } = options;
+  log.info('No files need processing, all file summaries up to date');
+  await ensureIndexingProgress(fullName, branch);
+  const dirResult = await aggregateDirectories({ fullName, agent, log, modelOverride, resolveSummarizationConfig, branch });
+  await clearIndexingCancellation(fullName, branch);
+  await clearIndexingProgress(fullName, branch);
+
+  if (dirResult.failedBatches > 0) {
+    await updateRepositoryStatus(fullName, 'failed', branch);
+    await safePublishIndexingStatus(fullName, branch, 'failed');
+    log.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
+    return;
+  }
+
+  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+  await safePublishIndexingStatus(fullName, branch, 'completed');
+}
+
+async function finalizeIndexing(options: IndexingCompletionOptions): Promise<void> {
+  const { repoPath, fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, batchResult, dirFailedBatches, log } = options;
+  if (batchResult.failedBatches > 0 || dirFailedBatches > 0) {
+    await updateRepositoryStatus(fullName, 'failed', branch);
+    await safePublishIndexingStatus(fullName, branch, 'failed');
+    log.warn(
+      { repoPath, fullName, branch, ...batchResult, dirFailedBatches },
+      'Repository indexing completed with failures - will retry on next scan'
+    );
+    return;
+  }
+
+  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+  await safePublishIndexingStatus(fullName, branch, 'completed');
+  log.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
+}
+
 // --- Main Export ---
 
 /**
@@ -244,26 +302,17 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     if (filesToProcess.length === 0 && filesToDelete.length === 0) {
-      correlatedLogger.info('No files need processing, all file summaries up to date');
-      // File summaries are current, but directory summaries may still be missing
-      // from a prior run where directory aggregation failed. Run aggregation
-      // (hash-gated, so it's a no-op when directories are also current) so those
-      // gaps recover incrementally instead of requiring a full reindex.
-      await ensureIndexingProgress(fullName, branch);
-      const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
-
-      // Clear any stale cancellation flag that may have arrived during setup
-      await clearIndexingCancellation(fullName, branch);
-      await clearIndexingProgress(fullName, branch);
-
-      if (dirResult.failedBatches > 0) {
-        await updateRepositoryStatus(fullName, 'failed', branch);
-        await safePublishIndexingStatus(fullName, branch, 'failed');
-        correlatedLogger.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
-      } else {
-        await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-        await safePublishIndexingStatus(fullName, branch, 'completed');
-      }
+      await handleNoFilesToProcess({
+        fullName,
+        branch,
+        currentHeadHash,
+        currentHeadCommitMessage,
+        iconPath,
+        agent,
+        modelOverride,
+        resolveSummarizationConfig,
+        log: correlatedLogger
+      });
       return;
     }
 
@@ -298,21 +347,17 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     }
 
     // Phase D: Cleanup - Mark status based on results
-    if (batchResult.failedBatches > 0 || dirFailedBatches > 0) {
-      // Some file or directory batches failed - mark as failed so it will be retried.
-      // Successful summaries are already persisted, so the retry only reprocesses
-      // the missing files/directories (no full reindex required).
-      await updateRepositoryStatus(fullName, 'failed', branch);
-      await safePublishIndexingStatus(fullName, branch, 'failed');
-      correlatedLogger.warn(
-        { repoPath, fullName, branch, ...batchResult, dirFailedBatches },
-        'Repository indexing completed with failures - will retry on next scan'
-      );
-    } else {
-      await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-      await safePublishIndexingStatus(fullName, branch, 'completed');
-      correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
-    }
+    await finalizeIndexing({
+      repoPath,
+      fullName,
+      branch,
+      currentHeadHash,
+      currentHeadCommitMessage,
+      iconPath,
+      batchResult,
+      dirFailedBatches,
+      log: correlatedLogger
+    });
 
     // Clear cancellation flag and progress on successful completion
     await clearIndexingCancellation(fullName, branch);
