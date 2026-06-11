@@ -170,10 +170,17 @@ function setupAbortChecker(taskId: string, abortedRef: { value: boolean }, child
     }, 2000);
 }
 
+function getDockerRunContainerName(args: string[]): string | null {
+    const nameIndex = args.indexOf('--name');
+    if (nameIndex >= 0 && args[nameIndex + 1]) return args[nameIndex + 1];
+    return null;
+}
+
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi } = options;
         const executablePath = resolveDockerPath(command);
+        const namedContainer = command === 'docker' ? getDockerRunContainerName(args) : null;
         const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
         if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
         else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
@@ -189,7 +196,19 @@ export function executeDockerCommand(command: string, args: string[], options: D
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
         const messageTimestamps = new Map<string, string>();
-        const timeoutHandle = setTimeout(() => { state.timedOut = true; child.kill('SIGTERM'); setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000); }, timeout);
+        const timeoutHandle = setTimeout(() => {
+            state.timedOut = true;
+            const containerToStop = state.containerId.value || namedContainer;
+            if (containerToStop) {
+                void stopDockerContainer(containerToStop, 10).then((stopResult) => {
+                    if (!stopResult.success) {
+                        logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after timeout');
+                    }
+                });
+            }
+            child.kill('SIGTERM');
+            setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+        }, timeout);
         const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId) : null;
 
         const getRedisOutput = () => {

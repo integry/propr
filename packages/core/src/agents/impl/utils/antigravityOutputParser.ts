@@ -5,7 +5,7 @@ export interface AntigravityInitEvent { type: 'init'; timestamp: string; session
 export interface AntigravityMessageEvent { type: 'message'; role: 'user' | 'assistant'; content: string; timestamp: string; delta?: boolean }
 export interface AntigravityToolUseEvent { type: 'tool_use'; tool_name: string; tool_id: string; parameters: Record<string, unknown>; timestamp: string }
 export interface AntigravityToolResultEvent { type: 'tool_result'; tool_id: string; status: 'success' | 'error'; output: string; timestamp: string }
-export interface AntigravityResultEvent { type: 'result'; status: 'success' | 'error'; stats: { total_tokens?: number; input_tokens?: number; output_tokens?: number; duration_ms?: number; tool_calls?: number }; timestamp: string }
+export interface AntigravityResultEvent { type: 'result'; status: 'success' | 'error'; stats: { total_tokens?: number; input_tokens?: number; output_tokens?: number; inputTokens?: number; outputTokens?: number; duration_ms?: number; tool_calls?: number }; timestamp: string }
 export type AntigravityEvent = AntigravityInitEvent | AntigravityMessageEvent | AntigravityToolUseEvent | AntigravityToolResultEvent | AntigravityResultEvent | { type: 'error'; message: string; timestamp: string }
 export interface AntigravityTranscriptEvent { step_index?: number; source: string; type: string; status?: string; created_at?: string; content?: string }
 export type AntigravityOutputEvent = AntigravityEvent | AntigravityTranscriptEvent;
@@ -55,6 +55,14 @@ function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent 
         && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type);
 }
 
+function normalizeTokenUsage(stats: AntigravityResultEvent['stats'] | undefined): { input_tokens?: number; output_tokens?: number } {
+    if (!stats) return {};
+    return {
+        input_tokens: stats.input_tokens ?? stats.inputTokens,
+        output_tokens: stats.output_tokens ?? stats.outputTokens
+    };
+}
+
 function processEvent(event: AntigravityEvent, state: { sessionId: string | undefined; modelUsed: string | undefined; tokenUsage: { input_tokens?: number; output_tokens?: number }; currentAssistantMessage: string; lastCompleteAssistantMessage: string }): void {
     if (event.type === 'init') {
         state.sessionId = (event as AntigravityInitEvent).session_id;
@@ -69,12 +77,29 @@ function processEvent(event: AntigravityEvent, state: { sessionId: string | unde
     }
     if (event.type === 'result') {
         const resultEvent = event as AntigravityResultEvent;
-        state.tokenUsage = { input_tokens: resultEvent.stats.input_tokens, output_tokens: resultEvent.stats.output_tokens };
+        state.tokenUsage = normalizeTokenUsage(resultEvent.stats);
     }
     if (event.type !== 'message' && state.currentAssistantMessage) {
         state.lastCompleteAssistantMessage = state.currentAssistantMessage;
         state.currentAssistantMessage = '';
     }
+}
+
+export function isAntigravityAnalysisEvent(event: AntigravityOutputEvent): boolean {
+    if (isTranscriptEvent(event)) {
+        return event.source === 'MODEL'
+            && event.type === 'PLANNER_RESPONSE'
+            && typeof event.content === 'string'
+            && event.content.trim().length > 0;
+    }
+    return event.type === 'message'
+        && (event as AntigravityMessageEvent).role === 'assistant'
+        && typeof (event as AntigravityMessageEvent).content === 'string'
+        && (event as AntigravityMessageEvent).content.trim().length > 0;
+}
+
+export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]): AntigravityOutputEvent[] {
+    return events.filter(isAntigravityAnalysisEvent);
 }
 
 /** Parses Antigravity output. JSONL is supported when present; otherwise plain text is used as the summary. */
@@ -134,6 +159,6 @@ export function convertEventToClaudeFormat(event: AntigravityOutputEvent): unkno
     if (event.type === 'message') { const e = event as AntigravityMessageEvent; return { type: e.role === 'assistant' ? 'assistant' : 'user', timestamp: e.timestamp, message: { content: [{ type: 'text', text: e.content }] } }; }
     if (event.type === 'tool_use') { const e = event as AntigravityToolUseEvent; return { type: 'assistant', timestamp: e.timestamp, message: { content: [{ type: 'tool_use', name: e.tool_name, id: e.tool_id, input: e.parameters }] } }; }
     if (event.type === 'tool_result') { const e = event as AntigravityToolResultEvent; return { type: 'user', timestamp: e.timestamp, message: { content: [{ type: 'tool_result', tool_use_id: e.tool_id, content: e.output, is_error: e.status === 'error' }] } }; }
-    if (event.type === 'result') { const e = event as AntigravityResultEvent; return { type: 'result', timestamp: e.timestamp, message: { usage: { input_tokens: e.stats.input_tokens, output_tokens: e.stats.output_tokens } } }; }
+    if (event.type === 'result') { const e = event as AntigravityResultEvent; return { type: 'result', timestamp: e.timestamp, message: { usage: normalizeTokenUsage(e.stats) } }; }
     return event;
 }

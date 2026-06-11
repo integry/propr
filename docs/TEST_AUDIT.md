@@ -734,7 +734,7 @@ describe('webhook: comment events')
 
 ```
 describe('plan: sequential processing')
-  ✦ implement-all with auto-merge only triggers first issue
+  ✦ Epic PR auto-merge only triggers the first pending issue
   ✦ subsequent issues triggered after each PR merge
   ✦ in-progress issues block next trigger
 

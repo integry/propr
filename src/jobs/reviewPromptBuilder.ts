@@ -45,7 +45,7 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
     } = options;
 
     const diffSection = prDiff
-        ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT state of the PR changes included below. Base your review on this actual code, not on what earlier comments may have mentioned. If the diff notes that files were omitted, treat the review as partial and call that out.\n\n${prDiff}\n`
+        ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT, COMPLETE state of the PR changes included below. Base your review on this actual code, not on what earlier comments may have mentioned. Only treat the review as partial if the diff contains an explicit "files omitted" note; otherwise assume it is complete and do NOT claim it was truncated.\n\n${prDiff}\n`
         : '\n**Note:** No diff available. Review based on available context only.\n';
 
     const fileContentsSection = fileContents
@@ -53,6 +53,13 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         : '';
 
     const prompt = `You are reviewing pull request #${pullRequestNumber} in ${repoOwner}/${repoName}.
+
+**REQUIRED OUTPUT FORMAT (full details at the end of this prompt):**
+Your response MUST contain exactly three markdown sections, in this order:
+1. \`## Overall Evaluation\`
+2. \`## Findings\` — every finding prefixed with a severity emoji (🔴 / 🟡 / 🟢 / ✅)
+3. \`## Score\` — ending with the exact line \`Score: N/10\`
+Do not omit any section; the **Score** section is mandatory. The detailed instructions for each section appear at the very end of this prompt — follow them exactly. (This format is restated here because the diff below can be long.)
 
 **PR Comment History and Context:**
 ${commentHistory}${originalTaskSpec}

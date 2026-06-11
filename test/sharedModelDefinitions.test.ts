@@ -29,12 +29,12 @@ describe('shared model definitions', () => {
         }
     });
 
-    test('OpenCode defaults use unauthenticated OpenCode free model ids', () => {
+    test('OpenCode defaults use namespaced unauthenticated OpenCode free model ids', () => {
         const modelIds = new Set(OPENCODE_MODELS.map(model => model.id));
-        assert.ok(modelIds.has('opencode/minimax-m3-free'));
+        assert.ok(modelIds.has('opencode-minimax-m3-free'));
         for (const modelId of AGENT_DEFAULTS.opencode.defaultModels) {
-            assert.ok(modelId.startsWith('opencode/'), `${modelId} should use the built-in OpenCode provider prefix`);
-            assert.ok(modelId.includes('free') || modelId === 'opencode/big-pickle', `${modelId} should be usable without provider login`);
+            assert.ok(modelId.startsWith('opencode-'), `${modelId} should use the ProPR OpenCode prefix`);
+            assert.ok(modelId.includes('free') || modelId === 'opencode-big-pickle', `${modelId} should be usable without provider login`);
             assert.ok(modelIds.has(modelId), `${modelId} should exist in OPENCODE_MODELS`);
         }
     });

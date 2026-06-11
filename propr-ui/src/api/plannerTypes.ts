@@ -37,6 +37,7 @@ export interface PlannerDraft {
   attachments: PlannerAttachment[];
   created_at: string;
   generation_trace?: GenerationTrace;
+  context_config?: DraftContextConfig | string;
 }
 
 export interface ContextStats {
@@ -89,6 +90,12 @@ export interface PreviewResult {
   warnings: string[];
   /** Token counts per file for client-side context level simulation */
   fileTokenCounts?: Record<string, number>;
+}
+
+export interface PendingPreviewResult {
+  pending: true;
+  draftId: string;
+  previewRequestId: string;
 }
 
 export interface PreviewOptions {
@@ -150,6 +157,10 @@ export interface DraftContextConfig {
   generationModel?: string;
   /** Files manually excluded from context by the user */
   excludedFiles?: string[];
+  contextCache?: { fileTokenCounts?: Record<string, number> };
+  lastPreview?: Omit<PreviewResult, 'fileTokenCounts'>;
+  lastPreviewRequestId?: string;
+  lastPreviewError?: string;
   /** Whether to create an Epic PR to collect all issue PRs */
   useEpic?: boolean;
   /** Whether to auto-merge individual PRs into the Epic PR */

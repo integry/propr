@@ -14,8 +14,11 @@ import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import {
     parseAntigravityJsonl, aggregateDeltaMessages, convertEventToClaudeFormat,
+    filterAntigravityAnalysisEvents,
     type AntigravityOutputEvent
 } from './utils/antigravityOutputParser.js';
+import { estimateTokens } from '../../utils/tokenCalculation.js';
+import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -23,7 +26,7 @@ import os from 'os';
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
-const DEFAULT_ANTIGRAVITY_TIMEOUT_MS = 300000;
+const DEFAULT_ANTIGRAVITY_TIMEOUT_MS = 3600000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.gemini';
@@ -111,7 +114,7 @@ export class AntigravityAgent implements Agent {
         const parsed = this.resolveSessionOutput(result.stdout, worktreePath, onSessionId);
         const { response, modelUsed } = await parsed;
 
-        const finalTokenUsage = (response.tokenUsage.input_tokens || response.tokenUsage.output_tokens) ? response.tokenUsage : undefined;
+        const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const resolvedModel = response.modelUsed || effectiveModel || 'unknown';
         const agentResult: AgentExecutionResult = {
             success: result.exitCode === 0, executionTimeMs: executionTime,
@@ -133,10 +136,79 @@ export class AntigravityAgent implements Agent {
         const sessionOutput = await this.readPersistedSessionOutput(worktreePath, parsedOutput.sessionId);
         const sessionId = sessionOutput.sessionId || parsedOutput.sessionId;
         const summary = sessionOutput.summary || parsedOutput.summary;
-        const conversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
+        const rawConversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
+        const conversationLog = filterAntigravityAnalysisEvents(rawConversationLog);
+        const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
+        const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
         if (sessionId && onSessionId) onSessionId(sessionId);
         if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
-        return { response: { sessionId, summary, conversationLog, tokenUsage: parsedOutput.tokenUsage, modelUsed: parsedOutput.modelUsed }, modelUsed: parsedOutput.modelUsed };
+        // rawConversationLog (full agentic trace: file views, searches, command
+        // output, code edits) is kept for token estimation; conversationLog stays
+        // filtered to the displayed assistant responses.
+        return { response: { sessionId, summary, conversationLog, rawConversationLog, tokenUsage, modelUsed }, modelUsed };
+    }
+
+    private mergeTokenUsage(
+        primary: { input_tokens?: number; output_tokens?: number },
+        fallback?: { input_tokens?: number; output_tokens?: number }
+    ): { input_tokens?: number; output_tokens?: number } {
+        return {
+            input_tokens: primary.input_tokens ?? fallback?.input_tokens,
+            output_tokens: primary.output_tokens ?? fallback?.output_tokens
+        };
+    }
+
+    /**
+     * agy reports no token usage, so estimate from the full transcript. The model
+     * AUTHORS planner responses, code edits, and assistant messages (output); it
+     * CONSUMES the prompt, file views, search results, command output, and history
+     * (input). Counting only the prompt + final messages undercounts agentic runs
+     * by ~10-100x. Reported counts win when present. This is an estimate (it can't
+     * capture cumulative re-read context across agentic turns), but it lands in the
+     * right order of magnitude instead of near zero.
+     */
+    private resolveTokenUsage(
+        reported: { input_tokens?: number; output_tokens?: number },
+        prompt: string,
+        summary: string | undefined,
+        conversationLog: AntigravityOutputEvent[]
+    ): { input_tokens?: number; output_tokens?: number } | undefined {
+        if (reported.input_tokens || reported.output_tokens) return reported;
+
+        let inputText = '';
+        let outputText = '';
+        for (const event of conversationLog) {
+            const content = 'content' in event && typeof event.content === 'string' ? event.content : '';
+            if (!content) continue;
+            if (this.isModelAuthoredEvent(event)) outputText += `${content}\n`;
+            else inputText += `${content}\n`;
+        }
+
+        // Fallbacks when the transcript has no usable content (e.g. plain-text
+        // --print output, as in the analyze path): estimate from prompt + summary.
+        if (!inputText && !outputText) {
+            inputText = prompt;
+            outputText = summary || '';
+        } else if (!inputText) {
+            inputText = prompt; // transcript had only model output; still count the prompt
+        }
+
+        const inputTokens = estimateTokens(inputText);
+        const outputTokens = estimateTokens(outputText);
+        return inputTokens || outputTokens
+            ? { input_tokens: inputTokens, output_tokens: outputTokens }
+            : undefined;
+    }
+
+    /** Whether a transcript event's content was authored by the model (output) vs consumed by it (input). */
+    private isModelAuthoredEvent(event: AntigravityOutputEvent): boolean {
+        const role = (event as { role?: string }).role;
+        if (role === 'assistant') return true;
+        const type = (event as { type?: string }).type;
+        // PLANNER_RESPONSE = model's text; CODE_ACTION = edits the model wrote.
+        // VIEW_FILE / GREP_SEARCH / RUN_COMMAND content is dominated by results the
+        // model reads, so treat those as input.
+        return type === 'PLANNER_RESPONSE' || type === 'CODE_ACTION';
     }
 
     private async persistImplementationLog(opts: {
@@ -179,13 +251,13 @@ export class AntigravityAgent implements Agent {
         const suffix = responseFormat === 'json'
             ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
             : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
-        const stdinData = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        const fullPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
             const dockerArgs = this.buildDockerArgs({ worktreePath: '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, taskId, executionType });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData, taskId }),
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData: fullPrompt, taskId }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
             const executionTimeMs = Date.now() - startTime;
@@ -193,10 +265,15 @@ export class AntigravityAgent implements Agent {
 
             if (result.exitCode === 0 || summary) {
                 const analysisText = (summary || '').trim();
-                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel, executionTimeMs, inputTokens: tokenUsage.input_tokens, outputTokens: tokenUsage.output_tokens, usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
+                // agy --print emits plain text with no token stats, so
+                // parseAntigravityJsonl returns empty usage. Estimate from the
+                // full prompt and the response so reviews / summaries / pr-comments
+                // still report (estimated) token counts and cost, matching the
+                // executeTask path. Reported counts win when present.
+                const antigravityTokenUsage = this.resolveTokenUsage(tokenUsage, fullPrompt, analysisText, []);
+                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel, executionTimeMs, inputTokens: antigravityTokenUsage?.input_tokens, outputTokens: antigravityTokenUsage?.output_tokens, estimatedTokens: !(tokenUsage.input_tokens || tokenUsage.output_tokens), usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
 
                 const usage = formatUsageMetrics(usageMetrics);
-                const antigravityTokenUsage = (tokenUsage.input_tokens || tokenUsage.output_tokens) ? { input_tokens: tokenUsage.input_tokens, output_tokens: tokenUsage.output_tokens } : undefined;
                 await persistLlmLog(createLlmLogFromAnalysis({
                     executionType: (executionType || 'other') as ExecutionType, modelUsed: effectiveModel, executionTimeMs, success: true, tokenUsage: antigravityTokenUsage,
                     sessionId, draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
@@ -230,7 +307,12 @@ export class AntigravityAgent implements Agent {
     }
 
     private buildAntigravityShellCommand(): string {
-        return ['set -e', 'prompt="$(cat)"', `exec ${this.getCliCommand()} --dangerously-skip-permissions "$@" --print "$prompt"`].join('\n');
+        // `--print -` makes agy read the prompt from STDIN (the `-` convention).
+        // This is required because the prompt is passed via stdin (see executeTask
+        // / analyze): repo-context prompts routinely exceed Linux's 128 KiB
+        // per-argument limit (MAX_ARG_STRLEN), so passing it as an argv element
+        // fails with spawn E2BIG. `"$@"` carries only the `--model` flag.
+        return ['set -e', `exec ${this.getCliCommand()} --dangerously-skip-permissions --print - "$@"`].join('\n');
     }
 
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
@@ -243,20 +325,36 @@ export class AntigravityAgent implements Agent {
         const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
-        const containerName = `${this.config.alias || runtimeName}-${taskType}-${shortTaskId}`;
+        const containerName = this.buildContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
             '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
             this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
         ];
+        // Note: the prompt is delivered via STDIN (`--print -`), NOT as an argv
+        // element, to avoid spawn E2BIG on large repo-context prompts. Only the
+        // model flag goes here.
         if (modelName) {
-            const cleanModelName = modelName.startsWith(`${runtimeName}:`) ? modelName.slice(`${runtimeName}:`.length) : modelName;
+            // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
+            // to the Antigravity CLI's native model name. Passing the prefixed id
+            // makes `agy` fall back to its default model.
+            const cleanModelName = toAntigravityCliModelId(modelName);
             dockerArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         } else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Antigravity agent');
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, runtimeName);
+    }
+
+    private buildContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
+        const suffix = `-${shortTaskId}`;
+        const rawPrefix = modelName
+            ? `${alias}-${taskType}-${modelName}`
+            : `${alias}-${taskType}`;
+        const maxPrefixLength = Math.max(1, 120 - suffix.length);
+        const sanitizedPrefix = rawPrefix.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, maxPrefixLength).replace(/[^a-zA-Z0-9]+$/, '');
+        return `${sanitizedPrefix || 'antigravity'}${suffix}`.slice(0, 128);
     }
 
     private getLastConversationsPath(): string {
@@ -277,14 +375,14 @@ export class AntigravityAgent implements Agent {
         return undefined;
     }
 
-    private async readPersistedSessionOutput(worktreePath: string, parsedSessionId?: string): Promise<{ sessionId: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[] }> {
+    private async readPersistedSessionOutput(worktreePath: string, parsedSessionId?: string): Promise<{ sessionId: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: { input_tokens?: number; output_tokens?: number }; modelUsed?: string }> {
         const sessionId = parsedSessionId || await this.readLastConversationId(worktreePath);
         if (!sessionId) return { sessionId: undefined, summary: undefined, conversationLog: [] };
         const transcriptPath = path.join(this.getHostConfigPath(), 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
         try {
             const transcript = await fs.promises.readFile(transcriptPath, 'utf8');
             const parsed = parseAntigravityJsonl(transcript);
-            return { sessionId, summary: parsed.summary, conversationLog: parsed.conversationLog };
+            return { sessionId, summary: parsed.summary, conversationLog: parsed.conversationLog, tokenUsage: parsed.tokenUsage, modelUsed: parsed.modelUsed };
         } catch (error) {
             logger.debug({ sessionId, transcriptPath, error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read Antigravity transcript');
             return { sessionId, summary: undefined, conversationLog: [] };

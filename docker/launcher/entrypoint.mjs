@@ -438,17 +438,18 @@ function appContainer(name, command, extraArgs = []) {
 }
 
 function startApp() {
+    const workerCreds = agentCredentialArgs({ opencodeDataReadWrite: true });
+    const readOnlyCreds = agentCredentialArgs();
+    const vibePrompts = vibePromptCacheArgs();
+
     removeIfExists(`${STACK}-daemon`);
     appContainer(`${STACK}-daemon`, ['dist/src/daemon.js'], [
         '-v', `${ENV_FILE}:/usr/src/app/.env:ro`,
         '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
         '-e', `GITHUB_BOT_USERNAME=${process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]'}`,
         '-e', 'STAGING_ENV_FILE=/usr/src/app/.env',
+        ...vibePrompts,
     ]);
-
-    const workerCreds = agentCredentialArgs({ opencodeDataReadWrite: true });
-    const readOnlyCreds = agentCredentialArgs();
-    const vibePrompts = vibePromptCacheArgs();
 
     removeIfExists(`${STACK}-worker`);
     appContainer(`${STACK}-worker`, ['dist/src/worker.js'], [
@@ -470,6 +471,7 @@ function startApp() {
         '-v', '/tmp/claude-logs:/tmp/claude-logs',
         '-e', `INDEXING_SCAN_INTERVAL_MS=${process.env.INDEXING_SCAN_INTERVAL_MS || '300000'}`,
         '-e', `INDEXING_REINDEX_INTERVAL_MS=${process.env.INDEXING_REINDEX_INTERVAL_MS || '86400000'}`,
+        ...vibePrompts,
         ...readOnlyCreds,
     ]);
 

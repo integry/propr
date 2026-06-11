@@ -1,5 +1,7 @@
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
+import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
+import { shortHash } from '@propr/shared';
 import { ALL_MODELS, MODEL_INFO_MAP, type AgentType } from './modelDefinitions.js';
 import {
     MODEL_ALIASES,
@@ -96,6 +98,14 @@ function resolveBySupportedModelId(label: string, agents: { config: AgentConfig 
         if (model) {
             return { agentAlias: agent.config.alias, model };
         }
+
+        if (agent.config.type === 'opencode') {
+            const proprOpenCodeModel = toProprOpenCodeModelId(label).toLowerCase();
+            const prefixedModel = agent.config.supportedModels.find(m => m.toLowerCase() === proprOpenCodeModel);
+            if (prefixedModel) {
+                return { agentAlias: agent.config.alias, model: prefixedModel };
+            }
+        }
     }
 
     return null;
@@ -124,25 +134,66 @@ function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }
 }
 
 function resolveExplicitAgentModelLabel(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
-    const colonIdx = label.indexOf(':');
-    if (colonIdx <= 0 || colonIdx >= label.length - 1) {
+    // Try ~ separator first (dynamic labels), then : (settings UI values)
+    let sepIdx = label.indexOf('~');
+    if (sepIdx <= 0 || sepIdx >= label.length - 1) {
+        sepIdx = label.indexOf(':');
+    }
+    if (sepIdx <= 0 || sepIdx >= label.length - 1) {
         return null;
     }
 
-    const explicitAlias = label.substring(0, colonIdx);
-    const explicitModel = label.substring(colonIdx + 1);
+    const explicitAlias = label.substring(0, sepIdx);
+    const explicitModel = label.substring(sepIdx + 1);
     const resolvedModel = resolveModelAlias(explicitModel);
-    const agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
+
+    // Exact alias match first, then unambiguous prefix match for truncated aliases in dynamic labels
+    let agent = agents.find(a => a.config.alias.toLowerCase() === explicitAlias.toLowerCase());
+    if (!agent && explicitAlias.length >= 3) {
+        const candidates = agents.filter(a =>
+            a.config.alias.toLowerCase().startsWith(explicitAlias.toLowerCase())
+        );
+        if (candidates.length === 1) {
+            agent = candidates[0];
+        }
+    }
     if (!agent) {
         return null;
     }
 
-    const supportedModel = agent.config.supportedModels.find(m => m.toLowerCase() === resolvedModel.toLowerCase());
-    if (!supportedModel) {
-        return null;
+    const candidateModels = agent.config.type === 'opencode'
+        ? [resolvedModel, toProprOpenCodeModelId(resolvedModel)]
+        : [resolvedModel];
+    const supportedModel = agent.config.supportedModels.find(m =>
+        candidateModels.some(candidate => m.toLowerCase() === candidate.toLowerCase())
+    );
+    if (supportedModel) {
+        return { agentAlias: agent.config.alias, model: supportedModel };
     }
 
-    return { agentAlias: agent.config.alias, model: supportedModel };
+    const hashMatch = resolveByHashedModelLabel(explicitModel, agent.config);
+    if (hashMatch) {
+        return { agentAlias: agent.config.alias, model: hashMatch };
+    }
+
+    return null;
+}
+
+function resolveByHashedModelLabel(hashedLabel: string, config: AgentConfig): string | null {
+    const dashIdx = hashedLabel.lastIndexOf('-');
+    if (dashIdx <= 0) return null;
+    const labelHash = hashedLabel.substring(dashIdx + 1);
+    const visiblePrefix = hashedLabel.substring(0, dashIdx).toLowerCase();
+    for (const model of config.supportedModels) {
+        if (shortHash(model) !== labelHash) continue;
+        // Verify visible model prefix matches to reduce collision risk
+        if (visiblePrefix) {
+            const normalizedModel = model.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
+            if (!normalizedModel.startsWith(visiblePrefix)) continue;
+        }
+        return model;
+    }
+    return null;
 }
 
 function resolveAgentAliasLabel(lowerLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
@@ -193,7 +244,7 @@ function resolveStaticModelAliasLabel(lowerLabel: string): LlmLabelResolution | 
  * Resolves an LLM label (e.g., "gemini-pro", "claude-opus", "codex") to an agent alias and model.
  *
  * Resolution order:
- * 1. Check if label is an exact configured model ID, including routed IDs like "opencode:kimi-k2.6"
+ * 1. Check if label is an exact configured model ID, including prefixed dynamic OpenCode IDs like "opencode-openai/gpt-5.5"
  * 2. Check explicit "agentAlias:modelId" format (used by settings UI for pr_review_model)
  * 3. Check if label matches a githubLabel from modelDefinitions (exact match for labels like "gemini-g3-flash-preview")
  * 4. Check if label matches an agent alias directly (e.g., "gemini" -> gemini agent with default model)
@@ -219,6 +270,10 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
     const explicitLabelMatch = resolveExplicitAgentModelLabel(label, agents);
     if (explicitLabelMatch) {
         return explicitLabelMatch;
+    }
+    if (label.includes('~')) {
+        const defaultAgent = registry.getDefaultAgent();
+        return { agentAlias: defaultAgent?.config.alias || 'default', model: label };
     }
 
     const lowerLabel = label.toLowerCase();
@@ -294,7 +349,7 @@ function getRoutedOpenCodeModelName(modelId: string): string | null {
 
 function isOpenCodeModelId(modelId: string): boolean {
     const lowerModel = modelId.toLowerCase();
-    return lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
+    return lowerModel.startsWith('opencode-') || lowerModel.startsWith('opencode/') || lowerModel.startsWith('opencode-go/') || lowerModel.startsWith('opencode:');
 }
 
 function getReviewDisplayLabel(modelId: string): string {

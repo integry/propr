@@ -25,6 +25,8 @@ export interface AgentDisplayInfo {
 // Claude models (newest first within each tier, then by capability: Opus > Sonnet > Haiku)
 // 4.8/4.7/4.6 models require newer Claude Code versions; 4.5 models work with older versions
 export const CLAUDE_MODELS: ModelInfo[] = [
+  // Claude Fable 5 (top tier, above Opus)
+  { id: 'claude-fable-5', name: 'Claude Fable 5', shortName: 'Claude Fable 5', shortAlias: 'fable', githubLabel: 'llm-claude-fable', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-fable-5', minAgentVersion: '2.1.170' },
   // Claude 4.8 series
   { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', shortName: 'Claude Opus 4.8', shortAlias: 'opus48', githubLabel: 'llm-claude-opus48', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.8' },
   // Claude 4.7 series
@@ -61,22 +63,23 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-gemini-3.5-flash-medium', name: 'Antigravity Gemini 3.5 Flash Medium', shortName: 'Gemini 3.5 Flash Medium', shortAlias: 'flash-medium', githubLabel: 'llm-antigravity-flash-medium', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.5-flash' },
   { id: 'antigravity-gemini-3.5-flash-high', name: 'Antigravity Gemini 3.5 Flash High', shortName: 'Gemini 3.5 Flash High', shortAlias: 'flash-high', githubLabel: 'llm-antigravity-flash-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.5-flash' },
   { id: 'antigravity-gemini-3.5-flash-low', name: 'Antigravity Gemini 3.5 Flash Low', shortName: 'Gemini 3.5 Flash Low', shortAlias: 'flash-low', githubLabel: 'llm-antigravity-flash-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.5-flash' },
-  { id: 'antigravity-gemini-3.1-pro-low', name: 'Antigravity Gemini 3.1 Pro Low', shortName: 'Gemini 3.1 Pro Low', shortAlias: 'pro-low', githubLabel: 'llm-antigravity-pro-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro' },
-  { id: 'antigravity-gemini-3.1-pro-high', name: 'Antigravity Gemini 3.1 Pro High', shortName: 'Gemini 3.1 Pro High', shortAlias: 'pro-high', githubLabel: 'llm-antigravity-pro-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro' },
+  { id: 'antigravity-gemini-3.1-pro-low', name: 'Antigravity Gemini 3.1 Pro Low', shortName: 'Gemini 3.1 Pro Low', shortAlias: 'pro-low', githubLabel: 'llm-antigravity-pro-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro-preview' },
+  { id: 'antigravity-gemini-3.1-pro-high', name: 'Antigravity Gemini 3.1 Pro High', shortName: 'Gemini 3.1 Pro High', shortAlias: 'pro-high', githubLabel: 'llm-antigravity-pro-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.1-pro-preview' },
   { id: 'antigravity-claude-sonnet-4.6-thinking', name: 'Antigravity Claude Sonnet 4.6 Thinking', shortName: 'Claude Sonnet 4.6 Thinking', shortAlias: 'sonnet46-thinking', githubLabel: 'llm-antigravity-sonnet46-thinking', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-4.6' },
   { id: 'antigravity-claude-opus-4.6-thinking', name: 'Antigravity Claude Opus 4.6 Thinking', shortName: 'Claude Opus 4.6 Thinking', shortAlias: 'opus46-thinking', githubLabel: 'llm-antigravity-opus46-thinking', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.6' },
   { id: 'antigravity-gpt-oss-120b-medium', name: 'Antigravity GPT-OSS 120B Medium', shortName: 'GPT-OSS 120B Medium', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },
 ];
 
 
-// OpenCode built-in free models. IDs use OpenCode config syntax: provider/model.
+// OpenCode built-in free models. IDs are namespaced for ProPR and converted
+// back to OpenCode's provider/model syntax at CLI execution time.
 // These are available from `opencode models` without provider login.
 export const OPENCODE_MODELS: ModelInfo[] = [
-  { id: 'opencode/minimax-m3-free', name: 'MiniMax M3 Free', shortName: 'MiniMax M3 Free', shortAlias: 'minimax-m3-free', githubLabel: 'llm-opencode-minimax-m3-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m3' },
-  { id: 'opencode/deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', shortName: 'DeepSeek V4 Flash Free', shortAlias: 'deepseek-v4-flash-free', githubLabel: 'llm-opencode-deepseek-v4-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
-  { id: 'opencode/mimo-v2.5-free', name: 'MiMo V2.5 Free', shortName: 'MiMo V2.5 Free', shortAlias: 'mimo-v25-free', githubLabel: 'llm-opencode-mimo-v25-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
-  { id: 'opencode/nemotron-3-ultra-free', name: 'Nemotron 3 Ultra Free', shortName: 'Nemotron 3 Ultra Free', shortAlias: 'nemotron-3-ultra-free', githubLabel: 'llm-opencode-nemotron-3-ultra-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'nvidia/nemotron-3-ultra' },
-  { id: 'opencode/big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
+  { id: 'opencode-minimax-m3-free', name: 'MiniMax M3 Free', shortName: 'MiniMax M3 Free', shortAlias: 'minimax-m3-free', githubLabel: 'llm-opencode-minimax-m3-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m3' },
+  { id: 'opencode-deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', shortName: 'DeepSeek V4 Flash Free', shortAlias: 'deepseek-v4-flash-free', githubLabel: 'llm-opencode-deepseek-v4-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
+  { id: 'opencode-mimo-v2.5-free', name: 'MiMo V2.5 Free', shortName: 'MiMo V2.5 Free', shortAlias: 'mimo-v25-free', githubLabel: 'llm-opencode-mimo-v25-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
+  { id: 'opencode-nemotron-3-ultra-free', name: 'Nemotron 3 Ultra Free', shortName: 'Nemotron 3 Ultra Free', shortAlias: 'nemotron-3-ultra-free', githubLabel: 'llm-opencode-nemotron-3-ultra-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'nvidia/nemotron-3-ultra-550b-a55b' },
+  { id: 'opencode-big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
 ];
 
 // Mistral Vibe coding models
@@ -136,7 +139,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.165'
+    defaultCliVersion: '2.1.170'
   },
   codex: {
     dockerImage: 'propr/agent-codex:latest',

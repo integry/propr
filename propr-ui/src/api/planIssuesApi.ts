@@ -68,18 +68,6 @@ export interface UpdateIssueOptions {
 }
 
 /**
- * Options for implementing all issues.
- */
-export interface ImplementAllIssuesOptions {
-  agent_alias?: string;
-  model_name?: string;
-  /** Whether to create an Epic PR to collect all issue PRs */
-  useEpic?: boolean;
-  /** Whether to auto-merge individual PRs into the Epic PR */
-  autoMerge?: boolean;
-}
-
-/**
  * Options for fetching paginated plan issues.
  */
 export interface GetPlanIssuesOptions {
@@ -105,20 +93,6 @@ export interface PaginatedPlanIssuesResponse {
 export interface ImplementIssueResponse {
   success: boolean;
   message: string;
-}
-
-/**
- * Response from implement all issues endpoint.
- */
-export interface ImplementAllIssuesResponse {
-  success: boolean;
-  message: string;
-  implemented: number;
-  results?: Array<{
-    issueNumber: number;
-    success: boolean;
-    error?: string;
-  }>;
 }
 
 /**
@@ -189,27 +163,6 @@ export const updatePlanIssue = async (
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(options),
-      credentials: 'include'
-    }
-  );
-  await handleApiResponse(response);
-  return response.json();
-};
-
-/**
- * Triggers implementation for all pending issues in a draft.
- * Optionally sets agent/model for all issues before implementation.
- */
-export const implementAllIssues = async (
-  draftId: string,
-  options?: ImplementAllIssuesOptions
-): Promise<ImplementAllIssuesResponse> => {
-  const response = await apiFetch(
-    `${API_BASE_URL}/api/planner/drafts/${draftId}/issues/implement-all`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(options || {}),
       credentials: 'include'
     }
   );

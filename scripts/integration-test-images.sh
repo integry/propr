@@ -6,15 +6,20 @@
 # Requires:
 #   - propr/launcher:latest and propr/app:latest built locally
 #     (npm run images:build)
-#   - Agent images pulled or built locally (propr/agent-{claude,codex,antigravity,opencode})
+#   - Agent images pulled or built locally (propr/agent-{vibe,antigravity,opencode})
 #   - `gh auth login` or PROPR_E2E_TOKEN
-#   - Mounted agent credentials on the host ($HOME/.claude, /.codex, /.gemini,
+#   - Mounted agent credentials on the host ($HOME/.vibe, /.gemini,
 #     and /.config/opencode or /.opencode as applicable for the tests being run)
 #
 # Env:
 #   PROPR_E2E_REPO   (default: integry/propr-test)
 #   API_PORT         (default: 14001)
 #   PROPR_E2E_SKIP_SLOW=1  skip agent-invoking tests
+#   PROPR_E2E_VIBE_MODELS comma-separated Vibe models
+#   PROPR_E2E_ANTIGRAVITY_MODELS comma-separated Antigravity models
+#   PROPR_E2E_OPENCODE_MODELS comma-separated OpenCode models
+#   PROPR_E2E_KEEP_STACK=1  leave containers/logs running after the script exits
+#   PROPR_E2E_REUSE_DATA=1  reuse /tmp/$STACK data from a previous run
 
 set -euo pipefail
 
@@ -33,7 +38,11 @@ fi
 [ -z "$TOKEN" ] && { echo "✗ no GitHub token" >&2; exit 1; }
 
 DATA_DIR="/tmp/$STACK"
-mkdir -p "$DATA_DIR"/{data,logs,repos} /tmp/git-processor /tmp/claude-logs /tmp/pr-worktrees
+VIBE_PROMPT_CACHE_DIR="${PROPR_E2E_VIBE_PROMPT_CACHE_DIR:-/tmp/${STACK}-vibe-prompts}"
+if [ "${PROPR_E2E_REUSE_DATA:-}" != "1" ]; then
+  rm -rf "$DATA_DIR" "$VIBE_PROMPT_CACHE_DIR"
+fi
+mkdir -p "$DATA_DIR"/{data,logs,repos} "$VIBE_PROMPT_CACHE_DIR" /tmp/git-processor /tmp/claude-logs /tmp/pr-worktrees
 
 # Start from the developer's real .env so real GitHub App credentials, OAuth
 # client IDs, etc. are available. Then override test-specific values.
@@ -46,7 +55,13 @@ fi
 # path when mounted into the api/worker containers.
 HOST_PEM=$(grep '^GH_PRIVATE_KEY_PATH=' "$REPO_ROOT/.env" | cut -d= -f2-)
 HOST_PEM="${HOST_PEM#./}"
-HOST_PEM_ABS="$REPO_ROOT/$HOST_PEM"
+if [[ "$HOST_PEM" = /usr/src/app/* ]]; then
+  HOST_PEM_ABS="$REPO_ROOT/${HOST_PEM#/usr/src/app/}"
+elif [[ "$HOST_PEM" = /* ]]; then
+  HOST_PEM_ABS="$HOST_PEM"
+else
+  HOST_PEM_ABS="$REPO_ROOT/$HOST_PEM"
+fi
 if [ ! -f "$HOST_PEM_ABS" ]; then
   echo "✗ private key not found at $HOST_PEM_ABS" >&2
   exit 1
@@ -57,7 +72,7 @@ chmod 644 "$DATA_DIR/data/gh-app.pem"
 # Compose the test .env: base = dev .env with test-overrides appended. Bash
 # processes the file top-to-bottom, so later duplicates of a key win.
 {
-  grep -v -E '^(DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|CLAUDE_DOCKER_IMAGE|CODEX_DOCKER_IMAGE|ANTIGRAVITY_DOCKER_IMAGE|OPENCODE_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL)=' "$REPO_ROOT/.env"
+  grep -v -E '^(CONFIG_REPO|DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|ENABLE_GITHUB_WEBHOOKS|ENABLE_PR_COMMENT_POLLING|POLLING_INTERVAL_MS|CLAUDE_DOCKER_IMAGE|CODEX_DOCKER_IMAGE|ANTIGRAVITY_DOCKER_IMAGE|OPENCODE_DOCKER_IMAGE|VIBE_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL)=' "$REPO_ROOT/.env"
   cat <<EOF
 NODE_ENV=production
 LOG_LEVEL=warn
@@ -66,6 +81,9 @@ REDIS_HOST=${STACK}-redis
 REDIS_PORT=6379
 GH_PRIVATE_KEY_PATH=/usr/src/app/data/gh-app.pem
 GITHUB_REPOS_TO_MONITOR=${TEST_REPO}
+ENABLE_GITHUB_WEBHOOKS=false
+ENABLE_PR_COMMENT_POLLING=false
+POLLING_INTERVAL_MS=30000
 API_PUBLIC_URL=http://localhost:${API_PORT}
 FRONTEND_URL=http://localhost:5173
 GH_OAUTH_CALLBACK_URL=http://localhost:${API_PORT}/api/auth/github/callback
@@ -74,6 +92,8 @@ CLAUDE_DOCKER_IMAGE=propr/agent-claude:latest
 CODEX_DOCKER_IMAGE=propr/agent-codex:latest
 ANTIGRAVITY_DOCKER_IMAGE=propr/agent-antigravity:latest
 OPENCODE_DOCKER_IMAGE=propr/agent-opencode:latest
+VIBE_DOCKER_IMAGE=propr/agent-vibe:latest
+VIBE_ANALYSIS_TIMEOUT_MS=420000
 SESSION_SECRET=itest-not-secret
 GH_OAUTH_CLIENT_ID=itest
 GH_OAUTH_CLIENT_SECRET=itest
@@ -82,6 +102,13 @@ EOF
 } > "$DATA_DIR/.env"
 
 cleanup() {
+  if [ "${PROPR_E2E_KEEP_STACK:-}" = "1" ]; then
+    echo ""
+    echo "▸ keeping stack for inspection (PROPR_E2E_KEEP_STACK=1)"
+    echo "  launcher: $STACK-launcher"
+    echo "  data dir:  $DATA_DIR"
+    return
+  fi
   echo ""
   echo "▸ cleaning up"
   docker rm -f "$STACK-launcher" 2>/dev/null || true
@@ -111,10 +138,11 @@ docker image inspect "$LAUNCHER_TAG" >/dev/null || {
 # Launcher only needs the docker socket; the paths it uses for spawning
 # sibling containers must be real HOST paths (docker socket = host docker).
 LAUNCHER_ARGS=(
-  run --rm -d
+  run -d
   --name "$STACK-launcher"
   -v /var/run/docker.sock:/var/run/docker.sock
   -v "$DATA_DIR/.env:/app/.env:ro"
+  -v "$VIBE_PROMPT_CACHE_DIR:$VIBE_PROMPT_CACHE_DIR"
   -e "PROPR_STACK=$STACK"
   -e "API_PORT=$API_PORT"
   -e "UI_PORT=${UI_PORT:-15173}"
@@ -124,15 +152,30 @@ LAUNCHER_ARGS=(
   -e "PROPR_LOGS_DIR=$DATA_DIR/logs"
   -e "PROPR_REPOS_DIR=$DATA_DIR/repos"
 )
-[ -d "$HOME/.claude" ] && LAUNCHER_ARGS+=(-e "HOST_CLAUDE_DIR=$HOME/.claude")
-[ -d "$HOME/.codex" ]  && LAUNCHER_ARGS+=(-e "HOST_CODEX_DIR=$HOME/.codex")
-[ -d "$HOME/.gemini" ] && LAUNCHER_ARGS+=(-e "HOST_ANTIGRAVITY_DIR=$HOME/.gemini")
+if [ "${PROPR_E2E_KEEP_STACK:-}" != "1" ]; then
+  LAUNCHER_ARGS=(run --rm -d "${LAUNCHER_ARGS[@]:2}")
+fi
+if [ -d "$HOME/.gemini" ]; then
+  LAUNCHER_ARGS+=(-e "HOST_ANTIGRAVITY_DIR=$HOME/.gemini")
+elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
+  echo "✗ Antigravity credentials not found at $HOME/.gemini" >&2
+  echo "  Required for Antigravity-backed image integration tests; set PROPR_E2E_SKIP_SLOW=1 to skip agent execution." >&2
+  exit 1
+fi
+if [ -d "$HOME/.vibe" ]; then
+  LAUNCHER_ARGS+=(-e "HOST_VIBE_DIR=$HOME/.vibe" -e "HOST_VIBE_PROMPT_CACHE_DIR=$VIBE_PROMPT_CACHE_DIR")
+elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
+  echo "✗ Vibe credentials not found at $HOME/.vibe" >&2
+  echo "  Required for Vibe-backed image integration tests; set PROPR_E2E_SKIP_SLOW=1 to skip agent execution." >&2
+  exit 1
+fi
 
 OPENCODE_LEGACY_CFG="$HOME/.opencode"
 OPENCODE_XDG_CFG="$HOME/.config/opencode"
 OPENCODE_CFG=""
 [ -d "$OPENCODE_LEGACY_CFG" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_LEGACY_DIR=$OPENCODE_LEGACY_CFG")
 [ -d "$OPENCODE_XDG_CFG" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_XDG_DIR=$OPENCODE_XDG_CFG")
+[ -d "$HOME/.local/share/opencode" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_DATA_DIR=$HOME/.local/share/opencode")
 # Prefer XDG config when both OpenCode layouts exist, matching the app default.
 if [ -d "$OPENCODE_XDG_CFG" ]; then
   OPENCODE_CFG="$OPENCODE_XDG_CFG"
@@ -176,7 +219,7 @@ probe=$(curl -s -o /dev/null -w '%{http_code}' \
 echo "✓ authenticated"
 
 # Bootstrap test configuration the tests assume:
-#   - agents (claude/codex/antigravity/opencode) with cheap/fast models
+#   - agents requested for live image validation
 #   - test repo registered
 #   - summarization enabled so indexing works
 api() {
@@ -193,34 +236,46 @@ echo "▸ configuring agents"
 # code path that doesn't pin a model.
 # configPath must be the HOST path so when the api/worker spawns agent
 # containers via docker socket, the bind mount resolves correctly on the host.
-CLAUDE_CFG="${HOME}/.claude"
-CODEX_CFG="${HOME}/.codex"
 ANTIGRAVITY_CFG="${HOME}/.gemini"
+VIBE_CFG="${HOME}/.vibe"
+VIBE_MODELS="${PROPR_E2E_VIBE_MODELS:-mistral-medium-3.5,devstral-small}"
+ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.5-flash-medium,antigravity-gemini-3.5-flash-high,antigravity-gemini-3.5-flash-low,antigravity-gemini-3.1-pro-low,antigravity-gemini-3.1-pro-high,antigravity-claude-sonnet-4.6-thinking,antigravity-claude-opus-4.6-thinking,antigravity-gpt-oss-120b-medium}"
+OPENCODE_MODELS="${PROPR_E2E_OPENCODE_MODELS:-opencode-minimax-m3-free,opencode-go/qwen3.7-max,opencode-openai/gpt-5.5}"
+json_array_from_csv() {
+  local csv="$1"
+  node -e 'const values = process.argv[1].split(",").map(v => v.trim()).filter(Boolean); console.log(JSON.stringify(values));' "$csv"
+}
+first_csv_value() {
+  local csv="$1"
+  node -e 'const values = process.argv[1].split(",").map(v => v.trim()).filter(Boolean); console.log(values[0] || "");' "$csv"
+}
+VIBE_MODELS_JSON="$(json_array_from_csv "$VIBE_MODELS")"
+ANTIGRAVITY_MODELS_JSON="$(json_array_from_csv "$ANTIGRAVITY_MODELS")"
+OPENCODE_MODELS_JSON="$(json_array_from_csv "$OPENCODE_MODELS")"
+VIBE_DEFAULT_MODEL="$(first_csv_value "$VIBE_MODELS")"
+ANTIGRAVITY_DEFAULT_MODEL="$(first_csv_value "$ANTIGRAVITY_MODELS")"
+OPENCODE_DEFAULT_MODEL="$(first_csv_value "$OPENCODE_MODELS")"
 OPENCODE_AGENT_JSON=""
 if [ -n "$OPENCODE_CFG" ]; then
   OPENCODE_AGENT_JSON=$(cat <<JSON
 ,
   {"id":"itest-opencode","type":"opencode","alias":"opencode","enabled":true,
    "dockerImage":"propr/agent-opencode:latest","configPath":"${OPENCODE_CFG}",
-   "supportedModels":["opencode/minimax-m3-free"],
-   "defaultModel":"opencode/minimax-m3-free"}
+   "supportedModels":${OPENCODE_MODELS_JSON},
+   "defaultModel":"${OPENCODE_DEFAULT_MODEL}"}
 JSON
 )
 fi
 agents_payload=$(cat <<JSON
 {"agents":[
-  {"id":"itest-claude","type":"claude","alias":"claude","enabled":true,
-   "dockerImage":"propr/agent-claude:latest","configPath":"${CLAUDE_CFG}",
-   "supportedModels":["claude-opus-4-6","claude-sonnet-4-6","claude-opus-4-5-20251101","claude-sonnet-4-5-20250929","claude-haiku-4-5-20251001"],
-   "defaultModel":"claude-haiku-4-5-20251001"},
-  {"id":"itest-codex","type":"codex","alias":"codex","enabled":true,
-   "dockerImage":"propr/agent-codex:latest","configPath":"${CODEX_CFG}",
-   "supportedModels":["gpt-5","gpt-5-mini","gpt-5.4"],
-   "defaultModel":"gpt-5-mini"},
+  {"id":"itest-vibe","type":"vibe","alias":"vibe","enabled":true,
+   "dockerImage":"propr/agent-vibe:latest","configPath":"${VIBE_CFG}",
+   "supportedModels":${VIBE_MODELS_JSON},
+   "defaultModel":"${VIBE_DEFAULT_MODEL}"},
   {"id":"itest-antigravity","type":"antigravity","alias":"antigravity","enabled":true,
    "dockerImage":"propr/agent-antigravity:latest","configPath":"${ANTIGRAVITY_CFG}",
-   "supportedModels":["antigravity-gemini-2.5-pro","antigravity-gemini-2.5-flash"],
-   "defaultModel":"antigravity-gemini-2.5-flash"}${OPENCODE_AGENT_JSON}
+   "supportedModels":${ANTIGRAVITY_MODELS_JSON},
+   "defaultModel":"${ANTIGRAVITY_DEFAULT_MODEL}"}${OPENCODE_AGENT_JSON}
 ]}
 JSON
 )
@@ -235,8 +290,21 @@ JSON
 resp=$(api POST /api/config/repos "$repo_payload")
 echo "  $resp"
 
-echo "▸ enabling summarization (agent: claude)"
-summ_payload='{"enabled":true,"agent_alias":"claude"}'
+echo "▸ configuring planner/review defaults (agent: vibe)"
+settings_payload=$(cat <<JSON
+{"settings":{
+  "default_agent_alias":"vibe",
+  "planner_context_model":"vibe:${VIBE_DEFAULT_MODEL}",
+  "planner_generation_model":"vibe:${VIBE_DEFAULT_MODEL}",
+  "pr_review_model":"vibe:${VIBE_DEFAULT_MODEL}"
+}}
+JSON
+)
+resp=$(api POST /api/config/settings "$settings_payload")
+echo "  $resp"
+
+echo "▸ enabling summarization (agent: vibe)"
+summ_payload='{"enabled":true,"agent_alias":"vibe"}'
 resp=$(api POST /api/config/summarization "$summ_payload")
 echo "  $resp"
 

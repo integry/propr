@@ -21,7 +21,7 @@ export interface PaginationParams {
 }
 
 // Common regex patterns
-export const TASK_ID_REGEX = /^[a-zA-Z0-9\-_]+$/;
+export const TASK_ID_REGEX = /^[a-zA-Z0-9\-_.]+$/;
 export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const REPOSITORY_REGEX = /^[a-zA-Z0-9\-_]+\/[a-zA-Z0-9\-_.]+$/;
 export const SESSION_ID_REGEX = /^[a-zA-Z0-9\-_]+$/;
@@ -66,6 +66,10 @@ export function validateTaskId(taskId: unknown): ValidationResult {
 
   if (!TASK_ID_REGEX.test(trimmed)) {
     return { valid: false, error: 'Task ID contains invalid characters' };
+  }
+
+  if (/^\.+$/.test(trimmed)) {
+    return { valid: false, error: 'Task ID cannot be a dot path segment' };
   }
 
   return { valid: true };

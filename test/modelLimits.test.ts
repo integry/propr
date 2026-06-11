@@ -79,6 +79,13 @@ test('getEffectiveTokenLimit - agent:model format handling', async (t) => {
         assert.strictEqual(codexResult, geminiResult, 'Agent prefix should not affect result');
     });
 
+    await t.test('caps Codex agent routed models to the Codex CLI usable context', () => {
+        assert.strictEqual(getModelHardLimit('codex:gpt-5.5'), Math.floor(272000 * 0.98));
+        assert.strictEqual(getModelHardLimit('my-codex:gpt-5.5'), Math.floor(272000 * 0.98));
+        assert.strictEqual(getEffectiveTokenLimit('codex:gpt-5.5', 70), Math.floor(272000 * 0.70 * 0.98));
+        assert.strictEqual(getModelHardLimit('gpt-5.5'), Math.floor(272000 * 0.98));
+    });
+
     await t.test('handles model ID without agent prefix', () => {
         // Direct model ID without colon
         const result = getEffectiveTokenLimit('claude-opus-4-5-20251101', 50);
@@ -86,10 +93,9 @@ test('getEffectiveTokenLimit - agent:model format handling', async (t) => {
     });
 
     await t.test('handles edge case of model ID containing multiple colons', () => {
-        // A model ID like "agent:model:with:colons" extracts only the first segment after colon
-        // This tests the split(':')[1] behavior which gets "model" (not "model:with:colons")
+        // A model ID like "agent:model:with:colons" extracts everything after the first colon
         const result = getEffectiveTokenLimit('agent:model:with:colons', 50);
-        // Since "model" won't be found in MODEL_INFO_MAP, it should use default
+        // Since "model:with:colons" won't be found in MODEL_INFO_MAP, it should use default
         const defaultResult = getEffectiveTokenLimit(undefined, 50);
         assert.strictEqual(result, defaultResult, 'Should use default for unknown model segment after extracting');
     });
@@ -130,11 +136,11 @@ test('getEffectiveTokenLimit - math accuracy', async (t) => {
         assert.strictEqual(resultGeminiAt100, expectedGeminiAt100, 'Gemini at level 100 should calculate correctly');
         assert.strictEqual(resultGeminiAt100, 980000, 'Gemini at level 100 should produce 980000');
 
-        // Codex models have 400K (400000) token limit
+        // Codex models are capped to the CLI usable input limit
         const resultCodexAt100 = getEffectiveTokenLimit('gpt-5.4', 100);
-        const expectedCodexAt100 = Math.floor(400000 * (100 / 100) * 0.98);
+        const expectedCodexAt100 = Math.floor(272000 * (100 / 100) * 0.98);
         assert.strictEqual(resultCodexAt100, expectedCodexAt100, 'Codex at level 100 should calculate correctly');
-        assert.strictEqual(resultCodexAt100, 392000, 'Codex at level 100 should produce 392000');
+        assert.strictEqual(resultCodexAt100, 266560, 'Codex at level 100 should produce 266560');
     });
 
     await t.test('result scales linearly with context level', () => {
@@ -257,53 +263,53 @@ test('getModelHardLimit - all 18 known models', async (t) => {
         assert.strictEqual(haikuLimit, 196000, 'Claude Haiku 4.5 hard limit should be 196000');
     });
 
-    await t.test('Codex models (9 models, 400K context)', () => {
-        const expectedCodexLimit = Math.floor(400000 * 0.98); // 392000
+    await t.test('Codex models use CLI input cap', () => {
+        const expectedCodexLimit = Math.floor(272000 * 0.98);
 
         // GPT-5.5
         const gpt55Limit = getModelHardLimit('gpt-5.5');
-        assert.strictEqual(gpt55Limit, expectedCodexLimit, 'GPT-5.5 should return 98% of 400K');
-        assert.strictEqual(gpt55Limit, 392000, 'GPT-5.5 hard limit should be 392000');
+        assert.strictEqual(gpt55Limit, expectedCodexLimit, 'GPT-5.5 should return 98% of Codex CLI cap');
+        assert.strictEqual(gpt55Limit, 266560, 'GPT-5.5 hard limit should be 266560');
 
         // GPT-5.4
         const gpt54Limit = getModelHardLimit('gpt-5.4');
-        assert.strictEqual(gpt54Limit, expectedCodexLimit, 'GPT-5.4 should return 98% of 400K');
-        assert.strictEqual(gpt54Limit, 392000, 'GPT-5.4 hard limit should be 392000');
+        assert.strictEqual(gpt54Limit, expectedCodexLimit, 'GPT-5.4 should return 98% of Codex CLI cap');
+        assert.strictEqual(gpt54Limit, 266560, 'GPT-5.4 hard limit should be 266560');
 
         // GPT-5.4 Mini
         const gpt54MiniLimit = getModelHardLimit('gpt-5.4-mini');
-        assert.strictEqual(gpt54MiniLimit, expectedCodexLimit, 'GPT-5.4 Mini should return 98% of 400K');
-        assert.strictEqual(gpt54MiniLimit, 392000, 'GPT-5.4 Mini hard limit should be 392000');
+        assert.strictEqual(gpt54MiniLimit, expectedCodexLimit, 'GPT-5.4 Mini should return 98% of Codex CLI cap');
+        assert.strictEqual(gpt54MiniLimit, 266560, 'GPT-5.4 Mini hard limit should be 266560');
 
         // GPT-5.3 Codex
         const gpt53CodexLimit = getModelHardLimit('gpt-5.3-codex');
-        assert.strictEqual(gpt53CodexLimit, expectedCodexLimit, 'GPT-5.3 Codex should return 98% of 400K');
-        assert.strictEqual(gpt53CodexLimit, 392000, 'GPT-5.3 Codex hard limit should be 392000');
+        assert.strictEqual(gpt53CodexLimit, expectedCodexLimit, 'GPT-5.3 Codex should return 98% of Codex CLI cap');
+        assert.strictEqual(gpt53CodexLimit, 266560, 'GPT-5.3 Codex hard limit should be 266560');
 
         // GPT-5.3 Codex Spark
         const gpt53SparkLimit = getModelHardLimit('gpt-5.3-codex-spark');
-        assert.strictEqual(gpt53SparkLimit, expectedCodexLimit, 'GPT-5.3 Codex Spark should return 98% of 400K');
-        assert.strictEqual(gpt53SparkLimit, 392000, 'GPT-5.3 Codex Spark hard limit should be 392000');
+        assert.strictEqual(gpt53SparkLimit, expectedCodexLimit, 'GPT-5.3 Codex Spark should return 98% of Codex CLI cap');
+        assert.strictEqual(gpt53SparkLimit, 266560, 'GPT-5.3 Codex Spark hard limit should be 266560');
 
         // GPT-5.2 Codex
         const gpt52CodexLimit = getModelHardLimit('gpt-5.2-codex');
-        assert.strictEqual(gpt52CodexLimit, expectedCodexLimit, 'GPT-5.2 Codex should return 98% of 400K');
-        assert.strictEqual(gpt52CodexLimit, 392000, 'GPT-5.2 Codex hard limit should be 392000');
+        assert.strictEqual(gpt52CodexLimit, expectedCodexLimit, 'GPT-5.2 Codex should return 98% of Codex CLI cap');
+        assert.strictEqual(gpt52CodexLimit, 266560, 'GPT-5.2 Codex hard limit should be 266560');
 
         // GPT-5.2
         const gpt52Limit = getModelHardLimit('gpt-5.2');
-        assert.strictEqual(gpt52Limit, expectedCodexLimit, 'GPT-5.2 should return 98% of 400K');
-        assert.strictEqual(gpt52Limit, 392000, 'GPT-5.2 hard limit should be 392000');
+        assert.strictEqual(gpt52Limit, expectedCodexLimit, 'GPT-5.2 should return 98% of Codex CLI cap');
+        assert.strictEqual(gpt52Limit, 266560, 'GPT-5.2 hard limit should be 266560');
 
         // GPT-5.1 Codex Max
         const codexMaxLimit = getModelHardLimit('gpt-5.1-codex-max');
-        assert.strictEqual(codexMaxLimit, expectedCodexLimit, 'GPT-5.1 Codex Max should return 98% of 400K');
-        assert.strictEqual(codexMaxLimit, 392000, 'GPT-5.1 Codex Max hard limit should be 392000');
+        assert.strictEqual(codexMaxLimit, expectedCodexLimit, 'GPT-5.1 Codex Max should return 98% of Codex CLI cap');
+        assert.strictEqual(codexMaxLimit, 266560, 'GPT-5.1 Codex Max hard limit should be 266560');
 
         // GPT-5.1 Codex Mini
         const codexMiniLimit = getModelHardLimit('gpt-5.1-codex-mini');
-        assert.strictEqual(codexMiniLimit, expectedCodexLimit, 'GPT-5.1 Codex Mini should return 98% of 400K');
-        assert.strictEqual(codexMiniLimit, 392000, 'GPT-5.1 Codex Mini hard limit should be 392000');
+        assert.strictEqual(codexMiniLimit, expectedCodexLimit, 'GPT-5.1 Codex Mini should return 98% of Codex CLI cap');
+        assert.strictEqual(codexMiniLimit, 266560, 'GPT-5.1 Codex Mini hard limit should be 266560');
     });
 
     await t.test('Gemini models (5 models, 1M context)', () => {

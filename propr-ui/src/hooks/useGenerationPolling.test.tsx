@@ -31,6 +31,7 @@ describe('useGenerationPolling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-05T00:00:00Z'));
     draftUpdateListeners.clear();
     socketState.isConnected = true;
     mockGetDraft.mockResolvedValue({
@@ -335,5 +336,76 @@ describe('useGenerationPolling', () => {
     });
 
     expect(result.current.generationError).toBeNull();
+  });
+
+  it('ignores failed socket events from before the current run started', async () => {
+    const onComplete = vi.fn();
+    const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
+
+    vi.setSystemTime(new Date('2026-05-05T00:01:00Z'));
+
+    act(() => {
+      result.current.startPolling();
+    });
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-1',
+          step: 'complete',
+          status: 'failed',
+          timestamp: '2026-05-05T00:00:10Z',
+          draftStatus: 'failed',
+          generationTrace: {
+            steps: [
+              { name: 'relevance', status: 'completed' },
+              { name: 'context', status: 'completed' },
+              { name: 'llm', status: 'failed' },
+            ],
+            error: 'Old Codex failure',
+          },
+        }))
+      );
+    });
+
+    expect(result.current.generationError).toBeNull();
+    expect(result.current.isGenerating).toBe(true);
+  });
+
+  it('clears stale trace errors when polling finds a completed draft', async () => {
+    const onComplete = vi.fn();
+    socketState.isConnected = false;
+    mockGetDraft.mockResolvedValueOnce({
+      draft_id: 'draft-1',
+      repository: 'integry/propr',
+      initial_prompt: 'Test prompt',
+      status: 'review',
+      attachments: [],
+      created_at: '2026-05-05T00:00:00Z',
+      generation_trace: {
+        steps: [
+          { name: 'relevance', status: 'completed' },
+          { name: 'context', status: 'completed' },
+          { name: 'llm', status: 'completed' },
+        ],
+        error: 'Old Codex failure',
+      },
+    });
+    const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
+
+    act(() => {
+      result.current.setGenerationError('Old Codex failure');
+      result.current.startPolling();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
+
+    expect(result.current.generationError).toBeNull();
+    expect(result.current.isGenerating).toBe(false);
+    expect(onComplete).toHaveBeenCalled();
   });
 });

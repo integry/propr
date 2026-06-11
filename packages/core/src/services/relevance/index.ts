@@ -12,9 +12,14 @@ export {
   getRepositorySummaries,
   clearRepositorySummaries
 } from './summaryMiner.js';
+export {
+  scanProcessableGitFiles,
+  shouldProcessFilePath,
+  isProcessableFile
+} from './summaryFileFilter.js';
 export type {
   FileSummary,
   DirectorySummary,
-  GitFileInfo,
   IndexingOptions
 } from './summaryMiner.js';
+export type { GitFileInfo } from './summaryFileFilter.js';

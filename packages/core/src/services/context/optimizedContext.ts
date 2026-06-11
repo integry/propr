@@ -5,9 +5,112 @@
 import { pack } from 'repomix';
 import type { GenerateOptimizedContextOptions } from './types.js';
 
+interface FileRemovalPlan {
+  filesToRemove: string[];
+  tokensFreed: number;
+  nonFileTokens: number;
+  targetFileTokens: number;
+  estimatedRemainingTokens: number;
+}
+
+const FILE_TOKEN_BUDGET_SAFETY_RATIO = 0.98;
+const CONTEXT_FILL_STOP_RATIO = 0.99;
+const MIN_FIXED_OVERHEAD_TOKENS = 2_000;
+const FIXED_OVERHEAD_LIMIT_RATIO = 0.05;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function buildCompactRepomixConfig(baseConfig: any) {
+  return {
+    ...baseConfig,
+    output: {
+      ...baseConfig.output,
+      fileSummary: false,
+      directoryStructure: false,
+      includeFullDirectoryStructure: false,
+      topFilesLength: 0,
+    },
+  };
+}
+
+export function planFilesToRemoveForTokenLimit(
+  currentFiles: string[],
+  fileTokenCounts: Record<string, number>,
+  totalTokens: number,
+  tiktokenLimit: number,
+): FileRemovalPlan {
+  const filesWithTokens = currentFiles.map(path => ({
+    path,
+    tokens: fileTokenCounts[path] || 0,
+  }));
+  const rawFileTokens = filesWithTokens.reduce((sum, file) => sum + file.tokens, 0);
+  const rawNonFileTokens = Math.max(0, totalTokens - rawFileTokens);
+  if (rawFileTokens === 0 && totalTokens > tiktokenLimit && filesWithTokens.length > 0) {
+    const leastRelevantFile = filesWithTokens[filesWithTokens.length - 1];
+    return {
+      filesToRemove: [leastRelevantFile.path],
+      tokensFreed: 0,
+      nonFileTokens: totalTokens,
+      targetFileTokens: 0,
+      estimatedRemainingTokens: totalTokens,
+    };
+  }
+
+  const fixedOverheadLimit = Math.max(
+    MIN_FIXED_OVERHEAD_TOKENS,
+    Math.floor(tiktokenLimit * FIXED_OVERHEAD_LIMIT_RATIO),
+  );
+  const nonFileTokens = Math.min(rawNonFileTokens, fixedOverheadLimit);
+  const formattedFileTokens = rawFileTokens + Math.max(0, rawNonFileTokens - nonFileTokens);
+  const fileTokenScale = rawFileTokens > 0 ? formattedFileTokens / rawFileTokens : 1;
+  const filesWithEffectiveTokens = filesWithTokens.map(file => ({
+    ...file,
+    effectiveTokens: Math.ceil(file.tokens * fileTokenScale),
+  }));
+  const targetFileTokens = Math.max(
+    0,
+    Math.floor((tiktokenLimit - nonFileTokens) * FILE_TOKEN_BUDGET_SAFETY_RATIO),
+  );
+
+  const keptFiles = new Set<string>();
+  let keptTokens = 0;
+  const stopAtTokens = Math.floor(targetFileTokens * CONTEXT_FILL_STOP_RATIO);
+  for (const file of filesWithEffectiveTokens) {
+    if (keptTokens >= stopAtTokens) {
+      break;
+    }
+    if (keptTokens + file.effectiveTokens <= targetFileTokens) {
+      keptFiles.add(file.path);
+      keptTokens += file.effectiveTokens;
+    }
+  }
+
+  let filesToRemove = filesWithEffectiveTokens
+    .filter(file => !keptFiles.has(file.path))
+    .map(file => file.path);
+  let tokensFreed = filesWithEffectiveTokens
+    .filter(file => !keptFiles.has(file.path))
+    .reduce((sum, file) => sum + file.effectiveTokens, 0);
+
+  if (filesToRemove.length === 0 && totalTokens > tiktokenLimit && filesWithEffectiveTokens.length > 0) {
+    const leastRelevantFile = filesWithEffectiveTokens[filesWithEffectiveTokens.length - 1];
+    filesToRemove = [leastRelevantFile.path];
+    tokensFreed = leastRelevantFile.effectiveTokens;
+    keptTokens = Math.max(0, keptTokens - leastRelevantFile.effectiveTokens);
+  }
+
+  return {
+    filesToRemove,
+    tokensFreed,
+    nonFileTokens,
+    targetFileTokens,
+    estimatedRemainingTokens: nonFileTokens + keptTokens,
+  };
+}
+
 export async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
   const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, writeOutput, noopClipboard } = options;
   let currentFiles = [...initialFiles];
+  const optimizedBaseConfig = buildCompactRepomixConfig(baseConfig);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let result: any;
   let iterations = 0;
@@ -15,7 +118,7 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
   // Keep iterating until context fits or no files remain
   while (currentFiles.length > 0) {
     iterations++;
-    const limitedConfig = { ...baseConfig, include: currentFiles };
+    const limitedConfig = { ...optimizedBaseConfig, include: currentFiles };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     result = await (pack as any)([repoPath], limitedConfig, () => {}, {
       writeOutputToDisk: writeOutput,
@@ -37,49 +140,9 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
       'Context still exceeds token limit, removing least relevant files'
     );
 
-    // Files are ordered by relevance (most relevant first), so remove from the end
-    // Remove a portion of files each iteration to progressively reduce context
     const fileTokensInResult = result.fileTokenCounts as Record<string, number>;
-
-    // Calculate total tokens in files
-    const totalFileTokens = currentFiles.reduce((sum, f) => sum + (fileTokensInResult[f] || 0), 0);
-
-    // If overage is larger than total file tokens, we can't fix it by removing files alone
-    // In that case, remove ~30% of files per iteration to make progress
-    const tokensToFree = Math.min(overage * 1.1, totalFileTokens * 0.3);
-
-    // Sort all files by a combined score of relevance (position) and size
-    // Files at the end of the list are least relevant
-    const filesWithScore = currentFiles.map((f, index) => ({
-      path: f,
-      tokens: fileTokensInResult[f] || 0,
-      relevanceScore: currentFiles.length - index, // Higher = more relevant
-    }));
-
-    // Sort by: least relevant first, then by largest first within similar relevance
-    filesWithScore.sort((a, b) => {
-      // Primary: relevance (lower = remove first)
-      const relevanceDiff = a.relevanceScore - b.relevanceScore;
-      if (Math.abs(relevanceDiff) > currentFiles.length * 0.2) return relevanceDiff;
-      // Secondary: size (larger = remove first to free more tokens)
-      return b.tokens - a.tokens;
-    });
-
-    let tokensFreed = 0;
-    const filesToRemove: string[] = [];
-
-    for (const file of filesWithScore) {
-      if (tokensFreed >= tokensToFree) break;
-      filesToRemove.push(file.path);
-      tokensFreed += file.tokens;
-    }
-
-    // Ensure we remove at least some files to make progress
-    if (filesToRemove.length === 0 && currentFiles.length > 0) {
-      // Remove at least the least relevant file
-      filesToRemove.push(filesWithScore[0].path);
-      tokensFreed = filesWithScore[0].tokens;
-    }
+    const removalPlan = planFilesToRemoveForTokenLimit(currentFiles, fileTokensInResult, result.totalTokens, tiktokenLimit);
+    const { filesToRemove, tokensFreed } = removalPlan;
 
     if (filesToRemove.length === 0) {
       contextLogger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
@@ -87,7 +150,14 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
     }
 
     contextLogger.info(
-      { removingFiles: filesToRemove.length, tokensFreed, filesToRemove: filesToRemove.slice(0, 5) },
+      {
+        removingFiles: filesToRemove.length,
+        tokensFreed,
+        nonFileTokens: removalPlan.nonFileTokens,
+        targetFileTokens: removalPlan.targetFileTokens,
+        estimatedRemainingTokens: removalPlan.estimatedRemainingTokens,
+        filesToRemove: filesToRemove.slice(0, 5),
+      },
       'Removing least relevant files to fit within token limit'
     );
 
@@ -96,18 +166,18 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
   }
 
   if (currentFiles.length === 0) {
-    contextLogger.warn('All files removed, running final pack with empty file list');
-    // Run one final pack with no files to get minimal context (just XML structure)
-    const emptyConfig = { ...baseConfig, include: [] };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    result = await (pack as any)([repoPath], emptyConfig, () => {}, {
-      writeOutputToDisk: writeOutput,
-      copyToClipboardIfEnabled: noopClipboard,
-    });
-    contextLogger.info(
-      { totalTokens: result.totalTokens, tiktokenLimit },
-      'Generated minimal context with no files'
-    );
+    contextLogger.warn({ initialFiles: initialFiles.length }, 'All files removed after compact context reduction');
+    if (initialFiles.length > 0) {
+      const fallbackFiles = [initialFiles[0]];
+      contextLogger.warn({ fallbackFiles }, 'Retrying with the highest-priority file instead of returning empty context');
+      const fallbackConfig = { ...optimizedBaseConfig, include: fallbackFiles };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      result = await (pack as any)([repoPath], fallbackConfig, () => {}, {
+        writeOutputToDisk: writeOutput,
+        copyToClipboardIfEnabled: noopClipboard,
+      });
+      currentFiles = fallbackFiles;
+    }
   }
 
   return { result, currentFiles };

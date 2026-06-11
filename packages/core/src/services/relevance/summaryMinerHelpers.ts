@@ -5,7 +5,7 @@ import logger from '../../utils/logger.js';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
-import type { GitFileInfo } from './summaryMiner.js';
+import type { GitFileInfo } from './summaryFileFilter.js';
 import {
   logSummarizationCall,
   getSummarizationMetricsSummary,
@@ -15,6 +15,19 @@ import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './su
 import { aggregateDirectories } from './summaryMinerDirectories.js';
 import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, publishProgress } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { isProcessableFile } from './summaryFileFilter.js';
+import { withRetry } from '../../utils/retryHandler.js';
+
+// Retry transient agent failures (network blips, rate limits, 5xx) before
+// counting a batch as failed. Persistent errors (quota exhaustion, malformed
+// output) fall through after a bounded number of attempts so the run still
+// finishes promptly. See isRetryableError in retryHandler for classification.
+const SUMMARIZATION_RETRY = {
+  maxAttempts: 3,
+  baseDelay: 2000,
+  maxDelay: 15000,
+  exponentialBase: 2,
+} as const;
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -57,7 +70,6 @@ const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
 const DEFAULT_MAX_BATCH_TOKENS = 100_000; // Keep prompts well below context limits so agents reliably return JSON
 const DEFAULT_MAX_BATCH_FILES = 20; // Keep JSON responses reliable for repos with many small files
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
-const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100KB max file size
 
 // Default instructions for the summarization prompt (exported for UI display)
 export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
@@ -143,8 +155,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     let content: string;
     try {
       const stats = fs.statSync(filePath);
-      if (stats.size > MAX_FILE_SIZE_BYTES) {
-        log.debug({ path: file.path, size: stats.size }, 'Skipping large file');
+      if (!isProcessableFile(repoPath, file.path)) {
+        log.debug({ path: file.path, size: stats.size }, 'Skipping non-summarizable file');
         continue;
       }
       content = fs.readFileSync(filePath, 'utf8');
@@ -320,13 +332,21 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   let errorMessage: string | undefined;
 
   try {
-    const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
-    const response = analysisResult.response;
-    const summaries = parseBatchResponse(response);
-
-    if (summaries.length === 0) {
-      throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
-    }
+    const summaries = await withRetry(
+      async () => {
+        const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
+        if (!analysisResult.success) {
+          throw new Error(analysisResult.error || 'Summarization agent analysis failed');
+        }
+        const parsed = parseBatchResponse(analysisResult.response);
+        if (parsed.length === 0) {
+          throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
+        }
+        return parsed;
+      },
+      SUMMARIZATION_RETRY,
+      `batch_summarization:${fullName}`
+    );
 
     // Save summaries to DB with the actual model used
     await saveBatchSummaries({ fullName, batch, summaries, modelUsed, branch });

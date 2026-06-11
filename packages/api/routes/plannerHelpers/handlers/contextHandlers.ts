@@ -4,7 +4,17 @@
 
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
-import { generateContextPreview, BranchNotFoundError, ensureRepoCloned, generateCorrelationId, loadSettings } from '@propr/core';
+import crypto from 'crypto';
+import {
+  generateContextPreview,
+  BranchNotFoundError,
+  ensureRepoCloned,
+  generateCorrelationId,
+  loadSettings,
+  getEventPublisher,
+  parseGenerationTrace,
+  buildDraftUpdateTraceSnapshot
+} from '@propr/core';
 import type { Granularity } from '@propr/core';
 import type { OwnershipResult } from '../types.js';
 import { getRepoAuthToken } from '../auth.js';
@@ -49,6 +59,28 @@ function buildUpdatedConfig(options: BuildUpdatedConfigOptions): Record<string, 
   return updatedConfig;
 }
 
+async function storePreviewFailure(
+  db: Knex | undefined,
+  draftId: string,
+  previewRequestId: string,
+  error: string
+): Promise<void> {
+  if (!db) return;
+  const draft = await db('task_drafts').where({ draft_id: draftId }).select('context_config').first();
+  let contextConfig: Record<string, unknown> = {};
+  try {
+    contextConfig = typeof draft?.context_config === 'string'
+      ? JSON.parse(draft.context_config)
+      : (draft?.context_config || {});
+  } catch {
+    contextConfig = {};
+  }
+  await db('task_drafts').where({ draft_id: draftId }).update({
+    context_config: JSON.stringify({ ...contextConfig, lastPreviewRequestId: previewRequestId, lastPreviewError: error }),
+    updated_at: db.fn.now()
+  });
+}
+
 export function createPreviewContextHandler(deps: PreviewContextDeps) {
   return async function previewContext(req: Request, res: Response): Promise<void> {
     const validation = deps.validateInput(req.body);
@@ -56,6 +88,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
 
     const { draftId, prompt, baseBranch, granularity, contextLevel, compress, files, contextRepositories, generationModel: requestGenerationModel, excludedFiles } = req.body;
     const correlationId = generateCorrelationId();
+    const previewRequestId = crypto.randomUUID();
 
     try {
       const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'context_config']);
@@ -89,8 +122,40 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         });
       }
 
-      const result = await generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken: authToken, excludedFiles });
-      res.json(result);
+      void generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken: authToken, excludedFiles, previewRequestId })
+        .then(async (result) => {
+          const eventPublisher = getEventPublisher();
+          const draftWithTrace = deps.db ? await deps.db('task_drafts').where({ draft_id: draftId }).select('generation_trace', 'context_config').first() : null;
+          const generationTrace = buildDraftUpdateTraceSnapshot(parseGenerationTrace(draftWithTrace?.generation_trace));
+          await eventPublisher.publishDraftUpdate({
+            draftId,
+            step: 'context',
+            status: 'completed',
+            data: {
+              previewReady: true,
+              previewRequestId,
+              totalTokens: result.stats.totalTokens,
+              fileCount: result.stats.fileCount
+            },
+            draftStatus: 'generating',
+            generationTrace
+          });
+        })
+        .catch(async (error) => {
+          console.error('Preview context background error:', error);
+          const errorMessage = error instanceof Error ? error.message : 'Failed to preview context';
+          await storePreviewFailure(deps.db, draftId, previewRequestId, errorMessage);
+          const eventPublisher = getEventPublisher();
+          await eventPublisher.publishDraftUpdate({
+            draftId,
+            step: 'context',
+            status: 'failed',
+            data: { error: errorMessage, previewRequestId },
+            draftStatus: 'generating'
+          });
+        });
+
+      res.status(202).json({ pending: true, draftId, previewRequestId });
     } catch (error) {
       console.error('Preview context error:', error);
       if (error instanceof BranchNotFoundError) { res.status(400).json({ error: error.message }); return; }

@@ -1,5 +1,5 @@
 import { AgentConfig } from '../../api/proprApi';
-import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo } from '../../config/modelDefinitions';
+import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo, buildDynamicLlmLabel } from '../../config/modelDefinitions';
 
 export interface ModelOption {
   value: string;
@@ -102,11 +102,15 @@ function toTitleCase(value: string): string {
     .join(' ');
 }
 
+function buildSyntheticGithubLabel(agentType: AgentType, modelId: string): string {
+  if (agentType === 'opencode') return buildDynamicLlmLabel(agentType, modelId);
+  return `llm-${agentType}-${modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
+}
+
 function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {
   const providerSeparator = modelId.includes('/') ? '/' : modelId.includes(':') ? ':' : '';
   const [provider, rawName] = providerSeparator ? modelId.split(providerSeparator, 2) : ['', modelId];
   const shortAlias = (rawName || modelId).toLowerCase().replace(/[^a-z0-9-]+/g, '');
-  const labelModelId = modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   const providerPrefix = provider ? `${toTitleCase(provider)} ` : '';
 
   return {
@@ -114,7 +118,7 @@ function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {
     name: `${providerPrefix}${toTitleCase(rawName || modelId)}`,
     shortName: toTitleCase(rawName || modelId),
     shortAlias,
-    githubLabel: `llm-${agentType}-${labelModelId}`,
+    githubLabel: buildSyntheticGithubLabel(agentType, modelId),
     contextWindow: '',
     maxTokens: 0,
     openRouterId: modelId,

@@ -30,6 +30,7 @@ export function useGenerationPolling({
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [connectedActivityTick, setConnectedActivityTick] = useState(0);
   const isGeneratingRef = useRef<boolean>(false);
+  const generationStartedAtRef = useRef<number>(0);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const { subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, isConnected } = useSocket();
@@ -37,7 +38,22 @@ export function useGenerationPolling({
   const handleDraftUpdate = useCallback((payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId || !isGeneratingRef.current) return;
 
+    const payloadTime = Date.parse(payload.timestamp);
+    if (Number.isFinite(payloadTime) && payloadTime < generationStartedAtRef.current) {
+      return;
+    }
+
     setConnectedActivityTick((tick) => tick + 1);
+
+    // React to successful terminal status before inspecting trace errors so a
+    // stale error field cannot keep the banner visible after a completed retry.
+    if (payload.draftStatus === 'review') {
+      setGenerationError(null);
+      setIsGenerating(false);
+      isGeneratingRef.current = false;
+      onCompleteRef.current();
+      return;
+    }
 
     // Use the trace snapshot from the payload when available
     if (payload.generationTrace) {
@@ -48,14 +64,6 @@ export function useGenerationPolling({
         isGeneratingRef.current = false;
         return;
       }
-    }
-
-    // React to terminal draft statuses carried in the payload
-    if (payload.draftStatus === 'review') {
-      setIsGenerating(false);
-      isGeneratingRef.current = false;
-      onCompleteRef.current();
-      return;
     }
 
     if (payload.draftStatus === 'failed') {
@@ -87,6 +95,14 @@ export function useGenerationPolling({
       const updatedDraft = await getDraft(draftId);
       setConnectedActivityTick((tick) => tick + 1);
 
+      if (updatedDraft.status === 'review') {
+        setGenerationError(null);
+        setIsGenerating(false);
+        isGeneratingRef.current = false;
+        onCompleteRef.current();
+        return;
+      }
+
       if (updatedDraft.generation_trace) {
         setGenerationTrace(updatedDraft.generation_trace);
         const trace = updatedDraft.generation_trace as GenerationTrace & { error?: string };
@@ -96,13 +112,6 @@ export function useGenerationPolling({
           isGeneratingRef.current = false;
           return;
         }
-      }
-
-      if (updatedDraft.status === 'review') {
-        setIsGenerating(false);
-        isGeneratingRef.current = false;
-        onCompleteRef.current();
-        return;
       }
 
       if (updatedDraft.status === 'failed') {
@@ -160,6 +169,7 @@ export function useGenerationPolling({
   }, []);
 
   const startPolling = useCallback(() => {
+    generationStartedAtRef.current = Date.now();
     setIsGenerating(true);
     isGeneratingRef.current = true;
     setConnectedActivityTick((tick) => tick + 1);

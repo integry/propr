@@ -69,6 +69,9 @@ const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel()
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
 const ENABLE_WEBHOOKS = parseTruthyEnvValue(process.env.ENABLE_GITHUB_WEBHOOKS);
+const ENABLE_PR_COMMENT_POLLING = process.env.ENABLE_PR_COMMENT_POLLING === undefined
+    ? true
+    : parseTruthyEnvValue(process.env.ENABLE_PR_COMMENT_POLLING);
 
 // Redis channel for real-time config update notifications
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
@@ -118,11 +121,13 @@ async function pollForIssues(): Promise<DetectedIssue[]> {
                 }
             }
 
-            await pollForPullRequestComments(octokit, repoFullName, correlationId, {
-                redisClient,
-                PR_FOLLOWUP_TRIGGER_KEYWORDS,
-                MODEL_LABEL_PATTERN
-            });
+            if (ENABLE_PR_COMMENT_POLLING) {
+                await pollForPullRequestComments(octokit, repoFullName, correlationId, {
+                    redisClient,
+                    PR_FOLLOWUP_TRIGGER_KEYWORDS,
+                    MODEL_LABEL_PATTERN
+                });
+            }
 
         } catch (error) {
             handleError(error, `Error polling repository ${repoFullName}`, { correlationId });

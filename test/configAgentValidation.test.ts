@@ -24,8 +24,8 @@ describe('agent config validation', () => {
             enabled: true,
             dockerImage: 'propr/agent-opencode:latest',
             configPath: '~/.config/opencode',
-            supportedModels: ['opencode/minimax-m3-free'],
-            defaultModel: 'opencode/minimax-m3-free',
+            supportedModels: ['opencode-minimax-m3-free'],
+            defaultModel: 'opencode-minimax-m3-free',
             cliVersionType: 'default'
         }];
 

@@ -160,6 +160,9 @@ services:
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
+      # Vibe prompt cache — mounted by default so indexing summarization can
+      # pass large prompts to sibling Vibe containers via the host Docker daemon.
+      - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
     env_file:
       - .env
     environment:
