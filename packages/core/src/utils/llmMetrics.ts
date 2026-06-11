@@ -201,6 +201,24 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
         await db('llm_execution_details').insert(detailsArray);
     }
 }
+/**
+ * Whether a recorded execution should trigger a post-execution "task analysis".
+ *
+ * Only real implementation runs (issue / pr-comments-batch / merge-conflict)
+ * produce a commit/diff worth analyzing, and they are recorded with no explicit
+ * executionType — so allow undefined/null or 'implementation'. Every other type
+ * is excluded by default.
+ *
+ * This is the anti-recursion guard: the analysis itself runs claude and records
+ * its own execution with executionType 'task-analysis'. If that re-enqueued an
+ * analysis, it would analyze-the-analysis forever (the analysis-processor loop
+ * that wedged production). An allowlist means any future executionType is
+ * excluded by default and cannot re-introduce the recursion.
+ */
+export function shouldEnqueueExecutionAnalysis(executionType?: string | null): boolean {
+    return executionType == null || executionType === 'implementation';
+}
+
 async function enqueueAnalysisTask(taskId: string, executionId: string, sessionId: string, correlationId?: string): Promise<void> {
     try {
         const queue = await getAnalysisQueue();
@@ -250,12 +268,22 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
 
-        // Only enqueue analysis task if we have a valid task and it's not a review task
-        // Reviews are read-only and don't produce commits to analyze
-        if (effectiveTaskId && executionType !== 'pr-review') {
+        // Only enqueue post-execution analysis for real implementation runs — the
+        // only ones that produce a commit/diff worth analyzing. Implementation
+        // executions (issue / pr-comments-batch / merge-conflict) are recorded with
+        // no explicit executionType, so allow undefined or 'implementation'.
+        //
+        // Excluding everything else is CRITICAL, not just cosmetic: the analysis
+        // itself runs claude (executeClaudeAnalysis) which records its own execution
+        // with executionType 'task-analysis'. Under the old `!== 'pr-review'` gate
+        // that re-enqueued another analysis → analyze-the-analysis forever, an
+        // infinite recursion in the analysis-processor queue (execution IDs climbing
+        // every ~80s) that wedged production. Reviews/chat/planning/summaries/titles
+        // produce no commit and shouldn't be analyzed either.
+        if (effectiveTaskId && shouldEnqueueExecutionAnalysis(executionType)) {
             await enqueueAnalysisTask(effectiveTaskId, executionId, sessionId, correlationId);
-        } else if (executionType === 'pr-review') {
-            logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'Skipping analysis queue for pr-review execution (read-only)');
+        } else {
+            logger.debug({ correlationId, taskId: effectiveTaskId, executionId, executionType }, 'Skipping analysis queue (non-implementation execution)');
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
