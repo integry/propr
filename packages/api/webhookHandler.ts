@@ -104,6 +104,8 @@ export interface MergedPRCancellationSummary {
   attempted: number;
   cancelled: number;
   failed: number;
+  /** Tasks that were no longer active by the time the stop ran (finished or vanished). */
+  skipped: number;
 }
 
 /**
@@ -112,6 +114,18 @@ export interface MergedPRCancellationSummary {
  * delivery toward its timeout when a PR has several active tasks.
  */
 const MERGED_PR_STOP_CONCURRENCY = 4;
+
+/**
+ * Maximum time the webhook response waits for merge-triggered cancellation
+ * before continuing with normal processing. GitHub fails deliveries after
+ * ~10s, and even with bounded stop concurrency a PR with many active tasks
+ * (or slow container stops) can exceed that. When the budget is exhausted the
+ * remaining stops keep running in the background — a bounded version of the
+ * cancel-before-processing ordering, preferred over a timed-out delivery:
+ * GitHub's retry of a timed-out delivery would be rejected as a duplicate, so
+ * the close-event processor would never run at all.
+ */
+export const MERGED_PR_CANCELLATION_WAIT_MS = 8_000;
 
 /**
  * Cancels all still-active tasks and queued jobs associated with a merged PR.
@@ -129,7 +143,7 @@ export async function cancelActiveTasksForMergedPR(
   for (const task of activeTasks) idsToStop.add(task.taskId);
   for (const job of queuedJobs) idsToStop.add(job.jobId);
 
-  if (idsToStop.size === 0) return { attempted: 0, cancelled: 0, failed: 0 };
+  if (idsToStop.size === 0) return { attempted: 0, cancelled: 0, failed: 0, skipped: 0 };
 
   const context: MergedPRStopContext = {
     requestedBy: 'system',
@@ -140,6 +154,7 @@ export async function cancelActiveTasksForMergedPR(
 
   let cancelled = 0;
   let failed = 0;
+  let skipped = 0;
   const pending = [...idsToStop];
   const stopNext = async (): Promise<void> => {
     for (let id = pending.shift(); id !== undefined; id = pending.shift()) {
@@ -147,6 +162,7 @@ export async function cancelActiveTasksForMergedPR(
         const result = await deps.stopTask(id, context);
         if (result && result.success === false) {
           // The task finished (or vanished) between lookup and stop — nothing to cancel.
+          skipped++;
           console.log(`[webhook] Task ${id} for merged PR ${repository}#${prNumber} was no longer active`);
         } else {
           cancelled++;
@@ -162,8 +178,8 @@ export async function cancelActiveTasksForMergedPR(
   };
   await Promise.all(Array.from({ length: Math.min(MERGED_PR_STOP_CONCURRENCY, pending.length) }, () => stopNext()));
 
-  console.log(`[webhook] Merged PR ${repository}#${prNumber}: cancelled ${cancelled}/${idsToStop.size} active task(s)${failed > 0 ? `, ${failed} failed` : ''}`);
-  return { attempted: idsToStop.size, cancelled, failed };
+  console.log(`[webhook] Merged PR ${repository}#${prNumber}: cancelled ${cancelled}/${idsToStop.size} active task(s)${skipped > 0 ? `, ${skipped} no longer active` : ''}${failed > 0 ? `, ${failed} failed` : ''}`);
+  return { attempted: idsToStop.size, cancelled, failed, skipped };
 }
 
 /**
@@ -272,15 +288,25 @@ export async function handleWebhookRequest(
   // deletion), so a cancelled task cannot race them by pushing to the merged
   // branch or posting stale comments mid-cleanup. Nothing in the cancellation
   // path reads anything the processor writes, so there is no reverse dependency.
+  // The wait is bounded by MERGED_PR_CANCELLATION_WAIT_MS so a PR with many
+  // active tasks cannot push the delivery past GitHub's webhook timeout.
   // Failures here are logged but must never fail the webhook delivery.
   if (deps.mergedPRTaskCanceller && isMergedPullRequestClose(rawEvent, payload)) {
     const repository = payload.repository?.full_name;
     const prNumber = (payload.pull_request as { number?: number } | undefined)?.number;
     if (repository && typeof prNumber === 'number') {
-      try {
-        await cancelActiveTasksForMergedPR(repository, prNumber, deps.mergedPRTaskCanceller);
-      } catch (error) {
-        console.error(`[webhook] Merge-triggered task cancellation failed for ${repository}#${prNumber}:`, error);
+      const cancellation = cancelActiveTasksForMergedPR(repository, prNumber, deps.mergedPRTaskCanceller)
+        .catch(error => {
+          console.error(`[webhook] Merge-triggered task cancellation failed for ${repository}#${prNumber}:`, error);
+        });
+      let waitTimer: NodeJS.Timeout | undefined;
+      const timedOut = await Promise.race([
+        cancellation.then(() => false),
+        new Promise<boolean>(resolve => { waitTimer = setTimeout(() => resolve(true), MERGED_PR_CANCELLATION_WAIT_MS); }),
+      ]);
+      clearTimeout(waitTimer);
+      if (timedOut) {
+        console.warn(`[webhook] Merge-triggered cancellation for ${repository}#${prNumber} exceeded ${MERGED_PR_CANCELLATION_WAIT_MS}ms; continuing webhook processing while the remaining stops finish in the background`);
       }
     }
   }

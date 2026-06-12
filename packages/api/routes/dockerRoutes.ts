@@ -55,11 +55,12 @@ export interface StopTaskExecutionOptions {
   cancellationReason?: string;
   /**
    * When true, the task is marked cancelled even if only the abort signal could
-   * be set (no container ID, or the container stop failed). Used by merge-triggered
-   * cancellation, which must durably record the cancellation instead of relying on
-   * the worker to observe the abort signal. The abort signal is left in place so
-   * the worker still terminates; its own terminal-state update is skipped because
-   * the task is already in a terminal state.
+   * be set (no container ID, the container stop failed, or an active queue job
+   * has not written worker state yet). Used by merge-triggered cancellation,
+   * which must durably record the cancellation instead of relying on the worker
+   * to observe the abort signal. The abort signal is left in place so the worker
+   * still terminates; its own terminal-state update is skipped because the task
+   * is already in a terminal state.
    */
   ensureCancelled?: boolean;
   /** Override the BullMQ queue lookup (used by tests). Defaults to getIssueQueue(). */
@@ -121,19 +122,42 @@ async function removeQueuedJobsForTask(taskIdOrJobId: string, taskId: string, op
   return { removed, jobData };
 }
 
-/** Returns true when the task has a job currently being processed by a queue worker. */
-async function hasActiveQueueJob(taskIdOrJobId: string, taskId: string, options: StopTaskExecutionOptions): Promise<boolean> {
+/** Finds a job currently being processed by a queue worker for the task, returning its data when present. */
+async function findActiveQueueJob(taskIdOrJobId: string, taskId: string, options: StopTaskExecutionOptions): Promise<{ active: boolean; jobData: Record<string, unknown> | null }> {
   try {
     const queue = options.getQueue ? await options.getQueue() : await getIssueQueue();
     const jobs = await queue.getJobs(['active']);
     for (const job of jobs) {
       const jobId = job.id != null ? String(job.id) : '';
-      if (jobId && jobMatchesTask(jobId, taskIdOrJobId, taskId)) return true;
+      if (jobId && jobMatchesTask(jobId, taskIdOrJobId, taskId)) {
+        const jobData = job.data && typeof job.data === 'object' ? job.data as Record<string, unknown> : null;
+        return { active: true, jobData };
+      }
     }
   } catch (queueError) {
     console.warn(`[stop-execution] Failed to inspect active queue jobs for task ${taskId}: ${(queueError as Error).message}`);
   }
-  return false;
+  return { active: false, jobData: null };
+}
+
+/**
+ * Parses a worker state value defensively. A corrupt or partial `worker:state`
+ * entry must not abort the stop operation — the task is treated as having no
+ * state, so the abort-signal and queued-job paths still run.
+ */
+function parseTaskState(taskId: string, stateData: string | null): TaskState | null {
+  if (!stateData) return null;
+  try {
+    const parsed = JSON.parse(stateData) as TaskState;
+    if (!Array.isArray(parsed?.history)) {
+      console.warn(`[stop-execution] Worker state for task ${taskId} has no history array; treating as missing`);
+      return null;
+    }
+    return parsed;
+  } catch (parseError) {
+    console.warn(`[stop-execution] Malformed worker state for task ${taskId}; treating as missing: ${(parseError as Error).message}`);
+    return null;
+  }
 }
 
 async function setAbortSignal(taskId: string, options: StopTaskExecutionOptions): Promise<void> {
@@ -171,7 +195,11 @@ function deriveIssueRefFromJobData(jobData: Record<string, unknown> | null): Iss
 async function ensureTaskStateForQueuedJob(taskId: string, jobData: Record<string, unknown> | null, options: StopTaskExecutionOptions): Promise<void> {
   const issueRef = deriveIssueRefFromJobData(jobData);
   if (!issueRef) {
-    console.warn(`[stop-execution] Cannot derive issue ref for queued task ${taskId}; cancellation reason may not be recorded`);
+    // Operational gap: without a repository + number the cancellation reason
+    // cannot be attached anywhere. Log the job-data shape so unsupported queue
+    // payloads are visible and can be added to deriveIssueRefFromJobData().
+    const jobDataKeys = jobData ? Object.keys(jobData).join(', ') || '(empty object)' : '(no job data)';
+    console.warn(`[stop-execution] Cannot derive issue ref for queued task ${taskId}; cancellation reason will not be recorded. Job data keys: ${jobDataKeys}`);
     return;
   }
   try {
@@ -197,12 +225,18 @@ async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<s
       }
     });
     console.log(`[stop-execution] Task ${taskId} marked as cancelled`);
-    await options.redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: 'Task cancelled successfully.', level: 'info' }));
-    return true;
   } catch (stateError) {
     console.warn(`[stop-execution] Failed to mark task as cancelled: ${(stateError as Error).message}`);
     return false;
   }
+  // The conversation append is informational; the cancellation is already
+  // durably recorded above, so a failure here must not report it as unrecorded.
+  try {
+    await options.redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: 'Task cancelled successfully.', level: 'info' }));
+  } catch (appendError) {
+    console.warn(`[stop-execution] Failed to append cancellation note to conversation for task ${taskId}: ${(appendError as Error).message}`);
+  }
+  return true;
 }
 
 /**
@@ -220,7 +254,7 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
   const markCancelled = (historyMetadata: Record<string, unknown>): Promise<boolean> => markTaskCancelledSafely(taskId, historyMetadata, options);
 
   const stateData = await redisClient.get(`worker:state:${taskId}`);
-  const state = stateData ? (JSON.parse(stateData) as TaskState) : null;
+  const state = parseTaskState(taskId, stateData);
   const currentState = state?.history[state.history.length - 1]?.state;
   const isRunning = !!currentState && ACTIVE_TASK_STATES.includes(currentState);
 
@@ -248,17 +282,30 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
       // A queue worker may have picked the job up without having written
       // worker:state yet. Set the abort signal so the worker terminates as soon
       // as it checks for it; the worker records the cancellation when it aborts.
-      if (await hasActiveQueueJob(taskIdOrJobId, taskId, options)) {
+      const activeJob = await findActiveQueueJob(taskIdOrJobId, taskId, options);
+      if (activeJob.active) {
         await setAbortSignal(taskId, options);
         await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: stopMessage, level: 'warning' }));
         console.log(`[stop-execution] Abort signal set for active queue job of task ${taskId} (no worker state yet)`);
+        let cancellationRecorded = false;
+        if (options.ensureCancelled) {
+          // Durably record the cancellation instead of relying solely on the
+          // worker to observe the abort signal. The worker may overwrite this
+          // state when it starts (createTaskState), but the abort signal —
+          // which carries the machine-readable reason — stays in place so the
+          // worker still terminates and re-records the cancellation itself;
+          // if the worker dies before writing state, this record remains as
+          // the durable audit trail.
+          await ensureTaskStateForQueuedJob(taskId, activeJob.jobData, options);
+          cancellationRecorded = await markCancelled({ abortSignalled: true, activeQueueJob: true });
+        }
         return {
           success: true,
           taskId,
           containerStopped: false,
           removedQueuedJobs: 0,
           abortSignalled: true,
-          cancellationRecorded: false,
+          cancellationRecorded,
           message: 'Stop request sent to worker. The execution will be terminated shortly.'
         };
       }
