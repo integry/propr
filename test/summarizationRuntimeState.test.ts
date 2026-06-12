@@ -14,7 +14,8 @@ const {
   loadSummarizationRuntimeState,
   recordPrimarySummarizationQuotaFailure,
   recordSummarizationCooldown,
-  getSummarizationCooldown
+  getSummarizationCooldown,
+  clearSummarizationPrimaryQuotaFailures
 } = await import('../packages/core/src/index.js');
 
 describe('summarization fallback runtime state', () => {
@@ -81,5 +82,25 @@ describe('summarization fallback runtime state', () => {
     const state = await loadSummarizationRuntimeState();
     assert.equal(state.warning?.mode, 'cooldown');
     assert.equal(Object.keys(state.cooldowns).length, 1);
+
+    const persisted = await db('system_configs').where({ key: 'summarization_runtime_state' }).first();
+    assert.ok(!String(persisted.value).includes('\\u0000'));
+  });
+
+  test('clears quota warning after primary summarization success', async () => {
+    await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary',
+      fallbackAgentAlias: 'fallback'
+    });
+
+    let state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 1);
+    assert.equal(state.warning?.mode, 'fallback_degraded');
+
+    await clearSummarizationPrimaryQuotaFailures();
+
+    state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 0);
+    assert.equal(state.warning, undefined);
   });
 });

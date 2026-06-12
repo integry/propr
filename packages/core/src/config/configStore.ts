@@ -9,8 +9,12 @@ type ConfigDbClient = Knex | Knex.Transaction;
  * Exported for reuse by sibling config modules.
  */
 export async function getConfig<T>(key: string, defaultValue: T): Promise<T> {
+    return getConfigWithClient(key, defaultValue, db);
+}
+
+export async function getConfigWithClient<T>(key: string, defaultValue: T, client: ConfigDbClient): Promise<T> {
     try {
-        const result = await db('system_configs').where({ key }).first();
+        const result = await client('system_configs').where({ key }).first();
         if (result && result.value !== undefined && result.value !== null) {
             return typeof result.value === 'string' ? JSON.parse(result.value) : result.value;
         }

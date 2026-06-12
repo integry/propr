@@ -322,14 +322,25 @@ async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Pro
       });
       await clearSummarizationPrimaryQuotaFailures();
     } catch (primaryError) {
-      if (!isQuotaExhaustionError(primaryError) || !fallbackAgent || !fallbackAgentAliasSetting) {
+      if (!isQuotaExhaustionError(primaryError)) {
         throw primaryError;
       }
 
+      const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
       await recordPrimarySummarizationQuotaFailure({
-        primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
+        primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting
       });
+      if (!fallbackAgent || !fallbackAgentAliasSetting) {
+        await recordSummarizationCooldown({
+          repository: fullName,
+          branch,
+          primaryAgentAlias,
+          reason: 'Primary directory summarization model is quota-limited and no fallback model is configured.'
+        });
+        throw primaryError;
+      }
+
       log.warn({
         error: (primaryError as Error).message,
         primaryAgentAlias: agent.config.alias,

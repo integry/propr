@@ -403,6 +403,21 @@ describe('isRetryableError', () => {
             }
         });
 
+        test('returns true for transient quota-shaped rate limits', () => {
+            const quotaMessages = [
+                'quota exceeded for tokens per minute, please try again',
+                'TPM quota exceeded; retry after 20 seconds',
+                'requests per minute quota exceeded'
+            ];
+            for (const message of quotaMessages) {
+                assert.strictEqual(
+                    isRetryableError({ status: 429, message }, baseConfig),
+                    true,
+                    message
+                );
+            }
+        });
+
         test('returns true for 500 Internal Server Error', () => {
             const error = { status: 500, message: 'Internal Server Error' };
             assert.strictEqual(isRetryableError(error, baseConfig), true);
@@ -585,16 +600,12 @@ describe('isRetryableError', () => {
     });
 
     describe('edge cases', () => {
-        test('throws on null error (implementation limitation)', () => {
-            // Note: The current implementation does not handle null/undefined gracefully
-            // It throws because it tries to access .code on null
-            assert.throws(() => isRetryableError(null, baseConfig), TypeError);
+        test('returns false for null error', () => {
+            assert.strictEqual(isRetryableError(null, baseConfig), false);
         });
 
-        test('throws on undefined error (implementation limitation)', () => {
-            // Note: The current implementation does not handle null/undefined gracefully
-            // It throws because it tries to access .code on undefined
-            assert.throws(() => isRetryableError(undefined, baseConfig), TypeError);
+        test('returns false for undefined error', () => {
+            assert.strictEqual(isRetryableError(undefined, baseConfig), false);
         });
 
         test('handles error with no properties', () => {

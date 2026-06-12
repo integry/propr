@@ -50,6 +50,8 @@ export async function identifyStaleFiles(
 }
 
 export async function deleteFileSummaries(paths: string[], branch: string): Promise<void> {
+  if (paths.length === 0) return;
+
   const CHUNK_SIZE = 500;
   for (let i = 0; i < paths.length; i += CHUNK_SIZE) {
     const chunk = paths.slice(i, i + CHUNK_SIZE);

@@ -147,8 +147,10 @@ const SystemStatus: React.FC = () => {
         {renderStatusRow('GitHub Auth', status?.githubAuth)}
         {renderStatusRow('Indexing', status?.indexing, !hasAgents)}
         {(status?.warnings?.length || 0) > 0 && (
-          <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            {status?.warnings?.[0]?.message}
+          <div className="flex flex-col gap-1 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {status?.warnings?.map(warning => (
+              <div key={`${warning.type}:${warning.message}`}>{warning.message}</div>
+            ))}
           </div>
         )}
         {hasAgents && (

@@ -275,25 +275,25 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     // Phase A: Setup & Staleness Check
     correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
-    const cooldown = await getSummarizationCooldown(fullName, branch);
-    if (cooldown) {
-      correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
-      await updateRepositoryStatus(fullName, 'failed', branch);
-      await safePublishIndexingStatus(fullName, branch, 'failed');
-      return;
-    }
-
-    // 0. Discover repository icon (early, so we can include it in status updates)
-    const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
-
-    // 1. Check if summarization is enabled
+    // Check if summarization is enabled before considering runtime cooldowns.
     const settings = await loadSummarizationSettings();
     if (!settings.enabled) {
       correlatedLogger.info('Summarization is disabled, skipping indexing');
       return;
     }
 
-    // 2. Get agent from registry
+    const cooldown = await getSummarizationCooldown(fullName, branch);
+    if (cooldown) {
+      correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
+      await updateRepositoryStatus(fullName, 'idle', branch);
+      await safePublishIndexingStatus(fullName, branch, 'idle');
+      return;
+    }
+
+    // Discover repository icon early, so we can include it in status updates.
+    const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
+
+    // Get agent from registry
     const { agent, modelOverride, effectiveModel } = await setupAgent(settings);
     const resolveSummarizationConfig = async () => {
       const latestSettings = await loadSummarizationSettings();

@@ -144,7 +144,7 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
   try {
     const state = await loadRuntimeState();
     const warnings: Array<{ type: string; message: string }> = [];
-    if (state.warning) {
+    if (state.warning && state.warning.mode !== 'cooldown') {
       warnings.push({ type: `summarization_${state.warning.mode}`, message: state.warning.message });
     }
     for (const cooldown of Object.values(state.cooldowns || {})) {

@@ -38,13 +38,27 @@ const QUOTA_EXHAUSTION_PATTERNS = [
     /usage limit/i,
     /quota exceeded/i,
     /out of quota/i,
-    /insufficient quota/i
+    /insufficient quota/i,
+    /credit balance/i,
+    /billing.*quota/i,
+    /spending.*limit/i
+];
+
+const TRANSIENT_RATE_LIMIT_PATTERNS = [
+    /per[- ]?(minute|second|hour)/i,
+    /\b(rpm|tpm|qps)\b/i,
+    /tokens? per minute/i,
+    /requests? per minute/i
 ];
 
 export function isQuotaExhaustionError(error: Error | unknown): boolean {
-    const err = error as ErrorLike;
+    const err = (error ?? {}) as ErrorLike;
     const errorMessage = err.message ?? '';
     const errorString = error?.toString() ?? '';
+    const combined = `${errorMessage} ${errorString}`;
+    if (TRANSIENT_RATE_LIMIT_PATTERNS.some(pattern => pattern.test(combined))) {
+        return false;
+    }
     return QUOTA_EXHAUSTION_PATTERNS.some(pattern =>
         pattern.test(errorMessage) || pattern.test(errorString)
     );
@@ -75,7 +89,7 @@ export function calculateDelay(attempt: number, config: RetryConfig): number {
  * @returns Whether the error is retryable
  */
 export function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
-    const err = error as ErrorLike;
+    const err = (error ?? {}) as ErrorLike;
 
     if (isQuotaExhaustionError(error)) {
         return false;
