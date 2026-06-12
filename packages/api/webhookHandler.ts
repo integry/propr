@@ -79,6 +79,8 @@ export interface MergedPRStopContext {
   requestedBy: string;
   reason: string;
   cancellationReason: string;
+  /** Marks the task cancelled even when only an abort signal could be set (see stopTaskExecution). */
+  ensureCancelled: boolean;
 }
 
 export interface MergedPRTaskCancellerDeps {
@@ -88,7 +90,7 @@ export interface MergedPRTaskCancellerDeps {
     queuedJobs: Array<{ jobId: string; state: string }>;
   }>;
   /** Stops a single task or queued job (see stopTaskExecution in routes/dockerRoutes). */
-  stopTask: (taskIdOrJobId: string, context: MergedPRStopContext) => Promise<{ success: boolean } | void>;
+  stopTask: (taskIdOrJobId: string, context: MergedPRStopContext) => Promise<{ success: boolean; cancellationRecorded?: boolean } | void>;
 }
 
 /** Returns true for a pull_request webhook where the PR was closed by merging. */
@@ -105,9 +107,16 @@ export interface MergedPRCancellationSummary {
 }
 
 /**
+ * Bounded concurrency for merge-triggered task stops. Each container stop can
+ * take up to ~10s, so cancelling sequentially could push the GitHub webhook
+ * delivery toward its timeout when a PR has several active tasks.
+ */
+const MERGED_PR_STOP_CONCURRENCY = 4;
+
+/**
  * Cancels all still-active tasks and queued jobs associated with a merged PR.
- * A failure to cancel one task is logged and does not block the remaining
- * cancellations (nor the webhook delivery).
+ * Stops run concurrently (bounded); a failure to cancel one task is logged and
+ * does not block the remaining cancellations (nor the webhook delivery).
  */
 export async function cancelActiveTasksForMergedPR(
   repository: string,
@@ -126,24 +135,32 @@ export async function cancelActiveTasksForMergedPR(
     requestedBy: 'system',
     reason: `Pull request ${repository}#${prNumber} was merged. Task cancelled automatically.`,
     cancellationReason: PR_MERGED_CANCELLATION_REASON,
+    ensureCancelled: true,
   };
 
   let cancelled = 0;
   let failed = 0;
-  for (const id of idsToStop) {
-    try {
-      const result = await deps.stopTask(id, context);
-      if (result && result.success === false) {
-        // The task finished (or vanished) between lookup and stop — nothing to cancel.
-        console.log(`[webhook] Task ${id} for merged PR ${repository}#${prNumber} was no longer active`);
-      } else {
-        cancelled++;
+  const pending = [...idsToStop];
+  const stopNext = async (): Promise<void> => {
+    for (let id = pending.shift(); id !== undefined; id = pending.shift()) {
+      try {
+        const result = await deps.stopTask(id, context);
+        if (result && result.success === false) {
+          // The task finished (or vanished) between lookup and stop — nothing to cancel.
+          console.log(`[webhook] Task ${id} for merged PR ${repository}#${prNumber} was no longer active`);
+        } else {
+          cancelled++;
+          if (result && result.cancellationRecorded === false) {
+            console.log(`[webhook] Task ${id} for merged PR ${repository}#${prNumber}: abort signal set; the worker will record the cancellation`);
+          }
+        }
+      } catch (error) {
+        failed++;
+        console.error(`[webhook] Failed to cancel task ${id} for merged PR ${repository}#${prNumber}:`, error);
       }
-    } catch (error) {
-      failed++;
-      console.error(`[webhook] Failed to cancel task ${id} for merged PR ${repository}#${prNumber}:`, error);
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(MERGED_PR_STOP_CONCURRENCY, pending.length) }, () => stopNext()));
 
   console.log(`[webhook] Merged PR ${repository}#${prNumber}: cancelled ${cancelled}/${idsToStop.size} active task(s)${failed > 0 ? `, ${failed} failed` : ''}`);
   return { attempted: idsToStop.size, cancelled, failed };
@@ -249,8 +266,13 @@ export async function handleWebhookRequest(
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
 
-  // Merged PR close → auto-cancel any still-active PR tasks. Failures here are
-  // logged but must never fail the webhook delivery.
+  // Merged PR close → auto-cancel any still-active PR tasks. This deliberately
+  // runs BEFORE the regular webhook processor: stale in-flight work must stop
+  // before close-processing side effects run (label/loop-state cleanup, branch
+  // deletion), so a cancelled task cannot race them by pushing to the merged
+  // branch or posting stale comments mid-cleanup. Nothing in the cancellation
+  // path reads anything the processor writes, so there is no reverse dependency.
+  // Failures here are logged but must never fail the webhook delivery.
   if (deps.mergedPRTaskCanceller && isMergedPullRequestClose(rawEvent, payload)) {
     const repository = payload.repository?.full_name;
     const prNumber = (payload.pull_request as { number?: number } | undefined)?.number;

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { execSync } from 'child_process';
 import { stopDockerContainer, getStateManager, getIssueQueue } from '@propr/core';
+import type { IssueRef } from '@propr/core';
 import { validateTaskId, validateTailParam } from './validation.js';
 
 interface DockerRoutesDeps {
@@ -36,11 +37,12 @@ export interface StopTaskRedisClient {
 
 interface StoppableQueueJob {
   id?: string;
+  data?: unknown;
   remove(): Promise<unknown>;
 }
 
 export interface StopTaskQueue {
-  getJobs(states: Array<'waiting' | 'delayed'>): Promise<StoppableQueueJob[]>;
+  getJobs(states: Array<'waiting' | 'delayed' | 'active'>): Promise<StoppableQueueJob[]>;
 }
 
 export interface StopTaskExecutionOptions {
@@ -51,10 +53,21 @@ export interface StopTaskExecutionOptions {
   reason?: string;
   /** Machine-readable cancellation reason code (e.g. 'pr_merged'), stored in task history metadata. */
   cancellationReason?: string;
+  /**
+   * When true, the task is marked cancelled even if only the abort signal could
+   * be set (no container ID, or the container stop failed). Used by merge-triggered
+   * cancellation, which must durably record the cancellation instead of relying on
+   * the worker to observe the abort signal. The abort signal is left in place so
+   * the worker still terminates; its own terminal-state update is skipped because
+   * the task is already in a terminal state.
+   */
+  ensureCancelled?: boolean;
   /** Override the BullMQ queue lookup (used by tests). Defaults to getIssueQueue(). */
   getQueue?: () => Promise<StopTaskQueue>;
   /** Override marking the task cancelled (used by tests). Defaults to the shared state manager. */
   markCancelled?: (taskId: string, cancelledBy: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown> }) => Promise<unknown>;
+  /** Override task state creation for queued jobs that never started (used by tests). */
+  createTaskState?: (taskId: string, issueRef: IssueRef) => Promise<unknown>;
   /** Override the container stop (used by tests). Defaults to stopDockerContainer(). */
   stopContainer?: (containerId: string, timeoutSeconds?: number) => Promise<{ success: boolean; error?: string }>;
 }
@@ -68,27 +81,35 @@ export interface StopTaskExecutionResult {
   notFound?: boolean;
   notRunning?: boolean;
   currentState?: string;
+  /** True when an abort signal is still pending for the worker to observe. */
+  abortSignalled?: boolean;
+  /** True when the task was marked cancelled in the state store. */
+  cancellationRecorded?: boolean;
+}
+
+function jobMatchesTask(jobId: string, taskIdOrJobId: string, taskId: string): boolean {
+  return jobId === taskIdOrJobId || jobId === taskId || normalizeTaskId(jobId) === taskId;
 }
 
 /**
- * Stops a task's execution: signals the worker to abort, terminates the Docker
- * container when one is running, and removes queued/delayed jobs that have not
- * started yet. Shared by the manual stop route and merge-triggered cancellation.
- *
- * Accepts either a task ID or a queue job ID (job IDs are normalized).
+ * Removes queued/delayed jobs belonging to a task before they start executing.
+ * Returns the number of removed jobs plus the job data of the last removed job,
+ * which is used to create a task state record for jobs that never started.
  */
-async function removeQueuedJobsForTask(taskIdOrJobId: string, taskId: string, options: StopTaskExecutionOptions): Promise<number> {
+async function removeQueuedJobsForTask(taskIdOrJobId: string, taskId: string, options: StopTaskExecutionOptions): Promise<{ removed: number; jobData: Record<string, unknown> | null }> {
   let removed = 0;
+  let jobData: Record<string, unknown> | null = null;
   try {
     const queue = options.getQueue ? await options.getQueue() : await getIssueQueue();
     const jobs = await queue.getJobs(PENDING_QUEUE_STATES);
     for (const job of jobs) {
       const jobId = job.id != null ? String(job.id) : '';
       if (!jobId) continue;
-      if (jobId !== taskIdOrJobId && jobId !== taskId && normalizeTaskId(jobId) !== taskId) continue;
+      if (!jobMatchesTask(jobId, taskIdOrJobId, taskId)) continue;
       try {
         await job.remove();
         removed++;
+        if (job.data && typeof job.data === 'object') jobData = job.data as Record<string, unknown>;
         console.log(`[stop-execution] Removed queued job ${jobId} for task ${taskId}`);
       } catch (removeError) {
         console.warn(`[stop-execution] Failed to remove queued job ${jobId}: ${(removeError as Error).message}`);
@@ -97,10 +118,73 @@ async function removeQueuedJobsForTask(taskIdOrJobId: string, taskId: string, op
   } catch (queueError) {
     console.warn(`[stop-execution] Failed to inspect queue for task ${taskId}: ${(queueError as Error).message}`);
   }
-  return removed;
+  return { removed, jobData };
 }
 
-async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<string, unknown>, options: StopTaskExecutionOptions): Promise<void> {
+/** Returns true when the task has a job currently being processed by a queue worker. */
+async function hasActiveQueueJob(taskIdOrJobId: string, taskId: string, options: StopTaskExecutionOptions): Promise<boolean> {
+  try {
+    const queue = options.getQueue ? await options.getQueue() : await getIssueQueue();
+    const jobs = await queue.getJobs(['active']);
+    for (const job of jobs) {
+      const jobId = job.id != null ? String(job.id) : '';
+      if (jobId && jobMatchesTask(jobId, taskIdOrJobId, taskId)) return true;
+    }
+  } catch (queueError) {
+    console.warn(`[stop-execution] Failed to inspect active queue jobs for task ${taskId}: ${(queueError as Error).message}`);
+  }
+  return false;
+}
+
+async function setAbortSignal(taskId: string, options: StopTaskExecutionOptions): Promise<void> {
+  await options.redisClient.set(`worker:abort:${taskId}`, JSON.stringify({
+    timestamp: new Date().toISOString(),
+    requestedBy: options.requestedBy ?? 'user',
+    ...(options.cancellationReason ? { reason: options.cancellationReason } : {})
+  }), { EX: 3600 });
+}
+
+/** Best-effort extraction of an issue ref from queue job data so a task state can be created. */
+function deriveIssueRefFromJobData(jobData: Record<string, unknown> | null): IssueRef | null {
+  if (!jobData) return null;
+  let repoOwner = typeof jobData.repoOwner === 'string' ? jobData.repoOwner : undefined;
+  let repoName = typeof jobData.repoName === 'string' ? jobData.repoName : undefined;
+  if ((!repoOwner || !repoName) && typeof jobData.repository === 'string' && jobData.repository.includes('/')) {
+    const [owner, ...rest] = jobData.repository.split('/');
+    repoOwner = owner;
+    repoName = rest.join('/');
+  }
+  if (!repoOwner || !repoName) return null;
+  const number = typeof jobData.number === 'number' ? jobData.number
+    : typeof jobData.issueNumber === 'number' ? jobData.issueNumber
+    : typeof jobData.prNumber === 'number' ? jobData.prNumber
+    : typeof jobData.pullRequestNumber === 'number' ? jobData.pullRequestNumber
+    : 0;
+  return { number, repoOwner, repoName };
+}
+
+/**
+ * Creates a task state record for a queued job that was removed before it ever
+ * started. Without this, marking the task cancelled has nothing to attach the
+ * cancellation reason to and the removal would leave no audit trail.
+ */
+async function ensureTaskStateForQueuedJob(taskId: string, jobData: Record<string, unknown> | null, options: StopTaskExecutionOptions): Promise<void> {
+  const issueRef = deriveIssueRefFromJobData(jobData);
+  if (!issueRef) {
+    console.warn(`[stop-execution] Cannot derive issue ref for queued task ${taskId}; cancellation reason may not be recorded`);
+    return;
+  }
+  try {
+    const create = options.createTaskState
+      ?? ((id: string, ref: IssueRef) => getStateManager().createTaskState(id, ref));
+    await create(taskId, issueRef);
+  } catch (createError) {
+    console.warn(`[stop-execution] Failed to create task state for queued task ${taskId}: ${(createError as Error).message}`);
+  }
+}
+
+/** Marks the task cancelled. Returns true when the cancellation was recorded. */
+async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<string, unknown>, options: StopTaskExecutionOptions): Promise<boolean> {
   try {
     const mark = options.markCancelled
       ?? ((id: string, by: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown> }) =>
@@ -114,19 +198,26 @@ async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<s
     });
     console.log(`[stop-execution] Task ${taskId} marked as cancelled`);
     await options.redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: 'Task cancelled successfully.', level: 'info' }));
+    return true;
   } catch (stateError) {
     console.warn(`[stop-execution] Failed to mark task as cancelled: ${(stateError as Error).message}`);
+    return false;
   }
 }
 
+/**
+ * Stops a task's execution: signals the worker to abort, terminates the Docker
+ * container when one is running, and removes queued/delayed jobs that have not
+ * started yet. Shared by the manual stop route and merge-triggered cancellation.
+ *
+ * Accepts either a task ID or a queue job ID (job IDs are normalized).
+ */
 export async function stopTaskExecution(taskIdOrJobId: string, options: StopTaskExecutionOptions): Promise<StopTaskExecutionResult> {
   const { redisClient } = options;
-  const requestedBy = options.requestedBy ?? 'user';
   const stopMessage = options.reason ?? 'Stop requested by user. Terminating execution...';
   const taskId = normalizeTaskId(taskIdOrJobId);
 
-  const removeQueuedJobs = (): Promise<number> => removeQueuedJobsForTask(taskIdOrJobId, taskId, options);
-  const markCancelled = (historyMetadata: Record<string, unknown>): Promise<void> => markTaskCancelledSafely(taskId, historyMetadata, options);
+  const markCancelled = (historyMetadata: Record<string, unknown>): Promise<boolean> => markTaskCancelledSafely(taskId, historyMetadata, options);
 
   const stateData = await redisClient.get(`worker:state:${taskId}`);
   const state = stateData ? (JSON.parse(stateData) as TaskState) : null;
@@ -136,31 +227,48 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
   if (!isRunning) {
     // No live container — the task may still have queued or delayed jobs that
     // have not started yet. Remove those before they begin executing.
-    const removedQueuedJobs = await removeQueuedJobs();
+    const { removed: removedQueuedJobs, jobData } = await removeQueuedJobsForTask(taskIdOrJobId, taskId, options);
     if (removedQueuedJobs > 0) {
-      if (state) {
-        await markCancelled({ removedQueuedJobs });
+      if (!state) {
+        // The job never started, so no task state exists yet. Create one so the
+        // cancellation and its reason are recorded instead of silently lost.
+        await ensureTaskStateForQueuedJob(taskId, jobData, options);
       }
+      const cancellationRecorded = await markCancelled({ removedQueuedJobs });
       return {
         success: true,
         taskId,
         containerStopped: false,
         removedQueuedJobs,
+        cancellationRecorded,
         message: `Removed ${removedQueuedJobs} queued job(s) before execution started.`
       };
     }
     if (!state) {
+      // A queue worker may have picked the job up without having written
+      // worker:state yet. Set the abort signal so the worker terminates as soon
+      // as it checks for it; the worker records the cancellation when it aborts.
+      if (await hasActiveQueueJob(taskIdOrJobId, taskId, options)) {
+        await setAbortSignal(taskId, options);
+        await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: stopMessage, level: 'warning' }));
+        console.log(`[stop-execution] Abort signal set for active queue job of task ${taskId} (no worker state yet)`);
+        return {
+          success: true,
+          taskId,
+          containerStopped: false,
+          removedQueuedJobs: 0,
+          abortSignalled: true,
+          cancellationRecorded: false,
+          message: 'Stop request sent to worker. The execution will be terminated shortly.'
+        };
+      }
       return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notFound: true, message: 'The task may have already completed or does not exist.' };
     }
     return { success: false, taskId, containerStopped: false, removedQueuedJobs: 0, notRunning: true, currentState, message: 'The task has already completed or is not in an active state.' };
   }
 
   // Set abort signal for the worker to pick up
-  await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({
-    timestamp: new Date().toISOString(),
-    requestedBy,
-    ...(options.cancellationReason ? { reason: options.cancellationReason } : {})
-  }), { EX: 3600 });
+  await setAbortSignal(taskId, options);
   await redisClient.rPush(`conversation:${taskId}`, JSON.stringify({ type: 'system', timestamp: new Date().toISOString(), content: stopMessage, level: 'warning' }));
   console.log(`[stop-execution] Abort signal set for task: ${taskId}`);
 
@@ -168,12 +276,19 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
   const containerStopped = containerId !== null;
 
   // Remove any queued/delayed jobs for the same task (e.g. pending retries)
-  const removedQueuedJobs = await removeQueuedJobs();
+  const { removed: removedQueuedJobs } = await removeQueuedJobsForTask(taskIdOrJobId, taskId, options);
 
-  // Clear abort signal after direct container stop
+  let cancellationRecorded = false;
   if (containerStopped) {
+    // Clear abort signal after direct container stop
     await redisClient.del(`worker:abort:${taskId}`);
-    await markCancelled({ containerId, stoppedAt: new Date().toISOString() });
+    cancellationRecorded = await markCancelled({ containerId, stoppedAt: new Date().toISOString() });
+  } else if (options.ensureCancelled) {
+    // The container could not be stopped directly. Record the cancellation now
+    // rather than relying on the worker to observe the abort signal. The signal
+    // stays in place so the worker still terminates; its later terminal-state
+    // update is skipped because the task is already cancelled.
+    cancellationRecorded = await markCancelled({ abortSignalled: true });
   }
 
   return {
@@ -181,6 +296,8 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
     taskId,
     containerStopped,
     removedQueuedJobs,
+    abortSignalled: !containerStopped,
+    cancellationRecorded,
     message: containerStopped
       ? 'Execution stopped. The Docker container has been terminated.'
       : 'Stop request sent to worker. The execution will be terminated shortly.'

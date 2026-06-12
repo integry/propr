@@ -66,6 +66,7 @@ test('cancelActiveTasksForMergedPR stops every active task and queued job with t
   for (const call of stopCalls) {
     assert.equal(call.context.cancellationReason, PR_MERGED_CANCELLATION_REASON);
     assert.equal(call.context.requestedBy, 'system');
+    assert.equal(call.context.ensureCancelled, true, 'merge-triggered stops must record the cancellation');
     assert.match(call.context.reason, /acme\/widgets#42 was merged/);
   }
 });
@@ -221,13 +222,18 @@ function makeFakeRedis(initial: Record<string, string> = {}): StopTaskRedisClien
   };
 }
 
-function makeFakeQueue(jobs: Array<{ id: string }>): StopTaskQueue & { removed: string[] } {
+function makeFakeQueue(
+  pendingJobs: Array<{ id: string; data?: Record<string, unknown> }>,
+  activeJobs: Array<{ id: string }> = [],
+): StopTaskQueue & { removed: string[] } {
   const removed: string[] = [];
   return {
     removed,
-    async getJobs() {
+    async getJobs(states) {
+      const jobs = states.includes('active') ? activeJobs : pendingJobs;
       return jobs.map(job => ({
         id: job.id,
+        data: 'data' in job ? job.data : undefined,
         remove: async () => { removed.push(job.id); },
       }));
     },
@@ -271,25 +277,104 @@ test('stopTaskExecution stops the container and marks the task cancelled with th
   assert.ok(redis.calls.some(c => c.method === 'del' && c.key === 'worker:abort:task-a'), 'abort signal cleared after container stop');
 });
 
-test('stopTaskExecution removes queued jobs that have not started yet', async () => {
+test('stopTaskExecution removes queued jobs that never started and records the cancellation', async () => {
   const redis = makeFakeRedis(); // no worker state — job never started
   const queue = makeFakeQueue([
-    { id: 'issue-acme-widgets-42-99' },
+    { id: 'issue-acme-widgets-42-99', data: { repository: REPOSITORY, prNumber: PR_NUMBER } },
     { id: 'issue-other-repo-7-12' },
   ]);
+  const createdStates: Array<{ taskId: string; issueRef: Record<string, unknown> }> = [];
+  const cancelCalls: string[] = [];
 
   const result = await stopTaskExecution('issue-acme-widgets-42-99', {
     redisClient: redis,
     requestedBy: 'system',
     cancellationReason: 'pr_merged',
     getQueue: async () => queue,
-    markCancelled: async () => {},
+    createTaskState: async (taskId, issueRef) => { createdStates.push({ taskId, issueRef }); },
+    markCancelled: async (taskId) => { cancelCalls.push(taskId); },
   });
 
   assert.equal(result.success, true);
   assert.equal(result.containerStopped, false);
   assert.equal(result.removedQueuedJobs, 1);
+  assert.equal(result.cancellationRecorded, true);
   assert.deepEqual(queue.removed, ['issue-acme-widgets-42-99'], 'only the matching job is removed');
+  assert.deepEqual(createdStates, [
+    { taskId: 'acme-widgets-42', issueRef: { number: PR_NUMBER, repoOwner: 'acme', repoName: 'widgets' } },
+  ], 'a task state is created so the cancellation reason can be recorded');
+  assert.deepEqual(cancelCalls, ['acme-widgets-42'], 'the removed queued job is marked cancelled');
+});
+
+test('stopTaskExecution sets the abort signal for an active queue job without worker state', async () => {
+  const redis = makeFakeRedis(); // worker picked the job up but has not written worker:state yet
+  const queue = makeFakeQueue([], [{ id: 'pr-comments-batch-acme-widgets-42-123' }]);
+  const cancelCalls: string[] = [];
+
+  const result = await stopTaskExecution('pr-comments-batch-acme-widgets-42-123', {
+    redisClient: redis,
+    requestedBy: 'system',
+    cancellationReason: 'pr_merged',
+    getQueue: async () => queue,
+    markCancelled: async (taskId) => { cancelCalls.push(taskId); },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.containerStopped, false);
+  assert.equal(result.abortSignalled, true);
+  assert.equal(result.cancellationRecorded, false);
+  assert.ok(
+    redis.calls.some(c => c.method === 'set' && c.key === 'worker:abort:pr-comments-batch-acme-widgets-42-123'),
+    'abort signal set for the worker to observe',
+  );
+  assert.equal(cancelCalls.length, 0, 'the worker records the cancellation when it aborts');
+});
+
+test('stopTaskExecution with ensureCancelled records the cancellation when the container stop fails', async () => {
+  const redis = makeFakeRedis({ 'worker:state:task-a': runningTaskState('container-1') });
+  const queue = makeFakeQueue([]);
+  const cancelCalls: Array<{ taskId: string; metadata: { reason?: string; historyMetadata?: Record<string, unknown> } }> = [];
+
+  const result = await stopTaskExecution('task-a', {
+    redisClient: redis,
+    requestedBy: 'system',
+    reason: 'Pull request acme/widgets#42 was merged. Task cancelled automatically.',
+    cancellationReason: 'pr_merged',
+    ensureCancelled: true,
+    getQueue: async () => queue,
+    stopContainer: async () => ({ success: false, error: 'docker daemon unreachable' }),
+    markCancelled: async (taskId, _cancelledBy, metadata) => { cancelCalls.push({ taskId, metadata }); },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.containerStopped, false);
+  assert.equal(result.abortSignalled, true);
+  assert.equal(result.cancellationRecorded, true);
+  assert.equal(cancelCalls.length, 1);
+  assert.equal(cancelCalls[0].metadata.historyMetadata?.abortSignalled, true);
+  assert.equal(cancelCalls[0].metadata.historyMetadata?.cancellationReason, 'pr_merged');
+  assert.ok(
+    !redis.calls.some(c => c.method === 'del' && c.key === 'worker:abort:task-a'),
+    'abort signal left in place for the worker',
+  );
+});
+
+test('stopTaskExecution without ensureCancelled leaves recording to the worker when the container stop fails', async () => {
+  const redis = makeFakeRedis({ 'worker:state:task-a': runningTaskState('container-1') });
+  const queue = makeFakeQueue([]);
+  const cancelCalls: string[] = [];
+
+  const result = await stopTaskExecution('task-a', {
+    redisClient: redis,
+    getQueue: async () => queue,
+    stopContainer: async () => ({ success: false, error: 'docker daemon unreachable' }),
+    markCancelled: async (taskId) => { cancelCalls.push(taskId); },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.containerStopped, false);
+  assert.equal(result.cancellationRecorded, false);
+  assert.equal(cancelCalls.length, 0, 'manual stop keeps relying on the worker abort path');
 });
 
 test('stopTaskExecution reports notFound for unknown tasks without queued jobs', async () => {
