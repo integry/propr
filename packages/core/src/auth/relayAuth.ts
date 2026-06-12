@@ -51,6 +51,7 @@ const REFRESH_MARGIN_MS = 60_000;
 // Fallback lifetime if the relay omits expires_at (GitHub installation tokens
 // last 1 hour).
 const DEFAULT_TOKEN_TTL_MS = 60 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 15_000;
 
 export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): RelayAuthInterface {
   const { relayUrl, relayToken, installationId } = strategyOptions;
@@ -69,6 +70,7 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
           accept: 'application/json',
         },
         body: JSON.stringify(installationId ? { installationId } : {}),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
     } catch (error) {
       throw new Error(`GitHub token relay unreachable at ${relayUrl}: ${(error as Error).message}`);

@@ -15,6 +15,13 @@ import './authTypes.js';
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
 
+function clearSessionCookie(res: Response): void {
+    res.clearCookie('connect.sid', {
+        domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+        path: '/',
+    });
+}
+
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
     configureDemoMode(demoModeAtStartup);
     const requiredEnvVars = demoModeAtStartup
@@ -120,10 +127,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                 if (!isUserWhitelisted(req.user?.username)) {
                     req.logout(() => {
                         req.session.destroy(() => {
-                            res.clearCookie('connect.sid', {
-                                domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
-                                path: '/',
-                            });
+                            clearSessionCookie(res);
                             res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
                         });
                     });
@@ -165,10 +169,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                 if (sessionErr) {
                     console.error('Session destroy error:', sessionErr);
                 }
-                res.clearCookie('connect.sid', {
-                    domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
-                    path: '/',
-                });
+                clearSessionCookie(res);
                 res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
             });
         });
@@ -204,10 +205,7 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
         if (!isUserWhitelisted(req.user?.username)) {
             req.logout(() => {
                 req.session.destroy(() => {
-                    res.clearCookie('connect.sid', {
-                        domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
-                        path: '/',
-                    });
+                    clearSessionCookie(res);
                     res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
                 });
             });

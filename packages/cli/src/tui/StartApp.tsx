@@ -99,13 +99,15 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
   const stop = (): void => {
     logProcRef.current?.kill();
     setMessage("Stopping stack…");
-    try {
-      orch.stopStack(cfg, { remove: true, removeNetwork: true });
-    } catch {
-      /* ignore — report outcome regardless */
-    }
-    onResult("stopped");
-    exit();
+    setTimeout(() => {
+      try {
+        orch.stopStack(cfg, { remove: true, removeNetwork: true });
+      } catch {
+        /* ignore — report outcome regardless */
+      }
+      onResult("stopped");
+      exit();
+    }, 50);
   };
 
   useInput((input, key) => {

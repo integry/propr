@@ -8,6 +8,8 @@
  * token against /v1/installation-token.
  */
 
+const FETCH_TIMEOUT_MS = 15_000;
+
 export interface RelayClientOptions {
   /** Relay base URL, including the version prefix (e.g. https://relay.example/v1). */
   baseUrl: string;
@@ -61,6 +63,7 @@ async function relayRequest<T>(
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (error) {
     throw new Error(`Cannot reach the relay at ${options.baseUrl}: ${(error as Error).message}`);

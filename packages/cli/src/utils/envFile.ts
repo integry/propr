@@ -54,7 +54,7 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
       const before = statSync(envPath).mode & 0o777;
       if (before !== 0o600) {
         chmodSync(envPath, 0o600);
-        console.error(`Note: tightened ${envPath} permissions from ${before.toString(8)} to 600 (secrets file).`);
+        console.warn(`Note: tightened ${envPath} permissions from ${before.toString(8)} to 600 (secrets file).`);
       }
     } catch {
       // Best-effort — may fail on Windows or non-owned files.

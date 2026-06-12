@@ -111,12 +111,18 @@ async function resolveLabelApplierCached(opts: {
 
     try {
         const result = await resolveLabelApplier(opts);
-        // FIFO eviction — oldest-inserted key is dropped (not LRU).
-        if (labelApplierCache.size >= LABEL_APPLIER_CACHE_MAX) {
-            const first = labelApplierCache.keys().next().value;
-            if (first !== undefined) labelApplierCache.delete(first);
+        // Only cache non-null results. A null from a successful timeline lookup
+        // means the labeled event isn't visible yet (GitHub timeline eventual
+        // consistency). Caching null would stall the issue until updatedAt
+        // changes, since that's the only thing that rotates the cache key.
+        if (result !== null) {
+            // FIFO eviction — oldest-inserted key is dropped (not LRU).
+            if (labelApplierCache.size >= LABEL_APPLIER_CACHE_MAX) {
+                const first = labelApplierCache.keys().next().value;
+                if (first !== undefined) labelApplierCache.delete(first);
+            }
+            labelApplierCache.set(cacheKey, result);
         }
-        labelApplierCache.set(cacheKey, result);
         return result;
     } catch (err) {
         // Transient API error (rate limit, network blip). Return null (fail closed)
