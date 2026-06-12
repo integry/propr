@@ -11,6 +11,9 @@
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc && node scripts/copy-assets.mjs",
     "prepack": "npm run build",
@@ -21,7 +24,7 @@
     "@propr/shared": "^0.8.1",
     "commander": "^13.1.0",
     "dotenv": "^16.5.0",
-    "ink": "^5.1.0",
+    "ink": "^7.0.5",
     "react": "^19.2.7"
   },
   "devDependencies": {
