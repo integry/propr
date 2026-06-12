@@ -54,8 +54,11 @@ In the control-plane CLI, `propr status` reports the local Docker stack. Use
 `propr remote-status` for the backend health/queue status JSON that older
 scripts may have read from `propr status --json`.
 
-Running bare `propr` now performs the same environment checks as `propr check`;
-it can exit nonzero when required local stack prerequisites are missing.
+**Breaking:** running bare `propr` now performs the same environment checks as
+`propr check` — including a Docker daemon probe that can take a few seconds —
+and exits nonzero when required local stack prerequisites are missing. Scripts
+or shell integrations that invoked bare `propr` to print help text should call
+`propr --help` instead.
 
 ## Repository Setup
 

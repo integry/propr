@@ -114,3 +114,22 @@ test('host config validates stack directories on the host', () => {
   assert.equal(cfg.validateHostPaths, true);
   assert.match(validateEnv(cfg).errors.join('\n'), /PROPR_REPOS_DIR/);
 });
+
+test('validateEnv rejects stack names that are not valid Docker names', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const cfg = resolveConfig({
+    PROPR_STACK: 'bad name!',
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  }, { manifestPath });
+
+  const errors = validateEnv(cfg).errors.join('\n');
+  assert.match(errors, /PROPR_STACK/);
+  assert.match(errors, /PROPR_NETWORK/);
+});

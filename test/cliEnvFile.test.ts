@@ -31,6 +31,16 @@ test("upsertEnvVars rejects values Docker env files cannot represent on one line
   );
 });
 
+test("upsertEnvVars rejects values the env-file reader would truncate as inline comments", () => {
+  const dir = mkdtempSync(join(tmpdir(), "propr-env-"));
+  const envPath = join(dir, ".env");
+
+  assert.throws(
+    () => upsertEnvVars(envPath, { PROPR_GH_RELAY_TOKEN: "rly_value #notacomment" }),
+    /whitespace followed by '#'/,
+  );
+});
+
 test("upsertEnvVars preserves export prefix when replacing a value", () => {
   const dir = mkdtempSync(join(tmpdir(), "propr-env-"));
   const envPath = join(dir, ".env");

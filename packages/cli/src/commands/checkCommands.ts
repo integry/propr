@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { validateRelayUrl } from "@propr/shared";
+import { resolveGithubAuthMode, validateRelayUrl } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
@@ -181,7 +181,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     results.push({
       name: "User whitelist",
       status: "warn",
-      detail: "GITHUB_USER_WHITELIST is not set — any GitHub user can trigger processing and access the API",
+      detail: "GITHUB_USER_WHITELIST is not set — any GitHub user who can authenticate to this instance may trigger processing and use the API (within the App's repository access)",
       fix: "Set GITHUB_USER_WHITELIST to a comma-separated list of allowed GitHub usernames in .env.",
     });
   } else if (whitelistEntries.length > 0) {
@@ -244,9 +244,11 @@ function isTruthy(value: string | undefined): boolean {
 }
 
 // Matches the unedited .env.example placeholders (your_app_id, path/to/..., etc.).
+// Every alternative is anchored so a real value that merely contains a
+// placeholder-looking substring is not misflagged.
 function isPlaceholder(value: string | undefined): boolean {
   if (!value || value.trim() === "") return true;
-  return /^your_|^\.?\/path\/to|^changeme$|xxxx|^example\.com$/i.test(value.trim());
+  return /^your_|^\.?\/path\/to|^changeme$|^x{4,}$|^example\.com$/i.test(value.trim());
 }
 
 // Forward-compatible relay env names (see the token-relay plan). Presence of the
@@ -257,31 +259,46 @@ const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
 /**
  * Verify the GitHub credentials the backend needs to boot. The daemon/worker/api
  * import @propr/core's githubAuth, which hard-exits unless one of these is true:
- * demo mode, a (future) token relay, or a configured GitHub App + readable key.
+ * demo mode, a token relay, or a configured GitHub App + readable key.
  *
- * GH_AUTH_MODE takes precedence over inference, matching the backend's behavior.
+ * The mode itself comes from @propr/shared's resolveGithubAuthMode — the same
+ * function the backend uses — so this check cannot drift from boot behavior.
  */
 function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
-  if (isTruthy(val("PROPR_DEMO_MODE"))) {
+  const relayUrl = val(RELAY_URL_KEY);
+  const relayToken = val(RELAY_TOKEN_KEY);
+  const { mode, warnings } = resolveGithubAuthMode({
+    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
+    ghAuthMode: val("GH_AUTH_MODE"),
+    relayUrl,
+    relayToken,
+    appId: val("GH_APP_ID"),
+    privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+    installationId: val("GH_INSTALLATION_ID"),
+  });
+  for (const warning of warnings) {
+    out.push({ name: "GitHub auth", status: "warn", detail: warning });
+  }
+
+  if (mode === "demo") {
     out.push({ name: "GitHub auth", status: "ok", detail: "demo mode — GitHub access disabled" });
     return out;
   }
 
-  // Honor explicit GH_AUTH_MODE to match the backend's resolveAuthMode().
-  const explicitMode = (val("GH_AUTH_MODE") ?? "").trim().toLowerCase();
-  if (explicitMode === "demo") {
-    out.push({ name: "GitHub auth", status: "ok", detail: "demo mode (GH_AUTH_MODE=demo) — GitHub access disabled" });
+  if (mode === "none") {
+    out.push({
+      name: "GitHub auth mode",
+      status: "fail",
+      detail: "no GitHub auth configured — the backend will exit at startup",
+      fix: "Set GH_APP_ID + GH_INSTALLATION_ID + a private key (own App), or PROPR_GH_RELAY_URL + PROPR_GH_RELAY_TOKEN (token relay), or PROPR_DEMO_MODE=true.",
+    });
     return out;
   }
 
-  // Relay mode: explicit GH_AUTH_MODE=relay, or inferred when both URL+token are present.
-  const relayUrl = val(RELAY_URL_KEY);
-  const relayToken = val(RELAY_TOKEN_KEY);
-  const useRelay = explicitMode === "relay" || (explicitMode !== "app" && relayUrl && relayToken);
-  if (useRelay) {
+  if (mode === "relay") {
     const urlError = relayUrl ? validateRelayUrl(relayUrl) : `${RELAY_URL_KEY} must be set for relay mode`;
     out.push(
       urlError

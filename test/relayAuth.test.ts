@@ -123,3 +123,15 @@ test('relay auth surfaces a network error when the relay is unreachable', async 
   const auth = createRelayAuth({ relayUrl: 'http://127.0.0.1:1', relayToken: 'rly_secret' });
   await assert.rejects(() => auth(), /relay unreachable/i);
 });
+
+test('relay auth rejects unsupported auth types instead of silently returning an installation token', async () => {
+  const relay = await startRelay(jsonToken('ghs_typetoken', 3_600_000));
+  try {
+    const auth = createRelayAuth({ relayUrl: relay.url, relayToken: 'rly_secret' });
+    await assert.rejects(() => auth({ type: 'app' }), /only supports auth\({ type: "installation" }\)/);
+    const result = await auth({ type: 'installation' });
+    assert.strictEqual(result.token, 'ghs_typetoken');
+  } finally {
+    await relay.close();
+  }
+});

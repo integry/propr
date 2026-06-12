@@ -102,7 +102,11 @@ Examples:
           label,
         });
 
+        // GH_AUTH_MODE=relay is implied by URL+token, but writing it makes the
+        // .env self-describing and keeps relay mode selected even if GitHub App
+        // credentials are also present.
         upsertEnvVars(ctx.envPath, {
+          GH_AUTH_MODE: "relay",
           PROPR_GH_RELAY_URL: ctx.relayBaseUrl,
           PROPR_GH_RELAY_TOKEN: result.token,
           GH_INSTALLATION_ID: ctx.installationId,
@@ -112,7 +116,7 @@ Examples:
         console.log(`  token id:     ${result.token_id}`);
         console.log(`  token prefix: ${result.token_prefix}…`);
         console.log(`  label:        ${result.label ?? label}`);
-        console.log(`  saved to:     ${ctx.envPath} (PROPR_GH_RELAY_URL, PROPR_GH_RELAY_TOKEN)`);
+        console.log(`  saved to:     ${ctx.envPath} (GH_AUTH_MODE, PROPR_GH_RELAY_URL, PROPR_GH_RELAY_TOKEN)`);
         console.log("");
         console.log("Next steps:");
         console.log("  propr check     # confirm relay mode is ready");

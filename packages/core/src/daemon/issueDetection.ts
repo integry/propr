@@ -18,7 +18,15 @@ export type { DetectedIssue };
 const labelApplierCache = new Map<string, string | null>();
 const LABEL_APPLIER_CACHE_MAX = 500;
 const LABEL_APPLIER_TIMELINE_PAGE_SIZE = 100;
-const LABEL_APPLIER_TIMELINE_MAX_PAGES = 5;
+const LABEL_APPLIER_TIMELINE_MAX_PAGES_DEFAULT = 5;
+
+// Page budget for the recent-timeline scan. Operators with very long-lived
+// issues can raise LABEL_APPLIER_TIMELINE_MAX_PAGES to widen the window in
+// which the trigger label event can be found (at the cost of more API calls).
+function labelApplierTimelineMaxPages(): number {
+    const raw = Number.parseInt(process.env.LABEL_APPLIER_TIMELINE_MAX_PAGES ?? '', 10);
+    return Number.isInteger(raw) && raw > 0 ? raw : LABEL_APPLIER_TIMELINE_MAX_PAGES_DEFAULT;
+}
 
 function getLabelApplierCacheKey(owner: string, repo: string, issueNumber: number, updatedAt: string): string {
     return `${owner}/${repo}#${issueNumber}:${updatedAt}`;
@@ -108,7 +116,7 @@ async function resolveLabelApplier(opts: {
         return findLabelApplierInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels);
     }
 
-    const firstRecentPage = Math.max(2, lastPage - LABEL_APPLIER_TIMELINE_MAX_PAGES + 1);
+    const firstRecentPage = Math.max(2, lastPage - labelApplierTimelineMaxPages() + 1);
     for (let page = lastPage; page >= firstRecentPage; page--) {
         const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
             owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page
@@ -116,7 +124,10 @@ async function resolveLabelApplier(opts: {
         const actor = findLabelApplierInEvents(response.data as TimelineEvent[], normalizedTargetLabels);
         if (actor) return actor;
     }
-    return null;
+    // The recent-page window starts at page 2, but page 1 is already in hand —
+    // search it too so a label event near the start of a short multi-page
+    // timeline (e.g. 2–5 pages) is still found.
+    return findLabelApplierInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels);
 }
 
 async function resolveLabelApplierCached(opts: {
@@ -413,7 +424,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     if (labelApplier === null) {
                         correlatedLogger.warn(
                             { issueNumber: issue.number, repository: repoFullName },
-                            'Could not determine label applier — skipping issue (fail closed). Will retry on timeline lookup failures; if the label event is too old to appear in the recent timeline window, remove and re-apply the processing label.'
+                            'Could not determine label applier — skipping issue (fail closed). Will retry on timeline lookup failures; if the label event is too old to appear in the recent timeline window, remove and re-apply the processing label, or raise LABEL_APPLIER_TIMELINE_MAX_PAGES.'
                         );
                         return null;
                     }

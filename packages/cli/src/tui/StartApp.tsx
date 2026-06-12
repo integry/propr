@@ -103,7 +103,11 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
     // Let Ink flush the status message before the synchronous Docker calls block.
     setTimeout(() => {
       try {
-        orch.stopStack(cfg, { remove: true, removeNetwork: true });
+        const { failed } = orch.stopStack(cfg, { remove: true, removeNetwork: true });
+        if (failed.length > 0) {
+          // The app exits right after, so log directly — Ink is unmounting anyway.
+          console.error(`warning: ${failed.length} container(s) could not be stopped: ${failed.join(", ")}`);
+        }
       } catch {
         /* ignore — report outcome regardless */
       }

@@ -33,7 +33,7 @@ export interface RelayInstallationAuthentication {
 }
 
 export interface RelayAuthInterface {
-  (): Promise<RelayInstallationAuthentication>;
+  (options?: { type?: string }): Promise<RelayInstallationAuthentication>;
   hook(
     request: RequestInterface,
     route: Route | EndpointOptions,
@@ -110,7 +110,15 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
     return pendingFetch;
   }
 
-  const auth = (async (): Promise<RelayInstallationAuthentication> => {
+  const auth = (async (options?: { type?: string }): Promise<RelayInstallationAuthentication> => {
+    // The relay only issues installation tokens. Fail loudly if a call site ever
+    // requests a different auth type (e.g. an app JWT) instead of silently
+    // handing back an installation token.
+    if (options?.type !== undefined && options.type !== 'installation') {
+      throw new Error(
+        `The GitHub token relay auth strategy only supports auth({ type: "installation" }); got type "${options.type}".`,
+      );
+    }
     const token = await getToken();
     return { type: 'token', tokenType: 'installation', token };
   }) as RelayAuthInterface;

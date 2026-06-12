@@ -77,7 +77,12 @@ Examples:
         }
 
         console.log("Stopping ProPR stack…");
-        orch.stopStack(cfg, { remove: !options.keep, removeNetwork: !options.keep, onLog: (l) => console.log(l) });
+        const { failed } = orch.stopStack(cfg, { remove: !options.keep, removeNetwork: !options.keep, onLog: (l) => console.log(l) });
+        if (failed.length > 0) {
+          console.error(`\nError: ${failed.length} container(s) could not be stopped: ${failed.join(", ")}`);
+          console.error("Inspect them with `docker ps` / `docker logs` and retry `propr stop`.");
+          process.exit(1);
+        }
         console.log(options.keep ? "Stack stopped (containers kept)." : "Stack stopped and removed.");
       } catch (error) {
         console.error(`Error stopping stack: ${(error as Error).message}`);

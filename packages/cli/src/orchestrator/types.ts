@@ -108,7 +108,10 @@ export interface OrchestratorModule {
     cfg: OrchestratorConfig,
     opts?: { ui?: boolean; docs?: boolean; onLog?: (line: string) => void }
   ): StackStatus;
-  stopStack(cfg: OrchestratorConfig, opts?: { remove?: boolean; removeNetwork?: boolean; onLog?: (line: string) => void }): void;
+  stopStack(
+    cfg: OrchestratorConfig,
+    opts?: { remove?: boolean; removeNetwork?: boolean; onLog?: (line: string) => void }
+  ): { failed: string[] };
 
   getStackStatus(cfg: OrchestratorConfig): StackStatus;
   getServiceState(cfg: OrchestratorConfig, service: string): ServiceState | undefined;

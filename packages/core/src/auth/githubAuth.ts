@@ -4,7 +4,8 @@ import { createAppAuth } from '@octokit/auth-app';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
-import { parseTruthyEnvValue, validateRelayUrl } from '@propr/shared';
+import { parseTruthyEnvValue, resolveGithubAuthMode, validateRelayUrl } from '@propr/shared';
+import type { GithubAuthMode } from '@propr/shared';
 import { createRelayAuth } from './relayAuth.js';
 
 interface InstallationAuth {
@@ -17,33 +18,23 @@ const privateKeyPath = process.env.GH_PRIVATE_KEY_PATH;
 const installationId = process.env.GH_INSTALLATION_ID;
 const demoMode = parseTruthyEnvValue(process.env.PROPR_DEMO_MODE);
 
-// GitHub auth is configured one of three ways (precedence matches `propr check`):
-//   demo  — no GitHub access
-//   relay — fetch installation tokens from a vendor relay (shared-app path)
-//   app   — mint installation tokens locally from the App private key (own-app)
-// An explicit GH_AUTH_MODE overrides the inference below.
+// The mode inference lives in @propr/shared (resolveGithubAuthMode) so the CLI's
+// `propr check` reports exactly what the backend will do at boot.
 const relayUrl = process.env.PROPR_GH_RELAY_URL;
 const relayToken = process.env.PROPR_GH_RELAY_TOKEN;
 
-type AuthMode = 'demo' | 'relay' | 'app' | 'none';
-
-function resolveAuthMode(): AuthMode {
-    if (demoMode) return 'demo';
-    const explicit = (process.env.GH_AUTH_MODE || '').trim().toLowerCase();
-    if (explicit === 'demo') {
-        console.warn('WARNING: GH_AUTH_MODE=demo only disables GitHub auth. Set PROPR_DEMO_MODE=true for full demo-mode behavior across the API and workers.');
-        return 'demo';
-    }
-    if (explicit === 'relay') return 'relay';
-    if (explicit === 'app') return 'app';
-    if (explicit) {
-        console.warn(`WARNING: GH_AUTH_MODE="${process.env.GH_AUTH_MODE}" is not a recognized value (expected "app", "relay", or "demo"). Falling back to auto-detection.`);
-    }
-    // Inferred relay requires both URL and token so a stray placeholder URL
-    // doesn't shadow a fully valid GitHub App configuration.
-    if (relayUrl && relayToken) return 'relay';
-    if (appId && privateKeyPath && installationId) return 'app';
-    return 'none';
+function resolveAuthMode(): GithubAuthMode {
+    const { mode, warnings } = resolveGithubAuthMode({
+        demoMode,
+        ghAuthMode: process.env.GH_AUTH_MODE,
+        relayUrl,
+        relayToken,
+        appId,
+        privateKeyPath,
+        installationId,
+    });
+    for (const warning of warnings) console.warn(`WARNING: ${warning}`);
+    return mode;
 }
 
 const authMode = resolveAuthMode();

@@ -35,9 +35,15 @@ export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): 
 
 function clearSessionCookie(res: Response): void {
     const domain = getSessionCookieDomain();
+    // Mirror the attributes used when the session cookie is set — browsers match
+    // on name/domain/path, but mirroring secure/httpOnly/sameSite is the safer
+    // convention.
     res.clearCookie('connect.sid', {
         ...(domain ? { domain } : {}),
         path: '/',
+        secure: shouldUseSecureSessionCookie(domain),
+        httpOnly: true,
+        sameSite: 'lax',
     });
 }
 

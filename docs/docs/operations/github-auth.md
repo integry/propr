@@ -31,6 +31,7 @@ private key. Instead the stack fetches short-lived installation tokens from a
 vendor-run **relay**, authenticated by a durable per-installation credential.
 
 ```bash
+GH_AUTH_MODE=relay                             # optional but recommended; relay is also inferred from URL+token
 PROPR_GH_RELAY_URL=https://relay.propr.dev/v1  # https required (http only for localhost), include version prefix
 PROPR_GH_RELAY_TOKEN=your_relay_token          # durable credential issued for your installation
 GH_INSTALLATION_ID=987654                      # optional; which installation

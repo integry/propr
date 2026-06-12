@@ -439,6 +439,10 @@ function buildServiceSpec(cfg, service) {
                 '-v', `${cfg.hostRepos}:/usr/src/app/repos`,
                 '-v', '/tmp/claude-logs:/tmp/claude-logs',
                 '--ulimit', 'nofile=65536:65536',
+                // The worker validates the attachment base URL at startup
+                // (validateAttachmentBaseUrlConfig); inject the computed value so a
+                // .env without API_PUBLIC_URL/FRONTEND_URL doesn't crashloop it.
+                '-e', `API_PUBLIC_URL=${cfg.apiPublicUrl}`,
                 ...vibePromptCacheArgs(cfg),
                 ...agentCredentialArgs(cfg, { opencodeDataReadWrite: true }),
             ]);
@@ -493,12 +497,20 @@ export function startService(cfg, service, { onLog, pull = true } = {}) {
     return getServiceState(cfg, service);
 }
 
-/** Stop (and by default remove) a single service container. */
+/** Stop (and by default remove) a single service container. Throws if the stop fails. */
 export function stopService(cfg, service, { remove = true, onLog } = {}) {
     const name = `${cfg.stack}-${service}`;
     if (!containerExists(cfg, name)) return;
-    docker(['stop', '-t', '10', name], { capture: true });
-    if (remove) docker(['rm', name], { capture: true });
+    const stopped = docker(['stop', '-t', '10', name], { capture: true });
+    if (stopped.status !== 0) {
+        throw new Error(`Failed to stop ${name}: ${(stopped.stderr || '').trim()}`);
+    }
+    if (remove) {
+        const removed = docker(['rm', name], { capture: true });
+        if (removed.status !== 0) {
+            throw new Error(`Stopped ${name} but failed to remove it: ${(removed.stderr || '').trim()}`);
+        }
+    }
     onLog?.(`  [ok] stopped ${name}`);
 }
 
@@ -512,15 +524,38 @@ export function isStackRunning(cfg) {
     return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
 }
 
-/** Start the full stack in dependency order. */
+/**
+ * Start the full stack in dependency order. If a service fails to start, the
+ * services started so far are stopped (best effort) before the error is
+ * rethrown, so a failed startup doesn't leave a half-running stack behind.
+ */
 export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
-    for (const service of CORE_SERVICES) startService(cfg, service, { onLog });
-    if (ui) startService(cfg, 'ui', { onLog });
-    if (docs) startService(cfg, 'docs', { onLog });
+    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
+    const started = [];
+    try {
+        for (const service of toStart) {
+            startService(cfg, service, { onLog });
+            started.push(service);
+        }
+    } catch (err) {
+        onLog?.(`  ! startup failed (${err.message}) — rolling back already-started services`);
+        for (const service of started.reverse()) {
+            try {
+                stopService(cfg, service, { onLog });
+            } catch (stopErr) {
+                onLog?.(`  ! rollback: ${stopErr.message}`);
+            }
+        }
+        throw err;
+    }
     return getStackStatus(cfg);
 }
 
-/** Stop every container belonging to this stack (discovered by label + legacy name pattern). */
+/**
+ * Stop every container belonging to this stack (discovered by label + legacy
+ * name pattern). Returns `{ failed }` listing containers that could not be
+ * stopped/removed so callers can surface partial failures.
+ */
 export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } = {}) {
     const res = docker(['ps', '-a', '--filter', `label=propr.stack=${cfg.stack}`, '--format', '{{.Names}}'], { capture: true });
     const names = new Set(res.stdout.split('\n').map((s) => s.trim()).filter(Boolean));
@@ -534,24 +569,36 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
         }
     }
 
+    const failed = [];
     for (const name of names) {
-        try {
-            docker(['stop', '-t', '10', name], { capture: true });
-            if (remove) docker(['rm', name], { capture: true });
-            onLog?.(`  [ok] stopped ${name}`);
-        } catch (e) {
-            onLog?.(`  ! failed to stop ${name}: ${e.message}`);
+        // docker() with capture never throws — check the exit status explicitly so
+        // a failed stop is reported instead of being logged as "[ok] stopped".
+        const stopped = docker(['stop', '-t', '10', name], { capture: true });
+        if (stopped.status !== 0) {
+            failed.push(name);
+            onLog?.(`  ! failed to stop ${name}: ${(stopped.stderr || '').trim()}`);
+            continue;
         }
+        if (remove) {
+            const removed = docker(['rm', name], { capture: true });
+            if (removed.status !== 0) {
+                failed.push(name);
+                onLog?.(`  ! stopped ${name} but failed to remove it: ${(removed.stderr || '').trim()}`);
+                continue;
+            }
+        }
+        onLog?.(`  [ok] stopped ${name}`);
     }
 
     if (removeNetwork) {
-        try {
-            docker(['network', 'rm', cfg.network], { capture: true });
+        const removedNet = docker(['network', 'rm', cfg.network], { capture: true });
+        // Non-zero is not fatal — the network may not exist or may still be in use.
+        if (removedNet.status === 0) {
             onLog?.(`  [ok] removed network ${cfg.network}`);
-        } catch {
-            // Network may not exist or may still be in use — not fatal.
         }
     }
+
+    return { failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +660,16 @@ export function getServiceLogs(cfg, service, { follow = false, tail = 'all', std
 export function validateEnv(cfg) {
     const errors = [];
     const warnings = [];
+
+    // Docker name constraint — the stack name is embedded in container, volume
+    // and network names, so reject it early instead of failing mid-startup.
+    const dockerNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+    if (!dockerNamePattern.test(cfg.stack)) {
+        errors.push(`PROPR_STACK ("${cfg.stack}") is not a valid Docker name — use letters, digits, '_', '.' or '-', starting with a letter or digit.`);
+    }
+    if (!dockerNamePattern.test(cfg.network)) {
+        errors.push(`PROPR_NETWORK ("${cfg.network}") is not a valid Docker network name — use letters, digits, '_', '.' or '-', starting with a letter or digit.`);
+    }
 
     if (!cfg.envFileHost) errors.push('env file path is not set (PROPR_ENV_FILE / <root>/.env)');
     if (!cfg.hostData) errors.push('data dir is not set (PROPR_DATA_DIR)');

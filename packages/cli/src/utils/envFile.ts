@@ -23,6 +23,11 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
     if (/^\s|\s$/.test(value)) {
       throw new Error(`${key} cannot contain leading or trailing whitespace in ${envPath}; Docker --env-file does not strip quotes.`);
     }
+    if (/\s#/.test(value)) {
+      // The orchestrator's env-file reader strips a trailing " #comment" from
+      // unquoted values, so such a value would not survive a read-back round trip.
+      throw new Error(`${key} cannot contain whitespace followed by '#' in ${envPath}; it would be read back as a truncated value (inline-comment syntax).`);
+    }
   }
 
   const raw = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
