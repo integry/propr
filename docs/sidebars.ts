@@ -105,6 +105,7 @@ const sidebars: SidebarsConfig = {
       label: 'Operations',
       items: [
         'operations/deployment',
+        'operations/github-auth',
         'operations/maintenance',
         'operations/system-metrics',
         'operations/metrics-feedback-loop',

@@ -8,11 +8,44 @@ import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
+import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
+
+export function getSessionCookieDomain(): string | undefined {
+    if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
+    return undefined;
+}
+
+export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): boolean {
+    try {
+        if (process.env.API_PUBLIC_URL) {
+            const url = new URL(process.env.API_PUBLIC_URL);
+            if (url.protocol === 'https:') return true;
+            if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')) return false;
+        }
+        return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
+    } catch {
+        return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
+    }
+}
+
+function clearSessionCookie(res: Response): void {
+    const domain = getSessionCookieDomain();
+    // Mirror the attributes used when the session cookie is set — browsers match
+    // on name/domain/path, but mirroring secure/httpOnly/sameSite is the safer
+    // convention.
+    res.clearCookie('connect.sid', {
+        ...(domain ? { domain } : {}),
+        path: '/',
+        secure: shouldUseSecureSessionCookie(domain),
+        httpOnly: true,
+        sameSite: 'lax',
+    });
+}
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
     configureDemoMode(demoModeAtStartup);
@@ -38,6 +71,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         // Use Redis store for sessions to share across subdomains
         const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
 
+        const cookieDomain = getSessionCookieDomain();
         app.use(session({
             store: redisStore,
             secret: process.env.SESSION_SECRET || 'your-secret-key-here',
@@ -45,12 +79,10 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
             saveUninitialized: false,
             rolling: true, // Extend session expiration on each request
             cookie: {
-                // Always secure since gitfix.dev uses HTTPS
-                secure: true,
+                secure: shouldUseSecureSessionCookie(cookieDomain),
                 httpOnly: true,
                 maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-                // Set domain to .gitfix.dev to share cookies across all subdomains
-                domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+                ...(cookieDomain ? { domain: cookieDomain } : {}),
                 sameSite: 'lax'
             }
         }));
@@ -114,6 +146,18 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         app.get('/api/auth/github/callback',
             passport.authenticate('github', { failureRedirect: '/login' }),
             (req: Request, res: Response) => {
+                // Reject logins from users not on the access whitelist, before a
+                // session is usable. (No-op when no whitelist is configured.)
+                if (!isUserWhitelisted(req.user?.username)) {
+                    req.logout(() => {
+                        req.session.destroy(() => {
+                            clearSessionCookie(res);
+                            res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
+                        });
+                    });
+                    return;
+                }
+
                 // Check for stored redirect URL (for PR preview environments)
                 const redirectTo = (req.session as session.Session & { redirectTo?: string }).redirectTo;
                 if (redirectTo) {
@@ -149,7 +193,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                 if (sessionErr) {
                     console.error('Session destroy error:', sessionErr);
                 }
-                res.clearCookie('connect.sid');
+                clearSessionCookie(res);
                 res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
             });
         });
@@ -182,6 +226,16 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
             return;
         }
 
+        if (!isUserWhitelisted(req.user?.username)) {
+            req.logout(() => {
+                req.session.destroy(() => {
+                    clearSessionCookie(res);
+                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+                });
+            });
+            return;
+        }
+
         // Proactively refresh token in background if needed
         // Don't block the request, let it continue while refresh happens
         refreshGitHubTokenIfNeeded(req).catch((err) => {
@@ -200,6 +254,10 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
         try {
             const user = await validateGitHubToken(token);
             if (user) {
+                if (!isUserWhitelisted(user.username)) {
+                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+                    return;
+                }
                 // Populate req.user so downstream handlers work the same way
                 (req as Request & { user: GitHubUser }).user = user;
                 return next();

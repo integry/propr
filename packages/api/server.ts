@@ -140,9 +140,16 @@ if (!process.env.FRONTEND_URL) {
 
 // Allow all subdomains of COOKIE_DOMAIN for CORS to support PR preview environments
 // that share sessions via cross-subdomain cookies
-const cookieDomain = process.env.COOKIE_DOMAIN || '.gitfix.dev';
+const cookieDomain = process.env.COOKIE_DOMAIN;
 // Remove leading dot if present for hostname matching
-const baseDomain = cookieDomain.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
+const baseDomain = cookieDomain?.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
+let frontendOrigin: string;
+try {
+  frontendOrigin = new URL(process.env.FRONTEND_URL).origin;
+} catch {
+  console.error(`FRONTEND_URL must be a valid URL, got: ${process.env.FRONTEND_URL}`);
+  process.exit(1);
+}
 
 // CORS origin validation function - shared between Express and Socket.IO
 function validateCorsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void): void {
@@ -154,7 +161,9 @@ function validateCorsOrigin(origin: string | undefined, callback: (err: Error | 
   try {
     const url = new URL(origin);
     // Allow the base domain and any subdomain
-    if (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain)) {
+    if (baseDomain && (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain))) {
+      callback(null, true);
+    } else if (url.origin === frontendOrigin) {
       callback(null, true);
     } else if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
       // Allow localhost for development

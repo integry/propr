@@ -275,6 +275,48 @@ export async function deleteAgent(
 }
 
 /**
+ * Enables or disables an agent by alias.
+ *
+ * Fetches the full agents array, flips the `enabled` flag on the matching entry,
+ * and saves it back (full-array replace, matching the web UI). Requires the
+ * backend API to be reachable (i.e. the stack is running).
+ *
+ * @param alias - The alias of the agent to toggle.
+ * @param enabled - The desired enabled state.
+ * @param client - Optional ApiClient instance.
+ * @returns A promise resolving to the save response.
+ */
+export async function setAgentEnabled(
+  alias: string,
+  enabled: boolean,
+  client?: ApiClient
+): Promise<SaveAgentsResponse> {
+  const apiClient = client ?? (await createApiClient());
+
+  const existingResponse = await apiClient.get<GetAgentsResponse>("/api/config/agents");
+  const existingAgents = existingResponse.data.agents || [];
+
+  const target = existingAgents.find(
+    (agent) => agent.alias.toLowerCase() === alias.toLowerCase()
+  );
+  if (!target) {
+    throw new Error(`Agent with alias '${alias}' not found`);
+  }
+
+  const updatedAgents = existingAgents.map((agent) =>
+    agent === target ? { ...agent, enabled } : agent
+  );
+
+  // Full-array replace can overwrite concurrent web/CLI edits until the API
+  // exposes a per-agent PATCH endpoint.
+  const response = await apiClient.post<SaveAgentsResponse>("/api/config/agents", {
+    body: { agents: updatedAgents },
+  });
+
+  return response.data;
+}
+
+/**
  * Gets the default Docker image for an agent type.
  *
  * @param type - The agent type.

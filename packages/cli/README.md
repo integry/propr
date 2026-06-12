@@ -8,6 +8,10 @@ Command-line interface for interacting with the ProPR backend. ProPR enables AI-
 npm install -g @propr/cli
 ```
 
+The host CLI requires Node.js 22 or newer. The Docker launcher image is separate
+and remains dependency-free on Node 20 because it does not load the Ink-based
+interactive CLI.
+
 ## Quick Start
 
 ```bash
@@ -43,6 +47,18 @@ propr use <owner/repo>   # Set default project
 propr login [token]      # Authenticate (interactive or PAT)
 propr logout             # Clear stored token
 ```
+
+## Compatibility Notes
+
+In the control-plane CLI, `propr status` reports the local Docker stack. Use
+`propr remote-status` for the backend health/queue status JSON that older
+scripts may have read from `propr status --json`.
+
+**Breaking:** running bare `propr` now performs the same environment checks as
+`propr check` — including a Docker daemon probe that can take a few seconds —
+and exits nonzero when required local stack prerequisites are missing. Scripts
+or shell integrations that invoked bare `propr` to print help text should call
+`propr --help` instead.
 
 ## Repository Setup
 

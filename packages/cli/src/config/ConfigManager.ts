@@ -154,6 +154,18 @@ export class ConfigManager {
       sanitized.defaultProject = data.defaultProject;
     }
 
+    if (typeof data.stackRoot === "string") {
+      sanitized.stackRoot = data.stackRoot;
+    }
+
+    if (typeof data.uiEnabled === "boolean") {
+      sanitized.uiEnabled = data.uiEnabled;
+    }
+
+    if (typeof data.docsEnabled === "boolean") {
+      sanitized.docsEnabled = data.docsEnabled;
+    }
+
     return sanitized;
   }
 
@@ -263,6 +275,52 @@ export class ConfigManager {
    */
   async setDefaultProject(project: string): Promise<void> {
     await this.set("defaultProject", project);
+  }
+
+  /**
+   * Gets the local stack root directory (where .env, data/, logs/, repos/ live).
+   *
+   * @returns The stack root path, or undefined if not set.
+   */
+  getStackRoot(): string | undefined {
+    return this.get("stackRoot");
+  }
+
+  /**
+   * Sets the local stack root directory.
+   *
+   * @param root - Absolute path to the stack root.
+   */
+  async setStackRoot(root: string): Promise<void> {
+    await this.set("stackRoot", root);
+  }
+
+  /**
+   * Gets the desired UI service state. Defaults to true when unset.
+   */
+  getUiEnabled(): boolean {
+    return this.get("uiEnabled") ?? true;
+  }
+
+  /**
+   * Sets the desired UI service state.
+   */
+  async setUiEnabled(enabled: boolean): Promise<void> {
+    await this.set("uiEnabled", enabled);
+  }
+
+  /**
+   * Gets the desired docs service state. Defaults to false when unset.
+   */
+  getDocsEnabled(): boolean {
+    return this.get("docsEnabled") ?? false;
+  }
+
+  /**
+   * Sets the desired docs service state.
+   */
+  async setDocsEnabled(enabled: boolean): Promise<void> {
+    await this.set("docsEnabled", enabled);
   }
 
   /**

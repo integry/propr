@@ -56,4 +56,21 @@ export {
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 
+// Export user whitelist helpers
+export {
+  getGithubUserWhitelist,
+  isGithubUserWhitelisted,
+} from './userWhitelist.js';
+
+// Export relay URL validation
+export { validateRelayUrl } from './validateRelayUrl.js';
+
+// Export GitHub auth mode inference (shared by backend boot and `propr check`)
+export {
+  type GithubAuthMode,
+  type GithubAuthModeEnv,
+  type GithubAuthModeResult,
+  resolveGithubAuthMode,
+} from './githubAuthMode.js';
+
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';
