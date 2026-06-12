@@ -49,7 +49,7 @@ const legacyDocsRedirects = [
 
 const config: Config = {
   title: 'ProPR',
-  tagline: 'Web UI for AI planning, execution, and PR automation',
+  tagline: 'Plan, implement, review, and refine GitHub pull requests with AI agents — self-hosted',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

@@ -4,10 +4,16 @@
  */
 
 .heroBanner {
-  padding: 4rem 0;
+  padding: 3.5rem 0;
   text-align: center;
   position: relative;
   overflow: hidden;
+}
+
+.heroBanner p {
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 @media screen and (max-width: 996px) {
@@ -20,4 +26,52 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.quickstart {
+  padding: 2.5rem 0 1rem;
+}
+
+.quickstart code {
+  font-size: 0.85rem;
+}
+
+.sections {
+  padding: 1.5rem 0 3rem;
+}
+
+.sectionCol {
+  margin-top: 1.5rem;
+}
+
+.sectionCard {
+  height: 100%;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 10px;
+  background: var(--ifm-card-background-color);
+}
+
+.sectionCard h3 {
+  font-size: 1.05rem;
+  margin-bottom: 0.4rem;
+}
+
+.sectionCard p {
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-700);
+  margin-bottom: 0.6rem;
+}
+
+.sectionCard ul {
+  list-style: none;
+  padding-left: 0;
+  margin-bottom: 0;
+  font-size: 0.85rem;
+}
+
+.sectionCard li {
+  margin: 0.25rem 0;
 }
