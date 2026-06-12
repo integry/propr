@@ -34,6 +34,14 @@ function isReadableFile(path) {
     }
 }
 
+function isDirectory(path) {
+    try {
+        return statSync(path).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // .env file parsing (parameterized by the file path so it works for both the
 // launcher's local env file and the host's <root>/.env)
@@ -607,6 +615,15 @@ export function validateEnv(cfg) {
     if (!cfg.hostData) errors.push('data dir is not set (PROPR_DATA_DIR)');
     if (!cfg.hostLogs) errors.push('logs dir is not set (PROPR_LOGS_DIR)');
     if (!cfg.hostRepos) errors.push('repos dir is not set (PROPR_REPOS_DIR)');
+    for (const [name, path] of [
+        ['PROPR_DATA_DIR', cfg.hostData],
+        ['PROPR_LOGS_DIR', cfg.hostLogs],
+        ['PROPR_REPOS_DIR', cfg.hostRepos],
+    ]) {
+        if (path && !isDirectory(path)) {
+            errors.push(`${name} (${path}) is not an existing directory. Run \`propr init stack\` to create the stack directories.`);
+        }
+    }
     if (cfg.envFileLocal && !isReadableFile(cfg.envFileLocal)) {
         errors.push(`cannot read the env file at ${cfg.envFileLocal}`);
     }

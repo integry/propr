@@ -15,28 +15,16 @@ import './authTypes.js';
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
 
-function getSessionCookieDomain(): string | undefined {
+export function getSessionCookieDomain(): string | undefined {
     if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
-    if (!process.env.API_PUBLIC_URL) return undefined;
-
-    let host: string;
-    try {
-        host = new URL(process.env.API_PUBLIC_URL).hostname;
-    } catch {
-        console.warn('Ignoring invalid API_PUBLIC_URL for session cookie domain.');
-        return undefined;
-    }
-
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return undefined;
-    if (host === 'gitfix.dev' || host.endsWith('.gitfix.dev')) return '.gitfix.dev';
     return undefined;
 }
 
-function shouldUseSecureSessionCookie(cookieDomain: string | undefined): boolean {
+export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): boolean {
     try {
-        return process.env.API_PUBLIC_URL ? new URL(process.env.API_PUBLIC_URL).protocol === 'https:' : Boolean(cookieDomain);
+        return process.env.API_PUBLIC_URL ? new URL(process.env.API_PUBLIC_URL).protocol === 'https:' : process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
     } catch {
-        return Boolean(cookieDomain);
+        return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
     }
 }
 

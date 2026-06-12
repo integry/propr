@@ -6,7 +6,7 @@ export class ParseStateError extends Error {
 }
 
 export function parseOnOffState(value: string): boolean {
-  const v = value.toLowerCase();
+  const v = value.trim().toLowerCase();
   if (v === "on" || v === "enable" || v === "true" || v === "1" || v === "yes") return true;
   if (v === "off" || v === "disable" || v === "false" || v === "0" || v === "no") return false;
   throw new ParseStateError(value);

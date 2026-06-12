@@ -48,6 +48,17 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
 
   console.log(`Starting ProPR stack (root: ${rootDir})`);
 
+  const running = orch.isStackRunning(cfg);
+  if (running) {
+    if (!options.restart && !(await confirmRestart())) {
+      console.error("\nStack is already running. Use `propr start --restart` to recreate all services.");
+      process.exit(1);
+    }
+    console.log("\nRestarting all services…");
+  } else {
+    console.log("\nStarting containers…");
+  }
+
   if (options.pull !== false) {
     const { failedAgentImages } = orch.pullImages(cfg, { onLog: (l) => console.log(l) });
     if (failedAgentImages.length > 0) {
@@ -62,16 +73,6 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
   // back to the resolved config which honors DOCS_ENABLED from .env.
   const docs = configManager.get("docsEnabled") ?? cfg.docsEnabled;
 
-  const running = orch.isStackRunning(cfg);
-  if (running) {
-    if (!options.restart && !(await confirmRestart())) {
-      console.error("\nStack is already running. Use `propr start --restart` to recreate all services.");
-      process.exit(1);
-    }
-    console.log("\nRestarting all services…");
-  } else {
-    console.log("\nStarting containers…");
-  }
   orch.ensureNetwork(cfg, (l) => console.log(l));
   const status = orch.startStack(cfg, { ui, docs, onLog: (l) => console.log(l) });
 

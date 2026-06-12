@@ -33,7 +33,8 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
     if (/^\s|\s$/.test(value)) {
       throw new Error(`${key} cannot contain leading or trailing whitespace in ${envPath}; Docker --env-file does not strip quotes.`);
     }
-    const assignment = `${key}=${value}`;
+    const preserveExport = index >= 0 && /^\s*export\s+/.test(lines[index]);
+    const assignment = `${preserveExport ? "export " : ""}${key}=${value}`;
     if (index >= 0) {
       lines[index] = assignment;
     } else {

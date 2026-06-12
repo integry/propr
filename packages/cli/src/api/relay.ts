@@ -91,7 +91,11 @@ async function relayRequest<T>(
     throw new Error(`Relay request failed (HTTP ${response.status}${code ? ` ${code}` : ""}).`);
   }
 
-  return (await response.json()) as T;
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new Error("The relay returned a malformed JSON response.");
+  }
 }
 
 export function enrollRelayToken(

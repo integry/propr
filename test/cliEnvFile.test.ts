@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -29,4 +29,14 @@ test("upsertEnvVars rejects values Docker env files cannot represent on one line
     () => upsertEnvVars(envPath, { PROPR_GH_RELAY_TOKEN: "rly_first\nsecond" }),
     /cannot contain newlines/,
   );
+});
+
+test("upsertEnvVars preserves export prefix when replacing a value", () => {
+  const dir = mkdtempSync(join(tmpdir(), "propr-env-"));
+  const envPath = join(dir, ".env");
+  writeFileSync(envPath, "export PROPR_GH_RELAY_TOKEN=rly_old\n", "utf-8");
+
+  upsertEnvVars(envPath, { PROPR_GH_RELAY_TOKEN: "rly_new" });
+
+  assert.equal(readFileSync(envPath, "utf-8"), "export PROPR_GH_RELAY_TOKEN=rly_new\n");
 });

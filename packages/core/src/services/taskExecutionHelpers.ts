@@ -26,15 +26,16 @@ interface BuildUserNotesOptions {
 /**
  * Get the public base URL for attachments.
  * Uses API_PUBLIC_URL since attachments are served by the API.
- * Falls back to WEB_UI_URL or FRONTEND_URL with /api prefix for backwards compatibility.
+ * Falls back to WEB_UI_URL or FRONTEND_URL for backwards compatibility.
  */
 function getAttachmentBaseUrl(): string {
-  // API_PUBLIC_URL is the public URL for the API (e.g., https://pr-741-api.gitfix.dev)
   if (process.env.API_PUBLIC_URL) {
     return process.env.API_PUBLIC_URL;
   }
   // Fallback to frontend URL (for local development where API is proxied)
-  return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://api.gitfix.dev';
+  const fallbackUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL;
+  if (fallbackUrl) return fallbackUrl;
+  throw new Error('API_PUBLIC_URL, WEB_UI_URL, or FRONTEND_URL must be set to link attachments');
 }
 
 /**
