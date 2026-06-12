@@ -96,6 +96,13 @@ function jobMatchesTask(jobId: string, taskIdOrJobId: string, taskId: string): b
  * Removes queued/delayed jobs belonging to a task before they start executing.
  * Returns the number of removed jobs plus the job data of the last removed job,
  * which is used to create a task state record for jobs that never started.
+ *
+ * This scans the pending queue rather than doing a direct job-ID lookup because
+ * job IDs do not equal task IDs (queue producers add type prefixes and
+ * uniqueness suffixes — see normalizeTaskId), so the matching job IDs cannot be
+ * computed up front. The scan only runs for stops of non-running tasks, and the
+ * waiting/delayed set is typically small; if stop latency becomes a problem on
+ * large queues, a task-ID → job-ID index would remove the scan.
  */
 async function removeQueuedJobsForTask(taskIdOrJobId: string, taskId: string, options: StopTaskExecutionOptions): Promise<{ removed: number; jobData: Record<string, unknown> | null }> {
   let removed = 0;
@@ -183,7 +190,11 @@ function deriveIssueRefFromJobData(jobData: Record<string, unknown> | null): Iss
     : typeof jobData.issueNumber === 'number' ? jobData.issueNumber
     : typeof jobData.prNumber === 'number' ? jobData.prNumber
     : typeof jobData.pullRequestNumber === 'number' ? jobData.pullRequestNumber
-    : 0;
+    : null;
+  // Without an issue/PR number the payload shape is unsupported — creating a
+  // state record under a fabricated number (e.g. 0) would produce misleading
+  // task history, so the caller treats this the same as missing job data.
+  if (number === null || number <= 0) return null;
   return { number, repoOwner, repoName };
 }
 
@@ -191,8 +202,12 @@ function deriveIssueRefFromJobData(jobData: Record<string, unknown> | null): Iss
  * Creates a task state record for a queued job that was removed before it ever
  * started. Without this, marking the task cancelled has nothing to attach the
  * cancellation reason to and the removal would leave no audit trail.
+ *
+ * Returns 'created' when a state record now exists, or a failure outcome so the
+ * caller can skip marking the task cancelled (there is nothing to attach the
+ * cancellation to) and report `cancellationRecorded: false` truthfully.
  */
-async function ensureTaskStateForQueuedJob(taskId: string, jobData: Record<string, unknown> | null, options: StopTaskExecutionOptions): Promise<void> {
+async function ensureTaskStateForQueuedJob(taskId: string, jobData: Record<string, unknown> | null, options: StopTaskExecutionOptions): Promise<'created' | 'unsupported-payload' | 'create-failed'> {
   const issueRef = deriveIssueRefFromJobData(jobData);
   if (!issueRef) {
     // Operational gap: without a repository + number the cancellation reason
@@ -200,14 +215,16 @@ async function ensureTaskStateForQueuedJob(taskId: string, jobData: Record<strin
     // payloads are visible and can be added to deriveIssueRefFromJobData().
     const jobDataKeys = jobData ? Object.keys(jobData).join(', ') || '(empty object)' : '(no job data)';
     console.warn(`[stop-execution] Cannot derive issue ref for queued task ${taskId}; cancellation reason will not be recorded. Job data keys: ${jobDataKeys}`);
-    return;
+    return 'unsupported-payload';
   }
   try {
     const create = options.createTaskState
       ?? ((id: string, ref: IssueRef) => getStateManager().createTaskState(id, ref));
     await create(taskId, issueRef);
+    return 'created';
   } catch (createError) {
     console.warn(`[stop-execution] Failed to create task state for queued task ${taskId}: ${(createError as Error).message}`);
+    return 'create-failed';
   }
 }
 
@@ -263,19 +280,24 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
     // have not started yet. Remove those before they begin executing.
     const { removed: removedQueuedJobs, jobData } = await removeQueuedJobsForTask(taskIdOrJobId, taskId, options);
     if (removedQueuedJobs > 0) {
-      if (!state) {
-        // The job never started, so no task state exists yet. Create one so the
-        // cancellation and its reason are recorded instead of silently lost.
-        await ensureTaskStateForQueuedJob(taskId, jobData, options);
-      }
-      const cancellationRecorded = await markCancelled({ removedQueuedJobs });
+      // The job never started, so no task state exists yet. Create one so the
+      // cancellation and its reason are recorded instead of silently lost.
+      // When no state exists and none could be created, marking the task
+      // cancelled has nothing to attach the reason to — skip it and report
+      // cancellationRecorded: false instead of pretending an audit trail exists.
+      const stateAvailable = state
+        ? true
+        : (await ensureTaskStateForQueuedJob(taskId, jobData, options)) === 'created';
+      const cancellationRecorded = stateAvailable && await markCancelled({ removedQueuedJobs });
       return {
         success: true,
         taskId,
         containerStopped: false,
         removedQueuedJobs,
         cancellationRecorded,
-        message: `Removed ${removedQueuedJobs} queued job(s) before execution started.`
+        message: cancellationRecorded
+          ? `Removed ${removedQueuedJobs} queued job(s) before execution started.`
+          : `Removed ${removedQueuedJobs} queued job(s) before execution started, but the cancellation could not be recorded in task state.`
       };
     }
     if (!state) {
@@ -295,9 +317,12 @@ export async function stopTaskExecution(taskIdOrJobId: string, options: StopTask
           // which carries the machine-readable reason — stays in place so the
           // worker still terminates and re-records the cancellation itself;
           // if the worker dies before writing state, this record remains as
-          // the durable audit trail.
-          await ensureTaskStateForQueuedJob(taskId, activeJob.jobData, options);
-          cancellationRecorded = await markCancelled({ abortSignalled: true, activeQueueJob: true });
+          // the durable audit trail. When no state could be created there is
+          // nothing to record the cancellation on — the abort signal is the
+          // only cancellation mechanism, so cancellationRecorded stays false.
+          const ensured = await ensureTaskStateForQueuedJob(taskId, activeJob.jobData, options);
+          cancellationRecorded = ensured === 'created'
+            && await markCancelled({ abortSignalled: true, activeQueueJob: true });
         }
         return {
           success: true,

@@ -60,7 +60,7 @@ test('cancelActiveTasksForMergedPR stops every active task and queued job with t
 
   const summary = await cancelActiveTasksForMergedPR(REPOSITORY, PR_NUMBER, deps);
 
-  assert.deepEqual(summary, { attempted: 3, cancelled: 3, failed: 0, skipped: 0 });
+  assert.deepEqual(summary, { attempted: 3, cancelled: 3, cancellationPending: 0, failed: 0, skipped: 0 });
   assert.deepEqual(stopCalls.map(c => c.id).sort(), ['issue-acme-widgets-42-99', 'task-a', 'task-b']);
   for (const call of stopCalls) {
     assert.equal(call.context.cancellationReason, PR_MERGED_CANCELLATION_REASON);
@@ -77,7 +77,7 @@ test('cancelActiveTasksForMergedPR does nothing when there is no active work', a
 
   const summary = await cancelActiveTasksForMergedPR(REPOSITORY, PR_NUMBER, deps);
 
-  assert.deepEqual(summary, { attempted: 0, cancelled: 0, failed: 0, skipped: 0 });
+  assert.deepEqual(summary, { attempted: 0, cancelled: 0, cancellationPending: 0, failed: 0, skipped: 0 });
   assert.equal(stopCalls.length, 0);
 });
 
@@ -94,7 +94,7 @@ test('cancelActiveTasksForMergedPR continues cancelling after a task fails to st
   const summary = await cancelActiveTasksForMergedPR(REPOSITORY, PR_NUMBER, deps);
 
   assert.equal(stopCalls.length, 3, 'all tasks should be attempted despite the failure');
-  assert.deepEqual(summary, { attempted: 3, cancelled: 2, failed: 1, skipped: 0 });
+  assert.deepEqual(summary, { attempted: 3, cancelled: 2, cancellationPending: 0, failed: 1, skipped: 0 });
 });
 
 test('cancelActiveTasksForMergedPR counts no-longer-active tasks as skipped', async () => {
@@ -104,7 +104,17 @@ test('cancelActiveTasksForMergedPR counts no-longer-active tasks as skipped', as
 
   const summary = await cancelActiveTasksForMergedPR(REPOSITORY, PR_NUMBER, deps);
 
-  assert.deepEqual(summary, { attempted: 3, cancelled: 2, failed: 0, skipped: 1 });
+  assert.deepEqual(summary, { attempted: 3, cancelled: 2, cancellationPending: 0, failed: 0, skipped: 1 });
+});
+
+test('cancelActiveTasksForMergedPR surfaces stops without a durable cancellation record separately', async () => {
+  const { deps } = makeCancellerDeps({
+    stopTask: async (id) => ({ success: true, cancellationRecorded: id !== 'task-a' }),
+  });
+
+  const summary = await cancelActiveTasksForMergedPR(REPOSITORY, PR_NUMBER, deps);
+
+  assert.deepEqual(summary, { attempted: 3, cancelled: 2, cancellationPending: 1, failed: 0, skipped: 0 });
 });
 
 // --- handleWebhookRequest integration (no live Redis/GitHub) ---

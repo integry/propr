@@ -125,6 +125,50 @@ test('stopTaskExecution removes queued jobs that never started and records the c
   assert.deepEqual(cancelCalls, ['acme-widgets-42'], 'the removed queued job is marked cancelled');
 });
 
+test('stopTaskExecution reports an unrecorded cancellation when the queued job payload is unsupported', async () => {
+  const redis = makeFakeRedis(); // no worker state — job never started
+  // Repository is present but no issue/PR number field — no issue ref can be
+  // derived, so no task state can be created to attach the cancellation to.
+  const queue = makeFakeQueue([{ id: 'issue-acme-widgets-42-99', data: { repository: REPOSITORY } }]);
+  const createdStates: string[] = [];
+  const cancelCalls: string[] = [];
+
+  const result = await stopTaskExecution('issue-acme-widgets-42-99', {
+    redisClient: redis,
+    requestedBy: 'system',
+    cancellationReason: 'pr_merged',
+    getQueue: async () => queue,
+    createTaskState: async (taskId) => { createdStates.push(taskId); },
+    markCancelled: async (taskId) => { cancelCalls.push(taskId); },
+  });
+
+  assert.equal(result.success, true, 'the queued job was still removed');
+  assert.equal(result.removedQueuedJobs, 1);
+  assert.equal(result.cancellationRecorded, false, 'no state record exists to attach the cancellation to');
+  assert.match(result.message, /could not be recorded/);
+  assert.equal(createdStates.length, 0, 'no state is created under a fabricated issue number');
+  assert.equal(cancelCalls.length, 0, 'markCancelled is skipped when there is no state to mark');
+});
+
+test('stopTaskExecution reports an unrecorded cancellation when task state creation fails', async () => {
+  const redis = makeFakeRedis(); // no worker state — job never started
+  const queue = makeFakeQueue([{ id: 'issue-acme-widgets-42-99', data: { repository: REPOSITORY, prNumber: PR_NUMBER } }]);
+  const cancelCalls: string[] = [];
+
+  const result = await stopTaskExecution('issue-acme-widgets-42-99', {
+    redisClient: redis,
+    requestedBy: 'system',
+    cancellationReason: 'pr_merged',
+    getQueue: async () => queue,
+    createTaskState: async () => { throw new Error('redis write failed'); },
+    markCancelled: async (taskId) => { cancelCalls.push(taskId); },
+  });
+
+  assert.equal(result.success, true, 'the queued job was still removed');
+  assert.equal(result.cancellationRecorded, false);
+  assert.equal(cancelCalls.length, 0, 'markCancelled is skipped when the state could not be created');
+});
+
 test('stopTaskExecution sets the abort signal for an active queue job without worker state', async () => {
   const redis = makeFakeRedis(); // worker picked the job up but has not written worker:state yet
   const queue = makeFakeQueue([], [{ id: 'pr-comments-batch-acme-widgets-42-123' }]);
@@ -184,6 +228,27 @@ test('stopTaskExecution with ensureCancelled durably marks an active queue job w
     !redis.calls.some(c => c.method === 'del' && c.key === 'worker:abort:pr-comments-batch-acme-widgets-42-123'),
     'abort signal left in place for the worker',
   );
+});
+
+test('stopTaskExecution with ensureCancelled reports an unrecorded cancellation for an active job with unsupported payload', async () => {
+  const redis = makeFakeRedis(); // worker picked the job up but has not written worker:state yet
+  const queue = makeFakeQueue([], [{ id: 'pr-comments-batch-acme-widgets-42-123', data: { unrelated: true } }]);
+  const cancelCalls: string[] = [];
+
+  const result = await stopTaskExecution('pr-comments-batch-acme-widgets-42-123', {
+    redisClient: redis,
+    requestedBy: 'system',
+    cancellationReason: 'pr_merged',
+    ensureCancelled: true,
+    getQueue: async () => queue,
+    createTaskState: async () => {},
+    markCancelled: async (taskId) => { cancelCalls.push(taskId); },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.abortSignalled, true, 'the abort signal still terminates the worker');
+  assert.equal(result.cancellationRecorded, false, 'no issue ref could be derived, so nothing was recorded');
+  assert.equal(cancelCalls.length, 0, 'markCancelled is skipped when no state record could be created');
 });
 
 test('stopTaskExecution with ensureCancelled records the cancellation when the container stop fails', async () => {

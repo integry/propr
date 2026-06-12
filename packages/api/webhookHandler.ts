@@ -12,14 +12,17 @@ import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/core';
  */
 const DEFAULT_DELIVERY_TTL_SECONDS = 300;
 
-export const WEBHOOK_DELIVERY_TTL_SECONDS: number = (() => {
-  const env = process.env.WEBHOOK_DELIVERY_TTL_SECONDS;
+/** Reads a positive-integer env var, falling back when unset or invalid. */
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const env = process.env[name];
   if (env) {
     const parsed = parseInt(env, 10);
     if (!Number.isNaN(parsed) && parsed > 0) return parsed;
   }
-  return DEFAULT_DELIVERY_TTL_SECONDS;
-})();
+  return fallback;
+}
+
+export const WEBHOOK_DELIVERY_TTL_SECONDS: number = parsePositiveIntEnv('WEBHOOK_DELIVERY_TTL_SECONDS', DEFAULT_DELIVERY_TTL_SECONDS);
 
 /**
  * NOTE: Payload-timestamp–based staleness detection was intentionally removed.
@@ -102,7 +105,16 @@ export function isMergedPullRequestClose(event: string, payload: Record<string, 
 
 export interface MergedPRCancellationSummary {
   attempted: number;
+  /** Tasks that were stopped AND had the cancellation durably recorded in task state. */
   cancelled: number;
+  /**
+   * Tasks that were stopped (job removed or abort signal set) but whose
+   * cancellation could not be durably recorded — e.g. an unrecognized queue
+   * payload left nothing to attach the reason to, or the state write failed.
+   * The abort signal (which carries the machine-readable reason) remains in
+   * place, so a live worker still terminates and records the cancellation.
+   */
+  cancellationPending: number;
   failed: number;
   /** Tasks that were no longer active by the time the stop ran (finished or vanished). */
   skipped: number;
@@ -112,8 +124,10 @@ export interface MergedPRCancellationSummary {
  * Bounded concurrency for merge-triggered task stops. Each container stop can
  * take up to ~10s, so cancelling sequentially could push the GitHub webhook
  * delivery toward its timeout when a PR has several active tasks.
+ * Configurable via the MERGED_PR_STOP_CONCURRENCY env var for deployments
+ * with slower Docker stops or larger PR task fanout.
  */
-const MERGED_PR_STOP_CONCURRENCY = 4;
+const MERGED_PR_STOP_CONCURRENCY = parsePositiveIntEnv('MERGED_PR_STOP_CONCURRENCY', 4);
 
 /**
  * Maximum time the webhook response waits for merge-triggered cancellation
@@ -124,8 +138,10 @@ const MERGED_PR_STOP_CONCURRENCY = 4;
  * cancel-before-processing ordering, preferred over a timed-out delivery:
  * GitHub's retry of a timed-out delivery would be rejected as a duplicate, so
  * the close-event processor would never run at all.
+ * Configurable via the MERGED_PR_CANCELLATION_WAIT_MS env var (must stay
+ * comfortably under GitHub's ~10s delivery timeout).
  */
-export const MERGED_PR_CANCELLATION_WAIT_MS = 8_000;
+export const MERGED_PR_CANCELLATION_WAIT_MS = parsePositiveIntEnv('MERGED_PR_CANCELLATION_WAIT_MS', 8_000);
 
 /**
  * Cancels all still-active tasks and queued jobs associated with a merged PR.
@@ -143,7 +159,7 @@ export async function cancelActiveTasksForMergedPR(
   for (const task of activeTasks) idsToStop.add(task.taskId);
   for (const job of queuedJobs) idsToStop.add(job.jobId);
 
-  if (idsToStop.size === 0) return { attempted: 0, cancelled: 0, failed: 0, skipped: 0 };
+  if (idsToStop.size === 0) return { attempted: 0, cancelled: 0, cancellationPending: 0, failed: 0, skipped: 0 };
 
   const context: MergedPRStopContext = {
     requestedBy: 'system',
@@ -153,6 +169,7 @@ export async function cancelActiveTasksForMergedPR(
   };
 
   let cancelled = 0;
+  let cancellationPending = 0;
   let failed = 0;
   let skipped = 0;
   const pending = [...idsToStop];
@@ -164,11 +181,15 @@ export async function cancelActiveTasksForMergedPR(
           // The task finished (or vanished) between lookup and stop — nothing to cancel.
           skipped++;
           console.log(`[webhook] Task ${id} for merged PR ${repository}#${prNumber} was no longer active`);
+        } else if (result && result.cancellationRecorded === false) {
+          // Merge-triggered stops request durable cancellation marking
+          // (ensureCancelled), so an unrecorded cancellation means there was no
+          // task state to attach the reason to. Surface it separately instead
+          // of counting it as a fully recorded cancellation.
+          cancellationPending++;
+          console.warn(`[webhook] Task ${id} for merged PR ${repository}#${prNumber} was stopped but the cancellation was not durably recorded; the abort signal remains for the worker to observe`);
         } else {
           cancelled++;
-          if (result && result.cancellationRecorded === false) {
-            console.log(`[webhook] Task ${id} for merged PR ${repository}#${prNumber}: abort signal set; the worker will record the cancellation`);
-          }
         }
       } catch (error) {
         failed++;
@@ -178,8 +199,8 @@ export async function cancelActiveTasksForMergedPR(
   };
   await Promise.all(Array.from({ length: Math.min(MERGED_PR_STOP_CONCURRENCY, pending.length) }, () => stopNext()));
 
-  console.log(`[webhook] Merged PR ${repository}#${prNumber}: cancelled ${cancelled}/${idsToStop.size} active task(s)${skipped > 0 ? `, ${skipped} no longer active` : ''}${failed > 0 ? `, ${failed} failed` : ''}`);
-  return { attempted: idsToStop.size, cancelled, failed, skipped };
+  console.log(`[webhook] Merged PR ${repository}#${prNumber}: cancelled ${cancelled}/${idsToStop.size} active task(s)${cancellationPending > 0 ? `, ${cancellationPending} stopped without a durable record` : ''}${skipped > 0 ? `, ${skipped} no longer active` : ''}${failed > 0 ? `, ${failed} failed` : ''}`);
+  return { attempted: idsToStop.size, cancelled, cancellationPending, failed, skipped };
 }
 
 /**
@@ -289,7 +310,14 @@ export async function handleWebhookRequest(
   // branch or posting stale comments mid-cleanup. Nothing in the cancellation
   // path reads anything the processor writes, so there is no reverse dependency.
   // The wait is bounded by MERGED_PR_CANCELLATION_WAIT_MS so a PR with many
-  // active tasks cannot push the delivery past GitHub's webhook timeout.
+  // active tasks cannot push the delivery past GitHub's webhook timeout. The
+  // cancel-before-processing ordering is therefore guaranteed only within that
+  // budget: when it is exhausted, close processing runs while the remaining
+  // stops finish in the background, and a slow stop can in principle still
+  // race the cleanup. That residual race is accepted — the alternative (a
+  // timed-out delivery whose GitHub retry is rejected as a duplicate) would
+  // skip close processing entirely. Raise MERGED_PR_CANCELLATION_WAIT_MS in
+  // deployments where container stops are slow and stricter ordering matters.
   // Failures here are logged but must never fail the webhook delivery.
   if (deps.mergedPRTaskCanceller && isMergedPullRequestClose(rawEvent, payload)) {
     const repository = payload.repository?.full_name;
