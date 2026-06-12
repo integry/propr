@@ -38,6 +38,10 @@ function getAttachmentBaseUrl(): string {
   throw new Error('API_PUBLIC_URL, WEB_UI_URL, or FRONTEND_URL must be set to link attachments');
 }
 
+export function validateAttachmentBaseUrlConfig(): void {
+  getAttachmentBaseUrl();
+}
+
 /**
  * Format an attachment as a download link.
  * Returns a markdown link to the attachment.

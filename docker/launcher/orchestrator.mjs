@@ -138,7 +138,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const envFileHost = overrides.envFileHost || env.PROPR_ENV_FILE;
 
     // value precedence: explicit override → process env → .env file
-    const get = (name) => env[name] || envFileValueFrom(envFileLocal, name) || undefined;
+    const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
 
     const hostData = overrides.hostData || env.PROPR_DATA_DIR;
     const hostLogs = overrides.hostLogs || env.PROPR_LOGS_DIR;
@@ -156,9 +156,10 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostCodexDir = get('HOST_CODEX_DIR');
     const hostAntigravityDir = get('HOST_ANTIGRAVITY_DIR');
     const hostOpencodeLegacyDir = get('HOST_OPENCODE_LEGACY_DIR');
-    const hostOpencodeXdgDir = env.HOST_OPENCODE_XDG_DIR || env.HOST_OPENCODE_DIR
-        || envFileValueFrom(envFileLocal, 'HOST_OPENCODE_XDG_DIR')
-        || envFileValueFrom(envFileLocal, 'HOST_OPENCODE_DIR') || undefined;
+    const hostOpencodeXdgDir = env.HOST_OPENCODE_XDG_DIR !== undefined ? env.HOST_OPENCODE_XDG_DIR
+        : env.HOST_OPENCODE_DIR !== undefined ? env.HOST_OPENCODE_DIR
+            : envFileValueFrom(envFileLocal, 'HOST_OPENCODE_XDG_DIR')
+            || envFileValueFrom(envFileLocal, 'HOST_OPENCODE_DIR') || undefined;
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
 
@@ -176,6 +177,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost,
+        validateHostPaths: overrides.validateHostPaths === true,
         hostData, hostLogs, hostRepos,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
@@ -208,6 +210,7 @@ export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, 
         hostData: join(rootDir, 'data'),
         hostLogs: join(rootDir, 'logs'),
         hostRepos: join(rootDir, 'repos'),
+        validateHostPaths: true,
         manifestPath,
         ...cliOverrides,
     });
@@ -615,13 +618,15 @@ export function validateEnv(cfg) {
     if (!cfg.hostData) errors.push('data dir is not set (PROPR_DATA_DIR)');
     if (!cfg.hostLogs) errors.push('logs dir is not set (PROPR_LOGS_DIR)');
     if (!cfg.hostRepos) errors.push('repos dir is not set (PROPR_REPOS_DIR)');
-    for (const [name, path] of [
-        ['PROPR_DATA_DIR', cfg.hostData],
-        ['PROPR_LOGS_DIR', cfg.hostLogs],
-        ['PROPR_REPOS_DIR', cfg.hostRepos],
-    ]) {
-        if (path && !isDirectory(path)) {
-            errors.push(`${name} (${path}) is not an existing directory. Run \`propr init stack\` to create the stack directories.`);
+    if (cfg.validateHostPaths) {
+        for (const [name, path] of [
+            ['PROPR_DATA_DIR', cfg.hostData],
+            ['PROPR_LOGS_DIR', cfg.hostLogs],
+            ['PROPR_REPOS_DIR', cfg.hostRepos],
+        ]) {
+            if (path && !isDirectory(path)) {
+                errors.push(`${name} (${path}) is not an existing directory. Run \`propr init stack\` to create the stack directories.`);
+            }
         }
     }
     if (cfg.envFileLocal && !isReadableFile(cfg.envFileLocal)) {
@@ -646,7 +651,7 @@ export function validateEnv(cfg) {
             || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', cfg.vibePromptCacheDir, { containerPath: true });
         if (invalid) {
             errors.push(invalid);
-        } else if (cfg.hostVibePromptCacheDir) {
+        } else if (cfg.hostVibePromptCacheDir && cfg.validateHostPaths) {
             if (!existsSync(cfg.hostVibePromptCacheDir)) {
                 errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist. Create it: mkdir -p ${cfg.hostVibePromptCacheDir}`);
             } else {
@@ -677,7 +682,7 @@ export function validateEnv(cfg) {
         const invalidKeyPath = validateDockerBindPath('HOST_GH_PRIVATE_KEY', cfg.hostGhPrivateKey);
         if (invalidKeyPath) {
             errors.push(invalidKeyPath);
-        } else if (!isReadableFile(cfg.hostGhPrivateKey)) {
+        } else if (cfg.validateHostPaths && !isReadableFile(cfg.hostGhPrivateKey)) {
             errors.push(`HOST_GH_PRIVATE_KEY (${cfg.hostGhPrivateKey}) is not a readable file.`);
         }
     }

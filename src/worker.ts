@@ -10,6 +10,7 @@ import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatu
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
+import { validateAttachmentBaseUrlConfig } from '../packages/core/src/services/taskExecutionHelpers.js';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
@@ -136,6 +137,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
     const workerId = `worker:${generateCorrelationId()}`;
     let workerConcurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
     let aiPrimaryTag = 'AI';
+
+    validateAttachmentBaseUrlConfig();
 
     // Run migrations first, before loading any configs from the database
     try {

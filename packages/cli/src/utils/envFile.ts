@@ -43,16 +43,21 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
   }
 
   const isNew = !existsSync(envPath);
-  writeFileSync(envPath, `${lines.join("\n")}\n`, { encoding: "utf-8", mode: isNew ? 0o600 : undefined });
+  let tightenedFrom: number | null = null;
   if (!isNew) {
     try {
       const before = statSync(envPath).mode & 0o777;
       if (before !== 0o600) {
         chmodSync(envPath, 0o600);
-        console.warn(`Note: tightened ${envPath} permissions from ${before.toString(8)} to 600 (secrets file).`);
+        tightenedFrom = before;
       }
     } catch {
       // Best-effort — may fail on Windows or non-owned files.
     }
+  }
+
+  writeFileSync(envPath, `${lines.join("\n")}\n`, { encoding: "utf-8", mode: isNew ? 0o600 : undefined });
+  if (tightenedFrom !== null) {
+    console.warn(`Note: tightened ${envPath} permissions from ${tightenedFrom.toString(8)} to 600 (secrets file).`);
   }
 }

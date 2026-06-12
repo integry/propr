@@ -29,12 +29,19 @@ test('session cookie domain uses explicit COOKIE_DOMAIN', () => {
   assert.equal(getSessionCookieDomain(), '.example.com');
 });
 
-test('secure session cookie follows API_PUBLIC_URL protocol', () => {
+test('secure session cookie follows API_PUBLIC_URL protocol for HTTPS and localhost HTTP', () => {
   process.env.API_PUBLIC_URL = 'https://api.example.com';
   assert.equal(shouldUseSecureSessionCookie(undefined), true);
 
   process.env.API_PUBLIC_URL = 'http://localhost:4000';
   assert.equal(shouldUseSecureSessionCookie('.example.com'), false);
+});
+
+test('secure session cookie does not downgrade for non-localhost HTTP public URL', () => {
+  process.env.API_PUBLIC_URL = 'http://api.example.com';
+  process.env.COOKIE_DOMAIN = '.example.com';
+
+  assert.equal(shouldUseSecureSessionCookie('.example.com'), true);
 });
 
 test('secure session cookie defaults on in production without public URL', () => {

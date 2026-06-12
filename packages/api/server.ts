@@ -143,7 +143,13 @@ if (!process.env.FRONTEND_URL) {
 const cookieDomain = process.env.COOKIE_DOMAIN;
 // Remove leading dot if present for hostname matching
 const baseDomain = cookieDomain?.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
-const frontendOrigin = new URL(process.env.FRONTEND_URL).origin;
+let frontendOrigin: string;
+try {
+  frontendOrigin = new URL(process.env.FRONTEND_URL).origin;
+} catch {
+  console.error(`FRONTEND_URL must be a valid URL, got: ${process.env.FRONTEND_URL}`);
+  process.exit(1);
+}
 
 // CORS origin validation function - shared between Express and Socket.IO
 function validateCorsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void): void {

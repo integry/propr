@@ -16,6 +16,7 @@ export interface OrchestratorConfig {
   readonly network: string;
   readonly envFileLocal: string;
   readonly envFileHost?: string;
+  readonly validateHostPaths: boolean;
   readonly hostData?: string;
   readonly hostLogs?: string;
   readonly hostRepos?: string;

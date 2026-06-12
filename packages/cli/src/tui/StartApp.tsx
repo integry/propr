@@ -45,6 +45,7 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
   const [logLines, setLogLines] = useState<string[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [message, setMessage] = useState<string>("");
+  const [busy, setBusy] = useState(false);
   const logProcRef = useRef<ChildProcess | null>(null);
 
   const services = status.services;
@@ -140,23 +141,29 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
       return;
     }
     if (input === "u") {
-      const freshServices = orch.getStackStatus(cfg).services;
-      const ui = freshServices.find((s) => s.service === "ui");
-      try {
-        if (ui?.running) {
-          orch.stopService(cfg, "ui", { remove: true });
-          configManager?.setUiEnabled(false).catch((e: Error) => setMessage(`UI stopped (config save failed: ${e.message})`));
-          setMessage("UI stopped");
-        } else {
-          setMessage("Starting UI...");
-          orch.startService(cfg, "ui", { pull: false });
-          configManager?.setUiEnabled(true).catch((e: Error) => setMessage(`UI started (config save failed: ${e.message})`));
-          setMessage("UI started");
+      if (busy) return;
+      const ui = services.find((s) => s.service === "ui");
+      const shouldStop = Boolean(ui?.running);
+      setBusy(true);
+      setMessage(shouldStop ? "Stopping UI..." : "Starting UI...");
+      setTimeout(() => {
+        try {
+          if (shouldStop) {
+            orch.stopService(cfg, "ui", { remove: true });
+            configManager?.setUiEnabled(false).catch((e: Error) => setMessage(`UI stopped (config save failed: ${e.message})`));
+            setMessage("UI stopped");
+          } else {
+            orch.startService(cfg, "ui", { pull: false });
+            configManager?.setUiEnabled(true).catch((e: Error) => setMessage(`UI started (config save failed: ${e.message})`));
+            setMessage("UI started");
+          }
+          setStatus(orch.getStackStatus(cfg));
+        } catch (e) {
+          setMessage(`UI toggle failed: ${(e as Error).message}`);
+        } finally {
+          setBusy(false);
         }
-        setStatus(orch.getStackStatus(cfg));
-      } catch (e) {
-        setMessage(`UI toggle failed: ${(e as Error).message}`);
-      }
+      }, 50);
       return;
     }
     if (key.upArrow) {

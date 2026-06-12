@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -39,4 +39,16 @@ test("upsertEnvVars preserves export prefix when replacing a value", () => {
   upsertEnvVars(envPath, { PROPR_GH_RELAY_TOKEN: "rly_new" });
 
   assert.equal(readFileSync(envPath, "utf-8"), "export PROPR_GH_RELAY_TOKEN=rly_new\n");
+});
+
+test("upsertEnvVars tightens existing file permissions before writing", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "propr-env-"));
+  const envPath = join(dir, ".env");
+  writeFileSync(envPath, "PROPR_GH_RELAY_TOKEN=rly_old\n", "utf-8");
+  chmodSync(envPath, 0o644);
+
+  upsertEnvVars(envPath, { PROPR_GH_RELAY_TOKEN: "rly_new" });
+
+  assert.equal(readFileSync(envPath, "utf-8"), "PROPR_GH_RELAY_TOKEN=rly_new\n");
+  assert.equal(statSync(envPath).mode & 0o777, 0o600);
 });

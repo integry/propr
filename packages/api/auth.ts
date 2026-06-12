@@ -22,7 +22,12 @@ export function getSessionCookieDomain(): string | undefined {
 
 export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): boolean {
     try {
-        return process.env.API_PUBLIC_URL ? new URL(process.env.API_PUBLIC_URL).protocol === 'https:' : process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
+        if (process.env.API_PUBLIC_URL) {
+            const url = new URL(process.env.API_PUBLIC_URL);
+            if (url.protocol === 'https:') return true;
+            if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1')) return false;
+        }
+        return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
     } catch {
         return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
     }

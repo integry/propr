@@ -108,7 +108,7 @@ async function resolveLabelApplier(opts: {
         return findLabelApplierInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels);
     }
 
-    const firstRecentPage = Math.max(1, lastPage - LABEL_APPLIER_TIMELINE_MAX_PAGES + 1);
+    const firstRecentPage = Math.max(2, lastPage - LABEL_APPLIER_TIMELINE_MAX_PAGES + 1);
     for (let page = lastPage; page >= firstRecentPage; page--) {
         const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
             owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page
@@ -413,7 +413,7 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
                     if (labelApplier === null) {
                         correlatedLogger.warn(
                             { issueNumber: issue.number, repository: repoFullName },
-                            'Could not determine label applier — skipping issue (fail closed). Will retry on next poll cycle if the timeline lookup failed, or when the issue is next updated.'
+                            'Could not determine label applier — skipping issue (fail closed). Will retry on timeline lookup failures; if the label event is too old to appear in the recent timeline window, remove and re-apply the processing label.'
                         );
                         return null;
                     }
