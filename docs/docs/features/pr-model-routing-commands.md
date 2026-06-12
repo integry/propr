@@ -21,7 +21,7 @@ ProPR replaces the PR's `llm-*` label with the new model's label. Later comments
 If you include instructions on the lines below the command, ProPR switches the label and also queues one follow-up run with the new model using those instructions:
 
 ```text
-/switch llm-claude-opus46
+/switch llm-claude-opus48
 Re-check the concurrency handling after switching.
 ```
 

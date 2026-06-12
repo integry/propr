@@ -53,7 +53,7 @@ Branches are generated with task and model information so the result can be trac
 For example:
 
 ```text
-142/claude-sonnet46-fix-empty-state-20260612-0915-a3f2
+142/claude-opus48-fix-empty-state-20260612-0915-a3f2
 ```
 
 The name combines:

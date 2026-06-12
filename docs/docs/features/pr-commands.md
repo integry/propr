@@ -22,13 +22,13 @@ Slash commands are for specific actions: AI review, applying AI review feedback,
 ## Syntax Rules
 
 - The slash command must be on the first line of the PR comment. A comment with leading blank lines or text before the command is treated as a normal follow-up comment.
-- Arguments go on the same line as the command (for example `/review llm-claude-opus46` or `/ultrafix goal=8 max=10`).
+- Arguments go on the same line as the command (for example `/review llm-claude-opus48` or `/ultrafix goal=8 max=10`).
 - Lines below the command become extra instructions for the run.
 - Both top-level PR comments and line-level review comments are processed; line-level comments carry their file, line, and diff context to the agent.
 
 ## Model IDs
 
-Commands that take a model accept the model IDs configured in AI Agents. The `llm-` prefix is optional in command arguments — `/switch claude-sonnet46` and `/switch llm-claude-sonnet46` are equivalent. Unrecognized models are rejected. The built-in catalog is listed in [Agents And Models](./agents-and-models.md).
+Commands that take a model accept the model IDs configured in AI Agents. The `llm-` prefix is optional in command arguments — `/switch claude-opus48` and `/switch llm-claude-opus48` are equivalent. Unrecognized models are rejected. The built-in catalog is listed in [Agents And Models](./agents-and-models.md).
 
 ## Who Can Trigger Commands
 

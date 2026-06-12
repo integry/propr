@@ -34,7 +34,7 @@ Post:
 Or configure the loop:
 
 ```text
-/ultrafix goal=8 max=10 pause=120 model=llm-claude-opus46
+/ultrafix goal=8 max=10 pause=120 model=llm-claude-opus48
 ```
 
 `/ultrafix` alternates review and fix cycles until the latest review score reaches the goal or the maximum cycle count is exhausted.

@@ -16,7 +16,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 - **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-pro-high`, and `llm-antigravity-opus46-thinking`
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-opus48`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-pro-high`, and `llm-antigravity-opus46-thinking`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -490,7 +490,7 @@ npm test
 
 ### Issue Labels for Model Selection
 Add labels to GitHub issues to specify which enabled agent/model pair should process them:
-- `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
+- `llm-claude-opus48` - Use the configured Claude Opus 4.8 model
 - `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
 - `llm-opencode-minimax-m3-free` - Use the configured OpenCode MiniMax M3 Free model
 - `llm-antigravity-pro-high` - Use the configured Antigravity Gemini 3.1 Pro High model
@@ -519,7 +519,7 @@ To target a non-default branch for direct labeled issue execution, add a `base-<
 ### Branch Naming Convention
 `<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`
 
-Example: `349/claude-sonnet46-feat-implement-onboarding-20260529-1506-3he`
+Example: `349/claude-opus48-feat-implement-onboarding-20260529-1506-3he`
 
 ## Advanced Features
 

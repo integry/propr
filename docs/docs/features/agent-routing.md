@@ -60,7 +60,7 @@ ProPR uses the same model naming across the system:
 Examples of valid labels:
 
 ```text
-llm-claude-sonnet46
+llm-claude-opus48
 llm-codex-gpt55
 llm-antigravity-pro-high
 llm-opencode-minimax-m3-free
@@ -75,7 +75,7 @@ Add several `llm-*` labels to one issue to run it with several models at once. P
 
 ```text
 AI
-llm-claude-sonnet46
+llm-claude-opus48
 llm-codex-gpt55
 ```
 

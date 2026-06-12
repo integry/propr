@@ -62,7 +62,7 @@ Use reset mode carefully in shared environments because it can affect active wor
 When an issue has multiple model labels, the daemon creates separate BullMQ jobs. For example:
 
 ```text
-llm-claude-sonnet46
+llm-claude-opus48
 llm-codex-gpt55
 llm-antigravity-pro-high
 llm-antigravity-flash-medium

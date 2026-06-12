@@ -166,7 +166,7 @@ npm install -g @propr/cli
 propr remote http://localhost:4000
 propr login                      # reuses your gh CLI session, or pass a PAT
 propr repo add owner/repo -b main
-propr agent add my-claude -t claude -m sonnet46 -d sonnet46
+propr agent add my-claude -t claude -m opus48 -d opus48
 propr use owner/repo
 propr status                     # verify daemon, workers, Redis, GitHub auth
 ```

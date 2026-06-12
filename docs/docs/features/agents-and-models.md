@@ -27,7 +27,7 @@ Every model has a GitHub label of the form `llm-<agent>-<model-alias>`. Add one 
 The same model IDs work in PR comments:
 
 ```
-/switch claude-sonnet46     # future follow-ups on this PR use this model
+/switch claude-opus48     # future follow-ups on this PR use this model
 /use codex-gpt55            # one follow-up with this model
 /review claude-opus48 codex-gpt55   # independent reviews from two models
 ```

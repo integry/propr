@@ -31,7 +31,7 @@ Small, specific issues produce better PRs than broad requests.
 ## Start The Run
 
 1. Add the processing label to the issue (for example `AI`).
-2. Optionally add a model label such as `llm-claude-sonnet46` or `llm-antigravity-pro-high`. Adding several model labels produces one run, branch, and PR per model.
+2. Optionally add a model label such as `llm-claude-opus48` or `llm-antigravity-pro-high`. Adding several model labels produces one run, branch, and PR per model.
 3. Optionally add `base-<branch>` (for example `base-develop`) to target a non-default base branch.
 4. Open the ProPR Web UI.
 5. Watch the task record.

@@ -17,7 +17,7 @@ Post:
 Or request specific models (one review comment per model):
 
 ```text
-/review llm-claude-opus46 llm-codex-gpt55
+/review llm-claude-opus48 llm-codex-gpt55
 ```
 
 The `llm-` prefix is optional in arguments. Without arguments, `/review` uses the PR review model configured in Settings.

@@ -114,7 +114,7 @@ npm install -g @propr/cli
 propr remote https://propr.example.com   # the API origin behind your proxy
 propr login <personal-access-token>
 propr repo add owner/repo
-propr agent add my-claude -t claude -m sonnet46 -d sonnet46
+propr agent add my-claude -t claude -m opus48 -d opus48
 propr status
 ```
 

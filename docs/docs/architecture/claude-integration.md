@@ -73,8 +73,8 @@ Labels and slash commands use the configured model IDs, for example:
 
 ```text
 llm-claude-fable
+llm-claude-opus48
 llm-claude-sonnet46
-llm-claude-opus46
 ```
 
 Check AI Agents in your deployment for the exact model IDs available.
