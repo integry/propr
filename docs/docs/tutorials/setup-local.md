@@ -156,6 +156,23 @@ Open `http://localhost:5173`, then finish repository and agent setup in the Web 
 
 <!-- SCREENSHOT PLACEHOLDER: Capture the Web UI dashboard at `http://localhost:5173` immediately after first launch, showing the empty repository list and the prompt to add a repository. Start the launcher with a fresh `data/` directory to reach this state. -->
 
+## Configure From The CLI (Optional)
+
+Everything the Web UI does for setup can also be done with the [ProPR CLI](../features/propr-cli.md). The CLI talks to the API on port `4000` and authenticates with your GitHub token (Bearer auth is enabled by default):
+
+```bash
+npm install -g @propr/cli
+
+propr remote http://localhost:4000
+propr login                      # reuses your gh CLI session, or pass a PAT
+propr repo add owner/repo -b main
+propr agent add my-claude -t claude -m sonnet46 -d sonnet46
+propr use owner/repo
+propr status                     # verify daemon, workers, Redis, GitHub auth
+```
+
+From here, `propr plan create "..." --wait` and `propr issue implement <draft-id>/1 --wait` run the same plan-to-PR flow as the Web UI.
+
 ## Update ProPR
 
 The launcher manifest pins the service images to the launcher release version. To update, pull the latest launcher and run the same command again:

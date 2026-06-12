@@ -107,4 +107,17 @@ After the stack is reachable:
 3. Review label and PR settings.
 4. Run one small test task.
 
+Each step works from the Web UI or from the [ProPR CLI](../features/propr-cli.md) against the public API URL — useful for scripted provisioning:
+
+```bash
+npm install -g @propr/cli
+propr remote https://propr.example.com   # the API origin behind your proxy
+propr login <personal-access-token>
+propr repo add owner/repo
+propr agent add my-claude -t claude -m sonnet46 -d sonnet46
+propr status
+```
+
+CLI authentication uses GitHub Bearer tokens and is enabled by default (`ENABLE_BEARER_AUTH=true`).
+
 For ongoing server care, see [Maintenance And Troubleshooting](../operations/maintenance.md).

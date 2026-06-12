@@ -43,12 +43,12 @@ This path uses Node.js 20+, a source checkout, and development Compose or direct
 
 ## After Setup
 
-Once ProPR is running:
+Once ProPR is running, configure it through either control surface — the Web UI or the [ProPR CLI](../features/propr-cli.md):
 
-1. Open the Web UI.
-2. Add repositories.
-3. Configure AI Agents and default models.
+1. Open the Web UI (or run `npm install -g @propr/cli` and point it at the API with `propr remote` + `propr login`).
+2. Add repositories (Web UI, or `propr repo add owner/repo`).
+3. Configure AI Agents and default models (Web UI, or `propr agent add`).
 4. Review labels and PR behavior.
-5. Run a small test issue or Planner Studio draft.
+5. Run a small test issue or Planner Studio draft (or `propr plan create "..." --wait`).
 
 For day-to-day use, see [Daily Use](./usage.md).

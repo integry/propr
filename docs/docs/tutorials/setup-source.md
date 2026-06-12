@@ -79,3 +79,5 @@ npm run images:smoke
 ```
 
 Use the normal prebuilt-image setup for actual end-user installs.
+
+The [ProPR CLI](../features/propr-cli.md) works against the dev stack too — point it at the local API with `propr remote http://localhost:4000`.
