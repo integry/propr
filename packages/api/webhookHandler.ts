@@ -68,6 +68,85 @@ export interface WebhookHandlerDeps {
   };
   processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void>;
   correlationId: string;
+  /** When provided, active PR tasks are automatically cancelled on merged PR close events. */
+  mergedPRTaskCanceller?: MergedPRTaskCancellerDeps;
+}
+
+/** Machine-readable cancellation reason recorded when tasks are stopped because their PR merged. */
+export const PR_MERGED_CANCELLATION_REASON = 'pr_merged';
+
+export interface MergedPRStopContext {
+  requestedBy: string;
+  reason: string;
+  cancellationReason: string;
+}
+
+export interface MergedPRTaskCancellerDeps {
+  /** Loads active tasks and queued jobs for a PR (see getActiveTasksForPR in @propr/core). */
+  getActiveTasksForPR: (repository: string, prNumber: number) => Promise<{
+    activeTasks: Array<{ taskId: string; state: string }>;
+    queuedJobs: Array<{ jobId: string; state: string }>;
+  }>;
+  /** Stops a single task or queued job (see stopTaskExecution in routes/dockerRoutes). */
+  stopTask: (taskIdOrJobId: string, context: MergedPRStopContext) => Promise<{ success: boolean } | void>;
+}
+
+/** Returns true for a pull_request webhook where the PR was closed by merging. */
+export function isMergedPullRequestClose(event: string, payload: Record<string, unknown>): boolean {
+  if (event !== 'pull_request' || payload.action !== 'closed') return false;
+  const pullRequest = payload.pull_request as { merged?: unknown } | undefined;
+  return pullRequest?.merged === true;
+}
+
+export interface MergedPRCancellationSummary {
+  attempted: number;
+  cancelled: number;
+  failed: number;
+}
+
+/**
+ * Cancels all still-active tasks and queued jobs associated with a merged PR.
+ * A failure to cancel one task is logged and does not block the remaining
+ * cancellations (nor the webhook delivery).
+ */
+export async function cancelActiveTasksForMergedPR(
+  repository: string,
+  prNumber: number,
+  deps: MergedPRTaskCancellerDeps,
+): Promise<MergedPRCancellationSummary> {
+  const { activeTasks, queuedJobs } = await deps.getActiveTasksForPR(repository, prNumber);
+
+  const idsToStop = new Set<string>();
+  for (const task of activeTasks) idsToStop.add(task.taskId);
+  for (const job of queuedJobs) idsToStop.add(job.jobId);
+
+  if (idsToStop.size === 0) return { attempted: 0, cancelled: 0, failed: 0 };
+
+  const context: MergedPRStopContext = {
+    requestedBy: 'system',
+    reason: `Pull request ${repository}#${prNumber} was merged. Task cancelled automatically.`,
+    cancellationReason: PR_MERGED_CANCELLATION_REASON,
+  };
+
+  let cancelled = 0;
+  let failed = 0;
+  for (const id of idsToStop) {
+    try {
+      const result = await deps.stopTask(id, context);
+      if (result && result.success === false) {
+        // The task finished (or vanished) between lookup and stop — nothing to cancel.
+        console.log(`[webhook] Task ${id} for merged PR ${repository}#${prNumber} was no longer active`);
+      } else {
+        cancelled++;
+      }
+    } catch (error) {
+      failed++;
+      console.error(`[webhook] Failed to cancel task ${id} for merged PR ${repository}#${prNumber}:`, error);
+    }
+  }
+
+  console.log(`[webhook] Merged PR ${repository}#${prNumber}: cancelled ${cancelled}/${idsToStop.size} active task(s)${failed > 0 ? `, ${failed} failed` : ''}`);
+  return { attempted: idsToStop.size, cancelled, failed };
 }
 
 /**
@@ -169,6 +248,21 @@ export async function handleWebhookRequest(
   }
 
   console.log(`[webhook] Event received: ${rawEvent}, action: ${payload.action}, repo: ${payload.repository?.full_name}, delivery: ${rawDeliveryId}`);
+
+  // Merged PR close → auto-cancel any still-active PR tasks. Failures here are
+  // logged but must never fail the webhook delivery.
+  if (deps.mergedPRTaskCanceller && isMergedPullRequestClose(rawEvent, payload)) {
+    const repository = payload.repository?.full_name;
+    const prNumber = (payload.pull_request as { number?: number } | undefined)?.number;
+    if (repository && typeof prNumber === 'number') {
+      try {
+        await cancelActiveTasksForMergedPR(repository, prNumber, deps.mergedPRTaskCanceller);
+      } catch (error) {
+        console.error(`[webhook] Merge-triggered task cancellation failed for ${repository}#${prNumber}:`, error);
+      }
+    }
+  }
+
   await processor(payload, rawEvent, correlationId, rawDeliveryId);
 
   res.status(200).send('Webhook processed.');
