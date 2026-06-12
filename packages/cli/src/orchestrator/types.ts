@@ -98,6 +98,8 @@ export interface OrchestratorModule {
   readonly CORE_SERVICES: readonly string[];
   readonly TOGGLE_SERVICES: readonly string[];
 
+  isStackRunning(cfg: OrchestratorConfig): boolean;
+
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
   stopService(cfg: OrchestratorConfig, service: string, opts?: { remove?: boolean; onLog?: (line: string) => void }): void;
   startStack(

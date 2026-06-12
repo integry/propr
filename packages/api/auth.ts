@@ -15,9 +15,17 @@ import './authTypes.js';
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
 
+function getSessionCookieDomain(): string | undefined {
+    if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
+    const host = process.env.API_PUBLIC_URL && new URL(process.env.API_PUBLIC_URL).hostname;
+    if (host === 'localhost' || host === '127.0.0.1') return undefined;
+    return '.gitfix.dev';
+}
+
 function clearSessionCookie(res: Response): void {
+    const domain = getSessionCookieDomain();
     res.clearCookie('connect.sid', {
-        domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+        ...(domain ? { domain } : {}),
         path: '/',
     });
 }
@@ -53,12 +61,10 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
             saveUninitialized: false,
             rolling: true, // Extend session expiration on each request
             cookie: {
-                // Always secure since gitfix.dev uses HTTPS
-                secure: true,
+                secure: !getSessionCookieDomain() ? false : true,
                 httpOnly: true,
                 maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-                // Set domain to .gitfix.dev to share cookies across all subdomains
-                domain: process.env.COOKIE_DOMAIN || '.gitfix.dev',
+                ...(getSessionCookieDomain() ? { domain: getSessionCookieDomain() } : {}),
                 sameSite: 'lax'
             }
         }));

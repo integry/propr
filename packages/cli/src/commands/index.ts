@@ -16,7 +16,7 @@ export { createRemoteStatusCommand, createQueueCommand } from "./systemCommands.
 export { createInitCommand } from "./initCommands.js";
 
 // Control-plane commands (local Docker stack)
-export { createCheckCommand, runChecks, printChecks } from "./checkCommands.js";
+export { createCheckCommand, runChecks, printChecks, STACK_CONFIG_CHECK_NAME } from "./checkCommands.js";
 export { createStartCommand } from "./startCommand.js";
 export { createStackStatusCommand, createStopCommand } from "./stackCommands.js";
 export { createUiCommand, createDocsCommand } from "./uiDocsCommands.js";

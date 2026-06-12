@@ -66,6 +66,8 @@ export interface InitStackResult {
   envBackedUp: boolean;
   dirsCreated: string[];
   detected: DetectedCred[];
+  credentialsAppended: boolean;
+  pendingCredentials: DetectedCred[];
 }
 
 export async function scaffoldStack(options: InitStackOptions = {}): Promise<InitStackResult> {
@@ -78,6 +80,8 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
     envBackedUp: false,
     dirsCreated: [],
     detected: [],
+    credentialsAppended: false,
+    pendingCredentials: [],
   };
 
   mkdirSync(rootDir, { recursive: true });
@@ -116,22 +120,28 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
     result.envCreated = true;
   }
 
-  // 3. Detect credential dirs and record any not already present in .env
+  // 3. Detect credential dirs and record any not already present in .env.
+  //    When the .env was pre-existing (not created this run) and --force was
+  //    not given, collect but do NOT write — the caller should surface the
+  //    suggestions without silently mutating a user-managed file.
   const detected = detectCredentials();
   const envContent = readFileSync(envPath, "utf-8");
   const toAppend = detected.filter((c) => {
-    // already set (uncommented) in the env file?
     const re = new RegExp(`^\\s*(export\\s+)?${c.envKey}\\s*=`, "m");
     return !re.test(envContent);
   });
-  if (toAppend.length > 0) {
+  if (toAppend.length > 0 && (!result.envSkipped || options.force)) {
     const block =
       "\n# --- Host agent-credential directories (detected by `propr init stack`) ---\n" +
       toAppend.map((c) => `${c.envKey}=${c.path}`).join("\n") +
       "\n";
     appendFileSync(envPath, block, "utf-8");
+    result.credentialsAppended = true;
+  } else {
+    result.credentialsAppended = false;
   }
   result.detected = detected;
+  result.pendingCredentials = toAppend;
 
   // 4. Persist the stack root so other commands can find it.
   const configManager = await createConfigManager();
@@ -157,6 +167,13 @@ function displayResult(result: InitStackResult): void {
     console.log("Detected agent credentials on this host:");
     for (const c of result.detected) {
       console.log(`  ${c.envKey}=${c.path}`);
+    }
+    if (!result.credentialsAppended && result.pendingCredentials.length > 0) {
+      console.log("");
+      console.log("The following credentials are not in .env yet. Add them manually or re-run with --force:");
+      for (const c of result.pendingCredentials) {
+        console.log(`  ${c.envKey}=${c.path}`);
+      }
     }
   } else {
     console.log("");

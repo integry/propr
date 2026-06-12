@@ -28,6 +28,7 @@ import {
   createRelayCommand,
   runChecks,
   printChecks,
+  STACK_CONFIG_CHECK_NAME,
 } from "./commands/index.js";
 
 // Re-export configuration module for programmatic use
@@ -344,7 +345,7 @@ if (!process.argv.slice(2).length) {
       const outcome = await runChecks();
       printChecks(outcome);
       console.log("");
-      if (outcome.results.some((r) => r.name.startsWith("Stack config") && r.status !== "ok")) {
+      if (outcome.results.some((r) => r.name === STACK_CONFIG_CHECK_NAME && r.status !== "ok")) {
         console.log("Next: `propr init stack` to scaffold a stack, then `propr start`.");
       } else {
         console.log("Next: `propr start` to launch the stack  ·  `propr --help` for all commands.");

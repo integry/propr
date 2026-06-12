@@ -491,6 +491,16 @@ export function stopService(cfg, service, { remove = true, onLog } = {}) {
     onLog?.(`  [ok] stopped ${name}`);
 }
 
+/**
+ * Check if any core service container in the stack is currently running.
+ * Useful for callers that want to detect an already-running stack and
+ * prompt before restarting (e.g. `propr start`).
+ */
+export function isStackRunning(cfg) {
+    const status = getStackStatus(cfg);
+    return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
+}
+
 /** Start the full stack in dependency order. */
 export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
     for (const service of CORE_SERVICES) startService(cfg, service, { onLog });

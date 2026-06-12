@@ -372,42 +372,47 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
 
         const detected: DetectedIssue[] = [];
         const hasWhitelist = getGithubUserWhitelist().length > 0;
-        for (const issue of response.data.items) {
-            const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
 
-            // When a whitelist is configured, resolve the label applier from
-            // the issue timeline (matches webhook semantics which uses the
-            // webhook sender). When no whitelist is set, the issue author is
-            // used for informational/logging purposes only.
-            let triggeredBy: string | undefined = issue.user?.login;
-            if (hasWhitelist) {
-                const labelApplier = await resolveLabelApplierCached({
-                    octokit, owner, repo, issueNumber: issue.number,
-                    updatedAt: issue.updated_at, targetLabels: primaryProcessingLabels, log: correlatedLogger
-                });
-                if (labelApplier === null) {
-                    correlatedLogger.warn(
-                        { issueNumber: issue.number, repository: repoFullName },
-                        'Could not determine label applier — skipping issue (fail closed). Will retry on next poll cycle if the timeline lookup failed, or when the issue is next updated.'
-                    );
-                    continue;
+        // Resolve label appliers with bounded concurrency to avoid N+1
+        // sequential timeline API calls when many issues match at once.
+        const MAX_CONCURRENT_TIMELINE = 5;
+        const items = response.data.items;
+        for (let i = 0; i < items.length; i += MAX_CONCURRENT_TIMELINE) {
+            const batch = items.slice(i, i + MAX_CONCURRENT_TIMELINE);
+            const results = await Promise.all(batch.map(async (issue) => {
+                const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
+                let triggeredBy: string | undefined = issue.user?.login;
+                if (hasWhitelist) {
+                    const labelApplier = await resolveLabelApplierCached({
+                        octokit, owner, repo, issueNumber: issue.number,
+                        updatedAt: issue.updated_at, targetLabels: primaryProcessingLabels, log: correlatedLogger
+                    });
+                    if (labelApplier === null) {
+                        correlatedLogger.warn(
+                            { issueNumber: issue.number, repository: repoFullName },
+                            'Could not determine label applier — skipping issue (fail closed). Will retry on next poll cycle if the timeline lookup failed, or when the issue is next updated.'
+                        );
+                        return null;
+                    }
+                    triggeredBy = labelApplier;
                 }
-                triggeredBy = labelApplier;
+                return {
+                    id: issue.id,
+                    number: issue.number,
+                    title: issue.title,
+                    url: issue.html_url,
+                    repoOwner: owner,
+                    repoName: repo,
+                    labels,
+                    createdAt: issue.created_at,
+                    updatedAt: issue.updated_at,
+                    triggeredBy,
+                    source: 'polling' as const
+                };
+            }));
+            for (const r of results) {
+                if (r) detected.push(r);
             }
-
-            detected.push({
-                id: issue.id,
-                number: issue.number,
-                title: issue.title,
-                url: issue.html_url,
-                repoOwner: owner,
-                repoName: repo,
-                labels,
-                createdAt: issue.created_at,
-                updatedAt: issue.updated_at,
-                triggeredBy,
-                source: 'polling'
-            });
         }
         return detected;
     } catch (error) {

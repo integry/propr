@@ -49,7 +49,11 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
   // back to the resolved config which honors DOCS_ENABLED from .env.
   const docs = configManager.get("docsEnabled") ?? cfg.docsEnabled;
 
-  console.log("\nStarting containers…");
+  if (orch.isStackRunning(cfg)) {
+    console.log("\nStack is already running — restarting all services…");
+  } else {
+    console.log("\nStarting containers…");
+  }
   orch.ensureNetwork(cfg, (l) => console.log(l));
   const status = orch.startStack(cfg, { ui, docs, onLog: (l) => console.log(l) });
 

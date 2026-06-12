@@ -48,6 +48,7 @@ function agentDescriptors(): AgentDescriptor[] {
   ];
 }
 
+export const STACK_CONFIG_CHECK_NAME = "Stack config (.env)";
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
 
 export interface RunChecksOptions {
@@ -120,10 +121,10 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // 4. Stack root + .env
   const envPath = join(rootDir, ".env");
   if (existsSync(envPath)) {
-    results.push({ name: "Stack config (.env)", status: "ok", detail: envPath });
+    results.push({ name: STACK_CONFIG_CHECK_NAME, status: "ok", detail: envPath });
   } else {
     results.push({
-      name: "Stack config (.env)",
+      name: STACK_CONFIG_CHECK_NAME,
       status: "warn",
       detail: `no .env found at ${rootDir}`,
       fix: "Run `propr init stack` to scaffold .env, data/, logs/ and repos/.",
