@@ -26,23 +26,36 @@ let cachedPath: string | undefined;
 
 /**
  * Candidate locations for orchestrator.mjs, in priority order:
- *   1. Bundled next to this module (dist/orchestrator/ or src/orchestrator/).
- *   2. Repo-checkout fallback: docker/launcher/orchestrator.mjs walking up.
+ *   1. Repo-checkout fallback first in src/tsx dev mode.
+ *   2. Bundled next to this module in dist.
  */
 function resolveOrchestratorPath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const bundled = join(here, "orchestrator.mjs");
+
+  const repoCheckout = (): string | undefined => {
+    // Walk up looking for docker/launcher/orchestrator.mjs (dev / source tree).
+    let dir = here;
+    for (let i = 0; i < 8; i += 1) {
+      const candidate = join(dir, "docker", "launcher", "orchestrator.mjs");
+      if (existsSync(candidate)) return candidate;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return undefined;
+  };
+
+  const devCheckout = here.includes(`${join("src", "orchestrator")}`);
+  if (devCheckout) {
+    const checkoutPath = repoCheckout();
+    if (checkoutPath) return checkoutPath;
+  }
+
   if (existsSync(bundled)) return bundled;
 
-  // Walk up looking for docker/launcher/orchestrator.mjs (dev / source tree).
-  let dir = here;
-  for (let i = 0; i < 8; i += 1) {
-    const candidate = join(dir, "docker", "launcher", "orchestrator.mjs");
-    if (existsSync(candidate)) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
+  const checkoutPath = repoCheckout();
+  if (checkoutPath) return checkoutPath;
 
   throw new Error(
     "Could not locate orchestrator.mjs. Run `npm run build` in packages/cli to bundle it, " +

@@ -18,7 +18,7 @@ let stackStarted = false;
 function shutdown(code = 0) {
     console.log('\nshutting down…');
     if (cfg && stackStarted) {
-        stopStack(cfg, { remove: true, onLog: (l) => console.log(l) });
+        stopStack(cfg, { remove: true, removeNetwork: true, onLog: (l) => console.log(l) });
     }
     process.exit(code);
 }

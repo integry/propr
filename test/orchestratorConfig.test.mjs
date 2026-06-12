@@ -65,6 +65,26 @@ test('empty process env values override stack .env values before defaults apply'
   assert.equal(cfg.hostOpencodeXdgDir, '');
 });
 
+test('empty explicit overrides win over env and defaults', () => {
+  const cfg = resolveConfig({
+    PROPR_STACK: 'from-env',
+    API_PORT: '4400',
+    UI_PORT: '5174',
+    DOCS_PORT: '9090',
+  }, {
+    stack: '',
+    apiPort: '',
+    uiPort: '',
+    docsPort: '',
+    manifestPath,
+  });
+
+  assert.equal(cfg.stack, '');
+  assert.equal(cfg.apiPort, '');
+  assert.equal(cfg.uiPort, '');
+  assert.equal(cfg.docsPort, '');
+});
+
 test('launcher config does not stat host bind paths inside the launcher container', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFileLocal = join(rootDir, '.env');

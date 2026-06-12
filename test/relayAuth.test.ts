@@ -52,7 +52,7 @@ test('relay auth fetches an installation token and sends the relay credential', 
     assert.strictEqual(result.tokenType, 'installation');
     assert.strictEqual(relay.info.lastAuth, 'Bearer rly_secret');
     assert.strictEqual(relay.info.lastPath, '/installation-token');
-    assert.deepStrictEqual(JSON.parse(relay.info.lastBody ?? '{}'), { installationId: '42' });
+    assert.deepStrictEqual(JSON.parse(relay.info.lastBody ?? '{}'), { installation_id: '42' });
   } finally {
     await relay.close();
   }

@@ -132,21 +132,21 @@ export function readEnvFile(envFilePath) {
  * paths without needing env vars.
  */
 export function resolveConfig(env = process.env, overrides = {}) {
-    const stack = overrides.stack || env.PROPR_STACK || 'propr';
-    const network = overrides.network || env.PROPR_NETWORK || `${stack}-net`;
-    const envFileLocal = overrides.envFileLocal || env.PROPR_LAUNCHER_ENV_FILE || '/app/.env';
-    const envFileHost = overrides.envFileHost || env.PROPR_ENV_FILE;
+    const stack = overrides.stack ?? env.PROPR_STACK ?? 'propr';
+    const network = overrides.network ?? env.PROPR_NETWORK ?? `${stack}-net`;
+    const envFileLocal = overrides.envFileLocal ?? env.PROPR_LAUNCHER_ENV_FILE ?? '/app/.env';
+    const envFileHost = overrides.envFileHost ?? env.PROPR_ENV_FILE;
 
     // value precedence: explicit override → process env → .env file
     const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
 
-    const hostData = overrides.hostData || env.PROPR_DATA_DIR;
-    const hostLogs = overrides.hostLogs || env.PROPR_LOGS_DIR;
-    const hostRepos = overrides.hostRepos || env.PROPR_REPOS_DIR;
+    const hostData = overrides.hostData ?? env.PROPR_DATA_DIR;
+    const hostLogs = overrides.hostLogs ?? env.PROPR_LOGS_DIR;
+    const hostRepos = overrides.hostRepos ?? env.PROPR_REPOS_DIR;
 
-    const apiPort = overrides.apiPort || get('API_PORT') || '4000';
-    const uiPort = overrides.uiPort || get('UI_PORT') || '5173';
-    const docsPort = overrides.docsPort || get('DOCS_PORT') || '8080';
+    const apiPort = overrides.apiPort ?? get('API_PORT') ?? '4000';
+    const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '5173';
+    const docsPort = overrides.docsPort ?? get('DOCS_PORT') ?? '8080';
     const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
 
@@ -172,7 +172,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // read it without the user having to stage it under data/.
     const hostGhPrivateKey = get('HOST_GH_PRIVATE_KEY');
 
-    const manifestPath = overrides.manifestPath || resolve(__dirname, 'manifest.json');
+    const manifestPath = overrides.manifestPath ?? resolve(__dirname, 'manifest.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
     return Object.freeze({

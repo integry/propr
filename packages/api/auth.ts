@@ -25,7 +25,7 @@ export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): 
         if (process.env.API_PUBLIC_URL) {
             const url = new URL(process.env.API_PUBLIC_URL);
             if (url.protocol === 'https:') return true;
-            if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1')) return false;
+            if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')) return false;
         }
         return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
     } catch {

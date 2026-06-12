@@ -10,7 +10,7 @@ import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatu
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
-import { validateAttachmentBaseUrlConfig } from '../packages/core/src/services/taskExecutionHelpers.js';
+import { validateAttachmentBaseUrlConfig } from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';

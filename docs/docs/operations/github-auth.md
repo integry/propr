@@ -63,7 +63,7 @@ self-hosted (own) relay must implement this contract:
 
 - **Request:** `POST <PROPR_GH_RELAY_URL>/installation-token` (PROPR_GH_RELAY_URL includes the version prefix, e.g. `https://relay.propr.dev/v1`)
   - Header: `Authorization: Bearer <PROPR_GH_RELAY_TOKEN>`
-  - Body: `{ "installationId": "<id>" }` (optional; the relay may infer the
+  - Body: `{ "installation_id": "<id>" }` (optional; the relay may infer the
     installation from the credential)
 - **Behavior:** verify the relay token → map it to an installation → mint an
   installation access token via the shared App's key (optionally scoping

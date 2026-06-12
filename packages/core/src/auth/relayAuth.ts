@@ -69,7 +69,7 @@ export function createRelayAuth(strategyOptions: RelayAuthStrategyOptions): Rela
           'content-type': 'application/json',
           accept: 'application/json',
         },
-        body: JSON.stringify(installationId ? { installationId } : {}),
+        body: JSON.stringify(installationId ? { installation_id: installationId } : {}),
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
     } catch (error) {

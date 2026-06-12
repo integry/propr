@@ -100,6 +100,7 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
   const stop = (): void => {
     logProcRef.current?.kill();
     setMessage("Stopping stack…");
+    // Let Ink flush the status message before the synchronous Docker calls block.
     setTimeout(() => {
       try {
         orch.stopStack(cfg, { remove: true, removeNetwork: true });
@@ -146,6 +147,7 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
       const shouldStop = Boolean(ui?.running);
       setBusy(true);
       setMessage(shouldStop ? "Stopping UI..." : "Starting UI...");
+      // Let Ink flush the status message before the synchronous Docker calls block.
       setTimeout(() => {
         try {
           if (shouldStop) {

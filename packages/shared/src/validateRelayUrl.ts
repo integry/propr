@@ -12,7 +12,8 @@ export function validateRelayUrl(url: string): string | null {
     } catch {
         return `Relay URL ("${url}") is not a valid URL`;
     }
-    if (parsed.protocol !== 'https:' && !LOCALHOST_HOSTS.includes(parsed.hostname)) {
+    const isLocalhost = LOCALHOST_HOSTS.includes(parsed.hostname);
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLocalhost)) {
         return 'Relay URL must use https:// (http is only allowed for localhost)';
     }
     return null;

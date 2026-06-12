@@ -8,6 +8,10 @@ Command-line interface for interacting with the ProPR backend. ProPR enables AI-
 npm install -g @propr/cli
 ```
 
+The host CLI requires Node.js 22 or newer. The Docker launcher image is separate
+and remains dependency-free on Node 20 because it does not load the Ink-based
+interactive CLI.
+
 ## Quick Start
 
 ```bash

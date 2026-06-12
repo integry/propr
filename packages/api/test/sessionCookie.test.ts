@@ -35,6 +35,9 @@ test('secure session cookie follows API_PUBLIC_URL protocol for HTTPS and localh
 
   process.env.API_PUBLIC_URL = 'http://localhost:4000';
   assert.equal(shouldUseSecureSessionCookie('.example.com'), false);
+
+  process.env.API_PUBLIC_URL = 'http://[::1]:4000';
+  assert.equal(shouldUseSecureSessionCookie('.example.com'), false);
 });
 
 test('secure session cookie does not downgrade for non-localhost HTTP public URL', () => {

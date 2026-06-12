@@ -55,6 +55,7 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
       process.exit(1);
     }
     console.log("\nRestarting all services…");
+    orch.stopStack(cfg, { remove: true, onLog: (l) => console.log(l) });
   } else {
     console.log("\nStarting containers…");
   }
@@ -69,9 +70,7 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
   }
 
   const ui = configManager.getUiEnabled();
-  // Use the explicit CLI override (propr docs on/off) if set, otherwise fall
-  // back to the resolved config which honors DOCS_ENABLED from .env.
-  const docs = configManager.get("docsEnabled") ?? cfg.docsEnabled;
+  const docs = cfg.docsEnabled;
 
   orch.ensureNetwork(cfg, (l) => console.log(l));
   const status = orch.startStack(cfg, { ui, docs, onLog: (l) => console.log(l) });

@@ -16,6 +16,15 @@ function escapeRegExp(value: string): string {
 }
 
 export function upsertEnvVars(envPath: string, vars: Record<string, string>): void {
+  for (const [key, value] of Object.entries(vars)) {
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`${key} cannot contain newlines; Docker --env-file only supports one KEY=VALUE assignment per line.`);
+    }
+    if (/^\s|\s$/.test(value)) {
+      throw new Error(`${key} cannot contain leading or trailing whitespace in ${envPath}; Docker --env-file does not strip quotes.`);
+    }
+  }
+
   const raw = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
   const lines = raw.split(/\r?\n/);
 
@@ -27,12 +36,6 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
   for (const [key, value] of Object.entries(vars)) {
     const pattern = new RegExp(`^\\s*(export\\s+)?${escapeRegExp(key)}\\s*=`);
     const index = lines.findIndex((line) => pattern.test(line));
-    if (/[\r\n]/.test(value)) {
-      throw new Error(`${key} cannot contain newlines; Docker --env-file only supports one KEY=VALUE assignment per line.`);
-    }
-    if (/^\s|\s$/.test(value)) {
-      throw new Error(`${key} cannot contain leading or trailing whitespace in ${envPath}; Docker --env-file does not strip quotes.`);
-    }
     const preserveExport = index >= 0 && /^\s*export\s+/.test(lines[index]);
     const assignment = `${preserveExport ? "export " : ""}${key}=${value}`;
     if (index >= 0) {

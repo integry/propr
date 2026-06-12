@@ -307,6 +307,8 @@ export async function setAgentEnabled(
     agent === target ? { ...agent, enabled } : agent
   );
 
+  // Full-array replace can overwrite concurrent web/CLI edits until the API
+  // exposes a per-agent PATCH endpoint.
   const response = await apiClient.post<SaveAgentsResponse>("/api/config/agents", {
     body: { agents: updatedAgents },
   });
