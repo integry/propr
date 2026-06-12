@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # Claude Code Integration
 
-The Claude Code integration runs Anthropic's Claude Code CLI inside ProPR's worker flow. It is one agent implementation within the broader agent-routing system, alongside other configured coding agents.
+The Claude Code integration runs Anthropic's Claude Code CLI inside ProPR's worker flow. It is one agent implementation within the broader agent-routing system. The same runtime pattern — a Docker image built on `propr/agent-base`, an entrypoint script, and a host credential mount — also covers Codex (`Dockerfile.codex`, `HOST_CODEX_DIR`), Antigravity (`Dockerfile.antigravity`, `HOST_ANTIGRAVITY_DIR`), OpenCode (`Dockerfile.opencode`, `HOST_OPENCODE_*` directories), and Mistral Vibe (`Dockerfile.vibe`, `HOST_VIBE_DIR`).
 
 This page covers the integration shape. Runtime settings, Docker details, errors, and debugging live in [Claude Code Runtime Reference](./claude-code-runtime.md).
 
@@ -40,16 +40,18 @@ ProPR still owns git and GitHub finalization. Claude Code edits files; the worke
   </div>
 </div>
 
+The agent image is built from `Dockerfile.claude` on the shared `propr/agent-base` image, and the container is started through `scripts/claude-entrypoint.sh`. Codex, Antigravity, OpenCode, and Mistral Vibe follow the same structure with their own Dockerfiles and entrypoints.
+
 ## Authentication
 
-Claude Code expects a host login state, usually under `~/.claude`. For image-based installs, the launcher can mount that directory into the relevant containers when `HOST_CLAUDE_DIR` is set.
+Claude Code expects a host login state, usually under `~/.claude`. For image-based installs, the launcher mounts that directory into the relevant containers when `HOST_CLAUDE_DIR` is set.
 
 ```bash
 npm install -g @anthropic-ai/claude-code
 claude login
 ```
 
-This prepares the host Claude Code configuration used by ProPR's default Claude Code setup.
+This prepares the host Claude Code configuration used by ProPR's default Claude Code setup. The other agents use the same approach with their own host directories: `HOST_CODEX_DIR` (`~/.codex`), `HOST_ANTIGRAVITY_DIR` (`~/.gemini`, auth via `agy login`), the `HOST_OPENCODE_*` directories, and `HOST_VIBE_DIR` (`~/.vibe`).
 
 ## Prompt Shape
 
@@ -65,11 +67,12 @@ The exact prompt can vary by job type, but the boundary is stable: Claude Code i
 
 ## Model Selection
 
-Claude models are listed through ProPR's shared agent and model configuration. The active list is managed in code and shown in AI Agents in the Web UI.
+Claude models are listed through ProPR's shared agent and model configuration (`packages/shared/src/modelDefinitions.ts`). The active list is managed in code and shown in AI Agents in the Web UI.
 
 Labels and slash commands use the configured model IDs, for example:
 
 ```text
+llm-claude-fable
 llm-claude-sonnet46
 llm-claude-opus46
 ```
@@ -94,3 +97,4 @@ The worker then inspects the workspace for file changes and proceeds through nor
 - [Isolated And Safe Execution](../features/execution-safety.md)
 - [Worker Architecture](./worker.md)
 - [Claude Code Runtime Reference](./claude-code-runtime.md)
+- [OpenCode Integration](./opencode-integration.md)

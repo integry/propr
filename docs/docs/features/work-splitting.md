@@ -19,7 +19,7 @@ Splitting work gives each PR a clearer goal and a smaller blast radius.
 
 ## Planning As The Split Point
 
-Planner Studio is the best place to split work because the code has not changed yet. During plan review, you can turn one large plan into several smaller implementation units.
+Planner Studio is the best place to split work because the code has not changed yet. During the Review Plan stage, you can edit and delete generated issues or send the plan back through refinement chat to turn one large plan into several smaller implementation units (see [Planning Before Execution](./planning.md)).
 
 Good split points include:
 
@@ -47,13 +47,15 @@ For larger efforts:
 
 1. Draft the full goal in Planner Studio.
 2. Generate a plan.
-3. Split the plan into smaller implementation issues.
-4. Approve and run one issue first.
+3. Split the plan into smaller implementation issues during review.
+4. Finalize the plan into GitHub issues and run one issue first.
 5. Review the resulting PR before launching the next batch.
 6. Use PR follow-up comments for local refinements.
 
-That gives you more control than launching every generated issue at once.
+That gives you more control than launching every generated issue at once. When the issues are genuinely sequential, Epic mode with auto-merge runs them one after another, merging each PR before starting the next issue.
+
+A second kind of splitting works across models instead of across scope: add several `llm-*` labels to one issue and ProPR produces one branch and PR per model, so you can compare implementations of the same unit. See [Agent Routing](./agent-routing.md).
 
 ## Follow-Up Work
 
-When a PR reveals additional work, capture it as a new planned issue or repository todo if it is outside the current PR's scope. Keeping follow-up separate prevents review loops from absorbing unrelated cleanup.
+When a PR reveals additional work, capture it as a new planned issue or [repository todo](./repository-knowledge.md) if it is outside the current PR's scope. Keeping follow-up separate prevents review loops from absorbing unrelated cleanup.

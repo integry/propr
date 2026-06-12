@@ -16,7 +16,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 - **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-gemini-pro`, and `llm-antigravity-opus`
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-pro-high`, and `llm-antigravity-opus46-thinking`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -515,8 +515,8 @@ Add labels to GitHub issues to specify which enabled agent/model pair should pro
 - `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
 - `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
 - `llm-opencode-minimax-m3-free` - Use the configured OpenCode MiniMax M3 Free model
-- `llm-antigravity-gemini-pro` - Use the configured Antigravity Gemini Pro model
-- `llm-antigravity-opus` - Use the configured Antigravity Opus model
+- `llm-antigravity-pro-high` - Use the configured Antigravity Gemini 3.1 Pro High model
+- `llm-antigravity-opus46-thinking` - Use the configured Antigravity Claude Opus 4.6 Thinking model
 - Multiple model labels can be used together for multi-model processing
 
 To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts.

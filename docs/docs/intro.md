@@ -8,22 +8,24 @@ Welcome to ProPR, an AI engineering platform for planning, building, reviewing, 
 
 ## What is ProPR?
 
-ProPR connects to your GitHub repositories and keeps the pull request as the center of the workflow. It combines a Web UI dashboard, Planner Studio, and multi-agent workers so you can move from an idea or GitHub issue to a reviewed pull request without stitching together separate tools.
+ProPR connects to your GitHub repositories and keeps the pull request as the center of the workflow. It combines a Web UI dashboard, Planner Studio, a CLI, and multi-agent workers so you can move from an idea or GitHub issue to a reviewed pull request without stitching together separate tools.
 
 ## Key Capabilities
 
 - **Web UI Dashboard**: Configure GitHub repositories, labels, agents, and defaults, then track task activity, queue health, repository status, usage, and live run details from the browser
 - **Planner Studio**: Build draft plans, attach extra context, generate structured implementation steps, refine them, and run approved work
-- **Multi-Agent Support**: Configure supported coding agents, choose different models, and use the right agent for review or implementation
-- **Antigravity Routing**: Run Antigravity as a multi-model CLI agent with labels such as `llm-antigravity-gemini-pro` and `llm-antigravity-opus`
+- **Multi-Agent Support**: Run Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe agents, choose different models per task, and use the right agent for review or implementation
+- **Antigravity Routing**: Run Antigravity as a multi-model CLI agent with labels such as `llm-antigravity-pro-high` and `llm-antigravity-opus46-thinking`
+- **CLI**: Use the `propr` command (`@propr/cli`) to manage plans, implement issues, inspect tasks, and configure repositories and agents from the terminal
 - **GitHub PR Automation**: Use slash commands like `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` for follow-up work on pull requests after the main setup is already handled in the UI
-- **End-to-End GitHub Flow**: Detect issues, create isolated worktrees and branches, implement changes, and open linked pull requests automatically
+- **End-to-End GitHub Flow**: Detect labeled issues via polling or GitHub webhooks, create isolated worktrees and branches, implement changes, and open linked pull requests automatically
 - **Production Operations**: Run with retries, state tracking, Docker-isolated agent runs, and real-time dashboard visibility
+- **Agent Tank**: Optionally track per-task provider capacity and rate-limit usage, with live usage bars in the sidebar; tasks proceed even if tracking is unavailable
 
 ## How It Works
 
 1. **Connect GitHub repositories**: Add monitored repositories, choose base branches, set primary processing labels, and configure coding agents and default models from the browser. Environment variables mainly set up the deployment or seed defaults.
-2. **Choose the entry point**: Create a guided plan in Planner Studio, or let ProPR process labeled GitHub issues automatically.
+2. **Choose the entry point**: Create a guided plan in Planner Studio, let ProPR process labeled GitHub issues automatically (via polling or webhooks), or drive the same flows from the `propr` CLI.
 3. **Run the work**: ProPR prepares repository context, runs the selected agent in an isolated environment, and records the task in the dashboard.
 4. **Review and iterate**: Use dashboard task views plus PR slash commands for AI review, fixes, model switching, merge assistance, or the Ultrafix review-fix loop.
 5. **Observe everything**: Follow live task progress, logs, costs, and repository activity from the dashboard and task detail views.

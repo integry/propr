@@ -20,7 +20,8 @@ Start with a GitHub issue, a Planner Studio draft, or a pull request comment.
 
 Use different coding agents without changing the rest of the workflow.
 
-- [Agent routing](./agent-routing.md): use Claude Code, Codex, Antigravity, subscription-backed credentials, or API-backed credentials from the same GitHub flow.
+- [Agent routing](./agent-routing.md): use Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe — with subscription-backed or API-backed credentials — from the same GitHub flow.
+- [Agents and models](./agents-and-models.md): the canonical catalog of supported agents, model IDs, and `llm-*` labels.
 - [Isolated and safe execution](./execution-safety.md): run agents in controlled containers and separate worktrees.
 - [Self-hosted operation](./self-hosting.md): run ProPR from published images or from source while using your own credentials.
 
@@ -37,4 +38,4 @@ ProPR keeps follow-up work where the review already happens: the pull request.
 Every run leaves a task record you can inspect later.
 
 - [Observability and control](./observability.md): inspect task records, streamed logs, commits, costs, failures, and recovery state after every run.
-- [CLI workflows](./cli-workflows.md): use source-development, validation, image, and maintenance commands when you need them.
+- [CLI workflows](./cli-workflows.md): source-development, validation, image, and maintenance commands for developing and operating ProPR itself. The end-user `propr` CLI is documented separately in [ProPR CLI](./propr-cli.md).

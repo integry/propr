@@ -14,8 +14,11 @@ The Docker image flow is the same as [Local Setup](./setup-local.md). The differ
 - Set public URLs in `.env`.
 - Put ProPR behind a reverse proxy or ingress.
 - Configure TLS at the proxy layer.
+- Optionally switch issue intake from polling to GitHub webhooks.
 - Restrict access to the Docker socket and credential directories.
 - Back up data, logs, repositories, Redis, and SQLite state.
+
+The server must be a Linux host; the launcher bind-mounts host paths and the Docker socket directly.
 
 ## Runtime Directory
 
@@ -42,10 +45,36 @@ GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
 
 The GitHub OAuth App callback URL must match.
 
+## Configure GitHub Webhooks (Optional)
+
+By default ProPR polls GitHub for labeled issues every 60 seconds (`POLLING_INTERVAL_MS`, milliseconds). On a server with a public endpoint, webhooks deliver events immediately instead.
+
+Add to `.env`:
+
+```bash
+ENABLE_GITHUB_WEBHOOKS=true
+GH_WEBHOOK_SECRET=generate-a-strong-webhook-secret
+```
+
+`GH_WEBHOOK_SECRET` is mandatory when webhooks are enabled: the API refuses to start if `ENABLE_GITHUB_WEBHOOKS=true` is set without a secret, because unsigned webhook traffic would be rejected anyway.
+
+The webhook endpoint is `POST /webhook` on the API service (port `4000`). Route it through your reverse proxy, for example with nginx:
+
+```nginx
+location /webhook {
+    proxy_pass http://127.0.0.1:4000/webhook;
+}
+```
+
+In your GitHub App settings, set the webhook URL to `https://propr.example.com/webhook` and the webhook secret to the same `GH_WEBHOOK_SECRET` value.
+
+If you cannot expose a public endpoint, the optional hosted GitHub App at propr.dev can handle webhook routing and event replays for your installation instead.
+
 ## Start The Launcher
 
-Use the same launcher command as local setup, but run it from `/srv/propr` or your chosen server directory.
-Authenticate Antigravity on the host first with `agy login`; the launcher mounts `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` for Antigravity agent runs.
+Use the same launcher command as local setup, but run it from `/srv/propr` or your chosen server directory. All `PROPR_*` and `HOST_*` paths must be absolute; the launcher does not expand `~`.
+
+Authenticate Antigravity on the host first with `agy login`; the launcher mounts `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` for Antigravity agent runs. For OpenCode and Mistral Vibe credential preparation (including the required `/tmp/propr-vibe-prompts` directory), see [Local Setup](./setup-local.md#prepare-agent-credentials).
 
 ```bash
 docker run --rm \
@@ -59,8 +88,15 @@ docker run --rm \
   -e HOST_CLAUDE_DIR="$HOME/.claude" \
   -e HOST_CODEX_DIR="$HOME/.codex" \
   -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
+  -e HOST_OPENCODE_XDG_DIR="$HOME/.config/opencode" \
+  -e HOST_OPENCODE_DATA_DIR="$HOME/.local/share/opencode" \
+  -e HOST_VIBE_DIR="$HOME/.vibe" \
+  -e HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
+  -e VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
   propr/launcher:latest
 ```
+
+Omit the OpenCode and Vibe lines if you do not enable those agents. To update later, run `docker pull propr/launcher:latest` and re-run the same command.
 
 ## Finish In The Web UI
 

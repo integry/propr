@@ -14,14 +14,18 @@ Use model routing commands when the current PR should use a different configured
 /switch <model-id>
 ```
 
-If you include instructions, ProPR switches models and queues a follow-up review with the new model:
+ProPR replaces the PR's `llm-*` label with the new model's label. Later comments, commands, and ultrafix cycles on this PR use the new model.
+
+`/switch` takes exactly one model argument; extra arguments are ignored with a warning. The model must be a known catalog model or a model configured on an enabled agent — unrecognized models are rejected.
+
+If you include instructions on the lines below the command, ProPR switches the label and also queues one follow-up run with the new model using those instructions:
 
 ```text
-/switch <model-id>
-Please re-review after switching.
+/switch llm-claude-opus46
+Re-check the concurrency handling after switching.
 ```
 
-Use `/switch` when the model choice should persist for later comments and commands.
+Without instructions, `/switch` only updates the label and makes no code changes.
 
 ## `/use`
 
@@ -32,11 +36,11 @@ Use `/switch` when the model choice should persist for later comments and comman
 Please investigate the flaky test failure and update the PR.
 ```
 
-The PR's model label does not change. Later work returns to the PR's configured model unless you use `/switch` or another `/use`.
+The PR's model label does not change. Later work returns to the PR's configured model unless you use `/switch` or another `/use`. Like `/switch`, `/use` takes one model argument, and the agent sees only your instructions — not the command syntax.
 
 ## Choosing A Model
 
-Check AI Agents in the Web UI for valid model IDs. The `llm-` label prefix is optional in command arguments when the ID is otherwise unambiguous.
+Check AI Agents in the Web UI for the model IDs available in your deployment; the built-in catalog is in [Agents And Models](./agents-and-models.md). The `llm-` prefix is optional in command arguments.
 
 Use routing when:
 

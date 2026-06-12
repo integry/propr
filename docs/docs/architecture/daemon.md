@@ -39,6 +39,15 @@ It should stay lightweight. The daemon decides what should be processed; workers
   </div>
 </div>
 
+## Intake Modes
+
+The daemon supports two intake modes:
+
+- **Polling** (default): the daemon queries the GitHub API on an interval (`POLLING_INTERVAL_MS`, default `60000`) for open issues with processing labels and for PR events.
+- **Webhooks**: when `ENABLE_GITHUB_WEBHOOKS=true`, webhook events are received by the dashboard API service (port 4000), verified against `GH_WEBHOOK_SECRET`, and forwarded into the same intake path. Webhooks reduce polling pressure and latency; polling still acts as a safety net for missed events.
+
+Each intake event receives a correlation ID so the resulting queue job, worker logs, and task record can be traced back to the original GitHub event.
+
 ## Repository Monitoring
 
 The daemon monitors repositories configured through deployment defaults and the Web UI. The Web UI is the source of truth for normal repository management.
@@ -59,28 +68,28 @@ AI
 propr
 ```
 
-State labels are derived from the trigger label, such as:
+State labels are derived from the trigger label and are environment-overridable. With the default `AI` trigger:
 
 ```text
 AI-processing
 AI-done
-AI-failed
+AI-waiting
 ```
 
-Model labels route work to configured models:
+Model labels route work to configured models. They are matched against `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`):
 
 ```text
 llm-claude-sonnet46
-llm-codex-gpt54
-llm-antigravity-gemini-pro
-llm-antigravity-opus
+llm-codex-gpt55
+llm-antigravity-pro-high
+llm-antigravity-opus46-thinking
 ```
 
-The exact model labels available in a deployment come from AI Agents in the Web UI.
+If an issue carries a trigger label but no model label, the daemon falls back to the deployment default model (`DEFAULT_MODEL_NAME`). The exact model labels available in a deployment come from AI Agents in the Web UI.
 
 ## Job Creation
 
-When the daemon finds eligible work, it creates queue jobs containing:
+When the daemon finds eligible work, it creates BullMQ jobs in Redis containing:
 
 - Repository owner/name
 - Issue or PR number
@@ -89,11 +98,15 @@ When the daemon finds eligible work, it creates queue jobs containing:
 - Selected model or model label
 - Correlation metadata for logs and task records
 
-For multi-model issue processing, the daemon creates one job per selected model so each result can be tracked independently.
+For multi-model issue processing, the daemon creates one job per model label so each result can be tracked independently. Each job gets a deterministic ID:
+
+```text
+issue-<owner>-<repo>-<number>-<agent>-<model>
+```
 
 ## Deduplication
 
-The daemon avoids duplicate work by checking labels, task state, and queue state before enqueueing. This prevents repeated processing when polling sees the same issue multiple times.
+Deterministic job IDs are the primary deduplication mechanism: enqueueing the same issue/agent/model combination again is a no-op while the original job exists. The daemon also checks state labels and task state before enqueueing, which prevents repeated processing when polling sees the same issue multiple times or when polling and webhooks both report the same event.
 
 ## Relationship To Workers
 

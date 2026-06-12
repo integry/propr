@@ -45,6 +45,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/planning',
         'features/agent-routing',
+        'features/agents-and-models',
         'features/execution-safety',
         'features/observability',
         'features/self-hosting',
@@ -74,6 +75,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Tools',
       items: [
+        'features/propr-cli',
         'features/cli-workflows',
       ],
     },

@@ -26,7 +26,37 @@ Or target specific models:
 /review <model-id-a> <model-id-b>
 ```
 
-Each model posts its own AI review comment.
+Each model posts its own AI review comment. Text below the command becomes focus instructions for the review.
+
+### Review Output Format
+
+Every `/review` comment follows a fixed structure (`src/jobs/reviewPromptBuilder.ts`):
+
+```markdown
+## Overall Evaluation
+<summary of the change>
+
+## Findings
+🔴 Critical: <must-fix problems>
+🟡 Warning: <likely problems or risky patterns>
+🟢 Suggestion: <optional improvements>
+✅ Positive: <things done well>
+
+## Score
+Score: N/10
+```
+
+The three sections always appear in this order, findings are tagged with the severity emojis above, and the comment ends with a `Score: N/10` line.
+
+### Review Markers
+
+Each AI review comment carries a hidden HTML marker identifying it as machine-generated review output:
+
+```html
+<!-- propr:ai-review model="<model-id>" -->
+```
+
+Failed reviews carry the error variant (`error="true"`) and are never picked up by `/fix`.
 
 ## `/fix` Only Applies `/review` Comments
 
@@ -35,6 +65,12 @@ Use `/fix` only when you want ProPR to apply unprocessed AI review comments gene
 ```text
 /fix
 ```
+
+`/fix` selects comments by their `propr:ai-review` marker. It gathers comments that are:
+
+- Unprocessed (processed comment IDs are tracked in Redis, so each review is applied at most once)
+- Not error reviews (`error="true"` is skipped)
+- Newer than 7 days
 
 Direct user comments are already processed as follow-up work. `/fix` does not process those comments.
 
@@ -46,6 +82,8 @@ Before running `/fix`, you can edit or delete AI review comments:
 - Rewrite comments that need clearer instructions.
 - Leave only the suggestions you want ProPR to implement.
 
+Edited comments keep their marker, so `/fix` applies your edited version.
+
 ## When The PR Needs More Work
 
 Use the ProPR mechanism that matches your intent:
@@ -56,6 +94,6 @@ Use the ProPR mechanism that matches your intent:
 - `/use`: run one follow-up with a temporary model.
 - `/switch`: change the PR model for future work.
 - `/merge`: update the branch from the base branch.
-- `/ultrafix`: run a review-fix loop.
+- `/ultrafix`: run a review-fix loop until the review score meets the goal.
 
 For syntax and examples, see [PR Slash Commands](../features/pr-commands.md).

@@ -8,7 +8,7 @@ This reference covers worker concurrency, retries, state handling, configuration
 
 ## Concurrency And Scaling
 
-Multiple workers can process jobs at the same time as long as the host has enough CPU, memory, disk, and provider capacity.
+Each worker process handles up to `WORKER_CONCURRENCY` jobs at once (code default `5`; the shipped `.env.example` sets `2`; a `worker_concurrency` setting is also available). Multiple workers can run as long as the host has enough CPU, memory, disk, and provider capacity.
 
 ```bash
 # Direct local runs
@@ -23,6 +23,8 @@ docker-compose -f docker-compose.prod.yml up -d --scale worker=3
 ```
 
 Higher concurrency is not always better. Watch queue depth, model rate limits, repository size, and average task duration before increasing it.
+
+Separate `analysis-worker` and `indexing-worker` services process repository analysis and indexing jobs independently of implementation work.
 
 ## Model-Specific Processing
 
@@ -47,21 +49,21 @@ Worker failures generally fall into these categories:
 - Empty or invalid agent output
 - Pull request creation or update failures
 
-Transient git and GitHub operations use retry behavior. Agent failures are recorded with logs and task state so you can inspect the run, retry it, or switch models.
+Transient git and GitHub operations are retried with exponential backoff. Retry counts and backoff are hard-coded in `retryHandler.ts`; they are not environment-configurable. Agent failures are recorded with logs and task state so you can inspect the run, retry it, or switch models.
 
 ## Job States
 
-Task state is persisted so the Web UI can show progress and outcomes:
+Task state is persisted so the Web UI can show progress and outcomes (`packages/core/src/utils/workerStateManager.types.ts`):
 
-- `queued`
+- `pending`
 - `processing`
-- `agent_running`
-- `finalizing`
+- `claude_execution`
+- `post_processing`
 - `completed`
 - `failed`
 - `cancelled`
 
-State records should include enough metadata to connect the original trigger, selected agent, output, commits, and PR.
+`claude_execution` covers the agent-implementation phase for every agent type, not only Claude Code. State records include enough metadata to connect the original trigger, selected agent, output, commits, and PR.
 
 ## Configuration
 
@@ -69,25 +71,23 @@ Common worker settings:
 
 ```bash
 # Worker configuration
-WORKER_CONCURRENCY=5
+WORKER_CONCURRENCY=2
 
-# Agent runtime configuration
+# Agent runtime timeouts
 CLAUDE_TIMEOUT_MS=300000
 CODEX_TIMEOUT_MS=3600000
-ANTIGRAVITY_TIMEOUT_MS=3600000
+ANTIGRAVITY_TIMEOUT_MS=300000
+OPENCODE_TIMEOUT_MS=3600000
+VIBE_TIMEOUT_MS=3600000
 
-# Retry configuration
-GITHUB_API_MAX_RETRIES=3
-GIT_OPERATION_MAX_RETRIES=3
-
-# Git paths
-GIT_CLONES_BASE_PATH=/app/repos/clones
-GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
+# Git paths (defaults shown; override for image-based installs)
+GIT_CLONES_BASE_PATH=/tmp/git-processor/clones
+GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
 ```
 
-Adjust agent defaults and routing in the Web UI. Environment variables are mainly for install-time paths, secrets, and service wiring.
+Adjust agent defaults and routing in the Web UI. Environment variables are mainly for install-time paths, secrets, and service wiring. Retry behavior is hard-coded and has no environment variables.
 
-Use `ANTIGRAVITY_TIMEOUT_MS` for Antigravity runs and configure Antigravity model labels such as `llm-antigravity-gemini-pro` and `llm-antigravity-opus` in AI Agents.
+Use `ANTIGRAVITY_TIMEOUT_MS` for Antigravity runs and configure Antigravity model labels such as `llm-antigravity-pro-high`, `llm-antigravity-flash-medium`, and `llm-antigravity-opus46-thinking` in AI Agents.
 
 ## Monitoring
 
@@ -101,7 +101,7 @@ Important worker signals:
 - Cost and usage by model
 - Disk usage for clones and worktrees
 
-Worker logs should include correlation IDs so related GitHub, git, and agent events can be traced together.
+Worker logs include correlation IDs so related GitHub, git, and agent events can be traced together.
 
 ## Best Practices
 
