@@ -1,9 +1,12 @@
 /**
  * Minimal .env upsert helper.
  *
- * Sets each KEY to a value in a dotenv-style file: replaces the first
+ * Sets each KEY to a value in a Docker --env-file-compatible dotenv file: replaces the first
  * uncommented `KEY=` assignment if present, otherwise appends it. Other lines
  * (comments, blank lines, commented examples) are preserved.
+ *
+ * Docker does not strip quotes in --env-file values, so values are written
+ * literally and must fit on one line.
  */
 
 import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -24,22 +27,13 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
   for (const [key, value] of Object.entries(vars)) {
     const pattern = new RegExp(`^\\s*(export\\s+)?${escapeRegExp(key)}\\s*=`);
     const index = lines.findIndex((line) => pattern.test(line));
-    const needsQuoting = /[\s#"'\\$`\n]/.test(value);
-    let safe: string;
-    if (!needsQuoting) {
-      safe = value;
-    } else if (!value.includes("'")) {
-      // Single quotes: literal in both dotenv and docker --env-file (no
-      // escape processing), so the value round-trips identically.
-      safe = `'${value}'`;
-    } else {
-      // Fallback: double quotes with escaping. docker --env-file strips
-      // outer quotes but does NOT process backslash escapes, so values
-      // containing $, `, or \ will read differently via --env-file vs
-      // dotenv. This path is rare (value contains both ' and special chars).
-      safe = `"${value.replace(/[\\"$`\n]/g, (ch) => ch === "\n" ? "\\n" : `\\${ch}`)}"`;
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`${key} cannot contain newlines; Docker --env-file only supports one KEY=VALUE assignment per line.`);
     }
-    const assignment = `${key}=${safe}`;
+    if (/^\s|\s$/.test(value)) {
+      throw new Error(`${key} cannot contain leading or trailing whitespace in ${envPath}; Docker --env-file does not strip quotes.`);
+    }
+    const assignment = `${key}=${value}`;
     if (index >= 0) {
       lines[index] = assignment;
     } else {

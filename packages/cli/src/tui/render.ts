@@ -9,11 +9,24 @@
 import type { ConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import { renderStatusTable } from "../orchestrator/format.js";
+import { createInterface } from "node:readline/promises";
 
 export interface StartOptions {
   root?: string;
   tui?: boolean; // commander sets this false for --no-tui
   pull?: boolean; // commander sets this false for --no-pull
+  restart?: boolean;
+}
+
+async function confirmRestart(): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question("Stack is already running. Restart all services? [y/N] ");
+    return answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes";
+  } finally {
+    rl.close();
+  }
 }
 
 export async function runStart(configManager: ConfigManager, options: StartOptions): Promise<void> {
@@ -49,8 +62,13 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
   // back to the resolved config which honors DOCS_ENABLED from .env.
   const docs = configManager.get("docsEnabled") ?? cfg.docsEnabled;
 
-  if (orch.isStackRunning(cfg)) {
-    console.log("\nStack is already running — restarting all services…");
+  const running = orch.isStackRunning(cfg);
+  if (running) {
+    if (!options.restart && !(await confirmRestart())) {
+      console.error("\nStack is already running. Use `propr start --restart` to recreate all services.");
+      process.exit(1);
+    }
+    console.log("\nRestarting all services…");
   } else {
     console.log("\nStarting containers…");
   }

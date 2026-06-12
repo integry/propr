@@ -12,6 +12,7 @@ export function createStartCommand(): Command {
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--no-tui", "Skip the live dashboard; start and print a status snapshot")
     .option("--no-pull", "Skip pulling images before starting")
+    .option("--restart", "Recreate services if the stack is already running")
     .addHelpText("after", `
 Keys (live dashboard):
   b  background (keep the stack running)    q  stop the stack
@@ -20,10 +21,11 @@ Keys (live dashboard):
 
 Examples:
   $ propr start
+  $ propr start --restart
   $ propr start --no-tui
   $ propr start --root ~/propr
 `)
-    .action(async (options: { root?: string; tui?: boolean; pull?: boolean }) => {
+    .action(async (options: { root?: string; tui?: boolean; pull?: boolean; restart?: boolean }) => {
       try {
         const configManager = await createConfigManager();
         await runStart(configManager, options);

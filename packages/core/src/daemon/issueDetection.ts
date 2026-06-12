@@ -17,6 +17,8 @@ export type { DetectedIssue };
 // invalidated whenever the issue changes.
 const labelApplierCache = new Map<string, string | null>();
 const LABEL_APPLIER_CACHE_MAX = 500;
+const LABEL_APPLIER_TIMELINE_PAGE_SIZE = 100;
+const LABEL_APPLIER_TIMELINE_MAX_PAGES = 5;
 
 function getLabelApplierCacheKey(owner: string, repo: string, issueNumber: number, updatedAt: string): string {
     return `${owner}/${repo}#${issueNumber}:${updatedAt}`;
@@ -44,6 +46,28 @@ interface TimelineEvent {
     event: string;
     actor?: { login: string } | null;
     label?: { name: string };
+}
+
+function findLabelApplierInEvents(events: TimelineEvent[], normalizedTargetLabels: string[]): string | null {
+    for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (
+            ev.event === 'labeled' &&
+            ev.label?.name &&
+            normalizedTargetLabels.includes(ev.label.name.toLowerCase()) &&
+            ev.actor?.login
+        ) {
+            return ev.actor.login;
+        }
+    }
+    return null;
+}
+
+function lastPageFromLinkHeader(linkHeader: string | undefined): number | null {
+    if (!linkHeader) return null;
+    const lastLink = linkHeader.split(',').find(part => part.includes('rel="last"'));
+    const page = lastLink?.match(/[?&]page=(\d+)/)?.[1];
+    return page ? Number.parseInt(page, 10) : null;
 }
 
 /**
@@ -76,22 +100,21 @@ async function resolveLabelApplier(opts: {
     // whether to cache the result. Errors must NOT be cached because the cache key
     // only rotates when the issue's updatedAt changes, which would stall the issue
     // indefinitely after a transient failure (rate limit, network blip).
-    const events = await octokit.paginate(
-        'GET /repos/{owner}/{repo}/issues/{issue_number}/timeline',
-        { owner, repo, issue_number: issueNumber, per_page: 100 }
-    ) as TimelineEvent[];
+    const firstPage = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
+        owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page: 1
+    });
+    const lastPage = lastPageFromLinkHeader(firstPage.headers.link) ?? 1;
+    if (lastPage === 1) {
+        return findLabelApplierInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels);
+    }
 
-    // Walk backwards to find the most recent "labeled" event for a target label.
-    for (let i = events.length - 1; i >= 0; i--) {
-        const ev = events[i];
-        if (
-            ev.event === 'labeled' &&
-            ev.label?.name &&
-            normalizedTargetLabels.includes(ev.label.name.toLowerCase()) &&
-            ev.actor?.login
-        ) {
-            return ev.actor.login;
-        }
+    const firstRecentPage = Math.max(1, lastPage - LABEL_APPLIER_TIMELINE_MAX_PAGES + 1);
+    for (let page = lastPage; page >= firstRecentPage; page--) {
+        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
+            owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page
+        });
+        const actor = findLabelApplierInEvents(response.data as TimelineEvent[], normalizedTargetLabels);
+        if (actor) return actor;
     }
     return null;
 }

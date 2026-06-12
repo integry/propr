@@ -30,7 +30,10 @@ type AuthMode = 'demo' | 'relay' | 'app' | 'none';
 function resolveAuthMode(): AuthMode {
     if (demoMode) return 'demo';
     const explicit = (process.env.GH_AUTH_MODE || '').trim().toLowerCase();
-    if (explicit === 'demo') return 'demo';
+    if (explicit === 'demo') {
+        console.warn('WARNING: GH_AUTH_MODE=demo only disables GitHub auth. Set PROPR_DEMO_MODE=true for full demo-mode behavior across the API and workers.');
+        return 'demo';
+    }
     if (explicit === 'relay') return 'relay';
     if (explicit === 'app') return 'app';
     if (explicit) {

@@ -17,9 +17,27 @@ export type { GitHubUser } from './authTypes.js';
 
 function getSessionCookieDomain(): string | undefined {
     if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
-    const host = process.env.API_PUBLIC_URL && new URL(process.env.API_PUBLIC_URL).hostname;
-    if (host === 'localhost' || host === '127.0.0.1') return undefined;
-    return '.gitfix.dev';
+    if (!process.env.API_PUBLIC_URL) return undefined;
+
+    let host: string;
+    try {
+        host = new URL(process.env.API_PUBLIC_URL).hostname;
+    } catch {
+        console.warn('Ignoring invalid API_PUBLIC_URL for session cookie domain.');
+        return undefined;
+    }
+
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return undefined;
+    if (host === 'gitfix.dev' || host.endsWith('.gitfix.dev')) return '.gitfix.dev';
+    return undefined;
+}
+
+function shouldUseSecureSessionCookie(cookieDomain: string | undefined): boolean {
+    try {
+        return process.env.API_PUBLIC_URL ? new URL(process.env.API_PUBLIC_URL).protocol === 'https:' : Boolean(cookieDomain);
+    } catch {
+        return Boolean(cookieDomain);
+    }
 }
 
 function clearSessionCookie(res: Response): void {
@@ -54,6 +72,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         // Use Redis store for sessions to share across subdomains
         const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
 
+        const cookieDomain = getSessionCookieDomain();
         app.use(session({
             store: redisStore,
             secret: process.env.SESSION_SECRET || 'your-secret-key-here',
@@ -61,10 +80,10 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
             saveUninitialized: false,
             rolling: true, // Extend session expiration on each request
             cookie: {
-                secure: !getSessionCookieDomain() ? false : true,
+                secure: shouldUseSecureSessionCookie(cookieDomain),
                 httpOnly: true,
                 maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-                ...(getSessionCookieDomain() ? { domain: getSessionCookieDomain() } : {}),
+                ...(cookieDomain ? { domain: cookieDomain } : {}),
                 sameSite: 'lax'
             }
         }));

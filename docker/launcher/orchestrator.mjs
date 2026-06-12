@@ -136,11 +136,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostLogs = overrides.hostLogs || env.PROPR_LOGS_DIR;
     const hostRepos = overrides.hostRepos || env.PROPR_REPOS_DIR;
 
-    const apiPort = overrides.apiPort || env.API_PORT || '4000';
-    const uiPort = overrides.uiPort || env.UI_PORT || '5173';
-    const docsPort = overrides.docsPort || env.DOCS_PORT || '8080';
-    const redisExternalPort = overrides.redisExternalPort ?? env.REDIS_EXTERNAL_PORT ?? '';
-    const docsEnabled = overrides.docsEnabled ?? (env.DOCS_ENABLED === 'true');
+    const apiPort = overrides.apiPort || get('API_PORT') || '4000';
+    const uiPort = overrides.uiPort || get('UI_PORT') || '5173';
+    const docsPort = overrides.docsPort || get('DOCS_PORT') || '8080';
+    const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
+    const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
     // resolve the same path end-to-end). HOST_OPENCODE_DIR is a back-compat alias.
@@ -471,9 +471,9 @@ function buildServiceSpec(cfg, service) {
  * the service image if it is missing so toggles (`propr docs on`) work even when
  * the image was skipped at startup.
  */
-export function startService(cfg, service, { onLog } = {}) {
+export function startService(cfg, service, { onLog, pull = true } = {}) {
     const name = `${cfg.stack}-${service}`;
-    ensureServiceImage(cfg, service, onLog);
+    if (pull) ensureServiceImage(cfg, service, onLog);
     const spec = buildServiceSpec(cfg, service);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
@@ -547,36 +547,18 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 // status
 // ---------------------------------------------------------------------------
 
-/** Per-service state for the whole stack, discovered via `docker ps` labels + legacy name fallback. */
+/** Per-service state for the whole stack, discovered by canonical/legacy container name. */
 export function getStackStatus(cfg) {
+    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
     const res = docker([
         'ps', '-a',
-        '--filter', `label=propr.stack=${cfg.stack}`,
         '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}',
     ], { capture: true });
 
     const byName = new Map();
     for (const line of res.stdout.split('\n').filter(Boolean)) {
         const [name, state, status, ports] = line.split('\t');
-        byName.set(name, { state, status, ports: ports || '' });
-    }
-
-    // Also discover legacy containers created before labeling was added (named
-    // <stack>-<service> but missing the propr.stack label). Mirrors the fallback
-    // in stopStack so status accurately reflects what ports are actually bound.
-    for (const service of SERVICES) {
-        const name = `${cfg.stack}-${service}`;
-        if (!byName.has(name) && containerExists(cfg, name)) {
-            const inspect = docker([
-                'ps', '-a',
-                '--filter', `name=^${name}$`,
-                '--format', '{{.State}}\t{{.Status}}\t{{.Ports}}',
-            ], { capture: true });
-            const parts = inspect.stdout.trim().split('\t');
-            if (parts[0]) {
-                byName.set(name, { state: parts[0], status: parts[1] || '', ports: parts[2] || '' });
-            }
-        }
+        if (expectedNames.has(name)) byName.set(name, { state, status, ports: ports || '' });
     }
 
     const services = SERVICES.map((service) => {

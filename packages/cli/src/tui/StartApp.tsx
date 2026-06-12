@@ -148,7 +148,8 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
           configManager?.setUiEnabled(false).catch((e: Error) => setMessage(`UI stopped (config save failed: ${e.message})`));
           setMessage("UI stopped");
         } else {
-          orch.startService(cfg, "ui");
+          setMessage("Starting UI...");
+          orch.startService(cfg, "ui", { pull: false });
           configManager?.setUiEnabled(true).catch((e: Error) => setMessage(`UI started (config save failed: ${e.message})`));
           setMessage("UI started");
         }

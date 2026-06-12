@@ -44,6 +44,15 @@ propr login [token]      # Authenticate (interactive or PAT)
 propr logout             # Clear stored token
 ```
 
+## Compatibility Notes
+
+In the control-plane CLI, `propr status` reports the local Docker stack. Use
+`propr remote-status` for the backend health/queue status JSON that older
+scripts may have read from `propr status --json`.
+
+Running bare `propr` now performs the same environment checks as `propr check`;
+it can exit nonzero when required local stack prerequisites are missing.
+
 ## Repository Setup
 
 Use `propr init` from a repository root to scaffold `.propr` setup files used by agent execution containers.

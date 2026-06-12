@@ -76,6 +76,7 @@ export interface ResolveHostConfigOptions {
 
 export interface OnLogOption {
   onLog?: (line: string) => void;
+  pull?: boolean;
 }
 
 /** Public surface of orchestrator.mjs consumed by the CLI. */

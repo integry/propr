@@ -18,15 +18,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@propr/shared": "0.8.1",
+    "@propr/shared": "^0.8.1",
     "commander": "^13.1.0",
     "dotenv": "^16.5.0",
     "ink": "^5.1.0",
-    "react": "^18.0.0"
+    "react": "^19.2.7"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "@types/react": "^18.0.0",
+    "@types/react": "^19.2.17",
     "typescript": "^5.9.3"
   }
 }

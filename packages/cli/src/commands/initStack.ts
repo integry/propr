@@ -130,7 +130,7 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
     const re = new RegExp(`^\\s*(export\\s+)?${c.envKey}\\s*=`, "m");
     return !re.test(envContent);
   });
-  if (toAppend.length > 0 && (!result.envSkipped || options.force)) {
+  if (toAppend.length > 0 && !result.envSkipped) {
     const block =
       "\n# --- Host agent-credential directories (detected by `propr init stack`) ---\n" +
       toAppend.map((c) => `${c.envKey}=${c.path}`).join("\n") +
