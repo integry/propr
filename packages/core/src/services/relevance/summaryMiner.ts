@@ -6,7 +6,7 @@ import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
-import { loadSummarizationSettings } from '../../config/configManager.js';
+import { loadSummarizationSettings, getSummarizationCooldown } from '../../config/configManager.js';
 import {
   processBatches,
   aggregateDirectories
@@ -95,21 +95,26 @@ interface AgentSetupResult {
   agent: Agent;
   modelOverride: string | undefined;
   effectiveModel: string | undefined;
+  agentAliasSetting: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
 }
 
 /**
  * Sets up the agent for summarization based on settings
  */
-async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetupResult> {
+async function resolveAgentAlias(agentAliasSetting?: string): Promise<Omit<AgentSetupResult, 'fallbackAgent' | 'fallbackModelOverride' | 'fallbackEffectiveModel' | 'fallbackAgentAliasSetting'>> {
   const registry = AgentRegistry.getInstance();
   await registry.ensureInitialized();
 
   // Parse agent_alias which may be in format "agent_alias:model" or just "agent_alias"
-  let agentAlias = settings.agent_alias;
+  let agentAlias = agentAliasSetting;
   let modelOverride: string | undefined;
 
-  if (settings.agent_alias && settings.agent_alias.includes(':')) {
-    const parts = settings.agent_alias.split(':');
+  if (agentAliasSetting && agentAliasSetting.includes(':')) {
+    const parts = agentAliasSetting.split(':');
     agentAlias = parts[0];
     modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
   }
@@ -124,7 +129,23 @@ async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetu
 
   const effectiveModel = modelOverride || agent.config.defaultModel;
 
-  return { agent, modelOverride, effectiveModel };
+  return { agent, modelOverride, effectiveModel, agentAliasSetting: agentAliasSetting || agent.config.alias };
+}
+
+async function setupAgent(settings: { agent_alias?: string; fallback_agent_alias?: string }): Promise<AgentSetupResult> {
+  const primary = await resolveAgentAlias(settings.agent_alias);
+  if (!settings.fallback_agent_alias || settings.fallback_agent_alias === settings.agent_alias) {
+    return primary;
+  }
+
+  const fallback = await resolveAgentAlias(settings.fallback_agent_alias);
+  return {
+    ...primary,
+    fallbackAgent: fallback.agent,
+    fallbackModelOverride: fallback.modelOverride,
+    fallbackEffectiveModel: fallback.effectiveModel,
+    fallbackAgentAliasSetting: fallback.agentAliasSetting
+  };
 }
 
 /**
@@ -254,6 +275,14 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     // Phase A: Setup & Staleness Check
     correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
+    const cooldown = await getSummarizationCooldown(fullName, branch);
+    if (cooldown) {
+      correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
+      await updateRepositoryStatus(fullName, 'failed', branch);
+      await safePublishIndexingStatus(fullName, branch, 'failed');
+      return;
+    }
+
     // 0. Discover repository icon (early, so we can include it in status updates)
     const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
 
@@ -276,7 +305,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     };
 
     correlatedLogger.info(
-      { agentAlias: agent.config.alias, model: effectiveModel },
+      { agentAlias: agent.config.alias, model: effectiveModel, fallbackAgentAlias: settings.fallback_agent_alias || undefined },
       'Using agent for summarization'
     );
 

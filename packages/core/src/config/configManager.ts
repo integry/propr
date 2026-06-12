@@ -265,29 +265,198 @@ export async function saveAutoResolveMergeConflicts(enabled: boolean): Promise<b
 export interface SummarizationSettings {
     enabled: boolean;
     agent_alias: string;
+    fallback_agent_alias?: string;
     custom_prompt?: string;
 }
 
 const DEFAULT_SUMMARIZATION_SETTINGS: SummarizationSettings = {
     enabled: false,
     agent_alias: '',
+    fallback_agent_alias: '',
     custom_prompt: ''
 };
+
+export interface SummarizationCooldown {
+    repository: string;
+    branch: string;
+    until: string;
+    reason: string;
+    primary_agent_alias?: string;
+    fallback_agent_alias?: string;
+}
+
+export interface SummarizationDegradationWarning {
+    mode: 'fallback_degraded' | 'fallback_promoted' | 'cooldown';
+    message: string;
+    recorded_at: string;
+    repository?: string;
+    branch?: string;
+    primary_agent_alias?: string;
+    fallback_agent_alias?: string;
+}
+
+export interface SummarizationRuntimeState {
+    primary_quota_failures: number;
+    warning?: SummarizationDegradationWarning;
+    cooldowns: Record<string, SummarizationCooldown>;
+}
+
+const DEFAULT_SUMMARIZATION_RUNTIME_STATE: SummarizationRuntimeState = {
+    primary_quota_failures: 0,
+    cooldowns: {}
+};
+
+const SUMMARIZATION_RUNTIME_STATE_KEY = 'summarization_runtime_state';
+
+function getSummarizationCooldownKey(repository: string, branch: string): string {
+    return `${repository}\0${branch || 'HEAD'}`;
+}
+
+function getPromotionThreshold(): number {
+    const value = parseInt(process.env.SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD || '3', 10);
+    return Number.isFinite(value) && value > 0 ? value : 3;
+}
+
+function getCooldownMs(): number {
+    const value = parseInt(process.env.SUMMARIZATION_QUOTA_COOLDOWN_MS || String(60 * 60 * 1000), 10);
+    return Number.isFinite(value) && value > 0 ? value : 60 * 60 * 1000;
+}
 
 /**
  * Loads summarization settings from the database.
  */
 export async function loadSummarizationSettings(): Promise<SummarizationSettings> {
     const settings = await getConfig<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS);
-    logger.info({ summarization: settings }, 'Successfully loaded summarization settings');
-    return settings;
+    const normalized = { ...DEFAULT_SUMMARIZATION_SETTINGS, ...settings };
+    logger.info({ summarization: normalized }, 'Successfully loaded summarization settings');
+    return normalized;
 }
 
 /**
  * Saves summarization settings to the database.
  */
 export async function saveSummarizationSettings(settings: SummarizationSettings): Promise<boolean> {
-    await saveConfig('summarization', settings);
-    logger.info({ summarization: settings }, 'Successfully saved summarization settings');
+    const normalized = { ...DEFAULT_SUMMARIZATION_SETTINGS, ...settings };
+    await saveConfig('summarization', normalized);
+    logger.info({ summarization: normalized }, 'Successfully saved summarization settings');
     return true;
+}
+
+export async function loadSummarizationRuntimeState(): Promise<SummarizationRuntimeState> {
+    const state = await getConfig<SummarizationRuntimeState>(
+        SUMMARIZATION_RUNTIME_STATE_KEY,
+        DEFAULT_SUMMARIZATION_RUNTIME_STATE
+    );
+    const now = Date.now();
+    const cooldowns = Object.fromEntries(
+        Object.entries(state.cooldowns || {}).filter(([, cooldown]) => Date.parse(cooldown.until) > now)
+    );
+    const normalized = {
+        ...DEFAULT_SUMMARIZATION_RUNTIME_STATE,
+        ...state,
+        cooldowns
+    };
+    if (Object.keys(cooldowns).length !== Object.keys(state.cooldowns || {}).length) {
+        await saveConfig(SUMMARIZATION_RUNTIME_STATE_KEY, normalized);
+    }
+    return normalized;
+}
+
+export async function saveSummarizationRuntimeState(state: SummarizationRuntimeState): Promise<boolean> {
+    await saveConfig(SUMMARIZATION_RUNTIME_STATE_KEY, {
+        ...DEFAULT_SUMMARIZATION_RUNTIME_STATE,
+        ...state,
+        cooldowns: state.cooldowns || {}
+    });
+    return true;
+}
+
+export async function getSummarizationCooldown(repository: string, branch: string = 'HEAD'): Promise<SummarizationCooldown | null> {
+    const state = await loadSummarizationRuntimeState();
+    const cooldown = state.cooldowns[getSummarizationCooldownKey(repository, branch)];
+    if (!cooldown || Date.parse(cooldown.until) <= Date.now()) {
+        return null;
+    }
+    return cooldown;
+}
+
+export async function recordSummarizationCooldown(options: {
+    repository: string;
+    branch?: string;
+    primaryAgentAlias?: string;
+    fallbackAgentAlias?: string;
+    reason?: string;
+}): Promise<SummarizationCooldown> {
+    const branch = options.branch || 'HEAD';
+    const until = new Date(Date.now() + getCooldownMs()).toISOString();
+    const reason = options.reason || 'Primary and fallback summarization models are quota-limited.';
+    const cooldown: SummarizationCooldown = {
+        repository: options.repository,
+        branch,
+        until,
+        reason,
+        primary_agent_alias: options.primaryAgentAlias,
+        fallback_agent_alias: options.fallbackAgentAlias
+    };
+    const state = await loadSummarizationRuntimeState();
+    state.cooldowns[getSummarizationCooldownKey(options.repository, branch)] = cooldown;
+    state.warning = {
+        mode: 'cooldown',
+        message: `${options.repository} (${branch}) summarization is paused until ${until}: ${reason}`,
+        recorded_at: new Date().toISOString(),
+        repository: options.repository,
+        branch,
+        primary_agent_alias: options.primaryAgentAlias,
+        fallback_agent_alias: options.fallbackAgentAlias
+    };
+    await saveSummarizationRuntimeState(state);
+    logger.warn({ cooldown }, 'Recorded summarization cooldown');
+    return cooldown;
+}
+
+export async function recordPrimarySummarizationQuotaFailure(options: {
+    primaryAgentAlias: string;
+    fallbackAgentAlias?: string;
+}): Promise<{ promoted: boolean; failureCount: number; warning: SummarizationDegradationWarning }> {
+    const state = await loadSummarizationRuntimeState();
+    const failureCount = (state.primary_quota_failures || 0) + 1;
+    state.primary_quota_failures = failureCount;
+
+    let promoted = false;
+    const warning: SummarizationDegradationWarning = {
+        mode: 'fallback_degraded',
+        message: options.fallbackAgentAlias
+            ? `Primary summarization model ${options.primaryAgentAlias} is quota-limited; using fallback ${options.fallbackAgentAlias}.`
+            : `Primary summarization model ${options.primaryAgentAlias} is quota-limited.`,
+        recorded_at: new Date().toISOString(),
+        primary_agent_alias: options.primaryAgentAlias,
+        fallback_agent_alias: options.fallbackAgentAlias
+    };
+
+    if (options.fallbackAgentAlias && failureCount >= getPromotionThreshold()) {
+        const currentSettings = await loadSummarizationSettings();
+        if (currentSettings.agent_alias === options.primaryAgentAlias) {
+            await saveSummarizationSettings({
+                ...currentSettings,
+                agent_alias: options.fallbackAgentAlias,
+                fallback_agent_alias: options.primaryAgentAlias
+            });
+            promoted = true;
+            warning.mode = 'fallback_promoted';
+            warning.message = `Promoted summarization fallback ${options.fallbackAgentAlias} after ${failureCount} primary quota failures.`;
+            state.primary_quota_failures = 0;
+        }
+    }
+
+    state.warning = warning;
+    await saveSummarizationRuntimeState(state);
+    logger.warn({ failureCount, promoted, ...options }, 'Recorded summarization primary quota failure');
+    return { promoted, failureCount, warning };
+}
+
+export async function clearSummarizationPrimaryQuotaFailures(): Promise<void> {
+    const state = await loadSummarizationRuntimeState();
+    if (state.primary_quota_failures === 0) return;
+    state.primary_quota_failures = 0;
+    await saveSummarizationRuntimeState(state);
 }

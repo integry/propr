@@ -1,0 +1,85 @@
+import { after, before, beforeEach, describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+
+process.env.NODE_ENV = 'test';
+process.env.SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD = '2';
+process.env.SUMMARIZATION_QUOTA_COOLDOWN_MS = '60000';
+
+const {
+  db,
+  runMigrations,
+  closeConnection,
+  saveSummarizationSettings,
+  loadSummarizationSettings,
+  loadSummarizationRuntimeState,
+  recordPrimarySummarizationQuotaFailure,
+  recordSummarizationCooldown,
+  getSummarizationCooldown
+} = await import('../packages/core/src/index.js');
+
+describe('summarization fallback runtime state', () => {
+  before(async () => {
+    await runMigrations();
+  });
+
+  beforeEach(async () => {
+    await db('system_configs').whereIn('key', ['summarization', 'summarization_runtime_state']).delete();
+  });
+
+  after(async () => {
+    await closeConnection();
+  });
+
+  test('promotes fallback after repeated primary quota failures and preserves old primary as fallback', async () => {
+    await saveSummarizationSettings({
+      enabled: true,
+      agent_alias: 'primary:gpt-expensive',
+      fallback_agent_alias: 'fallback:gpt-cheap',
+      custom_prompt: 'Summarize carefully'
+    });
+
+    const first = await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary:gpt-expensive',
+      fallbackAgentAlias: 'fallback:gpt-cheap'
+    });
+    assert.equal(first.promoted, false);
+    assert.equal(first.failureCount, 1);
+
+    const second = await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary:gpt-expensive',
+      fallbackAgentAlias: 'fallback:gpt-cheap'
+    });
+    assert.equal(second.promoted, true);
+    assert.equal(second.warning.mode, 'fallback_promoted');
+
+    const settings = await loadSummarizationSettings();
+    assert.equal(settings.agent_alias, 'fallback:gpt-cheap');
+    assert.equal(settings.fallback_agent_alias, 'primary:gpt-expensive');
+    assert.equal(settings.custom_prompt, 'Summarize carefully');
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 0);
+    assert.equal(state.warning?.mode, 'fallback_promoted');
+  });
+
+  test('records and returns repository branch cooldown', async () => {
+    const cooldown = await recordSummarizationCooldown({
+      repository: 'integry/propr',
+      branch: 'main',
+      primaryAgentAlias: 'primary',
+      fallbackAgentAlias: 'fallback'
+    });
+
+    assert.equal(cooldown.repository, 'integry/propr');
+    assert.equal(cooldown.branch, 'main');
+    assert.ok(Date.parse(cooldown.until) > Date.now());
+
+    const loaded = await getSummarizationCooldown('integry/propr', 'main');
+    assert.equal(loaded?.repository, 'integry/propr');
+    assert.equal(loaded?.fallback_agent_alias, 'fallback');
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.warning?.mode, 'cooldown');
+    assert.equal(Object.keys(state.cooldowns).length, 1);
+  });
+});

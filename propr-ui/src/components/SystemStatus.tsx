@@ -18,6 +18,7 @@ interface SystemStatusData {
   claudeAuth: string;
   indexing: string;
   agents: SystemAgentStatus[];
+  warnings?: { type: string; message: string }[];
 }
 
 const SystemStatus: React.FC = () => {
@@ -145,6 +146,11 @@ const SystemStatus: React.FC = () => {
         {renderStatusRow('Redis', status?.redis)}
         {renderStatusRow('GitHub Auth', status?.githubAuth)}
         {renderStatusRow('Indexing', status?.indexing, !hasAgents)}
+        {(status?.warnings?.length || 0) > 0 && (
+          <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {status?.warnings?.[0]?.message}
+          </div>
+        )}
         {hasAgents && (
           <div className="pt-3 mt-1 border-t border-slate-100">
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">

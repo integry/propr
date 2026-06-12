@@ -387,6 +387,22 @@ describe('isRetryableError', () => {
             assert.strictEqual(isRetryableError(error, baseConfig), true);
         });
 
+        test('returns false for quota exhaustion even when message says try again', () => {
+            const quotaMessages = [
+                'usage limit reached, try again later',
+                'quota exceeded; please try again',
+                'out of quota, try again tomorrow',
+                'insufficient quota. Try again after upgrading.'
+            ];
+            for (const message of quotaMessages) {
+                assert.strictEqual(
+                    isRetryableError({ status: 429, message }, baseConfig),
+                    false,
+                    message
+                );
+            }
+        });
+
         test('returns true for 500 Internal Server Error', () => {
             const error = { status: 500, message: 'Internal Server Error' };
             assert.strictEqual(isRetryableError(error, baseConfig), true);

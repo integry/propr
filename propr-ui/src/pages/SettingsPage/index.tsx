@@ -51,6 +51,7 @@ const SettingsPage: React.FC = () => {
     removeIgnoreKeyword,
     handleSummarizationChange,
     handleSummarizationModelChange,
+    handleSummarizationFallbackModelChange,
     handleDefaultAgentChange,
     handleReindexAll,
     handleAgentTankChange,
@@ -99,6 +100,7 @@ const SettingsPage: React.FC = () => {
               agents={agents}
               onSettingChange={handleModelSelectionChange}
               onSummarizationModelChange={handleSummarizationModelChange}
+              onSummarizationFallbackModelChange={handleSummarizationFallbackModelChange}
               onDefaultAgentChange={handleDefaultAgentChange}
             />
 

@@ -61,8 +61,10 @@ export function parseLoadedData(results: any[]) {
     summarizationSettings: {
       enabled: summarizationData.enabled || false,
       agent_alias: summarizationData.agent_alias || '',
+      fallback_agent_alias: summarizationData.fallback_agent_alias || '',
       custom_prompt: summarizationData.custom_prompt,
       default_prompt: summarizationData.default_prompt,
+      runtime: summarizationData.runtime,
     },
     agentTankSettings: { enabled: atData.enabled || false, url: atData.url || 'http://0.0.0.0:3456' },
   };

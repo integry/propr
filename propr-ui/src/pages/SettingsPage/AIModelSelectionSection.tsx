@@ -25,6 +25,7 @@ interface AIModelSelectionSectionProps {
   agents: AgentConfig[];
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onSummarizationModelChange: (agentAlias: string) => void;
+  onSummarizationFallbackModelChange: (agentAlias: string) => void;
   onDefaultAgentChange: (agentAlias: string) => void;
   className?: string;
 }
@@ -67,6 +68,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   agents,
   onSettingChange,
   onSummarizationModelChange,
+  onSummarizationFallbackModelChange,
   onDefaultAgentChange,
   className
 }) => {
@@ -82,6 +84,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
+  const summarizationWarning = summarizationSettings.runtime?.warning?.message;
 
   return (
     <div className={className || ''}>
@@ -200,6 +203,36 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 <NoAgentsMessage label="enabled agents" />
               )}
             </SettingRow>
+
+            <SettingRow
+              label="Summarization Fallback Model"
+              htmlFor="summarization_fallback_model"
+              helperText="Used once for a summarization batch when the primary model is quota-limited."
+            >
+              {hasEnabledAgents ? (
+                <select
+                  id="summarization_fallback_model"
+                  value={summarizationSettings.fallback_agent_alias || ''}
+                  onChange={(e) => onSummarizationFallbackModelChange(e.target.value)}
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
+                >
+                  <option value="">No fallback model</option>
+                  {summarizationOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <NoAgentsMessage label="enabled agents" />
+              )}
+            </SettingRow>
+
+            {summarizationWarning && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {summarizationWarning}
+              </div>
+            )}
           </div>
         </div>
 

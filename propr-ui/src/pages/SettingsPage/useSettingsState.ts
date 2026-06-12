@@ -57,7 +57,8 @@ export function useSettingsState() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [summarizationSettings, setSummarizationSettings] = useState<SummarizationSettings>({
     enabled: false,
-    agent_alias: ''
+    agent_alias: '',
+    fallback_agent_alias: ''
   });
   const [isReindexing, setIsReindexing] = useState(false);
   const [agentTankSettings, setAgentTankSettings] = useState<{ enabled: boolean; url: string }>({
@@ -275,6 +276,10 @@ export function useSettingsState() {
     handleSummarizationChange({ ...summarizationSettings, agent_alias: agentAlias });
   }, [summarizationSettings, handleSummarizationChange]);
 
+  const handleSummarizationFallbackModelChange = useCallback((agentAlias: string) => {
+    handleSummarizationChange({ ...summarizationSettings, fallback_agent_alias: agentAlias });
+  }, [summarizationSettings, handleSummarizationChange]);
+
   const handleDefaultAgentChange = useCallback((agentAlias: string) => {
     const newSettings = { ...settings, default_agent_alias: agentAlias };
     setSettings(newSettings);
@@ -325,6 +330,7 @@ export function useSettingsState() {
     setSettings, setPrLabel,
     triggerSettingsSave, handleModelSelectionChange,
     handleSummarizationChange, handleSummarizationModelChange,
+    handleSummarizationFallbackModelChange,
     handleDefaultAgentChange, handleReindexAll, handleAgentTankChange,
     savePrLabelOnly,
     ...lists,

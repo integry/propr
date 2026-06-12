@@ -1,7 +1,12 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
-import { AgentRegistry, getIndexingQueue as loadIndexingQueue, loadAgents as loadAgentConfigs } from '@propr/core';
+import {
+  AgentRegistry,
+  getIndexingQueue as loadIndexingQueue,
+  loadAgents as loadAgentConfigs,
+  loadSummarizationRuntimeState
+} from '@propr/core';
 import type { Agent, AgentConfig } from '@propr/core';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,6 +19,7 @@ interface StatusRoutesDeps {
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
   now?: () => number;
+  loadSummarizationRuntimeState?: typeof loadSummarizationRuntimeState;
 }
 
 interface IndexingStatusQueue {
@@ -41,7 +47,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     getIndexingQueue = loadIndexingQueue,
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
-    now = Date.now
+    now = Date.now,
+    loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState
   } = deps;
   let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
@@ -77,6 +84,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         githubAuth: 'unknown',
         claudeAuth: 'unknown',
         indexing: 'unknown',
+        warnings: [],
         agents: [],
         timestamp: new Date().toISOString()
       };
@@ -106,6 +114,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         ? 'connected'
         : 'disconnected';
       status.indexing = await getIndexingStatus(getIndexingQueue);
+      status.warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
 
       res.json(status);
     } catch (error) {
@@ -128,6 +137,26 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       expiresAt: currentTime + agentStatusCacheTtlMs
     };
     return statuses;
+  }
+}
+
+async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRuntimeState): Promise<Array<{ type: string; message: string }>> {
+  try {
+    const state = await loadRuntimeState();
+    const warnings: Array<{ type: string; message: string }> = [];
+    if (state.warning) {
+      warnings.push({ type: `summarization_${state.warning.mode}`, message: state.warning.message });
+    }
+    for (const cooldown of Object.values(state.cooldowns || {})) {
+      warnings.push({
+        type: 'summarization_cooldown',
+        message: `${cooldown.repository} (${cooldown.branch}) summarization is paused until ${cooldown.until}.`
+      });
+    }
+    return warnings;
+  } catch (error) {
+    console.error('Error loading summarization warnings:', error);
+    return [];
   }
 }
 

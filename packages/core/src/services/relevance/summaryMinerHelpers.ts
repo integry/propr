@@ -16,7 +16,12 @@ import { aggregateDirectories } from './summaryMinerDirectories.js';
 import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, publishProgress } from './indexingCancellation.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isProcessableFile } from './summaryFileFilter.js';
-import { withRetry } from '../../utils/retryHandler.js';
+import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
+import {
+  clearSummarizationPrimaryQuotaFailures,
+  recordPrimarySummarizationQuotaFailure,
+  recordSummarizationCooldown
+} from '../../config/configManager.js';
 
 // Retry transient agent failures (network blips, rate limits, 5xx) before
 // counting a batch as failed. Persistent errors (quota exhaustion, malformed
@@ -27,6 +32,11 @@ const SUMMARIZATION_RETRY = {
   baseDelay: 2000,
   maxDelay: 15000,
   exponentialBase: 2,
+} as const;
+
+const SUMMARIZATION_FALLBACK_RETRY = {
+  ...SUMMARIZATION_RETRY,
+  maxAttempts: 1
 } as const;
 
 // Re-export metrics types and functions for backwards compatibility
@@ -62,6 +72,11 @@ export interface SummarizationAgentConfig {
   modelOverride?: string;
   effectiveModel?: string;
   customPrompt?: string;
+  agentAliasSetting?: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
 }
 
 // --- Constants ---
@@ -139,7 +154,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let filesProcessed = 0;
   let filesFailed = 0;
 
-  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, customPrompt, effectiveModel: modelId };
+  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, customPrompt, effectiveModel: modelId, agentAliasSetting: agent.config.alias };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   for (const file of files) {
@@ -182,6 +197,11 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         log,
         modelUsed: currentModelId,
         customPrompt: currentConfig.customPrompt,
+        primaryAgentAliasSetting: currentConfig.agentAliasSetting || currentConfig.agent.config.alias,
+        fallbackAgent: currentConfig.fallbackAgent,
+        fallbackModelOverride: currentConfig.fallbackModelOverride,
+        fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
+        fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
         branch
       });
       const batchFileCount = currentBatch.length;
@@ -238,6 +258,11 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       log,
       modelUsed: currentModelId,
       customPrompt: currentConfig.customPrompt,
+      primaryAgentAliasSetting: currentConfig.agentAliasSetting || currentConfig.agent.config.alias,
+      fallbackAgent: currentConfig.fallbackAgent,
+      fallbackModelOverride: currentConfig.fallbackModelOverride,
+      fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
+      fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
       branch
     });
     const batchFileCount = currentBatch.length;
@@ -311,6 +336,11 @@ interface ProcessSingleBatchOptions {
   log: Logger;
   modelUsed: string;
   customPrompt?: string;
+  primaryAgentAliasSetting?: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackModelUsed?: string;
+  fallbackAgentAliasSetting?: string;
   branch: string;
 }
 
@@ -319,7 +349,10 @@ interface ProcessSingleBatchOptions {
  * Returns true if successful, false if failed
  */
 async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<boolean> {
-  const { fullName, batch, agent, log, modelUsed, customPrompt, branch } = options;
+  const {
+    fullName, batch, agent, log, modelUsed, customPrompt, branch,
+    primaryAgentAliasSetting, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting
+  } = options;
   const prompt = buildBatchPrompt(batch, customPrompt);
   const startTime = Date.now();
 
@@ -330,26 +363,60 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
 
   let success = false;
   let errorMessage: string | undefined;
+  let agentUsed = agent;
+  let modelLogged = modelUsed;
 
   try {
-    const summaries = await withRetry(
-      async () => {
-        const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
-        if (!analysisResult.success) {
-          throw new Error(analysisResult.error || 'Summarization agent analysis failed');
+    let summaries: SummaryResult[];
+    try {
+      summaries = await analyzeBatchWithAgent({
+        prompt, batchSize: batch.length, agent, model: modelUsed, context: `batch_summarization:${fullName}`
+      });
+      await clearSummarizationPrimaryQuotaFailures();
+    } catch (primaryError) {
+      if (!isQuotaExhaustionError(primaryError) || !fallbackAgent || !fallbackAgentAliasSetting) {
+        throw primaryError;
+      }
+
+      await recordPrimarySummarizationQuotaFailure({
+        primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
+        fallbackAgentAlias: fallbackAgentAliasSetting
+      });
+      log.warn({
+        error: (primaryError as Error).message,
+        primaryAgentAlias: agent.config.alias,
+        fallbackAgentAlias: fallbackAgent.config.alias,
+        fallbackModel: fallbackModelUsed
+      }, 'Primary summarization model quota-limited; retrying batch with fallback');
+
+      try {
+        summaries = await analyzeBatchWithAgent({
+          prompt,
+          batchSize: batch.length,
+          agent: fallbackAgent,
+          model: fallbackModelUsed,
+          modelOverride: fallbackModelOverride,
+          context: `batch_summarization_fallback:${fullName}`,
+          retryOptions: SUMMARIZATION_FALLBACK_RETRY
+        });
+        agentUsed = fallbackAgent;
+        modelLogged = fallbackModelUsed || fallbackAgent.config.defaultModel || 'unknown';
+      } catch (fallbackError) {
+        if (isQuotaExhaustionError(fallbackError)) {
+          await recordSummarizationCooldown({
+            repository: fullName,
+            branch,
+            primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
+            fallbackAgentAlias: fallbackAgentAliasSetting,
+            reason: 'Primary and fallback summarization models are quota-limited.'
+          });
         }
-        const parsed = parseBatchResponse(analysisResult.response);
-        if (parsed.length === 0) {
-          throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
-        }
-        return parsed;
-      },
-      SUMMARIZATION_RETRY,
-      `batch_summarization:${fullName}`
-    );
+        throw fallbackError;
+      }
+    }
 
     // Save summaries to DB with the actual model used
-    await saveBatchSummaries({ fullName, batch, summaries, modelUsed, branch });
+    await saveBatchSummaries({ fullName, batch, summaries, modelUsed: modelLogged, branch });
 
     success = true;
     log.debug({ savedCount: summaries.length }, 'Saved batch summaries');
@@ -368,8 +435,8 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   await logSummarizationCall({
     timestamp: new Date().toISOString(),
     callType: 'batch_summarization',
-    model: modelUsed,
-    agentAlias: agent.config.alias,
+    model: modelLogged,
+    agentAlias: agentUsed.config.alias,
     repository: fullName,
     estimatedInputTokens,
     estimatedOutputTokens,
@@ -383,7 +450,7 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   // Persist to llm_logs table
   const logEntry = createLlmLogFromAnalysis({
     executionType: 'summarization',
-    modelUsed,
+    modelUsed: modelLogged,
     executionTimeMs: durationMs,
     success,
     tokenUsage: {
@@ -392,7 +459,7 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
     },
     error: errorMessage,
     repository: fullName,
-    agentAlias: agent.config.alias,
+    agentAlias: agentUsed.config.alias,
     workRef: {
       workType: 'repository',
       workRepository: fullName,
@@ -401,6 +468,34 @@ async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<b
   await persistLlmLog(logEntry);
 
   return success;
+}
+
+async function analyzeBatchWithAgent(options: {
+  prompt: string;
+  batchSize: number;
+  agent: Agent;
+  model?: string;
+  modelOverride?: string;
+  context: string;
+  retryOptions?: RetryOptions;
+}): Promise<SummaryResult[]> {
+  const { prompt, batchSize, agent, model, modelOverride, context, retryOptions = SUMMARIZATION_RETRY } = options;
+  const modelForAnalyze = modelOverride ?? model;
+  return withRetry(
+    async () => {
+      const analysisResult = await agent.analyze(prompt, { model: modelForAnalyze, responseFormat: 'json' });
+      if (!analysisResult.success) {
+        throw new Error(analysisResult.error || 'Summarization agent analysis failed');
+      }
+      const parsed = parseBatchResponse(analysisResult.response);
+      if (parsed.length === 0) {
+        throw new Error(`No valid summaries parsed for batch of ${batchSize} files`);
+      }
+      return parsed;
+    },
+    retryOptions,
+    context
+  );
 }
 
 /**

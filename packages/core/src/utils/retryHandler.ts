@@ -34,6 +34,22 @@ interface ErrorLike {
     message?: string;
 }
 
+const QUOTA_EXHAUSTION_PATTERNS = [
+    /usage limit/i,
+    /quota exceeded/i,
+    /out of quota/i,
+    /insufficient quota/i
+];
+
+export function isQuotaExhaustionError(error: Error | unknown): boolean {
+    const err = error as ErrorLike;
+    const errorMessage = err.message ?? '';
+    const errorString = error?.toString() ?? '';
+    return QUOTA_EXHAUSTION_PATTERNS.some(pattern =>
+        pattern.test(errorMessage) || pattern.test(errorString)
+    );
+}
+
 /**
  * Calculates delay for exponential backoff with optional jitter
  * @param attempt - Current attempt number (0-based)
@@ -60,6 +76,10 @@ export function calculateDelay(attempt: number, config: RetryConfig): number {
  */
 export function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
     const err = error as ErrorLike;
+
+    if (isQuotaExhaustionError(error)) {
+        return false;
+    }
 
     if (err.code && config.retryableErrors.includes(err.code)) {
         return true;

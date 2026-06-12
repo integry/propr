@@ -151,15 +151,16 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
   }
 
   function validateSummarizationInput(body: Record<string, unknown>): string | null {
-    const { enabled, agent_alias, custom_prompt } = body;
+    const { enabled, agent_alias, fallback_agent_alias, custom_prompt } = body;
     if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
     if (agent_alias !== undefined && typeof agent_alias !== 'string') return 'agent_alias must be a string';
+    if (fallback_agent_alias !== undefined && typeof fallback_agent_alias !== 'string') return 'fallback_agent_alias must be a string';
     if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
     return null;
   }
 
-  function buildSummarizationDescription(enabled: boolean, agent_alias: string, promptChanged: boolean, reindexScheduled: boolean): string {
-    const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`;
+  function buildSummarizationDescription(enabled: boolean, agent_alias: string, fallback_agent_alias: string, promptChanged: boolean, reindexScheduled: boolean): string {
+    const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'}, fallback: ${fallback_agent_alias || 'none'})`;
     return promptChanged && reindexScheduled ? `${base}. Scheduled reindexing in 10 minutes.` : base;
   }
 
@@ -170,7 +171,12 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       return;
     }
 
-    const { enabled, agent_alias, custom_prompt } = req.body;
+    const { enabled, agent_alias, fallback_agent_alias, custom_prompt } = req.body as {
+      enabled: boolean;
+      agent_alias?: string;
+      fallback_agent_alias?: string;
+      custom_prompt?: string;
+    };
     const currentSettings = await configManager.loadSummarizationSettings();
     const newCustomPrompt = custom_prompt || '';
     const promptChanged = newCustomPrompt !== (currentSettings.custom_prompt || '');
@@ -178,6 +184,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     const settings = {
       enabled,
       agent_alias: agent_alias || '',
+      fallback_agent_alias: fallback_agent_alias || '',
       custom_prompt: newCustomPrompt
     };
 
@@ -189,7 +196,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       reindexScheduled = await scheduleDelayedReindex(redisClient);
     }
 
-    const description = buildSummarizationDescription(enabled, agent_alias, promptChanged, reindexScheduled);
+    const description = buildSummarizationDescription(enabled, agent_alias || '', fallback_agent_alias || '', promptChanged, reindexScheduled);
     await logActivityHelper(description, 'summarization-update', 'summarization_updated', req.user?.username);
 
     res.json({ success: true, ...settings, promptChanged, reindexScheduled });

@@ -76,6 +76,11 @@ async function queueResummarizationForRepo({
   if (alreadyQueued) {
     return false;
   }
+  const cooldown = await configManager.getSummarizationCooldown(repoFullName, effectiveBranch);
+  if (cooldown) {
+    console.warn(`Skipping resummarization for ${repoFullName} (${effectiveBranch}) during cooldown until ${cooldown.until}`);
+    return false;
+  }
 
   const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
   let repoPath: string;
@@ -184,6 +189,13 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   );
   if (alreadyQueued) {
     return { success: false, error: 'Indexing job already queued for this repository and branch' };
+  }
+  const cooldown = await configManager.getSummarizationCooldown(repository, effectiveBranch);
+  if (cooldown) {
+    return {
+      success: false,
+      error: `Summarization is in cooldown for this repository and branch until ${cooldown.until}: ${cooldown.reason}`
+    };
   }
 
   // Resume-on-failure: a full reindex requested while the repo is in a 'failed'
