@@ -16,9 +16,9 @@ The canonical catalog lives in `packages/shared/src/modelDefinitions.ts`. The ta
 | Codex (OpenAI) | `codex` | `propr/agent-codex` | `HOST_CODEX_DIR` → `~/.codex` |
 | Antigravity (Google, multi-model) | `antigravity` | `propr/agent-antigravity` | `HOST_ANTIGRAVITY_DIR` → `~/.gemini` (authenticate with `agy login`) |
 | OpenCode | `opencode` | `propr/agent-opencode` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data/legacy dirs; see below) |
-| Mistral Vibe | `vibe` | `propr/agent-vibe` | `~/.vibe` |
+| Mistral Vibe | `vibe` | `propr/agent-vibe` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
 
-Authenticate each agent's CLI on the host first; the launcher and compose files mount the credential directories read-only into agent containers. Gemini CLI was discontinued upstream and is not a supported agent — Gemini models route through Antigravity.
+Authenticate each agent's CLI on the host first; the launcher and compose files mount the credential directories into agent containers at their host paths. These mounts are read-write — worker containers may refresh auth state (the launcher mounts the OpenCode data directory read-write for workers and read-only elsewhere); only the `.env` file is mounted read-only. Gemini CLI was discontinued upstream and is not a supported agent — Gemini models route through Antigravity.
 
 ## Model Labels
 

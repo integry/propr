@@ -27,7 +27,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 ### ✅ Intelligent Agent Integration
 - **Implementation-Focused Prompts**: Agents focus on code implementation, not git operations
 - **Context-Aware Processing**: Reads both issue descriptions and all comments for complete context
-- **Docker Isolation**: Secure containerized execution environment with network restrictions
+- **Docker Isolation**: Containerized execution environment per task. An optional iptables firewall script ships in the agent images but is disabled by default (it requires privileged containers); outbound network access is otherwise unrestricted
 - **Output Parsing**: Intelligent extraction of implementation details and commit messages
 
 ### ✅ Production-Ready Reliability
@@ -118,6 +118,7 @@ GITHUB_USER_BLACKLIST=
 # Git Storage Inside The ProPR Containers
 GIT_CLONES_BASE_PATH=/app/repos/clones
 GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
+# Fallback base branch for PR operations; per-repository overrides use GIT_DEFAULT_BRANCH_<OWNER>_<REPO>
 GIT_DEFAULT_BRANCH=main
 GIT_SHALLOW_CLONE_DEPTH=
 
@@ -179,47 +180,23 @@ For local platform development, use `npm run compose:up` to build and run the st
 
 ```
 propr/
-├── src/
-│   ├── auth/
-│   │   └── githubAuth.js        # GitHub App authentication
-│   ├── agents/
-│   │   └── impl/                # Supported coding agent implementations
-│   ├── claude/
-│   │   └── claudeService.js     # Claude Code integration helpers
-│   ├── git/
-│   │   └── repoManager.js       # Git operations, worktree management, branch handling
-│   ├── queue/
-│   │   └── taskQueue.js         # BullMQ task queue with Redis
-│   ├── utils/
-│   │   ├── errorHandler.js      # Comprehensive error handling utilities
-│   │   ├── logger.js            # Structured logging with correlation IDs
-│   │   ├── prValidation.js      # PR validation and retry mechanisms
-│   │   ├── retryHandler.js      # Configurable retry logic with exponential backoff
-│   │   ├── workerStateManager.js # Job state management and tracking
-│   │   └── idempotentOps.js     # Idempotent operation utilities
-│   ├── daemon.js                # Multi-model issue detection daemon
-│   ├── worker.js                # 3-phase deterministic job processor
-│   ├── githubService.js         # GitHub API operations and PR management
-│   └── index.js                 # Application entry point
-├── scripts/
-│   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
-│   ├── codex-entrypoint.sh      # Docker entrypoint for Codex execution
-│   ├── antigravity-entrypoint.sh # Docker entrypoint for Antigravity execution
-│   ├── opencode-entrypoint.sh   # Docker entrypoint for OpenCode execution
-│   ├── init-firewall.sh         # Security and firewall setup
-│   ├── fix-issue-labels.js      # Manual issue label management utility
-│   └── list-repo-configs.js     # Repository configuration display utility
-├── docs/
-│   ├── AI_PR_REVIEW_GUIDELINES.md    # Guidelines for AI-generated code review
-│   ├── REPOSITORY_BRANCH_CONFIG.md   # Repository configuration documentation
-│   └── SYSTEM_METRICS.md             # System metrics and monitoring guide
-├── test/                             # Comprehensive test suite
-│   ├── *.test.js                     # Unit and integration tests
-│   ├── worker.modelSpecific.test.js  # Multi-model processing tests
-│   └── repoManager.modelSpecific.test.js # Git worktree isolation tests
-├── Dockerfile.claude                 # Docker image for Claude execution
-├── .env.example                      # Complete environment configuration template
-└── package.json                      # Dependencies and npm scripts
+├── src/                       # Daemon, workers, jobs, polling, GitHub handling (TypeScript)
+│   ├── daemon.ts              # Multi-model issue detection daemon
+│   ├── jobs/                  # Issue, PR-comment, merge-conflict, and system-task processors
+│   └── polling/               # GitHub polling intake
+├── packages/
+│   ├── core/                  # Git/worktree management, agents, queue, config, DB migrations
+│   ├── api/                   # Dashboard REST API, webhooks, authentication
+│   ├── cli/                   # @propr/cli — the end-user `propr` command
+│   └── shared/                # Shared model catalog and types
+├── propr-ui/                  # Web UI (React + Vite)
+├── docs/                      # Docusaurus documentation site
+├── scripts/                   # Agent entrypoints, init-firewall.sh, build/compose helpers
+├── docker/                    # Launcher and agent-base images
+├── Dockerfile.claude          # Agent runtime images (also .codex, .antigravity, .opencode, .vibe)
+├── docker-compose*.yml        # Development and production stacks
+├── .env.example               # Environment configuration template
+└── package.json               # Workspace dependencies and npm scripts
 ```
 
 ## Usage
@@ -364,7 +341,7 @@ via the mounted docker socket. See `.env.example` for required configuration.
 | `propr/agent-opencode` | OpenCode CLI execution container | ~TBD |
 
 Images are also mirrored to GHCR. The current GitHub Actions release workflow
-publishes under `ghcr.io/integry/propr-*`; this namespace can be changed later
+publishes under `ghcr.io/proprdev/*` by default (override with `GHCR_NS` when running `scripts/build-images.sh`)
 once the organization package permissions are ready.
 
 ### Building locally

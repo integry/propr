@@ -24,6 +24,10 @@ GIT_FALLBACK_BRANCH=main
 # Example for my-org/web-app:
 GIT_DEFAULT_BRANCH_MY_ORG_WEB_APP=dev
 
+# Fallback base branch used by PR operations when no other source resolves
+# (distinct from branch resolution above; read by src/github/prOperations.ts)
+GIT_DEFAULT_BRANCH=main
+
 # Clone options (sets --depth=N when non-empty)
 GIT_SHALLOW_CLONE_DEPTH=
 ```

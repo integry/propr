@@ -53,7 +53,7 @@ The launcher starts these images, pinned to the release version in its manifest:
 | `propr/agent-vibe` | Mistral Vibe execution container |
 | `redis:7-alpine` | Queue and cache state |
 
-Images are published to Docker Hub under the `propr/` namespace and mirrored to GHCR under `ghcr.io/integry/propr-*`.
+Images are published to Docker Hub under the `propr/` namespace and mirrored to GHCR under `ghcr.io/proprdev/*` (the namespace is set by `GHCR_NS` in `scripts/build-images.sh`).
 
 ## Environment
 
