@@ -14,9 +14,14 @@ Post:
 /merge
 ```
 
-ProPR merges the base branch into the PR branch. If conflicts appear, it can attempt to resolve them and report the result back to the PR.
+ProPR merges the base branch into the PR branch inside an isolated worktree. An agent run accompanies the merge:
 
-Use this before final review when the base branch has moved or the PR has conflicts.
+- On a clean merge, the agent verifies the result before it is pushed.
+- On conflicts, the agent resolves the conflict markers; ProPR then scans the tree to confirm no conflict markers remain before pushing. If markers remain, the task fails instead of pushing a broken merge.
+
+ProPR posts a status comment on the PR when the merge starts and updates it with the result.
+
+Use `/merge` before final review when the base branch has moved or the PR has conflicts.
 
 ## `/ultrafix`
 
@@ -29,21 +34,37 @@ Post:
 Or configure the loop:
 
 ```text
-/ultrafix goal=8 max=5 pause=60 model=<model-id>
+/ultrafix goal=8 max=10 pause=120 model=llm-claude-opus48
 ```
 
-`/ultrafix` alternates review and fix cycles until the review reaches the target score or the maximum cycle count is reached.
+`/ultrafix` alternates review and fix cycles until the latest review score reaches the goal or the maximum cycle count is exhausted.
 
-## Waiting Rules
+### Parameters
 
-Between cycles, ProPR waits for:
+| Parameter | Meaning | Constraints | Default |
+|---|---|---|---|
+| `goal` | Target review score (`Score: N/10`) | Integer 1–10 | 7 |
+| `max` | Maximum fix cycles before giving up | Positive integer | 5 |
+| `pause` | Seconds to wait between cycles | Non-negative integer | 60 |
+| `model` | Model for the review cycles | Configured model ID (`llm-` prefix optional) | PR review model from Settings |
 
-- Required checks to pass
-- The configured cooldown
-- PR inactivity, so it does not race human pushes or comments
+A bare number is treated as the goal: `/ultrafix 8` is the same as `/ultrafix goal=8`. Defaults can be changed in Settings. Unknown keys and invalid values are ignored with a warning. Lines below the command become extra instructions for the cycles.
 
-## Stopping The Loop
+### Waiting Rules
 
-The loop is controlled by the visible `ultrafix` PR label. Removing that label stops the loop after the current cycle finishes.
+Before each cycle, ProPR checks readiness:
+
+- Required CI checks must be passing; if they are not, the continuation is deferred and resumes when check results arrive.
+- The PR must be inactive, so the loop does not race human pushes or comments.
+- The configured `pause` delay is applied between cycles.
+
+### Stopping The Loop
+
+The loop is controlled by the visible `ultrafix` PR label, which acts as a circuit breaker. Remove the label to stop the loop after the current cycle finishes.
+
+### Completion
+
+- **Goal reached**: the `ultrafix` label is removed. If the PR belongs to a planned issue labeled `auto-merge`, ProPR re-enables GitHub auto-merge on the PR.
+- **Max cycles exhausted**: ProPR posts a warning comment with the requested goal and the last score, and manual review takes over.
 
 Use `/ultrafix` for stronger cleanup passes, not for every small edit. For direct changes, a normal PR comment is usually better.

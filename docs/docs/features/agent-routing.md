@@ -4,9 +4,17 @@ sidebar_position: 4
 
 # Agent Routing
 
-ProPR can route work to different coding agents without forcing you to change the rest of the workflow. The same issue intake, planning, PR creation, comment handling, and task history apply whether the selected agent is Claude Code, Codex, Antigravity, or another configured backend.
+ProPR can route work to different coding agents without forcing you to change the rest of the workflow. The same issue intake, planning, PR creation, comment handling, and task history apply whichever agent runs the task.
 
-Antigravity is a multi-model CLI agent. In ProPR it can expose model IDs for different backing models through the same Antigravity container and credential mount, so labels route to Antigravity model choices instead of to a Google-only agent.
+ProPR supports five agents:
+
+- **Claude Code** (Anthropic)
+- **Codex** (OpenAI)
+- **Antigravity** (Google's multi-model CLI; routes to Gemini, Claude, and GPT-OSS backends through one agent)
+- **OpenCode** (built-in free models without provider login)
+- **Mistral Vibe**
+
+The full list of models and their labels lives in [Agents And Models](./agents-and-models.md).
 
 ## What Routing Solves
 
@@ -23,36 +31,55 @@ Use routing when you want to:
 
 ## Agent Configuration
 
-The Web UI includes an AI Agents area for configuring coding agents. An enabled agent entry can define:
+The Web UI includes an AI Agents page for configuring coding agents. Each agent entry defines:
 
-- Provider or implementation type
-- Supported model IDs
-- Default model
-- Docker image
-- Credential or config path
-- Runtime timeouts and limits
+- Agent type (claude, codex, antigravity, opencode, vibe)
+- A unique alias (lowercase alphanumeric and hyphens)
+- An enable toggle
+- The Docker image (predefined per agent type)
+- The credential/config path mounted into agent containers
+- The supported model list (toggle individual models on or off)
+- The default model
+- Optional per-model custom labels
+- Optional environment variables and an API key
+- The agent CLI version (default or a pinned custom version)
 
-The configured model IDs become the durable names used by labels and slash commands.
+The model IDs you enable here become the durable names used by labels and slash commands.
 
-## Model-Aware Workflows
+<!-- SCREENSHOT PLACEHOLDER: Capture the AI Agents page with the agent configuration modal open for a Claude agent: agent type, alias, enable toggle, supported models checklist with one default model selected, and the config path field. -->
+
+## Model Labels
 
 ProPR uses the same model naming across the system:
 
-- Issue and PR labels use `llm-<model-id>`
-- Slash commands accept configured model IDs
+- Issue and PR labels use the form `llm-<agent-alias>-<model-alias>`
+- Slash commands accept the same IDs (the `llm-` prefix is optional in command arguments)
 - Task records show the selected agent and model
-- Branch names include model identifiers for traceability
+- Branch names include the model identifier for traceability
 
-Examples:
+Examples of valid labels:
 
 ```text
-llm-claude-sonnet46
-llm-codex-gpt54
-llm-antigravity-gemini-pro
-llm-antigravity-opus
+llm-claude-opus48
+llm-codex-gpt55
+llm-antigravity-pro-high
+llm-opencode-minimax-m3-free
+llm-vibe-devstral
 ```
 
-The exact IDs available in your deployment come from AI Agents in the Web UI.
+The exact IDs available in your deployment come from the AI Agents page; the built-in catalog is listed in [Agents And Models](./agents-and-models.md).
+
+## Multi-Model Comparison
+
+Add several `llm-*` labels to one issue to run it with several models at once. ProPR fans the issue out into one job per model label: each model gets its own run, its own worktree and branch (with the model name in the branch name), and its own pull request. Compare the PRs, merge the best one, and close the rest.
+
+```text
+AI
+llm-claude-opus48
+llm-codex-gpt55
+```
+
+This issue produces two tasks and two pull requests — one per model. If a `base-<branch>` label is also present, the fan-out is per base × per model.
 
 ## Routing On Pull Requests
 
@@ -60,10 +87,10 @@ Pull request follow-up can use the PR's configured model, switch the model perma
 
 - `/switch <model-id>` changes the PR's model label for future work.
 - `/use <model-id>` runs one immediate follow-up task with that model.
-- `/review <model-id-a> <model-id-b>` requests review comments from specific models.
+- `/review <model-id-a> <model-id-b>` requests one review comment per listed model.
 
 See [PR Slash Commands](./pr-commands.md) for command syntax.
 
 ## Why This Is Core
 
-Agent routing is part of ProPR's core promise because it lets you choose the right agent without splitting planning, review, task history, and recovery across separate tools. The workflow stays stable while the agent choice changes.
+Agent routing lets you choose the right agent without splitting planning, review, task history, and recovery across separate tools. The workflow stays stable while the agent choice changes.

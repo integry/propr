@@ -12,7 +12,7 @@ ProPR has four main parts:
 
 - **Web UI** for configuration, planning, task records, logs, and control.
 - **Daemon** for detecting eligible issues and pull request events.
-- **Queue** for holding work until a worker can run it.
+- **Queue** (Redis + BullMQ) for holding work until a worker can run it.
 - **Workers** for preparing repositories, running coding agents, and creating pull requests.
 
 <div className="propr-flow" aria-label="High-level ProPR architecture">
@@ -29,12 +29,26 @@ ProPR has four main parts:
 
 ## What Happens During A Run
 
-1. A plan, issue label, or PR comment triggers work.
+1. A plan, issue label, or PR comment triggers work. Intake happens through polling (default 60 seconds) or GitHub webhooks.
 2. ProPR creates a task record.
 3. A worker prepares an isolated branch and worktree.
-4. The selected agent runs in a controlled container.
+4. The selected agent runs in a dedicated Docker container.
 5. ProPR commits changes, pushes the branch, and opens or updates a PR.
 6. Logs, model choice, commits, cost, and outcome remain visible in the Web UI.
+
+## Agent Runtimes
+
+Every supported agent follows the same runtime pattern: a Docker image built on the shared `propr/agent-base` image, an entrypoint script, and a host credential directory mounted into the container.
+
+| Agent | Dockerfile | Entrypoint | Credential mount |
+| --- | --- | --- | --- |
+| Claude Code | `Dockerfile.claude` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) |
+| Codex | `Dockerfile.codex` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) |
+| Antigravity | `Dockerfile.antigravity` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) |
+| OpenCode | `Dockerfile.opencode` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) and related dirs |
+| Mistral Vibe | `Dockerfile.vibe` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) |
+
+The [Claude Code Runtime Reference](./claude-code-runtime.md) documents the pattern in detail; the other agents differ mainly in CLI, image, and credential paths.
 
 ## Important Boundaries
 

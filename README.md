@@ -16,7 +16,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 - **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
 - **Concurrent Processing**: Multiple workers can process different models simultaneously
 - **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-sonnet46`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-gemini-pro`, and `llm-antigravity-opus`
+- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-opus48`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-pro-high`, and `llm-antigravity-opus46-thinking`
 
 ### ✅ Robust Git Management
 - **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
@@ -27,7 +27,7 @@ A production-ready automated system that monitors GitHub issues, runs configured
 ### ✅ Intelligent Agent Integration
 - **Implementation-Focused Prompts**: Agents focus on code implementation, not git operations
 - **Context-Aware Processing**: Reads both issue descriptions and all comments for complete context
-- **Docker Isolation**: Secure containerized execution environment with network restrictions
+- **Docker Isolation**: Containerized execution environment per task. An optional iptables firewall script ships in the agent images but is disabled by default (it requires privileged containers); outbound network access is otherwise unrestricted
 - **Output Parsing**: Intelligent extraction of implementation details and commit messages
 
 ### ✅ Production-Ready Reliability
@@ -39,8 +39,8 @@ A production-ready automated system that monitors GitHub issues, runs configured
 ### ✅ Dynamic Label System
 - **Multiple Primary Labels**: Configure multiple labels to trigger processing (e.g., 'AI', 'propr', 'automation')
 - **Automatic State Labels**: State labels are dynamically generated based on the triggering label:
-  - Issue with 'AI' label → Uses 'AI-processing', 'AI-done', 'AI-failed-*' labels
-  - Issue with 'propr' label → Uses 'propr-processing', 'propr-done', 'propr-failed-*' labels
+  - Issue with 'AI' label → Uses 'AI-processing', 'AI-waiting', 'AI-done', 'AI-failed-*' labels
+  - Issue with 'propr' label → Uses 'propr-processing', 'propr-waiting', 'propr-done', 'propr-failed-*' labels
 - **Correct Label Attribution**: Each issue is tracked with labels specific to its trigger, avoiding conflicts
 - **Flexible Configuration**: Add or remove primary labels via environment variables or UI without code changes
 
@@ -118,6 +118,7 @@ GITHUB_USER_BLACKLIST=
 # Git Storage Inside The ProPR Containers
 GIT_CLONES_BASE_PATH=/app/repos/clones
 GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
+# Fallback base branch for PR operations; per-repository overrides use GIT_DEFAULT_BRANCH_<OWNER>_<REPO>
 GIT_DEFAULT_BRANCH=main
 GIT_SHALLOW_CLONE_DEPTH=
 
@@ -179,47 +180,23 @@ For local platform development, use `npm run compose:up` to build and run the st
 
 ```
 propr/
-├── src/
-│   ├── auth/
-│   │   └── githubAuth.js        # GitHub App authentication
-│   ├── agents/
-│   │   └── impl/                # Supported coding agent implementations
-│   ├── claude/
-│   │   └── claudeService.js     # Claude Code integration helpers
-│   ├── git/
-│   │   └── repoManager.js       # Git operations, worktree management, branch handling
-│   ├── queue/
-│   │   └── taskQueue.js         # BullMQ task queue with Redis
-│   ├── utils/
-│   │   ├── errorHandler.js      # Comprehensive error handling utilities
-│   │   ├── logger.js            # Structured logging with correlation IDs
-│   │   ├── prValidation.js      # PR validation and retry mechanisms
-│   │   ├── retryHandler.js      # Configurable retry logic with exponential backoff
-│   │   ├── workerStateManager.js # Job state management and tracking
-│   │   └── idempotentOps.js     # Idempotent operation utilities
-│   ├── daemon.js                # Multi-model issue detection daemon
-│   ├── worker.js                # 3-phase deterministic job processor
-│   ├── githubService.js         # GitHub API operations and PR management
-│   └── index.js                 # Application entry point
-├── scripts/
-│   ├── claude-entrypoint.sh     # Docker entrypoint for Claude execution
-│   ├── codex-entrypoint.sh      # Docker entrypoint for Codex execution
-│   ├── antigravity-entrypoint.sh # Docker entrypoint for Antigravity execution
-│   ├── opencode-entrypoint.sh   # Docker entrypoint for OpenCode execution
-│   ├── init-firewall.sh         # Security and firewall setup
-│   ├── fix-issue-labels.js      # Manual issue label management utility
-│   └── list-repo-configs.js     # Repository configuration display utility
-├── docs/
-│   ├── AI_PR_REVIEW_GUIDELINES.md    # Guidelines for AI-generated code review
-│   ├── REPOSITORY_BRANCH_CONFIG.md   # Repository configuration documentation
-│   └── SYSTEM_METRICS.md             # System metrics and monitoring guide
-├── test/                             # Comprehensive test suite
-│   ├── *.test.js                     # Unit and integration tests
-│   ├── worker.modelSpecific.test.js  # Multi-model processing tests
-│   └── repoManager.modelSpecific.test.js # Git worktree isolation tests
-├── Dockerfile.claude                 # Docker image for Claude execution
-├── .env.example                      # Complete environment configuration template
-└── package.json                      # Dependencies and npm scripts
+├── src/                       # Daemon, workers, jobs, polling, GitHub handling (TypeScript)
+│   ├── daemon.ts              # Multi-model issue detection daemon
+│   ├── jobs/                  # Issue, PR-comment, merge-conflict, and system-task processors
+│   └── polling/               # GitHub polling intake
+├── packages/
+│   ├── core/                  # Git/worktree management, agents, queue, config, DB migrations
+│   ├── api/                   # Dashboard REST API, webhooks, authentication
+│   ├── cli/                   # @propr/cli — the end-user `propr` command
+│   └── shared/                # Shared model catalog and types
+├── propr-ui/                  # Web UI (React + Vite)
+├── docs/                      # Docusaurus documentation site
+├── scripts/                   # Agent entrypoints, init-firewall.sh, build/compose helpers
+├── docker/                    # Launcher and agent-base images
+├── Dockerfile.claude          # Agent runtime images (also .codex, .antigravity, .opencode, .vibe)
+├── docker-compose*.yml        # Development and production stacks
+├── .env.example               # Environment configuration template
+└── package.json               # Workspace dependencies and npm scripts
 ```
 
 ## Usage
@@ -362,9 +339,10 @@ via the mounted docker socket. See `.env.example` for required configuration.
 | `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
 | `propr/agent-antigravity` | Antigravity execution container | ~380 MB |
 | `propr/agent-opencode` | OpenCode CLI execution container | ~TBD |
+| `propr/agent-vibe` | Mistral Vibe execution container | ~TBD |
 
 Images are also mirrored to GHCR. The current GitHub Actions release workflow
-publishes under `ghcr.io/integry/propr-*`; this namespace can be changed later
+publishes under `ghcr.io/proprdev/*` by default (override with `GHCR_NS` when running `scripts/build-images.sh`)
 once the organization package permissions are ready.
 
 ### Building locally
@@ -512,11 +490,11 @@ npm test
 
 ### Issue Labels for Model Selection
 Add labels to GitHub issues to specify which enabled agent/model pair should process them:
-- `llm-claude-sonnet46` - Use the configured Claude Sonnet 4.6 model
+- `llm-claude-opus48` - Use the configured Claude Opus 4.8 model
 - `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
 - `llm-opencode-minimax-m3-free` - Use the configured OpenCode MiniMax M3 Free model
-- `llm-antigravity-gemini-pro` - Use the configured Antigravity Gemini Pro model
-- `llm-antigravity-opus` - Use the configured Antigravity Opus model
+- `llm-antigravity-pro-high` - Use the configured Antigravity Gemini 3.1 Pro High model
+- `llm-antigravity-opus46-thinking` - Use the configured Antigravity Claude Opus 4.6 Thinking model
 - Multiple model labels can be used together for multi-model processing
 
 To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts.
@@ -539,9 +517,9 @@ To target a non-default branch for direct labeled issue execution, add a `base-<
    - Label management and cleanup
 
 ### Branch Naming Convention
-`ai-fix/{issueId}-{title}-{timestamp}-{model}-{random}`
+`<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`
 
-Example: `ai-fix/349-feat-implement-onboarding-20250529-1506-sonnet-3he`
+Example: `349/claude-opus48-feat-implement-onboarding-20260529-1506-3he`
 
 ## Advanced Features
 

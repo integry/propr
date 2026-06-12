@@ -4,10 +4,35 @@
  */
 
 .heroBanner {
-  padding: 4rem 0;
+  padding: 3.5rem 0 3rem;
   text-align: center;
   position: relative;
   overflow: hidden;
+  background: var(--ifm-background-color);
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.heroLogo {
+  width: 240px;
+  max-width: 70vw;
+  height: auto;
+  margin-bottom: 0.75rem;
+}
+
+[data-theme='dark'] .heroLogo {
+  filter: brightness(0) invert(1);
+}
+
+.heroTitle {
+  font-size: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+.heroSubtitle {
+  font-size: 1.1rem;
+  color: var(--ifm-color-emphasis-700);
+  max-width: 760px;
+  margin: 0 auto 1.5rem;
 }
 
 @media screen and (max-width: 996px) {
@@ -20,4 +45,130 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.buttons .icon {
+  margin-right: 0.45rem;
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+  vertical-align: -3px;
+}
+
+.quickstart {
+  padding: 2.5rem 0 1rem;
+}
+
+.quickstart code {
+  font-size: 0.85rem;
+}
+
+.sections {
+  padding: 1.5rem 0 3rem;
+}
+
+.sectionCol {
+  margin-top: 1.5rem;
+}
+
+.sectionCard {
+  height: 100%;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-top-width: 3px;
+  border-radius: 10px;
+  background: var(--ifm-card-background-color);
+}
+
+.sectionIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 0.6rem;
+  border-radius: 9px;
+}
+
+.sectionIcon .icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* Accent colors from the marketing palette */
+.accent-teal {
+  border-top-color: #1d8a8a;
+}
+.accent-teal .sectionIcon {
+  color: #167575;
+  background: rgba(29, 138, 138, 0.12);
+}
+.accent-gold {
+  border-top-color: #b9893f;
+}
+.accent-gold .sectionIcon {
+  color: #b9893f;
+  background: rgba(185, 137, 63, 0.12);
+}
+.accent-blue {
+  border-top-color: #315c8a;
+}
+.accent-blue .sectionIcon {
+  color: #315c8a;
+  background: rgba(49, 92, 138, 0.12);
+}
+.accent-green {
+  border-top-color: #3e7a5b;
+}
+.accent-green .sectionIcon {
+  color: #3e7a5b;
+  background: rgba(62, 122, 91, 0.12);
+}
+
+[data-theme='dark'] .accent-teal .sectionIcon {
+  color: #3dcaca;
+}
+[data-theme='dark'] .accent-gold .sectionIcon {
+  color: #d8a55e;
+}
+[data-theme='dark'] .accent-blue .sectionIcon {
+  color: #6f9cc9;
+}
+[data-theme='dark'] .accent-green .sectionIcon {
+  color: #6fb290;
+}
+
+.sectionCard h3 {
+  font-size: 1.05rem;
+  margin-bottom: 0.4rem;
+}
+
+.sectionCard h3 a {
+  color: var(--ifm-heading-color);
+}
+
+.sectionCard h3 a:hover {
+  color: var(--ifm-color-primary);
+  text-decoration: none;
+}
+
+.sectionCard p {
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-700);
+  margin-bottom: 0.6rem;
+}
+
+.sectionCard ul {
+  list-style: none;
+  padding-left: 0;
+  margin-bottom: 0;
+  font-size: 0.85rem;
+}
+
+.sectionCard li {
+  margin: 0.25rem 0;
 }

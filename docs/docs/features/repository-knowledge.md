@@ -6,49 +6,51 @@ sidebar_position: 9
 
 Repository knowledge helps ProPR plan and run with better context. Not every task needs it, but it becomes important once you use ProPR across larger or less familiar codebases.
 
-## Repository Summaries
+The Repositories page in the Web UI is the home for this: each repository entry has a status indicator and reindex control, plus a workspace with four tabs — **Chat**, **Improve**, **Browse**, and **To-Dos**.
 
-ProPR can maintain summaries and repository-level context to help you and the agents understand what a repository contains. Summaries are useful when:
+<!-- SCREENSHOT PLACEHOLDER: Capture the Repositories page with one indexed repository selected and its workspace open on the Browse tab, showing the tab row (Chat / Improve / Browse / To-Dos), the indexing status indicator, and the reindex button. Index the repository first so the status reads "Indexed". -->
+
+## Indexing And Summaries
+
+ProPR indexes monitored repositories and maintains file and repository summaries. The repository list shows the indexing state per repo ("Not indexed", "Indexing" with progress, "Indexed", or "Failed"), and the **Browse** tab lets you read the generated summaries.
+
+A background indexing worker scans for repositories to index (every 5 minutes by default, `INDEXING_SCAN_INTERVAL_MS`) and refreshes existing indexes periodically (daily by default, `INDEXING_REINDEX_INTERVAL_MS`). You can also trigger reindexing manually with the reindex button on the repository entry, or with `propr repo index` from the CLI.
+
+Summaries are useful when:
 
 - Planning work in a large repo
 - Onboarding a new agent or user to a codebase
 - Comparing related areas before splitting work
 - Checking whether a generated plan is looking at the right part of the repository
 
-Good summaries should stay grounded in repository facts:
+Summaries are a map, not the source of truth — they do not replace current file context during implementation.
 
-- Major application areas
-- Important entry points
-- Test and build commands
-- Known architectural boundaries
-- Areas that are risky to edit casually
+## Repository Chat
 
-Summaries should not become a substitute for current file context. They are a map, not the source of truth.
+The **Chat** tab lets you ask questions about a repository. Messages run against the indexed repository context with a selectable context level, and the conversation history is persisted per repository (you can delete individual messages or clear the history).
+
+Use chat to check assumptions before planning: where something is implemented, which layer owns a behavior, what a directory is for.
 
 ## Context Gathering And Preview
 
-Before generating a plan, Planner Studio can gather and preview context. You can inspect whether the selected files, notes, attachments, or repository signals look relevant before the run starts.
+Before generating a plan, Planner Studio gathers and previews context: selected files, attachments, context statistics, and an estimated issue count. You can inspect whether the gathered context looks relevant before the run starts.
 
-Good context preview reduces blind agent runs. If the gathered context looks wrong, reset or refine the draft before implementation.
-
-Preview is especially important before larger plans. A weak preview is a signal to add more specific instructions, attach better supporting material, or split the request before it runs.
+Good context preview reduces blind agent runs. If the gathered context looks wrong, reset or refine the draft before implementation. A weak preview is a signal to add more specific instructions, attach better supporting material, or split the request before it runs.
 
 ## Improvement Suggestions
 
-Repository knowledge can also support improvement suggestions: areas where code, tests, documentation, or architecture may need cleanup. These suggestions should be treated as planning inputs rather than automatic changes.
+The **Improve** tab generates improvement suggestions for a repository. You can:
 
-Useful suggestions usually include:
+- Pick suggestion categories (grouped into Health and Growth)
+- Add a custom prompt to steer the analysis
+- Optionally select a reference repository to compare against
+- Select the suggestions worth keeping and convert them into repository todos or a new plan
 
-- A concrete target area
-- Why the change matters
-- What evidence points to the issue
-- A suggested reviewable scope
-
-Suggestions should not automatically become implementation work. They should feed into planning, where a human can decide priority, scope, and timing.
+Suggestions are planning inputs, not automatic changes. A human decides priority, scope, and timing before anything runs.
 
 ## Repository Todos
 
-Repository todos help turn ongoing maintenance ideas into trackable work. They are most useful when connected to planning and reviewable pull requests, rather than kept as unstructured notes.
+The **To-Dos** tab turns ongoing maintenance ideas into trackable work. Todos are organized into categories, can be reordered by drag-and-drop, searched, edited, completed, and restored after completion.
 
 Use todos to capture:
 
@@ -69,10 +71,10 @@ Repository knowledge needs attention when:
 - Generated suggestions are too generic
 - Tasks fail because setup, test, or build conventions were missing
 
-In those cases, refresh repository summaries, improve todos, add clearer workflow guidance, or split the work into a smaller planning pass.
+In those cases, reindex the repository, improve todos, add clearer workflow guidance, or split the work into a smaller planning pass.
 
 ## Reindexing And Recovery
 
-If repository knowledge looks stale, use the repository workspace in the Web UI to reindex or refresh the relevant repository. Low-level indexing recovery details live in operations docs, but the rule is simple: refresh stale context before planning or running work that depends on it.
+If repository knowledge looks stale, use the reindex button on the repository entry (or `propr repo index`). Reindex before high-stakes runs after major refactors, dependency changes, directory moves, or repository renames. For routine follow-up on a small PR, the PR diff and comments may be enough.
 
-Reindex before high-stakes runs after major refactors, dependency changes, directory moves, or repository renames. For routine follow-up on a small PR, the PR diff and comments may be enough.
+Low-level indexing recovery details live in the operations docs; see [Maintenance And Troubleshooting](../operations/maintenance.md).
