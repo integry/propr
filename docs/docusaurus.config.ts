@@ -127,6 +127,12 @@ const config: Config = {
           label: 'Documentation',
         },
         {
+          href: 'https://propr.dev',
+          label: 'propr.dev',
+          position: 'right',
+          target: '_self',
+        },
+        {
           href: 'https://demo.propr.dev',
           label: 'Live Demo',
           position: 'right',
