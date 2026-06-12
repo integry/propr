@@ -159,7 +159,12 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     return null;
   }
 
-  function buildSummarizationDescription(enabled: boolean, agent_alias: string, fallback_agent_alias: string, promptChanged: boolean, reindexScheduled: boolean): string {
+  function buildSummarizationDescription(
+    settings: { enabled: boolean; agent_alias: string; fallback_agent_alias: string },
+    promptChanged: boolean,
+    reindexScheduled: boolean
+  ): string {
+    const { enabled, agent_alias, fallback_agent_alias } = settings;
     const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'}, fallback: ${fallback_agent_alias || 'none'})`;
     return promptChanged && reindexScheduled ? `${base}. Scheduled reindexing in 10 minutes.` : base;
   }
@@ -196,7 +201,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       reindexScheduled = await scheduleDelayedReindex(redisClient);
     }
 
-    const description = buildSummarizationDescription(enabled, agent_alias || '', fallback_agent_alias || '', promptChanged, reindexScheduled);
+    const description = buildSummarizationDescription(settings, promptChanged, reindexScheduled);
     await logActivityHelper(description, 'summarization-update', 'summarization_updated', req.user?.username);
 
     res.json({ success: true, ...settings, promptChanged, reindexScheduled });
