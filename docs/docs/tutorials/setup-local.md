@@ -154,13 +154,11 @@ To enable Mistral Vibe, add:
 
 Open `http://localhost:5173`, then finish repository and agent setup in the Web UI. The API listens on port `4000`; override the ports with `UI_PORT` and `API_PORT` if they conflict.
 
-:::note Screenshot placeholder
-Capture the Web UI dashboard at `http://localhost:5173` immediately after first launch, showing the empty repository list and the prompt to add a repository. Start the launcher with a fresh `data/` directory to reach this state.
-:::
+<!-- SCREENSHOT PLACEHOLDER: Capture the Web UI dashboard at `http://localhost:5173` immediately after first launch, showing the empty repository list and the prompt to add a repository. Start the launcher with a fresh `data/` directory to reach this state. -->
 
 ## Update ProPR
 
-The launcher manifest pins the service images to a specific release (currently 0.8.2). To update, pull the latest launcher and run the same command again:
+The launcher manifest pins the service images to the launcher release version. To update, pull the latest launcher and run the same command again:
 
 ```bash
 docker pull propr/launcher:latest

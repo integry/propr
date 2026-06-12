@@ -72,8 +72,9 @@ State labels are derived from the trigger label and are environment-overridable.
 
 ```text
 AI-processing
-AI-done
 AI-waiting
+AI-done
+AI-failed-*   # e.g. AI-failed-post-processing, set when a phase fails
 ```
 
 Model labels route work to configured models. They are matched against `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`):

@@ -30,7 +30,7 @@ Each model posts its own AI review comment. Text below the command becomes focus
 
 ### Review Output Format
 
-Every `/review` comment follows a fixed structure (`src/jobs/reviewPromptBuilder.ts`):
+Every `/review` comment follows a fixed structure:
 
 ```markdown
 ## Overall Evaluation
@@ -73,6 +73,8 @@ Use `/fix` only when you want ProPR to apply unprocessed AI review comments gene
 - Newer than 7 days
 
 Direct user comments are already processed as follow-up work. `/fix` does not process those comments.
+
+Note that marker matching does not check the comment author: any comment carrying a valid `propr:ai-review` marker is treated as review feedback by the next `/fix`. Control who can run commands (and who can comment) through the trigger permissions described in [PR Commands](../features/pr-commands.md), and review pending AI review comments before running `/fix`.
 
 ## Edit AI Review Comments First
 

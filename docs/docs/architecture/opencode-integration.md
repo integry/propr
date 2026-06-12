@@ -73,8 +73,8 @@ OpenCode agents are normal ProPR agent configs:
   "enabled": true,
   "dockerImage": "propr/agent-opencode:latest",
   "configPath": "/home/your-user/.config/opencode",
-  "supportedModels": ["opencode/minimax-m3-free"],
-  "defaultModel": "opencode/minimax-m3-free",
+  "supportedModels": ["opencode-minimax-m3-free"],
+  "defaultModel": "opencode-minimax-m3-free",
   "envVars": {}
 }
 ```
@@ -84,15 +84,15 @@ The equivalent CLI command is:
 ```bash
 propr agent add opencode \
   -t opencode \
-  -m opencode/minimax-m3-free \
-  -d opencode/minimax-m3-free \
+  -m opencode-minimax-m3-free \
+  -d opencode-minimax-m3-free \
   --docker-image propr/agent-opencode:latest \
   --config-path /home/your-user/.config/opencode
 ```
 
-Use `opencode/minimax-m3-free` for the built-in free OpenCode model, or replace it with another model ID from `opencode models` after authenticating providers in OpenCode. The `envVars` block is required only when using copied `opencode auth login` credentials under the mounted config tree; provider-key env vars can be supplied there instead.
+Use `opencode-minimax-m3-free` (ProPR's catalog ID, with the `opencode-` prefix) for the built-in free OpenCode model, or register another model from `opencode models` under the same prefix (for example `opencode-openai/gpt-5.5`). ProPR converts these IDs back to OpenCode's native `provider/model` syntax at execution time. The `envVars` block is required only when using copied `opencode auth login` credentials under the mounted config tree; provider-key env vars can be supplied there instead.
 
-With the default `MODEL_LABEL_PATTERN=^llm-(.+)$`, the GitHub label `llm-opencode-minimax-m3-free` maps to `opencode/minimax-m3-free` through ProPR's model catalog when an enabled OpenCode agent supports that model.
+With the default `MODEL_LABEL_PATTERN=^llm-(.+)$`, the GitHub label `llm-opencode-minimax-m3-free` maps to ProPR model ID `opencode-minimax-m3-free`, which is converted to OpenCode's native `minimax/minimax-m3` form at execution time when an enabled OpenCode agent supports that model.
 
 ## Container Execution
 

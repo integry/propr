@@ -38,13 +38,15 @@ Use this path when changing ProPR code. For normal usage, run the prebuilt image
 
 ## Validation
 
+From the repository root:
+
 ```bash
 npm run typecheck
 npm run lint
 npm run test:unit
 ```
 
-When editing the docs:
+When editing the documentation site, run its own typecheck and Docusaurus build from the `docs/` directory:
 
 ```bash
 cd docs

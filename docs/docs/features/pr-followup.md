@@ -68,6 +68,4 @@ The visible `ultrafix` PR label acts as a circuit breaker. Removing it stops the
 
 See [PR Slash Commands](./pr-commands.md) for full syntax and examples.
 
-:::note Video placeholder
-Record a 45-second clip: post a natural follow-up comment on a ProPR-created PR, show the task appearing in the Web UI task list, then return to the PR to show the new commit and the completion comment. Show the completion comment's expandable slash-command block as the key moment.
-:::
+<!-- VIDEO PLACEHOLDER: Record a 45-second clip: post a natural follow-up comment on a ProPR-created PR, show the task appearing in the Web UI task list, then return to the PR to show the new commit and the completion comment. Show the completion comment's expandable slash-command block as the key moment. -->

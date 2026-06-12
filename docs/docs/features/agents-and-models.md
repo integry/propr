@@ -91,7 +91,7 @@ Built-in free models:
 
 OpenCode can also use any provider/model you have authenticated on the host. Run `opencode models` after `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
 
-OpenCode host setup for file-based auth:
+OpenCode host setup. The `auth.json` copy into `xdg-data` (and the matching `XDG_DATA_HOME` env var) is a fallback for when the normal data-directory mount is unavailable — skip those steps if `HOST_OPENCODE_DATA_DIR` is mounted:
 
 ```bash
 curl -fsSL https://opencode.ai/install | bash

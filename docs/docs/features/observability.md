@@ -26,9 +26,7 @@ The task detail view shows:
 - A progress bar over the agent's todo list
 - Action buttons: Follow Up (compose a follow-up for the task's PR or issue), Stop (while pending or processing), and Delete
 
-:::note Screenshot placeholder
-Capture a task detail view for a completed implementation task: context strip with repository/model/PR link/cost, the result overview, and the file changes section expanded to show at least one diff.
-:::
+<!-- SCREENSHOT PLACEHOLDER: Capture a task detail view for a completed implementation task: context strip with repository/model/PR link/cost, the result overview, and the file changes section expanded to show at least one diff. -->
 
 ## Logs And Live Output
 
@@ -53,13 +51,11 @@ The dashboard summarizes activity across repositories:
 - Top Models (task counts and usage share per model)
 - Global search across tasks
 
-:::note Screenshot placeholder
-Capture the dashboard with real history: the stats grid (Active / Success / Total / Failed / Total Cost), the task chart, and the Top Repositories and Top Models tables populated.
-:::
+<!-- SCREENSHOT PLACEHOLDER: Capture the dashboard with real history: the stats grid (Active / Success / Total / Failed / Total Cost), the task chart, and the Top Repositories and Top Models tables populated. -->
 
-## LLM Logs
+## LLM Log
 
-The LLM Logs page records every model call:
+The LLM Log page records every model call:
 
 - Status, model, execution type, cost, duration, and work type per call
 - Expandable details linking each call to its task, plan draft, issue, or PR
@@ -69,15 +65,13 @@ The LLM Logs page records every model call:
 
 This is the page to use when comparing model costs across real work or investigating an unexpectedly expensive run.
 
-:::note Screenshot placeholder
-Capture the LLM Logs page with one row expanded, showing the Work Reference section (task link, repository) and the cache statistics.
-:::
+<!-- SCREENSHOT PLACEHOLDER: Capture the LLM Log page with one row expanded, showing the Work Reference section (task link, repository) and the cache statistics. -->
 
 ## Agent Tank Usage Tracking
 
 Agent Tank is an optional integration that tracks provider capacity and rate-limit usage per task execution for CLI subscriptions (Claude, Codex, Antigravity).
 
-- Configure it in Settings under "LLM Usage Tracking": enable the Agent Tank integration and set the daemon URL (default `http://0.0.0.0:3456`). The Settings section shows whether the daemon is reachable.
+- Configure it in Settings under "LLM Usage Tracking": enable the Agent Tank integration and set the daemon URL (shipped default `http://0.0.0.0:3456`; use `http://localhost:3456` to connect to a local instance, since `0.0.0.0` is a bind address). The Settings section shows whether the daemon is reachable.
 - When ProPR detects a running Agent Tank daemon, the dashboard shows a banner offering to enable it.
 - Once enabled, the sidebar shows live usage bars per provider (for example Claude session/weekly limits, Codex 5-hour session and weekly limits), refreshed every 60 seconds.
 - Tracking is best-effort: if Agent Tank is unavailable, tasks proceed normally without usage data.

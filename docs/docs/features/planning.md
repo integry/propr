@@ -25,9 +25,7 @@ Planner Studio moves a draft through three stages, shown in the stepper at the t
 
 A draft can be reset back to setup if the inputs were wrong, which makes planning useful for exploratory work as well as well-defined tickets.
 
-:::note Screenshot placeholder
-Capture Planner Studio in the Review Plan stage: the stepper showing the three stages, a generated plan with several issues, and the refinement chat input visible. Use a draft generated against a real repository so issue titles look representative.
-:::
+<!-- SCREENSHOT PLACEHOLDER: Capture Planner Studio in the Review Plan stage: the stepper showing the three stages, a generated plan with several issues, and the refinement chat input visible. Use a draft generated against a real repository so issue titles look representative. -->
 
 ## Context Assembly
 

@@ -98,7 +98,7 @@ propr task delete <task-id> --force        # Force-delete an active task
 propr task revert owner/repo <pr> <sha> <issue>   # Revert a commit from a PR
 ```
 
-Status values: `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`.
+Status values for `-s`: `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`. These are queue-level filters; task details additionally display the finer-grained worker states `claude_execution` ("Executing", agent run for any agent type) and `post_processing` (see [Worker Runtime](../architecture/worker-runtime.md)).
 
 ## Repositories
 

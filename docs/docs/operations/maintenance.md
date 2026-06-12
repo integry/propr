@@ -4,6 +4,8 @@ Use this page after ProPR is already running.
 
 ## Updating
 
+The canonical update flow is described in [Deployment](./deployment.md); the short version:
+
 For launcher-based installs, pull the newer launcher image and restart the stack:
 
 ```bash
@@ -65,6 +67,8 @@ Other locations:
 - Set `LOG_LEVEL=debug` in `.env` for more verbose service logs.
 
 ## Backups
+
+Deployment-time backup planning (what to persist and where it lives) is covered in [Deployment](./deployment.md); this section is the operational checklist.
 
 Back up:
 

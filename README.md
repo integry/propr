@@ -39,8 +39,8 @@ A production-ready automated system that monitors GitHub issues, runs configured
 ### ✅ Dynamic Label System
 - **Multiple Primary Labels**: Configure multiple labels to trigger processing (e.g., 'AI', 'propr', 'automation')
 - **Automatic State Labels**: State labels are dynamically generated based on the triggering label:
-  - Issue with 'AI' label → Uses 'AI-processing', 'AI-done', 'AI-failed-*' labels
-  - Issue with 'propr' label → Uses 'propr-processing', 'propr-done', 'propr-failed-*' labels
+  - Issue with 'AI' label → Uses 'AI-processing', 'AI-waiting', 'AI-done', 'AI-failed-*' labels
+  - Issue with 'propr' label → Uses 'propr-processing', 'propr-waiting', 'propr-done', 'propr-failed-*' labels
 - **Correct Label Attribution**: Each issue is tracked with labels specific to its trigger, avoiding conflicts
 - **Flexible Configuration**: Add or remove primary labels via environment variables or UI without code changes
 
@@ -339,6 +339,7 @@ via the mounted docker socket. See `.env.example` for required configuration.
 | `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
 | `propr/agent-antigravity` | Antigravity execution container | ~380 MB |
 | `propr/agent-opencode` | OpenCode CLI execution container | ~TBD |
+| `propr/agent-vibe` | Mistral Vibe execution container | ~TBD |
 
 Images are also mirrored to GHCR. The current GitHub Actions release workflow
 publishes under `ghcr.io/proprdev/*` by default (override with `GHCR_NS` when running `scripts/build-images.sh`)
@@ -516,9 +517,9 @@ To target a non-default branch for direct labeled issue execution, add a `base-<
    - Label management and cleanup
 
 ### Branch Naming Convention
-`ai-fix/{issueId}-{title}-{timestamp}-{model}-{random}`
+`<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`
 
-Example: `ai-fix/349-feat-implement-onboarding-20250529-1506-sonnet-3he`
+Example: `349/claude-sonnet46-feat-implement-onboarding-20260529-1506-3he`
 
 ## Advanced Features
 

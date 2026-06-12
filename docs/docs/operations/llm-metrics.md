@@ -30,9 +30,7 @@ Filter the list by status (success/failed), work type (task/plan/repository), ex
 
 Not every provider exposes identical data. ProPR normalizes what it can and leaves provider-specific gaps visible (for example, token counts may be null for some agents).
 
-:::note Screenshot placeholder
-Capture the LLM Log page with several entries of different execution types, the filter dropdowns (Status, Work, Type, Model) visible in the header, and one row expanded to show its details (repository, session/correlation IDs, cache statistics). Run a few tasks and a plan generation first so multiple work types appear.
-:::
+<!-- SCREENSHOT PLACEHOLDER: Capture the LLM Log page with several entries of different execution types, the filter dropdowns (Status, Work, Type, Model) visible in the header, and one row expanded to show its details (repository, session/correlation IDs, cache statistics). Run a few tasks and a plan generation first so multiple work types appear. -->
 
 ## Aggregated Metrics
 
@@ -57,7 +55,7 @@ Use this together with the LLM Log page to decide when to switch models, split t
 
 ## Capacity Tracking With Agent Tank
 
-When the optional [Agent Tank](https://agenttank.io) integration is enabled in **Settings → Agent Tank**, ProPR records provider session and rate-limit usage deltas alongside each LLM call and shows live per-provider usage bars in the sidebar. The integration is best-effort: tasks proceed normally when the Agent Tank service is unavailable. The LLM Log page shows a dismissible banner suggesting the integration when it is not detected.
+When the optional [Agent Tank](https://agenttank.io) integration is enabled in **Settings → LLM Usage Tracking**, ProPR records provider session and rate-limit usage deltas alongside each LLM call and shows live per-provider usage bars in the sidebar. The integration is best-effort: tasks proceed normally when the Agent Tank service is unavailable. The LLM Log page shows a dismissible banner suggesting the integration when it is not detected.
 
 ## High-Cost Runs
 

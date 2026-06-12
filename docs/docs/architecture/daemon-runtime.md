@@ -34,7 +34,7 @@ REDIS_HOST=redis
 REDIS_PORT=6379
 ```
 
-State labels (`AI-processing`, `AI-done`, `AI-waiting` for the default `AI` trigger) are derived from the trigger label and can be overridden through environment variables.
+State labels (`AI-processing`, `AI-waiting`, `AI-done`, and `AI-failed-*` such as `AI-failed-post-processing` for the default `AI` trigger) are derived from the trigger label and can be overridden through environment variables.
 
 Repository, label, branch, and agent settings should normally be managed in the Web UI after install.
 
