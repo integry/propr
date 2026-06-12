@@ -1,0 +1,333 @@
+import type { Logger } from 'pino';
+import logger from '../../utils/logger.js';
+import { Agent } from '../../agents/types.js';
+import { db } from '../../db/connection.js';
+import { logSummarizationCall } from './summaryMinerMetrics.js';
+import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
+import {
+  clearSummarizationPrimaryQuotaFailures,
+  recordPrimarySummarizationQuotaFailure,
+  recordSummarizationCooldown
+} from '../../config/configManager.js';
+
+const CHARS_PER_TOKEN_ESTIMATE = 3;
+
+const SUMMARIZATION_RETRY = {
+  maxAttempts: 3,
+  baseDelay: 2000,
+  maxDelay: 15000,
+  exponentialBase: 2,
+} as const;
+
+const SUMMARIZATION_FALLBACK_RETRY = {
+  ...SUMMARIZATION_RETRY,
+  maxAttempts: 1
+} as const;
+
+export interface BatchFile {
+  path: string;
+  content: string;
+  blobHash: string;
+}
+
+interface SummaryResult {
+  path: string;
+  summary: string;
+}
+
+interface SaveBatchSummariesOptions {
+  fullName: string;
+  batch: BatchFile[];
+  summaries: SummaryResult[];
+  modelUsed: string;
+  branch: string;
+}
+
+interface ProcessSingleBatchOptions {
+  fullName: string;
+  batch: BatchFile[];
+  agent: Agent;
+  log: Logger;
+  modelUsed: string;
+  customPrompt?: string;
+  primaryAgentAliasSetting?: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackModelUsed?: string;
+  fallbackAgentAliasSetting?: string;
+  branch: string;
+}
+
+export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
+For each file, provide a summary (3-4 sentences) covering:
+1. Primary purpose of the file
+2. Key functions, classes, or exports it provides
+3. What other parts of the system it interacts with or depends on`;
+
+const JSON_FORMAT_RULES = `Return ONLY valid JSON in this exact format:
+{
+  "summaries": [
+    { "path": "relative/path/to/file", "summary": "This file handles... It provides... It interacts with..." }
+  ]
+}
+
+Important:
+- Include ALL files listed below in your response
+- Each summary should be 3-4 sentences with specific details
+- Mention key function/class names when relevant
+- Focus on what the file does and how it connects to the system
+- Return valid JSON only, no markdown or other formatting`;
+
+export async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<boolean> {
+  const {
+    fullName, batch, agent, log, modelUsed, customPrompt, branch,
+    primaryAgentAliasSetting, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting
+  } = options;
+  const prompt = buildBatchPrompt(batch, customPrompt);
+  const startTime = Date.now();
+  const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
+  const estimatedOutputTokens = batch.length * 120;
+  let success = false;
+  let errorMessage: string | undefined;
+  let agentUsed = agent;
+  let modelLogged = modelUsed;
+
+  try {
+    const summaries = await analyzeBatchWithFallback({
+      prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting,
+      fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch
+    });
+    agentUsed = summaries.agentUsed;
+    modelLogged = summaries.modelLogged;
+    await saveBatchSummaries({ fullName, batch, summaries: summaries.results, modelUsed: modelLogged, branch });
+    success = true;
+    log.debug({ savedCount: summaries.results.length }, 'Saved batch summaries');
+  } catch (error) {
+    errorMessage = (error as Error).message;
+    log.error({ error: errorMessage, fileCount: batch.length }, 'Failed to process batch');
+  }
+
+  const durationMs = Date.now() - startTime;
+  await logFileBatchCall({
+    log, fullName, batch, modelLogged, agentUsed, estimatedInputTokens,
+    estimatedOutputTokens, durationMs, success, errorMessage
+  });
+  return success;
+}
+
+async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { prompt: string }): Promise<{
+  results: SummaryResult[];
+  agentUsed: Agent;
+  modelLogged: string;
+}> {
+  const {
+    prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting,
+    fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch
+  } = options;
+
+  try {
+    const results = await analyzeBatchWithAgent({
+      prompt, batchSize: batch.length, agent, model: modelUsed, context: `batch_summarization:${fullName}`
+    });
+    await clearSummarizationPrimaryQuotaFailures();
+    return { results, agentUsed: agent, modelLogged: modelUsed };
+  } catch (primaryError) {
+    if (!isQuotaExhaustionError(primaryError) || !fallbackAgent || !fallbackAgentAliasSetting) {
+      throw primaryError;
+    }
+
+    await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
+      fallbackAgentAlias: fallbackAgentAliasSetting
+    });
+    log.warn({
+      error: (primaryError as Error).message,
+      primaryAgentAlias: agent.config.alias,
+      fallbackAgentAlias: fallbackAgent.config.alias,
+      fallbackModel: fallbackModelUsed
+    }, 'Primary summarization model quota-limited; retrying batch with fallback');
+
+    try {
+      const results = await analyzeBatchWithAgent({
+        prompt,
+        batchSize: batch.length,
+        agent: fallbackAgent,
+        model: fallbackModelUsed,
+        modelOverride: fallbackModelOverride,
+        context: `batch_summarization_fallback:${fullName}`,
+        retryOptions: SUMMARIZATION_FALLBACK_RETRY
+      });
+      return { results, agentUsed: fallbackAgent, modelLogged: fallbackModelUsed || fallbackAgent.config.defaultModel || 'unknown' };
+    } catch (fallbackError) {
+      await recordCooldownIfQuotaLimited({
+        error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
+      });
+      throw fallbackError;
+    }
+  }
+}
+
+async function recordCooldownIfQuotaLimited(options: {
+  error: unknown;
+  fullName: string;
+  branch: string;
+  agent: Agent;
+  primaryAgentAliasSetting?: string;
+  fallbackAgentAliasSetting: string;
+}): Promise<void> {
+  const { error, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting } = options;
+  if (!isQuotaExhaustionError(error)) return;
+
+  await recordSummarizationCooldown({
+    repository: fullName,
+    branch,
+    primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
+    fallbackAgentAlias: fallbackAgentAliasSetting,
+    reason: 'Primary and fallback summarization models are quota-limited.'
+  });
+}
+
+async function analyzeBatchWithAgent(options: {
+  prompt: string;
+  batchSize: number;
+  agent: Agent;
+  model?: string;
+  modelOverride?: string;
+  context: string;
+  retryOptions?: RetryOptions;
+}): Promise<SummaryResult[]> {
+  const { prompt, batchSize, agent, model, modelOverride, context, retryOptions = SUMMARIZATION_RETRY } = options;
+  const modelForAnalyze = modelOverride ?? model;
+  return withRetry(
+    async () => {
+      const analysisResult = await agent.analyze(prompt, { model: modelForAnalyze, responseFormat: 'json' });
+      if (!analysisResult.success) {
+        throw new Error(analysisResult.error || 'Summarization agent analysis failed');
+      }
+      const parsed = parseBatchResponse(analysisResult.response);
+      if (parsed.length === 0) {
+        throw new Error(`No valid summaries parsed for batch of ${batchSize} files`);
+      }
+      return parsed;
+    },
+    retryOptions,
+    context
+  );
+}
+
+function buildBatchPrompt(batch: BatchFile[], customPrompt?: string): string {
+  const filesContent = batch.map(f =>
+    `--- START ${f.path} ---\n${f.content}\n--- END ${f.path} ---`
+  ).join('\n\n');
+  const instructions = customPrompt && customPrompt.trim().length > 0
+    ? customPrompt
+    : DEFAULT_INSTRUCTIONS;
+
+  return `${instructions}
+
+${JSON_FORMAT_RULES}
+
+FILES:
+${filesContent}`;
+}
+
+function parseBatchResponse(response: string): SummaryResult[] {
+  try {
+    const jsonMatch = response.match(/\{[\s\S]*"summaries"[\s\S]*\}/);
+    if (!jsonMatch) {
+      logger.warn('No JSON found in batch response');
+      return [];
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as { summaries: SummaryResult[] };
+    if (!parsed.summaries || !Array.isArray(parsed.summaries)) {
+      logger.warn('Invalid summaries format in response');
+      return [];
+    }
+
+    return parsed.summaries
+      .filter(s =>
+        typeof s.path === 'string' &&
+        typeof s.summary === 'string' &&
+        s.path.trim().length > 0 &&
+        s.summary.trim().length > 0
+      )
+      .map(s => ({ path: s.path.trim(), summary: s.summary.trim() }));
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, 'Failed to parse batch response');
+    return [];
+  }
+}
+
+async function saveBatchSummaries(options: SaveBatchSummariesOptions): Promise<void> {
+  const { fullName, batch, summaries, modelUsed, branch } = options;
+  const summaryMap = new Map(summaries.map(s => [s.path, s.summary]));
+
+  for (const file of batch) {
+    const summary = summaryMap.get(file.path);
+    if (!summary) continue;
+
+    await db('file_summaries')
+      .insert({
+        path: `${fullName}/${file.path}`,
+        branch,
+        summary,
+        commit_hash: file.blobHash,
+        model_used: modelUsed,
+        last_updated_at: db.fn.now()
+      })
+      .onConflict(['path', 'branch'])
+      .merge({
+        summary,
+        commit_hash: file.blobHash,
+        model_used: modelUsed,
+        last_updated_at: db.fn.now()
+      });
+  }
+}
+
+async function logFileBatchCall(options: {
+  log: Logger;
+  fullName: string;
+  batch: BatchFile[];
+  modelLogged: string;
+  agentUsed: Agent;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  durationMs: number;
+  success: boolean;
+  errorMessage?: string;
+}): Promise<void> {
+  const {
+    log, fullName, batch, modelLogged, agentUsed, estimatedInputTokens,
+    estimatedOutputTokens, durationMs, success, errorMessage
+  } = options;
+
+  await logSummarizationCall({
+    timestamp: new Date().toISOString(),
+    callType: 'batch_summarization',
+    model: modelLogged,
+    agentAlias: agentUsed.config.alias,
+    repository: fullName,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
+    fileCount: batch.length,
+    success,
+    durationMs,
+    error: errorMessage
+  }, log);
+
+  await persistLlmLog(createLlmLogFromAnalysis({
+    executionType: 'summarization',
+    modelUsed: modelLogged,
+    executionTimeMs: durationMs,
+    success,
+    tokenUsage: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens },
+    error: errorMessage,
+    repository: fullName,
+    agentAlias: agentUsed.config.alias,
+    workRef: { workType: 'repository', workRepository: fullName },
+  }));
+}

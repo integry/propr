@@ -5,7 +5,6 @@ import type { Logger } from 'pino';
 import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { Agent } from '../../agents/types.js';
-import { db } from '../../db/connection.js';
 import { loadSummarizationSettings, getSummarizationCooldown } from '../../config/configManager.js';
 import {
   processBatches,
@@ -14,7 +13,8 @@ import {
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import type { IndexingPhase } from '@propr/shared';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
-import { scanProcessableGitFiles, type GitFileInfo } from './summaryFileFilter.js';
+import { scanProcessableGitFiles } from './summaryFileFilter.js';
+import { deleteFileSummaries, identifyStaleFiles } from './summaryMinerStaleness.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -439,100 +439,6 @@ async function handleIndexingError(
   }
 
   throw error;
-}
-
-// --- Phase A: Setup & Staleness Check ---
-
-interface IdentifyStaleFilesOptions {
-  branch: string;
-  fullReindex?: boolean;
-}
-
-/**
- * Identifies files that need processing (new or changed) and files to delete.
- * If fullReindex is true, all files are marked for processing regardless of staleness.
- */
-async function identifyStaleFiles(
-  fullName: string,
-  gitFiles: GitFileInfo[],
-  log: Logger,
-  options: IdentifyStaleFilesOptions
-): Promise<{
-  filesToProcess: GitFileInfo[];
-  filesToDelete: string[];
-}> {
-  const { branch, fullReindex } = options;
-  // Fetch existing summaries from DB (paths are stored as fullName/relativePath)
-  const existingSummaries = await db('file_summaries')
-    .where('path', 'like', `${fullName}/%`)
-    .andWhere({ branch })
-    .select('path', 'commit_hash');
-
-  // Map from full stored path to hash
-  const dbHashMap = new Map<string, string>();
-  for (const summary of existingSummaries) {
-    dbHashMap.set(summary.path, summary.commit_hash);
-  }
-
-  // Create set of full paths from git files for deletion check
-  const gitFileFullPathSet = new Set(gitFiles.map(f => `${fullName}/${f.path}`));
-  const filesToProcess: GitFileInfo[] = [];
-  const filesToDelete: string[] = [];
-
-  // If fullReindex, process all files (existing summaries will be overwritten)
-  if (fullReindex) {
-    log.info({ fullReindex: true, fileCount: gitFiles.length }, 'Full reindex requested - processing all files');
-    filesToProcess.push(...gitFiles);
-  } else {
-    // Find new and changed files
-    for (const file of gitFiles) {
-      const fullPath = `${fullName}/${file.path}`;
-      const dbHash = dbHashMap.get(fullPath);
-
-      if (!dbHash) {
-        // New file
-        filesToProcess.push(file);
-      } else if (dbHash !== file.blobHash) {
-        // Changed file
-        filesToProcess.push(file);
-      }
-      // else: unchanged, skip
-    }
-  }
-
-  // Find deleted files (in DB but not in git) - always clean these up
-  for (const dbPath of dbHashMap.keys()) {
-    if (!gitFileFullPathSet.has(dbPath)) {
-      filesToDelete.push(dbPath);
-    }
-  }
-
-  log.debug({
-    fullReindex: !!fullReindex,
-    existingInDb: dbHashMap.size,
-    newFiles: filesToProcess.filter(f => !dbHashMap.has(`${fullName}/${f.path}`)).length,
-    changedFiles: filesToProcess.filter(f => dbHashMap.has(`${fullName}/${f.path}`)).length,
-    deletedFiles: filesToDelete.length,
-    unchangedFiles: fullReindex ? 0 : (gitFiles.length - filesToProcess.length)
-  }, 'Staleness check complete');
-
-  return { filesToProcess, filesToDelete };
-}
-
-/**
- * Deletes file summaries from the database
- */
-async function deleteFileSummaries(paths: string[], branch: string): Promise<void> {
-  if (paths.length === 0) return;
-
-  const CHUNK_SIZE = 500;
-  for (let i = 0; i < paths.length; i += CHUNK_SIZE) {
-    const chunk = paths.slice(i, i + CHUNK_SIZE);
-    await db('file_summaries')
-      .whereIn('path', chunk)
-      .andWhere({ branch })
-      .delete();
-  }
 }
 
 // --- Utility Exports ---

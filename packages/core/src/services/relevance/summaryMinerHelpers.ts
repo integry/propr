@@ -1,43 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import type { Logger } from 'pino';
-import logger from '../../utils/logger.js';
 import { Agent } from '../../agents/types.js';
-import { db } from '../../db/connection.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 import type { GitFileInfo } from './summaryFileFilter.js';
-import {
-  logSummarizationCall,
-  getSummarizationMetricsSummary,
-  getSummarizationCallHistory
-} from './summaryMinerMetrics.js';
+import { getSummarizationMetricsSummary, getSummarizationCallHistory } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
 import { aggregateDirectories } from './summaryMinerDirectories.js';
 import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, publishProgress } from './indexingCancellation.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isProcessableFile } from './summaryFileFilter.js';
-import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
-import {
-  clearSummarizationPrimaryQuotaFailures,
-  recordPrimarySummarizationQuotaFailure,
-  recordSummarizationCooldown
-} from '../../config/configManager.js';
-
-// Retry transient agent failures (network blips, rate limits, 5xx) before
-// counting a batch as failed. Persistent errors (quota exhaustion, malformed
-// output) fall through after a bounded number of attempts so the run still
-// finishes promptly. See isRetryableError in retryHandler for classification.
-const SUMMARIZATION_RETRY = {
-  maxAttempts: 3,
-  baseDelay: 2000,
-  maxDelay: 15000,
-  exponentialBase: 2,
-} as const;
-
-const SUMMARIZATION_FALLBACK_RETRY = {
-  ...SUMMARIZATION_RETRY,
-  maxAttempts: 1
-} as const;
+import { processSingleBatch, type BatchFile } from './summaryMinerBatch.js';
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -45,27 +17,9 @@ export type { SummarizationCallMetrics, SummarizationMetricsSummary };
 
 // Re-export directory aggregation for backwards compatibility
 export { aggregateDirectories };
+export { DEFAULT_INSTRUCTIONS } from './summaryMinerBatch.js';
 
 // --- Types ---
-
-interface BatchFile {
-  path: string;
-  content: string;
-  blobHash: string;
-}
-
-interface SummaryResult {
-  path: string;
-  summary: string;
-}
-
-interface SaveBatchSummariesOptions {
-  fullName: string;
-  batch: BatchFile[];
-  summaries: SummaryResult[];
-  modelUsed: string;
-  branch: string;
-}
 
 export interface SummarizationAgentConfig {
   agent: Agent;
@@ -85,28 +39,6 @@ const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
 const DEFAULT_MAX_BATCH_TOKENS = 100_000; // Keep prompts well below context limits so agents reliably return JSON
 const DEFAULT_MAX_BATCH_FILES = 20; // Keep JSON responses reliable for repos with many small files
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
-
-// Default instructions for the summarization prompt (exported for UI display)
-export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
-For each file, provide a summary (3-4 sentences) covering:
-1. Primary purpose of the file
-2. Key functions, classes, or exports it provides
-3. What other parts of the system it interacts with or depends on`;
-
-// Strict JSON format rules that must always be appended to preserve parsing
-const JSON_FORMAT_RULES = `Return ONLY valid JSON in this exact format:
-{
-  "summaries": [
-    { "path": "relative/path/to/file", "summary": "This file handles... It provides... It interacts with..." }
-  ]
-}
-
-Important:
-- Include ALL files listed below in your response
-- Each summary should be 3-4 sentences with specific details
-- Mention key function/class names when relevant
-- Focus on what the file does and how it connects to the system
-- Return valid JSON only, no markdown or other formatting`;
 
 // --- Phase B: Batch Summarization ---
 
@@ -327,267 +259,4 @@ async function publishBatchProgressIfActive(
   }
 
   try { await publishProgress(repository, branch, progress); } catch { /* best-effort */ }
-}
-
-interface ProcessSingleBatchOptions {
-  fullName: string;
-  batch: BatchFile[];
-  agent: Agent;
-  log: Logger;
-  modelUsed: string;
-  customPrompt?: string;
-  primaryAgentAliasSetting?: string;
-  fallbackAgent?: Agent;
-  fallbackModelOverride?: string;
-  fallbackModelUsed?: string;
-  fallbackAgentAliasSetting?: string;
-  branch: string;
-}
-
-/**
- * Processes a single batch of files through the LLM
- * Returns true if successful, false if failed
- */
-async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<boolean> {
-  const {
-    fullName, batch, agent, log, modelUsed, customPrompt, branch,
-    primaryAgentAliasSetting, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting
-  } = options;
-  const prompt = buildBatchPrompt(batch, customPrompt);
-  const startTime = Date.now();
-
-  // Estimate input tokens (prompt + file contents)
-  const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
-  // Estimate output tokens (roughly 120 tokens per file for 3-4 sentence summary JSON)
-  const estimatedOutputTokens = batch.length * 120;
-
-  let success = false;
-  let errorMessage: string | undefined;
-  let agentUsed = agent;
-  let modelLogged = modelUsed;
-
-  try {
-    let summaries: SummaryResult[];
-    try {
-      summaries = await analyzeBatchWithAgent({
-        prompt, batchSize: batch.length, agent, model: modelUsed, context: `batch_summarization:${fullName}`
-      });
-      await clearSummarizationPrimaryQuotaFailures();
-    } catch (primaryError) {
-      if (!isQuotaExhaustionError(primaryError) || !fallbackAgent || !fallbackAgentAliasSetting) {
-        throw primaryError;
-      }
-
-      await recordPrimarySummarizationQuotaFailure({
-        primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
-        fallbackAgentAlias: fallbackAgentAliasSetting
-      });
-      log.warn({
-        error: (primaryError as Error).message,
-        primaryAgentAlias: agent.config.alias,
-        fallbackAgentAlias: fallbackAgent.config.alias,
-        fallbackModel: fallbackModelUsed
-      }, 'Primary summarization model quota-limited; retrying batch with fallback');
-
-      try {
-        summaries = await analyzeBatchWithAgent({
-          prompt,
-          batchSize: batch.length,
-          agent: fallbackAgent,
-          model: fallbackModelUsed,
-          modelOverride: fallbackModelOverride,
-          context: `batch_summarization_fallback:${fullName}`,
-          retryOptions: SUMMARIZATION_FALLBACK_RETRY
-        });
-        agentUsed = fallbackAgent;
-        modelLogged = fallbackModelUsed || fallbackAgent.config.defaultModel || 'unknown';
-      } catch (fallbackError) {
-        if (isQuotaExhaustionError(fallbackError)) {
-          await recordSummarizationCooldown({
-            repository: fullName,
-            branch,
-            primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
-            fallbackAgentAlias: fallbackAgentAliasSetting,
-            reason: 'Primary and fallback summarization models are quota-limited.'
-          });
-        }
-        throw fallbackError;
-      }
-    }
-
-    // Save summaries to DB with the actual model used
-    await saveBatchSummaries({ fullName, batch, summaries, modelUsed: modelLogged, branch });
-
-    success = true;
-    log.debug({ savedCount: summaries.length }, 'Saved batch summaries');
-  } catch (error) {
-    errorMessage = (error as Error).message;
-    log.error(
-      { error: errorMessage, fileCount: batch.length },
-      'Failed to process batch'
-    );
-    // Continue with next batch instead of failing entirely
-  }
-
-  const durationMs = Date.now() - startTime;
-
-  // Log the summarization call metrics
-  await logSummarizationCall({
-    timestamp: new Date().toISOString(),
-    callType: 'batch_summarization',
-    model: modelLogged,
-    agentAlias: agentUsed.config.alias,
-    repository: fullName,
-    estimatedInputTokens,
-    estimatedOutputTokens,
-    estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
-    fileCount: batch.length,
-    success,
-    durationMs,
-    error: errorMessage
-  }, log);
-
-  // Persist to llm_logs table
-  const logEntry = createLlmLogFromAnalysis({
-    executionType: 'summarization',
-    modelUsed: modelLogged,
-    executionTimeMs: durationMs,
-    success,
-    tokenUsage: {
-      input_tokens: estimatedInputTokens,
-      output_tokens: estimatedOutputTokens,
-    },
-    error: errorMessage,
-    repository: fullName,
-    agentAlias: agentUsed.config.alias,
-    workRef: {
-      workType: 'repository',
-      workRepository: fullName,
-    },
-  });
-  await persistLlmLog(logEntry);
-
-  return success;
-}
-
-async function analyzeBatchWithAgent(options: {
-  prompt: string;
-  batchSize: number;
-  agent: Agent;
-  model?: string;
-  modelOverride?: string;
-  context: string;
-  retryOptions?: RetryOptions;
-}): Promise<SummaryResult[]> {
-  const { prompt, batchSize, agent, model, modelOverride, context, retryOptions = SUMMARIZATION_RETRY } = options;
-  const modelForAnalyze = modelOverride ?? model;
-  return withRetry(
-    async () => {
-      const analysisResult = await agent.analyze(prompt, { model: modelForAnalyze, responseFormat: 'json' });
-      if (!analysisResult.success) {
-        throw new Error(analysisResult.error || 'Summarization agent analysis failed');
-      }
-      const parsed = parseBatchResponse(analysisResult.response);
-      if (parsed.length === 0) {
-        throw new Error(`No valid summaries parsed for batch of ${batchSize} files`);
-      }
-      return parsed;
-    },
-    retryOptions,
-    context
-  );
-}
-
-/**
- * Builds the prompt for batch summarization
- */
-function buildBatchPrompt(batch: BatchFile[], customPrompt?: string): string {
-  const filesContent = batch.map(f =>
-    `--- START ${f.path} ---\n${f.content}\n--- END ${f.path} ---`
-  ).join('\n\n');
-
-  // Use custom prompt if provided and non-empty, otherwise use default instructions
-  const instructions = customPrompt && customPrompt.trim().length > 0
-    ? customPrompt
-    : DEFAULT_INSTRUCTIONS;
-
-  return `${instructions}
-
-${JSON_FORMAT_RULES}
-
-FILES:
-${filesContent}`;
-}
-
-/**
- * Parses the LLM response into individual summaries
- */
-function parseBatchResponse(response: string): SummaryResult[] {
-  try {
-    // Try to extract JSON from the response
-    const jsonMatch = response.match(/\{[\s\S]*"summaries"[\s\S]*\}/);
-    if (!jsonMatch) {
-      logger.warn('No JSON found in batch response');
-      return [];
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as { summaries: SummaryResult[] };
-
-    if (!parsed.summaries || !Array.isArray(parsed.summaries)) {
-      logger.warn('Invalid summaries format in response');
-      return [];
-    }
-
-    // Validate and filter results
-    return parsed.summaries
-      .filter(s =>
-        typeof s.path === 'string' &&
-        typeof s.summary === 'string' &&
-        s.path.trim().length > 0 &&
-        s.summary.trim().length > 0
-      )
-      .map(s => ({
-        path: s.path.trim(),
-        summary: s.summary.trim()
-      }));
-  } catch (error) {
-    logger.warn({ error: (error as Error).message }, 'Failed to parse batch response');
-    return [];
-  }
-}
-
-/**
- * Saves batch summaries to the database
- */
-async function saveBatchSummaries(options: SaveBatchSummariesOptions): Promise<void> {
-  const { fullName, batch, summaries, modelUsed, branch } = options;
-  const summaryMap = new Map(summaries.map(s => [s.path, s.summary]));
-
-  for (const file of batch) {
-    const summary = summaryMap.get(file.path);
-    if (!summary) {
-      // LLM didn't return summary for this file, skip
-      continue;
-    }
-
-    // Store path with repo prefix for proper staleness detection
-    const storedPath = `${fullName}/${file.path}`;
-
-    await db('file_summaries')
-      .insert({
-        path: storedPath,
-        branch,
-        summary,
-        commit_hash: file.blobHash,
-        model_used: modelUsed,
-        last_updated_at: db.fn.now()
-      })
-      .onConflict(['path', 'branch'])
-      .merge({
-        summary,
-        commit_hash: file.blobHash,
-        model_used: modelUsed,
-        last_updated_at: db.fn.now()
-      });
-  }
 }
