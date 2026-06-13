@@ -30,6 +30,12 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
     }, true); // Mark as prompt change for debouncing
   };
   const hasCooldown = Object.keys(settings.runtime?.cooldowns || {}).length > 0;
+  const handleIgnoreCooldown = () => {
+    const confirmed = window.confirm('Ignore summarization cooldowns and reindex all repositories now? This can consume quota immediately.');
+    if (confirmed) {
+      onReindexAll?.(true);
+    }
+  };
 
   return (
     <div className={className || ''}>
@@ -110,7 +116,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
               {hasCooldown && (
                 <button
                   type="button"
-                  onClick={() => onReindexAll(true)}
+                  onClick={handleIgnoreCooldown}
                   disabled={!settings.enabled || !settings.agent_alias || isReindexing}
                   className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-amber-700"
                 >

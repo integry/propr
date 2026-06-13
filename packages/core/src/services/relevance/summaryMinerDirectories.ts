@@ -211,8 +211,8 @@ async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options:
 }
 
 function logDirectoryBatchAgentIfChanged(log: Logger, initialConfig: SummarizationAgentConfig, currentConfig: SummarizationAgentConfig): void {
-  const initialModel = initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
-  const currentModel = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  const initialModel = initialConfig.effectiveModel || initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
+  const currentModel = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
   if (initialConfig.agent.config.alias === currentConfig.agent.config.alias && initialModel === currentModel) return;
 
   log.info({

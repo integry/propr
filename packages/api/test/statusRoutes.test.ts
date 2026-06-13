@@ -169,6 +169,22 @@ test('/api/status returns default Claude fallback when no agents are configured'
   }]);
 });
 
+test('/api/status includes warnings field in demo mode', async () => {
+  process.env.NODE_ENV = 'production';
+  process.env.PROPR_DEMO_MODE = 'true';
+  const { response, body } = createJsonResponse();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    loadAgents: async () => [],
+    agentRegistry: createRegistry(),
+    getIndexingQueue: async () => createIndexingQueue(),
+  });
+
+  await routes.getStatus({} as Request, response);
+
+  assert.deepEqual(body().warnings, []);
+});
+
 test('/api/status caches agent health checks briefly', async () => {
   configureStatusEnv();
   let healthChecks = 0;
@@ -222,7 +238,7 @@ test('/api/status caps summarization cooldown warnings', async () => {
     {
       repository: `owner/repo-${index}`,
       branch: 'main',
-      until: '2026-06-14T00:00:00.000Z',
+      until: `2026-06-14T00:0${6 - index}:00.000Z`,
       reason: 'quota-limited',
     },
   ]));
@@ -235,9 +251,9 @@ test('/api/status caps summarization cooldown warnings', async () => {
   });
 
   assert.deepEqual(body.warnings, [
-    ...Array.from({ length: 5 }, (_, index) => ({
+    ...[6, 5, 4, 3, 2].map(index => ({
       type: 'summarization_cooldown',
-      message: `owner/repo-${index} (main) summarization is paused until 2026-06-14T00:00:00.000Z: quota-limited`,
+      message: `owner/repo-${index} (main) summarization is paused until 2026-06-14T00:0${6 - index}:00.000Z: quota-limited`,
     })),
     {
       type: 'summarization_cooldown_summary',

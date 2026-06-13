@@ -65,6 +65,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
           githubAuth: 'connected',
           claudeAuth: 'connected',
           indexing: 'idle',
+          warnings: [],
           agents: [{
             id: 'default-claude-agent',
             type: 'claude',
@@ -148,7 +149,8 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
     if (state.warning && state.warning.mode !== 'cooldown') {
       warnings.push({ type: `summarization_${state.warning.mode}`, message: state.warning.message });
     }
-    const cooldowns = Object.values(state.cooldowns || {});
+    const cooldowns = Object.values(state.cooldowns || {})
+      .sort((left, right) => Date.parse(left.until) - Date.parse(right.until));
     for (const cooldown of cooldowns.slice(0, maxCooldownWarnings)) {
       warnings.push({
         type: 'summarization_cooldown',

@@ -201,13 +201,12 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       fallback_agent_alias: fallback_agent_alias || '',
       custom_prompt: newCustomPrompt
     };
-    const modelSettingsChanged =
-      settings.enabled !== currentSettings.enabled ||
+    const modelAliasesChanged =
       settings.agent_alias !== (currentSettings.agent_alias || '') ||
       settings.fallback_agent_alias !== (currentSettings.fallback_agent_alias || '');
 
     await configManager.saveSummarizationSettings(settings);
-    if (modelSettingsChanged) {
+    if (modelAliasesChanged) {
       await configManager.clearSummarizationRuntimeState();
     }
     await publishConfigUpdate('summarization_settings_update');

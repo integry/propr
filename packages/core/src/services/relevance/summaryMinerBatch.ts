@@ -20,12 +20,6 @@ const SUMMARIZATION_RETRY = {
   exponentialBase: 2,
 } as const;
 
-const SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT = {
-  ...SUMMARIZATION_RETRY,
-  // withRetry treats maxAttempts as total calls, so this performs one fallback call.
-  maxAttempts: 1
-} as const;
-
 export interface BatchFile {
   path: string;
   content: string;
@@ -193,7 +187,7 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
       error: (primaryError as Error).message,
       primaryAgentAlias: agent.config.alias,
       fallbackAgentAlias: fallbackAgent.config.alias,
-      fallbackModel: fallbackModelUsed
+      fallbackModel: fallbackModelUsed ?? fallbackModelOverride
     }, 'Primary summarization model quota-limited; retrying batch with fallback');
 
     try {
@@ -201,24 +195,26 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         prompt,
         batch,
         agent: fallbackAgent,
-        model: fallbackModelUsed,
-        modelOverride: fallbackModelOverride,
+        model: fallbackModelUsed ?? fallbackModelOverride,
         context: `batch_summarization_fallback:${fullName}`,
-        retryOptions: SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT
+        retryOptions: SUMMARIZATION_RETRY
       });
       return {
         results,
         agentUsed: fallbackAgent,
-        modelLogged: fallbackModelUsed || fallbackAgent.config.defaultModel || 'unknown',
+        modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
         fallbackUsed: true,
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting
       };
     } catch (fallbackError) {
-      await recordCooldownAfterFallbackFailure({
-        error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
-      });
-      throw new SummarizationCooldownRecordedError(fallbackError);
+      if (isQuotaExhaustionError(fallbackError)) {
+        await recordCooldownAfterFallbackFailure({
+          error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
+        });
+        throw new SummarizationCooldownRecordedError(fallbackError);
+      }
+      throw fallbackError;
     }
   }
 }
@@ -250,15 +246,13 @@ async function analyzeBatchWithAgent(options: {
   batch: BatchFile[];
   agent: Agent;
   model?: string;
-  modelOverride?: string;
   context: string;
   retryOptions?: RetryOptions;
 }): Promise<SummaryResult[]> {
-  const { prompt, batch, agent, model, modelOverride, context, retryOptions = SUMMARIZATION_RETRY } = options;
-  const modelForAnalyze = modelOverride ?? model;
+  const { prompt, batch, agent, model, context, retryOptions = SUMMARIZATION_RETRY } = options;
   return withRetry(
     async () => {
-      const analysisResult = await agent.analyze(prompt, { model: modelForAnalyze, responseFormat: 'json' });
+      const analysisResult = await agent.analyze(prompt, { model, responseFormat: 'json' });
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Summarization agent analysis failed');
       }

@@ -55,8 +55,9 @@ describe('summary miner batch fallback', () => {
   test('tries primary once, saves successful fallback summaries with fallback model', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
-    const primaryAgent = createAgent('primary', 'primary-model', async () => {
+    const primaryAgent = createAgent('primary', 'primary-model', async (_prompt, options) => {
       primaryCalls++;
+      assert.equal(options?.model, 'primary-model');
       return {
         success: false,
         response: '',
@@ -86,6 +87,7 @@ describe('summary miner batch fallback', () => {
       modelUsed: 'primary-model',
       primaryAgentAliasSetting: 'primary',
       fallbackAgent: fallbackAgent as never,
+      fallbackModelOverride: 'fallback-model',
       fallbackModelUsed: 'fallback-model',
       fallbackAgentAliasSetting: 'fallback',
       branch: 'main'
@@ -110,7 +112,45 @@ describe('summary miner batch fallback', () => {
     assert.equal(state.primary_quota_failures_by_alias.primary, 1);
   });
 
-  test('records primary quota failure and stops after fallback failure', async () => {
+  test('records primary quota failure without cooldown after non-quota fallback failure', async () => {
+    const primaryAgent = createAgent('primary', 'primary-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'primary-model',
+      executionTimeMs: 1,
+      error: 'insufficient quota'
+    }));
+    const fallbackAgent = createAgent('fallback', 'fallback-model', async () => ({
+      success: true,
+      response: 'not json',
+      modelUsed: 'fallback-model',
+      executionTimeMs: 1
+    }));
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-model',
+      fallbackAgentAliasSetting: 'fallback',
+      branch: 'main'
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.stopProcessing, false);
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 1);
+    assert.equal(state.primary_quota_failures_by_alias.primary, 1);
+    assert.equal(Object.keys(state.cooldowns).length, 0);
+    assert.equal(state.warning?.mode, 'fallback_degraded');
+  });
+
+  test('records cooldown and stops after fallback quota failure', async () => {
     const primaryAgent = createAgent('primary', 'primary-model', async () => ({
       success: false,
       response: '',
@@ -123,7 +163,7 @@ describe('summary miner batch fallback', () => {
       response: '',
       modelUsed: 'fallback-model',
       executionTimeMs: 1,
-      error: 'temporary fallback failure'
+      error: 'fallback quota exceeded'
     }));
 
     const result = await processSingleBatch({
@@ -143,8 +183,7 @@ describe('summary miner batch fallback', () => {
     assert.equal(result.stopProcessing, true);
 
     const state = await loadSummarizationRuntimeState();
-    assert.equal(state.primary_quota_failures, 1);
-    assert.equal(state.primary_quota_failures_by_alias.primary, 1);
     assert.equal(state.warning?.mode, 'cooldown');
+    assert.equal(Object.keys(state.cooldowns).length, 1);
   });
 });

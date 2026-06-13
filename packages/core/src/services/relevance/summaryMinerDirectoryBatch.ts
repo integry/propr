@@ -22,11 +22,6 @@ const SUMMARIZATION_RETRY = {
   exponentialBase: 2,
 } as const;
 
-const SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT = {
-  ...SUMMARIZATION_RETRY,
-  maxAttempts: 1
-} as const;
-
 export type DirectoryBatchResult = DirectoryResult[] & {
   fallbackUsed: boolean;
   stopProcessing: boolean;
@@ -123,10 +118,10 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
   prompt: string;
   state: DirectoryBatchState;
 }): Promise<void> {
-  const { prompt, directories, agent, modelOverride, fullName, branch, primaryAgentAliasSetting, state } = options;
+  const { prompt, directories, agent, modelOverride, modelUsed, fullName, branch, primaryAgentAliasSetting, state } = options;
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
-      prompt, directories, agent, modelOverride, context: `directory_aggregation:${fullName}`
+      prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`
     });
     await clearSummarizationPrimaryQuotaFailures({
       primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
@@ -171,7 +166,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     error: (primaryError as Error).message,
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgent?.config.alias,
-    fallbackModel: fallbackModelUsed
+    fallbackModel: fallbackModelUsed ?? fallbackModelOverride
   }, 'Primary directory summarization model quota-limited; retrying batch with fallback');
 
   try {
@@ -179,26 +174,27 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       prompt,
       directories,
       agent: fallbackAgent as Agent,
-      modelOverride: fallbackModelOverride ?? fallbackModelUsed,
+      model: fallbackModelUsed ?? fallbackModelOverride,
       context: `directory_aggregation_fallback:${fullName}`,
-      retryOptions: SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT
+      retryOptions: SUMMARIZATION_RETRY
     });
     state.fallbackUsed = true;
     state.fallbackPrimaryAgentAlias = primaryAgentAlias;
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
-    state.modelLogged = fallbackModelUsed || fallbackAgent?.config.defaultModel || 'unknown';
+    state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
   } catch (fallbackError) {
-    await recordSummarizationCooldown({
-      repository: fullName,
-      branch,
-      primaryAgentAlias,
-      fallbackAgentAlias: fallbackAgentAliasSetting,
-      reason: isQuotaExhaustionError(fallbackError)
-        ? 'Primary and fallback directory summarization models are quota-limited.'
-        : `Primary directory summarization model is quota-limited and fallback summarization failed: ${(fallbackError as Error).message}`
-    });
-    throw new SummarizationCooldownRecordedError(fallbackError);
+    if (isQuotaExhaustionError(fallbackError)) {
+      await recordSummarizationCooldown({
+        repository: fullName,
+        branch,
+        primaryAgentAlias,
+        fallbackAgentAlias: fallbackAgentAliasSetting,
+        reason: 'Primary and fallback directory summarization models are quota-limited.'
+      });
+      throw new SummarizationCooldownRecordedError(fallbackError);
+    }
+    throw fallbackError;
   }
 }
 
@@ -241,14 +237,14 @@ async function analyzeDirectoryBatchWithAgent(options: {
   prompt: string;
   directories: DirectoryInfo[];
   agent: Agent;
-  modelOverride?: string;
+  model?: string;
   context: string;
   retryOptions?: RetryOptions;
 }): Promise<DirectoryResult[]> {
-  const { prompt, directories, agent, modelOverride, context, retryOptions = SUMMARIZATION_RETRY } = options;
+  const { prompt, directories, agent, model, context, retryOptions = SUMMARIZATION_RETRY } = options;
   return withRetry(
     async () => {
-      const analysisResult = await agent.analyze(prompt, { model: modelOverride, responseFormat: 'json' });
+      const analysisResult = await agent.analyze(prompt, { model, responseFormat: 'json' });
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
       }

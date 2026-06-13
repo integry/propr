@@ -51,6 +51,7 @@ describe('summarization fallback runtime state', () => {
       fallbackAgentAlias: 'fallback:gpt-cheap'
     });
     assert.equal(second.promoted, true);
+    assert.equal(second.failureCount, 0);
     assert.equal(second.warning.mode, 'fallback_promoted');
 
     const settings = await loadSummarizationSettings();

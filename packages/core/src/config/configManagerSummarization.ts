@@ -77,7 +77,11 @@ export async function loadSummarizationRuntimeState(): Promise<SummarizationRunt
     const state = await getConfig<SummarizationRuntimeState>(SUMMARIZATION_RUNTIME_STATE_KEY, DEFAULT_SUMMARIZATION_RUNTIME_STATE);
     const normalized = normalizeSummarizationRuntimeState(state);
     if (JSON.stringify(normalized) !== JSON.stringify(state)) {
-        await saveConfig(SUMMARIZATION_RUNTIME_STATE_KEY, normalized);
+        try {
+            await saveConfig(SUMMARIZATION_RUNTIME_STATE_KEY, normalized);
+        } catch (error) {
+            logger.warn({ error: (error as Error).message }, 'Failed to persist normalized summarization runtime state');
+        }
     }
     return normalized;
 }
@@ -220,7 +224,7 @@ export async function recordPrimarySummarizationQuotaFailure(options: {
         }
 
         state.warning = warning;
-        return { result: { promoted, failureCount, warning }, save: true };
+        return { result: { promoted, failureCount: state.primary_quota_failures, warning }, save: true };
     });
     logger.warn({ failureCount: result.failureCount, promoted: result.promoted, ...options }, 'Recorded summarization primary quota failure');
     return result;

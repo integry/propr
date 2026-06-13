@@ -146,7 +146,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
       const currentConfig = await getCurrentConfig();
       logBatchAgentIfChanged(log, initialConfig, currentConfig);
-      const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+      const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
       const batchResult = await processSingleBatch({
         fullName,
         batch: currentBatch,
@@ -227,7 +227,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
     const currentConfig = await getCurrentConfig();
     logBatchAgentIfChanged(log, initialConfig, currentConfig);
-    const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+    const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
     const batchResult = await processSingleBatch({
       fullName,
       batch: currentBatch,
@@ -291,8 +291,8 @@ function logBatchAgentIfChanged(
   initialConfig: SummarizationAgentConfig,
   currentConfig: SummarizationAgentConfig
 ): void {
-  const initialModel = initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
-  const currentModel = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  const initialModel = initialConfig.effectiveModel || initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
+  const currentModel = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
   if (initialConfig.agent.config.alias === currentConfig.agent.config.alias && initialModel === currentModel) {
     return;
   }
