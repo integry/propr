@@ -4,7 +4,7 @@ import { SummarizationSettings } from '../../api/proprApi';
 interface KnowledgeBaseSectionProps {
   settings: SummarizationSettings;
   onSettingsChange: (settings: SummarizationSettings, isPromptChange?: boolean) => void;
-  onReindexAll?: () => void;
+  onReindexAll?: (ignoreCooldown?: boolean) => void;
   isReindexing?: boolean;
   className?: string;
 }
@@ -29,6 +29,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
       custom_prompt: e.target.value
     }, true); // Mark as prompt change for debouncing
   };
+  const hasCooldown = Object.keys(settings.runtime?.cooldowns || {}).length > 0;
 
   return (
     <div className={className || ''}>
@@ -82,29 +83,41 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
             </p>
           {/* Reindex button - secondary ghost style */}
           {onReindexAll && (
-            <button
-              type="button"
-              onClick={onReindexAll}
-              disabled={!settings.enabled || !settings.agent_alias || isReindexing}
-              className="mt-2 inline-flex items-center px-2.5 py-1 text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-600"
-            >
-              {isReindexing ? (
-                <>
-                  <svg className="animate-spin -ml-0.5 mr-1.5 h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  Reindexing...
-                </>
-              ) : (
-                <>
-                  <svg className="-ml-0.5 mr-1.5 h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  Reindex All Repositories
-                </>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onReindexAll(false)}
+                disabled={!settings.enabled || !settings.agent_alias || isReindexing}
+                className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-600"
+              >
+                {isReindexing ? (
+                  <>
+                    <svg className="animate-spin -ml-0.5 mr-1.5 h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Reindexing...
+                  </>
+                ) : (
+                  <>
+                    <svg className="-ml-0.5 mr-1.5 h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Reindex All Repositories
+                  </>
+                )}
+              </button>
+              {hasCooldown && (
+                <button
+                  type="button"
+                  onClick={() => onReindexAll(true)}
+                  disabled={!settings.enabled || !settings.agent_alias || isReindexing}
+                  className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-amber-700"
+                >
+                  Ignore Cooldown
+                </button>
               )}
-            </button>
+            </div>
           )}
           </div>
         </div>

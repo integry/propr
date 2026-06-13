@@ -24,6 +24,7 @@ export interface AggregateDirectoriesResult {
   failedBatches: number;
   dirsProcessed: number;
   fallbackUsed: boolean;
+  stopProcessing: boolean;
   fallbackPrimaryAgentAlias?: string;
   fallbackAgentAlias?: string;
 }
@@ -42,6 +43,7 @@ interface DirectoryAggregationState {
   failedBatches: number;
   dirsProcessed: number;
   fallbackUsed: boolean;
+  stopProcessing: boolean;
   fallbackPrimaryAgentAlias?: string;
   fallbackAgentAlias?: string;
 }
@@ -68,7 +70,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
 
   if (fileSummaries.length === 0) {
     log.debug('No file summaries to aggregate');
-    return { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false };
+    return { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   }
 
   const directories = new Set(extractDirectories(fileSummaries.map(f => f.path)));
@@ -84,7 +86,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
   const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
 
-  const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false };
+  const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const initialConfig: SummarizationAgentConfig = { agent, modelOverride, effectiveModel: modelId, agentAliasSetting: agent.config.alias };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
@@ -108,9 +110,13 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
       state.fallbackPrimaryAgentAlias ??= depthResult.fallbackPrimaryAgentAlias;
       state.fallbackAgentAlias ??= depthResult.fallbackAgentAlias;
     }
+    state.stopProcessing ||= depthResult.stopProcessing;
+    if (state.stopProcessing) break;
   }
 
-  await deleteStaleDirectorySummaries(fullName, branch, directories, log);
+  if (!state.stopProcessing) {
+    await deleteStaleDirectorySummaries(fullName, branch, directories, log);
+  }
   log.info({
     directoryCount: totalDirs,
     batchCount: state.totalBatches,
@@ -123,7 +129,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
 
 async function processDirectoryDepth(options: ProcessDepthOptions): Promise<DirectoryAggregationState> {
   const { dirsAtDepth, fileSummaries, dirSummaryCache, branch, fullName, maxBatchTokens } = options;
-  const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false };
+  const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const dirsToProcess: DirectoryInfo[] = [];
 
   for (const dirPath of dirsAtDepth) {
@@ -147,6 +153,8 @@ async function processDirectoryDepth(options: ProcessDepthOptions): Promise<Dire
       state.fallbackPrimaryAgentAlias ??= batchResult.fallbackPrimaryAgentAlias;
       state.fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
     }
+    state.stopProcessing ||= batchResult.stopProcessing;
+    if (state.stopProcessing) break;
   }
 
   return state;
@@ -180,6 +188,7 @@ async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options:
     failedBatches,
     dirsProcessed: results.length,
     fallbackUsed: results.fallbackUsed,
+    stopProcessing: results.stopProcessing,
     fallbackPrimaryAgentAlias: results.primaryAgentAlias,
     fallbackAgentAlias: results.fallbackAgentAlias
   };

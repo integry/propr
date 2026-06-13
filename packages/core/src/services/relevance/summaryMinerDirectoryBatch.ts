@@ -29,9 +29,17 @@ const SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT = {
 
 export type DirectoryBatchResult = DirectoryResult[] & {
   fallbackUsed: boolean;
+  stopProcessing: boolean;
   primaryAgentAlias?: string;
   fallbackAgentAlias?: string;
 };
+
+interface DirectoryBatchMetadata {
+  fallbackUsed: boolean;
+  stopProcessing: boolean;
+  primaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
+}
 
 interface ProcessDirectoryBatchOptions {
   directories: DirectoryInfo[];
@@ -48,9 +56,17 @@ interface ProcessDirectoryBatchOptions {
   branch: string;
 }
 
+class SummarizationCooldownRecordedError extends Error {
+  constructor(error: unknown) {
+    super((error as Error).message);
+    this.name = 'SummarizationCooldownRecordedError';
+    this.cause = error;
+  }
+}
+
 export async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Promise<DirectoryBatchResult> {
   const { directories } = options;
-  if (directories.length === 0) return withFallbackMetadata([], false);
+  if (directories.length === 0) return withFallbackMetadata([], { fallbackUsed: false, stopProcessing: false });
 
   const prompt = buildBatchDirectoryPrompt(directories);
   const startTime = Date.now();
@@ -64,13 +80,19 @@ export async function processDirectoryBatch(options: ProcessDirectoryBatchOption
     options.log.debug({ batchSize: directories.length, successCount: state.results.filter(r => r.summary).length }, 'Processed directory batch');
   } catch (error) {
     state.errorMessage = (error as Error).message;
+    state.stopProcessing = error instanceof SummarizationCooldownRecordedError;
     options.log.warn({ error: state.errorMessage, batchSize: directories.length }, 'Failed to process directory batch');
     state.results = directories.map(d => ({ dirPath: d.dirPath, summary: null }));
   }
 
   const durationMs = Date.now() - startTime;
   await logDirectoryBatchCall({ ...options, state, estimatedInputTokens, estimatedOutputTokens, durationMs });
-  return withFallbackMetadata(state.results, state.fallbackUsed, state.fallbackPrimaryAgentAlias, state.fallbackAgentAlias);
+  return withFallbackMetadata(state.results, {
+    fallbackUsed: state.fallbackUsed,
+    stopProcessing: state.stopProcessing,
+    primaryAgentAlias: state.fallbackPrimaryAgentAlias,
+    fallbackAgentAlias: state.fallbackAgentAlias
+  });
 }
 
 interface DirectoryBatchState {
@@ -80,6 +102,7 @@ interface DirectoryBatchState {
   errorMessage?: string;
   results: DirectoryResult[];
   fallbackUsed: boolean;
+  stopProcessing: boolean;
   fallbackPrimaryAgentAlias?: string;
   fallbackAgentAlias?: string;
 }
@@ -91,7 +114,8 @@ function createDirectoryBatchState(options: ProcessDirectoryBatchOptions): Direc
     modelLogged: modelUsed || modelOverride || agent.config.defaultModel || 'unknown',
     success: false,
     results: [],
-    fallbackUsed: false
+    fallbackUsed: false,
+    stopProcessing: false
   };
 }
 
@@ -126,7 +150,7 @@ async function handlePrimaryDirectoryFailure(
       primaryAgentAlias,
       reason: 'Primary directory summarization model is quota-limited and no fallback model is configured.'
     });
-    throw primaryError;
+    throw new SummarizationCooldownRecordedError(primaryError);
   }
 
   await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options);
@@ -138,6 +162,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
   options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState }
 ): Promise<void> {
   const { prompt, directories, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch, log, state } = options;
+  await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
   log.warn({
     error: (primaryError as Error).message,
     primaryAgentAlias,
@@ -169,7 +194,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
         ? 'Primary and fallback directory summarization models are quota-limited.'
         : `Primary directory summarization model is quota-limited and fallback summarization failed: ${(fallbackError as Error).message}`
     });
-    throw fallbackError;
+    throw new SummarizationCooldownRecordedError(fallbackError);
   }
 }
 
@@ -198,14 +223,13 @@ async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {
 
 function withFallbackMetadata(
   results: DirectoryResult[],
-  fallbackUsed: boolean,
-  primaryAgentAlias?: string,
-  fallbackAgentAlias?: string
+  metadata: DirectoryBatchMetadata
 ): DirectoryBatchResult {
   const batchResult = results as DirectoryBatchResult;
-  batchResult.fallbackUsed = fallbackUsed;
-  batchResult.primaryAgentAlias = primaryAgentAlias;
-  batchResult.fallbackAgentAlias = fallbackAgentAlias;
+  batchResult.fallbackUsed = metadata.fallbackUsed;
+  batchResult.stopProcessing = metadata.stopProcessing;
+  batchResult.primaryAgentAlias = metadata.primaryAgentAlias;
+  batchResult.fallbackAgentAlias = metadata.fallbackAgentAlias;
   return batchResult;
 }
 

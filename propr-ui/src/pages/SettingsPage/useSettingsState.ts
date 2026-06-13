@@ -305,11 +305,11 @@ export function useSettingsState() {
     }
   }, []);
 
-  const handleReindexAll = useCallback(async () => {
+  const handleReindexAll = useCallback(async (ignoreCooldown = false) => {
     setIsReindexing(true);
     setGlobalError(null);
     try {
-      const result = await triggerReindexAll();
+      const result = await triggerReindexAll(ignoreCooldown);
       if (result.success) {
         setSaveStatus('saved');
         if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);

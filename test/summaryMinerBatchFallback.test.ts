@@ -2,11 +2,13 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.NODE_ENV = 'test';
+process.env.SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD = '3';
 
 const {
   db,
   runMigrations,
-  closeConnection
+  closeConnection,
+  loadSummarizationRuntimeState
 } = await import('../packages/core/src/index.js');
 const { processSingleBatch } = await import('../packages/core/src/services/relevance/summaryMinerBatch.js');
 
@@ -91,6 +93,7 @@ describe('summary miner batch fallback', () => {
 
     assert.equal(result.success, true);
     assert.equal(result.fallbackUsed, true);
+    assert.equal(result.stopProcessing, false);
     assert.equal(result.primaryAgentAlias, 'primary');
     assert.equal(result.fallbackAgentAlias, 'fallback');
     assert.equal(primaryCalls, 1);
@@ -101,5 +104,47 @@ describe('summary miner batch fallback', () => {
       .first();
     assert.equal(saved.summary, 'Exports the A helper and supports the feature.');
     assert.equal(saved.model_used, 'fallback-model');
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 1);
+    assert.equal(state.primary_quota_failures_by_alias.primary, 1);
+  });
+
+  test('records primary quota failure and stops after fallback failure', async () => {
+    const primaryAgent = createAgent('primary', 'primary-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'primary-model',
+      executionTimeMs: 1,
+      error: 'insufficient quota'
+    }));
+    const fallbackAgent = createAgent('fallback', 'fallback-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'fallback-model',
+      executionTimeMs: 1,
+      error: 'temporary fallback failure'
+    }));
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-model',
+      fallbackAgentAliasSetting: 'fallback',
+      branch: 'main'
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.stopProcessing, true);
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 1);
+    assert.equal(state.primary_quota_failures_by_alias.primary, 1);
+    assert.equal(state.warning?.mode, 'cooldown');
   });
 });

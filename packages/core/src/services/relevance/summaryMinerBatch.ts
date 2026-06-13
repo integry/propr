@@ -63,6 +63,7 @@ interface ProcessSingleBatchOptions {
 export interface ProcessSingleBatchResult {
   success: boolean;
   fallbackUsed: boolean;
+  stopProcessing: boolean;
   primaryAgentAlias?: string;
   fallbackAgentAlias?: string;
 }
@@ -87,6 +88,14 @@ Important:
 - Focus on what the file does and how it connects to the system
 - Return valid JSON only, no markdown or other formatting`;
 
+class SummarizationCooldownRecordedError extends Error {
+  constructor(error: unknown) {
+    super((error as Error).message);
+    this.name = 'SummarizationCooldownRecordedError';
+    this.cause = error;
+  }
+}
+
 export async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<ProcessSingleBatchResult> {
   const {
     fullName, batch, agent, log, modelUsed, customPrompt, branch,
@@ -101,6 +110,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   let agentUsed = agent;
   let modelLogged = modelUsed;
   let fallbackUsed = false;
+  let stopProcessing = false;
   let fallbackPrimaryAgentAlias: string | undefined;
   let fallbackAgentAlias: string | undefined;
 
@@ -119,6 +129,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
     log.debug({ savedCount: summaries.results.length }, 'Saved batch summaries');
   } catch (error) {
     errorMessage = (error as Error).message;
+    stopProcessing = error instanceof SummarizationCooldownRecordedError;
     log.error({ error: errorMessage, fileCount: batch.length }, 'Failed to process batch');
   }
 
@@ -130,6 +141,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   return {
     success,
     fallbackUsed,
+    stopProcessing,
     primaryAgentAlias: fallbackPrimaryAgentAlias,
     fallbackAgentAlias
   };
@@ -168,8 +180,10 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         primaryAgentAlias,
         reason: 'Primary summarization model is quota-limited and no fallback model is configured.'
       });
-      throw primaryError;
+      throw new SummarizationCooldownRecordedError(primaryError);
     }
+
+    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
 
     log.warn({
       error: (primaryError as Error).message,
@@ -200,7 +214,7 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
       await recordCooldownAfterFallbackFailure({
         error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
       });
-      throw fallbackError;
+      throw new SummarizationCooldownRecordedError(fallbackError);
     }
   }
 }

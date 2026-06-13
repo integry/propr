@@ -5,7 +5,7 @@ import type { Logger } from 'pino';
 import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { Agent } from '../../agents/types.js';
-import { loadSummarizationSettings, getSummarizationCooldown, recordPrimarySummarizationQuotaFailure } from '../../config/configManager.js';
+import { loadSummarizationSettings, getSummarizationCooldown } from '../../config/configManager.js';
 import {
   processBatches,
   aggregateDirectories
@@ -356,7 +356,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       filesFailed: 0,
       failedBatches: 0,
       totalBatches: 0,
-      fallbackUsed: false
+      fallbackUsed: false,
+      stopProcessing: false
     };
 
     if (filesToProcess.length > 0) {
@@ -381,13 +382,12 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Phase C: Directory Aggregation (if files were processed or deleted)
     let dirFailedBatches = 0;
-    if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
+    if (!batchResult.stopProcessing && (batchResult.filesProcessed > 0 || filesToDelete.length > 0)) {
       await ensureIndexingProgress(fullName, branch);
       const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
       dirFailedBatches = dirResult.failedBatches;
       applyDirectoryFallbackResult(batchResult, dirResult);
     }
-    await recordRunFallbackUsage(batchResult);
 
     // Phase D: Cleanup - Mark status based on results
     await finalizeIndexing({
@@ -416,14 +416,6 @@ function applyDirectoryFallbackResult(batchResult: ProcessBatchesResult, dirResu
   batchResult.fallbackUsed = true;
   batchResult.fallbackPrimaryAgentAlias = dirResult.fallbackPrimaryAgentAlias;
   batchResult.fallbackAgentAlias = dirResult.fallbackAgentAlias;
-}
-
-async function recordRunFallbackUsage(batchResult: ProcessBatchesResult): Promise<void> {
-  if (!batchResult.fallbackUsed || !batchResult.fallbackPrimaryAgentAlias || !batchResult.fallbackAgentAlias) return;
-  await recordPrimarySummarizationQuotaFailure({
-    primaryAgentAlias: batchResult.fallbackPrimaryAgentAlias,
-    fallbackAgentAlias: batchResult.fallbackAgentAlias
-  });
 }
 
 async function handleIndexingError(

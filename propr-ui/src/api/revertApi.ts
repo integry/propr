@@ -63,8 +63,13 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
 };
 
 export interface TriggerReindexAllResponse { success: boolean; repositoriesQueued: number; }
-export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
+export const triggerReindexAll = async (ignoreCooldown = false): Promise<TriggerReindexAllResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ignoreCooldown }),
+    credentials: 'include'
+  });
   await handleApiResponse(response);
   return response.json();
 };

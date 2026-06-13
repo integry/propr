@@ -61,6 +61,7 @@ export interface ProcessBatchesResult {
   filesProcessed: number;
   filesFailed: number;
   fallbackUsed: boolean;
+  stopProcessing: boolean;
   fallbackPrimaryAgentAlias?: string;
   fallbackAgentAlias?: string;
 }
@@ -89,6 +90,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let filesProcessed = 0;
   let filesFailed = 0;
   let fallbackUsed = false;
+  let stopProcessing = false;
   let fallbackPrimaryAgentAlias: string | undefined;
   let fallbackAgentAlias: string | undefined;
 
@@ -151,6 +153,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         fallbackPrimaryAgentAlias ??= batchResult.primaryAgentAlias;
         fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
       }
+      stopProcessing ||= batchResult.stopProcessing;
 
       if (batchResult.success) {
         successfulBatches++;
@@ -171,6 +174,19 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
       currentBatch = [];
       currentTokens = 0;
+      if (stopProcessing) {
+        return {
+          totalBatches: batchNumber,
+          successfulBatches,
+          failedBatches,
+          filesProcessed,
+          filesFailed,
+          fallbackUsed,
+          stopProcessing,
+          fallbackPrimaryAgentAlias,
+          fallbackAgentAlias
+        };
+      }
     }
 
     // Add file to batch
@@ -218,6 +234,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       fallbackPrimaryAgentAlias ??= batchResult.primaryAgentAlias;
       fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
     }
+    stopProcessing ||= batchResult.stopProcessing;
 
     if (batchResult.success) {
       successfulBatches++;
@@ -246,6 +263,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     filesProcessed,
     filesFailed,
     fallbackUsed,
+    stopProcessing,
     fallbackPrimaryAgentAlias,
     fallbackAgentAlias
   };

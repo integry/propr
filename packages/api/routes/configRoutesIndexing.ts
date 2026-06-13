@@ -157,8 +157,9 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
-  function validateSummarizationInput(body: Record<string, unknown>): string | null {
-    const { enabled, agent_alias, fallback_agent_alias, custom_prompt } = body;
+  function validateSummarizationInput(body: unknown): string | null {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return 'request body must be an object';
+    const { enabled, agent_alias, fallback_agent_alias, custom_prompt } = body as Record<string, unknown>;
     if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
     if (agent_alias !== undefined && typeof agent_alias !== 'string') return 'agent_alias must be a string';
     if (fallback_agent_alias !== undefined && typeof fallback_agent_alias !== 'string') return 'fallback_agent_alias must be a string';
