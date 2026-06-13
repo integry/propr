@@ -46,12 +46,14 @@ import {
   handleCommentDeleted,
   handleCommentEdited,
   processCommentEvent,
-  closeUltrafixStateRedis
+  closeUltrafixStateRedis,
+  getActiveTasksForPR
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import * as configManager from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
+import { stopTaskExecution } from './routes/dockerRoutes.js';
 
 type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 type RouteHandler = RequestHandler;
@@ -338,6 +340,10 @@ function setupWebhookRoute(): void {
           : redisClient.set(key, value) as Promise<string | null> },
         processor: (payload, event, cid, deliveryId) => processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId),
         correlationId,
+        mergedPRTaskCanceller: {
+          getActiveTasksForPR,
+          stopTask: (taskIdOrJobId, context) => stopTaskExecution(taskIdOrJobId, { redisClient, ...context }),
+        },
       });
     } catch (error) {
       console.error('[webhook] Error processing webhook:', error);
