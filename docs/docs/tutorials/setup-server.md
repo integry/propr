@@ -70,7 +70,23 @@ In your GitHub App settings, set the webhook URL to `https://propr.example.com/w
 
 If you cannot expose a public endpoint, the optional hosted GitHub App at propr.dev can handle webhook routing and event replays for your installation instead.
 
-## Start The Launcher
+## Start The Stack
+
+On the server, the CLI control plane is the simplest path (Node.js 22+):
+
+```bash
+sudo mkdir -p /srv/propr && cd /srv/propr
+propr init stack               # scaffold .env + data/ logs/ repos/
+# configure GitHub auth in .env: own App (GH_APP_ID, GH_INSTALLATION_ID,
+# HOST_GH_PRIVATE_KEY) or a shared App via `propr relay enroll` —
+# see ../operations/github-auth.md
+propr check
+propr start --no-tui
+```
+
+`propr status`, `propr stop`, and `propr start --restart` manage the running stack. Prefer a container-only host? Use the launcher below instead.
+
+## Alternative: Start The Launcher
 
 Use the same launcher command as local setup, but run it from `/srv/propr` or your chosen server directory. All `PROPR_*` and `HOST_*` paths must be absolute; the launcher does not expand `~`.
 
@@ -115,7 +131,7 @@ propr remote https://propr.example.com   # the API origin behind your proxy
 propr login <personal-access-token>
 propr repo add owner/repo
 propr agent add my-claude -t claude -m opus48 -d opus48
-propr status
+propr remote-status
 ```
 
 CLI authentication uses GitHub Bearer tokens and is enabled by default (`ENABLE_BEARER_AUTH=true`).

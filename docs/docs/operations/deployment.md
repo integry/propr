@@ -4,13 +4,13 @@ Use this page when ProPR should run on a shared server. For a laptop install, st
 
 ## Recommended Path
 
-Use the published launcher image. The launcher replaces `docker-compose` for production deployments: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
+Use the prebuilt images, started by the ProPR CLI control plane (`propr init stack --root /srv/propr`, `propr check`, `propr start --no-tui`; Node.js 22+) or by the published launcher container. Both run the same orchestrator: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
 
 You need:
 
 - Docker
 - A runtime directory such as `/srv/propr`
-- A GitHub App and private key
+- GitHub backend access — your own GitHub App and private key (`HOST_GH_PRIVATE_KEY` bind-mounts it from any host path), or a shared App via the token relay; see [GitHub Authentication](./github-auth.md) for the three `GH_AUTH_MODE`s
 - Agent credentials for at least one agent (for example Claude Code state in `~/.claude`, Codex state in `~/.codex`, or Antigravity CLI state in `~/.gemini`)
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress

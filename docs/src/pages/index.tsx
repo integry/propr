@@ -9,16 +9,13 @@ import CodeBlock from '@theme/CodeBlock';
 
 import styles from './index.module.css';
 
-const LAUNCHER_SNIPPET = `docker run --rm \\
-  -v /var/run/docker.sock:/var/run/docker.sock \\
-  -v "$PWD/.env:/app/.env:ro" \\
-  -v "$PWD/your-app-private-key.pem:/app/config/your-app-private-key.pem:ro" \\
-  -e PROPR_ENV_FILE="$PWD/.env" \\
-  -e PROPR_DATA_DIR="$PWD/data" \\
-  -e PROPR_LOGS_DIR="$PWD/logs" \\
-  -e PROPR_REPOS_DIR="$PWD/repos" \\
-  -e HOST_CLAUDE_DIR="$HOME/.claude" \\
-  propr/launcher:latest`;
+const QUICKSTART_SNIPPET = `npm install -g @propr/cli   # Node.js 22+
+
+mkdir propr && cd propr
+propr init stack    # scaffold .env + data/ logs/ repos/, detect agent credentials
+propr check         # verify Docker, images, agents, and GitHub auth
+propr start         # pull images and start the stack with a live dashboard
+propr ui            # open the Web UI`;
 
 type IconName =
   | 'rocket'
@@ -248,20 +245,25 @@ function Quickstart() {
           <div className="col col--5">
             <Heading as="h2">Quickstart</Heading>
             <p>
-              ProPR runs from prebuilt images with a single launcher command on a
-              Docker-capable Linux host. Create a runtime directory with your{' '}
-              <Link to="/docs/tutorials/setup">GitHub App credentials and .env</Link>,
-              authenticate at least one agent CLI on the host, then start the stack and
-              open the Web UI at <code>http://localhost:5173</code>.
+              The ProPR CLI is the stack control plane: it scaffolds the runtime
+              directory, verifies the host, and starts the prebuilt images on a
+              Docker-capable Linux host. Configure{' '}
+              <Link to="/docs/operations/github-auth">GitHub access</Link> (your own
+              GitHub App, or a shared App via <code>propr relay enroll</code>) and
+              authenticate at least one agent CLI on the host.
             </p>
             <p>
               Full walkthroughs: <Link to="/docs/tutorials/setup-local">local</Link>,{' '}
               <Link to="/docs/tutorials/setup-server">server</Link>, or{' '}
-              <Link to="/docs/tutorials/setup-source">from source</Link>.
+              <Link to="/docs/tutorials/setup-source">from source</Link> — including a{' '}
+              <Link to="/docs/tutorials/setup-local#alternative-launcher-container-without-the-cli">
+                launcher-container path
+              </Link>{' '}
+              that needs no Node.js.
             </p>
           </div>
           <div className="col col--7">
-            <CodeBlock language="bash">{LAUNCHER_SNIPPET}</CodeBlock>
+            <CodeBlock language="bash">{QUICKSTART_SNIPPET}</CodeBlock>
           </div>
         </div>
       </div>

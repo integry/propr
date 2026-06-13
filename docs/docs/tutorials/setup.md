@@ -4,11 +4,11 @@ sidebar_position: 1
 
 # Setup
 
-Most people should run ProPR from the prebuilt Docker images via `propr/launcher:latest`. You only need source setup if you are changing ProPR itself.
+Most people should run ProPR from the prebuilt Docker images, started either by the ProPR CLI (`propr init stack` + `propr start`, recommended; Node.js 22+) or by the `propr/launcher:latest` container (no Node.js needed). You only need source setup if you are changing ProPR itself.
 
 ## Prerequisites For Every Path
 
-- A GitHub App installed on the repositories ProPR should access, with these permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), and optionally Actions (Read-only)
+- GitHub backend access: your own GitHub App installed on the target repositories — permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), optionally Actions (Read-only) — or a vendor-provided shared App via the token relay (`propr relay enroll`); see [GitHub Authentication](../operations/github-auth.md)
 - Credentials for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe), authenticated on the host before starting ProPR
 - Docker with access to the Docker socket
 - Disk space for data, logs, and repository workspaces
@@ -23,7 +23,7 @@ Use this when you want to run ProPR on your Linux laptop or workstation.
 
 [Local Setup](./setup-local.md)
 
-You will create a local runtime directory, add GitHub App credentials, mount your agent credentials, start `propr/launcher:latest`, and open the Web UI at `http://localhost:5173`. The API listens on port `4000`. Issue intake uses polling by default.
+You will install the CLI, scaffold a runtime directory with `propr init stack`, configure GitHub access, and start the stack with `propr start` (the launcher container remains as a no-Node.js alternative). The Web UI is at `http://localhost:5173`, the API on port `4000`. Issue intake uses polling by default.
 
 ## Server Setup
 
