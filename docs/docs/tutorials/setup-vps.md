@@ -27,6 +27,8 @@ user — the guide will remind you where to switch.
 
 ## 1. Create An Admin User And Lock Down SSH
 
+*Run as: **root**.*
+
 Working as root over password SSH is the most common way these boxes get
 compromised. Create an unprivileged sudo user and switch to key-only login.
 
@@ -66,6 +68,8 @@ connects before relying on the change.
 
 ## 2. Patch The System And Enable Automatic Security Updates
 
+*Run as: **root** (or `you` with `sudo`).*
+
 ```bash
 sudo apt update && sudo apt -y upgrade
 
@@ -83,6 +87,8 @@ sudo fail2ban-client status sshd
 
 ## 3. Configure The Host Firewall
 
+*Run as: **root** (or `you` with `sudo`).*
+
 :::tip Cloudflare Tunnel users — read this first
 If you plan to front ProPR with Cloudflare Tunnel (see
 [Advanced VPS Hardening](./setup-vps-hardening.md)), you do **not** need to open
@@ -94,18 +100,27 @@ of step 9, which walks through the localhost-only nginx config and the tunnel
 together.
 :::
 
-Allow only SSH and web traffic; deny everything else inbound.
+Allow SSH (and, for the public-TLS path, web traffic); deny everything else
+inbound.
 
 ```bash
 sudo apt -y install ufw
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow OpenSSH
+
+# Public-TLS path only (step 9 with nginx + Certbot). SKIP these two lines if you
+# are using Cloudflare Tunnel — the hardening tutorial needs no public web ports.
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
+
 sudo ufw enable
 sudo ufw status verbose
 ```
+
+If you are taking the Cloudflare Tunnel path, run everything above **except** the
+two `ufw allow 80/443` lines; the tunnel reaches nginx over localhost and needs no
+inbound web ports.
 
 :::danger Docker bypasses UFW for published ports
 Docker inserts its own `iptables` rules in the `DOCKER` chain when a container
@@ -120,6 +135,9 @@ publish it.
 :::
 
 ## 4. Install Docker And The ProPR CLI
+
+*Run as: **root** (or `you` with `sudo`). This is the last root section — steps 5
+onward run as `you`.*
 
 Install Docker Engine from Docker's official repository:
 
@@ -142,6 +160,8 @@ sudo npm install -g @propr/cli
 ```
 
 ## 5. Authenticate Agent CLIs On The Host
+
+*Run as: **you** (the unprivileged user) for this and every following section.*
 
 :::warning Switch to your unprivileged user now
 All remaining steps must run as `you`, not root. If you are still in a root
@@ -185,6 +205,8 @@ install command, login step, and credential directory — including the OpenCode
 
 ## 6. Scaffold The Stack
 
+*Run as: **you**.*
+
 Create a runtime directory and scaffold it with the CLI. `/srv/propr` is a
 conventional location; keep it owned by `you`.
 
@@ -199,6 +221,8 @@ bundled template, and records any agent credential directories it detects under
 `/home/you`.
 
 ## 7. Configure GitHub Access
+
+*Run as: **you**.*
 
 Choose one auth mode (full detail in [GitHub Authentication](../operations/github-auth.md)):
 
@@ -223,14 +247,18 @@ Choose one auth mode (full detail in [GitHub Authentication](../operations/githu
   HOST_GH_PRIVATE_KEY=/srv/propr/app-private-key.pem
   ```
 
-- **Shared App via relay** — no private key on the server:
+- **Shared App via relay** — no private key on the server. Enrollment opens the
+  GitHub OAuth flow to prove your identity, then writes a relay token to `.env`;
+  it contacts the vendor relay directly, so no prior `propr remote`/`propr login`
+  state is required:
 
   ```bash
-  propr login            # proves your GitHub identity
-  propr relay enroll     # writes a relay token to .env
+  propr relay enroll     # OAuth login, then writes a relay token to .env
   ```
 
 ## 8. Bind Service Ports To Localhost
+
+*Run as: **you** (editing `/srv/propr/.env`).*
 
 This is the step that makes the firewall meaningful. Set the API and UI ports to
 bind to the loopback interface only, and set the public URLs explicitly (required
@@ -248,10 +276,25 @@ UI_PORT=127.0.0.1:5173
 FRONTEND_URL=https://propr.example.com
 API_PUBLIC_URL=https://propr.example.com
 GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
+
+# Browser sign-in (GitHub OAuth App + signed session cookies). Without these the
+# dashboard cannot complete a GitHub login after the stack starts in step 11.
+GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
+GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
+SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 Leave `REDIS_EXTERNAL_PORT` unset — Redis then stays on the internal Docker
 network and is never published to the host at all.
+
+:::note OAuth App vs. GitHub App
+`GH_OAUTH_CLIENT_ID`/`GH_OAUTH_CLIENT_SECRET` come from a GitHub **OAuth App**
+(used for the browser sign-in flow) — these are separate from the **GitHub App**
+identifiers you set in step 7 (used to act on repositories). Register the OAuth
+App with its **Authorization callback URL** set to the
+`GH_OAUTH_CALLBACK_URL` above. See
+[GitHub Authentication](../operations/github-auth.md) for the full setup.
+:::
 
 :::note Why explicit URLs are required here
 The launcher derives `API_PUBLIC_URL`/`FRONTEND_URL` from the port value when you
@@ -262,6 +305,9 @@ URLs above yourself. On a TLS server you would set them regardless.
 
 ## 9. Terminate TLS With A Reverse Proxy
 
+*Run as: **you** with `sudo` (system service config); the `.env` stays owned by
+`you`.*
+
 :::tip Planning to use Cloudflare Tunnel?
 If you intend to use Cloudflare Zero Trust, **skip this step entirely** and
 follow [Advanced VPS Hardening](./setup-vps-hardening.md) instead. That tutorial
@@ -270,8 +316,14 @@ reaches nginx over the loopback), so there is no Certbot and no public port to
 open. Resume this tutorial at step 10 afterward.
 :::
 
-Install nginx and Certbot, point your domain's DNS `A` record at the server
-(`propr.example.com → 203.0.113.10`), then obtain a certificate.
+:::warning DNS first
+Point your domain's DNS `A` record at the server (`propr.example.com →
+203.0.113.10`) **before** running Certbot, and wait for it to resolve
+(`dig +short propr.example.com` should return `203.0.113.10`). Certbot's HTTP-01
+challenge fails if the name does not yet resolve to this host.
+:::
+
+Install nginx and Certbot, then obtain a certificate.
 
 ```bash
 sudo apt -y install nginx
@@ -336,6 +388,8 @@ sudo systemctl status certbot.timer
 
 ## 10. Restrict Who Can Trigger ProPR
 
+*Run as: **you** (editing `/srv/propr/.env`).*
+
 ProPR acts on GitHub as a bot identity; anyone who can comment a command on a
 watched repository could otherwise drive it. Whitelist the GitHub usernames
 allowed to use the system in `/srv/propr/.env`:
@@ -357,6 +411,8 @@ GitHub App's webhook settings. See [Server Setup](./setup-server.md#configure-gi
 for the full webhook walkthrough.
 
 ## 11. Verify And Start
+
+*Run as: **you**.*
 
 ```bash
 cd /srv/propr
@@ -385,6 +441,9 @@ curl -m 5 http://203.0.113.10:5173/   # UI port  — must NOT respond
 Only `https://propr.example.com` (443) and SSH (22) should answer.
 
 ## 12. Operate It
+
+*Run as: **you**; the `sudo` in the update command matches the root-owned global
+CLI install from step 4.*
 
 - **Updates:** `sudo npm update -g @propr/cli && propr start --restart` pulls the
   matching service images and recreates the stack. Use the **same method you

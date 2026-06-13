@@ -187,10 +187,13 @@ complete a Cloudflare Access login and will be blocked. Either:
 - **Use polling** (ProPR's default) and do not enable webhooks — with the tunnel
   this is the cleanest posture, since no endpoint needs to accept unauthenticated
   public traffic at all; or
-- **Bypass `/webhook`** — add a second Access application scoped to the
-  `propr.example.com/webhook` path with a *Bypass* policy. The endpoint stays
-  protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR
-  already verifies.
+- **Bypass `/webhook`** — add a second, **path-scoped** Access application whose
+  application domain is exactly `propr.example.com/webhook` (the path matters —
+  do **not** bypass the bare `propr.example.com` hostname, which would disable the
+  Access gate for the entire app) with a single *Bypass* policy. Cloudflare
+  evaluates the more specific path-scoped application first, so only `/webhook`
+  skips SSO while everything else stays gated. The endpoint stays protected by the
+  mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR already verifies.
 
 The GitHub OAuth callback (`/api/auth/github/callback`) is fine through Access —
 it is the user's own browser, which has already authenticated.
