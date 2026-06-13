@@ -33,11 +33,20 @@ Install the app on every repository ProPR should process, and note the App ID an
 The ProPR CLI doubles as the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack:
 
 ```bash
-npm install -g @propr/cli      # Node.js 22+
+npm install -g @propr/cli      # Node.js 22+ — prefix sudo if your global npm needs it
 
 mkdir propr-deploy && cd propr-deploy
 propr init stack               # creates .env + data/ logs/ repos/, detects agent credentials
 ```
+
+:::tip Global install permissions
+If `npm install -g` fails with `EACCES`, your Node was installed where the global
+prefix is root-owned (a system/`apt` install) — prefix the command with `sudo`.
+Use the **same convention every time** you install or update the CLI: a `sudo`
+install must be updated with `sudo`, and a user-prefix install (e.g. `nvm`, or a
+custom `npm config set prefix`) needs no `sudo`. Mixing the two can update a
+different copy of the CLI or leave root-owned files in a user-owned prefix.
+:::
 
 `propr init stack` writes `.env` from the bundled template and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`). Then configure GitHub access:
 

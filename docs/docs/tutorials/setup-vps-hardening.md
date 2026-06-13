@@ -100,6 +100,17 @@ sudo nginx -t && sudo systemctl reload nginx
 There is no Certbot step and no `listen 443` block: Cloudflare's edge holds the
 certificate, and the tunnel forwards plain HTTP to `127.0.0.1:80`.
 
+:::note Traffic is still end-to-end HTTPS — the plain HTTP hop is local
+The **browser → Cloudflare edge** hop is always HTTPS; the only cleartext hop is
+**tunnel → local nginx**, which never leaves the loopback interface on your VPS.
+This is *not* Cloudflare's "Flexible" SSL mode and you do not need to touch the
+**SSL/TLS → Overview** encryption-mode setting — `cloudflared` brings its own
+encrypted tunnel to the edge, so that mode does not apply to tunnel traffic.
+Don't switch the zone to "Flexible" to accommodate this setup; leave it at its
+default ("Full" or "Full (strict)"), which governs only any *non-tunnel* origins
+on the same zone.
+:::
+
 ## 2. Install And Create The Tunnel
 
 ```bash
@@ -156,11 +167,13 @@ sudo systemctl status cloudflared      # confirm it started and read the creds f
 ## 3. Close The Public Web Ports
 
 With the tunnel up, nothing needs to reach the VPS directly. If you opened the
-web rules in step 3 of the base tutorial, remove them now:
+web rules in step 3 of the base tutorial, remove them now. If you followed the
+"skip 80/443" advice and never opened them, these deletes will report
+`Could not delete non-existent rule` — that is harmless, and you can skip them:
 
 ```bash
-sudo ufw delete allow 80/tcp
-sudo ufw delete allow 443/tcp
+sudo ufw delete allow 80/tcp     # only if you opened it; ignore "non-existent rule"
+sudo ufw delete allow 443/tcp    # only if you opened it; ignore "non-existent rule"
 sudo ufw status verbose          # only OpenSSH should remain
 ```
 
@@ -187,13 +200,28 @@ complete a Cloudflare Access login and will be blocked. Either:
 - **Use polling** (ProPR's default) and do not enable webhooks — with the tunnel
   this is the cleanest posture, since no endpoint needs to accept unauthenticated
   public traffic at all; or
-- **Bypass `/webhook`** — add a second, **path-scoped** Access application whose
-  application domain is exactly `propr.example.com/webhook` (the path matters —
-  do **not** bypass the bare `propr.example.com` hostname, which would disable the
-  Access gate for the entire app) with a single *Bypass* policy. Cloudflare
-  evaluates the more specific path-scoped application first, so only `/webhook`
-  skips SSO while everything else stays gated. The endpoint stays protected by the
-  mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR already verifies.
+- **Bypass `/webhook`** — add a second, **path-scoped** Access application with a
+  single *Bypass* policy. Scope it to the webhook path **and nothing else**. The
+  path matters: do **not** bypass the bare `propr.example.com` hostname, which
+  would disable the Access gate for the entire app.
+
+  Cover both the exact path and any sub-path/trailing-slash variant by adding
+  **two paths** to the same application (Cloudflare matches the path prefix, so
+  these two together catch `/webhook`, `/webhook/`, and `/webhook?...` query
+  forms without matching anything outside the webhook endpoint):
+
+  | Application domain | Matches |
+  |---|---|
+  | `propr.example.com/webhook` | the exact endpoint, including `?query` strings |
+  | `propr.example.com/webhook/*` | any sub-path such as `/webhook/github` |
+
+  Cloudflare evaluates the more specific path-scoped application before the
+  hostname-wide Allow policy, so **only** these two webhook paths skip SSO while
+  everything else stays gated. After saving, send a test delivery from your
+  GitHub App's **Recent Deliveries** tab and confirm it returns `2xx` (not a
+  Cloudflare Access login redirect) before relying on it. The endpoint stays
+  protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR
+  already verifies.
 
 The GitHub OAuth callback (`/api/auth/github/callback`) is fine through Access —
 it is the user's own browser, which has already authenticated.

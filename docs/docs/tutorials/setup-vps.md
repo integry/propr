@@ -463,6 +463,14 @@ curl -m 5 http://203.0.113.10:4000/   # API port — must NOT respond
 curl -m 5 http://203.0.113.10:5173/   # UI port  — must NOT respond
 ```
 
+You can also confirm the bind locally on the VPS — the published ports should
+show `127.0.0.1:4000`/`127.0.0.1:5173` (or `[::1]:...`), never `0.0.0.0:*` or
+`*:*`, which would mean they are listening on every interface:
+
+```bash
+ss -ltnp | grep -E ':4000|:5173'   # both must be bound to 127.0.0.1, not 0.0.0.0
+```
+
 Only `https://propr.example.com` (443) and SSH (22) should answer.
 
 ## 12. Operate It
