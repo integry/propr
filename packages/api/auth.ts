@@ -6,7 +6,7 @@ import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
-import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
+import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded, refreshGitHubTokenWithResult } from './authGithubTokens.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
@@ -237,15 +237,14 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
         }
 
         if (isGitHubTokenExpired(req)) {
-            const refreshed = await refreshGitHubTokenIfNeeded(req, true);
-            if (!refreshed) {
+            const refreshResult = await refreshGitHubTokenWithResult(req, true);
+            if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
                 if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
                 res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
                 return;
             }
-            if (req.user?.githubAuthInvalid) {
-                await clearSessionForReauth(req);
-                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+            if (refreshResult.status === 'temporarily-unavailable') {
+                res.status(503).json({ error: 'GitHub token refresh unavailable', code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE', message: 'GitHub authentication could not be refreshed right now. Please retry shortly.' });
                 return;
             }
         } else {

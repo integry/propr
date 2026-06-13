@@ -35,8 +35,8 @@ const shouldRetryAfterTokenRefresh = async (response: Response): Promise<boolean
 };
 
 const isReplayableApiRequest = (input: RequestInfo | URL, init?: RequestInit): boolean => {
-  if (typeof Request !== 'undefined' && input instanceof Request) return false;
-  const method = (init?.method ?? 'GET').toUpperCase();
+  const method = (init?.method ?? (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')).toUpperCase();
+  if (typeof Request !== 'undefined' && input instanceof Request && (input.body || input.bodyUsed)) return false;
   return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
 };
 

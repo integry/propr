@@ -64,19 +64,26 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it('does not retry Request instances after a token refresh response', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      code: 'TOKEN_REFRESHED',
-    }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    }));
+  it('retries replayable Request instances after a token refresh response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 'TOKEN_REFRESHED',
+      }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ repos: ['integry/propr'] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
 
     const request = new Request('http://localhost/api/github/repos');
     const response = await apiFetch(request);
 
-    expect(response.status).toBe(401);
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, request, undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, request, undefined);
   });
 
   it('does not retry GitHub re-authentication failures', async () => {

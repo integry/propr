@@ -10,6 +10,17 @@ interface GitHubTokenRefreshResponse {
     error_description?: string;
 }
 
+export type GitHubTokenRefreshStatus = 'refreshed' | 'not-needed' | 'reauth-required' | 'temporarily-unavailable';
+
+export interface GitHubTokenRefreshResult {
+    status: GitHubTokenRefreshStatus;
+    accessToken?: string;
+    refreshToken?: string;
+    tokenExpiresAt?: number;
+}
+
+const sessionRefreshes = new Map<string, Promise<GitHubTokenRefreshResult>>();
+
 function isUnrecoverableRefreshError(error?: string): boolean {
     return error === 'bad_refresh_token' || error === 'invalid_grant';
 }
@@ -49,13 +60,42 @@ export async function clearSessionForReauth(req: Request): Promise<void> {
     });
 }
 
-export async function refreshGitHubTokenIfNeeded(req: Request, force = false): Promise<boolean> {
+function getRefreshLockKey(req: Request): string | undefined {
+    const sessionId = 'sessionID' in req && typeof req.sessionID === 'string' ? req.sessionID : undefined;
+    return sessionId ?? req.user?.id;
+}
+
+function applyRefreshResultToRequest(req: Request, result: GitHubTokenRefreshResult): void {
     const user = req.user;
-    if (!user || user.githubAuthInvalid || !user.refreshToken) return false;
+    if (!user || result.status !== 'refreshed' || !result.accessToken) return;
+
+    user.accessToken = result.accessToken;
+    if (result.refreshToken) user.refreshToken = result.refreshToken;
+    if (result.tokenExpiresAt) user.tokenExpiresAt = result.tokenExpiresAt;
+}
+
+async function saveSession(req: Request, successMessage: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        req.session.save(err => {
+            if (err) {
+                console.error('Error saving session after token refresh:', err);
+                reject(err);
+            } else {
+                console.log(successMessage);
+                resolve();
+            }
+        });
+    });
+}
+
+async function performGitHubTokenRefresh(req: Request, force: boolean): Promise<GitHubTokenRefreshResult> {
+    const user = req.user;
+    if (!user || user.githubAuthInvalid) return { status: 'reauth-required' };
+    if (!user.refreshToken) return { status: 'reauth-required' };
 
     const now = Date.now();
     const needsRefresh = force || (user.tokenExpiresAt && (user.tokenExpiresAt - now) < TOKEN_REFRESH_BUFFER_MS);
-    if (!needsRefresh) return false;
+    if (!needsRefresh) return { status: 'not-needed' };
 
     console.log(`Refreshing GitHub token for user ${user.username} (force=${force})`);
 
@@ -72,39 +112,60 @@ export async function refreshGitHubTokenIfNeeded(req: Request, force = false): P
         });
         if (!response.ok) {
             console.error(`GitHub token refresh failed with status ${response.status}`);
-            return false;
+            return { status: 'temporarily-unavailable' };
         }
 
         const data = await response.json() as GitHubTokenRefreshResponse;
         if (data.error) {
             console.error(`GitHub token refresh error: ${data.error} - ${data.error_description}`);
             if (isUnrecoverableRefreshError(data.error)) await markGitHubSessionReauthRequired(req, data.error);
-            return false;
+            return { status: isUnrecoverableRefreshError(data.error) ? 'reauth-required' : 'temporarily-unavailable' };
         }
         if (!data.access_token) {
             console.error('GitHub token refresh response missing access_token');
-            return false;
+            return { status: 'temporarily-unavailable' };
         }
 
         user.accessToken = data.access_token;
         if (data.refresh_token) user.refreshToken = data.refresh_token;
         if (data.expires_in) user.tokenExpiresAt = Date.now() + (data.expires_in * 1000);
 
-        await new Promise<void>((resolve, reject) => {
-            req.session.save(err => {
-                if (err) {
-                    console.error('Error saving session after token refresh:', err);
-                    reject(err);
-                } else {
-                    console.log(`Successfully refreshed GitHub token for user ${user.username}`);
-                    resolve();
-                }
-            });
-        });
+        await saveSession(req, `Successfully refreshed GitHub token for user ${user.username}`);
 
-        return true;
+        return {
+            status: 'refreshed',
+            accessToken: user.accessToken,
+            refreshToken: user.refreshToken,
+            tokenExpiresAt: user.tokenExpiresAt,
+        };
     } catch (error) {
         console.error('Error refreshing GitHub token:', error);
-        return false;
+        return { status: 'temporarily-unavailable' };
     }
+}
+
+export async function refreshGitHubTokenWithResult(req: Request, force = false): Promise<GitHubTokenRefreshResult> {
+    const lockKey = getRefreshLockKey(req);
+    const existingRefresh = lockKey ? sessionRefreshes.get(lockKey) : undefined;
+    if (existingRefresh) {
+        const result = await existingRefresh;
+        applyRefreshResultToRequest(req, result);
+        if (result.status === 'refreshed') {
+            await saveSession(req, `Saved refreshed GitHub token for concurrent request by user ${req.user?.username}`);
+        }
+        return result;
+    }
+
+    const refreshPromise = performGitHubTokenRefresh(req, force);
+    if (lockKey) sessionRefreshes.set(lockKey, refreshPromise);
+    try {
+        return await refreshPromise;
+    } finally {
+        if (lockKey) sessionRefreshes.delete(lockKey);
+    }
+}
+
+export async function refreshGitHubTokenIfNeeded(req: Request, force = false): Promise<boolean> {
+    const result = await refreshGitHubTokenWithResult(req, force);
+    return result.status === 'refreshed';
 }
