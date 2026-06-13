@@ -212,6 +212,13 @@ URLs above yourself. On a TLS server you would set them regardless.
 
 ## 9. Terminate TLS With A Reverse Proxy
 
+:::tip Planning to use Cloudflare Tunnel?
+If you intend to follow the optional [Cloudflare Zero Trust](#optional-cloudflare-zero-trust)
+section below, skip Certbot here — Cloudflare provides edge TLS and the tunnel
+reaches nginx over localhost. Still set up nginx (it path-routes to the
+services), but leave it on plain HTTP and do not open 80/443 in step 3.
+:::
+
 Install nginx and Certbot, point your domain's DNS `A` record at the server
 (`propr.example.com → 203.0.113.10`), then obtain a certificate.
 
@@ -344,3 +351,95 @@ Only `https://propr.example.com` (443) and SSH (22) should answer.
 For deeper operational guidance — image manifest, container names, metrics, and
 recovery — see [Deployment](../operations/deployment.md) and
 [Maintenance](../operations/maintenance.md).
+
+## Optional: Cloudflare Zero Trust
+
+Fronting ProPR with [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+removes all public inbound from the VPS: `cloudflared` makes an **outbound**
+connection to Cloudflare's edge, which terminates TLS and forwards requests down
+the tunnel to nginx on localhost. You then close ports 80 and 443 entirely — only
+SSH remains. This requires your domain to be on Cloudflare (the free plan
+includes Tunnel and Access).
+
+This replaces step 9's public TLS: keep nginx, but it serves plain HTTP on
+localhost and Cloudflare handles the certificate at the edge. Skip Certbot.
+
+### Install And Create The Tunnel
+
+```bash
+# Install cloudflared from Cloudflare's apt repository
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+  | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+  | sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt update && sudo apt -y install cloudflared
+
+# Authenticate (opens a browser link; pick your zone) and create the tunnel
+cloudflared tunnel login
+cloudflared tunnel create propr        # prints a tunnel UUID and writes a creds JSON
+cloudflared tunnel route dns propr propr.example.com
+```
+
+Write `/etc/cloudflared/config.yml`, pointing the tunnel at nginx on localhost
+(replace `<UUID>` and move the credentials JSON written by `tunnel create` to
+`/etc/cloudflared/`):
+
+```yaml
+tunnel: <UUID>
+credentials-file: /etc/cloudflared/<UUID>.json
+
+ingress:
+  - hostname: propr.example.com
+    service: http://127.0.0.1:80
+  - service: http_status:404
+```
+
+Install it as a service so it survives reboots:
+
+```bash
+sudo cloudflared service install
+sudo systemctl enable --now cloudflared
+```
+
+### Close The Public Web Ports
+
+With the tunnel up, nothing needs to reach the VPS directly. Remove the web
+rules added in step 3:
+
+```bash
+sudo ufw delete allow 80/tcp
+sudo ufw delete allow 443/tcp
+sudo ufw status verbose          # only OpenSSH should remain
+```
+
+Make nginx listen on localhost only — change `listen 80;` to
+`listen 127.0.0.1:80;` in `/etc/nginx/sites-available/propr.conf` and
+`sudo systemctl reload nginx`. The site is now reachable exclusively through
+`https://propr.example.com` via Cloudflare.
+
+### Optional: Add An Access Identity Gate
+
+Cloudflare Access can require SSO before any request reaches your origin. It is
+**defense-in-depth on top of** ProPR's own GitHub login and user whitelist — not
+a replacement — so expect users to authenticate twice unless you configure
+Access to use GitHub as its identity provider.
+
+In the Zero Trust dashboard, add a self-hosted Access application for
+`propr.example.com` with an Allow policy scoped to your team's emails or GitHub
+identities.
+
+:::warning Webhooks cannot pass an SSO gate
+GitHub delivers webhooks as server-to-server POSTs to `/webhook`; they cannot
+complete a Cloudflare Access login and will be blocked. Either:
+
+- **Use polling** (ProPR's default) and do not enable webhooks — with the tunnel
+  this is the cleanest posture, since no endpoint needs to accept unauthenticated
+  public traffic at all; or
+- **Bypass `/webhook`** — add a second Access application scoped to the
+  `propr.example.com/webhook` path with a *Bypass* policy. The endpoint stays
+  protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR
+  already verifies.
+
+The GitHub OAuth callback (`/api/auth/github/callback`) is fine through Access —
+it is the user's own browser, which has already authenticated.
+:::
