@@ -6,6 +6,10 @@ sidebar_position: 3
 
 Use this path when ProPR should run on a shared host or production server.
 
+:::tip Starting from a bare VPS?
+If this is a fresh server, follow [Secure VPS Deployment](./setup-vps.md) instead — it covers OS hardening, the host firewall, localhost port binding, and TLS in addition to the ProPR-specific steps below.
+:::
+
 ## What Changes From Local Setup
 
 The Docker image flow is the same as [Local Setup](./setup-local.md). The differences are:

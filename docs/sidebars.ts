@@ -22,6 +22,7 @@ const sidebars: SidebarsConfig = {
         'tutorials/setup',
         'tutorials/setup-local',
         'tutorials/setup-server',
+        'tutorials/setup-vps',
         'tutorials/setup-source',
       ],
     },

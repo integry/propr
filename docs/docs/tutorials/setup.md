@@ -33,6 +33,14 @@ Use this when ProPR should run on a shared machine or production host.
 
 The flow is the same as local setup, but you use stable server paths, public URLs, TLS through a reverse proxy, and stricter credential access. Server setup also covers GitHub webhook intake as an alternative to polling.
 
+## Secure VPS Deployment
+
+Use this when you are starting from a brand-new Linux VPS and want the host hardened as well as ProPR installed.
+
+[Secure VPS Deployment](./setup-vps.md)
+
+A start-to-finish walkthrough: admin user and SSH lockdown, automatic security updates, host firewall (including the Docker/UFW caveat), Docker and the CLI, binding service ports to localhost, TLS via nginx and Certbot, and the GitHub user whitelist.
+
 ## Source Development Setup
 
 Use this only when you are changing ProPR code, validating docs, running tests, or building images.
