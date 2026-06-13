@@ -201,7 +201,10 @@ it is the user's own browser, which has already authenticated.
 
 ## Next Steps
 
-Return to [Secure VPS Deployment](./setup-vps.md) step 10 (Restrict Who Can
-Trigger ProPR) to finish configuring the application, then verify and start the
-stack. For ongoing operations, see [Deployment](../operations/deployment.md) and
+**Resume at [Secure VPS Deployment](./setup-vps.md) step 10** (Restrict Who Can
+Trigger ProPR) — do **not** go back to step 9, which provisions public TLS with
+Certbot and nginx and would re-expose the public web ports this tunnel setup
+deliberately avoids. Step 10 finishes configuring the application; then verify and
+start the stack. For ongoing operations, see
+[Deployment](../operations/deployment.md) and
 [Maintenance](../operations/maintenance.md).

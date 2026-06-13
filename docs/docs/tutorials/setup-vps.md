@@ -281,7 +281,24 @@ GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
 # dashboard cannot complete a GitHub login after the stack starts in step 11.
 GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
 GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
-SESSION_SECRET=$(openssl rand -hex 32)
+SESSION_SECRET=paste_the_generated_hex_string_here
+```
+
+:::warning Generate the secret first — `.env` does not run shell commands
+`.env` files are read literally; they do **not** evaluate `$(...)`. If you paste
+`SESSION_SECRET=$(openssl rand -hex 32)` the app uses that literal text as the
+secret. Run the command in your shell first, then paste the resulting hex string:
+
+```bash
+openssl rand -hex 32   # copy the output into SESSION_SECRET above
+```
+:::
+
+Now that `.env` holds OAuth and session secrets, lock it down so only `you` can
+read it:
+
+```bash
+chmod 600 /srv/propr/.env
 ```
 
 Leave `REDIS_EXTERNAL_PORT` unset — Redis then stays on the internal Docker
@@ -403,7 +420,15 @@ secret is mandatory and the API refuses to start without it:
 
 ```bash
 ENABLE_GITHUB_WEBHOOKS=true
-GH_WEBHOOK_SECRET=$(openssl rand -hex 32)
+GH_WEBHOOK_SECRET=paste_the_generated_hex_string_here
+```
+
+As with `SESSION_SECRET`, `.env` does not evaluate `$(...)`. Generate the value in
+your shell first, then paste the hex string above (and re-run `chmod 600
+/srv/propr/.env` if you edit the file as a different user):
+
+```bash
+openssl rand -hex 32   # copy the output into GH_WEBHOOK_SECRET above
 ```
 
 Set the same secret and the `https://propr.example.com/webhook` URL in your
