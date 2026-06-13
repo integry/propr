@@ -23,7 +23,14 @@ Create a stable directory that owns all persistent state:
 sudo mkdir -p /srv/propr/{data,logs,repos}
 sudo chown -R "$USER" /srv/propr
 cd /srv/propr
-chmod 600 your-app-private-key.pem   # only in own GitHub App mode; relay mode has no key file
+```
+
+**Own GitHub App mode only:** once you have copied the App private key into this
+directory, restrict its permissions. Relay mode (`GH_AUTH_MODE=relay`) has no key
+file, so skip this command:
+
+```bash
+chmod 600 your-app-private-key.pem
 ```
 
 | Path | Contents |
@@ -154,6 +161,13 @@ docker run --rm \
   -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
   propr/launcher:latest
 ```
+
+The private-key mount (`-v ...your-app-private-key.pem...`) is needed **only in
+own GitHub App mode**, where it pairs with `GH_PRIVATE_KEY_PATH=/app/config/...`
+in `.env`. In relay mode (`GH_AUTH_MODE=relay`) there is no key file — omit that
+line. Do not also set `HOST_GH_PRIVATE_KEY` here: that variable is for the CLI
+start path, and the two key variables must not be mixed (see
+[Environment](#environment) above).
 
 The path variables are passed as environment values, not mounts, because the launcher spawns sibling containers through the host Docker daemon — every `-v` value it passes must resolve on the host.
 

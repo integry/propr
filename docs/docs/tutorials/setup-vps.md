@@ -84,12 +84,14 @@ sudo fail2ban-client status sshd
 ## 3. Configure The Host Firewall
 
 :::tip Cloudflare Tunnel users — read this first
-If you plan to front ProPR with [Cloudflare Tunnel](#optional-cloudflare-zero-trust),
-you do **not** need to open ports 80/443 and can skip Certbot in step 9. The
-tunnel makes an outbound connection to Cloudflare's edge, so no public inbound
-web ports are required. You still need the firewall (allow SSH only) and nginx
-(it routes requests locally). Decide now — backtracking after step 9 means
-undoing certificate provisioning and nginx TLS configuration.
+If you plan to front ProPR with Cloudflare Tunnel (see
+[Advanced VPS Hardening](./setup-vps-hardening.md)), you do **not** need to open
+ports 80/443 and can skip Certbot in step 9. The tunnel makes an outbound
+connection to Cloudflare's edge, so no public inbound web ports are required. You
+still need the firewall (allow SSH only) and nginx (it routes requests locally).
+Decide now — complete steps 1–8 here, then follow the hardening tutorial instead
+of step 9, which walks through the localhost-only nginx config and the tunnel
+together.
 :::
 
 Allow only SSH and web traffic; deny everything else inbound.
@@ -163,11 +165,23 @@ it. For example:
 ```bash
 claude login        # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-code)
 # or: agy login     # Antigravity  -> ~/.gemini  (curl -fsSL https://antigravity.google/cli/install.sh | bash)
-# codex / opencode / vibe similarly; see Agents and Models
 ```
 
-See [Agents and Models](../features/agents-and-models.md) for each agent's install
-command, login step, and credential directory.
+These two are examples, not the full set. Install and log in to whichever agents
+you plan to run; each writes its login state to a credential directory under
+`/home/you` that the stack mounts into worker runs:
+
+| Agent | Install | Credential directory |
+|---|---|---|
+| Claude Code | `npm i -g @anthropic-ai/claude-code` | `~/.claude` |
+| Antigravity | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | `~/.gemini` |
+| Codex | see [Agents and Models](../features/agents-and-models.md) | `~/.codex` |
+| OpenCode | `curl -fsSL https://opencode.ai/install \| bash` | `~/.config/opencode` |
+| Vibe | see [Agents and Models](../features/agents-and-models.md) | `~/.vibe` |
+
+See [Agents and Models](../features/agents-and-models.md) for each agent's exact
+install command, login step, and credential directory — including the OpenCode
+`XDG_DATA_HOME` requirement for file-based auth.
 
 ## 6. Scaffold The Stack
 
@@ -188,10 +202,17 @@ bundled template, and records any agent credential directories it detects under
 
 Choose one auth mode (full detail in [GitHub Authentication](../operations/github-auth.md)):
 
-- **Own GitHub App** — place the App private key on the server (readable only by
-  `you`) and set the App identifiers in `.env`:
+- **Own GitHub App** — copy the App private key onto the server first, then lock
+  down its permissions (readable only by `you`) and set the App identifiers in
+  `.env`. From your laptop, upload the `.pem` you downloaded from GitHub:
 
   ```bash
+  # On your laptop — copy the key to the runtime directory on the VPS:
+  scp ./app-private-key.pem you@203.0.113.10:/srv/propr/app-private-key.pem
+  ```
+
+  ```bash
+  # On the VPS — restrict the key now that the file exists:
   chmod 600 /srv/propr/app-private-key.pem
   ```
 
@@ -242,10 +263,11 @@ URLs above yourself. On a TLS server you would set them regardless.
 ## 9. Terminate TLS With A Reverse Proxy
 
 :::tip Planning to use Cloudflare Tunnel?
-If you intend to follow the optional [Cloudflare Zero Trust](#optional-cloudflare-zero-trust)
-section below, skip Certbot here — Cloudflare provides edge TLS and the tunnel
-reaches nginx over localhost. Still set up nginx (it path-routes to the
-services), but leave it on plain HTTP and do not open 80/443 in step 3.
+If you intend to use Cloudflare Zero Trust, **skip this step entirely** and
+follow [Advanced VPS Hardening](./setup-vps-hardening.md) instead. That tutorial
+sets up nginx bound to localhost (Cloudflare provides edge TLS and the tunnel
+reaches nginx over the loopback), so there is no Certbot and no public port to
+open. Resume this tutorial at step 10 afterward.
 :::
 
 Install nginx and Certbot, point your domain's DNS `A` record at the server
@@ -385,119 +407,11 @@ For deeper operational guidance — image manifest, container names, metrics, an
 recovery — see [Deployment](../operations/deployment.md) and
 [Maintenance](../operations/maintenance.md).
 
-## Optional: Cloudflare Zero Trust
+## Go Further: Cloudflare Zero Trust
 
-Fronting ProPR with [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-removes all public inbound from the VPS: `cloudflared` makes an **outbound**
-connection to Cloudflare's edge, which terminates TLS and forwards requests down
-the tunnel to nginx on localhost. You then close ports 80 and 443 entirely — only
-SSH remains. This requires your domain to be on Cloudflare (the free plan
-includes Tunnel and Access).
-
-This replaces step 9's public TLS: keep nginx, but it serves plain HTTP on
-localhost and Cloudflare handles the certificate at the edge. Skip Certbot.
-
-:::tip Plan your issue-intake mode now
-If you add the optional [Access identity gate](#optional-add-an-access-identity-gate)
-below, **polling** (ProPR's default) is the recommended mode — an SSO gate blocks
-GitHub's server-to-server webhook POSTs to `/webhook`. Only enable webhooks (step
-10) behind Access if you explicitly add a *Bypass* policy for the `/webhook`
-path, as detailed at the end of this section. Decide before configuring webhooks
-to avoid silently dropped deliveries.
-:::
-
-### Install And Create The Tunnel
-
-```bash
-# Install cloudflared from Cloudflare's apt repository
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-  | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
-  | sudo tee /etc/apt/sources.list.d/cloudflared.list
-sudo apt update && sudo apt -y install cloudflared
-
-# Authenticate (opens a browser link; pick your zone) and create the tunnel
-cloudflared tunnel login
-cloudflared tunnel create propr        # prints a tunnel UUID and writes a creds JSON
-cloudflared tunnel route dns propr propr.example.com
-```
-
-Run as `you`, the credentials JSON and cert land under `~/.cloudflared/`. The
-service installed below runs as **root**, so move both the credentials file and
-the config into `/etc/cloudflared/` (root-owned, not world-readable) before
-installing the service. Replace `<UUID>` with the value printed by
-`tunnel create`:
-
-```bash
-sudo mkdir -p /etc/cloudflared
-sudo mv ~/.cloudflared/<UUID>.json /etc/cloudflared/<UUID>.json
-sudo chown root:root /etc/cloudflared/<UUID>.json
-sudo chmod 600 /etc/cloudflared/<UUID>.json
-```
-
-Write `/etc/cloudflared/config.yml` (use `sudo`, since the directory is now
-root-owned), pointing the tunnel at nginx on localhost and at the moved
-credentials file:
-
-```yaml
-tunnel: <UUID>
-credentials-file: /etc/cloudflared/<UUID>.json
-
-ingress:
-  - hostname: propr.example.com
-    service: http://127.0.0.1:80
-  - service: http_status:404
-```
-
-Install it as a service so it survives reboots. With the config and credentials
-already in `/etc/cloudflared/`, `service install` picks them up automatically;
-run it after both files are in place:
-
-```bash
-sudo cloudflared service install
-sudo systemctl enable --now cloudflared
-sudo systemctl status cloudflared      # confirm it started and read the creds file
-```
-
-### Close The Public Web Ports
-
-With the tunnel up, nothing needs to reach the VPS directly. Remove the web
-rules added in step 3:
-
-```bash
-sudo ufw delete allow 80/tcp
-sudo ufw delete allow 443/tcp
-sudo ufw status verbose          # only OpenSSH should remain
-```
-
-Make nginx listen on localhost only — change `listen 80;` to
-`listen 127.0.0.1:80;` in `/etc/nginx/sites-available/propr.conf` and
-`sudo systemctl reload nginx`. The site is now reachable exclusively through
-`https://propr.example.com` via Cloudflare.
-
-### Optional: Add An Access Identity Gate
-
-Cloudflare Access can require SSO before any request reaches your origin. It is
-**defense-in-depth on top of** ProPR's own GitHub login and user whitelist — not
-a replacement — so expect users to authenticate twice unless you configure
-Access to use GitHub as its identity provider.
-
-In the Zero Trust dashboard, add a self-hosted Access application for
-`propr.example.com` with an Allow policy scoped to your team's emails or GitHub
-identities.
-
-:::warning Webhooks cannot pass an SSO gate
-GitHub delivers webhooks as server-to-server POSTs to `/webhook`; they cannot
-complete a Cloudflare Access login and will be blocked. Either:
-
-- **Use polling** (ProPR's default) and do not enable webhooks — with the tunnel
-  this is the cleanest posture, since no endpoint needs to accept unauthenticated
-  public traffic at all; or
-- **Bypass `/webhook`** — add a second Access application scoped to the
-  `propr.example.com/webhook` path with a *Bypass* policy. The endpoint stays
-  protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR
-  already verifies.
-
-The GitHub OAuth callback (`/api/auth/github/callback`) is fine through Access —
-it is the user's own browser, which has already authenticated.
-:::
+To remove **all** public inbound traffic from the VPS — closing ports 80 and 443
+so only SSH remains — front ProPR with Cloudflare Tunnel, and optionally add a
+Cloudflare Access SSO gate. That advanced hardening layer lives in its own
+tutorial: [Advanced VPS Hardening](./setup-vps-hardening.md). Follow it instead
+of step 9 if you decided up front to use Cloudflare (see the tips in steps 3
+and 9).

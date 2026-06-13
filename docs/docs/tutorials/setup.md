@@ -41,6 +41,8 @@ Use this when you are starting from a brand-new Linux VPS and want the host hard
 
 A start-to-finish walkthrough: admin user and SSH lockdown, automatic security updates, host firewall (including the Docker/UFW caveat), Docker and the CLI, binding service ports to localhost, TLS via nginx and Certbot, and the GitHub user whitelist.
 
+For an optional layer that removes all public inbound traffic with a Cloudflare Tunnel and an SSO identity gate, continue with [Advanced VPS Hardening](./setup-vps-hardening.md).
+
 ## Source Development Setup
 
 Use this only when you are changing ProPR code, validating docs, running tests, or building images.
