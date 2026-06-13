@@ -48,6 +48,7 @@ export interface IndexingOptions {
   fullName?: string; // repository full name for status tracking
   branch?: string; // branch to index (defaults to 'HEAD')
   fullReindex?: boolean; // if true, process all files regardless of staleness (but preserve existing summaries as fallback)
+  ignoreCooldown?: boolean; // manual/admin override for persisted summarization cooldowns
 }
 
 // --- Constants ---
@@ -282,7 +283,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       return;
     }
 
-    const cooldown = await getSummarizationCooldown(fullName, branch);
+    const cooldown = options.ignoreCooldown ? null : await getSummarizationCooldown(fullName, branch);
     if (cooldown) {
       correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
       await updateRepositoryStatus(fullName, 'idle', branch);

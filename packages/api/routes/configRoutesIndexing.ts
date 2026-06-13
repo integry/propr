@@ -38,7 +38,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         baseBranch?: string;
       };
       const shouldRunFullReindex = fullReindex === true;
-      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch);
+      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch, { ignoreCooldown: true });
       if (!result.success) {
         const isAlreadyQueued = result.error?.includes('already queued');
         const statusCode = isAlreadyQueued ? 409 : 400;
@@ -67,7 +67,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
   async function triggerResummarizationSafe(): Promise<number> {
     try {
-      return await queueResummarizationForAllRepos();
+      return await queueResummarizationForAllRepos({ ignoreCooldown: true });
     } catch (error) {
       console.error('Error triggering resummarization for repositories:', error);
       return 0;
@@ -155,6 +155,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
     if (agent_alias !== undefined && typeof agent_alias !== 'string') return 'agent_alias must be a string';
     if (fallback_agent_alias !== undefined && typeof fallback_agent_alias !== 'string') return 'fallback_agent_alias must be a string';
+    if (agent_alias && fallback_agent_alias && agent_alias === fallback_agent_alias) return 'fallback_agent_alias must differ from agent_alias';
     if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
     return null;
   }
@@ -192,8 +193,15 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       fallback_agent_alias: fallback_agent_alias || '',
       custom_prompt: newCustomPrompt
     };
+    const modelSettingsChanged =
+      settings.enabled !== currentSettings.enabled ||
+      settings.agent_alias !== (currentSettings.agent_alias || '') ||
+      settings.fallback_agent_alias !== (currentSettings.fallback_agent_alias || '');
 
     await configManager.saveSummarizationSettings(settings);
+    if (modelSettingsChanged) {
+      await configManager.clearSummarizationRuntimeState();
+    }
     await publishConfigUpdate('summarization_settings_update');
 
     let reindexScheduled = false;

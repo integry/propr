@@ -150,7 +150,7 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
     for (const cooldown of Object.values(state.cooldowns || {})) {
       warnings.push({
         type: 'summarization_cooldown',
-        message: `${cooldown.repository} (${cooldown.branch}) summarization is paused until ${cooldown.until}.`
+        message: `${cooldown.repository} (${cooldown.branch}) summarization is paused until ${cooldown.until}: ${cooldown.reason}`
       });
     }
     return warnings;

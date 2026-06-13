@@ -36,8 +36,9 @@ const SUMMARIZATION_RETRY = {
   exponentialBase: 2,
 } as const;
 
-const SUMMARIZATION_FALLBACK_RETRY = {
+const SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT = {
   ...SUMMARIZATION_RETRY,
+  // withRetry treats maxAttempts as total calls, so this performs one fallback call.
   maxAttempts: 1
 } as const;
 
@@ -327,11 +328,8 @@ async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Pro
       }
 
       const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
-      await recordPrimarySummarizationQuotaFailure({
-        primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgentAliasSetting
-      });
       if (!fallbackAgent || !fallbackAgentAliasSetting) {
+        await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
         await recordSummarizationCooldown({
           repository: fullName,
           branch,
@@ -355,7 +353,11 @@ async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Pro
           agent: fallbackAgent,
           modelOverride: fallbackModelOverride ?? fallbackModelUsed,
           context: `directory_aggregation_fallback:${fullName}`,
-          retryOptions: SUMMARIZATION_FALLBACK_RETRY
+          retryOptions: SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT
+        });
+        await recordPrimarySummarizationQuotaFailure({
+          primaryAgentAlias,
+          fallbackAgentAlias: fallbackAgentAliasSetting
         });
         agentUsed = fallbackAgent;
         modelLogged = fallbackModelUsed || fallbackAgent.config.defaultModel || 'unknown';
@@ -418,6 +420,10 @@ async function analyzeDirectoryBatchWithAgent(options: {
       const parsed = parseBatchDirectoryResponse(analysisResult.response, directories.map(d => d.dirPath));
       if (!parsed.some(r => r.summary !== null)) {
         throw new Error(`No valid directory summaries parsed for batch of ${directories.length} directories`);
+      }
+      const missingDirs = parsed.filter(result => result.summary === null).map(result => result.dirPath);
+      if (missingDirs.length > 0) {
+        throw new Error(`Missing summaries for ${missingDirs.length} of ${directories.length} directories: ${missingDirs.slice(0, 5).join(', ')}`);
       }
       return parsed;
     },
