@@ -57,12 +57,24 @@ Images are published to Docker Hub under the `propr/` namespace and mirrored to 
 
 ## Environment
 
-Use `.env` for server-specific wiring:
+Use `.env` for server-specific wiring. The GitHub App private-key variable
+depends on whether you start the stack with the **CLI** or the **launcher**:
+
+| Variable | When to use | Value |
+|---|---|---|
+| `HOST_GH_PRIVATE_KEY` | **CLI** (`propr start`) | Absolute **host** path to the `.pem` file — the CLI bind-mounts it into the container |
+| `GH_PRIVATE_KEY_PATH` | **Launcher** (`docker run propr/launcher`) | Path **inside the launcher container** (typically `/app/config/...` via a `-v` mount) |
+
+Do not mix them — the CLI cannot resolve a container-internal path, and the
+launcher cannot resolve a host path it has not mounted itself.
 
 ```bash
 GH_APP_ID=your-github-app-id
-GH_PRIVATE_KEY_PATH=/app/config/your-app-private-key.pem
 GH_INSTALLATION_ID=your-installation-id
+
+# Pick ONE of the following, depending on your start method:
+HOST_GH_PRIVATE_KEY=/srv/propr/your-app-private-key.pem          # CLI
+# GH_PRIVATE_KEY_PATH=/app/config/your-app-private-key.pem       # Launcher
 
 FRONTEND_URL=https://propr.example.com
 GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
@@ -105,7 +117,28 @@ If your server cannot expose a public webhook endpoint, the optional hosted GitH
 
 ## Start The Stack
 
-From the runtime directory:
+### Option A — CLI (Recommended)
+
+The ProPR CLI (`@propr/cli`, Node.js 22+) is the recommended control plane. It
+reads `.env`, pulls images, creates the Docker network, and starts service
+containers — the same orchestration the launcher performs, but managed from the
+host rather than from inside a container.
+
+```bash
+cd /srv/propr
+propr check              # validates Docker, images, agent credentials, and GitHub auth mode
+propr start --no-tui     # pull images and start the stack (non-interactive)
+```
+
+`propr check --verify` additionally smoke-tests each agent image. Use
+`propr start` (without `--no-tui`) for the interactive dashboard.
+`propr status`, `propr stop`, and `propr remote-status` manage the running
+stack.
+
+### Option B — Launcher Container
+
+If you prefer not to install Node.js on the host, the published launcher
+container provides the same orchestration:
 
 ```bash
 docker run --rm \
@@ -175,12 +208,28 @@ Back up:
 
 ## Updating
 
-The launcher manifest pins exact image versions, so updating means running a newer launcher:
+### CLI update path
+
+Update the CLI package, then restart the stack. The CLI manifest pins exact
+image versions; the new version pulls the matching service and agent images:
+
+```bash
+sudo npm update -g @propr/cli
+propr start --restart        # pulls updated images and recreates containers
+```
+
+### Launcher update path
+
+Pull the newer launcher image:
 
 ```bash
 docker pull propr/launcher:latest
 ```
 
-Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service and agent images on startup. Persistent state in `data/`, `repos/`, and the Redis volume is unaffected.
+Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service and agent images on startup.
+
+---
+
+In both cases, persistent state in `data/`, `repos/`, and the Redis volume is unaffected.
 
 For ongoing care — backups, troubleshooting, queue resets, and tuning — see [Maintenance And Troubleshooting](./maintenance.md).

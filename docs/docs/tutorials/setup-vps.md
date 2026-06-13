@@ -20,8 +20,9 @@ on the host and network hardening around them.
 
 :::info Assumptions
 Replace `propr.example.com` with your domain, `you` with your admin username, and
-`203.0.113.10` with your server IP throughout. Commands are run as root unless a
-`sudo` prefix is shown.
+`203.0.113.10` with your server IP throughout. Steps 1–4 are run as **root** (or
+with `sudo`). From step 5 onward you must be logged in as the unprivileged `you`
+user — the guide will remind you where to switch.
 :::
 
 ## 1. Create An Admin User And Lock Down SSH
@@ -78,6 +79,15 @@ sudo fail2ban-client status sshd
 
 ## 3. Configure The Host Firewall
 
+:::tip Cloudflare Tunnel users — read this first
+If you plan to front ProPR with [Cloudflare Tunnel](#optional-cloudflare-zero-trust),
+you do **not** need to open ports 80/443 and can skip Certbot in step 9. The
+tunnel makes an outbound connection to Cloudflare's edge, so no public inbound
+web ports are required. You still need the firewall (allow SSH only) and nginx
+(it routes requests locally). Decide now — backtracking after step 9 means
+undoing certificate provisioning and nginx TLS configuration.
+:::
+
 Allow only SSH and web traffic; deny everything else inbound.
 
 ```bash
@@ -126,6 +136,19 @@ sudo npm install -g @propr/cli
 ```
 
 ## 5. Authenticate Agent CLIs On The Host
+
+:::warning Switch to your unprivileged user now
+All remaining steps must run as `you`, not root. If you are still in a root
+session, switch now:
+
+```bash
+su - you
+# or open a new SSH session: ssh you@203.0.113.10
+```
+
+Running `propr init stack` or agent logins as root places credentials and
+files under `/root`, where the stack cannot find them.
+:::
 
 Each coding agent runs from credentials mounted off the host. Log in to at least
 one agent CLI **as `you`** (not root), so the credential directory lives under
