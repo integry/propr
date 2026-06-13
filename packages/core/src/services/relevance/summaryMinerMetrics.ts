@@ -82,7 +82,12 @@ export async function logSummarizationCall(metrics: SummarizationCallMetrics, lo
       host: REDIS_HOST,
       port: REDIS_PORT,
       maxRetriesPerRequest: null,
-      enableReadyCheck: false
+      enableReadyCheck: false,
+      retryStrategy: () => null
+    });
+    redis.on('error', () => {
+      // Handled by the command promise below; keep missing Redis from leaking
+      // unhandled error events during tests or optional metrics outages.
     });
 
     const dateKey = metrics.timestamp.split('T')[0];
@@ -125,7 +130,7 @@ export async function logSummarizationCall(metrics: SummarizationCallMetrics, lo
     log.warn({ error: (error as Error).message }, 'Failed to store summarization metrics in Redis');
   } finally {
     if (redis) {
-      await redis.quit();
+      redis.disconnect();
     }
   }
 }

@@ -60,6 +60,9 @@ export interface ProcessBatchesResult {
   failedBatches: number;
   filesProcessed: number;
   filesFailed: number;
+  fallbackUsed: boolean;
+  fallbackPrimaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
 }
 
 /**
@@ -85,6 +88,9 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let failedBatches = 0;
   let filesProcessed = 0;
   let filesFailed = 0;
+  let fallbackUsed = false;
+  let fallbackPrimaryAgentAlias: string | undefined;
+  let fallbackAgentAlias: string | undefined;
 
   const initialConfig: SummarizationAgentConfig = { agent, modelOverride, customPrompt, effectiveModel: modelId, agentAliasSetting: agent.config.alias };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
@@ -122,7 +128,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       const currentConfig = await getCurrentConfig();
       logBatchAgentIfChanged(log, initialConfig, currentConfig);
       const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
-      const success = await processSingleBatch({
+      const batchResult = await processSingleBatch({
         fullName,
         batch: currentBatch,
         agent: currentConfig.agent,
@@ -140,7 +146,13 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       const batchInputTokens = currentTokens;
       const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
 
-      if (success) {
+      if (batchResult.fallbackUsed) {
+        fallbackUsed = true;
+        fallbackPrimaryAgentAlias ??= batchResult.primaryAgentAlias;
+        fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
+      }
+
+      if (batchResult.success) {
         successfulBatches++;
         filesProcessed += batchFileCount;
       } else {
@@ -183,7 +195,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     const currentConfig = await getCurrentConfig();
     logBatchAgentIfChanged(log, initialConfig, currentConfig);
     const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
-    const success = await processSingleBatch({
+    const batchResult = await processSingleBatch({
       fullName,
       batch: currentBatch,
       agent: currentConfig.agent,
@@ -201,7 +213,13 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     const batchInputTokens = currentTokens;
     const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
 
-    if (success) {
+    if (batchResult.fallbackUsed) {
+      fallbackUsed = true;
+      fallbackPrimaryAgentAlias ??= batchResult.primaryAgentAlias;
+      fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
+    }
+
+    if (batchResult.success) {
       successfulBatches++;
       filesProcessed += batchFileCount;
     } else {
@@ -226,7 +244,10 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     successfulBatches,
     failedBatches,
     filesProcessed,
-    filesFailed
+    filesFailed,
+    fallbackUsed,
+    fallbackPrimaryAgentAlias,
+    fallbackAgentAlias
   };
 }
 

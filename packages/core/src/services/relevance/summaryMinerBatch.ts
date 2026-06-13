@@ -60,6 +60,13 @@ interface ProcessSingleBatchOptions {
   branch: string;
 }
 
+export interface ProcessSingleBatchResult {
+  success: boolean;
+  fallbackUsed: boolean;
+  primaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
+}
+
 export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
 For each file, provide a summary (3-4 sentences) covering:
 1. Primary purpose of the file
@@ -80,7 +87,7 @@ Important:
 - Focus on what the file does and how it connects to the system
 - Return valid JSON only, no markdown or other formatting`;
 
-export async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<boolean> {
+export async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<ProcessSingleBatchResult> {
   const {
     fullName, batch, agent, log, modelUsed, customPrompt, branch,
     primaryAgentAliasSetting, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting
@@ -93,6 +100,9 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   let errorMessage: string | undefined;
   let agentUsed = agent;
   let modelLogged = modelUsed;
+  let fallbackUsed = false;
+  let fallbackPrimaryAgentAlias: string | undefined;
+  let fallbackAgentAlias: string | undefined;
 
   try {
     const summaries = await analyzeBatchWithFallback({
@@ -101,6 +111,9 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
     });
     agentUsed = summaries.agentUsed;
     modelLogged = summaries.modelLogged;
+    fallbackUsed = summaries.fallbackUsed;
+    fallbackPrimaryAgentAlias = summaries.primaryAgentAlias;
+    fallbackAgentAlias = summaries.fallbackAgentAlias;
     await saveBatchSummaries({ fullName, batch, summaries: summaries.results, modelUsed: modelLogged, branch });
     success = true;
     log.debug({ savedCount: summaries.results.length }, 'Saved batch summaries');
@@ -114,13 +127,21 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
     log, fullName, batch, modelLogged, agentUsed, estimatedInputTokens,
     estimatedOutputTokens, durationMs, success, errorMessage
   });
-  return success;
+  return {
+    success,
+    fallbackUsed,
+    primaryAgentAlias: fallbackPrimaryAgentAlias,
+    fallbackAgentAlias
+  };
 }
 
 async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { prompt: string }): Promise<{
   results: SummaryResult[];
   agentUsed: Agent;
   modelLogged: string;
+  fallbackUsed: boolean;
+  primaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
 }> {
   const {
     prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting,
@@ -132,7 +153,7 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
       prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`
     });
     await clearSummarizationPrimaryQuotaFailures();
-    return { results, agentUsed: agent, modelLogged: modelUsed };
+    return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
   } catch (primaryError) {
     if (!isQuotaExhaustionError(primaryError)) {
       throw primaryError;
@@ -167,13 +188,16 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         context: `batch_summarization_fallback:${fullName}`,
         retryOptions: SUMMARIZATION_FALLBACK_SINGLE_ATTEMPT
       });
-      await recordPrimarySummarizationQuotaFailure({
+      return {
+        results,
+        agentUsed: fallbackAgent,
+        modelLogged: fallbackModelUsed || fallbackAgent.config.defaultModel || 'unknown',
+        fallbackUsed: true,
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting
-      });
-      return { results, agentUsed: fallbackAgent, modelLogged: fallbackModelUsed || fallbackAgent.config.defaultModel || 'unknown' };
+      };
     } catch (fallbackError) {
-      await recordCooldownIfQuotaLimited({
+      await recordCooldownAfterFallbackFailure({
         error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
       });
       throw fallbackError;
@@ -181,7 +205,7 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
   }
 }
 
-async function recordCooldownIfQuotaLimited(options: {
+async function recordCooldownAfterFallbackFailure(options: {
   error: unknown;
   fullName: string;
   branch: string;
@@ -190,14 +214,16 @@ async function recordCooldownIfQuotaLimited(options: {
   fallbackAgentAliasSetting: string;
 }): Promise<void> {
   const { error, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting } = options;
-  if (!isQuotaExhaustionError(error)) return;
+  const fallbackWasQuotaLimited = isQuotaExhaustionError(error);
 
   await recordSummarizationCooldown({
     repository: fullName,
     branch,
     primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
     fallbackAgentAlias: fallbackAgentAliasSetting,
-    reason: 'Primary and fallback summarization models are quota-limited.'
+    reason: fallbackWasQuotaLimited
+      ? 'Primary and fallback summarization models are quota-limited.'
+      : `Primary summarization model is quota-limited and fallback summarization failed: ${(error as Error).message}`
   });
 }
 

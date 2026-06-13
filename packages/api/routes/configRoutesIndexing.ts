@@ -36,9 +36,11 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         repository: string;
         fullReindex?: boolean;
         baseBranch?: string;
+        ignoreCooldown?: boolean;
       };
       const shouldRunFullReindex = fullReindex === true;
-      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch, { ignoreCooldown: true });
+      const ignoreCooldown = req.body.ignoreCooldown === true;
+      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch, { ignoreCooldown });
       if (!result.success) {
         const isAlreadyQueued = result.error?.includes('already queued');
         const statusCode = isAlreadyQueued ? 409 : 400;
@@ -65,9 +67,9 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
-  async function triggerResummarizationSafe(): Promise<number> {
+  async function triggerResummarizationSafe(ignoreCooldown: boolean): Promise<number> {
     try {
-      return await queueResummarizationForAllRepos({ ignoreCooldown: true });
+      return await queueResummarizationForAllRepos({ ignoreCooldown });
     } catch (error) {
       console.error('Error triggering resummarization for repositories:', error);
       return 0;
@@ -76,6 +78,10 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
   async function triggerReindexAll(req: Request, res: Response): Promise<void> {
     try {
+      if (req.body?.ignoreCooldown !== undefined && typeof req.body.ignoreCooldown !== 'boolean') {
+        res.status(400).json({ error: 'ignoreCooldown must be a boolean' });
+        return;
+      }
       const settings = await configManager.loadSummarizationSettings();
       if (!settings.enabled) {
         res.status(400).json({ error: 'Summarization is not enabled. Enable it in settings first.' });
@@ -87,7 +93,8 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       }
 
       await cancelDelayedReindex(redisClient);
-      const repositoriesQueued = await triggerResummarizationSafe();
+      const ignoreCooldown = req.body?.ignoreCooldown === true;
+      const repositoriesQueued = await triggerResummarizationSafe(ignoreCooldown);
 
       await logActivityHelper(
         `Manually triggered reindexing for ${repositoriesQueued} repositories`,

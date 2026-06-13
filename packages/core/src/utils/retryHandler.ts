@@ -32,6 +32,10 @@ interface ErrorLike {
     code?: string;
     status?: number;
     message?: string;
+    error?: unknown;
+    response?: unknown;
+    body?: unknown;
+    cause?: unknown;
 }
 
 const QUOTA_EXHAUSTION_PATTERNS = [
@@ -52,16 +56,41 @@ const TRANSIENT_RATE_LIMIT_PATTERNS = [
 ];
 
 export function isQuotaExhaustionError(error: Error | unknown): boolean {
-    const err = (error ?? {}) as ErrorLike;
-    const errorMessage = err.message ?? '';
-    const errorString = error?.toString() ?? '';
-    const combined = `${errorMessage} ${errorString}`;
+    const errorText = collectErrorText(error);
+    const combined = errorText.join(' ');
     if (TRANSIENT_RATE_LIMIT_PATTERNS.some(pattern => pattern.test(combined))) {
         return false;
     }
-    return QUOTA_EXHAUSTION_PATTERNS.some(pattern =>
-        pattern.test(errorMessage) || pattern.test(errorString)
-    );
+    return QUOTA_EXHAUSTION_PATTERNS.some(pattern => pattern.test(combined));
+}
+
+function collectErrorText(error: unknown): string[] {
+    const values: string[] = [];
+    const seen = new Set<unknown>();
+
+    function visit(value: unknown): void {
+        if (value === null || value === undefined || seen.has(value)) return;
+        if (typeof value === 'string') {
+            values.push(value);
+            return;
+        }
+        if (typeof value !== 'object') return;
+        seen.add(value);
+
+        const record = value as ErrorLike & Record<string, unknown>;
+        if (typeof record.message === 'string') values.push(record.message);
+        const stringified = typeof record.toString === 'function' ? record.toString() : '';
+        if (stringified && stringified !== '[object Object]') values.push(stringified);
+
+        visit(record.error);
+        visit(record.response);
+        visit(record.body);
+        visit(record.cause);
+        visit((record.response as Record<string, unknown> | undefined)?.data);
+    }
+
+    visit(error);
+    return values;
 }
 
 /**

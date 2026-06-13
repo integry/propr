@@ -418,6 +418,22 @@ describe('isRetryableError', () => {
             }
         });
 
+        test('detects quota exhaustion in nested SDK error payloads', () => {
+            const error = {
+                status: 429,
+                message: 'Request failed',
+                response: {
+                    data: {
+                        error: {
+                            message: 'insufficient quota. Try again after upgrading.'
+                        }
+                    }
+                }
+            };
+
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
         test('returns true for 500 Internal Server Error', () => {
             const error = { status: 500, message: 'Internal Server Error' };
             assert.strictEqual(isRetryableError(error, baseConfig), true);

@@ -60,7 +60,36 @@ describe('summarization fallback runtime state', () => {
 
     const state = await loadSummarizationRuntimeState();
     assert.equal(state.primary_quota_failures, 0);
+    assert.deepEqual(state.primary_quota_failures_by_alias, {});
     assert.equal(state.warning?.mode, 'fallback_promoted');
+  });
+
+  test('promotion clears stale alias failure counters', async () => {
+    await saveSummarizationSettings({
+      enabled: true,
+      agent_alias: 'primary',
+      fallback_agent_alias: 'fallback',
+      custom_prompt: ''
+    });
+    await db('system_configs').insert({
+      key: 'summarization_runtime_state',
+      value: JSON.stringify({
+        primary_quota_failures: 1,
+        primary_quota_failures_by_alias: { stale: 4, primary: 1 },
+        cooldowns: {}
+      }),
+      created_at: db.fn.now(),
+      updated_at: db.fn.now()
+    });
+
+    const result = await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary',
+      fallbackAgentAlias: 'fallback'
+    });
+
+    assert.equal(result.promoted, true);
+    const state = await loadSummarizationRuntimeState();
+    assert.deepEqual(state.primary_quota_failures_by_alias, {});
   });
 
   test('records and returns repository branch cooldown', async () => {
@@ -102,5 +131,21 @@ describe('summarization fallback runtime state', () => {
     state = await loadSummarizationRuntimeState();
     assert.equal(state.primary_quota_failures, 0);
     assert.equal(state.warning, undefined);
+  });
+
+  test('primary success clears counters without deleting cooldown warning', async () => {
+    await recordSummarizationCooldown({
+      repository: 'integry/propr',
+      branch: 'main',
+      primaryAgentAlias: 'primary',
+      fallbackAgentAlias: 'fallback'
+    });
+
+    await clearSummarizationPrimaryQuotaFailures();
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 0);
+    assert.equal(state.warning?.mode, 'cooldown');
+    assert.equal(Object.keys(state.cooldowns).length, 1);
   });
 });

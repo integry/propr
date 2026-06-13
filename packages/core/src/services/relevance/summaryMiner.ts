@@ -5,11 +5,13 @@ import type { Logger } from 'pino';
 import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { Agent } from '../../agents/types.js';
-import { loadSummarizationSettings, getSummarizationCooldown } from '../../config/configManager.js';
+import { loadSummarizationSettings, getSummarizationCooldown, recordPrimarySummarizationQuotaFailure } from '../../config/configManager.js';
 import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
+import type { ProcessBatchesResult } from './summaryMinerHelpers.js';
+import type { AggregateDirectoriesResult } from './summaryMinerDirectories.js';
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import type { IndexingPhase } from '@propr/shared';
 import { updateRepositoryStatus } from './summaryMinerQueries.js';
@@ -288,6 +290,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
       await updateRepositoryStatus(fullName, 'idle', branch);
       await safePublishIndexingStatus(fullName, branch, 'idle');
+      await clearIndexingCancellation(fullName, branch);
+      await clearIndexingProgress(fullName, branch);
       return;
     }
 
@@ -346,7 +350,14 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       return;
     }
 
-    let batchResult = { filesProcessed: 0, failedBatches: 0, totalBatches: 0 };
+    let batchResult: ProcessBatchesResult = {
+      successfulBatches: 0,
+      filesProcessed: 0,
+      filesFailed: 0,
+      failedBatches: 0,
+      totalBatches: 0,
+      fallbackUsed: false
+    };
 
     if (filesToProcess.length > 0) {
       correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
@@ -374,7 +385,9 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       await ensureIndexingProgress(fullName, branch);
       const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
       dirFailedBatches = dirResult.failedBatches;
+      applyDirectoryFallbackResult(batchResult, dirResult);
     }
+    await recordRunFallbackUsage(batchResult);
 
     // Phase D: Cleanup - Mark status based on results
     await finalizeIndexing({
@@ -396,6 +409,21 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
   } catch (error) {
     await handleIndexingError(error, repoPath, options, correlatedLogger);
   }
+}
+
+function applyDirectoryFallbackResult(batchResult: ProcessBatchesResult, dirResult: AggregateDirectoriesResult): void {
+  if (!dirResult.fallbackUsed || batchResult.fallbackUsed) return;
+  batchResult.fallbackUsed = true;
+  batchResult.fallbackPrimaryAgentAlias = dirResult.fallbackPrimaryAgentAlias;
+  batchResult.fallbackAgentAlias = dirResult.fallbackAgentAlias;
+}
+
+async function recordRunFallbackUsage(batchResult: ProcessBatchesResult): Promise<void> {
+  if (!batchResult.fallbackUsed || !batchResult.fallbackPrimaryAgentAlias || !batchResult.fallbackAgentAlias) return;
+  await recordPrimarySummarizationQuotaFailure({
+    primaryAgentAlias: batchResult.fallbackPrimaryAgentAlias,
+    fallbackAgentAlias: batchResult.fallbackAgentAlias
+  });
 }
 
 async function handleIndexingError(

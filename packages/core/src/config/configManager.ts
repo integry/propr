@@ -452,6 +452,7 @@ export async function recordPrimarySummarizationQuotaFailure(options: {
                 warning.message = `Promoted summarization fallback ${options.fallbackAgentAlias} after ${failureCount} primary quota failures.`;
                 delete failuresByAlias[options.primaryAgentAlias];
                 state.primary_quota_failures = 0;
+                state.primary_quota_failures_by_alias = {};
             }
         }
 
@@ -465,12 +466,13 @@ export async function recordPrimarySummarizationQuotaFailure(options: {
 export async function clearSummarizationPrimaryQuotaFailures(): Promise<void> {
     await mutateSummarizationRuntimeState(async state => {
         const hasFailuresByAlias = Object.keys(state.primary_quota_failures_by_alias || {}).length > 0;
-        if (state.primary_quota_failures === 0 && !hasFailuresByAlias && !state.warning) {
+        const clearableWarning = state.warning && state.warning.mode !== 'cooldown';
+        if (state.primary_quota_failures === 0 && !hasFailuresByAlias && !clearableWarning) {
             return { result: undefined, save: false };
         }
         state.primary_quota_failures = 0;
         state.primary_quota_failures_by_alias = {};
-        delete state.warning;
+        if (clearableWarning) delete state.warning;
         return { result: undefined, save: true };
     });
 }
