@@ -54,11 +54,15 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 ```
 
-Apply it:
+Apply it. The SSH service is named `ssh` on most Debian/Ubuntu images but `sshd`
+on some, so try both:
 
 ```bash
-sudo systemctl restart ssh
+sudo systemctl restart ssh || sudo systemctl restart sshd
 ```
+
+Keep your existing root session open and confirm a **new** session still
+connects before relying on the change.
 
 ## 2. Patch The System And Enable Automatic Security Updates
 
@@ -150,18 +154,20 @@ Running `propr init stack` or agent logins as root places credentials and
 files under `/root`, where the stack cannot find them.
 :::
 
-Each coding agent runs from credentials mounted off the host. Log in to at least
-one agent CLI **as `you`** (not root), so the credential directory lives under
-`/home/you` where the stack expects it. For example:
+Each coding agent runs from credentials mounted off the host. **Install the CLI
+for each agent you intend to use first** (only `@propr/cli`, Docker, and Node were
+installed above — the agent CLIs are separate), then log in **as `you`** (not
+root) so the credential directory lives under `/home/you` where the stack expects
+it. For example:
 
 ```bash
-claude login        # Claude Code  -> ~/.claude
-# or: agy login     # Antigravity  -> ~/.gemini
+claude login        # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-code)
+# or: agy login     # Antigravity  -> ~/.gemini  (curl -fsSL https://antigravity.google/cli/install.sh | bash)
 # codex / opencode / vibe similarly; see Agents and Models
 ```
 
-See [Agents and Models](../features/agents-and-models.md) for each agent's login
-and credential directory.
+See [Agents and Models](../features/agents-and-models.md) for each agent's install
+command, login step, and credential directory.
 
 ## 6. Scaffold The Stack
 
@@ -359,7 +365,11 @@ Only `https://propr.example.com` (443) and SSH (22) should answer.
 ## 12. Operate It
 
 - **Updates:** `sudo npm update -g @propr/cli && propr start --restart` pulls the
-  matching service images and recreates the stack. Unattended-upgrades keeps the
+  matching service images and recreates the stack. Use the **same method you
+  installed the CLI with** — `sudo` here matches the root-owned global install in
+  step 4. If you instead installed under a user-managed npm prefix (so `npm -g`
+  needs no `sudo`), drop the `sudo`; mixing the two can update a different copy or
+  create root-owned files in a user-owned prefix. Unattended-upgrades keeps the
   OS patched.
 - **Backups:** persist `/srv/propr/data` (SQLite, WAL-aware) and the
   `propr-redis-data` volume; `repos/` is re-creatable. See
@@ -387,6 +397,15 @@ includes Tunnel and Access).
 This replaces step 9's public TLS: keep nginx, but it serves plain HTTP on
 localhost and Cloudflare handles the certificate at the edge. Skip Certbot.
 
+:::tip Plan your issue-intake mode now
+If you add the optional [Access identity gate](#optional-add-an-access-identity-gate)
+below, **polling** (ProPR's default) is the recommended mode — an SSO gate blocks
+GitHub's server-to-server webhook POSTs to `/webhook`. Only enable webhooks (step
+10) behind Access if you explicitly add a *Bypass* policy for the `/webhook`
+path, as detailed at the end of this section. Decide before configuring webhooks
+to avoid silently dropped deliveries.
+:::
+
 ### Install And Create The Tunnel
 
 ```bash
@@ -403,9 +422,22 @@ cloudflared tunnel create propr        # prints a tunnel UUID and writes a creds
 cloudflared tunnel route dns propr propr.example.com
 ```
 
-Write `/etc/cloudflared/config.yml`, pointing the tunnel at nginx on localhost
-(replace `<UUID>` and move the credentials JSON written by `tunnel create` to
-`/etc/cloudflared/`):
+Run as `you`, the credentials JSON and cert land under `~/.cloudflared/`. The
+service installed below runs as **root**, so move both the credentials file and
+the config into `/etc/cloudflared/` (root-owned, not world-readable) before
+installing the service. Replace `<UUID>` with the value printed by
+`tunnel create`:
+
+```bash
+sudo mkdir -p /etc/cloudflared
+sudo mv ~/.cloudflared/<UUID>.json /etc/cloudflared/<UUID>.json
+sudo chown root:root /etc/cloudflared/<UUID>.json
+sudo chmod 600 /etc/cloudflared/<UUID>.json
+```
+
+Write `/etc/cloudflared/config.yml` (use `sudo`, since the directory is now
+root-owned), pointing the tunnel at nginx on localhost and at the moved
+credentials file:
 
 ```yaml
 tunnel: <UUID>
@@ -417,11 +449,14 @@ ingress:
   - service: http_status:404
 ```
 
-Install it as a service so it survives reboots:
+Install it as a service so it survives reboots. With the config and credentials
+already in `/etc/cloudflared/`, `service install` picks them up automatically;
+run it after both files are in place:
 
 ```bash
 sudo cloudflared service install
 sudo systemctl enable --now cloudflared
+sudo systemctl status cloudflared      # confirm it started and read the creds file
 ```
 
 ### Close The Public Web Ports

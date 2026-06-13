@@ -23,13 +23,13 @@ Create a stable directory that owns all persistent state:
 sudo mkdir -p /srv/propr/{data,logs,repos}
 sudo chown -R "$USER" /srv/propr
 cd /srv/propr
-chmod 600 your-app-private-key.pem
+chmod 600 your-app-private-key.pem   # only in own GitHub App mode; relay mode has no key file
 ```
 
 | Path | Contents |
 |---|---|
 | `.env` | Server configuration (secrets, URLs, paths) |
-| `your-app-private-key.pem` | GitHub App private key |
+| `your-app-private-key.pem` | GitHub App private key — **only in own GitHub App mode**; relay mode (`GH_AUTH_MODE=relay`) stores no key file here |
 | `data/` | SQLite database (`propr.sqlite` plus `-wal`/`-shm` files) |
 | `logs/` | Log directory mounted into the service containers at `/usr/src/app/logs` |
 | `repos/` | Git working area: `clones/` (cached repository clones) and `worktrees/` (per-task worktrees) |
@@ -217,6 +217,13 @@ image versions; the new version pulls the matching service and agent images:
 sudo npm update -g @propr/cli
 propr start --restart        # pulls updated images and recreates containers
 ```
+
+Run the update with the **same method you installed `@propr/cli` with**. `sudo`
+matches a root-owned global install (the default for a system `apt`/NodeSource
+Node). If your global prefix is user-owned — for example an `nvm`-managed Node or
+a custom `npm config set prefix` under your home directory — omit `sudo`, since
+running it as root can update a different install or leave root-owned files in a
+user-owned prefix. `npm prefix -g` shows which prefix is in effect.
 
 ### Launcher update path
 
