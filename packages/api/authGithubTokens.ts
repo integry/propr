@@ -14,6 +14,11 @@ function isUnrecoverableRefreshError(error?: string): boolean {
     return error === 'bad_refresh_token' || error === 'invalid_grant';
 }
 
+export function isGitHubTokenExpired(req: Request): boolean {
+    const tokenExpiresAt = req.user?.tokenExpiresAt;
+    return typeof tokenExpiresAt === 'number' && tokenExpiresAt <= Date.now();
+}
+
 async function markGitHubSessionReauthRequired(req: Request, reason: string): Promise<void> {
     const user = req.user;
     if (!user) return;
