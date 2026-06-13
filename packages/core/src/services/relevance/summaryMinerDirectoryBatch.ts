@@ -184,17 +184,16 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     state.agentUsed = fallbackAgent as Agent;
     state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
   } catch (fallbackError) {
-    if (isQuotaExhaustionError(fallbackError)) {
-      await recordSummarizationCooldown({
-        repository: fullName,
-        branch,
-        primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgentAliasSetting,
-        reason: 'Primary and fallback directory summarization models are quota-limited.'
-      });
-      throw new SummarizationCooldownRecordedError(fallbackError);
-    }
-    throw fallbackError;
+    await recordSummarizationCooldown({
+      repository: fullName,
+      branch,
+      primaryAgentAlias,
+      fallbackAgentAlias: fallbackAgentAliasSetting,
+      reason: isQuotaExhaustionError(fallbackError)
+        ? 'Primary and fallback directory summarization models are quota-limited.'
+        : `Primary directory summarization model is quota-limited and fallback directory summarization failed: ${(fallbackError as Error).message}`
+    });
+    throw new SummarizationCooldownRecordedError(fallbackError);
   }
 }
 

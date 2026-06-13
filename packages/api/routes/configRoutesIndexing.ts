@@ -157,7 +157,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
-  function validateSummarizationInput(body: unknown): string | null {
+  async function validateSummarizationInput(body: unknown): Promise<string | null> {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return 'request body must be an object';
     const { enabled, agent_alias, fallback_agent_alias, custom_prompt } = body as Record<string, unknown>;
     if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
@@ -165,7 +165,25 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     if (fallback_agent_alias !== undefined && typeof fallback_agent_alias !== 'string') return 'fallback_agent_alias must be a string';
     if (agent_alias && fallback_agent_alias && agent_alias === fallback_agent_alias) return 'fallback_agent_alias must differ from agent_alias';
     if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
+    const agentValidationError = await validateSummarizationAgentAliases(agent_alias, fallback_agent_alias);
+    if (agentValidationError) return agentValidationError;
     return null;
+  }
+
+  async function validateSummarizationAgentAliases(
+    primarySetting: unknown,
+    fallbackSetting: unknown
+  ): Promise<string | null> {
+    const aliases = [primarySetting, fallbackSetting]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map(value => value.split(':')[0]);
+    if (aliases.length === 0) return null;
+
+    const enabledAliases = new Set((await configManager.loadAgents())
+      .filter(agent => agent.enabled)
+      .map(agent => agent.alias));
+    const missingAlias = aliases.find(alias => !enabledAliases.has(alias));
+    return missingAlias ? `summarization agent alias '${missingAlias}' must resolve to an enabled agent` : null;
   }
 
   function buildSummarizationDescription(
@@ -179,7 +197,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
   }
 
   async function postSummarizationSettings(req: Request, res: Response): Promise<void> {
-    const validationError = validateSummarizationInput(req.body);
+    const validationError = await validateSummarizationInput(req.body);
     if (validationError) {
       res.status(400).json({ error: validationError });
       return;

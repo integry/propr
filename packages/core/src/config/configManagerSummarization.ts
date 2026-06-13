@@ -59,8 +59,9 @@ function getCooldownMs(): number {
 }
 
 export async function loadSummarizationSettings(client?: Knex | Knex.Transaction): Promise<SummarizationSettings> {
-    const loader = client ? getConfigWithClient : getConfig;
-    const settings = await loader<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS, client as Knex | Knex.Transaction);
+    const settings = client
+        ? await getConfigWithClient<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS, client)
+        : await getConfig<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS);
     const normalized = { ...DEFAULT_SUMMARIZATION_SETTINGS, ...settings };
     logger.info({ summarization: normalized }, 'Successfully loaded summarization settings');
     return normalized;

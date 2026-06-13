@@ -120,7 +120,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
                   disabled={!settings.enabled || !settings.agent_alias || isReindexing}
                   className="inline-flex items-center px-2.5 py-1 text-xs font-medium text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-amber-700"
                 >
-                  Ignore Cooldown
+                  Queue Once Despite Cooldown
                 </button>
               )}
             </div>

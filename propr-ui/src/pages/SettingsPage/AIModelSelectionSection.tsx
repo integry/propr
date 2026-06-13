@@ -77,6 +77,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const enabledOptions = modelOptions.filter(opt => opt.enabled);
   const disabledOptions = modelOptions.filter(opt => !opt.enabled);
   const summarizationOptions = buildSummarizationOptions(enabledAgents);
+  const fallbackSummarizationOptions = summarizationOptions.filter(opt => opt.value !== summarizationSettings.agent_alias);
   const contextAnalysisOptions = buildContextAnalysisOptions(enabledAgents);
   const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
   const prReviewOptions = buildPrReviewOptions(enabledAgents);
@@ -217,7 +218,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
                 >
                   <option value="">No fallback model</option>
-                  {summarizationOptions.map(opt => (
+                  {fallbackSummarizationOptions.map(opt => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
                     </option>

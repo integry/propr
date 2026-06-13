@@ -112,7 +112,7 @@ describe('summary miner batch fallback', () => {
     assert.equal(state.primary_quota_failures_by_alias.primary, 1);
   });
 
-  test('records primary quota failure without cooldown after non-quota fallback failure', async () => {
+  test('records cooldown and stops after non-quota fallback failure', async () => {
     const primaryAgent = createAgent('primary', 'primary-model', async () => ({
       success: false,
       response: '',
@@ -141,13 +141,14 @@ describe('summary miner batch fallback', () => {
     });
 
     assert.equal(result.success, false);
-    assert.equal(result.stopProcessing, false);
+    assert.equal(result.stopProcessing, true);
 
     const state = await loadSummarizationRuntimeState();
     assert.equal(state.primary_quota_failures, 1);
     assert.equal(state.primary_quota_failures_by_alias.primary, 1);
-    assert.equal(Object.keys(state.cooldowns).length, 0);
-    assert.equal(state.warning?.mode, 'fallback_degraded');
+    assert.equal(Object.keys(state.cooldowns).length, 1);
+    assert.equal(state.warning?.mode, 'cooldown');
+    assert.match(state.warning?.message || '', /fallback summarization failed/);
   });
 
   test('records cooldown and stops after fallback quota failure', async () => {

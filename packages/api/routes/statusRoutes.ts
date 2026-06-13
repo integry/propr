@@ -154,7 +154,7 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
     for (const cooldown of cooldowns.slice(0, maxCooldownWarnings)) {
       warnings.push({
         type: 'summarization_cooldown',
-        message: `${cooldown.repository} (${cooldown.branch}) summarization is paused until ${cooldown.until}: ${cooldown.reason}`
+        message: `${cooldown.repository} (${cooldown.branch}) summarization is paused until ${formatCooldownUntil(cooldown.until)}: ${cooldown.reason}`
       });
     }
     if (cooldowns.length > maxCooldownWarnings) {
@@ -168,6 +168,19 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
     console.error('Error loading summarization warnings:', error);
     return [];
   }
+}
+
+function formatCooldownUntil(until: string): string {
+  const parsed = new Date(until);
+  if (Number.isNaN(parsed.getTime())) return until;
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  });
 }
 
 async function getAgentStatuses(

@@ -208,13 +208,10 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         fallbackAgentAlias: fallbackAgentAliasSetting
       };
     } catch (fallbackError) {
-      if (isQuotaExhaustionError(fallbackError)) {
-        await recordCooldownAfterFallbackFailure({
-          error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
-        });
-        throw new SummarizationCooldownRecordedError(fallbackError);
-      }
-      throw fallbackError;
+      await recordCooldownAfterFallbackFailure({
+        error: fallbackError, fullName, branch, agent, primaryAgentAliasSetting, fallbackAgentAliasSetting
+      });
+      throw new SummarizationCooldownRecordedError(fallbackError);
     }
   }
 }
