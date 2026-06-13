@@ -47,6 +47,38 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/github/repos', { credentials: 'include' });
   });
 
+  it('does not retry refreshed-token responses for mutating requests', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      code: 'TOKEN_REFRESHED',
+    }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const response = await apiFetch('/api/tasks/import', {
+      method: 'POST',
+      body: JSON.stringify({ repository: 'integry/propr' }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('does not retry Request instances after a token refresh response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      code: 'TOKEN_REFRESHED',
+    }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const request = new Request('http://localhost/api/github/repos');
+    const response = await apiFetch(request);
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('does not retry GitHub re-authentication failures', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       code: 'GITHUB_REAUTH_REQUIRED',

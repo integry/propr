@@ -34,9 +34,15 @@ const shouldRetryAfterTokenRefresh = async (response: Response): Promise<boolean
   }
 };
 
+const isReplayableApiRequest = (input: RequestInfo | URL, init?: RequestInit): boolean => {
+  if (typeof Request !== 'undefined' && input instanceof Request) return false;
+  const method = (init?.method ?? 'GET').toUpperCase();
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+};
+
 export const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const response = await fetch(input, init);
-  if (await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
+  if (isReplayableApiRequest(input, init) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
   return response;
 };
 
