@@ -34,6 +34,10 @@ export interface AggregateDirectoriesOptions {
   agent: Agent;
   log: Logger;
   modelOverride?: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
   resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string;
 }
@@ -62,7 +66,10 @@ interface ProcessDepthOptions {
 
 /** Aggregates file summaries into directory summaries (bottom-up), batching multiple directories per API call. */
 export async function aggregateDirectories(options: AggregateDirectoriesOptions): Promise<AggregateDirectoriesResult> {
-  const { fullName, agent, log, modelOverride, resolveSummarizationConfig, branch = 'HEAD' } = options;
+  const {
+    fullName, agent, log, modelOverride, resolveSummarizationConfig, branch = 'HEAD',
+    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting
+  } = options;
   const fileSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
     .andWhere({ branch })
@@ -87,7 +94,16 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
 
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
-  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, effectiveModel: modelId, agentAliasSetting: agent.config.alias };
+  const initialConfig: SummarizationAgentConfig = {
+    agent,
+    modelOverride,
+    effectiveModel: modelId,
+    agentAliasSetting: agent.config.alias,
+    fallbackAgent,
+    fallbackModelOverride,
+    fallbackEffectiveModel,
+    fallbackAgentAliasSetting
+  };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   for (const depth of depths) {

@@ -60,7 +60,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch, ignoreCooldown });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
@@ -101,7 +101,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         'reindex-all-trigger', 'reindex_all_triggered', req.user?.username
       );
 
-      res.json({ success: true, repositoriesQueued });
+      res.json({ success: true, repositoriesQueued, ignoreCooldown });
     } catch (error) {
       console.error('Error in /api/config/summarization/reindex-all POST:', error);
       res.status(500).json({ error: 'Failed to trigger reindexing' });

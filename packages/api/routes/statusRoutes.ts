@@ -144,13 +144,21 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
   try {
     const state = await loadRuntimeState();
     const warnings: Array<{ type: string; message: string }> = [];
+    const maxCooldownWarnings = 5;
     if (state.warning && state.warning.mode !== 'cooldown') {
       warnings.push({ type: `summarization_${state.warning.mode}`, message: state.warning.message });
     }
-    for (const cooldown of Object.values(state.cooldowns || {})) {
+    const cooldowns = Object.values(state.cooldowns || {});
+    for (const cooldown of cooldowns.slice(0, maxCooldownWarnings)) {
       warnings.push({
         type: 'summarization_cooldown',
         message: `${cooldown.repository} (${cooldown.branch}) summarization is paused until ${cooldown.until}: ${cooldown.reason}`
+      });
+    }
+    if (cooldowns.length > maxCooldownWarnings) {
+      warnings.push({
+        type: 'summarization_cooldown_summary',
+        message: `${cooldowns.length - maxCooldownWarnings} additional repositories are in summarization cooldown.`
       });
     }
     return warnings;

@@ -12,6 +12,12 @@ type StatusRoutesDeps = {
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
   now?: () => number;
+  loadSummarizationRuntimeState?: () => Promise<{
+    primary_quota_failures: number;
+    primary_quota_failures_by_alias: Record<string, number>;
+    cooldowns: Record<string, { repository: string; branch: string; until: string; reason: string }>;
+    warning?: { mode: 'fallback_degraded' | 'fallback_promoted' | 'cooldown'; message: string; recorded_at: string };
+  }>;
 };
 
 type StatusAgentRegistry = {
@@ -208,4 +214,34 @@ test('/api/status maps indexing queue states', async () => {
     });
     assert.equal(body.indexing, expected);
   }
+});
+
+test('/api/status caps summarization cooldown warnings', async () => {
+  const cooldowns = Object.fromEntries(Array.from({ length: 7 }, (_, index) => [
+    `cooldown-${index}`,
+    {
+      repository: `owner/repo-${index}`,
+      branch: 'main',
+      until: '2026-06-14T00:00:00.000Z',
+      reason: 'quota-limited',
+    },
+  ]));
+  const body = await readStatus({
+    loadSummarizationRuntimeState: async () => ({
+      primary_quota_failures: 0,
+      primary_quota_failures_by_alias: {},
+      cooldowns,
+    }),
+  });
+
+  assert.deepEqual(body.warnings, [
+    ...Array.from({ length: 5 }, (_, index) => ({
+      type: 'summarization_cooldown',
+      message: `owner/repo-${index} (main) summarization is paused until 2026-06-14T00:00:00.000Z: quota-limited`,
+    })),
+    {
+      type: 'summarization_cooldown_summary',
+      message: '2 additional repositories are in summarization cooldown.',
+    },
+  ]);
 });

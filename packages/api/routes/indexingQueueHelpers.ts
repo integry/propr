@@ -194,7 +194,7 @@ export async function queueIndexingJob(
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
   const effectiveBranch = configManager.normalizeSummarizationBranch(baseBranch);
   const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-    j.data.repository === repository && (j.data.baseBranch || 'HEAD') === effectiveBranch
+    j.data.repository === repository && configManager.normalizeSummarizationBranch(j.data.baseBranch) === effectiveBranch
   );
   if (alreadyQueued) {
     return { success: false, error: 'Indexing job already queued for this repository and branch' };
@@ -256,7 +256,7 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
     const matchingJobs = jobs.filter((j: { data: IndexingJobData }) => {
       if (j.data.repository !== repository) return false;
       if (branch) {
-        return (j.data.baseBranch || 'HEAD') === branch;
+        return configManager.normalizeSummarizationBranch(j.data.baseBranch) === configManager.normalizeSummarizationBranch(branch);
       }
       return true;
     });
@@ -266,7 +266,7 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
 
     if (matchingJobs.length > 0) {
       for (const job of matchingJobs) {
-        const jobBranch = job.data.baseBranch || 'HEAD';
+        const jobBranch = configManager.normalizeSummarizationBranch(job.data.baseBranch);
         const state = await job.getState();
         if (state === 'active') {
           await requestIndexingCancellation(repository, jobBranch);

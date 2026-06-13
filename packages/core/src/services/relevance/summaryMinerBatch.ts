@@ -164,7 +164,11 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
     const results = await analyzeBatchWithAgent({
       prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`
     });
-    await clearSummarizationPrimaryQuotaFailures();
+    await clearSummarizationPrimaryQuotaFailures({
+      primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
+      repository: fullName,
+      branch
+    });
     return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
   } catch (primaryError) {
     if (!isQuotaExhaustionError(primaryError)) {

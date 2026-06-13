@@ -299,7 +299,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
 
     // Get agent from registry
-    const { agent, modelOverride, effectiveModel } = await setupAgent(settings);
+    const agentConfig = await setupAgent(settings);
+    const { agent, modelOverride, effectiveModel } = agentConfig;
     const resolveSummarizationConfig = async () => {
       const latestSettings = await loadSummarizationSettings();
       if (!latestSettings.enabled) {
@@ -374,6 +375,10 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         agent,
         log: correlatedLogger,
         modelOverride,
+        fallbackAgent: agentConfig.fallbackAgent,
+        fallbackModelOverride: agentConfig.fallbackModelOverride,
+        fallbackEffectiveModel: agentConfig.fallbackEffectiveModel,
+        fallbackAgentAliasSetting: agentConfig.fallbackAgentAliasSetting,
         customPrompt: settings.custom_prompt,
         resolveSummarizationConfig,
         branch
@@ -384,7 +389,18 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     let dirFailedBatches = 0;
     if (!batchResult.stopProcessing && (batchResult.filesProcessed > 0 || filesToDelete.length > 0)) {
       await ensureIndexingProgress(fullName, branch);
-      const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
+      const dirResult = await aggregateDirectories({
+        fullName,
+        agent,
+        log: correlatedLogger,
+        modelOverride,
+        fallbackAgent: agentConfig.fallbackAgent,
+        fallbackModelOverride: agentConfig.fallbackModelOverride,
+        fallbackEffectiveModel: agentConfig.fallbackEffectiveModel,
+        fallbackAgentAliasSetting: agentConfig.fallbackAgentAliasSetting,
+        resolveSummarizationConfig,
+        branch
+      });
       dirFailedBatches = dirResult.failedBatches;
       applyDirectoryFallbackResult(batchResult, dirResult);
     }

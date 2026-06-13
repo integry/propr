@@ -123,12 +123,16 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
   prompt: string;
   state: DirectoryBatchState;
 }): Promise<void> {
-  const { prompt, directories, agent, modelOverride, fullName, state } = options;
+  const { prompt, directories, agent, modelOverride, fullName, branch, primaryAgentAliasSetting, state } = options;
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
       prompt, directories, agent, modelOverride, context: `directory_aggregation:${fullName}`
     });
-    await clearSummarizationPrimaryQuotaFailures();
+    await clearSummarizationPrimaryQuotaFailures({
+      primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
+      repository: fullName,
+      branch
+    });
   } catch (primaryError) {
     await handlePrimaryDirectoryFailure(primaryError, options);
   }

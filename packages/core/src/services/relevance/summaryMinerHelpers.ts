@@ -50,6 +50,10 @@ export interface ProcessBatchesOptions {
   log: Logger;
   modelOverride?: string; // Optional model override for token budgeting and logging
   customPrompt?: string; // Optional custom prompt to override default instructions
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
   resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string; // Branch being indexed (defaults to 'HEAD')
 }
@@ -72,7 +76,10 @@ export interface ProcessBatchesResult {
  */
 // eslint-disable-next-line complexity
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
-  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, resolveSummarizationConfig, branch = 'HEAD' } = options;
+  const {
+    repoPath, fullName, files, agent, log, modelOverride, customPrompt, resolveSummarizationConfig, branch = 'HEAD',
+    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting
+  } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
@@ -94,7 +101,17 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let fallbackPrimaryAgentAlias: string | undefined;
   let fallbackAgentAlias: string | undefined;
 
-  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, customPrompt, effectiveModel: modelId, agentAliasSetting: agent.config.alias };
+  const initialConfig: SummarizationAgentConfig = {
+    agent,
+    modelOverride,
+    customPrompt,
+    effectiveModel: modelId,
+    agentAliasSetting: agent.config.alias,
+    fallbackAgent,
+    fallbackModelOverride,
+    fallbackEffectiveModel,
+    fallbackAgentAliasSetting
+  };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   for (const file of files) {
