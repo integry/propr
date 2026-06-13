@@ -36,7 +36,7 @@ The **cost preview** estimates the plan-generation cost and auto-refreshes as yo
 
 When the inputs look right, generate the plan. You can abort generation while it runs.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the Define & Context step with a filled prompt, an attached screenshot, the granularity selector on Balanced, the context level selector, and the cost preview visible. Use a real repository with Smart File Selection enabled. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the Define & Context step with a filled prompt, an attached screenshot, the granularity selector on Balanced, the context level selector, and the cost preview visible. Use a real repository with Smart File Selection enabled. */}
 
 ## Step 2: Review Plan
 
@@ -51,7 +51,7 @@ Review the generated plan like a proposal:
 
 Planning is the best point to keep work reviewable. When the plan is ready, finalize it with the **Create N GitHub Issues** button; ProPR creates one GitHub issue per plan item.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the Review Plan step showing a generated plan with several issues in the editor, the refinement chat panel, and the "Create N GitHub Issues" button. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the Review Plan step showing a generated plan with several issues in the editor, the refinement chat panel, and the "Create N GitHub Issues" button. */}
 
 ## Step 3: Execution
 
@@ -66,7 +66,7 @@ Configure how the created issues run:
 
 Start execution, watch the task records in the Web UI, and review the created pull requests. For larger changes, run one planned issue first and review the result before launching the rest.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the Execution step for a plan with 3+ issues, showing per-issue agent/model selectors, the multi-model comparison toggle with Apply to All, and the Auto-merge, Epic PR, and Run ultrafix options. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the Execution step for a plan with 3+ issues, showing per-issue agent/model selectors, the multi-model comparison toggle with Apply to All, and the Auto-merge, Epic PR, and Run ultrafix options. */}
 
 ## CLI Equivalent
 

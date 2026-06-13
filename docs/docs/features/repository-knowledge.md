@@ -8,7 +8,7 @@ Repository knowledge helps ProPR plan and run with better context. Not every tas
 
 The Repositories page in the Web UI is the home for this: each repository entry has a status indicator and reindex control, plus a workspace with four tabs — **Chat**, **Improve**, **Browse**, and **To-Dos**.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the Repositories page with one indexed repository selected and its workspace open on the Browse tab, showing the tab row (Chat / Improve / Browse / To-Dos), the indexing status indicator, and the reindex button. Index the repository first so the status reads "Indexed". -->
+{/* SCREENSHOT PLACEHOLDER: Capture the Repositories page with one indexed repository selected and its workspace open on the Browse tab, showing the tab row (Chat / Improve / Browse / To-Dos), the indexing status indicator, and the reindex button. Index the repository first so the status reads "Indexed". */}
 
 ## Indexing And Summaries
 

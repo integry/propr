@@ -30,7 +30,7 @@ Filter the list by status (success/failed), work type (task/plan/repository), ex
 
 Not every provider exposes identical data. ProPR normalizes what it can and leaves provider-specific gaps visible (for example, token counts may be null for some agents).
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the LLM Log page with several entries of different execution types, the filter dropdowns (Status, Work, Type, Model) visible in the header, and one row expanded to show its details (repository, session/correlation IDs, cache statistics). Run a few tasks and a plan generation first so multiple work types appear. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the LLM Log page with several entries of different execution types, the filter dropdowns (Status, Work, Type, Model) visible in the header, and one row expanded to show its details (repository, session/correlation IDs, cache statistics). Run a few tasks and a plan generation first so multiple work types appear. */}
 
 ## Aggregated Metrics
 

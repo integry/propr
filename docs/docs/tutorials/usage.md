@@ -19,7 +19,7 @@ Use the Web UI to:
 
 Environment variables and CLI commands are mostly for install and development work.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the dashboard home page with at least a few completed tasks, showing queue stats, success rate, and the recent task list. Run two or three small test issues first so the dashboard has real data. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the dashboard home page with at least a few completed tasks, showing queue stats, success rate, and the recent task list. Run two or three small test issues first so the dashboard has real data. */}
 
 ## Run Work From An Issue
 
@@ -73,7 +73,7 @@ Use slash commands only for specific actions:
 
 See [PR Slash Commands](../features/pr-commands.md).
 
-<!-- VIDEO PLACEHOLDER: Record a 30-second clip: post `/review` on an open ProPR pull request, show the AI review comments appearing with severity findings and the `Score: N/10` line, then post `/fix` and show the follow-up commit landing on the PR. -->
+{/* VIDEO PLACEHOLDER: Record a 30-second clip: post `/review` on an open ProPR pull request, show the AI review comments appearing with severity findings and the `Score: N/10` line, then post `/fix` and show the follow-up commit landing on the PR. */}
 
 ## Monitor And Recover
 

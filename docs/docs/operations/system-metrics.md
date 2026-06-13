@@ -14,7 +14,7 @@ The Web UI dashboard combines several API sources:
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the Dashboard page with a populated instance: the Recent Activity task list on the left and the analytics rail on the right showing the Active/Success/Total/Failed grid, Total Cost, the activity sparkline, task status distribution, Repository Breakdown, and Top Models. Run a handful of tasks first so all panels have data. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the Dashboard page with a populated instance: the Recent Activity task list on the left and the analytics rail on the right showing the Active/Success/Total/Failed grid, Total Cost, the activity sparkline, task status distribution, Repository Breakdown, and Top Models. Run a handful of tasks first so all panels have data. */}
 
 ## Watch These First
 
@@ -62,7 +62,7 @@ For provider capacity, ProPR integrates with [Agent Tank](https://agenttank.io),
 - LLM log entries record per-call usage deltas.
 - The integration is best-effort: if the Agent Tank service is unreachable, tasks proceed normally and the sidebar hides itself.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the sidebar Usage section with Agent Tank enabled, showing provider rows (for example Claude and Codex) with colored usage bars and percentages, and one provider expanded to show its session and weekly metrics. Requires a running Agent Tank instance configured in Settings. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the sidebar Usage section with Agent Tank enabled, showing provider rows (for example Claude and Codex) with colored usage bars and percentages, and one provider expanded to show its session and weekly metrics. Requires a running Agent Tank instance configured in Settings. */}
 
 ## Failures
 
