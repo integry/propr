@@ -40,6 +40,7 @@ import {
     loadSettingsFromConfig
 } from '@propr/core';
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
+import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
 import { startLoop, clearState } from './jobs/ultrafixOrchestrationService.js';
@@ -225,6 +226,12 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     await sendHeartbeat();
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
 
+    // Reclaim stale draft context (generated_context + cached file previews) past its TTL.
+    // The first run on startup also backfills any historically-accumulated context.
+    const DRAFT_CONTEXT_SWEEP_INTERVAL_MS = parseInt(process.env.DRAFT_CONTEXT_SWEEP_INTERVAL_MS || `${60 * 60 * 1000}`, 10);
+    await sweepDraftContext();
+    const draftContextSweepInterval = setInterval(() => { void sweepDraftContext(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
+
     let intervalId: NodeJS.Timeout | null = null;
 
     const commentConfig = getCommentConfig();
@@ -345,6 +352,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
+        clearInterval(draftContextSweepInterval);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
@@ -357,6 +365,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
+        clearInterval(draftContextSweepInterval);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
