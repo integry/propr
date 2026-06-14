@@ -9,7 +9,7 @@ import CodeBlock from '@theme/CodeBlock';
 
 import styles from './index.module.css';
 
-const QUICKSTART_SNIPPET = `npm install -g @propr/cli   # Node.js 22+
+const QUICKSTART_SNIPPET = `npm install -g @propr/cli   # Node.js 22+; prefix with sudo only if your global npm prefix requires it
 
 mkdir propr && cd propr
 propr init stack    # scaffold .env + data/ logs/ repos/, detect agent credentials

@@ -201,7 +201,16 @@ you plan to run; each writes its login state to a credential directory under
 
 See [Agents and Models](../features/agents-and-models.md) for each agent's exact
 install command, login step, and credential directory — including the OpenCode
-`XDG_DATA_HOME` requirement for file-based auth.
+`XDG_DATA_HOME` requirement for file-based auth, and the full Codex and Vibe
+install/login steps not shown inline above.
+
+:::warning Finish agent setup before continuing
+This is a branch point: `propr check` in step 11 validates the credentials of
+every agent you intend to run. Install **and** log in to each agent — completing
+the linked agent-specific setup for any (such as Codex or Vibe) that are not
+shown inline here — before moving on, or `propr check` will report missing agent
+CLIs or credentials.
+:::
 
 ## 6. Scaffold The Stack
 
@@ -382,6 +391,8 @@ server {
     location /webhook {
         proxy_pass http://127.0.0.1:4000/webhook;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```

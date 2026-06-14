@@ -93,6 +93,8 @@ server {
     location /webhook {
         proxy_pass http://127.0.0.1:4000/webhook;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
     }
 }
 ```
@@ -214,22 +216,34 @@ complete a Cloudflare Access login and will be blocked. Either:
   would disable the Access gate for the entire app.
 
   Cover both the exact path and any sub-path/trailing-slash variant by adding
-  **two paths** to the same application (Cloudflare matches the path prefix, so
-  these two together catch `/webhook`, `/webhook/`, and `/webhook?...` query
-  forms without matching anything outside the webhook endpoint):
+  **two paths** to the same application, so the bypass is intended to catch
+  `/webhook`, `/webhook/`, and `/webhook?...` query forms without matching
+  anything outside the webhook endpoint:
 
-  | Application domain | Matches |
+  | Application domain | Intended to match |
   |---|---|
   | `propr.example.com/webhook` | the exact endpoint, including `?query` strings |
   | `propr.example.com/webhook/*` | any sub-path such as `/webhook/github` |
 
-  Cloudflare evaluates the more specific path-scoped application before the
-  hostname-wide Allow policy, so **only** these two webhook paths skip SSO while
-  everything else stays gated. After saving, send a test delivery from your
-  GitHub App's **Recent Deliveries** tab and confirm it returns `2xx` (not a
-  Cloudflare Access login redirect) before relying on it. The endpoint stays
-  protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR
-  already verifies.
+  Cloudflare is expected to evaluate the more specific path-scoped application
+  before the hostname-wide Allow policy, so only these two webhook paths skip
+  SSO while everything else stays gated. **Path matching is security-sensitive
+  and Cloudflare's exact prefix/precedence behavior can change, so treat the
+  above as a starting point you must verify, not a guarantee** — confirm the
+  current rules against Cloudflare's
+  [Access application path matching](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-public-app/)
+  and
+  [policy precedence](https://developers.cloudflare.com/cloudflare-one/policies/access/)
+  documentation. Then test both directions before relying on it:
+
+  - Send a test delivery from your GitHub App's **Recent Deliveries** tab and
+    confirm `/webhook` returns `2xx` (not a Cloudflare Access login redirect).
+  - Load `https://propr.example.com/` in a fresh/incognito browser and confirm
+    the app itself still forces SSO — proving the bypass did **not** widen
+    beyond the webhook path.
+
+  The endpoint stays protected by the mandatory `GH_WEBHOOK_SECRET` HMAC
+  signature that ProPR already verifies.
 
   Because these rules bypass Access by **path prefix**, treat the bypass as
   security-sensitive and re-audit it whenever you upgrade ProPR or add routes.

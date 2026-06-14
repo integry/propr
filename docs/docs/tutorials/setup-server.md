@@ -82,11 +82,15 @@ On the server, the CLI control plane is the simplest path (Node.js 22+):
 sudo mkdir -p /srv/propr && sudo chown "$USER" /srv/propr && cd /srv/propr
 propr init stack               # scaffold .env + data/ logs/ repos/
 # configure GitHub auth in .env: own App (GH_APP_ID, GH_INSTALLATION_ID,
-# HOST_GH_PRIVATE_KEY) or a shared App via `propr relay enroll` —
-# see ../operations/github-auth.md
+# HOST_GH_PRIVATE_KEY) or a shared App via `propr relay enroll`
 propr check
 propr start --no-tui
 ```
+
+Configure GitHub auth in `.env` before `propr check` — either your own App
+(`GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`) or a shared App via
+`propr relay enroll`. See [GitHub Authentication](../operations/github-auth.md)
+for the full walkthrough.
 
 `propr status`, `propr stop`, and `propr start --restart` manage the running stack. Prefer a container-only host? Use the launcher below instead.
 
