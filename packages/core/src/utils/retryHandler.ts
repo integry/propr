@@ -32,10 +32,6 @@ interface ErrorLike {
     code?: string;
     status?: number;
     message?: string;
-    error?: unknown;
-    response?: unknown;
-    body?: unknown;
-    cause?: unknown;
 }
 
 const QUOTA_EXHAUSTION_PATTERNS = [
@@ -79,14 +75,16 @@ function isQuotaExhaustionText(text: string): boolean {
 function collectErrorText(error: unknown): string[] {
     const values: string[] = [];
     const seen = new Set<unknown>();
+    const maxDepth = 10;
+    const maxValues = 80;
 
-    function visit(value: unknown): void {
+    function visit(value: unknown, depth = 0): void {
         if (value === null || value === undefined || seen.has(value)) return;
         if (typeof value === 'string') {
             values.push(value);
             return;
         }
-        if (typeof value !== 'object') return;
+        if (typeof value !== 'object' || depth > maxDepth || values.length >= maxValues) return;
         seen.add(value);
 
         const record = value as ErrorLike & Record<string, unknown>;
@@ -94,11 +92,15 @@ function collectErrorText(error: unknown): string[] {
         const stringified = typeof record.toString === 'function' ? record.toString() : '';
         if (stringified && stringified !== '[object Object]') values.push(stringified);
 
-        visit(record.error);
-        visit(record.response);
-        visit(record.body);
-        visit(record.cause);
-        visit((record.response as Record<string, unknown> | undefined)?.data);
+        if (Array.isArray(value)) {
+            for (const item of value) visit(item, depth + 1);
+            return;
+        }
+
+        for (const nested of Object.values(record)) {
+            visit(nested, depth + 1);
+            if (values.length >= maxValues) break;
+        }
     }
 
     visit(error);

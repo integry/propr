@@ -200,7 +200,11 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         context: `batch_summarization_fallback:${fullName}`,
         retryOptions: SUMMARIZATION_RETRY
       });
-      await clearSummarizationCooldown(fullName, branch);
+      await clearSummarizationCooldown(fullName, branch, {
+        primaryAgentAlias,
+        fallbackAgentAlias: fallbackAgentAliasSetting,
+        clearDegradationWarning: true
+      });
       return {
         results,
         agentUsed: fallbackAgent,

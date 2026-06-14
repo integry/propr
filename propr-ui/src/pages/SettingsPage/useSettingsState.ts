@@ -25,11 +25,26 @@ import {
 import { Settings } from './types';
 import { parseLoadedData } from './parseLoadedData';
 import { useListManagement } from './useListManagement';
+import type { TriggerReindexAllResponse } from '../../api/proprApi';
 
 // Debounce delay for prompt changes (in milliseconds)
 const PROMPT_DEBOUNCE_DELAY = 800;
 // Timeout for waiting on in-flight save operations (in milliseconds)
 const SAVE_WAIT_TIMEOUT = 5000;
+
+function buildReindexAllSkipMessage(result: TriggerReindexAllResponse): string {
+  const skippedCooldown = result.repositoriesSkippedCooldown ?? 0;
+  const skippedAlreadyQueued = result.repositoriesSkippedAlreadyQueued ?? 0;
+  const failedClone = result.repositoriesFailedClone ?? 0;
+  const skipped = [
+    skippedCooldown > 0 ? `${skippedCooldown} in cooldown` : '',
+    skippedAlreadyQueued > 0 ? `${skippedAlreadyQueued} already queued` : '',
+    failedClone > 0 ? `${failedClone} failed clone` : ''
+  ].filter(Boolean).join(', ');
+  return skipped
+    ? `No repositories were queued for reindexing (${skipped}).`
+    : 'No repositories were queued for reindexing.';
+}
 
 export function useSettingsState() {
   const [loading, setLoading] = useState(true);
@@ -311,6 +326,12 @@ export function useSettingsState() {
     try {
       const result = await triggerReindexAll(ignoreCooldown);
       if (result.success) {
+        const skippedCount = (result.repositoriesSkippedCooldown ?? 0) + (result.repositoriesSkippedAlreadyQueued ?? 0) + (result.repositoriesFailedClone ?? 0);
+        if (result.repositoriesQueued === 0 && skippedCount > 0) {
+          setGlobalError(buildReindexAllSkipMessage(result));
+          setSaveStatus('error');
+          return;
+        }
         setSaveStatus('saved');
         if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);

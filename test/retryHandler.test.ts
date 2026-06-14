@@ -1,6 +1,6 @@
 import { test, describe, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { calculateDelay, isRetryableError, withRetry } from '../packages/core/src/utils/retryHandler.js';
+import { calculateDelay, isQuotaExhaustionError, isRetryableError, withRetry } from '../packages/core/src/utils/retryHandler.js';
 import type { RetryConfig, RetryOptions } from '../packages/core/src/utils/retryHandler.js';
 
 /**
@@ -280,6 +280,31 @@ describe('calculateDelay', () => {
             assert.strictEqual(delay3, 4000);  // 500 * 2^3
             assert.strictEqual(delay4, 5000);  // 500 * 2^4 = 8000, capped at 5000
         });
+    });
+});
+
+describe('isQuotaExhaustionError', () => {
+    test('detects quota exhaustion in nested SDK payload arrays', () => {
+        const error = {
+            response: {
+                data: {
+                    details: [
+                        { message: 'temporary wrapper' },
+                        { raw: { errors: [{ message: 'insufficient quota. Try again after upgrading.' }] } }
+                    ]
+                }
+            }
+        };
+
+        assert.strictEqual(isQuotaExhaustionError(error), true);
+        assert.strictEqual(isRetryableError(error, {
+            maxAttempts: 3,
+            baseDelay: 1000,
+            maxDelay: 30000,
+            exponentialBase: 2,
+            jitter: false,
+            retryableErrors: []
+        }), false);
     });
 });
 

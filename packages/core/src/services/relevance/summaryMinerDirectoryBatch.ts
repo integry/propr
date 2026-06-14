@@ -184,7 +184,11 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
     state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
-    await clearSummarizationCooldown(fullName, branch);
+    await clearSummarizationCooldown(fullName, branch, {
+      primaryAgentAlias,
+      fallbackAgentAlias: fallbackAgentAliasSetting,
+      clearDegradationWarning: true
+    });
   } catch (fallbackError) {
     await recordSummarizationCooldown({
       repository: fullName,

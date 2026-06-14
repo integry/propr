@@ -172,6 +172,10 @@ export interface SummarizationSettings {
 export interface TriggerReindexAllResponse {
   success: boolean;
   repositoriesQueued: number;
+  repositoriesSkippedCooldown?: number;
+  repositoriesSkippedAlreadyQueued?: number;
+  repositoriesFailedClone?: number;
+  ignoreCooldown?: boolean;
 }
 
 export interface PostFollowupResponse {

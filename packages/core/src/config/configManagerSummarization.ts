@@ -1,4 +1,5 @@
 import type { Knex } from 'knex';
+import { Redis } from 'ioredis';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { getConfig, getConfigWithClient, saveConfig } from './configStore.js';
@@ -40,6 +41,7 @@ const DEFAULT_SUMMARIZATION_SETTINGS: SummarizationSettings = { enabled: false, 
 const DEFAULT_SUMMARIZATION_RUNTIME_STATE: SummarizationRuntimeState = { primary_quota_failures: 0, primary_quota_failures_by_alias: {}, cooldowns: {} };
 const SUMMARIZATION_RUNTIME_STATE_KEY = 'summarization_runtime_state';
 const SUMMARIZATION_RUNTIME_STATE_MUTATION_RETRIES = 3;
+const CONFIG_EVENT_CHANNEL = 'system:config:events';
 let summarizationRuntimeStateMutation = Promise.resolve();
 
 export function normalizeSummarizationBranch(branch?: string): string { return branch?.trim() || 'HEAD'; }
@@ -232,6 +234,7 @@ export async function recordPrimarySummarizationQuotaFailure(options: {
         state.warning = warning;
         return { result: { promoted, failureCount: state.primary_quota_failures, warning }, save: true };
     });
+    if (result.promoted) await publishSummarizationSettingsUpdate();
     logger.warn({ failureCount: result.failureCount, promoted: result.promoted, ...options }, 'Recorded summarization primary quota failure');
     return result;
 }
@@ -271,6 +274,33 @@ async function promoteFallbackIfCurrentPrimary(args: {
     return true;
 }
 
+async function publishSummarizationSettingsUpdate(): Promise<void> {
+    if (process.env.NODE_ENV === 'test') return;
+    const redis = new Redis({
+        host: process.env.REDIS_HOST ?? '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+        connectTimeout: 1000,
+        maxRetriesPerRequest: 0,
+        enableReadyCheck: false,
+        lazyConnect: true
+    });
+    redis.on('error', (error: Error) => {
+        logger.warn({ error: error.message }, 'Redis error publishing summarization settings update');
+    });
+    try {
+        await redis.connect();
+        await redis.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({
+            type: 'config_update',
+            subtype: 'summarization_settings_update',
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        logger.warn({ error: (error as Error).message }, 'Failed to publish summarization promotion config update');
+    } finally {
+        redis.disconnect();
+    }
+}
+
 export async function clearSummarizationPrimaryQuotaFailures(options: {
     primaryAgentAlias?: string;
     repository?: string;
@@ -282,11 +312,16 @@ export async function clearSummarizationPrimaryQuotaFailures(options: {
     });
 }
 
-export async function clearSummarizationCooldown(repository: string, branch?: string): Promise<void> {
+export async function clearSummarizationCooldown(
+    repository: string,
+    branch?: string,
+    options: { primaryAgentAlias?: string; fallbackAgentAlias?: string; clearDegradationWarning?: boolean } = {}
+): Promise<void> {
     await mutateSummarizationRuntimeState(async state => {
-        const cooldownCleared = clearMatchingCooldown(state, { repository, branch });
-        const warningCleared = clearMatchingCooldownWarning(state, { repository, branch });
-        return { result: undefined, save: cooldownCleared || warningCleared };
+        const cooldownCleared = clearMatchingCooldown(state, { repository, branch, ...options });
+        const cooldownWarningCleared = cooldownCleared && clearMatchingCooldownWarning(state, { repository, branch, ...options });
+        const degradationWarningCleared = options.clearDegradationWarning ? clearMatchingDegradationWarning(state, options) : false;
+        return { result: undefined, save: cooldownCleared || cooldownWarningCleared || degradationWarningCleared };
     });
 }
 
@@ -322,12 +357,23 @@ function clearAliasFailureState(
 
 function clearMatchingCooldown(
     state: SummarizationRuntimeState,
-    options: { repository?: string; branch?: string }
+    options: { repository?: string; branch?: string; primaryAgentAlias?: string; fallbackAgentAlias?: string }
 ): boolean {
     if (!options.repository) return false;
     const cooldownKey = getSummarizationCooldownKey(options.repository, options.branch);
-    if (!state.cooldowns[cooldownKey]) return false;
+    const cooldown = state.cooldowns[cooldownKey];
+    if (!cooldown) return false;
+    if (!cooldownAliasesMatch(cooldown, options)) return false;
     delete state.cooldowns[cooldownKey];
+    return true;
+}
+
+function cooldownAliasesMatch(
+    cooldown: SummarizationCooldown,
+    options: { primaryAgentAlias?: string; fallbackAgentAlias?: string }
+): boolean {
+    if (options.primaryAgentAlias && cooldown.primary_agent_alias !== options.primaryAgentAlias) return false;
+    if (options.fallbackAgentAlias && cooldown.fallback_agent_alias !== options.fallbackAgentAlias) return false;
     return true;
 }
 
@@ -345,13 +391,34 @@ function clearMatchingWarning(
 
 function clearMatchingCooldownWarning(
     state: SummarizationRuntimeState,
-    options: { repository: string; branch?: string }
+    options: { repository: string; branch?: string; primaryAgentAlias?: string; fallbackAgentAlias?: string }
 ): boolean {
     if (!state.warning) return false;
     if (state.warning.mode !== 'cooldown') return false;
     if (state.warning.repository !== options.repository) return false;
     if (normalizeSummarizationBranch(state.warning.branch) !== normalizeSummarizationBranch(options.branch)) return false;
+    if (!warningAliasesMatch(state.warning, options)) return false;
     delete state.warning;
+    return true;
+}
+
+function clearMatchingDegradationWarning(
+    state: SummarizationRuntimeState,
+    options: { primaryAgentAlias?: string; fallbackAgentAlias?: string }
+): boolean {
+    if (!state.warning) return false;
+    if (state.warning.mode !== 'fallback_degraded') return false;
+    if (!warningAliasesMatch(state.warning, options)) return false;
+    delete state.warning;
+    return true;
+}
+
+function warningAliasesMatch(
+    warning: SummarizationDegradationWarning,
+    options: { primaryAgentAlias?: string; fallbackAgentAlias?: string }
+): boolean {
+    if (options.primaryAgentAlias && warning.primary_agent_alias !== options.primaryAgentAlias) return false;
+    if (options.fallbackAgentAlias && warning.fallback_agent_alias !== options.fallbackAgentAlias) return false;
     return true;
 }
 

@@ -227,4 +227,26 @@ describe('summarization fallback runtime state', () => {
     assert.equal(state.warning, undefined);
     assert.deepEqual(state.cooldowns, {});
   });
+
+  test('cooldown clear preserves newer cooldown with different model aliases', async () => {
+    await recordSummarizationCooldown({
+      repository: 'integry/propr',
+      branch: 'main',
+      primaryAgentAlias: 'primary-new',
+      fallbackAgentAlias: 'fallback-new'
+    });
+
+    await clearSummarizationCooldown('integry/propr', 'main', {
+      primaryAgentAlias: 'primary-old',
+      fallbackAgentAlias: 'fallback-old',
+      clearDegradationWarning: true
+    });
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(Object.keys(state.cooldowns).length, 1);
+    assert.equal(state.warning?.mode, 'cooldown');
+    const cooldown = await getSummarizationCooldown('integry/propr', 'main');
+    assert.equal(cooldown?.primary_agent_alias, 'primary-new');
+    assert.equal(cooldown?.fallback_agent_alias, 'fallback-new');
+  });
 });

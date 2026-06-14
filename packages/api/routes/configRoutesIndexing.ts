@@ -221,7 +221,8 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     agent: AgentConfig
   ): string | null {
     if (!setting.model) return null;
-    return agent.supportedModels.includes(setting.model)
+    const supportedModels = Array.isArray(agent.supportedModels) ? agent.supportedModels : [];
+    return supportedModels.includes(setting.model)
       ? null
       : `summarization model '${setting.model}' is not supported by agent '${setting.alias}'`;
   }

@@ -44,6 +44,7 @@ export const revertCommit = async (params: RevertParams): Promise<void> => {
 export interface SummarizationSettings {
   enabled: boolean;
   agent_alias: string;
+  fallback_agent_alias?: string;
   custom_prompt?: string;
   default_prompt?: string;
 }
@@ -62,7 +63,14 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
   await handleApiResponse(response);
 };
 
-export interface TriggerReindexAllResponse { success: boolean; repositoriesQueued: number; }
+export interface TriggerReindexAllResponse {
+  success: boolean;
+  repositoriesQueued: number;
+  repositoriesSkippedCooldown?: number;
+  repositoriesSkippedAlreadyQueued?: number;
+  repositoriesFailedClone?: number;
+  ignoreCooldown?: boolean;
+}
 export const triggerReindexAll = async (ignoreCooldown = false): Promise<TriggerReindexAllResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, {
     method: 'POST',
