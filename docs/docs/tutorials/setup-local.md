@@ -34,6 +34,7 @@ The ProPR CLI doubles as the [stack control plane](../features/propr-cli.md#loca
 
 ```bash
 npm install -g @propr/cli      # Node.js 22+ — prefix sudo if your global npm needs it
+which propr && propr --version # confirm the CLI is on PATH (catches root/user prefix mismatches)
 
 mkdir propr-deploy && cd propr-deploy
 propr init stack               # creates .env + data/ logs/ repos/, detects agent credentials
@@ -50,7 +51,7 @@ different copy of the CLI or leave root-owned files in a user-owned prefix.
 
 `propr init stack` writes `.env` from the bundled template and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`). Then configure GitHub access:
 
-- **Own GitHub App:** place the private key in the directory (`chmod 600`), and set `GH_APP_ID`, `GH_INSTALLATION_ID`, and `HOST_GH_PRIVATE_KEY=<absolute path to the .pem>` in `.env`.
+- **Own GitHub App:** place the private key in the directory (`chmod 600`), and set `GH_APP_ID`, `GH_INSTALLATION_ID`, and `HOST_GH_PRIVATE_KEY=<absolute path to the .pem>` in `.env`. For `propr start`, use `HOST_GH_PRIVATE_KEY` (a host path the CLI mounts) — do **not** set `GH_PRIVATE_KEY_PATH`, which is the in-container path used only by the [launcher alternative](#alternative-launcher-container-without-the-cli) below. Mixing the two is a common migration mistake.
 - **Shared App via relay:** run `propr relay enroll` to mint a relay token straight into `.env` — no private key needed. Enrollment opens the GitHub OAuth flow in your browser to prove your identity (no prior `propr login` or `propr remote` is required; it talks to the vendor relay, not your local backend). See [GitHub Authentication](../operations/github-auth.md).
 
 Review the rest of `.env` (next section), then:

@@ -151,12 +151,29 @@ Adding `you` to the `docker` group is equivalent to granting root on the host
 (the Docker socket can mount any path). Keep that group membership limited to
 your admin user.
 
-Install Node.js 22+ (required by the ProPR CLI) and the CLI itself:
+Install Node.js 22+ (required by the ProPR CLI) and the CLI itself. On a
+hardening-focused box, add NodeSource as a signed apt repository (keyring +
+`signed-by`) rather than piping their setup script straight into a root shell —
+apt then verifies every package against the pinned GPG key on each `apt update`:
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt -y install nodejs
+# Add NodeSource's signing key and a signed-by apt source for Node.js 22.x
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+  | sudo tee /etc/apt/sources.list.d/nodesource.list
+sudo apt update && sudo apt -y install nodejs
 sudo npm install -g @propr/cli
+```
+
+The one-line `curl … | sudo -E bash -` form from the
+[official NodeSource instructions](https://github.com/nodesource/distributions#installation-instructions)
+does the same repository setup but executes a remote script as root; the explicit
+steps above keep the security posture consistent with the rest of this guide.
+Confirm the CLI is on the expected `PATH` before continuing:
+
+```bash
+which propr && propr --version   # should resolve to the global npm prefix, e.g. /usr/bin/propr
 ```
 
 ## 5. Authenticate Agent CLIs On The Host
@@ -189,7 +206,10 @@ claude login        # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-
 
 These two are examples, not the full set. Install and log in to whichever agents
 you plan to run; each writes its login state to a credential directory under
-`/home/you` that the stack mounts into worker runs:
+`/home/you` that the stack mounts into worker runs. The install commands in the
+table below are convenience snippets that can change upstream — treat
+[Agents and Models](../features/agents-and-models.md) as the canonical source and
+verify there if a command fails:
 
 | Agent | Install | Credential directory |
 |---|---|---|
@@ -385,6 +405,11 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Live task updates ride a long-lived websocket; nginx's default 60s
+        # read/send timeouts would drop idle connections and stall UI updates.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
     # GitHub webhook endpoint (only needed if you enable webhooks; see below)

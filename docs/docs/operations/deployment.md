@@ -229,6 +229,7 @@ image versions; the new version pulls the matching service and agent images:
 
 ```bash
 sudo npm update -g @propr/cli
+which propr && propr --version   # confirm the updated CLI is the one on PATH
 propr start --restart        # pulls updated images and recreates containers
 ```
 
