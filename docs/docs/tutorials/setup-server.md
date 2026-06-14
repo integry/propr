@@ -62,10 +62,10 @@ GH_WEBHOOK_SECRET=generate-a-strong-webhook-secret
 
 `GH_WEBHOOK_SECRET` is mandatory when webhooks are enabled: the API refuses to start if `ENABLE_GITHUB_WEBHOOKS=true` is set without a secret, because unsigned webhook traffic would be rejected anyway.
 
-The webhook endpoint is `POST /webhook` on the API service (port `4000`). Route it through your reverse proxy, for example with nginx:
+The webhook endpoint is `POST /webhook` on the API service (port `4000`). Route it through your reverse proxy, for example with nginx. Use an exact-match `location = /webhook` so the proxy does not also forward prefix siblings such as `/webhookadmin` or `/webhook-test` to the API:
 
 ```nginx
-location /webhook {
+location = /webhook {
     proxy_pass http://127.0.0.1:4000/webhook;
 }
 ```

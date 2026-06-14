@@ -22,7 +22,7 @@ Bring up a complete ProPR stack from the terminal:
 
 ```bash
 propr init stack         # scaffold .env + data/ logs/ repos/, detect agent credentials
-propr check              # verify Docker, images, and agent readiness (--verify smoke-tests agents)
+propr check              # verify Docker, images, agents, and GitHub auth mode (--verify smoke-tests agents)
 propr start              # pull images and start the stack with a live dashboard
 propr status             # local stack status (--json for scripts)
 propr ui                 # open the Web UI (http://localhost:5173)

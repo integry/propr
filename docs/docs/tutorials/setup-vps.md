@@ -460,8 +460,11 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    # GitHub webhook endpoint (only needed if you enable webhooks; see below)
-    location /webhook {
+    # GitHub webhook endpoint (only needed if you enable webhooks; see below).
+    # ProPR serves a single POST /webhook route, so match it exactly with `= `:
+    # a bare `location /webhook` is a prefix match that would also proxy siblings
+    # like /webhookadmin or /webhook-test to the API.
+    location = /webhook {
         proxy_pass http://127.0.0.1:4000/webhook;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

@@ -94,8 +94,11 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    # GitHub webhook endpoint (only needed if you enable webhooks; see below)
-    location /webhook {
+    # GitHub webhook endpoint (only needed if you enable webhooks; see below).
+    # ProPR serves a single POST /webhook route, so match it exactly with `= `:
+    # a bare `location /webhook` is a prefix match that would also proxy siblings
+    # like /webhookadmin or /webhook-test to the API.
+    location = /webhook {
         proxy_pass http://127.0.0.1:4000/webhook;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -287,18 +290,18 @@ and stay on polling:
 Polling needs none of this — it is the default and carries none of the bypass risk.
 :::
 
-Cover both the exact path and any sub-path/trailing-slash variant by adding
-**two paths** to the same application, so the bypass is intended to catch
-`/webhook`, `/webhook/`, and `/webhook?...` query forms without matching
-anything outside the webhook endpoint:
+ProPR serves a single `POST /webhook` route, so scope the bypass to that **exact
+path only** — matching the `location = /webhook` nginx block in the main
+tutorial. Add one path to the application; do not add a broad `/webhook/*`
+sub-path bypass unless a future release documents webhook subpaths you genuinely
+need to exempt:
 
 | Application domain | Intended to match |
 |---|---|
 | `propr.example.com/webhook` | the exact endpoint, including `?query` strings |
-| `propr.example.com/webhook/*` | any sub-path such as `/webhook/github` |
 
 Cloudflare is expected to evaluate the more specific path-scoped application
-before the hostname-wide Allow policy, so only these two webhook paths skip SSO
+before the hostname-wide Allow policy, so only this exact webhook path skips SSO
 while everything else stays gated. **Path matching is security-sensitive and
 Cloudflare's exact prefix/precedence behavior can change, so treat the above as a
 starting point you must verify, not a guarantee** — confirm the current rules
@@ -319,8 +322,8 @@ documentation. Then test both directions before relying on it:
   `https://propr.example.com/webhook-test` — and confirm each is **still forced
   through SSO** (an Access login redirect), not bypassed. If any sibling path
   skips SSO, your bypass is matching by bare prefix and is over-scoped: narrow the
-  application paths until only `/webhook` and its intended subpaths are exempt
-  before you rely on this setup.
+  application path until only the exact `/webhook` endpoint is exempt before you
+  rely on this setup.
 
 The endpoint stays protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature
 that ProPR already verifies.
@@ -330,10 +333,10 @@ standing exception that requires revalidation — not a permanent control. Re-au
 it on **two triggers**: whenever you change Cloudflare configuration (Access
 applications, policies, or their ordering — precedence is what keeps the bypass
 scoped to `/webhook`) and whenever you upgrade ProPR or otherwise add routes.
-Each time, re-run the two-direction test above and confirm the bypass still
-covers only `/webhook` and intended webhook subpaths. If a future release ever
-serves a different route that shares the prefix — a sibling like `/webhookadmin`,
-or anything under `/webhook/` — it would inherit the bypass and sit
+Each time, re-run the test above and confirm the bypass still covers only the
+exact `/webhook` endpoint. If a future release ever serves a different route that
+shares the prefix — a sibling like `/webhookadmin`, or anything under
+`/webhook/` — make sure it has **not** inherited the bypass and is left sitting
 unauthenticated behind Access. Keep the application's paths as narrow as the
 endpoints you actually expose.
 
