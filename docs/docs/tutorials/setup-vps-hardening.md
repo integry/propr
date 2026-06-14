@@ -129,9 +129,11 @@ on the same zone.
 ## 2. Install And Create The Tunnel
 
 ```bash
-# Install cloudflared from Cloudflare's apt repository
+# Install cloudflared from Cloudflare's apt repository. Dearmor the key into a
+# binary keyring so apt's signed-by verification works even if the endpoint
+# serves ASCII-armored output (same pattern as NodeSource in the base tutorial).
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-  | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+  | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
   | sudo tee /etc/apt/sources.list.d/cloudflared.list
 sudo apt update && sudo apt -y install cloudflared
@@ -143,10 +145,10 @@ cloudflared tunnel route dns propr propr.example.com
 ```
 
 Run as `you`, the credentials JSON and cert land under `~/.cloudflared/`. The
-service installed below runs as **root**, so move both the credentials file and
-the config into `/etc/cloudflared/` (root-owned, not world-readable) before
-installing the service. Replace `<UUID>` with the value printed by
-`tunnel create`:
+service installed below runs as **root**, so move the credentials file into
+`/etc/cloudflared/` (root-owned, not world-readable) before installing the
+service; you create the config there directly in the next step. Replace `<UUID>`
+with the value printed by `tunnel create`:
 
 ```bash
 sudo mkdir -p /etc/cloudflared
@@ -298,8 +300,9 @@ endpoints you actually expose.
 
 ## Next Steps
 
-**Resume at [Secure VPS Deployment](./setup-vps.md) step 10** (Restrict Who Can
-Trigger ProPR) — do **not** go back to step 9, which provisions public TLS with
+**Resume at [Secure VPS Deployment](./setup-vps.md#10-restrict-who-can-trigger-propr)
+step 10** (Restrict Who Can Trigger ProPR) — do **not** go back to step 9, which
+provisions public TLS with
 Certbot and nginx and would re-expose the public web ports this tunnel setup
 deliberately avoids. Step 10 finishes configuring the application; then verify and
 start the stack. For ongoing operations, see

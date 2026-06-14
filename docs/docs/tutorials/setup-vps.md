@@ -290,6 +290,7 @@ Choose one auth mode (full detail in [GitHub Authentication](../operations/githu
   state is required:
 
   ```bash
+  cd /srv/propr         # run from the stack directory so the token lands in its .env
   propr relay enroll     # OAuth login, then writes a relay token to .env
   ```
 

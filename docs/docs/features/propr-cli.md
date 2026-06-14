@@ -43,6 +43,9 @@ Running bare `propr` performs the same environment checks as `propr check` (incl
 
 If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay (see [GitHub Authentication](../operations/github-auth.md)):
 
+Run these from the initialized stack directory (the one holding `.env`), so
+`propr relay enroll` writes the token to the right `.env`:
+
 ```bash
 propr relay enroll       # mint a relay token and save it to the stack .env
 propr relay list         # list relay tokens for the installation

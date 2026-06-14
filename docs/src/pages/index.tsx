@@ -264,6 +264,12 @@ function Quickstart() {
           </div>
           <div className="col col--7">
             <CodeBlock language="bash">{QUICKSTART_SNIPPET}</CodeBlock>
+            <p className={styles.quickstartNote}>
+              Global install failing or needing <code>sudo</code> on a system
+              Node? See{' '}
+              <Link to="/docs/tutorials/setup-local">Local Setup</Link> for
+              install-prefix notes.
+            </p>
           </div>
         </div>
       </div>
