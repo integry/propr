@@ -147,6 +147,15 @@ interface DaemonOptions {
     reset?: boolean;
 }
 
+// Reclaim stale draft context (generated_context + cached file previews) past its TTL.
+// The first run on startup also backfills any historically-accumulated context, then
+// it runs on an interval. Returns the interval handle so the caller can clear it on shutdown.
+async function scheduleDraftContextSweep(): Promise<NodeJS.Timeout> {
+    const DRAFT_CONTEXT_SWEEP_INTERVAL_MS = parseInt(process.env.DRAFT_CONTEXT_SWEEP_INTERVAL_MS || `${60 * 60 * 1000}`, 10);
+    await sweepDraftContext();
+    return setInterval(() => { void sweepDraftContext(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
+}
+
 async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // Run migrations first, before loading any configs from the database
     try {
@@ -226,11 +235,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     await sendHeartbeat();
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
 
-    // Reclaim stale draft context (generated_context + cached file previews) past its TTL.
-    // The first run on startup also backfills any historically-accumulated context.
-    const DRAFT_CONTEXT_SWEEP_INTERVAL_MS = parseInt(process.env.DRAFT_CONTEXT_SWEEP_INTERVAL_MS || `${60 * 60 * 1000}`, 10);
-    await sweepDraftContext();
-    const draftContextSweepInterval = setInterval(() => { void sweepDraftContext(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
+    const draftContextSweepInterval = await scheduleDraftContextSweep();
 
     let intervalId: NodeJS.Timeout | null = null;
 
