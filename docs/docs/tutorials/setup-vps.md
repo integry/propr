@@ -139,13 +139,32 @@ publish it.
 *Run as: **root** (or `you` with `sudo`). This is the last root section — steps 5
 onward run as `you`.*
 
-Install Docker Engine from Docker's official repository:
+Install Docker Engine from Docker's official apt repository. As with NodeSource
+below, add the signing key and a `signed-by` apt source rather than piping
+`get.docker.com` straight into a root shell — apt then verifies every Docker
+package against the pinned GPG key on each `apt update`, keeping the posture
+consistent with the rest of this guide:
 
 ```bash
-curl -fsSL https://get.docker.com | sudo sh
+# Add Docker's official GPG key and signed-by apt source
+sudo apt -y install ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt update
+sudo apt -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
 sudo usermod -aG docker you      # run docker without sudo; log out/in to apply
 sudo systemctl enable --now docker
 ```
+
+On Debian, swap `ubuntu` for `debian` in both the key URL and the apt source
+line above. The convenience `curl -fsSL https://get.docker.com | sudo sh` script
+does the same repository setup but executes a remote script as root; the explicit
+steps above keep the security posture consistent with the rest of this guide.
 
 Adding `you` to the `docker` group is equivalent to granting root on the host
 (the Docker socket can mount any path). Keep that group membership limited to
@@ -159,7 +178,7 @@ apt then verifies every package against the pinned GPG key on each `apt update`:
 ```bash
 # Add NodeSource's signing key and a signed-by apt source for Node.js 22.x
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-  | sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+  | sudo gpg --dearmor --yes -o /usr/share/keyrings/nodesource.gpg
 echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
   | sudo tee /etc/apt/sources.list.d/nodesource.list
 sudo apt update && sudo apt -y install nodejs
@@ -279,10 +298,17 @@ Choose one auth mode (full detail in [GitHub Authentication](../operations/githu
 
   ```bash
   # in /srv/propr/.env
+  GH_AUTH_MODE=app                                # app mode is inferred from the keys below, but set it explicitly here
   GH_APP_ID=123456
   GH_INSTALLATION_ID=987654
   HOST_GH_PRIVATE_KEY=/srv/propr/app-private-key.pem
   ```
+
+  App mode is the inferred default once `GH_APP_ID`/`GH_INSTALLATION_ID`/the
+  private key are present (the resolution order is demo → relay → app), so
+  `GH_AUTH_MODE=app` is optional — but set it explicitly to avoid surprises if a
+  relay variable is ever left in the environment. See
+  [GitHub Authentication](../operations/github-auth.md) for the mode precedence.
 
 - **Shared App via relay** — no private key on the server. Enrollment opens the
   GitHub OAuth flow to prove your identity, then writes a relay token to `.env`;

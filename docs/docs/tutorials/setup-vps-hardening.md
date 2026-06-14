@@ -9,9 +9,9 @@ This tutorial adds an optional **Cloudflare Zero Trust** layer on top of the
 traffic from the VPS and, optionally, puts an SSO identity gate in front of the
 application.
 
-Front ProPR with [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-and `cloudflared` makes an **outbound** connection to Cloudflare's edge, which
-terminates TLS and forwards requests down the tunnel to nginx on localhost. You
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+fronts ProPR: `cloudflared` makes an **outbound** connection to Cloudflare's edge,
+which terminates TLS and forwards requests down the tunnel to nginx on localhost. You
 then close ports 80 and 443 entirely — only SSH remains reachable from the
 internet. This requires your domain to be on Cloudflare (the free plan includes
 Tunnel and Access).
@@ -133,7 +133,7 @@ on the same zone.
 # binary keyring so apt's signed-by verification works even if the endpoint
 # serves ASCII-armored output (same pattern as NodeSource in the base tutorial).
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-  | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
+  | sudo gpg --dearmor --yes -o /usr/share/keyrings/cloudflare-main.gpg
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
   | sudo tee /etc/apt/sources.list.d/cloudflared.list
 sudo apt update && sudo apt -y install cloudflared
@@ -247,11 +247,21 @@ it is the user's own browser, which has already authenticated.
 
 ### 4a. (Advanced) Bypass Access For The Webhook Path
 
-:::danger Advanced and security-sensitive — only if you must run webhooks
-Skip this entire subsection unless you have a concrete reason to use webhooks
-instead of polling. Carving a public, unauthenticated hole through your SSO gate
-is exactly the kind of change that can over-expose the app if a path or
-precedence assumption is wrong. Polling (above) avoids the risk altogether.
+:::danger Advanced and security-sensitive — polling is strongly preferred
+**Use polling. Treat this bypass as an exception, not a recommended path.** Skip
+this entire subsection unless you have a concrete, standing reason to run webhooks
+instead of polling — polling (above) is the default, needs no exception, and
+carries none of the risk below.
+
+A bypass carves a public, unauthenticated hole through your SSO gate, and its
+safety depends entirely on Cloudflare's path-matching and route-precedence
+behavior **and** on ProPR's current routes — both of which can change underneath
+you. A wrong path or precedence assumption silently over-exposes the app. Because
+the boundary is this fragile, the bypass is **not** a set-and-forget control: it
+must be re-validated after every Cloudflare configuration change and after every
+ProPR upgrade that could alter routes (see the re-audit note at the end of this
+subsection). If you cannot commit to that revalidation discipline, do not enable
+it — stay on polling.
 :::
 
 If you genuinely need webhook delivery behind Access, add a second,
@@ -290,12 +300,16 @@ documentation. Then test both directions before relying on it:
 The endpoint stays protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature
 that ProPR already verifies.
 
-Because these rules bypass Access by **path prefix**, treat the bypass as
-security-sensitive and re-audit it whenever you upgrade ProPR or add routes.
-Confirm it covers only `/webhook` and intended webhook subpaths. If a future
-release ever serves a different route that shares the prefix — a sibling like
-`/webhookadmin`, or anything under `/webhook/` — it would inherit the bypass and
-sit unauthenticated behind Access. Keep the application's paths as narrow as the
+Because these rules bypass Access by **path prefix**, treat the bypass as a
+standing exception that requires revalidation — not a permanent control. Re-audit
+it on **two triggers**: whenever you change Cloudflare configuration (Access
+applications, policies, or their ordering — precedence is what keeps the bypass
+scoped to `/webhook`) and whenever you upgrade ProPR or otherwise add routes.
+Each time, re-run the two-direction test above and confirm the bypass still
+covers only `/webhook` and intended webhook subpaths. If a future release ever
+serves a different route that shares the prefix — a sibling like `/webhookadmin`,
+or anything under `/webhook/` — it would inherit the bypass and sit
+unauthenticated behind Access. Keep the application's paths as narrow as the
 endpoints you actually expose.
 
 ## Next Steps
