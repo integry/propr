@@ -44,6 +44,10 @@ let summarizationRuntimeStateMutation = Promise.resolve();
 
 export function normalizeSummarizationBranch(branch?: string): string { return branch?.trim() || 'HEAD'; }
 
+function normalizeSummarizationAgentAliasSetting(value?: string): string {
+    return value?.trim() || '';
+}
+
 function getSummarizationCooldownKey(repository: string, branch?: string): string {
     return JSON.stringify([repository, normalizeSummarizationBranch(branch)]);
 }
@@ -62,16 +66,25 @@ export async function loadSummarizationSettings(client?: Knex | Knex.Transaction
     const settings = client
         ? await getConfigWithClient<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS, client)
         : await getConfig<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS);
-    const normalized = { ...DEFAULT_SUMMARIZATION_SETTINGS, ...settings };
+    const normalized = normalizeSummarizationSettings(settings);
     logger.info({ summarization: normalized }, 'Successfully loaded summarization settings');
     return normalized;
 }
 
 export async function saveSummarizationSettings(settings: SummarizationSettings, client?: Knex | Knex.Transaction): Promise<boolean> {
-    const normalized = { ...DEFAULT_SUMMARIZATION_SETTINGS, ...settings };
+    const normalized = normalizeSummarizationSettings(settings);
     await saveConfig('summarization', normalized, client);
     logger.info({ summarization: normalized }, 'Successfully saved summarization settings');
     return true;
+}
+
+function normalizeSummarizationSettings(settings: Partial<SummarizationSettings> = {}): SummarizationSettings {
+    return {
+        ...DEFAULT_SUMMARIZATION_SETTINGS,
+        ...settings,
+        agent_alias: normalizeSummarizationAgentAliasSetting(settings.agent_alias),
+        fallback_agent_alias: normalizeSummarizationAgentAliasSetting(settings.fallback_agent_alias)
+    };
 }
 
 export async function loadSummarizationRuntimeState(): Promise<SummarizationRuntimeState> {

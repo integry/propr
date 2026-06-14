@@ -11,6 +11,7 @@ const {
   loadSummarizationRuntimeState
 } = await import('../packages/core/src/index.js');
 const { processSingleBatch } = await import('../packages/core/src/services/relevance/summaryMinerBatch.js');
+const { processDirectoryBatch } = await import('../packages/core/src/services/relevance/summaryMinerDirectoryBatch.js');
 
 function createAgent(alias: string, defaultModel: string, analyze: (prompt: string, options?: { model?: string }) => Promise<unknown>) {
   return {
@@ -185,6 +186,107 @@ describe('summary miner batch fallback', () => {
 
     const state = await loadSummarizationRuntimeState();
     assert.equal(state.warning?.mode, 'cooldown');
+    assert.equal(Object.keys(state.cooldowns).length, 1);
+  });
+
+  test('directory batch fallback tracks model-specific primary and fallback aliases', async () => {
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const primaryAgent = createAgent('primary', 'primary-default', async (_prompt, options) => {
+      primaryCalls++;
+      assert.equal(options?.model, 'gpt-expensive');
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'gpt-expensive',
+        executionTimeMs: 1,
+        error: 'insufficient quota'
+      };
+    });
+    const fallbackAgent = createAgent('fallback', 'fallback-default', async (_prompt, options) => {
+      fallbackCalls++;
+      assert.equal(options?.model, 'gpt-cheap');
+      return {
+        success: true,
+        response: JSON.stringify({
+          summaries: [{ path: 'integry/propr/src', summary: 'Contains source modules and shared helpers.' }]
+        }),
+        modelUsed: 'gpt-cheap',
+        executionTimeMs: 1
+      };
+    });
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'gpt-expensive',
+      primaryAgentAliasSetting: 'primary:gpt-expensive',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'gpt-cheap',
+      fallbackAgentAliasSetting: 'fallback:gpt-cheap',
+      fullName: 'integry/propr',
+      branch: 'main'
+    });
+
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.stopProcessing, false);
+    assert.equal(result.primaryAgentAlias, 'primary:gpt-expensive');
+    assert.equal(result.fallbackAgentAlias, 'fallback:gpt-cheap');
+    assert.equal(result[0].summary, 'Contains source modules and shared helpers.');
+    assert.equal(primaryCalls, 1);
+    assert.equal(fallbackCalls, 1);
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures_by_alias['primary:gpt-expensive'], 1);
+  });
+
+  test('directory batch records cooldown and stops after fallback quota failure', async () => {
+    const primaryAgent = createAgent('primary', 'primary-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'primary-model',
+      executionTimeMs: 1,
+      error: 'primary quota exceeded'
+    }));
+    const fallbackAgent = createAgent('fallback', 'fallback-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'fallback-model',
+      executionTimeMs: 1,
+      error: 'fallback quota exceeded'
+    }));
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary:model-a',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-model',
+      fallbackAgentAliasSetting: 'fallback:model-b',
+      fullName: 'integry/propr',
+      branch: 'main'
+    });
+
+    assert.equal(result.fallbackUsed, false);
+    assert.equal(result.stopProcessing, true);
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.warning?.mode, 'cooldown');
+    assert.equal(state.warning?.primary_agent_alias, 'primary:model-a');
+    assert.equal(state.warning?.fallback_agent_alias, 'fallback:model-b');
     assert.equal(Object.keys(state.cooldowns).length, 1);
   });
 });

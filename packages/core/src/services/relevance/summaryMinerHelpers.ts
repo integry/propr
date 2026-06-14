@@ -49,6 +49,7 @@ export interface ProcessBatchesOptions {
   agent: Agent;
   log: Logger;
   modelOverride?: string; // Optional model override for token budgeting and logging
+  agentAliasSetting?: string;
   customPrompt?: string; // Optional custom prompt to override default instructions
   fallbackAgent?: Agent;
   fallbackModelOverride?: string;
@@ -77,7 +78,7 @@ export interface ProcessBatchesResult {
 // eslint-disable-next-line complexity
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
   const {
-    repoPath, fullName, files, agent, log, modelOverride, customPrompt, resolveSummarizationConfig, branch = 'HEAD',
+    repoPath, fullName, files, agent, log, modelOverride, agentAliasSetting, customPrompt, resolveSummarizationConfig, branch = 'HEAD',
     fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting
   } = options;
   // Calculate budget based on model limits (use override if provided)
@@ -106,7 +107,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     modelOverride,
     customPrompt,
     effectiveModel: modelId,
-    agentAliasSetting: agent.config.alias,
+    agentAliasSetting: agentAliasSetting || agent.config.alias,
     fallbackAgent,
     fallbackModelOverride,
     fallbackEffectiveModel,

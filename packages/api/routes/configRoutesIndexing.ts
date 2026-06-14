@@ -164,7 +164,9 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
     if (agent_alias !== undefined && typeof agent_alias !== 'string') return 'agent_alias must be a string';
     if (fallback_agent_alias !== undefined && typeof fallback_agent_alias !== 'string') return 'fallback_agent_alias must be a string';
-    if (agent_alias && fallback_agent_alias && agent_alias === fallback_agent_alias) return 'fallback_agent_alias must differ from agent_alias';
+    const normalizedAgentAlias = typeof agent_alias === 'string' ? normalizeSummarizationAgentAliasSetting(agent_alias) : '';
+    const normalizedFallbackAgentAlias = typeof fallback_agent_alias === 'string' ? normalizeSummarizationAgentAliasSetting(fallback_agent_alias) : '';
+    if (normalizedAgentAlias && normalizedFallbackAgentAlias && normalizedAgentAlias === normalizedFallbackAgentAlias) return 'fallback_agent_alias must differ from agent_alias';
     if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
     const agentValidationError = await validateSummarizationAgentAliases(agent_alias, fallback_agent_alias);
     if (agentValidationError) return agentValidationError;
@@ -193,8 +195,13 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
   }
 
   function parseSummarizationAgentSetting(value: string): { alias: string; model?: string; raw: string } {
-    const [alias, ...modelParts] = value.trim().split(':');
-    return { alias, model: modelParts.length > 0 ? modelParts.join(':') : undefined, raw: value };
+    const raw = normalizeSummarizationAgentAliasSetting(value);
+    const [alias, ...modelParts] = raw.split(':');
+    return { alias, model: modelParts.length > 0 ? modelParts.join(':') : undefined, raw };
+  }
+
+  function normalizeSummarizationAgentAliasSetting(value?: string): string {
+    return value?.trim() || '';
   }
 
   function validateSummarizationModelSetting(
@@ -234,10 +241,12 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     const newCustomPrompt = custom_prompt || '';
     const promptChanged = newCustomPrompt !== (currentSettings.custom_prompt || '');
 
+    const normalizedAgentAlias = normalizeSummarizationAgentAliasSetting(agent_alias);
+    const normalizedFallbackAgentAlias = normalizeSummarizationAgentAliasSetting(fallback_agent_alias);
     const settings = {
       enabled,
-      agent_alias: agent_alias || '',
-      fallback_agent_alias: fallback_agent_alias || '',
+      agent_alias: normalizedAgentAlias,
+      fallback_agent_alias: normalizedFallbackAgentAlias,
       custom_prompt: newCustomPrompt
     };
     const modelAliasesChanged =
@@ -251,7 +260,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     await publishConfigUpdate('summarization_settings_update');
 
     let reindexScheduled = false;
-    if (promptChanged && enabled && agent_alias) {
+    if (promptChanged && enabled && normalizedAgentAlias) {
       reindexScheduled = await scheduleDelayedReindex(redisClient);
     }
 

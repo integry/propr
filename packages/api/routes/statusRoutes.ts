@@ -150,7 +150,7 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
       warnings.push({ type: `summarization_${state.warning.mode}`, message: state.warning.message });
     }
     const cooldowns = Object.values(state.cooldowns || {})
-      .sort((left, right) => Date.parse(right.until) - Date.parse(left.until));
+      .sort((left, right) => Date.parse(left.until) - Date.parse(right.until));
     for (const cooldown of cooldowns.slice(0, maxCooldownWarnings)) {
       warnings.push({
         type: 'summarization_cooldown',

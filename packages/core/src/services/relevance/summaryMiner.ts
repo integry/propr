@@ -113,11 +113,12 @@ async function resolveAgentAlias(agentAliasSetting?: string): Promise<Omit<Agent
   await registry.ensureInitialized();
 
   // Parse agent_alias which may be in format "agent_alias:model" or just "agent_alias"
-  let agentAlias = agentAliasSetting;
+  const normalizedAgentAliasSetting = agentAliasSetting?.trim() || '';
+  let agentAlias = normalizedAgentAliasSetting;
   let modelOverride: string | undefined;
 
-  if (agentAliasSetting && agentAliasSetting.includes(':')) {
-    const parts = agentAliasSetting.split(':');
+  if (normalizedAgentAliasSetting && normalizedAgentAliasSetting.includes(':')) {
+    const parts = normalizedAgentAliasSetting.split(':');
     agentAlias = parts[0];
     modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
   }
@@ -132,16 +133,18 @@ async function resolveAgentAlias(agentAliasSetting?: string): Promise<Omit<Agent
 
   const effectiveModel = modelOverride || agent.config.defaultModel;
 
-  return { agent, modelOverride, effectiveModel, agentAliasSetting: agentAliasSetting || agent.config.alias };
+  return { agent, modelOverride, effectiveModel, agentAliasSetting: normalizedAgentAliasSetting || agent.config.alias };
 }
 
 async function setupAgent(settings: { agent_alias?: string; fallback_agent_alias?: string }): Promise<AgentSetupResult> {
-  const primary = await resolveAgentAlias(settings.agent_alias);
-  if (!settings.fallback_agent_alias || settings.fallback_agent_alias === settings.agent_alias) {
+  const primaryAliasSetting = settings.agent_alias?.trim() || '';
+  const fallbackAliasSetting = settings.fallback_agent_alias?.trim() || '';
+  const primary = await resolveAgentAlias(primaryAliasSetting);
+  if (!fallbackAliasSetting || fallbackAliasSetting === primaryAliasSetting) {
     return primary;
   }
 
-  const fallback = await resolveAgentAlias(settings.fallback_agent_alias);
+  const fallback = await resolveAgentAlias(fallbackAliasSetting);
   return {
     ...primary,
     fallbackAgent: fallback.agent,
@@ -218,13 +221,14 @@ async function handleNoFilesToProcess(options: {
   iconPath: string | null;
   agent: Agent;
   modelOverride: string | undefined;
+  agentAliasSetting: string;
   resolveSummarizationConfig: () => Promise<AgentSetupResult & { customPrompt?: string }>;
   log: Logger;
 }): Promise<void> {
-  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, resolveSummarizationConfig, log } = options;
+  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, agentAliasSetting, resolveSummarizationConfig, log } = options;
   log.info('No files need processing, all file summaries up to date');
   await ensureIndexingProgress(fullName, branch);
-  const dirResult = await aggregateDirectories({ fullName, agent, log, modelOverride, resolveSummarizationConfig, branch });
+  const dirResult = await aggregateDirectories({ fullName, agent, log, modelOverride, agentAliasSetting, resolveSummarizationConfig, branch });
   await clearIndexingCancellation(fullName, branch);
   await clearIndexingProgress(fullName, branch);
 
@@ -300,7 +304,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Get agent from registry
     const agentConfig = await setupAgent(settings);
-    const { agent, modelOverride, effectiveModel } = agentConfig;
+    const { agent, modelOverride, effectiveModel, agentAliasSetting } = agentConfig;
     const resolveSummarizationConfig = async () => {
       const latestSettings = await loadSummarizationSettings();
       if (!latestSettings.enabled) {
@@ -345,6 +349,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         iconPath,
         agent,
         modelOverride,
+        agentAliasSetting,
         resolveSummarizationConfig,
         log: correlatedLogger
       });
@@ -375,6 +380,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         agent,
         log: correlatedLogger,
         modelOverride,
+        agentAliasSetting,
         fallbackAgent: agentConfig.fallbackAgent,
         fallbackModelOverride: agentConfig.fallbackModelOverride,
         fallbackEffectiveModel: agentConfig.fallbackEffectiveModel,
@@ -394,6 +400,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         agent,
         log: correlatedLogger,
         modelOverride,
+        agentAliasSetting,
         fallbackAgent: agentConfig.fallbackAgent,
         fallbackModelOverride: agentConfig.fallbackModelOverride,
         fallbackEffectiveModel: agentConfig.fallbackEffectiveModel,

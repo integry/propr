@@ -66,6 +66,33 @@ describe('summarization fallback runtime state', () => {
     assert.equal(state.warning?.mode, 'fallback_promoted');
   });
 
+  test('normalizes whitespace-padded aliases before persistence and promotion', async () => {
+    await saveSummarizationSettings({
+      enabled: true,
+      agent_alias: ' primary:gpt-expensive ',
+      fallback_agent_alias: ' fallback:gpt-cheap ',
+      custom_prompt: ''
+    });
+
+    let settings = await loadSummarizationSettings();
+    assert.equal(settings.agent_alias, 'primary:gpt-expensive');
+    assert.equal(settings.fallback_agent_alias, 'fallback:gpt-cheap');
+
+    await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary:gpt-expensive',
+      fallbackAgentAlias: 'fallback:gpt-cheap'
+    });
+    const result = await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary:gpt-expensive',
+      fallbackAgentAlias: 'fallback:gpt-cheap'
+    });
+
+    assert.equal(result.promoted, true);
+    settings = await loadSummarizationSettings();
+    assert.equal(settings.agent_alias, 'fallback:gpt-cheap');
+    assert.equal(settings.fallback_agent_alias, 'primary:gpt-expensive');
+  });
+
   test('promotion clears stale alias failure counters', async () => {
     await saveSummarizationSettings({
       enabled: true,
