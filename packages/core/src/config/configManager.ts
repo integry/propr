@@ -223,6 +223,7 @@ export {
 export { validatePrReviewModelValue, type PrReviewModelValidationResult } from './prReviewModelValidator.js';
 export { getConfig, saveConfig } from './configStore.js';
 export {
+    clearSummarizationCooldown,
     clearSummarizationPrimaryQuotaFailures,
     clearSummarizationRuntimeState,
     getSummarizationCooldown,

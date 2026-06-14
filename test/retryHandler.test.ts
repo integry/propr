@@ -392,7 +392,11 @@ describe('isRetryableError', () => {
                 'usage limit reached, try again later',
                 'quota exceeded; please try again',
                 'out of quota, try again tomorrow',
-                'insufficient quota. Try again after upgrading.'
+                'insufficient quota. Try again after upgrading.',
+                'billing hard limit reached',
+                'monthly budget exceeded for this organization',
+                'credit limit exceeded',
+                'organization usage limit reached'
             ];
             for (const message of quotaMessages) {
                 assert.strictEqual(

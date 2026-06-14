@@ -4,6 +4,7 @@ import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import {
+  clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
   recordPrimarySummarizationQuotaFailure,
   recordSummarizationCooldown
@@ -183,6 +184,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
     state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
+    await clearSummarizationCooldown(fullName, branch);
   } catch (fallbackError) {
     await recordSummarizationCooldown({
       repository: fullName,

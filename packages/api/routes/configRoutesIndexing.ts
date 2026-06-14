@@ -4,6 +4,7 @@ import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
 import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
+import type { AgentConfig } from '@propr/core';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -174,16 +175,36 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     primarySetting: unknown,
     fallbackSetting: unknown
   ): Promise<string | null> {
-    const aliases = [primarySetting, fallbackSetting]
+    const settings = [primarySetting, fallbackSetting]
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-      .map(value => value.split(':')[0]);
-    if (aliases.length === 0) return null;
+      .map(parseSummarizationAgentSetting);
+    if (settings.length === 0) return null;
 
-    const enabledAliases = new Set((await configManager.loadAgents())
+    const enabledAgents = new Map((await configManager.loadAgents())
       .filter(agent => agent.enabled)
-      .map(agent => agent.alias));
-    const missingAlias = aliases.find(alias => !enabledAliases.has(alias));
-    return missingAlias ? `summarization agent alias '${missingAlias}' must resolve to an enabled agent` : null;
+      .map(agent => [agent.alias, agent]));
+    for (const setting of settings) {
+      const agent = enabledAgents.get(setting.alias);
+      if (!agent) return `summarization agent alias '${setting.alias}' must resolve to an enabled agent`;
+      const modelError = validateSummarizationModelSetting(setting, agent);
+      if (modelError) return modelError;
+    }
+    return null;
+  }
+
+  function parseSummarizationAgentSetting(value: string): { alias: string; model?: string; raw: string } {
+    const [alias, ...modelParts] = value.trim().split(':');
+    return { alias, model: modelParts.length > 0 ? modelParts.join(':') : undefined, raw: value };
+  }
+
+  function validateSummarizationModelSetting(
+    setting: { alias: string; model?: string; raw: string },
+    agent: AgentConfig
+  ): string | null {
+    if (!setting.model) return null;
+    return agent.supportedModels.includes(setting.model)
+      ? null
+      : `summarization model '${setting.model}' is not supported by agent '${setting.alias}'`;
   }
 
   function buildSummarizationDescription(

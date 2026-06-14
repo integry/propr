@@ -15,6 +15,7 @@ const {
   recordPrimarySummarizationQuotaFailure,
   recordSummarizationCooldown,
   getSummarizationCooldown,
+  clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures
 } = await import('../packages/core/src/index.js');
 
@@ -148,5 +149,20 @@ describe('summarization fallback runtime state', () => {
     assert.equal(state.primary_quota_failures, 0);
     assert.equal(state.warning?.mode, 'cooldown');
     assert.equal(Object.keys(state.cooldowns).length, 1);
+  });
+
+  test('explicit cooldown clear removes matching repository warning', async () => {
+    await recordSummarizationCooldown({
+      repository: 'integry/propr',
+      branch: 'main',
+      primaryAgentAlias: 'primary',
+      fallbackAgentAlias: 'fallback'
+    });
+
+    await clearSummarizationCooldown('integry/propr', 'main');
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.warning, undefined);
+    assert.deepEqual(state.cooldowns, {});
   });
 });

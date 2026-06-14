@@ -44,7 +44,12 @@ const QUOTA_EXHAUSTION_PATTERNS = [
     /out of quota/i,
     /insufficient quota/i,
     /credit balance/i,
+    /credit limit/i,
     /billing.*quota/i,
+    /billing hard limit/i,
+    /monthly budget/i,
+    /budget exceeded/i,
+    /organization usage limit/i,
     /spending.*limit/i
 ];
 

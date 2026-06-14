@@ -6,6 +6,7 @@ import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import {
+  clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
   recordPrimarySummarizationQuotaFailure,
   recordSummarizationCooldown
@@ -199,6 +200,7 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         context: `batch_summarization_fallback:${fullName}`,
         retryOptions: SUMMARIZATION_RETRY
       });
+      await clearSummarizationCooldown(fullName, branch);
       return {
         results,
         agentUsed: fallbackAgent,

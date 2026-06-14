@@ -77,7 +77,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const enabledOptions = modelOptions.filter(opt => opt.enabled);
   const disabledOptions = modelOptions.filter(opt => !opt.enabled);
   const summarizationOptions = buildSummarizationOptions(enabledAgents);
-  const fallbackSummarizationOptions = summarizationOptions.filter(opt => opt.value !== summarizationSettings.agent_alias);
+  const fallbackValue = summarizationSettings.fallback_agent_alias || '';
+  const fallbackSummarizationOptions = buildFallbackSummarizationOptions(
+    summarizationOptions.filter(opt => opt.value !== summarizationSettings.agent_alias),
+    summarizationOptions,
+    fallbackValue
+  );
   const contextAnalysisOptions = buildContextAnalysisOptions(enabledAgents);
   const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
   const prReviewOptions = buildPrReviewOptions(enabledAgents);
@@ -308,5 +313,19 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
     </div>
   );
 };
+
+function buildFallbackSummarizationOptions(
+  options: ReturnType<typeof buildSummarizationOptions>,
+  allOptions: ReturnType<typeof buildSummarizationOptions>,
+  fallbackValue: string
+): ReturnType<typeof buildSummarizationOptions> {
+  if (!fallbackValue || options.some(opt => opt.value === fallbackValue)) return options;
+  const selectedOption = allOptions.find(opt => opt.value === fallbackValue) || {
+    value: fallbackValue,
+    label: `Saved fallback (${fallbackValue})`,
+    enabled: true
+  };
+  return [selectedOption, ...options];
+}
 
 export default AIModelSelectionSection;

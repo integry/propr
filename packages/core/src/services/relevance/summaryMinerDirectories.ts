@@ -193,16 +193,20 @@ async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options:
     branch
   });
   const failedBatches = results.some(r => r.summary) ? 0 : 1;
+  let dirsProcessed = 0;
 
   for (const result of results) {
-    await saveBatchResult(result, batch, branch, dirSummaryCache);
-    await tryPublishDirectoryProgress(fullName, branch);
+    const saved = await saveBatchResult(result, batch, branch, dirSummaryCache);
+    if (saved) {
+      dirsProcessed++;
+      await tryPublishDirectoryProgress(fullName, branch);
+    }
   }
 
   return {
     totalBatches: 0,
     failedBatches,
-    dirsProcessed: results.length,
+    dirsProcessed,
     fallbackUsed: results.fallbackUsed,
     stopProcessing: results.stopProcessing,
     fallbackPrimaryAgentAlias: results.primaryAgentAlias,
@@ -228,12 +232,13 @@ async function handleSkippedDirectory(dirPath: string, branch: string, dirSummar
   return 1;
 }
 
-async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], branch: string, dirSummaryCache: Map<string, string>): Promise<void> {
-  if (!result.summary) return;
+async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], branch: string, dirSummaryCache: Map<string, string>): Promise<boolean> {
+  if (!result.summary) return false;
   const dirInfo = batch.find(d => d.dirPath === result.dirPath);
-  if (!dirInfo) return;
+  if (!dirInfo) return false;
   await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
   dirSummaryCache.set(result.dirPath, result.summary);
+  return true;
 }
 
 async function tryPublishDirectoryProgress(fullName: string, branch: string): Promise<void> {

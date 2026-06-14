@@ -251,9 +251,9 @@ test('/api/status caps summarization cooldown warnings', async () => {
   });
 
   assert.deepEqual(body.warnings, [
-    ...[6, 5, 4, 3, 2].map(index => ({
+    ...[0, 1, 2, 3, 4].map(index => ({
       type: 'summarization_cooldown',
-      message: `owner/repo-${index} (main) summarization is paused until ${new Date(`2026-06-14T00:0${6 - index}:00.000Z`).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}: quota-limited`,
+      message: `owner/repo-${index} (main) summarization is paused until ${new Date(`2026-06-14T00:0${6 - index}:00.000Z`).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short' })}: quota-limited`,
     })),
     {
       type: 'summarization_cooldown_summary',

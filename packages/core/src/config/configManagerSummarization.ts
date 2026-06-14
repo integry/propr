@@ -277,15 +277,22 @@ export async function clearSummarizationPrimaryQuotaFailures(options: {
     });
 }
 
+export async function clearSummarizationCooldown(repository: string, branch?: string): Promise<void> {
+    await mutateSummarizationRuntimeState(async state => {
+        const cooldownCleared = clearMatchingCooldown(state, { repository, branch });
+        const warningCleared = clearMatchingCooldownWarning(state, { repository, branch });
+        return { result: undefined, save: cooldownCleared || warningCleared };
+    });
+}
+
 function clearPrimaryQuotaState(
     state: SummarizationRuntimeState,
     options: { primaryAgentAlias?: string; repository?: string; branch?: string }
 ): boolean {
     const failuresByAlias = state.primary_quota_failures_by_alias || {};
-    const hasMatchingCooldown = clearMatchingCooldown(state, options);
     const hadFailureState = clearAliasFailureState(state, failuresByAlias, options.primaryAgentAlias);
-    const warningCleared = clearMatchingWarning(state, options, hasMatchingCooldown);
-    return hasMatchingCooldown || hadFailureState || warningCleared;
+    const warningCleared = clearMatchingWarning(state, options);
+    return hadFailureState || warningCleared;
 }
 
 function clearAliasFailureState(
@@ -321,19 +328,26 @@ function clearMatchingCooldown(
 
 function clearMatchingWarning(
     state: SummarizationRuntimeState,
-    options: { primaryAgentAlias?: string; repository?: string; branch?: string },
-    cooldownCleared: boolean
+    options: { primaryAgentAlias?: string; repository?: string; branch?: string }
 ): boolean {
     if (!state.warning) return false;
-    if (cooldownCleared && state.warning.mode === 'cooldown' && state.warning.repository === options.repository && normalizeSummarizationBranch(state.warning.branch) === normalizeSummarizationBranch(options.branch)) {
-        delete state.warning;
-        return true;
-    }
     if (state.warning.mode !== 'cooldown' && (!options.primaryAgentAlias || state.warning.primary_agent_alias === options.primaryAgentAlias)) {
         delete state.warning;
         return true;
     }
     return false;
+}
+
+function clearMatchingCooldownWarning(
+    state: SummarizationRuntimeState,
+    options: { repository: string; branch?: string }
+): boolean {
+    if (!state.warning) return false;
+    if (state.warning.mode !== 'cooldown') return false;
+    if (state.warning.repository !== options.repository) return false;
+    if (normalizeSummarizationBranch(state.warning.branch) !== normalizeSummarizationBranch(options.branch)) return false;
+    delete state.warning;
+    return true;
 }
 
 export async function clearSummarizationRuntimeState(): Promise<void> {
