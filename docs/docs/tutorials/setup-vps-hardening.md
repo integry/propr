@@ -171,12 +171,15 @@ ingress:
   - service: http_status:404
 ```
 
-Install it as a service so it survives reboots. With the config and credentials
-already in `/etc/cloudflared/`, `service install` picks them up automatically;
-run it after both files are in place:
+Install it as a service so it survives reboots. Pass `--config` explicitly so the
+installer generates a config-based unit that reads `/etc/cloudflared/config.yml`
+(and the moved credentials it references) rather than a token-based unit that
+ignores your config file — a bare `sudo cloudflared service install` can pick up
+the wrong settings depending on the `cloudflared` version. Run it after both
+files are in place:
 
 ```bash
-sudo cloudflared service install
+sudo cloudflared --config /etc/cloudflared/config.yml service install
 sudo systemctl enable --now cloudflared
 sudo systemctl status cloudflared      # confirm it started and read the creds file
 ```
@@ -296,6 +299,14 @@ documentation. Then test both directions before relying on it:
 - Load `https://propr.example.com/` in a fresh/incognito browser and confirm the
   app itself still forces SSO — proving the bypass did **not** widen beyond the
   webhook path.
+- **Required:** from a fresh/incognito browser, load a *sibling* path that shares
+  the `/webhook` prefix but is not the webhook endpoint — for example
+  `https://propr.example.com/webhookadmin` and
+  `https://propr.example.com/webhook-test` — and confirm each is **still forced
+  through SSO** (an Access login redirect), not bypassed. If any sibling path
+  skips SSO, your bypass is matching by bare prefix and is over-scoped: narrow the
+  application paths until only `/webhook` and its intended subpaths are exempt
+  before you rely on this setup.
 
 The endpoint stays protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature
 that ProPR already verifies.

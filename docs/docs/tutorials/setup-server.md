@@ -79,7 +79,7 @@ If you cannot expose a public endpoint, the optional hosted GitHub App at propr.
 On the server, the CLI control plane is the simplest path (Node.js 22+):
 
 ```bash
-sudo mkdir -p /srv/propr && sudo chown "$USER" /srv/propr && cd /srv/propr
+sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/propr
 propr init stack               # scaffold .env + data/ logs/ repos/
 # configure GitHub auth in .env: own App (GH_APP_ID, GH_INSTALLATION_ID,
 # HOST_GH_PRIVATE_KEY) or a shared App via `propr relay enroll`

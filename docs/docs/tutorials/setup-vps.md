@@ -146,13 +146,16 @@ package against the pinned GPG key on each `apt update`, keeping the posture
 consistent with the rest of this guide:
 
 ```bash
-# Add Docker's official GPG key and signed-by apt source
+# Add Docker's official GPG key and signed-by apt source. Derive the distro
+# ("ubuntu" or "debian") from /etc/os-release so the same block works on either —
+# do not hard-code one or the other.
 sudo apt -y install ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+DISTRO=$(. /etc/os-release && echo "$ID")   # "ubuntu" or "debian"
+curl -fsSL "https://download.docker.com/linux/$DISTRO/gpg" \
   | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$DISTRO $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
   | sudo tee /etc/apt/sources.list.d/docker.list
 sudo apt update
 sudo apt -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -161,10 +164,12 @@ sudo usermod -aG docker you      # run docker without sudo; log out/in to apply
 sudo systemctl enable --now docker
 ```
 
-On Debian, swap `ubuntu` for `debian` in both the key URL and the apt source
-line above. The convenience `curl -fsSL https://get.docker.com | sudo sh` script
-does the same repository setup but executes a remote script as root; the explicit
-steps above keep the security posture consistent with the rest of this guide.
+The `DISTRO` variable resolves to `ubuntu` or `debian` from `/etc/os-release`, so
+the key URL and apt source point at the right repository on either distribution
+without manual editing. The convenience `curl -fsSL https://get.docker.com | sudo
+sh` script does the same repository setup but executes a remote script as root;
+the explicit steps above keep the security posture consistent with the rest of
+this guide.
 
 Adding `you` to the `docker` group is equivalent to granting root on the host
 (the Docker socket can mount any path). Keep that group membership limited to
@@ -267,7 +272,7 @@ Create a runtime directory and scaffold it with the CLI. `/srv/propr` is a
 conventional location; keep it owned by `you`.
 
 ```bash
-sudo mkdir -p /srv/propr && sudo chown you:you /srv/propr
+sudo mkdir -p /srv/propr && sudo chown -R you:you /srv/propr
 cd /srv/propr
 propr init stack
 ```
@@ -563,13 +568,21 @@ Only `https://propr.example.com` (443) and SSH (22) should answer.
 *Run as: **you**; the `sudo` in the update command matches the root-owned global
 CLI install from step 4.*
 
-- **Updates:** `sudo npm update -g @propr/cli && propr start --restart` pulls the
-  matching service images and recreates the stack. Use the **same method you
-  installed the CLI with** — `sudo` here matches the root-owned global install in
-  step 4. If you instead installed under a user-managed npm prefix (so `npm -g`
-  needs no `sudo`), drop the `sudo`; mixing the two can update a different copy or
-  create root-owned files in a user-owned prefix. Unattended-upgrades keeps the
-  OS patched.
+- **Updates:** run `propr start --restart` from the stack directory so it acts on
+  the right runtime root:
+
+  ```bash
+  sudo npm update -g @propr/cli
+  cd /srv/propr && propr start --restart   # pulls matching images, recreates the stack
+  ```
+
+  `propr start --restart` resolves its stack relative to the current directory (or
+  `--root`), so `cd /srv/propr` first to avoid restarting against the wrong path.
+  Use the **same method you installed the CLI with** — `sudo` here matches the
+  root-owned global install in step 4. If you instead installed under a
+  user-managed npm prefix (so `npm -g` needs no `sudo`), drop the `sudo`; mixing
+  the two can update a different copy or create root-owned files in a user-owned
+  prefix. Unattended-upgrades keeps the OS patched.
 - **Backups:** persist `/srv/propr/data` (SQLite, WAL-aware) and the
   `propr-redis-data` volume; `repos/` is re-creatable. See
   [Maintenance](../operations/maintenance.md).

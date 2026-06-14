@@ -230,8 +230,13 @@ image versions; the new version pulls the matching service and agent images:
 ```bash
 sudo npm update -g @propr/cli
 which propr && propr --version   # confirm the updated CLI is the one on PATH
+cd /srv/propr                # run --restart from the stack runtime directory
 propr start --restart        # pulls updated images and recreates containers
 ```
+
+`propr start --restart` resolves the stack relative to the current working
+directory (or an explicit `--root`), so `cd` into the runtime directory first to
+avoid restarting against the wrong path.
 
 Run the update with the **same method you installed `@propr/cli` with**. `sudo`
 matches a root-owned global install (the default for a system `apt`/NodeSource
