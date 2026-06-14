@@ -59,11 +59,17 @@ server {
     server_name propr.example.com;
 
     # Web UI
+    #
+    # The tunnel hands nginx plain HTTP over loopback, so $scheme is always
+    # "http" here even though the browser-facing URL is HTTPS. Hardcode
+    # X-Forwarded-Proto to https so the backend generates correct URLs and any
+    # scheme-aware security logic (OAuth redirects, cookie flags) sees the real
+    # browser scheme.
     location / {
         proxy_pass http://127.0.0.1:5173;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 
     # API, OAuth callback, and Socket.IO live on the API service
@@ -71,7 +77,7 @@ server {
         proxy_pass http://127.0.0.1:4000;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
     location /socket.io/ {
         proxy_pass http://127.0.0.1:4000;
@@ -79,6 +85,8 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
     }
 
     # GitHub webhook endpoint (only needed if you enable webhooks; see below)
@@ -222,6 +230,14 @@ complete a Cloudflare Access login and will be blocked. Either:
   Cloudflare Access login redirect) before relying on it. The endpoint stays
   protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature that ProPR
   already verifies.
+
+  Because these rules bypass Access by **path prefix**, treat the bypass as
+  security-sensitive and re-audit it whenever you upgrade ProPR or add routes.
+  Confirm it covers only `/webhook` and intended webhook subpaths. If a future
+  release ever serves a different route that shares the prefix — a sibling like
+  `/webhookadmin`, or anything under `/webhook/` — it would inherit the bypass
+  and sit unauthenticated behind Access. Keep the application's paths as narrow
+  as the endpoints you actually expose.
 
 The GitHub OAuth callback (`/api/auth/github/callback`) is fine through Access —
 it is the user's own browser, which has already authenticated.
