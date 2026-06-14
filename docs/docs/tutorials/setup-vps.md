@@ -206,10 +206,18 @@ claude login        # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-
 
 These two are examples, not the full set. Install and log in to whichever agents
 you plan to run; each writes its login state to a credential directory under
-`/home/you` that the stack mounts into worker runs. The install commands in the
-table below are convenience snippets that can change upstream — treat
-[Agents and Models](../features/agents-and-models.md) as the canonical source and
-verify there if a command fails:
+`/home/you` that the stack mounts into worker runs.
+
+:::warning Prefer official install docs over `curl … | bash` on a hardened host
+On a security-hardened box, follow each vendor's **official installation
+documentation** as the primary path — verify checksums or use a signed package
+repository where one is offered. The `curl -fsSL … | bash` one-liners in the
+table below are convenience snippets only: they pipe a remote script straight
+into a shell, can change upstream without notice, and bypass the package-pinning
+posture used for Node.js and `cloudflared` elsewhere in this guide. Treat
+[Agents and Models](../features/agents-and-models.md) as the canonical source for
+each agent's current, vendor-recommended install command and verify there if a
+command fails:
 
 | Agent | Install | Credential directory |
 |---|---|---|
@@ -312,6 +320,14 @@ GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
 GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
 SESSION_SECRET=paste_the_generated_hex_string_here
 ```
+
+:::caution Keep the port values in `host:port` form, not URL form
+`API_PORT`/`UI_PORT` are Docker port bindings, so they take a bare
+`127.0.0.1:4000` host-and-port value — **not** a URL. Do not prefix them with
+`http://` or add a path: a value like `http://127.0.0.1:4000` is invalid here and
+will break the published-port binding. The `http(s)://…` form belongs only on the
+`FRONTEND_URL`/`API_PUBLIC_URL`/`GH_OAUTH_CALLBACK_URL` lines below.
+:::
 
 :::warning Generate the secret first — `.env` does not run shell commands
 `.env` files are read literally; they do **not** evaluate `$(...)`. If you paste
@@ -454,7 +470,11 @@ GITHUB_USER_WHITELIST=you,teammate-a,teammate-b
 ```
 
 If you enable webhooks (optional — ProPR polls every 60s by default), a webhook
-secret is mandatory and the API refuses to start without it:
+secret is mandatory and the API refuses to start without it (if you arrived here
+from [Advanced VPS Hardening](./setup-vps-hardening.md) and put the app behind a
+Cloudflare Access SSO gate, **stay on polling** — GitHub's webhook POSTs cannot
+pass Access and will be silently dropped unless you added the explicit `/webhook`
+Bypass policy described there):
 
 ```bash
 ENABLE_GITHUB_WEBHOOKS=true

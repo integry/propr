@@ -179,6 +179,26 @@ sudo systemctl enable --now cloudflared
 sudo systemctl status cloudflared      # confirm it started and read the creds file
 ```
 
+Confirm the generated systemd unit actually runs the tunnel against
+`/etc/cloudflared/config.yml` — depending on the `cloudflared` version, the
+installer may write a token-based unit instead of one that reads your config
+file. Inspect the unit and check the logs:
+
+```bash
+systemctl cat cloudflared              # ExecStart should reference the config-based tunnel run
+sudo journalctl -u cloudflared -n 20   # look for the hostname and ingress rules from config.yml
+```
+
+If `ExecStart` does **not** reference `/etc/cloudflared/config.yml` (for example,
+it runs `tunnel run --token …` instead), point the service at your config
+explicitly with the documented config-based form and reinstall:
+
+```bash
+sudo cloudflared service uninstall
+sudo cloudflared --config /etc/cloudflared/config.yml service install
+sudo systemctl enable --now cloudflared
+```
+
 ## 3. Close The Public Web Ports
 
 With the tunnel up, nothing needs to reach the VPS directly. If you opened the
