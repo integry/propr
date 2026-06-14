@@ -40,7 +40,6 @@ interface ErrorLike {
 
 const QUOTA_EXHAUSTION_PATTERNS = [
     /usage limit/i,
-    /quota exceeded/i,
     /out of quota/i,
     /insufficient quota/i,
     /credit balance/i,
@@ -53,6 +52,8 @@ const QUOTA_EXHAUSTION_PATTERNS = [
     /spending.*limit/i
 ];
 
+const QUOTA_EXCEEDED_PATTERN = /quota exceeded/i;
+
 const TRANSIENT_RATE_LIMIT_PATTERNS = [
     /per[- ]?(minute|second|hour)/i,
     /\b(rpm|tpm|qps)\b/i,
@@ -62,11 +63,17 @@ const TRANSIENT_RATE_LIMIT_PATTERNS = [
 
 export function isQuotaExhaustionError(error: Error | unknown): boolean {
     const errorText = collectErrorText(error);
-    const combined = errorText.join(' ');
-    if (TRANSIENT_RATE_LIMIT_PATTERNS.some(pattern => pattern.test(combined))) {
+    return errorText.some(isQuotaExhaustionText);
+}
+
+function isQuotaExhaustionText(text: string): boolean {
+    if (QUOTA_EXHAUSTION_PATTERNS.some(pattern => pattern.test(text))) {
+        return true;
+    }
+    if (!QUOTA_EXCEEDED_PATTERN.test(text)) {
         return false;
     }
-    return QUOTA_EXHAUSTION_PATTERNS.some(pattern => pattern.test(combined));
+    return !TRANSIENT_RATE_LIMIT_PATTERNS.some(pattern => pattern.test(text));
 }
 
 function collectErrorText(error: unknown): string[] {

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
-import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
+import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob, type QueueResummarizationResult } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 import type { AgentConfig } from '@propr/core';
 
@@ -68,12 +68,16 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
-  async function triggerResummarizationSafe(ignoreCooldown: boolean): Promise<number> {
+  function emptyResummarizationResult(): QueueResummarizationResult {
+    return { queued: 0, skippedCooldown: 0, skippedAlreadyQueued: 0, failedClone: 0 };
+  }
+
+  async function triggerResummarizationSafe(ignoreCooldown: boolean): Promise<QueueResummarizationResult> {
     try {
       return await queueResummarizationForAllRepos({ ignoreCooldown });
     } catch (error) {
       console.error('Error triggering resummarization for repositories:', error);
-      return 0;
+      return emptyResummarizationResult();
     }
   }
 
@@ -95,14 +99,21 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
       await cancelDelayedReindex(redisClient);
       const ignoreCooldown = req.body?.ignoreCooldown === true;
-      const repositoriesQueued = await triggerResummarizationSafe(ignoreCooldown);
+      const resummarizationResult = await triggerResummarizationSafe(ignoreCooldown);
 
       await logActivityHelper(
-        `Manually triggered reindexing for ${repositoriesQueued} repositories`,
+        `Manually triggered reindexing for ${resummarizationResult.queued} repositories`,
         'reindex-all-trigger', 'reindex_all_triggered', req.user?.username
       );
 
-      res.json({ success: true, repositoriesQueued, ignoreCooldown });
+      res.json({
+        success: true,
+        repositoriesQueued: resummarizationResult.queued,
+        repositoriesSkippedCooldown: resummarizationResult.skippedCooldown,
+        repositoriesSkippedAlreadyQueued: resummarizationResult.skippedAlreadyQueued,
+        repositoriesFailedClone: resummarizationResult.failedClone,
+        ignoreCooldown
+      });
     } catch (error) {
       console.error('Error in /api/config/summarization/reindex-all POST:', error);
       res.status(500).json({ error: 'Failed to trigger reindexing' });
@@ -166,6 +177,7 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     if (fallback_agent_alias !== undefined && typeof fallback_agent_alias !== 'string') return 'fallback_agent_alias must be a string';
     const normalizedAgentAlias = typeof agent_alias === 'string' ? normalizeSummarizationAgentAliasSetting(agent_alias) : '';
     const normalizedFallbackAgentAlias = typeof fallback_agent_alias === 'string' ? normalizeSummarizationAgentAliasSetting(fallback_agent_alias) : '';
+    if (enabled && !normalizedAgentAlias) return 'agent_alias is required when summarization is enabled';
     if (normalizedAgentAlias && normalizedFallbackAgentAlias && normalizedAgentAlias === normalizedFallbackAgentAlias) return 'fallback_agent_alias must differ from agent_alias';
     if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
     const agentValidationError = await validateSummarizationAgentAliases(agent_alias, fallback_agent_alias);

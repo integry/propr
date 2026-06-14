@@ -438,6 +438,22 @@ describe('isRetryableError', () => {
             assert.strictEqual(isRetryableError(error, baseConfig), false);
         });
 
+        test('does not let transient rate-limit wording hide quota exhaustion payloads', () => {
+            const error = {
+                status: 429,
+                message: 'requests per minute quota exceeded; try again shortly',
+                response: {
+                    data: {
+                        error: {
+                            message: 'insufficient quota. Upgrade billing to continue.'
+                        }
+                    }
+                }
+            };
+
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
         test('returns true for 500 Internal Server Error', () => {
             const error = { status: 500, message: 'Internal Server Error' };
             assert.strictEqual(isRetryableError(error, baseConfig), true);

@@ -109,8 +109,39 @@ describe('summary miner batch fallback', () => {
     assert.equal(saved.model_used, 'fallback-model');
 
     const state = await loadSummarizationRuntimeState();
-    assert.equal(state.primary_quota_failures, 1);
-    assert.equal(state.primary_quota_failures_by_alias.primary, 1);
+    assert.notEqual(state.warning?.mode, 'cooldown');
+  });
+
+  test('passes custom prompt into file batch prompt', async () => {
+    let receivedPrompt = '';
+    const customPrompt = 'Use security-focused summaries for every file.';
+    const primaryAgent = createAgent('primary', 'primary-model', async (prompt, options) => {
+      receivedPrompt = prompt;
+      assert.equal(options?.model, 'primary-model');
+      return {
+        success: true,
+        response: JSON.stringify({
+          summaries: [{ path: 'src/a.ts', summary: 'Exports a security-sensitive helper.' }]
+        }),
+        modelUsed: 'primary-model',
+        executionTimeMs: 1
+      };
+    });
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      customPrompt,
+      primaryAgentAliasSetting: 'primary',
+      branch: 'main'
+    });
+
+    assert.equal(result.success, true);
+    assert.match(receivedPrompt, new RegExp(customPrompt));
+    assert.doesNotMatch(receivedPrompt, /Your task is to create concise/);
   });
 
   test('records cooldown and stops after non-quota fallback failure', async () => {

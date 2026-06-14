@@ -145,6 +145,41 @@ describe('summarization fallback runtime state', () => {
     assert.ok(!String(persisted.value).includes('\\u0000'));
   });
 
+  test('runtime state reads normalize expired cooldowns without writing persisted state', async () => {
+    const persistedState = {
+      primary_quota_failures: 0,
+      primary_quota_failures_by_alias: {},
+      warning: {
+        mode: 'cooldown',
+        message: 'expired',
+        recorded_at: new Date(Date.now() - 120000).toISOString(),
+        repository: 'integry/propr',
+        branch: 'main'
+      },
+      cooldowns: {
+        expired: {
+          repository: 'integry/propr',
+          branch: 'main',
+          until: new Date(Date.now() - 60000).toISOString(),
+          reason: 'expired'
+        }
+      }
+    };
+    await db('system_configs').insert({
+      key: 'summarization_runtime_state',
+      value: JSON.stringify(persistedState),
+      created_at: db.fn.now(),
+      updated_at: db.fn.now()
+    });
+
+    const loaded = await loadSummarizationRuntimeState();
+    assert.deepEqual(loaded.cooldowns, {});
+    assert.equal(loaded.warning, undefined);
+
+    const persisted = await db('system_configs').where({ key: 'summarization_runtime_state' }).first();
+    assert.equal(persisted.value, JSON.stringify(persistedState));
+  });
+
   test('clears quota warning after primary summarization success', async () => {
     await recordPrimarySummarizationQuotaFailure({
       primaryAgentAlias: 'primary',

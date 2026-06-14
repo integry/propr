@@ -3,7 +3,8 @@ import assert from 'node:assert';
 import * as configManager from '../packages/core/src/index.ts';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
 import { normalizeAgentsConfig } from '../packages/api/routes/configHelpers.ts';
-import { queueResummarizationForAllRepos, withConfigLock } from '../packages/api/routes/configHelpers.ts';
+import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
+import { queueResummarizationForAllRepos } from '../packages/api/routes/indexingQueueHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { appendClaudeUserMessageEvents, parseClaudeOutputToConversationResult, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
@@ -2408,41 +2409,76 @@ describe('config route follow-up helpers', () => {
     });
 
     test('queueResummarizationForAllRepos uses enabled raw repo names when scheduling jobs', async () => {
-        const loadReposMock = mock.method(configManager, 'loadMonitoredReposRaw', async () => ([
-            { id: '1', name: 'acme/alpha', enabled: true },
-            { id: '2', name: 'acme/beta', enabled: false },
-            { id: '3', name: 'acme/gamma', enabled: true },
-        ]));
-        const octokitMock = mock.method(configManager, 'getAuthenticatedOctokit', async () => ({
-            auth: async () => ({ token: 'test-token' }),
-        } as never));
-        const ensureRepoClonedMock = mock.method(configManager, 'ensureRepoCloned', async ({ owner, repoName }: { owner: string; repoName: string }) => `/tmp/${owner}-${repoName}`);
-        const fetchLatestChangesMock = mock.method(configManager, 'fetchLatestChanges', async () => ({ success: true }));
-        const getRepoUrlMock = mock.method(configManager, 'getRepoUrl', ({ repoOwner, repoName }: { repoOwner: string; repoName: string }) => `https://example.com/${repoOwner}/${repoName}.git`);
         const queueAdds: Array<{ repository: string }> = [];
-        const getIndexingQueueMock = mock.method(configManager, 'getIndexingQueue', async () => ({
-            getJobs: async () => [],
-            add: async (_name: string, data: { repository: string }) => {
-                queueAdds.push({ repository: data.repository });
-            },
-        } as never));
-
-        try {
-            const queued = await queueResummarizationForAllRepos();
-            assert.strictEqual(queued, 2);
-            assert.deepStrictEqual(queueAdds, [
-                { repository: 'acme/alpha' },
-                { repository: 'acme/gamma' },
-            ]);
-        } finally {
-            loadReposMock.mock.restore();
-            octokitMock.mock.restore();
-            ensureRepoClonedMock.mock.restore();
-            fetchLatestChangesMock.mock.restore();
-            getRepoUrlMock.mock.restore();
-            getIndexingQueueMock.mock.restore();
-        }
+        const queued = await queueResummarizationForAllRepos({
+            deps: createQueueResummarizationDeps({
+                repos: [
+                    { id: '1', name: 'acme/alpha', enabled: true },
+                    { id: '2', name: 'acme/beta', enabled: false },
+                    { id: '3', name: 'acme/gamma', enabled: true },
+                ],
+                queueAdds,
+            })
+        });
+        assert.deepStrictEqual(queued, {
+            queued: 2,
+            skippedCooldown: 0,
+            skippedAlreadyQueued: 0,
+            failedClone: 0,
+        });
+        assert.deepStrictEqual(queueAdds, [
+            { repository: 'acme/alpha' },
+            { repository: 'acme/gamma' },
+        ]);
     });
+
+    test('queueResummarizationForAllRepos reports cooldown and queued skips', async () => {
+        const result = await queueResummarizationForAllRepos({
+            deps: createQueueResummarizationDeps({
+                repos: [
+                    { id: '1', name: 'acme/alpha', enabled: true },
+                    { id: '2', name: 'acme/beta', enabled: true },
+                    { id: '3', name: 'acme/gamma', enabled: true },
+                ],
+                existingJobs: [{ data: { repository: 'acme/gamma', baseBranch: undefined } }],
+                cooldownRepos: new Set(['acme/beta']),
+            })
+        });
+        assert.deepStrictEqual(result, {
+            queued: 1,
+            skippedCooldown: 1,
+            skippedAlreadyQueued: 1,
+            failedClone: 0,
+        });
+    });
+
+    function createQueueResummarizationDeps(options: {
+        repos: Array<{ id: string; name: string; enabled: boolean }>;
+        existingJobs?: Array<{ data: { repository: string; baseBranch?: string } }>;
+        cooldownRepos?: Set<string>;
+        queueAdds?: Array<{ repository: string }>;
+    }) {
+        return {
+            loadMonitoredReposRaw: async () => options.repos,
+            getAuthenticatedOctokit: async () => ({
+                auth: async () => ({ token: 'test-token' }),
+            } as never),
+            getSummarizationCooldown: async (repoFullName: string) => (
+                options.cooldownRepos?.has(repoFullName)
+                    ? { repository: repoFullName, branch: 'HEAD', until: new Date(Date.now() + 60000).toISOString(), reason: 'quota-limited' }
+                    : null
+            ),
+            ensureRepoCloned: async ({ owner, repoName }: { owner: string; repoName: string }) => `/tmp/${owner}-${repoName}`,
+            fetchLatestChanges: async () => ({ success: true }),
+            getRepoUrl: ({ repoOwner, repoName }: { repoOwner: string; repoName: string }) => `https://example.com/${repoOwner}/${repoName}.git`,
+            getIndexingQueue: async () => ({
+                getJobs: async () => options.existingJobs || [],
+                add: async (_name: string, data: { repository: string }) => {
+                    options.queueAdds?.push({ repository: data.repository });
+                },
+            } as never),
+        };
+    }
 
     test('postRepos reports committed state when publish fails after save', async () => {
         const saveReposMock = mock.method(configManager, 'saveMonitoredRepos', async () => true);

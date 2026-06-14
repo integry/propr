@@ -89,15 +89,7 @@ function normalizeSummarizationSettings(settings: Partial<SummarizationSettings>
 
 export async function loadSummarizationRuntimeState(): Promise<SummarizationRuntimeState> {
     const state = await getConfig<SummarizationRuntimeState>(SUMMARIZATION_RUNTIME_STATE_KEY, DEFAULT_SUMMARIZATION_RUNTIME_STATE);
-    const normalized = normalizeSummarizationRuntimeState(state);
-    if (JSON.stringify(normalized) !== JSON.stringify(state)) {
-        try {
-            await saveConfig(SUMMARIZATION_RUNTIME_STATE_KEY, normalized);
-        } catch (error) {
-            logger.warn({ error: (error as Error).message }, 'Failed to persist normalized summarization runtime state');
-        }
-    }
-    return normalized;
+    return normalizeSummarizationRuntimeState(state);
 }
 
 function normalizeSummarizationRuntimeState(state: Partial<SummarizationRuntimeState> = {}): SummarizationRuntimeState {
@@ -224,7 +216,6 @@ export async function recordPrimarySummarizationQuotaFailure(options: {
     primaryAgentAlias: string;
     fallbackAgentAlias?: string;
 }): Promise<{ promoted: boolean; failureCount: number; warning: SummarizationDegradationWarning }> {
-    let promoted = false;
     const result = await mutateSummarizationRuntimeState(async (state, client) => {
         const failuresByAlias = state.primary_quota_failures_by_alias || {};
         const failureCount = (failuresByAlias[options.primaryAgentAlias] || 0) + 1;
@@ -232,6 +223,7 @@ export async function recordPrimarySummarizationQuotaFailure(options: {
         state.primary_quota_failures_by_alias = failuresByAlias;
         state.primary_quota_failures = failureCount;
         const warning = buildQuotaFailureWarning(options);
+        let promoted = false;
 
         if (options.fallbackAgentAlias && failureCount >= getPromotionThreshold()) {
             promoted = await promoteFallbackIfCurrentPrimary({ options, failuresByAlias, state, warning, client });
