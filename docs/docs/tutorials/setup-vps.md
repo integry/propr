@@ -544,9 +544,13 @@ propr status         # local stack containers
 propr remote-status  # backend health: daemon, workers, Redis, GitHub auth
 ```
 
-Open `https://propr.example.com`, sign in with GitHub, and confirm only
-whitelisted users can reach the dashboard. From a machine off the server, verify
-the raw ports are **not** reachable — these should both fail/time out:
+Open `https://propr.example.com`, sign in with GitHub, and confirm the dashboard
+loads. Note that `GITHUB_USER_WHITELIST` (step 10) gates who can **trigger** work
+from GitHub comments — it is an action/trigger gate, not a dashboard sign-in
+control. To restrict who can authenticate to or view the Web UI itself, put it
+behind an SSO gate such as the Cloudflare Access layer in
+[Advanced VPS Hardening](./setup-vps-hardening.md). From a machine off the server,
+verify the raw ports are **not** reachable — these should both fail/time out:
 
 ```bash
 curl -m 5 http://203.0.113.10:4000/   # API port — must NOT respond

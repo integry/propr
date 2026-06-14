@@ -273,6 +273,20 @@ webhook path **and nothing else**. The path matters: do **not** bypass the bare
 `propr.example.com` hostname, which would disable the Access gate for the entire
 app.
 
+:::tip Decision checkpoint — polling is recommended; only continue if all apply
+Before adding the bypass below, confirm every one of these. If any is "no", stop
+and stay on polling:
+
+- [ ] You have a concrete, standing reason webhooks must be used instead of
+      polling (latency-sensitive intake, deactivated polling, etc.).
+- [ ] You will **re-validate** the bypass after every Cloudflare config change and
+      every ProPR upgrade (the two-direction test below).
+- [ ] `GH_WEBHOOK_SECRET` is set so the endpoint still verifies the HMAC signature
+      even though Access no longer gates it.
+
+Polling needs none of this — it is the default and carries none of the bypass risk.
+:::
+
 Cover both the exact path and any sub-path/trailing-slash variant by adding
 **two paths** to the same application, so the bypass is intended to catch
 `/webhook`, `/webhook/`, and `/webhook?...` query forms without matching

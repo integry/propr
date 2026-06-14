@@ -201,7 +201,7 @@ From here, `propr plan create "..." --wait` and `propr issue implement <draft-id
 
 Service images are pinned to the release version of the control plane that starts them.
 
-- **CLI path:** update the CLI, then restart — `propr start` pulls the matching images (`npm update -g @propr/cli && propr start --restart`).
+- **CLI path:** update the CLI, then restart from the stack directory so it acts on the right runtime root — `propr start` pulls the matching images (`npm update -g @propr/cli && cd propr-deploy && propr start --restart`). `propr start --restart` resolves the stack relative to the current directory (or `--root <dir>`), so run it from `propr-deploy` to avoid restarting against the wrong path.
 - **Launcher path:** `docker pull propr/launcher:latest`, then re-run the `docker run` command; the launcher pulls the matching service images.
 
 Data, logs, and repositories persist in your runtime directory either way.
