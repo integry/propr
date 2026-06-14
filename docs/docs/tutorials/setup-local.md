@@ -8,16 +8,15 @@ Use this path to run ProPR on your own machine from prebuilt Docker images.
 
 ## Prerequisites
 
-- A Linux host with Docker. The launcher bind-mounts host paths and the Docker socket directly, so it does not work under Docker Desktop on macOS or Windows; use the Compose-based [Source Development Setup](./setup-source.md) there.
-- A GitHub App installed on the repositories you want ProPR to access
+- A Linux host with Docker. The stack bind-mounts host paths and the Docker socket directly, so it does not work under Docker Desktop on macOS or Windows; use the Compose-based [Source Development Setup](./setup-source.md) there.
+- GitHub access for the backend — either your own GitHub App (below) or a vendor-provided shared App via the token relay; see [GitHub Authentication](../operations/github-auth.md)
 - Credentials for at least one coding agent
+- Node.js 22+ for the recommended CLI path (the launcher-container alternative needs no Node.js)
 - Disk space for data, logs, and repository workspaces
-
-You do not need Node.js, Redis, or a source checkout for this path.
 
 ## GitHub App Permissions
 
-Create or reuse a GitHub App with these repository permissions:
+If you register your own GitHub App ("app mode"), create or reuse one with these repository permissions:
 
 | Permission | Access |
 | --- | --- |
@@ -29,18 +28,43 @@ Create or reuse a GitHub App with these repository permissions:
 
 Install the app on every repository ProPR should process, and note the App ID and Installation ID for `.env`.
 
-## Create A Runtime Directory
+## Set Up And Start With The CLI (Recommended)
+
+The ProPR CLI doubles as the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack:
 
 ```bash
-mkdir -p propr-deploy/{data,logs,repos}
-cd propr-deploy
+npm install -g @propr/cli      # Node.js 22+ — prefix sudo if your global npm needs it
+which propr && propr --version # confirm the CLI is on PATH (catches root/user prefix mismatches)
+
+mkdir propr-deploy && cd propr-deploy
+propr init stack               # creates .env + data/ logs/ repos/, detects agent credentials
 ```
 
-Place your GitHub App private key in this directory:
+:::tip Global install permissions
+If `npm install -g` fails with `EACCES`, your Node was installed where the global
+prefix is root-owned (a system/`apt` install) — prefix the command with `sudo`.
+Use the **same convention every time** you install or update the CLI: a `sudo`
+install must be updated with `sudo`, and a user-prefix install (e.g. `nvm`, or a
+custom `npm config set prefix`) needs no `sudo`. Mixing the two can update a
+different copy of the CLI or leave root-owned files in a user-owned prefix.
+:::
+
+`propr init stack` writes `.env` from the bundled template and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`). Then configure GitHub access:
+
+- **Own GitHub App:** place the private key in the directory (`chmod 600`), and set `GH_APP_ID`, `GH_INSTALLATION_ID`, and `HOST_GH_PRIVATE_KEY=<absolute path to the .pem>` in `.env`. For `propr start`, use `HOST_GH_PRIVATE_KEY` (a host path the CLI mounts) — do **not** set `GH_PRIVATE_KEY_PATH`, which is the in-container path used only by the [launcher alternative](#alternative-launcher-container-without-the-cli) below. Mixing the two is a common migration mistake.
+- **Shared App via relay:** from the stack directory (where `propr init stack` wrote `.env`), run `propr relay enroll` to mint a relay token straight into that `.env` — no private key needed. Enrollment opens the GitHub OAuth flow in your browser to prove your identity (no prior `propr login` or `propr remote` is required; it talks to the vendor relay, not your local backend). See [GitHub Authentication](../operations/github-auth.md).
+
+Review the rest of `.env` (next section), then:
 
 ```bash
-chmod 600 your-app-private-key.pem
+propr check                    # verifies Docker, images, agents, and GitHub auth mode
+propr start                    # pulls images and starts the stack with a live dashboard
+propr ui                       # opens http://localhost:5173
 ```
+
+`propr check --verify` additionally smoke-tests each agent image. `propr start --no-tui` is the non-interactive form for scripts. `propr status` and `propr stop` manage the running stack.
+
+## Runtime Directory Layout
 
 After the first run, the directory looks like this:
 
@@ -118,7 +142,9 @@ mkdir -p /tmp/propr-vibe-prompts
 
 Pass it with both `HOST_VIBE_PROMPT_CACHE_DIR` and `VIBE_PROMPT_CACHE_DIR` set to `/tmp/propr-vibe-prompts`.
 
-## Start ProPR
+## Alternative: Launcher Container Without The CLI
+
+If you prefer not to install Node.js on the host, the launcher container runs the same orchestrator. Create the runtime directory and `.env` manually (`mkdir -p propr-deploy/{data,logs,repos}`, place the key, write `.env`), then:
 
 All `PROPR_*` and `HOST_*` paths must be absolute. The launcher does not expand `~`; `$PWD` and `$HOME` work because your shell expands them before Docker sees the command.
 
@@ -154,31 +180,28 @@ To enable Mistral Vibe, add:
 
 Open `http://localhost:5173`, then finish repository and agent setup in the Web UI. The API listens on port `4000`; override the ports with `UI_PORT` and `API_PORT` if they conflict.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the Web UI dashboard at `http://localhost:5173` immediately after first launch, showing the empty repository list and the prompt to add a repository. Start the launcher with a fresh `data/` directory to reach this state. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the Web UI dashboard at `http://localhost:5173` immediately after first launch, showing the empty repository list and the prompt to add a repository. Start the launcher with a fresh `data/` directory to reach this state. */}
 
-## Configure From The CLI (Optional)
+## Configure Repositories And Agents From The CLI (Optional)
 
-Everything the Web UI does for setup can also be done with the [ProPR CLI](../features/propr-cli.md). The CLI talks to the API on port `4000` and authenticates with your GitHub token (Bearer auth is enabled by default):
+Everything the Web UI does for setup can also be done with the [ProPR CLI](../features/propr-cli.md). Backend commands talk to the API on port `4000` and authenticate with your GitHub token (Bearer auth is enabled by default):
 
 ```bash
-npm install -g @propr/cli
-
 propr remote http://localhost:4000
 propr login                      # reuses your gh CLI session, or pass a PAT
 propr repo add owner/repo -b main
 propr agent add my-claude -t claude -m opus48 -d opus48
 propr use owner/repo
-propr status                     # verify daemon, workers, Redis, GitHub auth
+propr remote-status              # verify daemon, workers, Redis, GitHub auth
 ```
 
 From here, `propr plan create "..." --wait` and `propr issue implement <draft-id>/1 --wait` run the same plan-to-PR flow as the Web UI.
 
 ## Update ProPR
 
-The launcher manifest pins the service images to the launcher release version. To update, pull the latest launcher and run the same command again:
+Service images are pinned to the release version of the control plane that starts them.
 
-```bash
-docker pull propr/launcher:latest
-```
+- **CLI path:** update the CLI, then restart from the stack directory so it acts on the right runtime root — `propr start` pulls the matching images (`npm update -g @propr/cli && cd propr-deploy && propr start --restart`). `propr start --restart` resolves the stack relative to the current directory (or `--root <dir>`), so run it from `propr-deploy` to avoid restarting against the wrong path.
+- **Launcher path:** `docker pull propr/launcher:latest`, then re-run the `docker run` command; the launcher pulls the matching service images.
 
-Then re-run the `docker run` command above. The launcher pulls the matching service images and restarts the stack; data, logs, and repositories persist in your runtime directory.
+Data, logs, and repositories persist in your runtime directory either way.

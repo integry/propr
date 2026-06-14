@@ -14,7 +14,7 @@ ProPR supports five agents:
 - **OpenCode** (built-in free models without provider login)
 - **Mistral Vibe**
 
-The full list of models and their labels lives in [Agents And Models](./agents-and-models.md).
+The full list of models and their labels lives in [Agents and Models](./agents-and-models.md).
 
 ## What Routing Solves
 
@@ -46,7 +46,7 @@ The Web UI includes an AI Agents page for configuring coding agents. Each agent 
 
 The model IDs you enable here become the durable names used by labels and slash commands.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the AI Agents page with the agent configuration modal open for a Claude agent: agent type, alias, enable toggle, supported models checklist with one default model selected, and the config path field. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the AI Agents page with the agent configuration modal open for a Claude agent: agent type, alias, enable toggle, supported models checklist with one default model selected, and the config path field. */}
 
 ## Model Labels
 
@@ -67,7 +67,7 @@ llm-opencode-minimax-m3-free
 llm-vibe-devstral
 ```
 
-The exact IDs available in your deployment come from the AI Agents page; the built-in catalog is listed in [Agents And Models](./agents-and-models.md).
+The exact IDs available in your deployment come from the AI Agents page; the built-in catalog is listed in [Agents and Models](./agents-and-models.md).
 
 ## Multi-Model Comparison
 

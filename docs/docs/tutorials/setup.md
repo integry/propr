@@ -4,11 +4,11 @@ sidebar_position: 1
 
 # Setup
 
-Most people should run ProPR from the prebuilt Docker images via `propr/launcher:latest`. You only need source setup if you are changing ProPR itself.
+Most people should run ProPR from the prebuilt Docker images, started either by the ProPR CLI (`propr init stack` + `propr start`, recommended; Node.js 22+) or by the `propr/launcher:latest` container (no Node.js needed). You only need source setup if you are changing ProPR itself.
 
 ## Prerequisites For Every Path
 
-- A GitHub App installed on the repositories ProPR should access, with these permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), and optionally Actions (Read-only)
+- GitHub backend access: your own GitHub App installed on the target repositories — permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), optionally Actions (Read-only) — or a vendor-provided shared App via the token relay (`propr relay enroll`); see [GitHub Authentication](../operations/github-auth.md)
 - Credentials for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe), authenticated on the host before starting ProPR
 - Docker with access to the Docker socket
 - Disk space for data, logs, and repository workspaces
@@ -23,7 +23,7 @@ Use this when you want to run ProPR on your Linux laptop or workstation.
 
 [Local Setup](./setup-local.md)
 
-You will create a local runtime directory, add GitHub App credentials, mount your agent credentials, start `propr/launcher:latest`, and open the Web UI at `http://localhost:5173`. The API listens on port `4000`. Issue intake uses polling by default.
+You will install the CLI, scaffold a runtime directory with `propr init stack`, configure GitHub access, and start the stack with `propr start` (the launcher container remains as a no-Node.js alternative). The Web UI is at `http://localhost:5173`, the API on port `4000`. Issue intake uses polling by default.
 
 ## Server Setup
 
@@ -32,6 +32,16 @@ Use this when ProPR should run on a shared machine or production host.
 [Server Setup](./setup-server.md)
 
 The flow is the same as local setup, but you use stable server paths, public URLs, TLS through a reverse proxy, and stricter credential access. Server setup also covers GitHub webhook intake as an alternative to polling.
+
+## Secure VPS Deployment
+
+Use this when you are starting from a brand-new Linux VPS and want the host hardened as well as ProPR installed.
+
+[Secure VPS Deployment](./setup-vps.md)
+
+A start-to-finish walkthrough: admin user and SSH lockdown, automatic security updates, host firewall (including the Docker/UFW caveat), Docker and the CLI, binding service ports to localhost, TLS via nginx and Certbot, and the GitHub user whitelist.
+
+For an optional layer that removes all public inbound traffic with a Cloudflare Tunnel and an SSO identity gate, continue with [Advanced VPS Hardening](./setup-vps-hardening.md).
 
 ## Source Development Setup
 

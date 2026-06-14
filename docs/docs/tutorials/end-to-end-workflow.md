@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 # Issue To Pull Request Walkthrough
@@ -40,7 +40,7 @@ ProPR picks up the label via polling (every 60 seconds by default) or immediatel
 
 The task record shows the selected repository, branch, model, status, logs, and resulting PR.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture a GitHub issue with the `AI` trigger label, one `llm-*` model label, and the auto-applied `AI-processing` state label visible in the label list. Trigger a run on a test issue and screenshot it while the task is in progress. -->
+{/* SCREENSHOT PLACEHOLDER: Capture a GitHub issue with the `AI` trigger label, one `llm-*` model label, and the auto-applied `AI-processing` state label visible in the label list. Trigger a run on a test issue and screenshot it while the task is in progress. */}
 
 ## Review The Pull Request
 
@@ -54,7 +54,7 @@ When ProPR opens the PR:
 
 Review the PR in your normal process. ProPR helps create and refine it; it does not decide whether it should merge.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the task record detail view in the Web UI for a completed run, showing status, agent and model, commit list, the linked PR, and the live log panel. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the task record detail view in the Web UI for a completed run, showing status, agent and model, commit list, the linked PR, and the live log panel. */}
 
 ## Ask For Follow-Up
 

@@ -13,6 +13,10 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
  Create as many sidebars as you want.
  */
 const sidebars: SidebarsConfig = {
+  // Convention: this sidebar lists every page explicitly, so the order here is
+  // authoritative. The `sidebar_position` front matter in individual tutorial
+  // pages is ignored for ordering — keep those values only as a hint for
+  // any auto-generated sidebar and adjust ordering here, not in front matter.
   tutorialSidebar: [
     'intro',
     {
@@ -22,6 +26,8 @@ const sidebars: SidebarsConfig = {
         'tutorials/setup',
         'tutorials/setup-local',
         'tutorials/setup-server',
+        'tutorials/setup-vps',
+        'tutorials/setup-vps-hardening',
         'tutorials/setup-source',
       ],
     },

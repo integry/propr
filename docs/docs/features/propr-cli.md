@@ -4,7 +4,7 @@ sidebar_position: 12
 
 # ProPR CLI
 
-The ProPR CLI (`propr`, npm package `@propr/cli`) operates a running ProPR backend from the terminal: plans, issue implementation, tasks, repositories, agents, to-dos, settings, logs, and system status. It talks to the same API as the Web UI, so everything it does shows up in the dashboard and follows the normal review path.
+The ProPR CLI (`propr`, npm package `@propr/cli`) is both the **control plane for a local ProPR stack** (scaffold, verify, start, stop — no hand-written `docker run`) and a **client for a running backend** (plans, issue implementation, tasks, repositories, agents, to-dos, settings, logs). Backend commands talk to the same API as the Web UI, so everything shows up in the dashboard and follows the normal review path.
 
 This page documents the end-user CLI. For developing or operating ProPR itself from a source checkout (compose stacks, image builds), see [CLI Workflows](./cli-workflows.md).
 
@@ -12,6 +12,44 @@ This page documents the end-user CLI. For developing or operating ProPR itself f
 
 ```bash
 npm install -g @propr/cli
+```
+
+The host CLI requires **Node.js 22 or newer** (the Docker launcher image is separate and unaffected).
+
+## Local Stack Control Plane
+
+Bring up a complete ProPR stack from the terminal:
+
+```bash
+propr init stack         # scaffold .env + data/ logs/ repos/, detect agent credentials
+propr check              # verify Docker, images, agents, and GitHub auth mode (--verify smoke-tests agents)
+propr start              # pull images and start the stack with a live dashboard
+propr status             # local stack status (--json for scripts)
+propr ui                 # open the Web UI (http://localhost:5173)
+propr docs               # open the bundled docs site
+propr stop               # stop the stack (--keep to stop without removing containers)
+```
+
+- `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
+- `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
+- `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
+- `propr tank` toggles Agent Tank LLM usage tracking on a running stack.
+
+:::warning Breaking changes in the control-plane CLI
+Running bare `propr` performs the same environment checks as `propr check` (including a Docker probe) and exits nonzero when prerequisites are missing — use `propr --help` for help text. `propr status` now reports the **local Docker stack**; use `propr remote-status` for the backend health/queue JSON that older scripts read from `propr status --json`.
+:::
+
+## GitHub Relay (shared-app auth)
+
+If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay (see [GitHub Authentication](../operations/github-auth.md)):
+
+Run these from the initialized stack directory (the one holding `.env`), so
+`propr relay enroll` writes the token to the right `.env`:
+
+```bash
+propr relay enroll       # mint a relay token and save it to the stack .env
+propr relay list         # list relay tokens for the installation
+propr relay revoke <id>  # revoke a token
 ```
 
 ## Connect and Authenticate
@@ -121,6 +159,8 @@ propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabl
 propr agent add opencode -t opencode -m opencode-minimax-m3-free \
   -d opencode-minimax-m3-free --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)
+propr agent enable my-agent                  # Enable / disable without deleting
+propr agent disable my-agent
 propr agent delete my-agent --force
 ```
 
@@ -157,7 +197,7 @@ propr log list                       # Recent LLM logs
 propr log list -m <model> --failed   # Filter by model, failures only
 propr log list --agent my-claude --draft <draft-id> --page 2 -l 100
 
-propr status            # System health check
+propr remote-status     # Backend health check (daemon, workers, Redis, GitHub auth)
 propr queue             # Queue statistics
 ```
 

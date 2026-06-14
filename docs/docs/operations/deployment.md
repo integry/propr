@@ -4,13 +4,13 @@ Use this page when ProPR should run on a shared server. For a laptop install, st
 
 ## Recommended Path
 
-Use the published launcher image. The launcher replaces `docker-compose` for production deployments: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
+Use the prebuilt images, started by the ProPR CLI control plane (`propr init stack --root /srv/propr`, `propr check`, `propr start --no-tui`; Node.js 22+) or by the published launcher container. Both run the same orchestrator: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
 
 You need:
 
 - Docker
 - A runtime directory such as `/srv/propr`
-- A GitHub App and private key
+- GitHub backend access — your own GitHub App and private key (`HOST_GH_PRIVATE_KEY` bind-mounts it from any host path), or a shared App via the token relay; see [GitHub Authentication](./github-auth.md) for the three `GH_AUTH_MODE`s
 - Agent credentials for at least one agent (for example Claude Code state in `~/.claude`, Codex state in `~/.codex`, or Antigravity CLI state in `~/.gemini`)
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
@@ -23,13 +23,20 @@ Create a stable directory that owns all persistent state:
 sudo mkdir -p /srv/propr/{data,logs,repos}
 sudo chown -R "$USER" /srv/propr
 cd /srv/propr
+```
+
+**Own GitHub App mode only:** once you have copied the App private key into this
+directory, restrict its permissions. Relay mode (`GH_AUTH_MODE=relay`) has no key
+file, so skip this command:
+
+```bash
 chmod 600 your-app-private-key.pem
 ```
 
 | Path | Contents |
 |---|---|
 | `.env` | Server configuration (secrets, URLs, paths) |
-| `your-app-private-key.pem` | GitHub App private key |
+| `your-app-private-key.pem` | GitHub App private key — **only in own GitHub App mode**; relay mode (`GH_AUTH_MODE=relay`) stores no key file here |
 | `data/` | SQLite database (`propr.sqlite` plus `-wal`/`-shm` files) |
 | `logs/` | Log directory mounted into the service containers at `/usr/src/app/logs` |
 | `repos/` | Git working area: `clones/` (cached repository clones) and `worktrees/` (per-task worktrees) |
@@ -57,12 +64,24 @@ Images are published to Docker Hub under the `propr/` namespace and mirrored to 
 
 ## Environment
 
-Use `.env` for server-specific wiring:
+Use `.env` for server-specific wiring. The GitHub App private-key variable
+depends on whether you start the stack with the **CLI** or the **launcher**:
+
+| Variable | When to use | Value |
+|---|---|---|
+| `HOST_GH_PRIVATE_KEY` | **CLI** (`propr start`) | Absolute **host** path to the `.pem` file — the CLI bind-mounts it into the container |
+| `GH_PRIVATE_KEY_PATH` | **Launcher** (`docker run propr/launcher`) | Path **inside the launcher container** (typically `/app/config/...` via a `-v` mount) |
+
+Do not mix them — the CLI cannot resolve a container-internal path, and the
+launcher cannot resolve a host path it has not mounted itself.
 
 ```bash
 GH_APP_ID=your-github-app-id
-GH_PRIVATE_KEY_PATH=/app/config/your-app-private-key.pem
 GH_INSTALLATION_ID=your-installation-id
+
+# Pick ONE of the following, depending on your start method:
+HOST_GH_PRIVATE_KEY=/srv/propr/your-app-private-key.pem          # CLI
+# GH_PRIVATE_KEY_PATH=/app/config/your-app-private-key.pem       # Launcher
 
 FRONTEND_URL=https://propr.example.com
 GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
@@ -105,7 +124,28 @@ If your server cannot expose a public webhook endpoint, the optional hosted GitH
 
 ## Start The Stack
 
-From the runtime directory:
+### Option A — CLI (Recommended)
+
+The ProPR CLI (`@propr/cli`, Node.js 22+) is the recommended control plane. It
+reads `.env`, pulls images, creates the Docker network, and starts service
+containers — the same orchestration the launcher performs, but managed from the
+host rather than from inside a container.
+
+```bash
+cd /srv/propr
+propr check              # validates Docker, images, agent credentials, and GitHub auth mode
+propr start --no-tui     # pull images and start the stack (non-interactive)
+```
+
+`propr check --verify` additionally smoke-tests each agent image. Use
+`propr start` (without `--no-tui`) for the interactive dashboard.
+`propr status`, `propr stop`, and `propr remote-status` manage the running
+stack.
+
+### Option B — Launcher Container
+
+If you prefer not to install Node.js on the host, the published launcher
+container provides the same orchestration:
 
 ```bash
 docker run --rm \
@@ -121,6 +161,13 @@ docker run --rm \
   -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
   propr/launcher:latest
 ```
+
+The private-key mount (`-v ...your-app-private-key.pem...`) is needed **only in
+own GitHub App mode**, where it pairs with `GH_PRIVATE_KEY_PATH=/app/config/...`
+in `.env`. In relay mode (`GH_AUTH_MODE=relay`) there is no key file — omit that
+line. Do not also set `HOST_GH_PRIVATE_KEY` here: that variable is for the CLI
+start path, and the two key variables must not be mixed (see
+[Environment](#environment) above).
 
 The path variables are passed as environment values, not mounts, because the launcher spawns sibling containers through the host Docker daemon — every `-v` value it passes must resolve on the host.
 
@@ -175,12 +222,41 @@ Back up:
 
 ## Updating
 
-The launcher manifest pins exact image versions, so updating means running a newer launcher:
+### CLI update path
+
+Update the CLI package, then restart the stack. The CLI manifest pins exact
+image versions; the new version pulls the matching service and agent images:
+
+```bash
+sudo npm update -g @propr/cli
+which propr && propr --version   # confirm the updated CLI is the one on PATH
+cd /srv/propr                # run --restart from the stack runtime directory
+propr start --restart        # pulls updated images and recreates containers
+```
+
+`propr start --restart` resolves the stack relative to the current working
+directory (or an explicit `--root`), so `cd` into the runtime directory first to
+avoid restarting against the wrong path.
+
+Run the update with the **same method you installed `@propr/cli` with**. `sudo`
+matches a root-owned global install (the default for a system `apt`/NodeSource
+Node). If your global prefix is user-owned — for example an `nvm`-managed Node or
+a custom `npm config set prefix` under your home directory — omit `sudo`, since
+running it as root can update a different install or leave root-owned files in a
+user-owned prefix. `npm prefix -g` shows which prefix is in effect.
+
+### Launcher update path
+
+Pull the newer launcher image:
 
 ```bash
 docker pull propr/launcher:latest
 ```
 
-Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service and agent images on startup. Persistent state in `data/`, `repos/`, and the Redis volume is unaffected.
+Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service and agent images on startup.
+
+---
+
+In both cases, persistent state in `data/`, `repos/`, and the Redis volume is unaffected.
 
 For ongoing care — backups, troubleshooting, queue resets, and tuning — see [Maintenance And Troubleshooting](./maintenance.md).

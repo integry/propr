@@ -28,7 +28,7 @@ Slash commands are for specific actions: AI review, applying AI review feedback,
 
 ## Model IDs
 
-Commands that take a model accept the model IDs configured in AI Agents. The `llm-` prefix is optional in command arguments — `/switch claude-opus48` and `/switch llm-claude-opus48` are equivalent. Unrecognized models are rejected. The built-in catalog is listed in [Agents And Models](./agents-and-models.md).
+Commands that take a model accept the model IDs configured in AI Agents. The `llm-` prefix is optional in command arguments — `/switch claude-opus48` and `/switch llm-claude-opus48` are equivalent. Unrecognized models are rejected. The built-in catalog is listed in [Agents and Models](./agents-and-models.md).
 
 ## Who Can Trigger Commands
 
@@ -45,4 +45,4 @@ Slash commands from an allowed author are processed directly. Natural follow-up 
 
 When a command or follow-up task finishes, ProPR posts a completion comment on the PR with a summary of what was done, the commit hash when changes were committed, and an expandable "ProPR Slash Commands" reference block listing the available commands.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture a PR conversation showing a `/review` comment, the resulting AI review with severity findings and a `Score: N/10` line, and a ProPR completion comment with the expanded slash commands block. -->
+{/* SCREENSHOT PLACEHOLDER: Capture a PR conversation showing a `/review` comment, the resulting AI review with severity findings and a `Score: N/10` line, and a ProPR completion comment with the expanded slash commands block. */}

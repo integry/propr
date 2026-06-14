@@ -26,7 +26,7 @@ The task detail view shows:
 - A progress bar over the agent's todo list
 - Action buttons: Follow Up (compose a follow-up for the task's PR or issue), Stop (while pending or processing), and Delete
 
-<!-- SCREENSHOT PLACEHOLDER: Capture a task detail view for a completed implementation task: context strip with repository/model/PR link/cost, the result overview, and the file changes section expanded to show at least one diff. -->
+{/* SCREENSHOT PLACEHOLDER: Capture a task detail view for a completed implementation task: context strip with repository/model/PR link/cost, the result overview, and the file changes section expanded to show at least one diff. */}
 
 ## Logs And Live Output
 
@@ -51,7 +51,7 @@ The dashboard summarizes activity across repositories:
 - Top Models (task counts and usage share per model)
 - Global search across tasks
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the dashboard with real history: the stats grid (Active / Success / Total / Failed / Total Cost), the task chart, and the Top Repositories and Top Models tables populated. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the dashboard with real history: the stats grid (Active / Success / Total / Failed / Total Cost), the task chart, and the Top Repositories and Top Models tables populated. */}
 
 ## LLM Log
 
@@ -65,7 +65,7 @@ The LLM Log page records every model call:
 
 This is the page to use when comparing model costs across real work or investigating an unexpectedly expensive run.
 
-<!-- SCREENSHOT PLACEHOLDER: Capture the LLM Log page with one row expanded, showing the Work Reference section (task link, repository) and the cache statistics. -->
+{/* SCREENSHOT PLACEHOLDER: Capture the LLM Log page with one row expanded, showing the Work Reference section (task link, repository) and the cache statistics. */}
 
 ## Agent Tank Usage Tracking
 

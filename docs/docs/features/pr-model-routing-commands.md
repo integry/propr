@@ -40,7 +40,7 @@ The PR's model label does not change. Later work returns to the PR's configured 
 
 ## Choosing A Model
 
-Check AI Agents in the Web UI for the model IDs available in your deployment; the built-in catalog is in [Agents And Models](./agents-and-models.md). The `llm-` prefix is optional in command arguments.
+Check AI Agents in the Web UI for the model IDs available in your deployment; the built-in catalog is in [Agents and Models](./agents-and-models.md). The `llm-` prefix is optional in command arguments.
 
 Use routing when:
 
