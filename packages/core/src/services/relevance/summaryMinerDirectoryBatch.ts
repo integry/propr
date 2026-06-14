@@ -23,6 +23,15 @@ const SUMMARIZATION_RETRY = {
   exponentialBase: 2,
 } as const;
 
+// The fallback model is given a single attempt: the requirement is to retry the
+// quota-limited batch once with the fallback, not to re-run the fallback itself.
+const SUMMARIZATION_FALLBACK_RETRY = {
+  maxAttempts: 1,
+  baseDelay: 2000,
+  maxDelay: 15000,
+  exponentialBase: 2,
+} as const;
+
 export type DirectoryBatchResult = DirectoryResult[] & {
   fallbackUsed: boolean;
   stopProcessing: boolean;
@@ -177,7 +186,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       agent: fallbackAgent as Agent,
       model: fallbackModelUsed ?? fallbackModelOverride,
       context: `directory_aggregation_fallback:${fullName}`,
-      retryOptions: SUMMARIZATION_RETRY
+      retryOptions: SUMMARIZATION_FALLBACK_RETRY
     });
     state.fallbackUsed = true;
     state.fallbackPrimaryAgentAlias = primaryAgentAlias;

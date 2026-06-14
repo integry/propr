@@ -112,6 +112,88 @@ describe('summary miner batch fallback', () => {
     assert.notEqual(state.warning?.mode, 'cooldown');
   });
 
+  test('caps the fallback model to a single attempt on transient failure', async () => {
+    let fallbackCalls = 0;
+    const primaryAgent = createAgent('primary', 'primary-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'primary-model',
+      executionTimeMs: 1,
+      error: 'insufficient quota'
+    }));
+    // A transient (retryable) failure would loop multiple times under the
+    // default retry config; the fallback must be tried exactly once.
+    const fallbackAgent = createAgent('fallback', 'fallback-model', async () => {
+      fallbackCalls++;
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'fallback-model',
+        executionTimeMs: 1,
+        error: 'service temporarily unavailable, try again'
+      };
+    });
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-model',
+      fallbackAgentAliasSetting: 'fallback',
+      branch: 'main'
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.stopProcessing, true);
+    assert.equal(fallbackCalls, 1);
+  });
+
+  test('directory batch caps the fallback model to a single attempt on transient failure', async () => {
+    let fallbackCalls = 0;
+    const primaryAgent = createAgent('primary', 'primary-model', async () => ({
+      success: false,
+      response: '',
+      modelUsed: 'primary-model',
+      executionTimeMs: 1,
+      error: 'insufficient quota'
+    }));
+    const fallbackAgent = createAgent('fallback', 'fallback-model', async () => {
+      fallbackCalls++;
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'fallback-model',
+        executionTimeMs: 1,
+        error: 'service temporarily unavailable, try again'
+      };
+    });
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-model',
+      fallbackAgentAliasSetting: 'fallback',
+      fullName: 'integry/propr',
+      branch: 'main'
+    });
+
+    assert.equal(result.stopProcessing, true);
+    assert.equal(fallbackCalls, 1);
+  });
+
   test('passes custom prompt into file batch prompt', async () => {
     let receivedPrompt = '';
     const customPrompt = 'Use security-focused summaries for every file.';

@@ -306,10 +306,22 @@ export async function clearSummarizationPrimaryQuotaFailures(options: {
     repository?: string;
     branch?: string;
 } = {}): Promise<void> {
+    // Cheap read-only pre-check: this runs after every successful summarization
+    // batch, but the common case has nothing to clear. Avoid opening a
+    // row-locking write transaction on system_configs when there is no state.
+    const current = await loadSummarizationRuntimeState();
+    if (!hasClearablePrimaryQuotaState(current)) return;
+
     await mutateSummarizationRuntimeState(async state => {
         const shouldSave = clearPrimaryQuotaState(state, options);
         return { result: undefined, save: shouldSave };
     });
+}
+
+function hasClearablePrimaryQuotaState(state: SummarizationRuntimeState): boolean {
+    const hasFailures = state.primary_quota_failures !== 0 || Object.keys(state.primary_quota_failures_by_alias || {}).length > 0;
+    const hasClearableWarning = !!state.warning && state.warning.mode !== 'cooldown';
+    return hasFailures || hasClearableWarning;
 }
 
 export async function clearSummarizationCooldown(

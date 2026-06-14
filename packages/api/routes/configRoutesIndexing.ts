@@ -266,10 +266,13 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       settings.agent_alias !== (currentSettings.agent_alias || '') ||
       settings.fallback_agent_alias !== (currentSettings.fallback_agent_alias || '');
 
-    await configManager.saveSummarizationSettings(settings);
+    // Clear stale cooldown/warning runtime state BEFORE persisting the new model
+    // settings. If clearing fails we return 500 without having saved the new
+    // settings, so we never leave stale runtime state attached to fresh config.
     if (modelAliasesChanged) {
       await configManager.clearSummarizationRuntimeState();
     }
+    await configManager.saveSummarizationSettings(settings);
     await publishConfigUpdate('summarization_settings_update');
 
     let reindexScheduled = false;

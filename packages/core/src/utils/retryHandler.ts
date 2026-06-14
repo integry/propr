@@ -89,7 +89,7 @@ function collectErrorText(error: unknown): string[] {
 
         const record = value as ErrorLike & Record<string, unknown>;
         if (typeof record.message === 'string') values.push(record.message);
-        const stringified = typeof record.toString === 'function' ? record.toString() : '';
+        const stringified = safeToString(record);
         if (stringified && stringified !== '[object Object]') values.push(stringified);
 
         if (Array.isArray(value)) {
@@ -105,6 +105,17 @@ function collectErrorText(error: unknown): string[] {
 
     visit(error);
     return values;
+}
+
+// A custom toString on an arbitrary error payload can throw or be expensive;
+// never let traversal of an error blow up the retry classification.
+function safeToString(record: Record<string, unknown>): string {
+    if (typeof record.toString !== 'function') return '';
+    try {
+        return record.toString();
+    } catch {
+        return '';
+    }
 }
 
 /**

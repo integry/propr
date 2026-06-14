@@ -149,8 +149,10 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
     if (state.warning && state.warning.mode !== 'cooldown') {
       warnings.push({ type: `summarization_${state.warning.mode}`, message: state.warning.message });
     }
+    // Surface the soonest-expiring cooldowns first so operators see what will
+    // resume next; the rest are summarized in the overflow warning below.
     const cooldowns = Object.values(state.cooldowns || {})
-      .sort((left, right) => Date.parse(right.until) - Date.parse(left.until));
+      .sort((left, right) => Date.parse(left.until) - Date.parse(right.until));
     for (const cooldown of cooldowns.slice(0, maxCooldownWarnings)) {
       warnings.push({
         type: 'summarization_cooldown',

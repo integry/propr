@@ -14,7 +14,7 @@ import type { ProcessBatchesResult } from './summaryMinerHelpers.js';
 import type { AggregateDirectoriesResult } from './summaryMinerDirectories.js';
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import type { IndexingPhase } from '@propr/shared';
-import { updateRepositoryStatus } from './summaryMinerQueries.js';
+import { updateRepositoryStatus, getRepositoryIndexingStatus } from './summaryMinerQueries.js';
 import { scanProcessableGitFiles } from './summaryFileFilter.js';
 import { deleteFileSummaries, identifyStaleFiles } from './summaryMinerStaleness.js';
 
@@ -292,8 +292,14 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     const cooldown = options.ignoreCooldown ? null : await getSummarizationCooldown(fullName, branch);
     if (cooldown) {
       correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
-      await updateRepositoryStatus(fullName, 'idle', branch);
-      await safePublishIndexingStatus(fullName, branch, 'idle');
+      // Preserve an existing failed state: the cooldown skip repairs nothing, so
+      // clearing a previously failed repository to idle would hide a real problem.
+      const existingStatus = await getRepositoryIndexingStatus(fullName, branch);
+      const cooldownStatus = existingStatus === 'failed' ? 'failed' : 'idle';
+      if (existingStatus !== 'failed') {
+        await updateRepositoryStatus(fullName, 'idle', branch);
+      }
+      await safePublishIndexingStatus(fullName, branch, cooldownStatus);
       await clearIndexingCancellation(fullName, branch);
       await clearIndexingProgress(fullName, branch);
       return;

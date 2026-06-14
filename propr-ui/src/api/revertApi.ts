@@ -1,4 +1,7 @@
 import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import type { SummarizationSettings } from './proprTypes';
+
+export type { SummarizationSettings };
 
 export interface RevertParams {
   repo: string;
@@ -40,14 +43,6 @@ export const revertCommit = async (params: RevertParams): Promise<void> => {
   });
   await handleApiResponse(response);
 };
-
-export interface SummarizationSettings {
-  enabled: boolean;
-  agent_alias: string;
-  fallback_agent_alias?: string;
-  custom_prompt?: string;
-  default_prompt?: string;
-}
 
 export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/summarization`, { credentials: 'include' });
