@@ -6,9 +6,9 @@ sidebar_position: 5
 
 ProPR runs Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe through one shared coding-agent integration pattern. The agent name changes the CLI, image, credential mount, and model catalog, but the architectural contract stays the same: ProPR routes a job to an enabled agent, starts that agent in a Docker runtime, gives it a bounded prompt, parses its output, and then the worker finalizes the result.
 
-Agent-specific pages cover runtime details that do not belong in the common contract:
+Runtime and agent-specific pages cover details that do not belong in the common contract:
 
-- [Claude Code Runtime Reference](./claude-code-runtime.md)
+- [Agent Runtime Reference](./agent-runtime.md)
 - [OpenCode Integration](./opencode-integration.md)
 
 ## Integration Contract
@@ -49,7 +49,7 @@ See [Agent Routing](../features/agent-routing.md) for label formats, aliases, de
 
 ## Docker Runtime
 
-Every supported coding agent uses the same containerized runtime shape: an agent image built on `propr/agent-base`, an entrypoint script, the task worktree mounted at `/home/node/workspace`, and the required host credential directory mounted into the container.
+Every supported coding agent uses the same containerized runtime shape: an agent image with ProPR's common tooling, an entrypoint script, the task worktree mounted at `/home/node/workspace`, and the required host credential directory mounted into the container. Most images build on `propr/agent-base`; Antigravity uses a Debian slim base for CLI compatibility while preserving the same runtime contract.
 
 | Agent | Dockerfile | Entrypoint | Credential mount |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ Every supported coding agent uses the same containerized runtime shape: an agent
 
 The runtime receives GitHub credentials, selected model settings, timeout settings, and any agent-specific environment variables. Containers run independently so concurrent jobs can use different agents and models without sharing mutable checkouts.
 
-See [Isolated And Safe Execution](../features/execution-safety.md) for the execution boundary and [Agent Runtime Reference](./claude-code-runtime.md) for concrete runtime configuration and debugging details currently documented through the Claude Code runtime.
+See [Isolated And Safe Execution](../features/execution-safety.md) for the execution boundary and [Agent Runtime Reference](./agent-runtime.md) for concrete runtime configuration and debugging details across all agent images.
 
 ## Prompt Boundary
 
@@ -98,7 +98,8 @@ If the agent made no changes, the worker records that outcome instead of creatin
 
 Use the generic integration contract first, then branch into agent details only when you need setup or runtime behavior for a specific CLI:
 
-- [Claude Code Runtime Reference](./claude-code-runtime.md): Claude Code container settings, CLI invocation, timeouts, and troubleshooting.
+- [Agent Runtime Reference](./agent-runtime.md): shared container settings, network behavior, timeouts, debugging, and per-agent runtime notes.
+- [Claude Code Runtime Details](./agent-runtime.md#claude-code): Claude Code container settings, CLI invocation, timeouts, and troubleshooting.
 - [OpenCode Integration](./opencode-integration.md): OpenCode configuration, model ID translation, auth data mounts, and JSON execution mode.
 - [Agents and Models](../features/agents-and-models.md): supported model labels and credential setup across all agents.
 
@@ -108,6 +109,6 @@ Use the generic integration contract first, then branch into agent details only 
 - [Worker Architecture](./worker.md)
 - [Worker Runtime Reference](./worker-runtime.md)
 - [Isolated And Safe Execution](../features/execution-safety.md)
-- [Agent Runtime Reference](./claude-code-runtime.md)
-- [Claude Code Runtime Reference](./claude-code-runtime.md)
+- [Agent Runtime Reference](./agent-runtime.md)
+- [Claude Code Runtime Details](./agent-runtime.md#claude-code)
 - [OpenCode Integration](./opencode-integration.md)
