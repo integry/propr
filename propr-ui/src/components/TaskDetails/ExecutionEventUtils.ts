@@ -1,5 +1,6 @@
 import { LiveEvent } from './types';
 import { formatDisplayPath, stripWorkspacePrefixes } from './utils';
+import { formatReviewPromptOverview } from './reviewPromptOverview';
 
 // Get file icon class based on file extension (returns icon name for use with lucide)
 export const getFileIconType = (filePath: string): 'code' | 'json' | 'text' | 'default' => {
@@ -147,6 +148,14 @@ export const formatToolResult = (result: string | object | undefined): string =>
     } catch {
       resultText = String(result);
     }
+  }
+  // Replace raw PR review request JSON with a concise human-readable overview
+  // before falling back to the generic rendering path. Non-review content and
+  // unrecognized schemas pass through unchanged; the raw value remains available
+  // internally on the originating event.
+  const reviewOverview = formatReviewPromptOverview(resultText);
+  if (reviewOverview !== null) {
+    return reviewOverview;
   }
   return stripWorkspacePrefixes(resultText);
 };
