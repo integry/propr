@@ -93,24 +93,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   await startDirectoryPhase(fullName, branch, totalDirs);
 
   const dirSummaryCache = new Map<string, string>();
-  const modelId = modelOverride || agent.config.defaultModel || 'default';
-  const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
-  const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_DIRECTORY_BATCH_TOKENS;
-  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
-  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
-  const maxDirsPerBatch = parseInt(
-    process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_DIRS ||
-      String(modelBatchLimitOverride?.maxItemsPerBatch ?? MAX_DIRS_PER_BATCH),
-    10
-  );
-  log.info({
-    maxBatchTokens,
-    maxBatchTokensCap,
-    maxDirsPerBatch,
-    model: modelId,
-    modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
-  }, 'Calculated directory batch budget');
+  const { modelId, maxBatchTokens, maxDirsPerBatch } = computeDirectoryBatchBudget(agent, modelOverride, log);
 
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const initialConfig: SummarizationAgentConfig = {
@@ -138,15 +121,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
       initialConfig,
       log
     });
-    state.totalBatches += depthResult.totalBatches;
-    state.failedBatches += depthResult.failedBatches;
-    state.dirsProcessed += depthResult.dirsProcessed;
-    if (depthResult.fallbackUsed) {
-      state.fallbackUsed = true;
-      state.fallbackPrimaryAgentAlias ??= depthResult.fallbackPrimaryAgentAlias;
-      state.fallbackAgentAlias ??= depthResult.fallbackAgentAlias;
-    }
-    state.stopProcessing ||= depthResult.stopProcessing;
+    mergeDirectoryAggregationResult(state, depthResult);
     if (state.stopProcessing) break;
   }
 
@@ -182,18 +157,49 @@ async function processDirectoryDepth(options: ProcessDepthOptions): Promise<Dire
 
   for (const batch of batches) {
     const batchResult = await processDirectoryAggregationBatch(batch, options);
-    state.failedBatches += batchResult.failedBatches;
-    state.dirsProcessed += batchResult.dirsProcessed;
-    if (batchResult.fallbackUsed) {
-      state.fallbackUsed = true;
-      state.fallbackPrimaryAgentAlias ??= batchResult.fallbackPrimaryAgentAlias;
-      state.fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
-    }
-    state.stopProcessing ||= batchResult.stopProcessing;
+    mergeDirectoryAggregationResult(state, batchResult);
     if (state.stopProcessing) break;
   }
 
   return state;
+}
+
+function computeDirectoryBatchBudget(
+  agent: Agent,
+  modelOverride: string | undefined,
+  log: Logger
+): { modelId: string; maxBatchTokens: number; maxDirsPerBatch: number } {
+  const modelId = modelOverride || agent.config.defaultModel || 'default';
+  const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
+  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
+  const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_DIRECTORY_BATCH_TOKENS;
+  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
+  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
+  const maxDirsPerBatch = parseInt(
+    process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_DIRS ||
+      String(modelBatchLimitOverride?.maxItemsPerBatch ?? MAX_DIRS_PER_BATCH),
+    10
+  );
+  log.info({
+    maxBatchTokens,
+    maxBatchTokensCap,
+    maxDirsPerBatch,
+    model: modelId,
+    modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
+  }, 'Calculated directory batch budget');
+  return { modelId, maxBatchTokens, maxDirsPerBatch };
+}
+
+function mergeDirectoryAggregationResult(state: DirectoryAggregationState, result: DirectoryAggregationState): void {
+  state.totalBatches += result.totalBatches;
+  state.failedBatches += result.failedBatches;
+  state.dirsProcessed += result.dirsProcessed;
+  if (result.fallbackUsed) {
+    state.fallbackUsed = true;
+    state.fallbackPrimaryAgentAlias ??= result.fallbackPrimaryAgentAlias;
+    state.fallbackAgentAlias ??= result.fallbackAgentAlias;
+  }
+  state.stopProcessing ||= result.stopProcessing;
 }
 
 async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options: ProcessDepthOptions): Promise<DirectoryAggregationState> {
