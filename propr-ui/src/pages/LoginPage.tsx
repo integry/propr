@@ -1,42 +1,130 @@
-import React from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDemoMode } from '../contexts/DemoModeContext';
+import { apiFetch } from '../api/proprApi';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 // For OAuth, use main API to avoid registering multiple callback URLs
 // Falls back to API_BASE_URL for main site
 const OAUTH_API_URL = import.meta.env.VITE_OAUTH_API_URL || API_BASE_URL;
 
+// Only same-origin, absolute in-app paths are safe redirect targets. This
+// rejects external URLs ("https://evil.example/path"), protocol-relative URLs
+// ("//evil.example/path") and backslash tricks ("/\\evil.example") that browsers
+// can treat as external.
+const isSafeInternalPath = (value: unknown): value is string => {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  if (!value.startsWith('/')) return false;
+  if (value.startsWith('//') || value.startsWith('/\\')) return false;
+  return true;
+};
+
+// Resolve where to send the user after a successful login, preferring the page
+// they came from (router location state), then a `redirect_to` query param, and
+// finally the dashboard root. Any unsafe/external target falls back to '/'.
+const resolveReturnPath = (state: unknown, redirectToParam: string | null): string => {
+  const fromState = (state as { from?: unknown } | null)?.from;
+  if (isSafeInternalPath(fromState)) return fromState;
+  if (fromState && typeof fromState === 'object') {
+    const loc = fromState as { pathname?: unknown; search?: unknown; hash?: unknown };
+    if (typeof loc.pathname === 'string') {
+      const search = typeof loc.search === 'string' ? loc.search : '';
+      const hash = typeof loc.hash === 'string' ? loc.hash : '';
+      const candidate = `${loc.pathname}${search}${hash}`;
+      if (isSafeInternalPath(candidate)) return candidate;
+    }
+  }
+  if (isSafeInternalPath(redirectToParam)) return redirectToParam;
+  return '/';
+};
+
 const LoginPage: React.FC = () => {
   useDocumentTitle('Login');
   const [searchParams] = useSearchParams();
-  const { isDemoMode } = useDemoMode();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   const loggedOut = searchParams.get('logged_out') === 'true';
 
+  const returnPath = useMemo(
+    () => resolveReturnPath(location.state, searchParams.get('redirect_to')),
+    [location.state, searchParams]
+  );
+
+  // Start in the "recovering" state (showing a spinner instead of the OAuth
+  // button) unless we already know recovery should be skipped. This avoids a
+  // flash of the login button before the session check resolves.
+  const [isRecovering, setIsRecovering] = useState(!loggedOut);
+
+  useEffect(() => {
+    // Wait until demo-mode status is known before deciding whether to recover.
+    if (isDemoModeLoading) return;
+
+    // Skip automatic session recovery in demo mode or right after an explicit
+    // logout, since silently logging the user back in would be surprising.
+    if (isDemoMode || loggedOut) {
+      setIsRecovering(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
+        if (cancelled) return;
+        if (response.ok) {
+          // The server still has (or could refresh) a valid session, so send
+          // the user back to where they came from.
+          navigate(returnPath, { replace: true });
+          return;
+        }
+        // 401/403/503 and any other non-OK status mean we cannot recover the
+        // session silently, so keep the login UI.
+        setIsRecovering(false);
+      } catch {
+        // Network errors fall through to the login UI as well.
+        if (!cancelled) setIsRecovering(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isDemoMode, isDemoModeLoading, loggedOut, navigate, returnPath]);
+
   const handleLogin = () => {
-    // Pass redirect_to for PR preview environments to redirect back after auth
-    const redirectTo = encodeURIComponent(window.location.origin + '/');
+    // Pass redirect_to so the OAuth flow returns the user to the page they came
+    // from (falling back to the dashboard root) after authenticating.
+    const redirectTo = encodeURIComponent(window.location.origin + returnPath);
     window.location.href = `${OAUTH_API_URL}/api/auth/github?redirect_to=${redirectTo}`;
   };
+
+  if (isRecovering) {
+    return (
+      <div className="min-h-full bg-light-100 flex items-center justify-center">
+        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-full bg-light-100 flex items-center justify-center">
       <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full text-center">
         <img src="/media/logo-and-name.png" alt="ProPR" className="h-12 w-auto mx-auto mb-4" />
-        
+
         {loggedOut && (
           <div className="mb-6 p-3 bg-green-50 text-green-700 rounded-md">
             You have been successfully logged out.
           </div>
         )}
-        
+
         <p className="text-gray-600 mb-6">
           {isDemoMode
             ? 'Demo mode is enabled. You can browse ProPR without GitHub OAuth, but all write and AI execution actions are disabled.'
             : 'Sign in with your GitHub account to access the dashboard.'}
         </p>
-        
+
         <button
           onClick={isDemoMode ? () => { window.location.href = '/'; } : handleLogin}
           className="w-full bg-gray-900 hover:bg-gray-800 text-white font-medium py-3 px-4 rounded-md transition-colors flex items-center justify-center gap-2"
