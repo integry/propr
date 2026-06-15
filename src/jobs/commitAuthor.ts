@@ -1,4 +1,3 @@
-export const AI_COMMIT_AUTHOR = {
-    name: process.env.PROPR_AGENT_COMMIT_AUTHOR_NAME || 'propr-dev[bot]',
-    email: process.env.PROPR_AGENT_COMMIT_AUTHOR_EMAIL || `${process.env.GH_APP_ID || '1316198'}+propr-dev[bot]@users.noreply.github.com`,
-};
+// Re-export the single source of truth from core so the agent commit author
+// identity (and its env-var defaults) cannot drift between the two packages.
+export { AI_COMMIT_AUTHOR } from '@propr/core';

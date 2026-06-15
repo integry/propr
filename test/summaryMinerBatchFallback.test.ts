@@ -112,7 +112,7 @@ describe('summary miner batch fallback', () => {
     assert.notEqual(state.warning?.mode, 'cooldown');
   });
 
-  test('retries invalid primary summaries, then saves successful fallback without cooldown', async () => {
+  test('uses fallback when the primary returns unusable output', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
     const primaryAgent = createAgent('primary', 'primary-model', async () => {
@@ -158,11 +158,13 @@ describe('summary miner batch fallback', () => {
     const saved = await db('file_summaries')
       .where({ path: 'integry/propr/src/a.ts', branch: 'main' })
       .first();
+    assert.equal(saved.summary, 'Exports the A helper after fallback parsing succeeds.');
     assert.equal(saved.model_used, 'fallback-model');
 
     const state = await loadSummarizationRuntimeState();
     assert.equal(Object.keys(state.cooldowns).length, 0);
     assert.equal(state.primary_quota_failures, 0);
+    assert.equal(state.warning?.mode, 'fallback_degraded');
   });
 
   test('caps the fallback model to a single attempt on transient failure', async () => {
@@ -247,7 +249,7 @@ describe('summary miner batch fallback', () => {
     assert.equal(fallbackCalls, 1);
   });
 
-  test('directory batch retries invalid primary summaries, then uses fallback without cooldown', async () => {
+  test('directory batch uses fallback when the primary returns unusable output', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
     const primaryAgent = createAgent('primary', 'primary-model', async () => {
@@ -298,6 +300,7 @@ describe('summary miner batch fallback', () => {
     const state = await loadSummarizationRuntimeState();
     assert.equal(Object.keys(state.cooldowns).length, 0);
     assert.equal(state.primary_quota_failures, 0);
+    assert.equal(state.warning?.mode, 'fallback_degraded');
   });
 
   test('passes custom prompt into file batch prompt', async () => {

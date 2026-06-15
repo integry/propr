@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
-import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob, type QueueResummarizationResult } from './indexingQueueHelpers.js';
+import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 import type { AgentConfig } from '@propr/core';
 
@@ -49,35 +49,26 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
+      // Report the normalized branch the job was actually queued under so clients
+      // and status matching stay consistent when baseBranch is omitted/whitespace.
+      const effectiveBranch = result.baseBranch ?? 'HEAD';
+
       // Best-effort optimistic status for newly accepted jobs only.
       try {
-        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+        await publishIndexingStatus(repository, effectiveBranch, 'indexing');
       } catch (pubErr) {
         console.warn('Failed to publish optimistic indexing status:', pubErr);
       }
 
       await logActivityHelper(
-        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
+        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository} (branch: ${effectiveBranch})`,
         'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch, ignoreCooldown });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch: effectiveBranch, ignoreCooldown });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
-    }
-  }
-
-  function emptyResummarizationResult(): QueueResummarizationResult {
-    return { queued: 0, skippedCooldown: 0, skippedAlreadyQueued: 0, failedClone: 0 };
-  }
-
-  async function triggerResummarizationSafe(ignoreCooldown: boolean): Promise<QueueResummarizationResult> {
-    try {
-      return await queueResummarizationForAllRepos({ ignoreCooldown });
-    } catch (error) {
-      console.error('Error triggering resummarization for repositories:', error);
-      return emptyResummarizationResult();
     }
   }
 
@@ -99,7 +90,11 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
       await cancelDelayedReindex(redisClient);
       const ignoreCooldown = req.body?.ignoreCooldown === true;
-      const resummarizationResult = await triggerResummarizationSafe(ignoreCooldown);
+      // Let systemic failures (auth, queue creation, DB access) propagate to the
+      // outer catch and surface as a 500. Per-repository clone/queue failures are
+      // already captured in the returned counts, so this only escalates the case
+      // where no repository could be processed at all.
+      const resummarizationResult = await queueResummarizationForAllRepos({ ignoreCooldown });
 
       await logActivityHelper(
         `Manually triggered reindexing for ${resummarizationResult.queued} repositories`,
@@ -269,8 +264,14 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     // Clear stale cooldown/warning runtime state BEFORE persisting the new model
     // settings. If clearing fails we return 500 without having saved the new
     // settings, so we never leave stale runtime state attached to fresh config.
+    // Only the (now-stale) quota-failure bookkeeping and cooldowns tied to a model
+    // that is no longer configured are cleared — cooldowns for still-active models
+    // are preserved so one settings change can't resume every paused repository.
     if (modelAliasesChanged) {
-      await configManager.clearSummarizationRuntimeState();
+      await configManager.clearSummarizationRuntimeStateForSettingsChange({
+        activePrimaryAlias: settings.agent_alias,
+        activeFallbackAlias: settings.fallback_agent_alias
+      });
     }
     await configManager.saveSummarizationSettings(settings);
     await publishConfigUpdate('summarization_settings_update');

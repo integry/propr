@@ -8,6 +8,7 @@ import {
   clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
   isSummarizationInvalidResponseError,
+  promoteSummarizationFallbackIfNeeded,
   recordPrimarySummarizationQuotaFailure,
   recordPrimarySummarizationResponseFailure,
   recordSummarizationCooldown
@@ -163,50 +164,23 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
     const results = await analyzeBatchWithAgent({
       prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`, fullName
     });
-    await clearSummarizationPrimaryQuotaFailures({
-      primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
-      repository: fullName,
-      branch
-    });
+    // Clearing quota-failure bookkeeping is best-effort: a transient runtime-state
+    // read/write error here must not discard a batch the LLM summarized successfully.
+    await clearSummarizationPrimaryQuotaFailuresSafe(
+      { primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias, repository: fullName, branch },
+      log
+    );
     return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
   } catch (primaryError) {
     const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
+    // Only quota/usage-limit exhaustion and invalid model output trigger the
+    // fallback model. Other failures (provider outages, agent bugs, malformed
+    // prompts) must surface as-is instead of silently switching models.
     if (!isQuotaExhaustionError(primaryError)) {
-      if (!fallbackAgent || !fallbackAgentAliasSetting) {
-        throw primaryError;
+      if (isSummarizationInvalidResponseError(primaryError) && fallbackAgent && fallbackAgentAliasSetting) {
+        return analyzeBatchWithInvalidResponseFallback(primaryError, primaryAgentAlias, options);
       }
-
-      log.warn({
-        error: (primaryError as Error).message,
-        primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgent.config.alias,
-        fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-      }, 'Primary summarization failed; retrying batch with fallback');
-
-      const results = await analyzeBatchWithAgent({
-        prompt,
-        batch,
-        agent: fallbackAgent,
-        model: fallbackModelUsed ?? fallbackModelOverride,
-        context: `batch_summarization_fallback:${fullName}`,
-        fullName,
-        retryOptions: SUMMARIZATION_FALLBACK_RETRY
-      });
-      if (isSummarizationInvalidResponseError(primaryError)) {
-        await recordPrimarySummarizationResponseFailure({
-          primaryAgentAlias,
-          fallbackAgentAlias: fallbackAgentAliasSetting,
-          reason: (primaryError as Error).message
-        });
-      }
-      return {
-        results,
-        agentUsed: fallbackAgent,
-        modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
-        fallbackUsed: true,
-        primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgentAliasSetting
-      };
+      throw primaryError;
     }
 
     if (!fallbackAgent || !fallbackAgentAliasSetting) {
@@ -244,6 +218,8 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         fallbackAgentAlias: fallbackAgentAliasSetting,
         clearDegradationWarning: true
       });
+      // Promote only now that the fallback has proven it can summarize this batch.
+      await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
       return {
         results,
         agentUsed: fallbackAgent,
@@ -258,6 +234,64 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
       });
       throw new SummarizationCooldownRecordedError(fallbackError);
     }
+  }
+}
+
+async function analyzeBatchWithInvalidResponseFallback(
+  primaryError: unknown,
+  primaryAgentAlias: string,
+  options: ProcessSingleBatchOptions & { prompt: string }
+): Promise<{
+  results: SummaryResult[];
+  agentUsed: Agent;
+  modelLogged: string;
+  fallbackUsed: boolean;
+  primaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
+}> {
+  const {
+    prompt, batch, fallbackAgent, fallbackModelOverride, fallbackModelUsed,
+    fallbackAgentAliasSetting, fullName, log
+  } = options;
+  log.warn({
+    error: (primaryError as Error).message,
+    primaryAgentAlias,
+    fallbackAgentAlias: fallbackAgent?.config.alias,
+    fallbackModel: fallbackModelUsed ?? fallbackModelOverride
+  }, 'Primary summarization returned unusable output; retrying batch with fallback');
+
+  const results = await analyzeBatchWithAgent({
+    prompt,
+    batch,
+    agent: fallbackAgent as Agent,
+    model: fallbackModelUsed ?? fallbackModelOverride,
+    context: `batch_summarization_fallback:${fullName}`,
+    fullName,
+    retryOptions: SUMMARIZATION_FALLBACK_RETRY
+  });
+  await recordPrimarySummarizationResponseFailure({
+    primaryAgentAlias,
+    fallbackAgentAlias: fallbackAgentAliasSetting as string,
+    reason: (primaryError as Error).message
+  });
+  return {
+    results,
+    agentUsed: fallbackAgent as Agent,
+    modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown',
+    fallbackUsed: true,
+    primaryAgentAlias,
+    fallbackAgentAlias: fallbackAgentAliasSetting
+  };
+}
+
+async function clearSummarizationPrimaryQuotaFailuresSafe(
+  options: { primaryAgentAlias?: string; repository?: string; branch?: string },
+  log: Logger
+): Promise<void> {
+  try {
+    await clearSummarizationPrimaryQuotaFailures(options);
+  } catch (error) {
+    log.warn({ error: (error as Error).message, ...options }, 'Failed to clear summarization quota-failure bookkeeping after successful batch');
   }
 }
 
@@ -373,4 +407,3 @@ export function parseBatchResponse(response: string, expectedPaths?: string[]): 
     return [];
   }
 }
-

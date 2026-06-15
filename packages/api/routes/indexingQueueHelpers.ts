@@ -12,6 +12,7 @@ export interface QueueIndexingResult {
   error?: string;
   jobId?: string;
   correlationId?: string;
+  baseBranch?: string;
 }
 
 export interface StopIndexingResult {
@@ -158,7 +159,9 @@ async function queueResummarizationForRepo({
       correlationId,
       priority: 'normal',
       fullReindex: true,
-      baseBranch,
+      // Persist the normalized branch so cooldown/dedup/status checks (which all
+      // normalize to HEAD) stay consistent with the stored job payload.
+      baseBranch: effectiveBranch,
       ignoreCooldown
     },
     {
@@ -285,12 +288,14 @@ export async function queueIndexingJob(
   const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
   const job = await queue.add(
     'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch, ignoreCooldown: options.ignoreCooldown },
+    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
     { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
   );
   await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
 
-  return { success: true, jobId: job.id, correlationId };
+  // Return the normalized branch so callers report/match the same value that was
+  // stored on the job and used to update repository status.
+  return { success: true, jobId: job.id, correlationId, baseBranch: effectiveBranch };
 }
 
 export async function stopIndexingJob(repository: string, branch?: string): Promise<StopIndexingResult> {
