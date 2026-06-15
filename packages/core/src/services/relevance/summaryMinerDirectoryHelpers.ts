@@ -179,7 +179,7 @@ export function parseBatchDirectoryResponse(response: string, expectedPaths: str
 
 function extractDirectorySummaryJson(response: string): string | null {
   const cleaned = cleanSummaryText(response);
-  if (/^\s*[\[{]/.test(cleaned)) return cleaned;
+  if (/^\s*[[{]/.test(cleaned)) return cleaned;
 
   const objectMatch = cleaned.match(/\{[\s\S]*(?:"summaries"|"directory_summaries"|"directories"|"results"|"summary")[\s\S]*\}/);
   if (objectMatch) return objectMatch[0];
@@ -215,7 +215,7 @@ function parseSingleDirectoryFallback(response: string, expectedPaths: string[])
   if (expectedPaths.length !== 1) return null;
   const summary = cleanSummaryText(response);
   if (summary.length < 20) return null;
-  if (/^\s*[\[{]/.test(summary)) return null;
+  if (/^\s*[[{]/.test(summary)) return null;
   return summary;
 }
 
