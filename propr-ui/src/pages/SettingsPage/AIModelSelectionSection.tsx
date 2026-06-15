@@ -29,6 +29,7 @@ interface AIModelSelectionSectionProps {
   onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onReviewPromptBlur: () => void;
   onSummarizationModelChange: (agentAlias: string) => void;
+  onSummarizationFallbackModelChange: (agentAlias: string) => void;
   onDefaultAgentChange: (agentAlias: string) => void;
   className?: string;
 }
@@ -73,6 +74,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   onReviewPromptChange,
   onReviewPromptBlur,
   onSummarizationModelChange,
+  onSummarizationFallbackModelChange,
   onDefaultAgentChange,
   className
 }) => {
@@ -81,6 +83,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const enabledOptions = modelOptions.filter(opt => opt.enabled);
   const disabledOptions = modelOptions.filter(opt => !opt.enabled);
   const summarizationOptions = buildSummarizationOptions(enabledAgents);
+  const fallbackValue = summarizationSettings.fallback_agent_alias || '';
+  const fallbackSummarizationOptions = buildFallbackSummarizationOptions(
+    summarizationOptions.filter(opt => opt.value !== summarizationSettings.agent_alias),
+    summarizationOptions,
+    fallbackValue
+  );
   const contextAnalysisOptions = buildContextAnalysisOptions(enabledAgents);
   const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
   const prReviewOptions = buildPrReviewOptions(enabledAgents);
@@ -88,6 +96,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
+  const summarizationWarning = summarizationSettings.runtime?.warning?.message;
 
   return (
     <div className={className || ''}>
@@ -206,6 +215,36 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 <NoAgentsMessage label="enabled agents" />
               )}
             </SettingRow>
+
+            <SettingRow
+              label="Summarization Fallback Model"
+              htmlFor="summarization_fallback_model"
+              helperText="Used once for a summarization batch when the primary model is quota-limited."
+            >
+              {hasEnabledAgents ? (
+                <select
+                  id="summarization_fallback_model"
+                  value={summarizationSettings.fallback_agent_alias || ''}
+                  onChange={(e) => onSummarizationFallbackModelChange(e.target.value)}
+                  className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
+                >
+                  <option value="">No fallback model</option>
+                  {fallbackSummarizationOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <NoAgentsMessage label="enabled agents" />
+              )}
+            </SettingRow>
+
+            {summarizationWarning && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {summarizationWarning}
+              </div>
+            )}
           </div>
         </div>
 
@@ -297,5 +336,19 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
     </div>
   );
 };
+
+function buildFallbackSummarizationOptions(
+  options: ReturnType<typeof buildSummarizationOptions>,
+  allOptions: ReturnType<typeof buildSummarizationOptions>,
+  fallbackValue: string
+): ReturnType<typeof buildSummarizationOptions> {
+  if (!fallbackValue || options.some(opt => opt.value === fallbackValue)) return options;
+  const selectedOption = allOptions.find(opt => opt.value === fallbackValue) || {
+    value: fallbackValue,
+    label: `Saved fallback (${fallbackValue})`,
+    enabled: true
+  };
+  return [selectedOption, ...options];
+}
 
 export default AIModelSelectionSection;

@@ -72,7 +72,7 @@ export { db, closeConnection, createKnexConfigForMigrations, runMigrations } fro
 
 export { getRepoConfigKey, detectDefaultBranch, listRepositoryBranchConfigurations } from './git/branchConfig.js';
 export type { BranchConfiguration } from './git/branchConfig.js';
-export { commitChanges } from './git/commitOperations.js';
+export { AI_COMMIT_AUTHOR, commitChanges } from './git/commitOperations.js';
 export type { CommitResult } from './git/commitOperations.js';
 export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git/repoBranching.js';
 export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChanges } from './git/repoManager.js';
@@ -256,6 +256,14 @@ export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, is
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
+
+export {
+    toAgentTankAgent,
+    toProprAgent,
+    normalizeAgentTankStatus,
+    normalizeAgentTankAgents
+} from './services/agentTankService.js';
+export type { AgentStatusResponse } from './services/agentTankService.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export type {

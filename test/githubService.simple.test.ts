@@ -157,11 +157,11 @@ describe('GitHub Service - Core Logic Tests', () => {
         const shortTitle = issueTitle ? issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
         const commitMessage = `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}
 
-Implemented by Claude Code. Full conversation log in PR comment.`;
+Implemented by ProPR AI. Full conversation log in PR comment.`;
 
         assert(commitMessage.includes('fix(ai): Resolve issue #42'));
         assert(commitMessage.includes('Very Long Issue Title That Should Be Truncated'));
-        assert(commitMessage.includes('Implemented by Claude Code'));
+        assert(commitMessage.includes('Implemented by ProPR AI'));
         assert(commitMessage.length < 200, 'Commit message should be reasonably sized');
         
         const extractedTitle = commitMessage.match(/- (.+)/)?.[1].split('\n')[0];

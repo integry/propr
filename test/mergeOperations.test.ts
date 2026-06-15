@@ -41,6 +41,7 @@ await mock.module('../packages/core/src/utils/errorHandler.js', {
 
 // Import the module under test
 const { mergeBaseIntoBranch } = await import('../packages/core/src/git/mergeOperations.js');
+const { AI_COMMIT_AUTHOR } = await import('../packages/core/src/git/commitOperations.js');
 
 function resetMocks() {
     mockGitInstance.raw.mock.resetCalls();
@@ -64,6 +65,17 @@ describe('mergeBaseIntoBranch', () => {
         // Should have called fetch and then merge
         const rawCalls = mockGitInstance.raw.mock.calls;
         assert.ok(rawCalls.length >= 3); // config name, config email, fetch, merge (fetch + merge at minimum)
+
+        assert.ok(rawCalls.some((c: { arguments: string[][] }) =>
+            c.arguments[0][0] === 'config' &&
+            c.arguments[0][1] === 'user.name' &&
+            c.arguments[0][2] === AI_COMMIT_AUTHOR.name
+        ), 'Expected merge author name config');
+        assert.ok(rawCalls.some((c: { arguments: string[][] }) =>
+            c.arguments[0][0] === 'config' &&
+            c.arguments[0][1] === 'user.email' &&
+            c.arguments[0][2] === AI_COMMIT_AUTHOR.email
+        ), 'Expected merge author email config');
 
         // Check fetch was called with the right args
         const fetchCall = rawCalls.find((c: { arguments: string[][] }) =>

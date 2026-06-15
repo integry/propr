@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import * as configManager from '@propr/core';
+import { normalizeAgentTankAgents, type AgentStatusResponse } from '@propr/core';
 
 export function createAgentTankRoutes() {
   async function getAgentTankSettings(_req: Request, res: Response): Promise<void> {
@@ -63,8 +64,8 @@ export function createAgentTankRoutes() {
         const response = await fetch(`${settings.url}/status`, { signal: controller.signal });
         clearTimeout(timer);
         if (response.ok) {
-          const data = await response.json();
-          res.json({ enabled: true, agents: data });
+          const data = await response.json() as Record<string, AgentStatusResponse>;
+          res.json({ enabled: true, agents: normalizeAgentTankAgents(data) });
         } else {
           res.json({ enabled: true, error: `HTTP ${response.status}` });
         }

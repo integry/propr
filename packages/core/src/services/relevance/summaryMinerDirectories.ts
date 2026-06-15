@@ -4,37 +4,31 @@ import crypto from 'crypto';
 import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
-import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { startDirectoryPhase, updateDirectoryProgress, publishProgress, isIndexingCancelled } from './indexingCancellation.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
-import { withRetry } from '../../utils/retryHandler.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 import type { IndexingProgress } from './indexingCancellation.js';
 import type { SummarizationAgentConfig } from './summaryMinerHelpers.js';
 import {
   type DirectoryInfo, type DirectoryResult,
   groupDirectoriesByDepth, extractDirectories, createDirectoryBatches,
-  buildBatchDirectoryPrompt, parseBatchDirectoryResponse
 } from './summaryMinerDirectoryHelpers.js';
+import { processDirectoryBatch } from './summaryMinerDirectoryBatch.js';
+import { getSummarizationBatchLimitOverride } from './summaryMinerBatchLimits.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 const BATCH_TOKEN_RATIO = 0.5;
 const MAX_DIRS_PER_BATCH = 20;
+const DEFAULT_MAX_DIRECTORY_BATCH_TOKENS = 70_000;
 const DIRECTORY_PROGRESS_PERCENT_STEP = 5;
-
-// Retry transient agent failures (network blips, rate limits, 5xx) before
-// treating a directory batch as failed. Mirrors the file-batch retry policy.
-const SUMMARIZATION_RETRY = {
-  maxAttempts: 3,
-  baseDelay: 2000,
-  maxDelay: 15000,
-  exponentialBase: 2,
-} as const;
 
 export interface AggregateDirectoriesResult {
   totalBatches: number;
   failedBatches: number;
   dirsProcessed: number;
+  fallbackUsed: boolean;
+  stopProcessing: boolean;
+  fallbackPrimaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
 }
 
 export interface AggregateDirectoriesOptions {
@@ -42,13 +36,44 @@ export interface AggregateDirectoriesOptions {
   agent: Agent;
   log: Logger;
   modelOverride?: string;
+  agentAliasSetting?: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
   resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string;
 }
 
+interface DirectoryAggregationState {
+  totalBatches: number;
+  failedBatches: number;
+  dirsProcessed: number;
+  fallbackUsed: boolean;
+  stopProcessing: boolean;
+  fallbackPrimaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
+}
+
+interface ProcessDepthOptions {
+  dirsAtDepth: string[];
+  fileSummaries: Array<{ path: string; summary: string; commit_hash: string }>;
+  dirSummaryCache: Map<string, string>;
+  branch: string;
+  fullName: string;
+  maxBatchTokens: number;
+  maxDirsPerBatch: number;
+  getCurrentConfig: () => Promise<SummarizationAgentConfig>;
+  initialConfig: SummarizationAgentConfig;
+  log: Logger;
+}
+
 /** Aggregates file summaries into directory summaries (bottom-up), batching multiple directories per API call. */
 export async function aggregateDirectories(options: AggregateDirectoriesOptions): Promise<AggregateDirectoriesResult> {
-  const { fullName, agent, log, modelOverride, resolveSummarizationConfig, branch = 'HEAD' } = options;
+  const {
+    fullName, agent, log, modelOverride, agentAliasSetting, resolveSummarizationConfig, branch = 'HEAD',
+    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting
+  } = options;
   const fileSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
     .andWhere({ branch })
@@ -56,7 +81,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
 
   if (fileSummaries.length === 0) {
     log.debug('No file summaries to aggregate');
-    return { totalBatches: 0, failedBatches: 0, dirsProcessed: 0 };
+    return { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   }
 
   const directories = new Set(extractDirectories(fileSummaries.map(f => f.path)));
@@ -68,66 +93,156 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   await startDirectoryPhase(fullName, branch, totalDirs);
 
   const dirSummaryCache = new Map<string, string>();
-  const modelId = modelOverride || agent.config.defaultModel || 'default';
-  const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
+  const { modelId, maxBatchTokens, maxDirsPerBatch } = computeDirectoryBatchBudget(agent, modelOverride, log);
 
-  let totalBatches = 0;
-  let failedBatches = 0;
-  let dirsProcessed = 0;
-  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, effectiveModel: modelId };
+  const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
+  const initialConfig: SummarizationAgentConfig = {
+    agent,
+    modelOverride,
+    effectiveModel: modelId,
+    agentAliasSetting: agentAliasSetting || agent.config.alias,
+    fallbackAgent,
+    fallbackModelOverride,
+    fallbackEffectiveModel,
+    fallbackAgentAliasSetting
+  };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   for (const depth of depths) {
-    const dirsAtDepth = dirsByDepth.get(depth) || [];
-    const dirsToProcess: DirectoryInfo[] = [];
+    const depthResult = await processDirectoryDepth({
+      dirsAtDepth: dirsByDepth.get(depth) || [],
+      fileSummaries,
+      dirSummaryCache,
+      branch,
+      fullName,
+      maxBatchTokens,
+      maxDirsPerBatch,
+      getCurrentConfig,
+      initialConfig,
+      log
+    });
+    mergeDirectoryAggregationResult(state, depthResult);
+    if (state.stopProcessing) break;
+  }
 
-    for (const dirPath of dirsAtDepth) {
-      const dirInfo = await checkDirectoryNeedsUpdate(dirPath, fileSummaries, dirSummaryCache, branch);
-      if (dirInfo) {
-        dirsToProcess.push(dirInfo);
-      } else {
-        dirsProcessed += await handleSkippedDirectory(dirPath, branch, dirSummaryCache, fullName);
-      }
-    }
+  if (!state.stopProcessing) {
+    await deleteStaleDirectorySummaries(fullName, branch, directories, log);
+  }
+  log.info({
+    directoryCount: totalDirs,
+    batchCount: state.totalBatches,
+    failedBatches: state.failedBatches,
+    dirsProcessed: state.dirsProcessed
+  }, 'Directory aggregation complete (batched)');
 
-    if (dirsToProcess.length === 0) continue;
+  return state;
+}
 
-    const batches = createDirectoryBatches(dirsToProcess, maxBatchTokens, MAX_DIRS_PER_BATCH, CHARS_PER_TOKEN_ESTIMATE);
-    totalBatches += batches.length;
+async function processDirectoryDepth(options: ProcessDepthOptions): Promise<DirectoryAggregationState> {
+  const { dirsAtDepth, fileSummaries, dirSummaryCache, branch, fullName, maxBatchTokens, maxDirsPerBatch } = options;
+  const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
+  const dirsToProcess: DirectoryInfo[] = [];
 
-    for (const batch of batches) {
-      const currentConfig = await getCurrentConfig();
-      logDirectoryBatchAgentIfChanged(log, initialConfig, currentConfig);
-      const results = await processDirectoryBatch({
-        directories: batch, agent: currentConfig.agent, log,
-        modelOverride: currentConfig.modelOverride, fullName
-      });
-
-      // A batch that produced no summaries at all failed to aggregate; surface
-      // it so indexRepo keeps the repo in 'failed' state and retries the
-      // missing directories on the next scan instead of marking it complete.
-      if (!results.some(r => r.summary)) {
-        failedBatches++;
-      }
-
-      for (const result of results) {
-        await saveBatchResult(result, batch, branch, dirSummaryCache);
-        dirsProcessed++;
-        await tryPublishDirectoryProgress(fullName, branch);
-      }
+  for (const dirPath of dirsAtDepth) {
+    const dirInfo = await checkDirectoryNeedsUpdate(dirPath, fileSummaries, dirSummaryCache, branch);
+    if (dirInfo) {
+      dirsToProcess.push(dirInfo);
+    } else {
+      state.dirsProcessed += await handleSkippedDirectory(dirPath, branch, dirSummaryCache, fullName);
     }
   }
 
-  await deleteStaleDirectorySummaries(fullName, branch, directories, log);
-  log.info({ directoryCount: totalDirs, batchCount: totalBatches, failedBatches, dirsProcessed }, 'Directory aggregation complete (batched)');
+  const batches = createDirectoryBatches(dirsToProcess, maxBatchTokens, maxDirsPerBatch, CHARS_PER_TOKEN_ESTIMATE);
+  state.totalBatches = batches.length;
 
-  return { totalBatches, failedBatches, dirsProcessed };
+  for (const batch of batches) {
+    const batchResult = await processDirectoryAggregationBatch(batch, options);
+    mergeDirectoryAggregationResult(state, batchResult);
+    if (state.stopProcessing) break;
+  }
+
+  return state;
+}
+
+function computeDirectoryBatchBudget(
+  agent: Agent,
+  modelOverride: string | undefined,
+  log: Logger
+): { modelId: string; maxBatchTokens: number; maxDirsPerBatch: number } {
+  const modelId = modelOverride || agent.config.defaultModel || 'default';
+  const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
+  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
+  const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_DIRECTORY_BATCH_TOKENS;
+  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
+  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
+  const maxDirsPerBatch = parseInt(
+    process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_DIRS ||
+      String(modelBatchLimitOverride?.maxItemsPerBatch ?? MAX_DIRS_PER_BATCH),
+    10
+  );
+  log.info({
+    maxBatchTokens,
+    maxBatchTokensCap,
+    maxDirsPerBatch,
+    model: modelId,
+    modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
+  }, 'Calculated directory batch budget');
+  return { modelId, maxBatchTokens, maxDirsPerBatch };
+}
+
+function mergeDirectoryAggregationResult(state: DirectoryAggregationState, result: DirectoryAggregationState): void {
+  state.totalBatches += result.totalBatches;
+  state.failedBatches += result.failedBatches;
+  state.dirsProcessed += result.dirsProcessed;
+  if (result.fallbackUsed) {
+    state.fallbackUsed = true;
+    state.fallbackPrimaryAgentAlias ??= result.fallbackPrimaryAgentAlias;
+    state.fallbackAgentAlias ??= result.fallbackAgentAlias;
+  }
+  state.stopProcessing ||= result.stopProcessing;
+}
+
+async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options: ProcessDepthOptions): Promise<DirectoryAggregationState> {
+  const { getCurrentConfig, initialConfig, log, fullName, branch, dirSummaryCache } = options;
+  const currentConfig = await getCurrentConfig();
+  logDirectoryBatchAgentIfChanged(log, initialConfig, currentConfig);
+  const results = await processDirectoryBatch({
+    directories: batch, agent: currentConfig.agent, log,
+    modelOverride: currentConfig.modelOverride,
+    modelUsed: currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel,
+    primaryAgentAliasSetting: currentConfig.agentAliasSetting || currentConfig.agent.config.alias,
+    fallbackAgent: currentConfig.fallbackAgent,
+    fallbackModelOverride: currentConfig.fallbackModelOverride,
+    fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
+    fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
+    fullName,
+    branch
+  });
+  const failedBatches = results.some(r => r.summary) ? 0 : 1;
+  let dirsProcessed = 0;
+
+  for (const result of results) {
+    const saved = await saveBatchResult(result, batch, branch, dirSummaryCache);
+    if (saved) {
+      dirsProcessed++;
+      await tryPublishDirectoryProgress(fullName, branch);
+    }
+  }
+
+  return {
+    totalBatches: 0,
+    failedBatches,
+    dirsProcessed,
+    fallbackUsed: results.fallbackUsed,
+    stopProcessing: results.stopProcessing,
+    fallbackPrimaryAgentAlias: results.primaryAgentAlias,
+    fallbackAgentAlias: results.fallbackAgentAlias
+  };
 }
 
 function logDirectoryBatchAgentIfChanged(log: Logger, initialConfig: SummarizationAgentConfig, currentConfig: SummarizationAgentConfig): void {
-  const initialModel = initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
-  const currentModel = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  const initialModel = initialConfig.effectiveModel || initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
+  const currentModel = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
   if (initialConfig.agent.config.alias === currentConfig.agent.config.alias && initialModel === currentModel) return;
 
   log.info({
@@ -143,12 +258,13 @@ async function handleSkippedDirectory(dirPath: string, branch: string, dirSummar
   return 1;
 }
 
-async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], branch: string, dirSummaryCache: Map<string, string>): Promise<void> {
-  if (!result.summary) return;
+async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], branch: string, dirSummaryCache: Map<string, string>): Promise<boolean> {
+  if (!result.summary) return false;
   const dirInfo = batch.find(d => d.dirPath === result.dirPath);
-  if (!dirInfo) return;
+  if (!dirInfo) return false;
   await saveDirectorySummary(result.dirPath, result.summary, dirInfo.newHash, branch);
   dirSummaryCache.set(result.dirPath, result.summary);
+  return true;
 }
 
 async function tryPublishDirectoryProgress(fullName: string, branch: string): Promise<void> {
@@ -221,72 +337,6 @@ async function checkDirectoryNeedsUpdate(
     childDirs,
     newHash
   };
-}
-
-interface ProcessDirectoryBatchOptions {
-  directories: DirectoryInfo[];
-  agent: Agent;
-  log: Logger;
-  modelOverride?: string;
-  fullName: string;
-}
-
-async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Promise<DirectoryResult[]> {
-  const { directories, agent, log, modelOverride, fullName } = options;
-  if (directories.length === 0) return [];
-
-  const prompt = buildBatchDirectoryPrompt(directories);
-  const startTime = Date.now();
-  const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
-  const estimatedOutputTokens = directories.length * 150;
-  const modelUsed = modelOverride || agent.config.defaultModel || 'unknown';
-
-  let success = false;
-  let errorMessage: string | undefined;
-  let results: DirectoryResult[] = [];
-
-  try {
-    results = await withRetry(
-      async () => {
-        const analysisResult = await agent.analyze(prompt, { model: modelOverride, responseFormat: 'json' });
-        if (!analysisResult.success) {
-          throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
-        }
-        const parsed = parseBatchDirectoryResponse(analysisResult.response, directories.map(d => d.dirPath));
-        if (!parsed.some(r => r.summary !== null)) {
-          throw new Error(`No valid directory summaries parsed for batch of ${directories.length} directories`);
-        }
-        return parsed;
-      },
-      SUMMARIZATION_RETRY,
-      `directory_aggregation:${fullName}`
-    );
-    success = results.some(r => r.summary !== null);
-    log.debug({ batchSize: directories.length, successCount: results.filter(r => r.summary).length }, 'Processed directory batch');
-  } catch (error) {
-    errorMessage = (error as Error).message;
-    log.warn({ error: errorMessage, batchSize: directories.length }, 'Failed to process directory batch');
-    results = directories.map(d => ({ dirPath: d.dirPath, summary: null }));
-  }
-
-  const durationMs = Date.now() - startTime;
-
-  await logSummarizationCall({
-    timestamp: new Date().toISOString(), callType: 'directory_aggregation', model: modelUsed,
-    agentAlias: agent.config.alias, repository: fullName, estimatedInputTokens, estimatedOutputTokens,
-    estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
-    fileCount: directories.length, success, durationMs, error: errorMessage
-  }, log);
-
-  await persistLlmLog(createLlmLogFromAnalysis({
-    executionType: 'summarization', modelUsed, executionTimeMs: durationMs, success,
-    tokenUsage: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens },
-    error: errorMessage, repository: fullName, agentAlias: agent.config.alias,
-    metadata: { directoryCount: directories.length, phase: 'directory_aggregation' },
-    workRef: { workType: 'repository', workRepository: fullName },
-  }));
-
-  return results;
 }
 
 async function saveDirectorySummary(dirPath: string, summary: string, hash: string, branch: string): Promise<void> {

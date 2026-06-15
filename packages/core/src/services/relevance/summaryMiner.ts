@@ -5,16 +5,18 @@ import type { Logger } from 'pino';
 import logger, { generateCorrelationId } from '../../utils/logger.js';
 import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { Agent } from '../../agents/types.js';
-import { db } from '../../db/connection.js';
-import { loadSummarizationSettings } from '../../config/configManager.js';
+import { loadSummarizationSettings, getSummarizationCooldown } from '../../config/configManager.js';
 import {
   processBatches,
   aggregateDirectories
 } from './summaryMinerHelpers.js';
+import type { ProcessBatchesResult } from './summaryMinerHelpers.js';
+import type { AggregateDirectoriesResult } from './summaryMinerDirectories.js';
 import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
 import type { IndexingPhase } from '@propr/shared';
-import { updateRepositoryStatus } from './summaryMinerQueries.js';
-import { scanProcessableGitFiles, type GitFileInfo } from './summaryFileFilter.js';
+import { updateRepositoryStatus, getRepositoryIndexingStatus } from './summaryMinerQueries.js';
+import { scanProcessableGitFiles } from './summaryFileFilter.js';
+import { deleteFileSummaries, identifyStaleFiles } from './summaryMinerStaleness.js';
 
 // Re-export metrics functions and types for external access
 export {
@@ -48,6 +50,7 @@ export interface IndexingOptions {
   fullName?: string; // repository full name for status tracking
   branch?: string; // branch to index (defaults to 'HEAD')
   fullReindex?: boolean; // if true, process all files regardless of staleness (but preserve existing summaries as fallback)
+  ignoreCooldown?: boolean; // manual/admin override for persisted summarization cooldowns
 }
 
 // --- Constants ---
@@ -95,21 +98,27 @@ interface AgentSetupResult {
   agent: Agent;
   modelOverride: string | undefined;
   effectiveModel: string | undefined;
+  agentAliasSetting: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
 }
 
 /**
  * Sets up the agent for summarization based on settings
  */
-async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetupResult> {
+async function resolveAgentAlias(agentAliasSetting?: string): Promise<Omit<AgentSetupResult, 'fallbackAgent' | 'fallbackModelOverride' | 'fallbackEffectiveModel' | 'fallbackAgentAliasSetting'>> {
   const registry = AgentRegistry.getInstance();
   await registry.ensureInitialized();
 
   // Parse agent_alias which may be in format "agent_alias:model" or just "agent_alias"
-  let agentAlias = settings.agent_alias;
+  const normalizedAgentAliasSetting = agentAliasSetting?.trim() || '';
+  let agentAlias = normalizedAgentAliasSetting;
   let modelOverride: string | undefined;
 
-  if (settings.agent_alias && settings.agent_alias.includes(':')) {
-    const parts = settings.agent_alias.split(':');
+  if (normalizedAgentAliasSetting && normalizedAgentAliasSetting.includes(':')) {
+    const parts = normalizedAgentAliasSetting.split(':');
     agentAlias = parts[0];
     modelOverride = parts.slice(1).join(':'); // Handle model IDs that might contain colons
   }
@@ -124,7 +133,25 @@ async function setupAgent(settings: { agent_alias?: string }): Promise<AgentSetu
 
   const effectiveModel = modelOverride || agent.config.defaultModel;
 
-  return { agent, modelOverride, effectiveModel };
+  return { agent, modelOverride, effectiveModel, agentAliasSetting: normalizedAgentAliasSetting || agent.config.alias };
+}
+
+async function setupAgent(settings: { agent_alias?: string; fallback_agent_alias?: string }): Promise<AgentSetupResult> {
+  const primaryAliasSetting = settings.agent_alias?.trim() || '';
+  const fallbackAliasSetting = settings.fallback_agent_alias?.trim() || '';
+  const primary = await resolveAgentAlias(primaryAliasSetting);
+  if (!fallbackAliasSetting || fallbackAliasSetting === primaryAliasSetting) {
+    return primary;
+  }
+
+  const fallback = await resolveAgentAlias(fallbackAliasSetting);
+  return {
+    ...primary,
+    fallbackAgent: fallback.agent,
+    fallbackModelOverride: fallback.modelOverride,
+    fallbackEffectiveModel: fallback.effectiveModel,
+    fallbackAgentAliasSetting: fallback.agentAliasSetting
+  };
 }
 
 /**
@@ -194,13 +221,14 @@ async function handleNoFilesToProcess(options: {
   iconPath: string | null;
   agent: Agent;
   modelOverride: string | undefined;
+  agentAliasSetting: string;
   resolveSummarizationConfig: () => Promise<AgentSetupResult & { customPrompt?: string }>;
   log: Logger;
 }): Promise<void> {
-  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, resolveSummarizationConfig, log } = options;
+  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, agentAliasSetting, resolveSummarizationConfig, log } = options;
   log.info('No files need processing, all file summaries up to date');
   await ensureIndexingProgress(fullName, branch);
-  const dirResult = await aggregateDirectories({ fullName, agent, log, modelOverride, resolveSummarizationConfig, branch });
+  const dirResult = await aggregateDirectories({ fullName, agent, log, modelOverride, agentAliasSetting, resolveSummarizationConfig, branch });
   await clearIndexingCancellation(fullName, branch);
   await clearIndexingProgress(fullName, branch);
 
@@ -254,18 +282,35 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     // Phase A: Setup & Staleness Check
     correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
-    // 0. Discover repository icon (early, so we can include it in status updates)
-    const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
-
-    // 1. Check if summarization is enabled
+    // Check if summarization is enabled before considering runtime cooldowns.
     const settings = await loadSummarizationSettings();
     if (!settings.enabled) {
       correlatedLogger.info('Summarization is disabled, skipping indexing');
       return;
     }
 
-    // 2. Get agent from registry
-    const { agent, modelOverride, effectiveModel } = await setupAgent(settings);
+    const cooldown = options.ignoreCooldown ? null : await getSummarizationCooldown(fullName, branch);
+    if (cooldown) {
+      correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
+      // Preserve an existing failed state: the cooldown skip repairs nothing, so
+      // clearing a previously failed repository to idle would hide a real problem.
+      const existingStatus = await getRepositoryIndexingStatus(fullName, branch);
+      const cooldownStatus = existingStatus === 'failed' ? 'failed' : 'idle';
+      if (existingStatus !== 'failed') {
+        await updateRepositoryStatus(fullName, 'idle', branch);
+      }
+      await safePublishIndexingStatus(fullName, branch, cooldownStatus);
+      await clearIndexingCancellation(fullName, branch);
+      await clearIndexingProgress(fullName, branch);
+      return;
+    }
+
+    // Discover repository icon early, so we can include it in status updates.
+    const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
+
+    // Get agent from registry
+    const agentConfig = await setupAgent(settings);
+    const { agent, modelOverride, effectiveModel, agentAliasSetting } = agentConfig;
     const resolveSummarizationConfig = async () => {
       const latestSettings = await loadSummarizationSettings();
       if (!latestSettings.enabled) {
@@ -276,7 +321,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     };
 
     correlatedLogger.info(
-      { agentAlias: agent.config.alias, model: effectiveModel },
+      { agentAlias: agent.config.alias, model: effectiveModel, fallbackAgentAlias: settings.fallback_agent_alias || undefined },
       'Using agent for summarization'
     );
 
@@ -310,13 +355,22 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         iconPath,
         agent,
         modelOverride,
+        agentAliasSetting,
         resolveSummarizationConfig,
         log: correlatedLogger
       });
       return;
     }
 
-    let batchResult = { filesProcessed: 0, failedBatches: 0, totalBatches: 0 };
+    let batchResult: ProcessBatchesResult = {
+      successfulBatches: 0,
+      filesProcessed: 0,
+      filesFailed: 0,
+      failedBatches: 0,
+      totalBatches: 0,
+      fallbackUsed: false,
+      stopProcessing: false
+    };
 
     if (filesToProcess.length > 0) {
       correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
@@ -332,6 +386,11 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         agent,
         log: correlatedLogger,
         modelOverride,
+        agentAliasSetting,
+        fallbackAgent: agentConfig.fallbackAgent,
+        fallbackModelOverride: agentConfig.fallbackModelOverride,
+        fallbackEffectiveModel: agentConfig.fallbackEffectiveModel,
+        fallbackAgentAliasSetting: agentConfig.fallbackAgentAliasSetting,
         customPrompt: settings.custom_prompt,
         resolveSummarizationConfig,
         branch
@@ -340,10 +399,23 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
     // Phase C: Directory Aggregation (if files were processed or deleted)
     let dirFailedBatches = 0;
-    if (batchResult.filesProcessed > 0 || filesToDelete.length > 0) {
+    if (!batchResult.stopProcessing && (batchResult.filesProcessed > 0 || filesToDelete.length > 0)) {
       await ensureIndexingProgress(fullName, branch);
-      const dirResult = await aggregateDirectories({ fullName, agent, log: correlatedLogger, modelOverride, resolveSummarizationConfig, branch });
+      const dirResult = await aggregateDirectories({
+        fullName,
+        agent,
+        log: correlatedLogger,
+        modelOverride,
+        agentAliasSetting,
+        fallbackAgent: agentConfig.fallbackAgent,
+        fallbackModelOverride: agentConfig.fallbackModelOverride,
+        fallbackEffectiveModel: agentConfig.fallbackEffectiveModel,
+        fallbackAgentAliasSetting: agentConfig.fallbackAgentAliasSetting,
+        resolveSummarizationConfig,
+        branch
+      });
       dirFailedBatches = dirResult.failedBatches;
+      applyDirectoryFallbackResult(batchResult, dirResult);
     }
 
     // Phase D: Cleanup - Mark status based on results
@@ -366,6 +438,13 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
   } catch (error) {
     await handleIndexingError(error, repoPath, options, correlatedLogger);
   }
+}
+
+function applyDirectoryFallbackResult(batchResult: ProcessBatchesResult, dirResult: AggregateDirectoriesResult): void {
+  if (!dirResult.fallbackUsed || batchResult.fallbackUsed) return;
+  batchResult.fallbackUsed = true;
+  batchResult.fallbackPrimaryAgentAlias = dirResult.fallbackPrimaryAgentAlias;
+  batchResult.fallbackAgentAlias = dirResult.fallbackAgentAlias;
 }
 
 async function handleIndexingError(
@@ -410,100 +489,6 @@ async function handleIndexingError(
   }
 
   throw error;
-}
-
-// --- Phase A: Setup & Staleness Check ---
-
-interface IdentifyStaleFilesOptions {
-  branch: string;
-  fullReindex?: boolean;
-}
-
-/**
- * Identifies files that need processing (new or changed) and files to delete.
- * If fullReindex is true, all files are marked for processing regardless of staleness.
- */
-async function identifyStaleFiles(
-  fullName: string,
-  gitFiles: GitFileInfo[],
-  log: Logger,
-  options: IdentifyStaleFilesOptions
-): Promise<{
-  filesToProcess: GitFileInfo[];
-  filesToDelete: string[];
-}> {
-  const { branch, fullReindex } = options;
-  // Fetch existing summaries from DB (paths are stored as fullName/relativePath)
-  const existingSummaries = await db('file_summaries')
-    .where('path', 'like', `${fullName}/%`)
-    .andWhere({ branch })
-    .select('path', 'commit_hash');
-
-  // Map from full stored path to hash
-  const dbHashMap = new Map<string, string>();
-  for (const summary of existingSummaries) {
-    dbHashMap.set(summary.path, summary.commit_hash);
-  }
-
-  // Create set of full paths from git files for deletion check
-  const gitFileFullPathSet = new Set(gitFiles.map(f => `${fullName}/${f.path}`));
-  const filesToProcess: GitFileInfo[] = [];
-  const filesToDelete: string[] = [];
-
-  // If fullReindex, process all files (existing summaries will be overwritten)
-  if (fullReindex) {
-    log.info({ fullReindex: true, fileCount: gitFiles.length }, 'Full reindex requested - processing all files');
-    filesToProcess.push(...gitFiles);
-  } else {
-    // Find new and changed files
-    for (const file of gitFiles) {
-      const fullPath = `${fullName}/${file.path}`;
-      const dbHash = dbHashMap.get(fullPath);
-
-      if (!dbHash) {
-        // New file
-        filesToProcess.push(file);
-      } else if (dbHash !== file.blobHash) {
-        // Changed file
-        filesToProcess.push(file);
-      }
-      // else: unchanged, skip
-    }
-  }
-
-  // Find deleted files (in DB but not in git) - always clean these up
-  for (const dbPath of dbHashMap.keys()) {
-    if (!gitFileFullPathSet.has(dbPath)) {
-      filesToDelete.push(dbPath);
-    }
-  }
-
-  log.debug({
-    fullReindex: !!fullReindex,
-    existingInDb: dbHashMap.size,
-    newFiles: filesToProcess.filter(f => !dbHashMap.has(`${fullName}/${f.path}`)).length,
-    changedFiles: filesToProcess.filter(f => dbHashMap.has(`${fullName}/${f.path}`)).length,
-    deletedFiles: filesToDelete.length,
-    unchangedFiles: fullReindex ? 0 : (gitFiles.length - filesToProcess.length)
-  }, 'Staleness check complete');
-
-  return { filesToProcess, filesToDelete };
-}
-
-/**
- * Deletes file summaries from the database
- */
-async function deleteFileSummaries(paths: string[], branch: string): Promise<void> {
-  if (paths.length === 0) return;
-
-  const CHUNK_SIZE = 500;
-  for (let i = 0; i < paths.length; i += CHUNK_SIZE) {
-    const chunk = paths.slice(i, i + CHUNK_SIZE);
-    await db('file_summaries')
-      .whereIn('path', chunk)
-      .andWhere({ branch })
-      .delete();
-  }
 }
 
 // --- Utility Exports ---

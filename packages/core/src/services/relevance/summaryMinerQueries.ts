@@ -63,6 +63,20 @@ export async function updateRepositoryStatus(
 }
 
 /**
+ * Reads the current indexing status for a repository branch, or null when no row exists yet.
+ */
+export async function getRepositoryIndexingStatus(
+  fullName: string,
+  branch: string = 'HEAD'
+): Promise<'idle' | 'indexing' | 'completed' | 'failed' | null> {
+  const row = await db('repositories')
+    .where({ full_name: fullName, branch })
+    .select('indexing_status')
+    .first();
+  return (row?.indexing_status as 'idle' | 'indexing' | 'completed' | 'failed' | undefined) ?? null;
+}
+
+/**
  * Gets the summary for a specific file
  */
 export async function getFileSummary(filePath: string, branch: string = 'HEAD'): Promise<FileSummaryResult | null> {

@@ -12,6 +12,7 @@ export interface QueueIndexingResult {
   error?: string;
   jobId?: string;
   correlationId?: string;
+  baseBranch?: string;
 }
 
 export interface StopIndexingResult {
@@ -25,48 +26,95 @@ interface QueueResummarizationForRepoOptions {
   repoFullName: string;
   token: string;
   baseBranch?: string;
+  ignoreCooldown?: boolean;
   queue?: Awaited<ReturnType<typeof getIndexingQueue>>;
   queuedRepoBranches?: Set<string>;
+  deps: QueueResummarizationDeps;
 }
 
-export async function queueResummarizationForAllRepos(): Promise<number> {
-  const monitoredRepos = getEnabledResummarizationTargets(await configManager.loadMonitoredReposRaw());
-  const queue = await getIndexingQueue();
+export interface QueueResummarizationResult {
+  queued: number;
+  skippedCooldown: number;
+  skippedAlreadyQueued: number;
+  failedClone: number;
+}
+
+type QueueResummarizationForRepoResult = 'queued' | 'skippedCooldown' | 'skippedAlreadyQueued' | 'failedClone';
+
+interface QueueResummarizationDeps {
+  loadMonitoredReposRaw: typeof configManager.loadMonitoredReposRaw;
+  getIndexingQueue: typeof getIndexingQueue;
+  getAuthenticatedOctokit: typeof getAuthenticatedOctokit;
+  getSummarizationCooldown: typeof configManager.getSummarizationCooldown;
+  ensureRepoCloned: typeof ensureRepoCloned;
+  fetchLatestChanges: typeof fetchLatestChanges;
+  getRepoUrl: typeof getRepoUrl;
+}
+
+interface QueueResummarizationOptions {
+  ignoreCooldown?: boolean;
+  deps?: Partial<QueueResummarizationDeps>;
+}
+
+function getQueueResummarizationDeps(overrides: Partial<QueueResummarizationDeps> = {}): QueueResummarizationDeps {
+  return {
+    loadMonitoredReposRaw: configManager.loadMonitoredReposRaw,
+    getIndexingQueue,
+    getAuthenticatedOctokit,
+    getSummarizationCooldown: configManager.getSummarizationCooldown,
+    ensureRepoCloned,
+    fetchLatestChanges,
+    getRepoUrl,
+    ...overrides
+  };
+}
+
+export async function queueResummarizationForAllRepos(options: QueueResummarizationOptions = {}): Promise<QueueResummarizationResult> {
+  const deps = getQueueResummarizationDeps(options.deps);
+  const monitoredRepos = getEnabledResummarizationTargets(await deps.loadMonitoredReposRaw());
+  const queue = await deps.getIndexingQueue();
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
   const queuedRepoBranches = new Set(
     existingJobs.map((job: { data: IndexingJobData }) =>
       getRepoBranchKey(job.data.repository, job.data.baseBranch)
     )
   );
-  const octokit = await getAuthenticatedOctokit();
+  const octokit = await deps.getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: 'installation' }) as { token: string };
-  let repositoriesQueued = 0;
+  const result: QueueResummarizationResult = {
+    queued: 0,
+    skippedCooldown: 0,
+    skippedAlreadyQueued: 0,
+    failedClone: 0
+  };
 
   for (const repoConfig of monitoredRepos) {
-    const queued = await queueResummarizationForRepo({
+    const repoResult = await queueResummarizationForRepo({
       repoFullName: repoConfig.name,
       token,
       baseBranch: repoConfig.baseBranch,
+      ignoreCooldown: options.ignoreCooldown,
       queue,
-      queuedRepoBranches
+      queuedRepoBranches,
+      deps
     });
-    if (queued) {
-      repositoriesQueued++;
-    }
+    result[repoResult]++;
   }
-  return repositoriesQueued;
+  return result;
 }
 
 async function queueResummarizationForRepo({
   repoFullName,
   token,
   baseBranch,
+  ignoreCooldown = false,
   queue: queueArg,
-  queuedRepoBranches
-}: QueueResummarizationForRepoOptions): Promise<boolean> {
-  const queue = queueArg ?? await getIndexingQueue();
+  queuedRepoBranches,
+  deps
+}: QueueResummarizationForRepoOptions): Promise<QueueResummarizationForRepoResult> {
+  const queue = queueArg ?? await deps.getIndexingQueue();
   const [owner, name] = repoFullName.split('/');
-  const effectiveBranch = baseBranch || 'HEAD';
+  const effectiveBranch = configManager.normalizeSummarizationBranch(baseBranch);
   const repoBranchKey = getRepoBranchKey(repoFullName, baseBranch);
   const alreadyQueued = queuedRepoBranches
     ? queuedRepoBranches.has(repoBranchKey)
@@ -74,19 +122,24 @@ async function queueResummarizationForRepo({
       getRepoBranchKey(j.data.repository, j.data.baseBranch) === repoBranchKey
     );
   if (alreadyQueued) {
-    return false;
+    return 'skippedAlreadyQueued';
+  }
+  const cooldown = ignoreCooldown ? null : await deps.getSummarizationCooldown(repoFullName, effectiveBranch);
+  if (cooldown) {
+    console.warn(`Skipping resummarization for ${repoFullName} (${effectiveBranch}) during cooldown until ${cooldown.until}`);
+    return 'skippedCooldown';
   }
 
-  const repoUrl = getRepoUrl({ repoOwner: owner, repoName: name });
+  const repoUrl = deps.getRepoUrl({ repoOwner: owner, repoName: name });
   let repoPath: string;
   try {
-    repoPath = await ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token, baseBranch });
+    repoPath = await deps.ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token, baseBranch });
   } catch {
     console.error(`Failed to clone repository ${repoFullName} for resummarization`);
-    return false;
+    return 'failedClone';
   }
 
-  const fetchResult = await fetchLatestChanges({
+  const fetchResult = await deps.fetchLatestChanges({
     owner,
     repoName: name,
     authToken: token,
@@ -106,7 +159,10 @@ async function queueResummarizationForRepo({
       correlationId,
       priority: 'normal',
       fullReindex: true,
-      baseBranch
+      // Persist the normalized branch so cooldown/dedup/status checks (which all
+      // normalize to HEAD) stay consistent with the stored job payload.
+      baseBranch: effectiveBranch,
+      ignoreCooldown
     },
     {
       jobId: `index-${repoFullName.replace('/', '-')}-${sanitizeJobIdSegment(effectiveBranch)}-prompt-change-${Date.now()}`,
@@ -114,7 +170,7 @@ async function queueResummarizationForRepo({
     }
   );
   queuedRepoBranches?.add(repoBranchKey);
-  return true;
+  return 'queued';
 }
 
 function sanitizeJobIdSegment(value: string): string {
@@ -122,7 +178,7 @@ function sanitizeJobIdSegment(value: string): string {
 }
 
 function getRepoBranchKey(repository: string, branch?: string): string {
-  return `${repository}:${branch || 'HEAD'}`;
+  return `${repository}:${configManager.normalizeSummarizationBranch(branch)}`;
 }
 
 const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex';
@@ -156,8 +212,8 @@ export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType
     const scheduledTime = parseInt(scheduledTimeStr, 10);
     if (Date.now() >= scheduledTime) {
       await redisClient.del(DELAYED_REINDEX_KEY);
-      const count = await queueResummarizationForAllRepos();
-      console.log(`Executed delayed reindex for ${count} repositories`);
+      const result = await queueResummarizationForAllRepos();
+      console.log(`Executed delayed reindex for ${result.queued} repositories`);
       return true;
     }
     return false;
@@ -167,7 +223,12 @@ export async function checkAndExecuteDelayedReindex(redisClient: RedisClientType
   }
 }
 
-export async function queueIndexingJob(repository: string, fullReindex: boolean, baseBranch?: string): Promise<QueueIndexingResult> {
+export async function queueIndexingJob(
+  repository: string,
+  fullReindex: boolean,
+  baseBranch?: string,
+  options: { ignoreCooldown?: boolean } = {}
+): Promise<QueueIndexingResult> {
   const settings = await configManager.loadSummarizationSettings();
   if (!settings.enabled) {
     return { success: false, error: 'Summarization is not enabled. Enable it in settings first.' };
@@ -178,12 +239,19 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
 
   const queue = await getIndexingQueue();
   const existingJobs = await queue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
-  const effectiveBranch = baseBranch || 'HEAD';
+  const effectiveBranch = configManager.normalizeSummarizationBranch(baseBranch);
   const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-    j.data.repository === repository && (j.data.baseBranch || 'HEAD') === effectiveBranch
+    j.data.repository === repository && configManager.normalizeSummarizationBranch(j.data.baseBranch) === effectiveBranch
   );
   if (alreadyQueued) {
     return { success: false, error: 'Indexing job already queued for this repository and branch' };
+  }
+  const cooldown = options.ignoreCooldown ? null : await configManager.getSummarizationCooldown(repository, effectiveBranch);
+  if (cooldown) {
+    return {
+      success: false,
+      error: `Summarization is in cooldown for this repository and branch until ${cooldown.until}: ${cooldown.reason}`
+    };
   }
 
   // Resume-on-failure: a full reindex requested while the repo is in a 'failed'
@@ -220,12 +288,14 @@ export async function queueIndexingJob(repository: string, fullReindex: boolean,
   const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
   const job = await queue.add(
     'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch },
+    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
     { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
   );
   await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
 
-  return { success: true, jobId: job.id, correlationId };
+  // Return the normalized branch so callers report/match the same value that was
+  // stored on the job and used to update repository status.
+  return { success: true, jobId: job.id, correlationId, baseBranch: effectiveBranch };
 }
 
 export async function stopIndexingJob(repository: string, branch?: string): Promise<StopIndexingResult> {
@@ -235,7 +305,7 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
     const matchingJobs = jobs.filter((j: { data: IndexingJobData }) => {
       if (j.data.repository !== repository) return false;
       if (branch) {
-        return (j.data.baseBranch || 'HEAD') === branch;
+        return configManager.normalizeSummarizationBranch(j.data.baseBranch) === configManager.normalizeSummarizationBranch(branch);
       }
       return true;
     });
@@ -245,7 +315,7 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
 
     if (matchingJobs.length > 0) {
       for (const job of matchingJobs) {
-        const jobBranch = job.data.baseBranch || 'HEAD';
+        const jobBranch = configManager.normalizeSummarizationBranch(job.data.baseBranch);
         const state = await job.getState();
         if (state === 'active') {
           await requestIndexingCancellation(repository, jobBranch);

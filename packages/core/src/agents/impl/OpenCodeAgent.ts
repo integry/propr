@@ -110,7 +110,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
         const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
@@ -133,7 +133,9 @@ export class OpenCodeAgent implements Agent {
             const success = result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
 
             const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
-            await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
+            if (!suppressLlmLog) {
+                await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
+            }
             return success
                 ? { response: analysisText, modelUsed, executionTimeMs, success: true, sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage }
                 : { response: analysisText, modelUsed, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage };
@@ -141,7 +143,9 @@ export class OpenCodeAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
             logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'OpenCode lightweight analysis failed');
-            await this.persistAnalysisLogSafely({ executionType, modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message, taskId, correlationId, repository, metadata, taskNumber, prNumber });
+            if (!suppressLlmLog) {
+                await this.persistAnalysisLogSafely({ executionType, modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message, taskId, correlationId, repository, metadata, taskNumber, prNumber });
+            }
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
         } finally {
             this.cleanupAnalysisWorkspace(analysisWorkspace);

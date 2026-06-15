@@ -12,6 +12,7 @@ import {
 } from '@propr/core';
 import type { ClaudeCodeResponse, JobResult, WorkerStateManager, WorktreeInfo } from '@propr/core';
 import { createContainerIdCallbackForPR, createSessionIdCallbackForPR } from './prCommentJobHelpers.js';
+import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { agentResultToClaudeResponse, toClaudeResult } from './prCommentJobUtils.js';
 import {
     buildConflictResolutionPrompt,
@@ -22,11 +23,6 @@ import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import type { GitHubToken } from './githubTypes.js';
 
 const MAX_CONFLICT_MARKER_SCAN_BYTES = 1024 * 1024;
-const MERGE_AGENT_COMMIT_AUTHOR = {
-    name: process.env.PROPR_AGENT_COMMIT_AUTHOR_NAME || 'ProPR Agent',
-    email: process.env.PROPR_AGENT_COMMIT_AUTHOR_EMAIL || 'propr-agent@integry.com',
-};
-
 async function buildMergeCompletionHistoryMetadata(options: {
     stateManager: WorkerStateManager;
     taskId: string;
@@ -176,7 +172,7 @@ export async function handleMergeWithAgent(options: {
         baseBranch, headBranch: branchName, pullRequestNumber, conflictedFiles,
         model: claudeResult.model || resolvedModel, wasCleanMerge,
     });
-    const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, MERGE_AGENT_COMMIT_AUTHOR, { issueNumber: pullRequestNumber, issueTitle: wasCleanMerge ? 'Verify clean merge' : 'Resolve merge conflicts' });
+    const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: pullRequestNumber, issueTitle: wasCleanMerge ? 'Verify clean merge' : 'Resolve merge conflicts' });
     await pushBranch(worktreeInfo.worktreePath, branchName, { repoUrl, authToken: githubToken.token });
 
     const { simpleGit } = await import('simple-git');

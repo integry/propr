@@ -144,21 +144,16 @@ export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequ
     } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment deletion'); return; }
 
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment deleted, aborting any active jobs for this PR');
-    const queue = await getIssueQueue();
-    const activeJobs = await queue.getActive();
-    const waitingJobs = await queue.getWaiting();
-    const allJobs = [...activeJobs, ...waitingJobs] as Job<PRJobData>[];
+    const allJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
 
     for (const job of allJobs) {
-        if (job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo) {
-            const jobCommentIds = job.data.comments?.map(c => c.id) || [];
-            if (jobCommentIds.includes(commentId)) {
-                correlatedLogger.info({ jobId: job.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting job due to comment deletion');
-                const taskId = job.id?.startsWith('pr-comments-batch-') ? job.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : `${owner}-${repo}-${prNumber}`;
-                await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_deleted', commentId }), 'EX', 3600);
-                await job.remove();
-                correlatedLogger.info({ jobId: job.id, taskId }, 'Job aborted and removed from queue');
-            }
+        const jobCommentIds = job.data.comments?.map(c => c.id) || [];
+        if (jobCommentIds.includes(commentId)) {
+            correlatedLogger.info({ jobId: job.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting job due to comment deletion');
+            const taskId = job.id?.startsWith('pr-comments-batch-') ? job.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : `${owner}-${repo}-${prNumber}`;
+            await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_deleted', commentId }), 'EX', 3600);
+            await job.remove();
+            correlatedLogger.info({ jobId: job.id, taskId }, 'Job aborted and removed from queue');
         }
     }
     await redisClient.del(`pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`);
@@ -184,17 +179,12 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit'); return; }
 
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment edited, restarting any active jobs for this PR');
-    const queue = await getIssueQueue();
-    const activeJobs = await queue.getActive();
-    const waitingJobs = await queue.getWaiting();
-    const allJobs = [...activeJobs, ...waitingJobs] as Job<PRJobData>[];
+    const allJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
 
     let foundJob: Job<PRJobData> | null = null;
     for (const job of allJobs) {
-        if (job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo) {
-            const jobCommentIds = job.data.comments?.map(c => c.id) || [];
-            if (jobCommentIds.includes(commentId)) { foundJob = job; break; }
-        }
+        const jobCommentIds = job.data.comments?.map(c => c.id) || [];
+        if (jobCommentIds.includes(commentId)) { foundJob = job; break; }
     }
 
     if (foundJob) {
@@ -589,12 +579,19 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 }
 
 async function checkExistingJob(prNumber: number, owner: string, repo: string): Promise<boolean> {
+    const existingJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
+    return existingJobs.length > 0;
+}
+
+async function getExistingPRCommentJobs(prNumber: number, owner: string, repo: string): Promise<Job<PRJobData>[]> {
     const queue = await getIssueQueue();
-    const activeJobs = await queue.getActive();
-    const waitingJobs = await queue.getWaiting();
-    const delayedJobs = await queue.getDelayed();
+    const [activeJobs, waitingJobs, delayedJobs] = await Promise.all([
+        queue.getActive(),
+        queue.getWaiting(),
+        queue.getDelayed(),
+    ]);
     const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs] as Job<PRJobData>[];
-    return existingJobs.some(job => job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo);
+    return existingJobs.filter(job => job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo);
 }
 
 async function storeCommentForBatch(comment: BatchComment, commentAuthor: string, eventContext: CommentContext, config: StoreCommentConfig): Promise<void> {

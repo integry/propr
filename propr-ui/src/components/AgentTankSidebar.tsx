@@ -7,15 +7,14 @@ import { getModelDisplayName } from '../utils/modelDisplay';
 // Refresh interval in milliseconds (60 seconds)
 const REFRESH_INTERVAL = 60000;
 
-// Visible provider labels keyed by Agent Tank provider key (presentation only).
-// The underlying provider keys (e.g. "agy") are preserved for API payloads/lookups.
+// Visible provider labels keyed by ProPR-facing provider key.
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  agy: 'Antigravity',
+  antigravity: 'Antigravity',
 };
 
 // Order providers appear in the status list. Codex must appear before Antigravity.
 // Unknown providers retain their original relative order after these.
-const PROVIDER_ORDER = ['claude', 'gemini', 'codex', 'agy'];
+const PROVIDER_ORDER = ['claude', 'gemini', 'codex', 'antigravity'];
 
 function getProviderRank(name: string): number {
   const idx = PROVIDER_ORDER.indexOf(name.toLowerCase());
@@ -104,7 +103,7 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
   }
   // Gemini / Antigravity models
   if (agent.usage.models) {
-    const isAntigravity = agent.name.toLowerCase() === 'agy';
+    const isAntigravity = agent.name.toLowerCase() === 'antigravity';
     for (const model of agent.usage.models) {
       if (isAntigravity) {
         // Keep the full model name (incl. "Gemini" prefix and thinking level) for the tooltip,

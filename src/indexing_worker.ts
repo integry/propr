@@ -38,7 +38,7 @@ const REINDEX_INTERVAL_MS = parseInt(process.env.INDEXING_REINDEX_INTERVAL_MS ||
  * Process a single indexing job
  */
 async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingResult> {
-    const { repository, repoPath, correlationId, fullReindex, baseBranch = 'HEAD' } = job.data;
+    const { repository, repoPath, correlationId, fullReindex, baseBranch = 'HEAD', ignoreCooldown } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const startTime = Date.now();
 
@@ -60,7 +60,8 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
             correlationId,
             fullName: repository,
             branch: baseBranch,
-            fullReindex
+            fullReindex,
+            ignoreCooldown
         });
 
         const duration = Date.now() - startTime;

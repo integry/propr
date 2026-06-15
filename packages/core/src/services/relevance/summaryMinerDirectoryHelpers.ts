@@ -12,6 +12,33 @@ export interface DirectoryResult {
   summary: string | null;
 }
 
+export function normalizeSummaryPath(pathValue: string): string {
+  return pathValue
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/home\/node\/workspace\//, '')
+    .replace(/^\/workspace\//, '')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+}
+
+export function resolveExpectedSummaryPath(pathValue: string, expectedPaths: string[]): string | null {
+  const normalizedPath = normalizeSummaryPath(pathValue);
+  const normalizedExpected = expectedPaths.map(expectedPath => ({
+    original: expectedPath,
+    normalized: normalizeSummaryPath(expectedPath)
+  }));
+
+  const exact = normalizedExpected.find(expected => expected.normalized === normalizedPath);
+  if (exact) return exact.original;
+
+  const suffixMatches = normalizedExpected.filter(expected =>
+    normalizedPath.endsWith(`/${expected.normalized}`)
+  );
+  return suffixMatches.length === 1 ? suffixMatches[0].original : null;
+}
+
 export function groupDirectoriesByDepth(directories: string[]): Map<number, string[]> {
   const byDepth = new Map<number, string[]>();
   for (const dir of directories) {
@@ -120,16 +147,22 @@ export function parseBatchDirectoryResponse(response: string, expectedPaths: str
   const results: DirectoryResult[] = expectedPaths.map(p => ({ dirPath: p, summary: null }));
 
   try {
-    const jsonMatch = response.match(/\{[\s\S]*"summaries"[\s\S]*\}/);
-    if (!jsonMatch) return results;
+    const jsonPayload = extractDirectorySummaryJson(response);
+    if (!jsonPayload) {
+      const singleSummary = parseSingleDirectoryFallback(response, expectedPaths);
+      if (singleSummary) results[0].summary = singleSummary;
+      return results;
+    }
 
-    const parsed = JSON.parse(jsonMatch[0]) as { summaries: Array<{ path: string; summary: string }> };
-    if (!parsed.summaries || !Array.isArray(parsed.summaries)) return results;
+    const parsed = JSON.parse(jsonPayload);
+    const summaries = normalizeDirectorySummaryEntries(parsed);
+    if (summaries.length === 0) return results;
 
     const summaryMap = new Map<string, string>();
-    for (const s of parsed.summaries) {
-      if (typeof s.path === 'string' && typeof s.summary === 'string' && s.summary.trim().length > 0) {
-        summaryMap.set(s.path.trim(), s.summary.trim());
+    for (const s of summaries) {
+      if (s.summary.trim().length > 0) {
+        const expectedPath = s.path ? resolveExpectedSummaryPath(s.path, expectedPaths) : (expectedPaths.length === 1 ? expectedPaths[0] : null);
+        if (expectedPath) summaryMap.set(expectedPath, cleanSummaryText(s.summary));
       }
     }
 
@@ -142,4 +175,54 @@ export function parseBatchDirectoryResponse(response: string, expectedPaths: str
   }
 
   return results;
+}
+
+function extractDirectorySummaryJson(response: string): string | null {
+  const cleaned = cleanSummaryText(response);
+  if (/^\s*[[{]/.test(cleaned)) return cleaned;
+
+  const objectMatch = cleaned.match(/\{[\s\S]*(?:"summaries"|"directory_summaries"|"directories"|"results"|"summary")[\s\S]*\}/);
+  if (objectMatch) return objectMatch[0];
+
+  const arrayMatch = cleaned.match(/\[[\s\S]*"summary"[\s\S]*\]/);
+  return arrayMatch ? arrayMatch[0] : null;
+}
+
+function normalizeDirectorySummaryEntries(parsed: unknown): Array<{ path?: string; summary: string }> {
+  if (Array.isArray(parsed)) return parsed.flatMap(normalizeDirectorySummaryEntry);
+  if (!parsed || typeof parsed !== 'object') return [];
+
+  const record = parsed as Record<string, unknown>;
+  const entries = record.summaries ?? record.directory_summaries ?? record.directories ?? record.results;
+  if (Array.isArray(entries)) return entries.flatMap(normalizeDirectorySummaryEntry);
+
+  return normalizeDirectorySummaryEntry(record);
+}
+
+function normalizeDirectorySummaryEntry(entry: unknown): Array<{ path?: string; summary: string }> {
+  if (!entry || typeof entry !== 'object') return [];
+  const record = entry as Record<string, unknown>;
+  const summary = record.summary ?? record.description ?? record.content;
+  if (typeof summary !== 'string') return [];
+  const pathValue = record.path ?? record.dirPath ?? record.directory ?? record.dir;
+  return [{
+    path: typeof pathValue === 'string' ? pathValue : undefined,
+    summary
+  }];
+}
+
+function parseSingleDirectoryFallback(response: string, expectedPaths: string[]): string | null {
+  if (expectedPaths.length !== 1) return null;
+  const summary = cleanSummaryText(response);
+  if (summary.length < 20) return null;
+  if (/^\s*[[{]/.test(summary)) return null;
+  return summary;
+}
+
+function cleanSummaryText(value: string): string {
+  return value
+    .trim()
+    .replace(/^```(?:json|markdown|md|text)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
 }

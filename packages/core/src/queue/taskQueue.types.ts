@@ -119,6 +119,7 @@ export interface IndexingJobData {
     priority?: 'high' | 'normal' | 'low';
     fullReindex?: boolean;   // Force full re-index even if summaries exist
     baseBranch?: string;     // Optional specific branch to index (defaults to repo default branch)
+    ignoreCooldown?: boolean; // Manual/admin indexing override for summarization cooldowns
 }
 
 export interface MergeConflictJobData {

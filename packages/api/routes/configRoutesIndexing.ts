@@ -4,6 +4,7 @@ import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
 import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
+import type { AgentConfig } from '@propr/core';
 
 interface IndexingRoutesDeps {
   redisClient: RedisClientType;
@@ -36,9 +37,11 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         repository: string;
         fullReindex?: boolean;
         baseBranch?: string;
+        ignoreCooldown?: boolean;
       };
       const shouldRunFullReindex = fullReindex === true;
-      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch);
+      const ignoreCooldown = req.body.ignoreCooldown === true;
+      const result = await queueIndexingJob(repository, shouldRunFullReindex, baseBranch, { ignoreCooldown });
       if (!result.success) {
         const isAlreadyQueued = result.error?.includes('already queued');
         const statusCode = isAlreadyQueued ? 409 : 400;
@@ -46,36 +49,35 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
+      // Report the normalized branch the job was actually queued under so clients
+      // and status matching stay consistent when baseBranch is omitted/whitespace.
+      const effectiveBranch = result.baseBranch ?? 'HEAD';
+
       // Best-effort optimistic status for newly accepted jobs only.
       try {
-        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+        await publishIndexingStatus(repository, effectiveBranch, 'indexing');
       } catch (pubErr) {
         console.warn('Failed to publish optimistic indexing status:', pubErr);
       }
 
       await logActivityHelper(
-        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
+        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository} (branch: ${effectiveBranch})`,
         'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch: effectiveBranch, ignoreCooldown });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
     }
   }
 
-  async function triggerResummarizationSafe(): Promise<number> {
-    try {
-      return await queueResummarizationForAllRepos();
-    } catch (error) {
-      console.error('Error triggering resummarization for repositories:', error);
-      return 0;
-    }
-  }
-
   async function triggerReindexAll(req: Request, res: Response): Promise<void> {
     try {
+      if (req.body?.ignoreCooldown !== undefined && typeof req.body.ignoreCooldown !== 'boolean') {
+        res.status(400).json({ error: 'ignoreCooldown must be a boolean' });
+        return;
+      }
       const settings = await configManager.loadSummarizationSettings();
       if (!settings.enabled) {
         res.status(400).json({ error: 'Summarization is not enabled. Enable it in settings first.' });
@@ -87,14 +89,26 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       }
 
       await cancelDelayedReindex(redisClient);
-      const repositoriesQueued = await triggerResummarizationSafe();
+      const ignoreCooldown = req.body?.ignoreCooldown === true;
+      // Let systemic failures (auth, queue creation, DB access) propagate to the
+      // outer catch and surface as a 500. Per-repository clone/queue failures are
+      // already captured in the returned counts, so this only escalates the case
+      // where no repository could be processed at all.
+      const resummarizationResult = await queueResummarizationForAllRepos({ ignoreCooldown });
 
       await logActivityHelper(
-        `Manually triggered reindexing for ${repositoriesQueued} repositories`,
+        `Manually triggered reindexing for ${resummarizationResult.queued} repositories`,
         'reindex-all-trigger', 'reindex_all_triggered', req.user?.username
       );
 
-      res.json({ success: true, repositoriesQueued });
+      res.json({
+        success: true,
+        repositoriesQueued: resummarizationResult.queued,
+        repositoriesSkippedCooldown: resummarizationResult.skippedCooldown,
+        repositoriesSkippedAlreadyQueued: resummarizationResult.skippedAlreadyQueued,
+        repositoriesFailedClone: resummarizationResult.failedClone,
+        ignoreCooldown
+      });
     } catch (error) {
       console.error('Error in /api/config/summarization/reindex-all POST:', error);
       res.status(500).json({ error: 'Failed to trigger reindexing' });
@@ -150,46 +164,124 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
-  function validateSummarizationInput(body: Record<string, unknown>): string | null {
-    const { enabled, agent_alias, custom_prompt } = body;
+  async function validateSummarizationInput(body: unknown): Promise<string | null> {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return 'request body must be an object';
+    const { enabled, agent_alias, fallback_agent_alias, custom_prompt } = body as Record<string, unknown>;
     if (typeof enabled !== 'boolean') return 'enabled must be a boolean';
     if (agent_alias !== undefined && typeof agent_alias !== 'string') return 'agent_alias must be a string';
+    if (fallback_agent_alias !== undefined && typeof fallback_agent_alias !== 'string') return 'fallback_agent_alias must be a string';
+    const normalizedAgentAlias = typeof agent_alias === 'string' ? normalizeSummarizationAgentAliasSetting(agent_alias) : '';
+    const normalizedFallbackAgentAlias = typeof fallback_agent_alias === 'string' ? normalizeSummarizationAgentAliasSetting(fallback_agent_alias) : '';
+    if (enabled && !normalizedAgentAlias) return 'agent_alias is required when summarization is enabled';
+    if (normalizedAgentAlias && normalizedFallbackAgentAlias && normalizedAgentAlias === normalizedFallbackAgentAlias) return 'fallback_agent_alias must differ from agent_alias';
     if (custom_prompt !== undefined && typeof custom_prompt !== 'string') return 'custom_prompt must be a string';
+    const agentValidationError = await validateSummarizationAgentAliases(agent_alias, fallback_agent_alias);
+    if (agentValidationError) return agentValidationError;
     return null;
   }
 
-  function buildSummarizationDescription(enabled: boolean, agent_alias: string, promptChanged: boolean, reindexScheduled: boolean): string {
-    const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'})`;
+  async function validateSummarizationAgentAliases(
+    primarySetting: unknown,
+    fallbackSetting: unknown
+  ): Promise<string | null> {
+    const settings = [primarySetting, fallbackSetting]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map(parseSummarizationAgentSetting);
+    if (settings.length === 0) return null;
+
+    const enabledAgents = new Map((await configManager.loadAgents())
+      .filter(agent => agent.enabled)
+      .map(agent => [agent.alias, agent]));
+    for (const setting of settings) {
+      const agent = enabledAgents.get(setting.alias);
+      if (!agent) return `summarization agent alias '${setting.alias}' must resolve to an enabled agent`;
+      const modelError = validateSummarizationModelSetting(setting, agent);
+      if (modelError) return modelError;
+    }
+    return null;
+  }
+
+  function parseSummarizationAgentSetting(value: string): { alias: string; model?: string; raw: string } {
+    const raw = normalizeSummarizationAgentAliasSetting(value);
+    const [alias, ...modelParts] = raw.split(':');
+    return { alias, model: modelParts.length > 0 ? modelParts.join(':') : undefined, raw };
+  }
+
+  function normalizeSummarizationAgentAliasSetting(value?: string): string {
+    return value?.trim() || '';
+  }
+
+  function validateSummarizationModelSetting(
+    setting: { alias: string; model?: string; raw: string },
+    agent: AgentConfig
+  ): string | null {
+    if (!setting.model) return null;
+    const supportedModels = Array.isArray(agent.supportedModels) ? agent.supportedModels : [];
+    return supportedModels.includes(setting.model)
+      ? null
+      : `summarization model '${setting.model}' is not supported by agent '${setting.alias}'`;
+  }
+
+  function buildSummarizationDescription(
+    settings: { enabled: boolean; agent_alias: string; fallback_agent_alias: string },
+    promptChanged: boolean,
+    reindexScheduled: boolean
+  ): string {
+    const { enabled, agent_alias, fallback_agent_alias } = settings;
+    const base = `Updated summarization settings (enabled: ${enabled}, agent: ${agent_alias || 'none'}, fallback: ${fallback_agent_alias || 'none'})`;
     return promptChanged && reindexScheduled ? `${base}. Scheduled reindexing in 10 minutes.` : base;
   }
 
   async function postSummarizationSettings(req: Request, res: Response): Promise<void> {
-    const validationError = validateSummarizationInput(req.body);
+    const validationError = await validateSummarizationInput(req.body);
     if (validationError) {
       res.status(400).json({ error: validationError });
       return;
     }
 
-    const { enabled, agent_alias, custom_prompt } = req.body;
+    const { enabled, agent_alias, fallback_agent_alias, custom_prompt } = req.body as {
+      enabled: boolean;
+      agent_alias?: string;
+      fallback_agent_alias?: string;
+      custom_prompt?: string;
+    };
     const currentSettings = await configManager.loadSummarizationSettings();
     const newCustomPrompt = custom_prompt || '';
     const promptChanged = newCustomPrompt !== (currentSettings.custom_prompt || '');
 
+    const normalizedAgentAlias = normalizeSummarizationAgentAliasSetting(agent_alias);
+    const normalizedFallbackAgentAlias = normalizeSummarizationAgentAliasSetting(fallback_agent_alias);
     const settings = {
       enabled,
-      agent_alias: agent_alias || '',
+      agent_alias: normalizedAgentAlias,
+      fallback_agent_alias: normalizedFallbackAgentAlias,
       custom_prompt: newCustomPrompt
     };
+    const modelAliasesChanged =
+      settings.agent_alias !== (currentSettings.agent_alias || '') ||
+      settings.fallback_agent_alias !== (currentSettings.fallback_agent_alias || '');
 
+    // Clear stale cooldown/warning runtime state BEFORE persisting the new model
+    // settings. If clearing fails we return 500 without having saved the new
+    // settings, so we never leave stale runtime state attached to fresh config.
+    // Only the (now-stale) quota-failure bookkeeping and cooldowns tied to a model
+    // that is no longer configured are cleared — cooldowns for still-active models
+    // are preserved so one settings change can't resume every paused repository.
+    if (modelAliasesChanged) {
+      await configManager.clearSummarizationRuntimeStateForSettingsChange({
+        activePrimaryAlias: settings.agent_alias,
+        activeFallbackAlias: settings.fallback_agent_alias
+      });
+    }
     await configManager.saveSummarizationSettings(settings);
     await publishConfigUpdate('summarization_settings_update');
 
     let reindexScheduled = false;
-    if (promptChanged && enabled && agent_alias) {
+    if (promptChanged && enabled && normalizedAgentAlias) {
       reindexScheduled = await scheduleDelayedReindex(redisClient);
     }
 
-    const description = buildSummarizationDescription(enabled, agent_alias, promptChanged, reindexScheduled);
+    const description = buildSummarizationDescription(settings, promptChanged, reindexScheduled);
     await logActivityHelper(description, 'summarization-update', 'summarization_updated', req.user?.username);
 
     res.json({ success: true, ...settings, promptChanged, reindexScheduled });

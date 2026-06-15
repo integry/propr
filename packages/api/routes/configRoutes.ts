@@ -384,7 +384,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function getSummarizationSettings(_req: Request, res: Response): Promise<void> {
     try {
       const settings = await configManager.loadSummarizationSettings();
-      res.json({ ...settings, default_prompt: DEFAULT_INSTRUCTIONS });
+      const runtime = await configManager.loadSummarizationRuntimeState();
+      res.json({ ...settings, default_prompt: DEFAULT_INSTRUCTIONS, runtime });
     } catch (error) {
       console.error('Error in /api/config/summarization GET:', error);
       res.status(500).json({ error: 'Failed to load summarization settings' });

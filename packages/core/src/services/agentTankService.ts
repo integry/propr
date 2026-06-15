@@ -17,6 +17,29 @@ async function getAgentTankBaseUrl(): Promise<string> {
     }
 }
 
+const AGENT_TANK_AGENT_ALIASES: Record<string, string> = {
+    antigravity: 'agy',
+};
+
+const PROPR_AGENT_ALIASES: Record<string, string> = Object.fromEntries(
+    Object.entries(AGENT_TANK_AGENT_ALIASES).map(([proprAgent, tankAgent]) => [tankAgent, proprAgent])
+);
+
+/**
+ * Translate ProPR agent aliases to Agent Tank provider keys.
+ *
+ * ProPR exposes Google's agent as "antigravity", while Agent Tank tracks the
+ * same provider under the CLI key "agy".
+ */
+export function toAgentTankAgent(agent: string): string {
+    return AGENT_TANK_AGENT_ALIASES[agent] || agent;
+}
+
+/** Translate Agent Tank provider keys back to ProPR agent aliases. */
+export function toProprAgent(agent: string): string {
+    return PROPR_AGENT_ALIASES[agent] || agent;
+}
+
 /**
  * Response shape from GET /status/:agent
  *
@@ -34,6 +57,21 @@ export interface AgentStatusResponse {
     isRefreshing?: boolean;
 }
 
+/** Normalize a single Agent Tank status object to ProPR-facing agent names. */
+export function normalizeAgentTankStatus(status: AgentStatusResponse): AgentStatusResponse {
+    return { ...status, name: toProprAgent(status.name) };
+}
+
+/** Normalize a GET /status response map to ProPR-facing agent keys and names. */
+export function normalizeAgentTankAgents(agents: Record<string, AgentStatusResponse>): Record<string, AgentStatusResponse> {
+    return Object.fromEntries(
+        Object.entries(agents).map(([agent, status]) => {
+            const proprAgent = toProprAgent(agent);
+            return [proprAgent, { ...status, name: toProprAgent(status.name || agent) }];
+        })
+    );
+}
+
 /**
  * Trigger a refresh for the given agent on Agent Tank.
  *
@@ -47,8 +85,9 @@ export interface AgentStatusResponse {
  */
 export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<void> {
     const baseUrl = await getAgentTankBaseUrl();
-    const url = `${baseUrl}/refresh/${encodeURIComponent(agent)}`;
-    logger.info({ url, agent }, 'Triggering Agent Tank refresh');
+    const tankAgent = toAgentTankAgent(agent);
+    const url = `${baseUrl}/refresh/${encodeURIComponent(tankAgent)}`;
+    logger.info({ url, agent, tankAgent }, 'Triggering Agent Tank refresh');
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -77,8 +116,9 @@ export async function refreshAgent(agent: string, timeoutMs: number = DEFAULT_TI
  */
 export async function getStatus(agent: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<AgentStatusResponse> {
     const baseUrl = await getAgentTankBaseUrl();
-    const url = `${baseUrl}/status/${encodeURIComponent(agent)}`;
-    logger.info({ url, agent }, 'Fetching Agent Tank status');
+    const tankAgent = toAgentTankAgent(agent);
+    const url = `${baseUrl}/status/${encodeURIComponent(tankAgent)}`;
+    logger.info({ url, agent, tankAgent }, 'Fetching Agent Tank status');
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -89,7 +129,7 @@ export async function getStatus(agent: string, timeoutMs: number = DEFAULT_TIMEO
             throw new Error(`Agent Tank returned HTTP ${response.status}: ${response.statusText}`);
         }
         const data = (await response.json()) as AgentStatusResponse;
-        return data;
+        return normalizeAgentTankStatus(data);
     } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
             throw new Error(`Agent Tank request timed out after ${timeoutMs}ms`);

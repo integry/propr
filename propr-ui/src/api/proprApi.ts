@@ -121,6 +121,7 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
     claudeAuth: mapAuthStatus(data.claudeAuth),
     indexing: mapIndexingStatus(data.indexing),
     agents,
+    warnings: data.warnings || [],
   };
 };
 

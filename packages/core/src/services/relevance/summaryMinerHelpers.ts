@@ -1,33 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 import type { Logger } from 'pino';
-import logger from '../../utils/logger.js';
 import { Agent } from '../../agents/types.js';
-import { db } from '../../db/connection.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 import type { GitFileInfo } from './summaryFileFilter.js';
-import {
-  logSummarizationCall,
-  getSummarizationMetricsSummary,
-  getSummarizationCallHistory
-} from './summaryMinerMetrics.js';
+import { getSummarizationMetricsSummary, getSummarizationCallHistory } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
 import { aggregateDirectories } from './summaryMinerDirectories.js';
 import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, publishProgress } from './indexingCancellation.js';
-import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isProcessableFile } from './summaryFileFilter.js';
-import { withRetry } from '../../utils/retryHandler.js';
-
-// Retry transient agent failures (network blips, rate limits, 5xx) before
-// counting a batch as failed. Persistent errors (quota exhaustion, malformed
-// output) fall through after a bounded number of attempts so the run still
-// finishes promptly. See isRetryableError in retryHandler for classification.
-const SUMMARIZATION_RETRY = {
-  maxAttempts: 3,
-  baseDelay: 2000,
-  maxDelay: 15000,
-  exponentialBase: 2,
-} as const;
+import { processSingleBatch, type BatchFile } from './summaryMinerBatch.js';
+import { getSummarizationBatchLimitOverride } from './summaryMinerBatchLimits.js';
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -35,63 +18,35 @@ export type { SummarizationCallMetrics, SummarizationMetricsSummary };
 
 // Re-export directory aggregation for backwards compatibility
 export { aggregateDirectories };
+export { DEFAULT_INSTRUCTIONS } from './summaryMinerBatch.js';
 
 // --- Types ---
-
-interface BatchFile {
-  path: string;
-  content: string;
-  blobHash: string;
-}
-
-interface SummaryResult {
-  path: string;
-  summary: string;
-}
-
-interface SaveBatchSummariesOptions {
-  fullName: string;
-  batch: BatchFile[];
-  summaries: SummaryResult[];
-  modelUsed: string;
-  branch: string;
-}
 
 export interface SummarizationAgentConfig {
   agent: Agent;
   modelOverride?: string;
   effectiveModel?: string;
   customPrompt?: string;
+  agentAliasSetting?: string;
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
 }
 
 // --- Constants ---
 
 const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
-const DEFAULT_MAX_BATCH_TOKENS = 100_000; // Keep prompts well below context limits so agents reliably return JSON
+const DEFAULT_MAX_BATCH_TOKENS = 70_000; // Keep prompts well below context limits so agents reliably return JSON
 const DEFAULT_MAX_BATCH_FILES = 20; // Keep JSON responses reliable for repos with many small files
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
-
-// Default instructions for the summarization prompt (exported for UI display)
-export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
-For each file, provide a summary (3-4 sentences) covering:
-1. Primary purpose of the file
-2. Key functions, classes, or exports it provides
-3. What other parts of the system it interacts with or depends on`;
-
-// Strict JSON format rules that must always be appended to preserve parsing
-const JSON_FORMAT_RULES = `Return ONLY valid JSON in this exact format:
-{
-  "summaries": [
-    { "path": "relative/path/to/file", "summary": "This file handles... It provides... It interacts with..." }
-  ]
-}
-
-Important:
-- Include ALL files listed below in your response
-- Each summary should be 3-4 sentences with specific details
-- Mention key function/class names when relevant
-- Focus on what the file does and how it connects to the system
-- Return valid JSON only, no markdown or other formatting`;
+// The Claude agent wraps every prompt with its own system prompt + tool definitions,
+// which measured at ~89k tokens against the model context window (the batch content is
+// only part of the real request). Reserve headroom for that overhead plus the response
+// so a batch that looks "within budget" here does not blow past the context limit and
+// come back as an unparseable "Prompt is too long" error. See issue: summarization
+// prompt-too-long failures on repos with large/dense files.
+const AGENT_PROMPT_OVERHEAD_TOKENS = 100_000;
 
 // --- Phase B: Batch Summarization ---
 
@@ -102,7 +57,12 @@ export interface ProcessBatchesOptions {
   agent: Agent;
   log: Logger;
   modelOverride?: string; // Optional model override for token budgeting and logging
+  agentAliasSetting?: string;
   customPrompt?: string; // Optional custom prompt to override default instructions
+  fallbackAgent?: Agent;
+  fallbackModelOverride?: string;
+  fallbackEffectiveModel?: string;
+  fallbackAgentAliasSetting?: string;
   resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string; // Branch being indexed (defaults to 'HEAD')
 }
@@ -113,6 +73,10 @@ export interface ProcessBatchesResult {
   failedBatches: number;
   filesProcessed: number;
   filesFailed: number;
+  fallbackUsed: boolean;
+  stopProcessing: boolean;
+  fallbackPrimaryAgentAlias?: string;
+  fallbackAgentAlias?: string;
 }
 
 /**
@@ -121,15 +85,29 @@ export interface ProcessBatchesResult {
  */
 // eslint-disable-next-line complexity
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
-  const { repoPath, fullName, files, agent, log, modelOverride, customPrompt, resolveSummarizationConfig, branch = 'HEAD' } = options;
+  const {
+    repoPath, fullName, files, agent, log, modelOverride, agentAliasSetting, customPrompt, resolveSummarizationConfig, branch = 'HEAD',
+    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting
+  } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(DEFAULT_MAX_BATCH_TOKENS), 10);
-  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
-  const maxBatchFiles = parseInt(process.env.SUMMARIZATION_MAX_BATCH_FILES || String(DEFAULT_MAX_BATCH_FILES), 10);
+  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
+  const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_BATCH_TOKENS;
+  const defaultMaxBatchFiles = modelBatchLimitOverride?.maxItemsPerBatch ?? DEFAULT_MAX_BATCH_FILES;
+  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
+  // Budget only the context left after the agent's fixed system-prompt/tool overhead.
+  const usableContextTokens = Math.max(maxTokens - AGENT_PROMPT_OVERHEAD_TOKENS, 20_000);
+  const maxBatchTokens = Math.min(Math.floor(usableContextTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
+  const maxBatchFiles = parseInt(process.env.SUMMARIZATION_MAX_BATCH_FILES || String(defaultMaxBatchFiles), 10);
 
-  log.info({ maxBatchTokens, maxBatchTokensCap, maxBatchFiles, model: modelId }, 'Calculated batch budget');
+  log.info({
+    maxBatchTokens,
+    maxBatchTokensCap,
+    maxBatchFiles,
+    model: modelId,
+    modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
+  }, 'Calculated batch budget');
 
   let currentBatch: BatchFile[] = [];
   let currentTokens = 0;
@@ -138,8 +116,22 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let failedBatches = 0;
   let filesProcessed = 0;
   let filesFailed = 0;
+  let fallbackUsed = false;
+  let stopProcessing = false;
+  let fallbackPrimaryAgentAlias: string | undefined;
+  let fallbackAgentAlias: string | undefined;
 
-  const initialConfig: SummarizationAgentConfig = { agent, modelOverride, customPrompt, effectiveModel: modelId };
+  const initialConfig: SummarizationAgentConfig = {
+    agent,
+    modelOverride,
+    customPrompt,
+    effectiveModel: modelId,
+    agentAliasSetting: agentAliasSetting || agent.config.alias,
+    fallbackAgent,
+    fallbackModelOverride,
+    fallbackEffectiveModel,
+    fallbackAgentAliasSetting
+  };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
 
   for (const file of files) {
@@ -174,21 +166,33 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
       const currentConfig = await getCurrentConfig();
       logBatchAgentIfChanged(log, initialConfig, currentConfig);
-      const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
-      const success = await processSingleBatch({
+      const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+      const batchResult = await processSingleBatch({
         fullName,
         batch: currentBatch,
         agent: currentConfig.agent,
         log,
         modelUsed: currentModelId,
         customPrompt: currentConfig.customPrompt,
+        primaryAgentAliasSetting: currentConfig.agentAliasSetting || currentConfig.agent.config.alias,
+        fallbackAgent: currentConfig.fallbackAgent,
+        fallbackModelOverride: currentConfig.fallbackModelOverride,
+        fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
+        fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
         branch
       });
       const batchFileCount = currentBatch.length;
       const batchInputTokens = currentTokens;
       const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
 
-      if (success) {
+      if (batchResult.fallbackUsed) {
+        fallbackUsed = true;
+        fallbackPrimaryAgentAlias ??= batchResult.primaryAgentAlias;
+        fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
+      }
+      stopProcessing ||= batchResult.stopProcessing;
+
+      if (batchResult.success) {
         successfulBatches++;
         filesProcessed += batchFileCount;
       } else {
@@ -207,6 +211,19 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
       currentBatch = [];
       currentTokens = 0;
+      if (stopProcessing) {
+        return {
+          totalBatches: batchNumber,
+          successfulBatches,
+          failedBatches,
+          filesProcessed,
+          filesFailed,
+          fallbackUsed,
+          stopProcessing,
+          fallbackPrimaryAgentAlias,
+          fallbackAgentAlias
+        };
+      }
     }
 
     // Add file to batch
@@ -230,21 +247,33 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     log.info({ batchNumber, fileCount: currentBatch.length, tokens: currentTokens }, 'Processing final batch');
     const currentConfig = await getCurrentConfig();
     logBatchAgentIfChanged(log, initialConfig, currentConfig);
-    const currentModelId = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
-    const success = await processSingleBatch({
+    const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+    const batchResult = await processSingleBatch({
       fullName,
       batch: currentBatch,
       agent: currentConfig.agent,
       log,
       modelUsed: currentModelId,
       customPrompt: currentConfig.customPrompt,
+      primaryAgentAliasSetting: currentConfig.agentAliasSetting || currentConfig.agent.config.alias,
+      fallbackAgent: currentConfig.fallbackAgent,
+      fallbackModelOverride: currentConfig.fallbackModelOverride,
+      fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
+      fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
       branch
     });
     const batchFileCount = currentBatch.length;
     const batchInputTokens = currentTokens;
     const batchOutputTokens = batchFileCount * 120; // ~120 tokens per file summary
 
-    if (success) {
+    if (batchResult.fallbackUsed) {
+      fallbackUsed = true;
+      fallbackPrimaryAgentAlias ??= batchResult.primaryAgentAlias;
+      fallbackAgentAlias ??= batchResult.fallbackAgentAlias;
+    }
+    stopProcessing ||= batchResult.stopProcessing;
+
+    if (batchResult.success) {
       successfulBatches++;
       filesProcessed += batchFileCount;
     } else {
@@ -269,7 +298,11 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     successfulBatches,
     failedBatches,
     filesProcessed,
-    filesFailed
+    filesFailed,
+    fallbackUsed,
+    stopProcessing,
+    fallbackPrimaryAgentAlias,
+    fallbackAgentAlias
   };
 }
 
@@ -278,8 +311,8 @@ function logBatchAgentIfChanged(
   initialConfig: SummarizationAgentConfig,
   currentConfig: SummarizationAgentConfig
 ): void {
-  const initialModel = initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
-  const currentModel = currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  const initialModel = initialConfig.effectiveModel || initialConfig.modelOverride || initialConfig.agent.config.defaultModel || 'default';
+  const currentModel = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
   if (initialConfig.agent.config.alias === currentConfig.agent.config.alias && initialModel === currentModel) {
     return;
   }
@@ -302,197 +335,4 @@ async function publishBatchProgressIfActive(
   }
 
   try { await publishProgress(repository, branch, progress); } catch { /* best-effort */ }
-}
-
-interface ProcessSingleBatchOptions {
-  fullName: string;
-  batch: BatchFile[];
-  agent: Agent;
-  log: Logger;
-  modelUsed: string;
-  customPrompt?: string;
-  branch: string;
-}
-
-/**
- * Processes a single batch of files through the LLM
- * Returns true if successful, false if failed
- */
-async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<boolean> {
-  const { fullName, batch, agent, log, modelUsed, customPrompt, branch } = options;
-  const prompt = buildBatchPrompt(batch, customPrompt);
-  const startTime = Date.now();
-
-  // Estimate input tokens (prompt + file contents)
-  const estimatedInputTokens = Math.ceil(prompt.length / CHARS_PER_TOKEN_ESTIMATE);
-  // Estimate output tokens (roughly 120 tokens per file for 3-4 sentence summary JSON)
-  const estimatedOutputTokens = batch.length * 120;
-
-  let success = false;
-  let errorMessage: string | undefined;
-
-  try {
-    const summaries = await withRetry(
-      async () => {
-        const analysisResult = await agent.analyze(prompt, { model: modelUsed, responseFormat: 'json' });
-        if (!analysisResult.success) {
-          throw new Error(analysisResult.error || 'Summarization agent analysis failed');
-        }
-        const parsed = parseBatchResponse(analysisResult.response);
-        if (parsed.length === 0) {
-          throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
-        }
-        return parsed;
-      },
-      SUMMARIZATION_RETRY,
-      `batch_summarization:${fullName}`
-    );
-
-    // Save summaries to DB with the actual model used
-    await saveBatchSummaries({ fullName, batch, summaries, modelUsed, branch });
-
-    success = true;
-    log.debug({ savedCount: summaries.length }, 'Saved batch summaries');
-  } catch (error) {
-    errorMessage = (error as Error).message;
-    log.error(
-      { error: errorMessage, fileCount: batch.length },
-      'Failed to process batch'
-    );
-    // Continue with next batch instead of failing entirely
-  }
-
-  const durationMs = Date.now() - startTime;
-
-  // Log the summarization call metrics
-  await logSummarizationCall({
-    timestamp: new Date().toISOString(),
-    callType: 'batch_summarization',
-    model: modelUsed,
-    agentAlias: agent.config.alias,
-    repository: fullName,
-    estimatedInputTokens,
-    estimatedOutputTokens,
-    estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
-    fileCount: batch.length,
-    success,
-    durationMs,
-    error: errorMessage
-  }, log);
-
-  // Persist to llm_logs table
-  const logEntry = createLlmLogFromAnalysis({
-    executionType: 'summarization',
-    modelUsed,
-    executionTimeMs: durationMs,
-    success,
-    tokenUsage: {
-      input_tokens: estimatedInputTokens,
-      output_tokens: estimatedOutputTokens,
-    },
-    error: errorMessage,
-    repository: fullName,
-    agentAlias: agent.config.alias,
-    workRef: {
-      workType: 'repository',
-      workRepository: fullName,
-    },
-  });
-  await persistLlmLog(logEntry);
-
-  return success;
-}
-
-/**
- * Builds the prompt for batch summarization
- */
-function buildBatchPrompt(batch: BatchFile[], customPrompt?: string): string {
-  const filesContent = batch.map(f =>
-    `--- START ${f.path} ---\n${f.content}\n--- END ${f.path} ---`
-  ).join('\n\n');
-
-  // Use custom prompt if provided and non-empty, otherwise use default instructions
-  const instructions = customPrompt && customPrompt.trim().length > 0
-    ? customPrompt
-    : DEFAULT_INSTRUCTIONS;
-
-  return `${instructions}
-
-${JSON_FORMAT_RULES}
-
-FILES:
-${filesContent}`;
-}
-
-/**
- * Parses the LLM response into individual summaries
- */
-function parseBatchResponse(response: string): SummaryResult[] {
-  try {
-    // Try to extract JSON from the response
-    const jsonMatch = response.match(/\{[\s\S]*"summaries"[\s\S]*\}/);
-    if (!jsonMatch) {
-      logger.warn('No JSON found in batch response');
-      return [];
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as { summaries: SummaryResult[] };
-
-    if (!parsed.summaries || !Array.isArray(parsed.summaries)) {
-      logger.warn('Invalid summaries format in response');
-      return [];
-    }
-
-    // Validate and filter results
-    return parsed.summaries
-      .filter(s =>
-        typeof s.path === 'string' &&
-        typeof s.summary === 'string' &&
-        s.path.trim().length > 0 &&
-        s.summary.trim().length > 0
-      )
-      .map(s => ({
-        path: s.path.trim(),
-        summary: s.summary.trim()
-      }));
-  } catch (error) {
-    logger.warn({ error: (error as Error).message }, 'Failed to parse batch response');
-    return [];
-  }
-}
-
-/**
- * Saves batch summaries to the database
- */
-async function saveBatchSummaries(options: SaveBatchSummariesOptions): Promise<void> {
-  const { fullName, batch, summaries, modelUsed, branch } = options;
-  const summaryMap = new Map(summaries.map(s => [s.path, s.summary]));
-
-  for (const file of batch) {
-    const summary = summaryMap.get(file.path);
-    if (!summary) {
-      // LLM didn't return summary for this file, skip
-      continue;
-    }
-
-    // Store path with repo prefix for proper staleness detection
-    const storedPath = `${fullName}/${file.path}`;
-
-    await db('file_summaries')
-      .insert({
-        path: storedPath,
-        branch,
-        summary,
-        commit_hash: file.blobHash,
-        model_used: modelUsed,
-        last_updated_at: db.fn.now()
-      })
-      .onConflict(['path', 'branch'])
-      .merge({
-        summary,
-        commit_hash: file.blobHash,
-        model_used: modelUsed,
-        last_updated_at: db.fn.now()
-      });
-  }
 }

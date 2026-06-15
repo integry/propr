@@ -13,6 +13,12 @@ export interface SystemStatus {
   claudeAuth: string;
   indexing: string;
   agents: SystemAgentStatus[];
+  warnings?: SystemWarning[];
+}
+
+export interface SystemWarning {
+  type: string;
+  message: string;
 }
 
 export interface StatusResponse {
@@ -23,6 +29,7 @@ export interface StatusResponse {
   claudeAuth: string;
   indexing?: string;
   agents?: SystemAgentStatus[];
+  warnings?: SystemWarning[];
 }
 
 export interface TaskAnalysisResponse {
@@ -144,13 +151,32 @@ export interface RevertPreviewResponse {
 export interface SummarizationSettings {
   enabled: boolean;
   agent_alias: string;
+  fallback_agent_alias?: string;
   custom_prompt?: string;
   default_prompt?: string;
+  runtime?: {
+    primary_quota_failures: number;
+    warning?: {
+      mode: string;
+      message: string;
+      recorded_at: string;
+    };
+    cooldowns: Record<string, {
+      repository: string;
+      branch: string;
+      until: string;
+      reason: string;
+    }>;
+  };
 }
 
 export interface TriggerReindexAllResponse {
   success: boolean;
   repositoriesQueued: number;
+  repositoriesSkippedCooldown?: number;
+  repositoriesSkippedAlreadyQueued?: number;
+  repositoriesFailedClone?: number;
+  ignoreCooldown?: boolean;
 }
 
 export interface PostFollowupResponse {

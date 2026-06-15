@@ -34,6 +34,90 @@ interface ErrorLike {
     message?: string;
 }
 
+const QUOTA_EXHAUSTION_PATTERNS = [
+    /usage limit/i,
+    /out of quota/i,
+    /insufficient quota/i,
+    /credit balance/i,
+    /credit limit/i,
+    /billing.*quota/i,
+    /billing hard limit/i,
+    /monthly budget/i,
+    /budget exceeded/i,
+    /organization usage limit/i,
+    /spending.*limit/i
+];
+
+const QUOTA_EXCEEDED_PATTERN = /quota exceeded/i;
+
+const TRANSIENT_RATE_LIMIT_PATTERNS = [
+    /per[- ]?(minute|second|hour)/i,
+    /\b(rpm|tpm|qps)\b/i,
+    /tokens? per minute/i,
+    /requests? per minute/i
+];
+
+export function isQuotaExhaustionError(error: Error | unknown): boolean {
+    const errorText = collectErrorText(error);
+    return errorText.some(isQuotaExhaustionText);
+}
+
+function isQuotaExhaustionText(text: string): boolean {
+    if (QUOTA_EXHAUSTION_PATTERNS.some(pattern => pattern.test(text))) {
+        return true;
+    }
+    if (!QUOTA_EXCEEDED_PATTERN.test(text)) {
+        return false;
+    }
+    return !TRANSIENT_RATE_LIMIT_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function collectErrorText(error: unknown): string[] {
+    const values: string[] = [];
+    const seen = new Set<unknown>();
+    const maxDepth = 10;
+    const maxValues = 80;
+
+    function visit(value: unknown, depth = 0): void {
+        if (value === null || value === undefined || seen.has(value)) return;
+        if (typeof value === 'string') {
+            values.push(value);
+            return;
+        }
+        if (typeof value !== 'object' || depth > maxDepth || values.length >= maxValues) return;
+        seen.add(value);
+
+        const record = value as ErrorLike & Record<string, unknown>;
+        if (typeof record.message === 'string') values.push(record.message);
+        const stringified = safeToString(record);
+        if (stringified && stringified !== '[object Object]') values.push(stringified);
+
+        if (Array.isArray(value)) {
+            for (const item of value) visit(item, depth + 1);
+            return;
+        }
+
+        for (const nested of Object.values(record)) {
+            visit(nested, depth + 1);
+            if (values.length >= maxValues) break;
+        }
+    }
+
+    visit(error);
+    return values;
+}
+
+// A custom toString on an arbitrary error payload can throw or be expensive;
+// never let traversal of an error blow up the retry classification.
+function safeToString(record: Record<string, unknown>): string {
+    if (typeof record.toString !== 'function') return '';
+    try {
+        return record.toString();
+    } catch {
+        return '';
+    }
+}
+
 /**
  * Calculates delay for exponential backoff with optional jitter
  * @param attempt - Current attempt number (0-based)
@@ -59,7 +143,11 @@ export function calculateDelay(attempt: number, config: RetryConfig): number {
  * @returns Whether the error is retryable
  */
 export function isRetryableError(error: Error | unknown, config: RetryConfig): boolean {
-    const err = error as ErrorLike;
+    const err = (error ?? {}) as ErrorLike;
+
+    if (isQuotaExhaustionError(error)) {
+        return false;
+    }
 
     if (err.code && config.retryableErrors.includes(err.code)) {
         return true;
@@ -111,7 +199,14 @@ export async function withRetry<T>(
     options: RetryOptions = {},
     context: string = 'operation'
 ): Promise<T> {
-    const config: RetryConfig = { ...DEFAULT_RETRY_CONFIG, ...options };
+    const config: RetryConfig = {
+        ...DEFAULT_RETRY_CONFIG,
+        ...options,
+        retryableErrors: [
+            ...DEFAULT_RETRY_CONFIG.retryableErrors,
+            ...(options.retryableErrors ?? [])
+        ]
+    };
     const correlationId = options.correlationId ?? 'unknown';
 
     let lastError: Error | unknown;

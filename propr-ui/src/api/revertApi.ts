@@ -1,4 +1,7 @@
 import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import type { SummarizationSettings } from './proprTypes';
+
+export type { SummarizationSettings };
 
 export interface RevertParams {
   repo: string;
@@ -41,13 +44,6 @@ export const revertCommit = async (params: RevertParams): Promise<void> => {
   await handleApiResponse(response);
 };
 
-export interface SummarizationSettings {
-  enabled: boolean;
-  agent_alias: string;
-  custom_prompt?: string;
-  default_prompt?: string;
-}
-
 export const getSummarizationSettings = async (): Promise<SummarizationSettings> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/summarization`, { credentials: 'include' });
   await handleApiResponse(response);
@@ -62,9 +58,21 @@ export const updateSummarizationSettings = async (settings: SummarizationSetting
   await handleApiResponse(response);
 };
 
-export interface TriggerReindexAllResponse { success: boolean; repositoriesQueued: number; }
-export const triggerReindexAll = async (): Promise<TriggerReindexAllResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
+export interface TriggerReindexAllResponse {
+  success: boolean;
+  repositoriesQueued: number;
+  repositoriesSkippedCooldown?: number;
+  repositoriesSkippedAlreadyQueued?: number;
+  repositoriesFailedClone?: number;
+  ignoreCooldown?: boolean;
+}
+export const triggerReindexAll = async (ignoreCooldown = false): Promise<TriggerReindexAllResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/config/summarization/reindex-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ignoreCooldown }),
+    credentials: 'include'
+  });
   await handleApiResponse(response);
   return response.json();
 };

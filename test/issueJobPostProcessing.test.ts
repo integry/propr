@@ -127,7 +127,7 @@ function generateCommitMessage(
     modelName: string,
     claudeResult: ClaudeCodeResponse | null
 ): string {
-    let commitMessage = `fix(ai): Resolve issue #${issueNumber} - ${issueTitle.substring(0, 50)}\n\nImplemented by Claude Code using ${modelName} model.\n\n${claudeResult?.success ? 'Implementation completed successfully.' : 'Implementation attempted - see PR comments for details.'}`;
+    let commitMessage = `fix(ai): Resolve issue #${issueNumber} - ${issueTitle.substring(0, 50)}\n\nImplemented by ProPR AI using ${modelName} model.\n\n${claudeResult?.success ? 'Implementation completed successfully.' : 'Implementation attempted - see PR comments for details.'}`;
 
     if (claudeResult?.commitMessage) {
         commitMessage = claudeResult.commitMessage;

@@ -51,6 +51,7 @@ const SettingsPage: React.FC = () => {
     removeIgnoreKeyword,
     handleSummarizationChange,
     handleSummarizationModelChange,
+    handleSummarizationFallbackModelChange,
     handleDefaultAgentChange,
     handleReindexAll,
     handleAgentTankChange,
@@ -102,6 +103,7 @@ const SettingsPage: React.FC = () => {
               onReviewPromptChange={(e) => setSettings(prev => ({ ...prev, pr_review_prompt: e.target.value }))}
               onReviewPromptBlur={triggerSettingsSave}
               onSummarizationModelChange={handleSummarizationModelChange}
+              onSummarizationFallbackModelChange={handleSummarizationFallbackModelChange}
               onDefaultAgentChange={handleDefaultAgentChange}
             />
 

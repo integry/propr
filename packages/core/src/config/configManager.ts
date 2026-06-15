@@ -223,6 +223,26 @@ export {
 export { validatePrReviewModelValue, type PrReviewModelValidationResult } from './prReviewModelValidator.js';
 export { getConfig, saveConfig } from './configStore.js';
 export {
+    clearSummarizationCooldown,
+    clearSummarizationPrimaryQuotaFailures,
+    clearSummarizationRuntimeState,
+    clearSummarizationRuntimeStateForSettingsChange,
+    getSummarizationCooldown,
+    loadSummarizationRuntimeState,
+    loadSummarizationSettings,
+    normalizeSummarizationBranch,
+    promoteSummarizationFallbackIfNeeded,
+    recordPrimarySummarizationQuotaFailure,
+    recordPrimarySummarizationResponseFailure,
+    recordSummarizationCooldown,
+    saveSummarizationSettings,
+    isSummarizationInvalidResponseError,
+    type SummarizationCooldown,
+    type SummarizationDegradationWarning,
+    type SummarizationRuntimeState,
+    type SummarizationSettings
+} from './configManagerSummarization.js';
+export {
     type CliVersionType,
     type AgentConfig,
     DEFAULT_CONFIG_PATHS,
@@ -254,40 +274,5 @@ export async function loadAutoResolveMergeConflicts(): Promise<boolean> {
 export async function saveAutoResolveMergeConflicts(enabled: boolean): Promise<boolean> {
     await saveConfig('auto_resolve_merge_conflicts', enabled);
     logger.info({ auto_resolve_merge_conflicts: enabled }, 'Successfully saved auto-resolve merge conflicts setting');
-    return true;
-}
-
-// --- Summarization Settings ---
-
-/**
- * Settings for codebase summarization/indexing feature.
- */
-export interface SummarizationSettings {
-    enabled: boolean;
-    agent_alias: string;
-    custom_prompt?: string;
-}
-
-const DEFAULT_SUMMARIZATION_SETTINGS: SummarizationSettings = {
-    enabled: false,
-    agent_alias: '',
-    custom_prompt: ''
-};
-
-/**
- * Loads summarization settings from the database.
- */
-export async function loadSummarizationSettings(): Promise<SummarizationSettings> {
-    const settings = await getConfig<SummarizationSettings>('summarization', DEFAULT_SUMMARIZATION_SETTINGS);
-    logger.info({ summarization: settings }, 'Successfully loaded summarization settings');
-    return settings;
-}
-
-/**
- * Saves summarization settings to the database.
- */
-export async function saveSummarizationSettings(settings: SummarizationSettings): Promise<boolean> {
-    await saveConfig('summarization', settings);
-    logger.info({ summarization: settings }, 'Successfully saved summarization settings');
     return true;
 }

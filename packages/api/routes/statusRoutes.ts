@@ -1,7 +1,12 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
-import { AgentRegistry, getIndexingQueue as loadIndexingQueue, loadAgents as loadAgentConfigs } from '@propr/core';
+import {
+  AgentRegistry,
+  getIndexingQueue as loadIndexingQueue,
+  loadAgents as loadAgentConfigs,
+  loadSummarizationRuntimeState
+} from '@propr/core';
 import type { Agent, AgentConfig } from '@propr/core';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,6 +19,7 @@ interface StatusRoutesDeps {
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
   now?: () => number;
+  loadSummarizationRuntimeState?: typeof loadSummarizationRuntimeState;
 }
 
 interface IndexingStatusQueue {
@@ -41,7 +47,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     getIndexingQueue = loadIndexingQueue,
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
-    now = Date.now
+    now = Date.now,
+    loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState
   } = deps;
   let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
@@ -58,6 +65,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
           githubAuth: 'connected',
           claudeAuth: 'connected',
           indexing: 'idle',
+          warnings: [],
           agents: [{
             id: 'default-claude-agent',
             type: 'claude',
@@ -77,6 +85,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         githubAuth: 'unknown',
         claudeAuth: 'unknown',
         indexing: 'unknown',
+        warnings: [],
         agents: [],
         timestamp: new Date().toISOString()
       };
@@ -106,6 +115,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         ? 'connected'
         : 'disconnected';
       status.indexing = await getIndexingStatus(getIndexingQueue);
+      status.warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
 
       res.json(status);
     } catch (error) {
@@ -129,6 +139,51 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     };
     return statuses;
   }
+}
+
+async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRuntimeState): Promise<Array<{ type: string; message: string }>> {
+  try {
+    const state = await loadRuntimeState();
+    const warnings: Array<{ type: string; message: string }> = [];
+    const maxCooldownWarnings = 5;
+    if (state.warning && state.warning.mode !== 'cooldown') {
+      warnings.push({ type: `summarization_${state.warning.mode}`, message: state.warning.message });
+    }
+    // Surface the soonest-expiring cooldowns first so operators see what will
+    // resume next; the rest are summarized in the overflow warning below.
+    const cooldowns = Object.values(state.cooldowns || {})
+      .sort((left, right) => Date.parse(left.until) - Date.parse(right.until));
+    for (const cooldown of cooldowns.slice(0, maxCooldownWarnings)) {
+      warnings.push({
+        type: 'summarization_cooldown',
+        message: `${cooldown.repository} (${cooldown.branch}) summarization is paused until ${formatCooldownUntil(cooldown.until)}: ${cooldown.reason}`
+      });
+    }
+    if (cooldowns.length > maxCooldownWarnings) {
+      warnings.push({
+        type: 'summarization_cooldown_summary',
+        message: `${cooldowns.length - maxCooldownWarnings} additional repositories are in summarization cooldown.`
+      });
+    }
+    return warnings;
+  } catch (error) {
+    console.error('Error loading summarization warnings:', error);
+    return [];
+  }
+}
+
+function formatCooldownUntil(until: string): string {
+  const parsed = new Date(until);
+  if (Number.isNaN(parsed.getTime())) return until;
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'UTC',
+    timeZoneName: 'short'
+  });
 }
 
 async function getAgentStatuses(

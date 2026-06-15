@@ -20,7 +20,7 @@ function resolveCommitMessage(commitMessage: string | CommitMessageObject, issue
         return commitMessage;
     }
     const shortTitle = issueTitle ? issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
-    return `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}\n\nImplemented by Claude Code. Full conversation log in PR comment.`;
+    return `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`;
 }
 
 describe('resolveCommitMessage', () => {
@@ -74,7 +74,7 @@ describe('resolveCommitMessage', () => {
             const result = resolveCommitMessage(commitMessage, 123, 'Fix login bug');
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #123 - Fix login bug\n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #123 - Fix login bug\n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
 
@@ -88,7 +88,7 @@ describe('resolveCommitMessage', () => {
             assert.strictEqual(expectedTruncatedTitle, 'This is a very long issue title that exceeds the f');
             assert.strictEqual(
                 result,
-                `fix(ai): Resolve issue #456 - ${expectedTruncatedTitle}\n\nImplemented by Claude Code. Full conversation log in PR comment.`
+                `fix(ai): Resolve issue #456 - ${expectedTruncatedTitle}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`
             );
         });
 
@@ -97,7 +97,7 @@ describe('resolveCommitMessage', () => {
             const result = resolveCommitMessage(commitMessage, 789);
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #789 - issue fix\n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #789 - issue fix\n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
 
@@ -106,7 +106,7 @@ describe('resolveCommitMessage', () => {
             const result = resolveCommitMessage(commitMessage, 101, '');
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #101 - issue fix\n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #101 - issue fix\n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
 
@@ -116,7 +116,7 @@ describe('resolveCommitMessage', () => {
             const result = resolveCommitMessage(commitMessage, 202, titleWithExtraSpaces);
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #202 - Fix multiple spaces in title\n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #202 - Fix multiple spaces in title\n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
 
@@ -126,7 +126,7 @@ describe('resolveCommitMessage', () => {
             const result = resolveCommitMessage(commitMessage, 303, titleWithWhitespace);
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #303 - Fix bug with padding\n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #303 - Fix bug with padding\n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
 
@@ -135,7 +135,7 @@ describe('resolveCommitMessage', () => {
             const result = resolveCommitMessage(commitMessage, undefined, 'Some title');
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #undefined - Some title\n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #undefined - Some title\n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
 
@@ -147,7 +147,7 @@ describe('resolveCommitMessage', () => {
             const result = resolveCommitMessage(commitMessage, 404, exactTitle);
             assert.strictEqual(
                 result,
-                `fix(ai): Resolve issue #404 - ${exactTitle}\n\nImplemented by Claude Code. Full conversation log in PR comment.`
+                `fix(ai): Resolve issue #404 - ${exactTitle}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`
             );
         });
 
@@ -161,7 +161,7 @@ describe('resolveCommitMessage', () => {
             assert.strictEqual(expectedTruncated.length, 50);
             assert.strictEqual(
                 result,
-                `fix(ai): Resolve issue #505 - ${expectedTruncated}\n\nImplemented by Claude Code. Full conversation log in PR comment.`
+                `fix(ai): Resolve issue #505 - ${expectedTruncated}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`
             );
         });
     });
@@ -175,7 +175,7 @@ describe('resolveCommitMessage', () => {
             // and since it's an object (not string), it goes to fallback
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #606 - Fallback title\n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #606 - Fallback title\n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
 
@@ -186,7 +186,7 @@ describe('resolveCommitMessage', () => {
             // However, the ternary check `issueTitle ?` passes, so it uses substring(0,50).replace().trim() which is ''
             assert.strictEqual(
                 result,
-                'fix(ai): Resolve issue #808 - \n\nImplemented by Claude Code. Full conversation log in PR comment.'
+                'fix(ai): Resolve issue #808 - \n\nImplemented by ProPR AI. Full conversation log in PR comment.'
             );
         });
     });

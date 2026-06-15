@@ -1,6 +1,6 @@
 import { test, describe, after, mock, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { calculateDelay, isRetryableError, withRetry } from '../packages/core/src/utils/retryHandler.js';
+import { calculateDelay, isQuotaExhaustionError, isRetryableError, withRetry } from '../packages/core/src/utils/retryHandler.js';
 import type { RetryConfig, RetryOptions } from '../packages/core/src/utils/retryHandler.js';
 
 /**
@@ -283,6 +283,31 @@ describe('calculateDelay', () => {
     });
 });
 
+describe('isQuotaExhaustionError', () => {
+    test('detects quota exhaustion in nested SDK payload arrays', () => {
+        const error = {
+            response: {
+                data: {
+                    details: [
+                        { message: 'temporary wrapper' },
+                        { raw: { errors: [{ message: 'insufficient quota. Try again after upgrading.' }] } }
+                    ]
+                }
+            }
+        };
+
+        assert.strictEqual(isQuotaExhaustionError(error), true);
+        assert.strictEqual(isRetryableError(error, {
+            maxAttempts: 3,
+            baseDelay: 1000,
+            maxDelay: 30000,
+            exponentialBase: 2,
+            jitter: false,
+            retryableErrors: []
+        }), false);
+    });
+});
+
 /**
  * Unit tests for isRetryableError function
  *
@@ -385,6 +410,73 @@ describe('isRetryableError', () => {
         test('returns true for 429 Too Many Requests', () => {
             const error = { status: 429, message: 'Too Many Requests' };
             assert.strictEqual(isRetryableError(error, baseConfig), true);
+        });
+
+        test('returns false for quota exhaustion even when message says try again', () => {
+            const quotaMessages = [
+                'usage limit reached, try again later',
+                'quota exceeded; please try again',
+                'out of quota, try again tomorrow',
+                'insufficient quota. Try again after upgrading.',
+                'billing hard limit reached',
+                'monthly budget exceeded for this organization',
+                'credit limit exceeded',
+                'organization usage limit reached'
+            ];
+            for (const message of quotaMessages) {
+                assert.strictEqual(
+                    isRetryableError({ status: 429, message }, baseConfig),
+                    false,
+                    message
+                );
+            }
+        });
+
+        test('returns true for transient quota-shaped rate limits', () => {
+            const quotaMessages = [
+                'quota exceeded for tokens per minute, please try again',
+                'TPM quota exceeded; retry after 20 seconds',
+                'requests per minute quota exceeded'
+            ];
+            for (const message of quotaMessages) {
+                assert.strictEqual(
+                    isRetryableError({ status: 429, message }, baseConfig),
+                    true,
+                    message
+                );
+            }
+        });
+
+        test('detects quota exhaustion in nested SDK error payloads', () => {
+            const error = {
+                status: 429,
+                message: 'Request failed',
+                response: {
+                    data: {
+                        error: {
+                            message: 'insufficient quota. Try again after upgrading.'
+                        }
+                    }
+                }
+            };
+
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
+        });
+
+        test('does not let transient rate-limit wording hide quota exhaustion payloads', () => {
+            const error = {
+                status: 429,
+                message: 'requests per minute quota exceeded; try again shortly',
+                response: {
+                    data: {
+                        error: {
+                            message: 'insufficient quota. Upgrade billing to continue.'
+                        }
+                    }
+                }
+            };
+
+            assert.strictEqual(isRetryableError(error, baseConfig), false);
         });
 
         test('returns true for 500 Internal Server Error', () => {
@@ -569,16 +661,12 @@ describe('isRetryableError', () => {
     });
 
     describe('edge cases', () => {
-        test('throws on null error (implementation limitation)', () => {
-            // Note: The current implementation does not handle null/undefined gracefully
-            // It throws because it tries to access .code on null
-            assert.throws(() => isRetryableError(null, baseConfig), TypeError);
+        test('returns false for null error', () => {
+            assert.strictEqual(isRetryableError(null, baseConfig), false);
         });
 
-        test('throws on undefined error (implementation limitation)', () => {
-            // Note: The current implementation does not handle null/undefined gracefully
-            // It throws because it tries to access .code on undefined
-            assert.throws(() => isRetryableError(undefined, baseConfig), TypeError);
+        test('returns false for undefined error', () => {
+            assert.strictEqual(isRetryableError(undefined, baseConfig), false);
         });
 
         test('handles error with no properties', () => {

@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { setupAuthenticatedRemote } from './repoBranching.js';
+import { AI_COMMIT_AUTHOR } from './commitOperations.js';
 
 export interface SeedCommitOptions {
     localRepoPath: string;
@@ -69,8 +70,8 @@ export async function ensureSeedCommitIfEmpty(
         const gitignorePath = path.join(localRepoPath, '.gitignore');
         await fs.writeFile(gitignorePath, DEFAULT_GITIGNORE);
 
-        await git.addConfig('user.email', 'bot@propr.dev');
-        await git.addConfig('user.name', 'ProPR Bot');
+        await git.addConfig('user.email', AI_COMMIT_AUTHOR.email);
+        await git.addConfig('user.name', AI_COMMIT_AUTHOR.name);
 
         await git.checkoutLocalBranch(defaultBranch);
         await git.add([readmePath, gitignorePath]);

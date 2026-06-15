@@ -32,7 +32,7 @@ export function validateIndexingInput(body: unknown): string | null {
     return 'request body must be a JSON object';
   }
 
-  const { repository, baseBranch, fullReindex } = body;
+  const { repository, baseBranch, fullReindex, ignoreCooldown } = body;
   const repositoryError = validateRepositoryName(repository);
   if (repositoryError) {
     return repositoryError;
@@ -42,6 +42,9 @@ export function validateIndexingInput(body: unknown): string | null {
   }
   if (fullReindex !== undefined && typeof fullReindex !== 'boolean') {
     return 'fullReindex must be a boolean';
+  }
+  if (ignoreCooldown !== undefined && typeof ignoreCooldown !== 'boolean') {
+    return 'ignoreCooldown must be a boolean';
   }
 
   return null;
