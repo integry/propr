@@ -49,19 +49,23 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
+      // Report the normalized branch the job was actually queued under so clients
+      // and status matching stay consistent when baseBranch is omitted/whitespace.
+      const effectiveBranch = result.baseBranch ?? 'HEAD';
+
       // Best-effort optimistic status for newly accepted jobs only.
       try {
-        await publishIndexingStatus(repository, baseBranch || 'HEAD', 'indexing');
+        await publishIndexingStatus(repository, effectiveBranch, 'indexing');
       } catch (pubErr) {
         console.warn('Failed to publish optimistic indexing status:', pubErr);
       }
 
       await logActivityHelper(
-        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository}${baseBranch ? ` (branch: ${baseBranch})` : ''}`,
+        `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository} (branch: ${effectiveBranch})`,
         'indexing-trigger', 'indexing_triggered', req.user?.username
       );
 
-      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch, ignoreCooldown });
+      res.json({ success: true, jobId: result.jobId, correlationId: result.correlationId, repository, fullReindex: shouldRunFullReindex, baseBranch: effectiveBranch, ignoreCooldown });
     } catch (error) {
       console.error('Error in /api/config/repos/trigger-indexing POST:', error);
       res.status(500).json({ error: 'Failed to trigger indexing' });
@@ -260,8 +264,14 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     // Clear stale cooldown/warning runtime state BEFORE persisting the new model
     // settings. If clearing fails we return 500 without having saved the new
     // settings, so we never leave stale runtime state attached to fresh config.
+    // Only the (now-stale) quota-failure bookkeeping and cooldowns tied to a model
+    // that is no longer configured are cleared — cooldowns for still-active models
+    // are preserved so one settings change can't resume every paused repository.
     if (modelAliasesChanged) {
-      await configManager.clearSummarizationRuntimeState();
+      await configManager.clearSummarizationRuntimeStateForSettingsChange({
+        activePrimaryAlias: settings.agent_alias,
+        activeFallbackAlias: settings.fallback_agent_alias
+      });
     }
     await configManager.saveSummarizationSettings(settings);
     await publishConfigUpdate('summarization_settings_update');

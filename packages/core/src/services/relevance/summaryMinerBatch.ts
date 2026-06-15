@@ -7,6 +7,7 @@ import { saveBatchSummaries, logFileBatchCall, type SummaryResult } from './summ
 import {
   clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
+  promoteSummarizationFallbackIfNeeded,
   recordPrimarySummarizationQuotaFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
@@ -170,35 +171,11 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
     return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
   } catch (primaryError) {
     const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
+    // Only quota/usage-limit exhaustion triggers the fallback model. Other
+    // failures (malformed prompts, parser failures, transient provider outages,
+    // agent bugs) must surface as-is instead of silently switching models.
     if (!isQuotaExhaustionError(primaryError)) {
-      if (!fallbackAgent || !fallbackAgentAliasSetting) {
-        throw primaryError;
-      }
-
-      log.warn({
-        error: (primaryError as Error).message,
-        primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgent.config.alias,
-        fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-      }, 'Primary summarization failed; retrying batch with fallback');
-
-      const results = await analyzeBatchWithAgent({
-        prompt,
-        batch,
-        agent: fallbackAgent,
-        model: fallbackModelUsed ?? fallbackModelOverride,
-        context: `batch_summarization_fallback:${fullName}`,
-        fullName,
-        retryOptions: SUMMARIZATION_FALLBACK_RETRY
-      });
-      return {
-        results,
-        agentUsed: fallbackAgent,
-        modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
-        fallbackUsed: true,
-        primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgentAliasSetting
-      };
+      throw primaryError;
     }
 
     if (!fallbackAgent || !fallbackAgentAliasSetting) {
@@ -236,6 +213,8 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         fallbackAgentAlias: fallbackAgentAliasSetting,
         clearDegradationWarning: true
       });
+      // Promote only now that the fallback has proven it can summarize this batch.
+      await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
       return {
         results,
         agentUsed: fallbackAgent,

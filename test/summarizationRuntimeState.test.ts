@@ -13,10 +13,12 @@ const {
   loadSummarizationSettings,
   loadSummarizationRuntimeState,
   recordPrimarySummarizationQuotaFailure,
+  promoteSummarizationFallbackIfNeeded,
   recordSummarizationCooldown,
   getSummarizationCooldown,
   clearSummarizationCooldown,
-  clearSummarizationPrimaryQuotaFailures
+  clearSummarizationPrimaryQuotaFailures,
+  clearSummarizationRuntimeStateForSettingsChange
 } = await import('../packages/core/src/index.js');
 
 describe('summarization fallback runtime state', () => {
@@ -44,16 +46,27 @@ describe('summarization fallback runtime state', () => {
       primaryAgentAlias: 'primary:gpt-expensive',
       fallbackAgentAlias: 'fallback:gpt-cheap'
     });
-    assert.equal(first.promoted, false);
     assert.equal(first.failureCount, 1);
+
+    // Below threshold: promotion is a no-op until the fallback has proven itself.
+    const earlyPromotion = await promoteSummarizationFallbackIfNeeded({
+      primaryAgentAlias: 'primary:gpt-expensive',
+      fallbackAgentAlias: 'fallback:gpt-cheap'
+    });
+    assert.equal(earlyPromotion.promoted, false);
 
     const second = await recordPrimarySummarizationQuotaFailure({
       primaryAgentAlias: 'primary:gpt-expensive',
       fallbackAgentAlias: 'fallback:gpt-cheap'
     });
-    assert.equal(second.promoted, true);
-    assert.equal(second.failureCount, 0);
-    assert.equal(second.warning.mode, 'fallback_promoted');
+    assert.equal(second.failureCount, 2);
+
+    // Promotion only happens once a fallback summary has actually succeeded.
+    const promotion = await promoteSummarizationFallbackIfNeeded({
+      primaryAgentAlias: 'primary:gpt-expensive',
+      fallbackAgentAlias: 'fallback:gpt-cheap'
+    });
+    assert.equal(promotion.promoted, true);
 
     const settings = await loadSummarizationSettings();
     assert.equal(settings.agent_alias, 'fallback:gpt-cheap');
@@ -82,7 +95,11 @@ describe('summarization fallback runtime state', () => {
       primaryAgentAlias: 'primary:gpt-expensive',
       fallbackAgentAlias: 'fallback:gpt-cheap'
     });
-    const result = await recordPrimarySummarizationQuotaFailure({
+    await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary:gpt-expensive',
+      fallbackAgentAlias: 'fallback:gpt-cheap'
+    });
+    const result = await promoteSummarizationFallbackIfNeeded({
       primaryAgentAlias: 'primary:gpt-expensive',
       fallbackAgentAlias: 'fallback:gpt-cheap'
     });
@@ -111,7 +128,11 @@ describe('summarization fallback runtime state', () => {
       updated_at: db.fn.now()
     });
 
-    const result = await recordPrimarySummarizationQuotaFailure({
+    await recordPrimarySummarizationQuotaFailure({
+      primaryAgentAlias: 'primary',
+      fallbackAgentAlias: 'fallback'
+    });
+    const result = await promoteSummarizationFallbackIfNeeded({
       primaryAgentAlias: 'primary',
       fallbackAgentAlias: 'fallback'
     });
@@ -119,6 +140,29 @@ describe('summarization fallback runtime state', () => {
     assert.equal(result.promoted, true);
     const state = await loadSummarizationRuntimeState();
     assert.deepEqual(state.primary_quota_failures_by_alias, {});
+  });
+
+  test('recording failures alone never promotes; promotion is gated on fallback success', async () => {
+    await saveSummarizationSettings({
+      enabled: true,
+      agent_alias: 'primary',
+      fallback_agent_alias: 'fallback',
+      custom_prompt: ''
+    });
+
+    // Reach the threshold purely via recorded failures. Promotion is only driven
+    // by promoteSummarizationFallbackIfNeeded() after a fallback summary actually
+    // succeeds, so the active model must not change here.
+    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias: 'primary', fallbackAgentAlias: 'fallback' });
+    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias: 'primary', fallbackAgentAlias: 'fallback' });
+
+    const settings = await loadSummarizationSettings();
+    assert.equal(settings.agent_alias, 'primary');
+    assert.equal(settings.fallback_agent_alias, 'fallback');
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(state.primary_quota_failures, 2);
+    assert.equal(state.warning?.mode, 'fallback_degraded');
   });
 
   test('records and returns repository branch cooldown', async () => {
@@ -226,6 +270,36 @@ describe('summarization fallback runtime state', () => {
     const state = await loadSummarizationRuntimeState();
     assert.equal(state.warning, undefined);
     assert.deepEqual(state.cooldowns, {});
+  });
+
+  test('settings-change clear preserves cooldowns for still-active models', async () => {
+    await recordSummarizationCooldown({
+      repository: 'integry/active',
+      branch: 'main',
+      primaryAgentAlias: 'primary',
+      fallbackAgentAlias: 'fallback'
+    });
+    await recordSummarizationCooldown({
+      repository: 'integry/removed',
+      branch: 'main',
+      primaryAgentAlias: 'removed-primary',
+      fallbackAgentAlias: 'removed-fallback'
+    });
+    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias: 'primary', fallbackAgentAlias: 'fallback' });
+
+    await clearSummarizationRuntimeStateForSettingsChange({
+      activePrimaryAlias: 'primary',
+      activeFallbackAlias: 'fallback'
+    });
+
+    const state = await loadSummarizationRuntimeState();
+    // Cooldown for the still-configured 'primary' model survives; the one tied to
+    // the removed model is cleared. Quota-failure counters are reset.
+    assert.equal(Object.keys(state.cooldowns).length, 1);
+    assert.ok(await getSummarizationCooldown('integry/active', 'main'));
+    assert.equal(await getSummarizationCooldown('integry/removed', 'main'), null);
+    assert.equal(state.primary_quota_failures, 0);
+    assert.deepEqual(state.primary_quota_failures_by_alias, {});
   });
 
   test('cooldown clear preserves newer cooldown with different model aliases', async () => {

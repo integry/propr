@@ -6,6 +6,7 @@ import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../util
 import {
   clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
+  promoteSummarizationFallbackIfNeeded,
   recordPrimarySummarizationQuotaFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
@@ -168,11 +169,9 @@ async function handlePrimaryDirectoryFailure(
 ): Promise<void> {
   const { agent, primaryAgentAliasSetting, fallbackAgent, fallbackAgentAliasSetting, fullName, branch } = options;
   const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
-  if (!isQuotaExhaustionError(primaryError)) {
-    if (!fallbackAgent || !fallbackAgentAliasSetting) throw primaryError;
-    await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, false);
-    return;
-  }
+  // Only quota/usage-limit exhaustion switches to the fallback model. Other
+  // failures (malformed prompts, parser failures, transient outages) propagate.
+  if (!isQuotaExhaustionError(primaryError)) throw primaryError;
 
   if (!fallbackAgent || !fallbackAgentAliasSetting) {
     await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
@@ -185,27 +184,22 @@ async function handlePrimaryDirectoryFailure(
     throw new SummarizationCooldownRecordedError(primaryError);
   }
 
-  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, true);
+  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options);
 }
 
 async function analyzeDirectoryBatchWithFallbackAgent(
   primaryError: unknown,
   primaryAgentAlias: string,
-  options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState },
-  primaryWasQuotaLimited: boolean
+  options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState }
 ): Promise<void> {
   const { prompt, directories, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch, log, state } = options;
-  if (primaryWasQuotaLimited) {
-    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
-  }
+  await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
   log.warn({
     error: (primaryError as Error).message,
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgent?.config.alias,
     fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-  }, primaryWasQuotaLimited
-    ? 'Primary directory summarization model quota-limited; retrying batch with fallback'
-    : 'Primary directory summarization failed; retrying batch with fallback');
+  }, 'Primary directory summarization model quota-limited; retrying batch with fallback');
 
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
@@ -222,17 +216,18 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
     state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
-    if (primaryWasQuotaLimited) {
-      await clearSummarizationCooldown(fullName, branch, {
-        primaryAgentAlias,
-        fallbackAgentAlias: fallbackAgentAliasSetting,
-        clearDegradationWarning: true
-      });
+    await clearSummarizationCooldown(fullName, branch, {
+      primaryAgentAlias,
+      fallbackAgentAlias: fallbackAgentAliasSetting,
+      clearDegradationWarning: true
+    });
+    // Promote only now that the fallback has proven it can summarize this batch.
+    // The caller (handlePrimaryDirectoryFailure) only reaches here with a
+    // configured fallback alias, so this guard is just for the type narrowing.
+    if (fallbackAgentAliasSetting) {
+      await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
     }
   } catch (fallbackError) {
-    if (!primaryWasQuotaLimited) {
-      throw fallbackError;
-    }
     await recordSummarizationCooldown({
       repository: fullName,
       branch,

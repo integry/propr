@@ -3,6 +3,21 @@ import { Redis } from 'ioredis';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { getConfig, getConfigWithClient, saveConfig } from './configStore.js';
+import {
+    DEFAULT_SUMMARIZATION_RUNTIME_STATE,
+    clearCooldownsForRemovedAliases,
+    clearMatchingCooldown,
+    clearMatchingCooldownWarning,
+    clearMatchingDegradationWarning,
+    clearPrimaryQuotaState,
+    clearStaleQuotaFailureBookkeeping,
+    getSummarizationCooldownKey,
+    hasClearablePrimaryQuotaState,
+    normalizeSummarizationBranch,
+    normalizeSummarizationRuntimeState
+} from './configManagerSummarizationState.js';
+
+export { normalizeSummarizationBranch } from './configManagerSummarizationState.js';
 
 export interface SummarizationSettings {
     enabled: boolean;
@@ -38,20 +53,13 @@ export interface SummarizationRuntimeState {
 }
 
 const DEFAULT_SUMMARIZATION_SETTINGS: SummarizationSettings = { enabled: false, agent_alias: '', fallback_agent_alias: '', custom_prompt: '' };
-const DEFAULT_SUMMARIZATION_RUNTIME_STATE: SummarizationRuntimeState = { primary_quota_failures: 0, primary_quota_failures_by_alias: {}, cooldowns: {} };
 const SUMMARIZATION_RUNTIME_STATE_KEY = 'summarization_runtime_state';
 const SUMMARIZATION_RUNTIME_STATE_MUTATION_RETRIES = 3;
 const CONFIG_EVENT_CHANNEL = 'system:config:events';
 let summarizationRuntimeStateMutation = Promise.resolve();
 
-export function normalizeSummarizationBranch(branch?: string): string { return branch?.trim() || 'HEAD'; }
-
 function normalizeSummarizationAgentAliasSetting(value?: string): string {
     return value?.trim() || '';
-}
-
-function getSummarizationCooldownKey(repository: string, branch?: string): string {
-    return JSON.stringify([repository, normalizeSummarizationBranch(branch)]);
 }
 
 function getPromotionThreshold(): number {
@@ -92,25 +100,6 @@ function normalizeSummarizationSettings(settings: Partial<SummarizationSettings>
 export async function loadSummarizationRuntimeState(): Promise<SummarizationRuntimeState> {
     const state = await getConfig<SummarizationRuntimeState>(SUMMARIZATION_RUNTIME_STATE_KEY, DEFAULT_SUMMARIZATION_RUNTIME_STATE);
     return normalizeSummarizationRuntimeState(state);
-}
-
-function normalizeSummarizationRuntimeState(state: Partial<SummarizationRuntimeState> = {}): SummarizationRuntimeState {
-    const now = Date.now();
-    const cooldowns = Object.fromEntries(Object.entries(state.cooldowns || {}).filter(([, cooldown]) => Date.parse(cooldown.until) > now));
-    const warning = normalizeSummarizationWarning(state.warning, cooldowns, now);
-    return { ...DEFAULT_SUMMARIZATION_RUNTIME_STATE, ...state, warning, cooldowns, primary_quota_failures: state.primary_quota_failures || 0, primary_quota_failures_by_alias: state.primary_quota_failures_by_alias || {} };
-}
-
-function normalizeSummarizationWarning(
-    warning: SummarizationDegradationWarning | undefined,
-    cooldowns: Record<string, SummarizationCooldown>,
-    now: number
-): SummarizationDegradationWarning | undefined {
-    if (!warning) return undefined;
-    if (warning.mode !== 'cooldown') return warning;
-
-    const matchingCooldown = Object.values(cooldowns).find(cooldown => cooldown.repository === warning.repository && cooldown.branch === normalizeSummarizationBranch(warning.branch) && Date.parse(cooldown.until) > now);
-    return matchingCooldown ? warning : undefined;
 }
 
 async function mutateSummarizationRuntimeState<T>(
@@ -223,25 +212,44 @@ export async function recordSummarizationCooldown(options: {
 export async function recordPrimarySummarizationQuotaFailure(options: {
     primaryAgentAlias: string;
     fallbackAgentAlias?: string;
-}): Promise<{ promoted: boolean; failureCount: number; warning: SummarizationDegradationWarning }> {
-    const result = await mutateSummarizationRuntimeState(async (state, client) => {
+}): Promise<{ failureCount: number; warning: SummarizationDegradationWarning }> {
+    const result = await mutateSummarizationRuntimeState(async state => {
         const failuresByAlias = state.primary_quota_failures_by_alias || {};
         const failureCount = (failuresByAlias[options.primaryAgentAlias] || 0) + 1;
         failuresByAlias[options.primaryAgentAlias] = failureCount;
         state.primary_quota_failures_by_alias = failuresByAlias;
         state.primary_quota_failures = failureCount;
         const warning = buildQuotaFailureWarning(options);
-        let promoted = false;
-
-        if (options.fallbackAgentAlias && failureCount >= getPromotionThreshold()) {
-            promoted = await promoteFallbackIfCurrentPrimary({ options, failuresByAlias, state, warning, client });
-        }
-
         state.warning = warning;
-        return { result: { promoted, failureCount: state.primary_quota_failures, warning }, save: true };
+        return { result: { failureCount, warning }, save: true };
     });
-    if (result.promoted) await publishSummarizationSettingsUpdate();
-    logger.warn({ failureCount: result.failureCount, promoted: result.promoted, ...options }, 'Recorded summarization primary quota failure');
+    logger.warn({ failureCount: result.failureCount, ...options }, 'Recorded summarization primary quota failure');
+    return result;
+}
+
+// Promotion is deliberately separated from failure recording: the fallback is
+// only swapped in as the active primary AFTER it has actually produced a
+// successful summary for this batch. Promoting at failure-record time (before
+// the fallback attempt) risks installing a model that is itself broken or also
+// quota-limited, and recording cooldowns against an already-promoted pair.
+export async function promoteSummarizationFallbackIfNeeded(options: {
+    primaryAgentAlias: string;
+    fallbackAgentAlias: string;
+}): Promise<{ promoted: boolean }> {
+    const result = await mutateSummarizationRuntimeState(async (state, client) => {
+        const failuresByAlias = state.primary_quota_failures_by_alias || {};
+        const failureCount = failuresByAlias[options.primaryAgentAlias] || 0;
+        if (failureCount < getPromotionThreshold()) return { result: { promoted: false }, save: false };
+
+        const warning = buildQuotaFailureWarning(options);
+        const promoted = await promoteFallbackIfCurrentPrimary({ options, failuresByAlias, state, warning, client });
+        if (promoted) state.warning = warning;
+        return { result: { promoted }, save: promoted };
+    });
+    if (result.promoted) {
+        await publishSummarizationSettingsUpdate();
+        logger.warn({ ...options }, 'Promoted summarization fallback model after repeated primary quota failures');
+    }
     return result;
 }
 
@@ -324,12 +332,6 @@ export async function clearSummarizationPrimaryQuotaFailures(options: {
     });
 }
 
-function hasClearablePrimaryQuotaState(state: SummarizationRuntimeState): boolean {
-    const hasFailures = state.primary_quota_failures !== 0 || Object.keys(state.primary_quota_failures_by_alias || {}).length > 0;
-    const hasClearableWarning = !!state.warning && state.warning.mode !== 'cooldown';
-    return hasFailures || hasClearableWarning;
-}
-
 export async function clearSummarizationCooldown(
     repository: string,
     branch?: string,
@@ -341,103 +343,6 @@ export async function clearSummarizationCooldown(
         const degradationWarningCleared = options.clearDegradationWarning ? clearMatchingDegradationWarning(state, options) : false;
         return { result: undefined, save: cooldownCleared || cooldownWarningCleared || degradationWarningCleared };
     });
-}
-
-function clearPrimaryQuotaState(
-    state: SummarizationRuntimeState,
-    options: { primaryAgentAlias?: string; repository?: string; branch?: string }
-): boolean {
-    const failuresByAlias = state.primary_quota_failures_by_alias || {};
-    const hadFailureState = clearAliasFailureState(state, failuresByAlias, options.primaryAgentAlias);
-    const warningCleared = clearMatchingWarning(state, options);
-    return hadFailureState || warningCleared;
-}
-
-function clearAliasFailureState(
-    state: SummarizationRuntimeState,
-    failuresByAlias: Record<string, number>,
-    primaryAgentAlias?: string
-): boolean {
-    const hadFailures = state.primary_quota_failures !== 0 || Object.keys(failuresByAlias).length > 0;
-    if (!primaryAgentAlias) {
-        state.primary_quota_failures = 0;
-        state.primary_quota_failures_by_alias = {};
-        return hadFailures;
-    }
-
-    const hadAliasFailure = failuresByAlias[primaryAgentAlias] !== undefined;
-    delete failuresByAlias[primaryAgentAlias];
-    const remainingCounts = Object.values(failuresByAlias);
-    state.primary_quota_failures = remainingCounts.length > 0 ? Math.max(...remainingCounts) : 0;
-    state.primary_quota_failures_by_alias = failuresByAlias;
-    return hadAliasFailure;
-}
-
-function clearMatchingCooldown(
-    state: SummarizationRuntimeState,
-    options: { repository?: string; branch?: string; primaryAgentAlias?: string; fallbackAgentAlias?: string }
-): boolean {
-    if (!options.repository) return false;
-    const cooldownKey = getSummarizationCooldownKey(options.repository, options.branch);
-    const cooldown = state.cooldowns[cooldownKey];
-    if (!cooldown) return false;
-    if (!cooldownAliasesMatch(cooldown, options)) return false;
-    delete state.cooldowns[cooldownKey];
-    return true;
-}
-
-function cooldownAliasesMatch(
-    cooldown: SummarizationCooldown,
-    options: { primaryAgentAlias?: string; fallbackAgentAlias?: string }
-): boolean {
-    if (options.primaryAgentAlias && cooldown.primary_agent_alias !== options.primaryAgentAlias) return false;
-    if (options.fallbackAgentAlias && cooldown.fallback_agent_alias !== options.fallbackAgentAlias) return false;
-    return true;
-}
-
-function clearMatchingWarning(
-    state: SummarizationRuntimeState,
-    options: { primaryAgentAlias?: string; repository?: string; branch?: string }
-): boolean {
-    if (!state.warning) return false;
-    if (state.warning.mode !== 'cooldown' && (!options.primaryAgentAlias || state.warning.primary_agent_alias === options.primaryAgentAlias)) {
-        delete state.warning;
-        return true;
-    }
-    return false;
-}
-
-function clearMatchingCooldownWarning(
-    state: SummarizationRuntimeState,
-    options: { repository: string; branch?: string; primaryAgentAlias?: string; fallbackAgentAlias?: string }
-): boolean {
-    if (!state.warning) return false;
-    if (state.warning.mode !== 'cooldown') return false;
-    if (state.warning.repository !== options.repository) return false;
-    if (normalizeSummarizationBranch(state.warning.branch) !== normalizeSummarizationBranch(options.branch)) return false;
-    if (!warningAliasesMatch(state.warning, options)) return false;
-    delete state.warning;
-    return true;
-}
-
-function clearMatchingDegradationWarning(
-    state: SummarizationRuntimeState,
-    options: { primaryAgentAlias?: string; fallbackAgentAlias?: string }
-): boolean {
-    if (!state.warning) return false;
-    if (state.warning.mode !== 'fallback_degraded') return false;
-    if (!warningAliasesMatch(state.warning, options)) return false;
-    delete state.warning;
-    return true;
-}
-
-function warningAliasesMatch(
-    warning: SummarizationDegradationWarning,
-    options: { primaryAgentAlias?: string; fallbackAgentAlias?: string }
-): boolean {
-    if (options.primaryAgentAlias && warning.primary_agent_alias !== options.primaryAgentAlias) return false;
-    if (options.fallbackAgentAlias && warning.fallback_agent_alias !== options.fallbackAgentAlias) return false;
-    return true;
 }
 
 export async function clearSummarizationRuntimeState(): Promise<void> {
@@ -452,5 +357,23 @@ export async function clearSummarizationRuntimeState(): Promise<void> {
         state.cooldowns = {};
         delete state.warning;
         return { result: undefined, save: true };
+    });
+}
+
+// Called when the summarization model aliases change. Unlike
+// clearSummarizationRuntimeState(), this does NOT wipe every repository cooldown:
+// a single settings tweak must not stampede all paused repositories back into the
+// quota loop. It only resets the (account-global, now-stale) quota-failure
+// bookkeeping and resumes repositories whose pause was caused by a model that is
+// no longer configured.
+export async function clearSummarizationRuntimeStateForSettingsChange(options: {
+    activePrimaryAlias?: string;
+    activeFallbackAlias?: string;
+} = {}): Promise<void> {
+    const activeAliases = new Set([options.activePrimaryAlias, options.activeFallbackAlias].filter((alias): alias is string => !!alias));
+    await mutateSummarizationRuntimeState(async state => {
+        const bookkeepingCleared = clearStaleQuotaFailureBookkeeping(state);
+        const cooldownsCleared = clearCooldownsForRemovedAliases(state, activeAliases);
+        return { result: undefined, save: bookkeepingCleared || cooldownsCleared };
     });
 }

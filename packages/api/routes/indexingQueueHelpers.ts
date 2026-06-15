@@ -12,6 +12,7 @@ export interface QueueIndexingResult {
   error?: string;
   jobId?: string;
   correlationId?: string;
+  baseBranch?: string;
 }
 
 export interface StopIndexingResult {
@@ -292,7 +293,9 @@ export async function queueIndexingJob(
   );
   await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
 
-  return { success: true, jobId: job.id, correlationId };
+  // Return the normalized branch so callers report/match the same value that was
+  // stored on the job and used to update repository status.
+  return { success: true, jobId: job.id, correlationId, baseBranch: effectiveBranch };
 }
 
 export async function stopIndexingJob(repository: string, branch?: string): Promise<StopIndexingResult> {

@@ -112,9 +112,11 @@ describe('summary miner batch fallback', () => {
     assert.notEqual(state.warning?.mode, 'cooldown');
   });
 
-  test('retries invalid primary summaries, then saves successful fallback without cooldown', async () => {
+  test('does not switch to fallback when the primary fails for a non-quota reason', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
+    // Primary returns parseable-but-invalid output (a non-quota failure). This
+    // must NOT trigger the fallback model; it should surface as a failed batch.
     const primaryAgent = createAgent('primary', 'primary-model', async () => {
       primaryCalls++;
       return {
@@ -149,16 +151,16 @@ describe('summary miner batch fallback', () => {
       branch: 'main'
     });
 
-    assert.equal(result.success, true);
-    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.success, false);
+    assert.equal(result.fallbackUsed, false);
     assert.equal(result.stopProcessing, false);
     assert.equal(primaryCalls, 3);
-    assert.equal(fallbackCalls, 1);
+    assert.equal(fallbackCalls, 0);
 
     const saved = await db('file_summaries')
       .where({ path: 'integry/propr/src/a.ts', branch: 'main' })
       .first();
-    assert.equal(saved.model_used, 'fallback-model');
+    assert.equal(saved, undefined);
 
     const state = await loadSummarizationRuntimeState();
     assert.equal(Object.keys(state.cooldowns).length, 0);
@@ -247,9 +249,10 @@ describe('summary miner batch fallback', () => {
     assert.equal(fallbackCalls, 1);
   });
 
-  test('directory batch retries invalid primary summaries, then uses fallback without cooldown', async () => {
+  test('directory batch does not switch to fallback for a non-quota primary failure', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
+    // Non-quota failure (invalid output): the fallback model must not be used.
     const primaryAgent = createAgent('primary', 'primary-model', async () => {
       primaryCalls++;
       return {
@@ -289,11 +292,11 @@ describe('summary miner batch fallback', () => {
       branch: 'main'
     });
 
-    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackUsed, false);
     assert.equal(result.stopProcessing, false);
-    assert.equal(result[0].summary, 'Contains source modules and shared helpers.');
+    assert.equal(result[0].summary, null);
     assert.equal(primaryCalls, 3);
-    assert.equal(fallbackCalls, 1);
+    assert.equal(fallbackCalls, 0);
 
     const state = await loadSummarizationRuntimeState();
     assert.equal(Object.keys(state.cooldowns).length, 0);
