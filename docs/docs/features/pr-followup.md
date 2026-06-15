@@ -26,7 +26,7 @@ You do not have to let ProPR create a PR to use its review and fix tools. The pu
 - **Review or fix only**: comment `/review` on any eligible PR to get AI review feedback, then `/fix` to apply it. Slash commands from an allowed author are processed directly — the PR does not need a processing label for commands to run.
 - **Take over an existing PR**: add a configured processing label (for example `AI` or `propr`) to the open PR. From then on, normal follow-up comments are picked up just like on a ProPR-created PR, and ProPR continues the work in place.
 
-The only difference between a ProPR-created PR and one you hand over is who opened it — once ProPR is engaged, follow-up comments and slash commands behave the same way.
+Once ProPR is engaged, follow-up comments and slash commands behave the same way on a handed-over PR as on a ProPR-created one. Other details can still differ — a handed-over PR keeps its original branch name, may not link a source issue, and carries no prior ProPR task history — but the command and follow-up behavior is identical.
 
 ## Natural Follow-Up Comments
 

@@ -43,6 +43,8 @@ The exact labels and model IDs come from your repository and AI Agent settings.
 - **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-opus48`, `llm-codex-gpt55`, `llm-antigravity-pro-high`, `llm-opencode-minimax-m3-free`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
 - **`base-<branch>`** targets a non-default base branch, for example `base-develop`.
 
+Throughout these docs, "processing label" means the configured trigger label you add yourself (for example `AI` or `propr`) — not the `<trigger>-processing` state label, which ProPR applies automatically while a run is in progress.
+
 ## Run Work From A Plan
 
 Use Planner Studio when the work needs a plan before it runs:
@@ -56,7 +58,7 @@ Use Planner Studio when the work needs a plan before it runs:
 
 See [Planner Studio](./planner-studio.md) for the guided workflow.
 
-You can also stop after step 4 and use Planner Studio for **planning only**: finalize the plan into GitHub issues, then implement them manually or with another tool. Finalized issues have no trigger label, so nothing runs until you choose to add one.
+You can also use Planner Studio for **planning only**: review and finalize the plan into GitHub issues (steps 1–5), then stop there and implement the issues manually or with another tool. Finalized issues have no trigger label, so nothing runs until you choose to add one.
 
 ## Refine A Pull Request
 
