@@ -93,7 +93,10 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Concepts',
-      items: ['concepts/pr-review-guidelines'],
+      items: [
+        'concepts/repository-best-practices',
+        'concepts/pr-review-guidelines',
+      ],
     },
     {
       type: 'category',
