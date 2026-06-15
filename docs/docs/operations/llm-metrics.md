@@ -55,7 +55,7 @@ Use this together with the LLM Log page to decide when to switch models, split t
 
 ## Capacity Tracking With Agent Tank
 
-When the optional [Agent Tank](https://agenttank.io) integration is enabled in **Settings → LLM Usage Tracking**, ProPR records provider session and rate-limit usage deltas alongside each LLM call and shows live per-provider usage bars in the sidebar. The integration is best-effort: tasks proceed normally when the Agent Tank service is unavailable. The LLM Log page shows a dismissible banner suggesting the integration when it is not detected.
+When the optional [Agent Tank](https://agenttank.io) integration is enabled, ProPR records provider session and rate-limit usage deltas alongside each LLM call and shows live per-provider usage bars in the sidebar. The integration is best-effort: tasks proceed normally when the Agent Tank service is unavailable. The LLM Log page shows a dismissible banner suggesting the integration when it is not detected. See [Agent Tank Usage Tracking](./agent-tank.md) for setup and connection details.
 
 ## High-Cost Runs
 

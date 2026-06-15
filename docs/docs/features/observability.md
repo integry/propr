@@ -69,12 +69,9 @@ This is the page to use when comparing model costs across real work or investiga
 
 ## Agent Tank Usage Tracking
 
-Agent Tank is an optional integration that tracks provider capacity and rate-limit usage per task execution for CLI subscriptions (Claude, Codex, Antigravity).
+Agent Tank is an optional integration that tracks provider capacity and rate-limit usage per task execution for CLI subscriptions (Claude, Codex, Antigravity). Once enabled, the sidebar shows live usage bars per provider (for example Claude session/weekly limits, Codex 5-hour session and weekly limits) refreshed every 60 seconds, and each LLM log entry records the usage delta the call consumed. Tracking is best-effort: if Agent Tank is unavailable, tasks proceed normally without usage data.
 
-- Configure it in Settings under "LLM Usage Tracking": enable the Agent Tank integration and set the daemon URL (shipped default `http://0.0.0.0:3456`; use `http://localhost:3456` to connect to a local instance, since `0.0.0.0` is a bind address). The Settings section shows whether the daemon is reachable.
-- When ProPR detects a running Agent Tank daemon, the dashboard shows a banner offering to enable it.
-- Once enabled, the sidebar shows live usage bars per provider (for example Claude session/weekly limits, Codex 5-hour session and weekly limits), refreshed every 60 seconds.
-- Tracking is best-effort: if Agent Tank is unavailable, tasks proceed normally without usage data.
+Turn it on from the dashboard banner ProPR shows when it detects a running instance, from **Settings → LLM Usage Tracking**, or with `propr tank on`. See [Agent Tank Usage Tracking](../operations/agent-tank.md) for the full guide, including how to run Agent Tank and the Docker networking the connection needs.
 
 ## Recovery
 

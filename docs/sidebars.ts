@@ -116,6 +116,7 @@ const sidebars: SidebarsConfig = {
         'operations/system-metrics',
         'operations/metrics-feedback-loop',
         'operations/llm-metrics',
+        'operations/agent-tank',
         'operations/web-ui-integration',
       ],
     },
