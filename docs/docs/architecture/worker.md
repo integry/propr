@@ -35,7 +35,7 @@ The split is deliberate: ProPR keeps deterministic git and GitHub operations out
 
 The worker prepares a clean execution environment before the agent runs:
 
-- Pulls the job from Redis
+- Pulls the job from the Redis-backed BullMQ queue
 - Loads issue, pull request, or plan context
 - Updates the target repository
 - Creates an isolated worktree
@@ -75,20 +75,33 @@ If the agent made no changes, the worker records that result instead of creating
 
 ## Job Types
 
-Workers can process several kinds of work:
+The worker registers BullMQ processors for several job names:
 
-- Labeled GitHub issues
-- Planner Studio implementation tasks
-- Natural PR follow-up comments
-- AI review and fix commands
-- Merge or conflict-help commands
-- Recovery or system-triggered tasks
+- `processGitHubIssue` — labeled GitHub issues and Planner Studio implementation tasks
+- `processPullRequestComment` — PR follow-up comments and AI review/fix commands
+- `processTaskImport` — task imports
+- `processSystemTask` — signed system tasks such as reverts and recovery actions
+- `processMergeConflict` — merge and conflict-resolution commands
 
-The same worker structure applies across those inputs: prepare, run, finalize, record.
+Separate `analysis-worker` and `indexing-worker` services handle repository analysis and indexing jobs so heavy implementation work does not block them.
+
+The same worker structure applies across job types: prepare, run, finalize, record.
+
+## Agent Runtimes
+
+Workers run whichever agent the job's routing metadata selects. All agents share the same containerized runtime pattern — a Docker image built on `propr/agent-base`, an entrypoint script, and a host credential mount:
+
+- Claude Code: `Dockerfile.claude`, `scripts/claude-entrypoint.sh`, mounts `HOST_CLAUDE_DIR`
+- Codex: `Dockerfile.codex`, `scripts/codex-entrypoint.sh`, mounts `HOST_CODEX_DIR`
+- Antigravity: `Dockerfile.antigravity`, `scripts/antigravity-entrypoint.sh`, mounts `HOST_ANTIGRAVITY_DIR`
+- OpenCode: `Dockerfile.opencode`, `scripts/opencode-entrypoint.sh`, mounts the `HOST_OPENCODE_*` directories
+- Mistral Vibe: `Dockerfile.vibe`, `scripts/vibe-entrypoint.sh`, mounts `HOST_VIBE_DIR`
+
+See [Claude Code Integration](./claude-integration.md) and [OpenCode Integration](./opencode-integration.md) for agent-specific detail; the other agents follow the same shape.
 
 ## Isolation Model
 
-Each job gets its own worktree and branch context. That isolation lets ProPR run multiple jobs concurrently, including jobs that use different agents or models, without sharing the same mutable checkout.
+Each job gets its own worktree, branch context, and agent container. That isolation lets ProPR run multiple jobs concurrently, including jobs that use different agents or models, without sharing the same mutable checkout.
 
 See [Git Management](./git-management.md) for worktree and branch details.
 

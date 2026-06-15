@@ -12,46 +12,70 @@ Each task runs in its own boundary:
 
 - A dedicated git worktree
 - A task-specific branch
-- A Docker-backed agent runtime
+- A dedicated Docker container for the agent run
 - Structured output capture
 - A durable task record
 
-This makes concurrent work possible across issues, PR comments, and models without sharing the same mutable checkout.
+This makes concurrent work possible across issues, PR comments, and models without sharing the same mutable checkout. When several `llm-*` model labels run against the same issue, each model gets its own worktree, branch, and pull request.
 
-## Three-Phase Workflow
+## Three-Phase Deterministic Workflow
 
-Worker execution is intentionally split into three phases:
+Worker execution is split into three phases. The agent only participates in the middle one:
 
-1. **Pre-agent setup**: update repository state, create the worktree, create or select the branch, and prepare context.
-2. **Agent implementation**: run the selected agent in the isolated workspace with the prepared prompt and context.
-3. **Post-agent finalization**: inspect changed files, commit, push, create or update the pull request, and update labels or task state.
+1. **Pre-agent setup (ProPR)**: pull the job from the queue, update the base branch, create the isolated git worktree, create the task branch, and prepare the prompt and context.
+2. **Agent implementation (agent)**: run the selected agent inside its container against the worktree. The agent edits files; it does not push, create branches, or open pull requests.
+3. **Post-agent finalization (ProPR)**: inspect changed files, commit, push to GitHub, create or update the pull request with issue linking, and update labels and task state.
 
-The agent does not need to be responsible for the surrounding git and GitHub steps. That reduces accidental branch mistakes and makes failures easier to diagnose.
+Because the git and GitHub steps are deterministic code rather than agent decisions, branch mistakes are rare and failures are easier to attribute: a failure in phase 1 or 3 is a git/GitHub problem, a failure in phase 2 is an agent problem.
 
-## Worktree Isolation
+## Worktree And Branch Isolation
 
-Worktrees allow ProPR to reuse repository clones while keeping each job in a separate directory. This is important when:
+ProPR reuses one clone per repository and creates a separate git worktree per task. Clone and worktree locations are configurable:
+
+```bash
+GIT_CLONES_BASE_PATH=/tmp/git-processor/clones
+GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
+```
+
+Worktree isolation matters when:
 
 - Multiple issues run at the same time
-- Several models are processing related work
+- Several models are processing the same issue in parallel
 - A PR follow-up runs while another task is queued
 - A failed job needs to be inspected without blocking new work
 
-Worktrees are implementation detail enough to live mostly in architecture docs, but the user-facing promise is simple: each task gets its own workspace.
+Branch names include the model identifier, so concurrent multi-model runs never collide and every branch can be traced back to the agent and model that produced it.
 
 ## Containerized Agent Runs
 
-Agent commands run through Docker-backed environments so credentials, filesystem access, and runtime dependencies can be controlled consistently.
+Each agent run starts a dedicated container from the matching agent image (`propr/agent-claude`, `propr/agent-codex`, `propr/agent-antigravity`, `propr/agent-opencode`, `propr/agent-vibe`). The container gets:
 
-The default image-based install starts the ProPR service containers and agent containers from published images. Source builds can use local images during development.
+- The task worktree mounted as its working directory
+- The agent credential directories mounted read-write from the host at their original paths (for example `~/.claude`, `~/.codex`, `~/.gemini`) so CLIs can refresh auth state; only the `.env` file is mounted read-only
+- A per-agent timeout (`CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`)
 
-## Failure Handling
+The image-based install starts service and agent containers from published images. Source builds can use local images during development.
+
+## Network Firewall (Optional Hardening, Not Active By Default)
+
+The agent images ship `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, SSH, and HTTPS to provider and GitHub endpoints (for example `api.anthropic.com`, `api.github.com`, `github.com`, `objects.githubusercontent.com`).
+
+The script is **not executed by default**. Every agent entrypoint (`scripts/claude-entrypoint.sh`, `codex-entrypoint.sh`, `antigravity-entrypoint.sh`, `opencode-entrypoint.sh`, `vibe-entrypoint.sh`) currently skips it and logs:
+
+```text
+Skipping firewall setup (would require --privileged Docker flag)
+```
+
+Applying iptables rules inside a container requires elevated container privileges (`--privileged` or equivalent capabilities), which ProPR does not request for agent containers. Treat the firewall script as available hardening you can wire in yourself if your deployment can grant those privileges — not as an active default. Without it, agent containers have ordinary outbound network access.
+
+## Failure Handling And Recovery
 
 Safe runs are also about what happens when something fails:
 
-- GitHub and git operations use retry behavior for transient failures.
-- Task state records where the failure happened.
-- Logs and streamed output remain available for inspection.
-- Recovery actions can be triggered without losing the historical record.
+- Git and GitHub operations retry transient failures with exponential backoff (with jitter).
+- Job state lives in Redis with correlation IDs, so every log line can be traced to a task.
+- Task records capture where the failure happened; logs and streamed output remain available for inspection.
+- Failed runs update the issue's state label (`<trigger>-failed-*`) instead of leaving it ambiguous.
+- Revert operations run as signed system tasks: requests are authorized with `SYSTEM_TASK_SECRET`, so a revert cannot be injected through normal intake paths.
 
 For operational details, see [Observability And Control](./observability.md) and the architecture pages.

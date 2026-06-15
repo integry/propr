@@ -17,6 +17,20 @@ test('redactSecrets replaces GitHub fine-grained tokens', () => {
     assert.ok(result.includes('[REDACTED_GITHUB_TOKEN]'));
 });
 
+test('redactSecrets replaces GitHub App installation tokens (ghs_)', () => {
+    const input = 'relay returned ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('ghs_ABCDEF'));
+    assert.ok(result.includes('[REDACTED_GITHUB_TOKEN]'));
+});
+
+test('redactSecrets scrubs the relay credential (PROPR_GH_RELAY_TOKEN)', () => {
+    const input = 'PROPR_GH_RELAY_TOKEN=rly_abcdefghijklmnopqrstuvwxyz0123456789';
+    const result = redactSecrets(input);
+    assert.ok(!result.includes('rly_abcdefghijklmnopqrstuvwxyz0123456789'));
+    assert.ok(result.includes('[REDACTED_SECRET]'));
+});
+
 test('redactSecrets replaces AWS access keys', () => {
     const input = 'key is AKIAIOSFODNN7EXAMPLE';
     const result = redactSecrets(input);

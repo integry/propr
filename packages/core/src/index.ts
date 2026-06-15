@@ -117,8 +117,8 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus } from './webhook/checkRunHelpers.js';
-export type { CheckRunsStatus } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getActiveTasksForPR, hasActiveTasksForPR } from './webhook/checkRunHelpers.js';
+export type { CheckRunsStatus, ActivePRWork, ActivePRTask, ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
@@ -156,6 +156,7 @@ export type { Base64Image, ContextRepository } from './services/planning/plannin
 export { updateTrace, parseGenerationTrace, buildDraftUpdateTraceSnapshot, sanitizeDraftUpdateStepData } from './services/planning/traceService.js';
 export { executeDraft, ensureEpicPR, generateEpicBranchName, isEpicBranch, EPIC_BRANCH_PATTERN } from './services/taskExecutionService.js';
 export type { IssueLink, ExecutionResult, EpicPRResult, EnsureEpicPROptions } from './services/taskExecutionService.js';
+export { validateAttachmentBaseUrlConfig } from './services/taskExecutionHelpers.js';
 export { AttachmentService } from './services/attachmentService.js';
 export type { Attachment, MulterFile } from './services/attachmentService.js';
 export { PLANNER_SYSTEM_PROMPT, GRANULARITY_INSTRUCTIONS, getPlannerPrompt, REFINER_SYSTEM_PROMPT } from './claude/prompts/plannerPrompts.js';

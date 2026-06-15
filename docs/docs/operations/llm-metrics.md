@@ -12,42 +12,61 @@ Use these metrics to answer:
 - Are review/fix loops costing more than expected?
 - Are provider limits affecting work?
 
-## Per-Run Metrics
+## Per-Call Records: The LLM Log Page
 
-Where available, ProPR records:
+Every LLM execution is recorded in the SQLite `llm_logs` table and shown on the **LLM Log** page in the Web UI. Each entry records:
 
-- Agent and model
-- Correlation ID
-- Request duration
-- Token or usage totals
-- Estimated cost
-- Success or failure state
-- Related task, issue, PR, or repository
+- Execution type (implementation, task analysis, plan generation, PR review, and so on)
+- Model name and agent alias
+- Work reference — the task, plan, PR, or repository the call belongs to
+- Input/output token counts and cache creation/read tokens
+- Estimated cost in USD
+- Duration, start/end time, and success or failure state
+- Session ID and correlation ID
+- Error message on failure
+- Agent Tank usage deltas per call, when Agent Tank is enabled
 
-Not every provider exposes identical data. ProPR normalizes what it can and leaves provider-specific gaps visible.
+Filter the list by status (success/failed), work type (task/plan/repository), execution type, and model. Expand a row to see the repository, session and correlation IDs, cache statistics, and the error message for failed calls. The data is paginated through `GET /api/llm-logs`.
+
+Not every provider exposes identical data. ProPR normalizes what it can and leaves provider-specific gaps visible (for example, token counts may be null for some agents).
+
+{/* SCREENSHOT PLACEHOLDER: Capture the LLM Log page with several entries of different execution types, the filter dropdowns (Status, Work, Type, Model) visible in the header, and one row expanded to show its details (repository, session/correlation IDs, cache statistics). Run a few tasks and a plan generation first so multiple work types appear. */}
+
+## Aggregated Metrics
+
+The API also aggregates run metrics in Redis, available at `GET /api/llm-metrics`:
+
+- Totals: requests, successes, failures, success rate, cost, turns, and average execution time
+- Per-model breakdown: requests, success rate, total and average cost, turns, and execution time per model
+- Daily metrics for the last 7 days (successful/failed counts and cost per day)
+- The 10 most recent high-cost alerts
+
+`GET /api/llm-metrics/<correlationId>` returns the detailed metrics for a single run.
 
 ## Dashboard Views
 
-The dashboard should make usage understandable without requiring Redis inspection:
+The dashboard surfaces usage without requiring Redis inspection:
 
-- Recent expensive runs
-- Usage by model
-- Usage by repository
-- Cost trends
-- Failure and rate-limit patterns
+- Total cost and per-model task counts (Top Models panel, from `/api/stats/overview`)
+- Per-repository activity (Repository Breakdown)
+- Task success and failure trends
 
-Use this to decide when to switch models, split tasks, tune loops, or adjust worker concurrency.
+Use this together with the LLM Log page to decide when to switch models, split tasks, tune loops, or adjust worker concurrency.
 
-## Alerts
+## Capacity Tracking With Agent Tank
 
-High-cost alerts are useful when:
+When the optional [Agent Tank](https://agenttank.io) integration is enabled in **Settings → LLM Usage Tracking**, ProPR records provider session and rate-limit usage deltas alongside each LLM call and shows live per-provider usage bars in the sidebar. The integration is best-effort: tasks proceed normally when the Agent Tank service is unavailable. The LLM Log page shows a dismissible banner suggesting the integration when it is not detected.
+
+## High-Cost Runs
+
+ProPR keeps a rolling list of recent high-cost alerts in the LLM metrics summary. Investigate when:
 
 - A single run exceeds the expected cost
 - A loop repeats too many times
 - One repository becomes unusually expensive
 - A provider starts returning rate-limit errors
 
-Cost alerts should lead to an action, not just noise.
+A cost spike should lead to an action — smaller task scope, a different model, or loop limits — not just acknowledgment.
 
 ## Related Pages
 

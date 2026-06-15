@@ -10,10 +10,12 @@ import {
   listAgents,
   addAgent,
   deleteAgent,
+  setAgentEnabled,
   AgentConfig,
   AgentType,
   AGENT_TYPES,
 } from "../api/agents.js";
+import { ApiError, NetworkError, NotFoundError, UnauthorizedError } from "../api/errors.js";
 import {
   printOutput,
   readJsonInput,
@@ -168,16 +170,12 @@ Examples:
         console.log("");
         console.log(`Total: ${result.agents.length} agent(s)`);
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
-        ) {
-          console.error(
-            "Error: Unauthorized. Please run 'propr login' first."
-          );
+        if (error instanceof UnauthorizedError) {
+          console.error("Error: Unauthorized. Please run 'propr login' first.");
+        } else if (error instanceof NetworkError) {
+          console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
         } else {
-          console.error(`Error listing agents: ${errorMessage}`);
+          console.error(`Error listing agents: ${(error as Error).message}`);
         }
         process.exit(1);
       }
@@ -356,23 +354,67 @@ Examples:
             process.exit(1);
           }
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
-            console.error(
-              "Error: Unauthorized. Please run 'propr login' first."
-            );
-          } else if (errorMessage.includes("already exists")) {
-            console.error(`Error: ${errorMessage}`);
+          if (error instanceof UnauthorizedError) {
+            console.error("Error: Unauthorized. Please run 'propr login' first.");
+          } else if (error instanceof NetworkError) {
+            console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
+          } else if (error instanceof ApiError && (error as Error).message.includes("already exists")) {
+            console.error(`Error: ${(error as Error).message}`);
           } else {
-            console.error(`Error adding agent: ${errorMessage}`);
+            console.error(`Error adding agent: ${(error as Error).message}`);
           }
           process.exit(1);
         }
       }
     );
+
+  // agent enable / disable
+  const applyEnabled = async (alias: string, enabled: boolean): Promise<void> => {
+    try {
+      const result = await setAgentEnabled(alias, enabled);
+      if (result.success) {
+        console.log(`Agent '${alias}' ${enabled ? "enabled" : "disabled"}.`);
+      } else {
+        console.error(`Failed to ${enabled ? "enable" : "disable"} agent '${alias}'`);
+        process.exit(1);
+      }
+    } catch (error) {
+      if (error instanceof NetworkError) {
+        console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
+      } else if (error instanceof NotFoundError || (error instanceof Error && error.message.includes("not found"))) {
+        console.error(`Error: Agent '${alias}' not found`);
+      } else if (error instanceof UnauthorizedError) {
+        console.error("Error: Unauthorized. Please run 'propr login' first.");
+      } else if (error instanceof ApiError) {
+        console.error(`Error updating agent: ${error.message}`);
+      } else {
+        console.error(`Error updating agent: ${(error as Error).message}`);
+      }
+      process.exit(1);
+    }
+  };
+
+  agent
+    .command("enable <alias>")
+    .description("Enable an agent (requires the stack to be running)")
+    .addHelpText("after", `
+Example:
+  $ propr agent enable claude-prod
+`)
+    .action(async (alias: string) => {
+      await applyEnabled(alias, true);
+    });
+
+  agent
+    .command("disable <alias>")
+    .description("Disable an agent (requires the stack to be running)")
+    .addHelpText("after", `
+Example:
+  $ propr agent disable claude-prod
+`)
+    .action(async (alias: string) => {
+      await applyEnabled(alias, false);
+    });
 
   // agent delete
   agent
@@ -414,18 +456,14 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
-        ) {
-          console.error(
-            "Error: Unauthorized. Please run 'propr login' first."
-          );
-        } else if (errorMessage.includes("not found")) {
+        if (error instanceof UnauthorizedError) {
+          console.error("Error: Unauthorized. Please run 'propr login' first.");
+        } else if (error instanceof NotFoundError) {
           console.error(`Error: Agent '${alias}' not found`);
+        } else if (error instanceof NetworkError) {
+          console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
         } else {
-          console.error(`Error deleting agent: ${errorMessage}`);
+          console.error(`Error deleting agent: ${(error as Error).message}`);
         }
         process.exit(1);
       }

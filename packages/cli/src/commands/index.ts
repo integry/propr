@@ -12,5 +12,13 @@ export { createAgentCommand } from "./agentCommands.js";
 export { createSettingCommand } from "./settingCommands.js";
 export { createLogCommand } from "./logCommands.js";
 export { createTodoCommand } from "./todoCommands.js";
-export { createStatusCommand, createQueueCommand } from "./systemCommands.js";
+export { createRemoteStatusCommand, createQueueCommand } from "./systemCommands.js";
 export { createInitCommand } from "./initCommands.js";
+
+// Control-plane commands (local Docker stack)
+export { createCheckCommand, runChecks, printChecks, STACK_CONFIG_CHECK_NAME } from "./checkCommands.js";
+export { createStartCommand } from "./startCommand.js";
+export { createStackStatusCommand, createStopCommand } from "./stackCommands.js";
+export { createUiCommand, createDocsCommand } from "./uiDocsCommands.js";
+export { createTankCommand } from "./tankCommands.js";
+export { createRelayCommand } from "./relayCommands.js";

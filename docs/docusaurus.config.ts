@@ -49,8 +49,8 @@ const legacyDocsRedirects = [
 
 const config: Config = {
   title: 'ProPR',
-  tagline: 'Web UI for AI planning, execution, and PR automation',
-  favicon: 'img/favicon.ico',
+  tagline: 'Plan, implement, review, and refine GitHub pull requests with AI agents — self-hosted',
+  favicon: 'img/logo-mark.png',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {
@@ -58,7 +58,7 @@ const config: Config = {
   },
 
   // Set the production url of your site here
-  url: 'https://gitfix.io',
+  url: 'https://docs.propr.dev',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
   baseUrl: '/',
@@ -84,16 +84,24 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          // Please change this to your repo.
-          // Remove this to remove the "edit this page" links.
-          editUrl:
-            'https://github.com/integry/gitfix/tree/main/docs/',
         },
         blog: false,
         theme: {
           customCss: './src/css/custom.css',
         },
       } satisfies Preset.Options,
+    ],
+  ],
+
+  themes: [
+    [
+      '@easyops-cn/docusaurus-search-local',
+      {
+        hashed: true,
+        indexBlog: false,
+        docsRouteBasePath: '/docs',
+        highlightSearchTermsOnTargetPage: true,
+      },
     ],
   ],
 
@@ -108,15 +116,16 @@ const config: Config = {
 
   themeConfig: {
     // Replace with your project's social card
-    image: 'img/logo.svg',
+    image: 'img/social-card.png',
     colorMode: {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'ProPR',
       logo: {
-        alt: 'ProPR Logo',
-        src: 'img/logo.svg',
+        alt: 'ProPR',
+        src: 'img/logo-and-name-transparent.png',
+        href: 'https://propr.dev',
+        target: '_self',
       },
       items: [
         {
@@ -126,35 +135,75 @@ const config: Config = {
           label: 'Documentation',
         },
         {
-          href: 'https://github.com/integry/gitfix',
+          href: 'https://propr.dev',
+          label: 'propr.dev',
+          position: 'right',
+          target: '_self',
+        },
+        {
+          href: 'https://demo.propr.dev',
+          label: 'Live Demo',
+          position: 'right',
+        },
+        {
+          href: 'https://github.com/integry/propr',
           label: 'GitHub',
           position: 'right',
         },
       ],
     },
     footer: {
-      style: 'dark',
+      style: 'light',
       links: [
         {
           title: 'Docs',
           items: [
             {
-              label: 'Documentation',
+              label: 'Introduction',
               to: '/docs/intro',
+            },
+            {
+              label: 'Setup',
+              to: '/docs/tutorials/setup',
+            },
+            {
+              label: 'ProPR CLI',
+              to: '/docs/features/propr-cli',
             },
           ],
         },
         {
-          title: 'More',
+          title: 'Product',
+          items: [
+            {
+              label: 'propr.dev',
+              href: 'https://propr.dev',
+            },
+            {
+              label: 'Live Demo',
+              href: 'https://demo.propr.dev',
+            },
+          ],
+        },
+        {
+          title: 'Community',
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/integry/gitfix',
+              href: 'https://github.com/integry/propr',
+            },
+            {
+              label: 'Discord',
+              href: 'https://discord.gg/wNYzTwZFku',
+            },
+            {
+              label: 'Reddit',
+              href: 'https://www.reddit.com/r/ProPRdev/',
             },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} ProPR. Built with Docusaurus.`,
+      copyright: `Copyright (c) ${new Date().getFullYear()} ProPR by Unchained Development O\u00dc / Rinalds Uzkalns`,
     },
     prism: {
       theme: prismThemes.github,

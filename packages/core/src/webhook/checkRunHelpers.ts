@@ -639,18 +639,30 @@ export async function linkedIssueHasAutoMergeLabel(owner: string, repoName: stri
  */
 const TERMINAL_TASK_STATES = ['completed', 'failed', 'cancelled'];
 
+export interface ActivePRTask {
+    taskId: string;
+    state: string;
+}
+
+export interface ActivePRQueuedJob {
+    jobId: string;
+    state: string;
+}
+
+export interface ActivePRWork {
+    activeTasks: ActivePRTask[];
+    queuedJobs: ActivePRQueuedJob[];
+}
+
 /**
- * Checks if there are any active (non-terminal) tasks for a given PR.
- * This is used to prevent auto-merge while a followup task is still running.
+ * Loads all active (non-terminal) tasks and queued/delayed jobs for a given PR,
+ * with their identifiers and current states. Used both to block auto-merge while
+ * follow-up work is running and to cancel that work when the PR is merged.
  */
-export async function hasActiveTasksForPR(
+export async function getActiveTasksForPR(
     repository: string,
     prNumber: number
-): Promise<{
-    hasActive: boolean;
-    activeTasks: Array<{ taskId: string; state: string }>;
-    queuedJobs: Array<{ jobId: string; state: string }>;
-}> {
+): Promise<ActivePRWork> {
     try {
         const queue = await getIssueQueue();
         const queueStates = ['waiting', 'active', 'delayed'] as const;
@@ -690,13 +702,12 @@ export async function hasActiveTasksForPR(
             .where('tasks.pr_number', prNumber)
             .whereNotIn('task_history.state', TERMINAL_TASK_STATES);
 
-        const result = {
-            hasActive: activeTasks.length > 0 || queuedJobs.length > 0,
+        const result: ActivePRWork = {
             activeTasks: activeTasks.map(t => ({ taskId: t.task_id, state: t.state })),
             queuedJobs,
         };
 
-        if (result.hasActive) {
+        if (result.activeTasks.length > 0 || result.queuedJobs.length > 0) {
             logger.info({
                 repository,
                 prNumber,
@@ -713,8 +724,29 @@ export async function hasActiveTasksForPR(
             error: (error as Error).message
         }, 'Failed to check for active tasks');
         // On error, assume no active tasks to avoid blocking legitimate merges
-        return { hasActive: false, activeTasks: [], queuedJobs: [] };
+        return { activeTasks: [], queuedJobs: [] };
     }
+}
+
+/**
+ * Checks if there are any active (non-terminal) tasks for a given PR.
+ * This is used to prevent auto-merge while a followup task is still running.
+ * Thin wrapper around getActiveTasksForPR().
+ */
+export async function hasActiveTasksForPR(
+    repository: string,
+    prNumber: number
+): Promise<{
+    hasActive: boolean;
+    activeTasks: Array<{ taskId: string; state: string }>;
+    queuedJobs: Array<{ jobId: string; state: string }>;
+}> {
+    const { activeTasks, queuedJobs } = await getActiveTasksForPR(repository, prNumber);
+    return {
+        hasActive: activeTasks.length > 0 || queuedJobs.length > 0,
+        activeTasks,
+        queuedJobs,
+    };
 }
 
 /**

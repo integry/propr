@@ -9,6 +9,7 @@ import path from "path";
 import { chmod, mkdir, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { printOutput } from "../utils/io.js";
+import { createInitStackCommand } from "./initStack.js";
 
 interface ScaffoldFile {
   relativePath: string;
@@ -152,31 +153,55 @@ function displayInitResult(result: InitCommandResult): void {
   console.log("  sudo apk add --no-cache <package>");
 }
 
+async function runRepoScaffold(options: { force?: boolean; json?: boolean }): Promise<void> {
+  try {
+    const result = await scaffoldProprDirectory({ force: options.force });
+    if (printOutput(result, !!options.json)) {
+      return;
+    }
+    displayInitResult(result);
+  } catch (error) {
+    console.error(`Error initializing .propr directory: ${(error as Error).message}`);
+    process.exit(1);
+  }
+}
+
 export function createInitCommand(): Command {
   const command = new Command("init");
 
+  // Default action (no subcommand) scaffolds the .propr repo files — preserved
+  // for backward compatibility.
   command
-    .description("Scaffold .propr repository setup files in the current directory")
+    .description("Scaffold local setup. Default/`repo`: .propr files. `stack`: a stack root.")
     .option("-f, --force", "Overwrite existing scaffold files")
     .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
+Subcommands:
+  $ propr init            Scaffold .propr repository setup files (default)
+  $ propr init repo       Same as the default — scaffold .propr files
+  $ propr init stack      Scaffold a local stack root (.env, data/, logs/, repos/)
+
 Examples:
   $ propr init
   $ propr init --force
-  $ propr init --json
+  $ propr init stack
 `)
     .action(async (options: { force?: boolean; json?: boolean }) => {
-      try {
-        const result = await scaffoldProprDirectory({ force: options.force });
-        if (printOutput(result, !!options.json)) {
-          return;
-        }
-        displayInitResult(result);
-      } catch (error) {
-        console.error(`Error initializing .propr directory: ${(error as Error).message}`);
-        process.exit(1);
-      }
+      await runRepoScaffold(options);
     });
+
+  // Explicit alias for the default repo scaffold.
+  command
+    .command("repo")
+    .description("Scaffold .propr repository setup files in the current directory")
+    .option("-f, --force", "Overwrite existing scaffold files")
+    .option("-j, --json", "Output result as JSON")
+    .action(async (options: { force?: boolean; json?: boolean }) => {
+      await runRepoScaffold(options);
+    });
+
+  // New control-plane stack scaffold.
+  command.addCommand(createInitStackCommand());
 
   return command;
 }

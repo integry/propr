@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 # Issue To Pull Request Walkthrough
@@ -30,24 +30,31 @@ Small, specific issues produce better PRs than broad requests.
 
 ## Start The Run
 
-1. Add the processing label to the issue.
-2. Optionally add a model label such as `llm-<model-id>`.
-3. Open the ProPR Web UI.
-4. Watch the task record.
+1. Add the processing label to the issue (for example `AI`).
+2. Optionally add a model label such as `llm-claude-opus48` or `llm-antigravity-pro-high`. Adding several model labels produces one run, branch, and PR per model.
+3. Optionally add `base-<branch>` (for example `base-develop`) to target a non-default base branch.
+4. Open the ProPR Web UI.
+5. Watch the task record.
+
+ProPR picks up the label via polling (every 60 seconds by default) or immediately if webhooks are configured. As the run progresses, ProPR replaces the trigger label with state labels: `<trigger>-processing` while running, then `<trigger>-done` on success or a `<trigger>-failed-*` label on failure.
 
 The task record shows the selected repository, branch, model, status, logs, and resulting PR.
+
+{/* SCREENSHOT PLACEHOLDER: Capture a GitHub issue with the `AI` trigger label, one `llm-*` model label, and the auto-applied `AI-processing` state label visible in the label list. Trigger a run on a test issue and screenshot it while the task is in progress. */}
 
 ## Review The Pull Request
 
 When ProPR opens the PR:
 
-- Read the summary.
+- Read the summary. The PR body links the source issue with `Closes #N`, so merging closes the issue automatically.
 - Review the diff.
 - Check tests and CI.
 - Confirm the change matches the issue.
 - Look at the task record if anything is unclear.
 
 Review the PR in your normal process. ProPR helps create and refine it; it does not decide whether it should merge.
+
+{/* SCREENSHOT PLACEHOLDER: Capture the task record detail view in the Web UI for a completed run, showing status, agent and model, commit list, the linked PR, and the live log panel. */}
 
 ## Ask For Follow-Up
 
@@ -57,15 +64,15 @@ For direct changes, write a normal PR comment:
 Please add a regression test for the empty state.
 ```
 
-ProPR processes normal user comments directly.
+ProPR processes normal user comments directly. Line-level review comments include their file and line context, and images in comments are available to the agent.
 
 Use slash commands for specific actions:
 
-- `/review` for AI review comments
-- `/fix` to apply AI review comments from `/review`
-- `/merge` to update the branch
-- `/switch` or `/use` to change models
-- `/ultrafix` for a review-fix loop
+- `/review` for a read-only AI review with severity findings and `Score: N/10`; add model IDs for a multi-model review (`/review claude-fable codex-gpt55`) and put focus instructions on the lines below the command
+- `/fix` to apply unprocessed AI review comments from `/review`
+- `/merge` to merge base into the PR branch with automatic conflict resolution
+- `/switch <model-id>` to change the PR's model going forward, or `/use <model-id>` for a one-off task
+- `/ultrafix goal=<score> max=<cycles> pause=<seconds> model=<model-id>` for a review-fix loop; the `ultrafix` PR label is the circuit breaker — remove it to stop
 
 See [PR Slash Commands](../features/pr-commands.md).
 
@@ -75,9 +82,10 @@ If the run fails:
 
 1. Open the task record.
 2. Read the failure message and logs.
-3. Check credentials, branch settings, and agent configuration.
-4. Add clearer PR or issue instructions if needed.
-5. Re-run with a smaller scope or different model.
+3. Check the `<trigger>-failed-*` label on the issue for the failure category.
+4. Check credentials, branch settings, and agent configuration.
+5. Add clearer PR or issue instructions if needed.
+6. Re-run with a smaller scope or different model.
 
 Related pages:
 

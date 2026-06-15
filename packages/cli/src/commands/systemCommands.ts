@@ -182,11 +182,15 @@ function displayQueueStats(stats: QueueStats): void {
 }
 
 /**
- * Creates the `status` command.
+ * Creates the `remote-status` command.
+ *
+ * Reports the health of a remote ProPR backend (API/Redis/daemon/worker) over
+ * HTTP. The top-level `propr status` now reports the local Docker stack, so this
+ * backend health view is exposed as `remote-status`.
  */
-export function createStatusCommand(): Command {
-  return new Command("status")
-    .description("Display the health status of all ProPR backend components")
+export function createRemoteStatusCommand(): Command {
+  return new Command("remote-status")
+    .description("Display the health status of a remote ProPR backend (API, Redis, daemon, worker)")
     .option("--json", "Output raw JSON response")
     .addHelpText("after", `
 Components Checked:
@@ -198,8 +202,8 @@ Components Checked:
   - Claude authentication
 
 Examples:
-  $ propr status           # Human-readable output
-  $ propr status --json    # JSON output for scripting
+  $ propr remote-status           # Human-readable output
+  $ propr remote-status --json    # JSON output for scripting
 `)
     .action(async (options: { json?: boolean }) => {
       try {

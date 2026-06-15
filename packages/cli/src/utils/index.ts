@@ -19,3 +19,5 @@ export {
   JsonInputError,
 } from "./io.js";
 export type { FormatOutputOptions } from "./io.js";
+
+export { parseOnOffState, ParseStateError } from "./parseState.js";

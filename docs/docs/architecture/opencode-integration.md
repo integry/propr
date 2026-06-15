@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # OpenCode Integration
 
-The OpenCode integration lets ProPR run OpenCode as an additional coding agent alongside Claude, Codex, and Gemini. It is implemented by the OpenCode agent class, the OpenCode Docker image, and the shared agent registry.
+The OpenCode integration lets ProPR run OpenCode as an additional coding agent alongside Claude Code, Codex, Antigravity, and Mistral Vibe. It is implemented by the OpenCode agent class, the OpenCode Docker image, and the shared agent registry.
 
 ## Components
 
@@ -73,8 +73,8 @@ OpenCode agents are normal ProPR agent configs:
   "enabled": true,
   "dockerImage": "propr/agent-opencode:latest",
   "configPath": "/home/your-user/.config/opencode",
-  "supportedModels": ["opencode/minimax-m3-free"],
-  "defaultModel": "opencode/minimax-m3-free",
+  "supportedModels": ["opencode-minimax-m3-free"],
+  "defaultModel": "opencode-minimax-m3-free",
   "envVars": {}
 }
 ```
@@ -84,15 +84,15 @@ The equivalent CLI command is:
 ```bash
 propr agent add opencode \
   -t opencode \
-  -m opencode/minimax-m3-free \
-  -d opencode/minimax-m3-free \
+  -m opencode-minimax-m3-free \
+  -d opencode-minimax-m3-free \
   --docker-image propr/agent-opencode:latest \
   --config-path /home/your-user/.config/opencode
 ```
 
-Use `opencode/minimax-m3-free` for the built-in free OpenCode model, or replace it with another model ID from `opencode models` after authenticating providers in OpenCode. The `envVars` block is required only when using copied `opencode auth login` credentials under the mounted config tree; provider-key env vars can be supplied there instead.
+Use `opencode-minimax-m3-free` (ProPR's catalog ID, with the `opencode-` prefix) for the built-in free OpenCode model, or register another model from `opencode models` under the same prefix (for example `opencode-openai/gpt-5.5`). ProPR converts these IDs back to OpenCode's native `provider/model` syntax at execution time. The `envVars` block is required only when using copied `opencode auth login` credentials under the mounted config tree; provider-key env vars can be supplied there instead.
 
-With the default `MODEL_LABEL_PATTERN=^llm-(.+)$`, the GitHub label `llm-opencode-minimax-m3-free` maps to `opencode/minimax-m3-free` through ProPR's model catalog when an enabled OpenCode agent supports that model.
+With the default `MODEL_LABEL_PATTERN=^llm-(.+)$`, the GitHub label `llm-opencode-minimax-m3-free` maps to ProPR model ID `opencode-minimax-m3-free`, which is converted to OpenCode's native `minimax/minimax-m3` form at execution time when an enabled OpenCode agent supports that model.
 
 ## Container Execution
 
@@ -114,6 +114,12 @@ The OpenCode container receives:
 
 The command is executed through `opencode-run --format json`, with `--model <model>` when ProPR selected a model. ProPR strips only the internal `opencode:` routing prefix before passing the model to OpenCode, so provider-qualified model IDs remain intact.
 
+OpenCode runs are bounded by `OPENCODE_TIMEOUT_MS` (default `3600000`, one hour):
+
+```bash
+OPENCODE_TIMEOUT_MS=3600000
+```
+
 ## Docker Images
 
 The published OpenCode agent image is:
@@ -128,7 +134,7 @@ Versioned builds use the same image family, for example:
 propr/agent-opencode:<version>-<content-hash>
 ```
 
-`scripts/build-images.sh` builds the image from `Dockerfile.opencode` and installs the `opencode-ai` npm package into the shared agent base image.
+`scripts/build-images.sh` builds the image from `Dockerfile.opencode` and installs the `opencode-ai` npm package into the shared agent base image. `Dockerfile.opencode` pins the CLI version through its `CLI_VERSION` build argument (default `1.16.2`), so image builds are reproducible; pass a different `CLI_VERSION` to build against another OpenCode release.
 
 ## Operations
 
@@ -140,7 +146,7 @@ For Docker Compose development, the compose files mount:
 ~/.local/share/opencode
 ```
 
-In development compose, the worker mounts these read-write (matching Claude, Codex, and Gemini mounts) so the OpenCode agent containers can access credentials and refresh auth metadata at runtime. Read-only services like the analysis-worker and API mount them with `:ro`. The base production compose file does not mount agent credential directories by default; add them with a deployment-specific override file, or use the launcher.
+In development compose, the worker mounts these read-write (matching the Claude Code, Codex, Antigravity, and Mistral Vibe credential mounts) so the OpenCode agent containers can access credentials and refresh auth metadata at runtime. Read-only services like the analysis-worker and API mount them with `:ro`. The base production compose file does not mount agent credential directories by default; add them with a deployment-specific override file, or use the launcher.
 
 The API does not refresh OpenCode auth files. Runtime auth refresh is limited to worker-spawned OpenCode agent containers, which receive the OpenCode data directory as a read-write bind mount.
 

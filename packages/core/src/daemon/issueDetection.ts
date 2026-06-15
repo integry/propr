@@ -7,10 +7,30 @@ import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
+import { getGithubUserWhitelist, isGithubUserWhitelisted } from '../utils/userWhitelist.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
 
 export type { DetectedIssue };
 
+// Cache resolved label-applier per issue to avoid N+1 timeline API calls on
+// every poll cycle. Keyed by "owner/repo#number:updatedAt" so the entry is
+// invalidated whenever the issue changes.
+const labelApplierCache = new Map<string, string | null>();
+const LABEL_APPLIER_CACHE_MAX = 500;
+const LABEL_APPLIER_TIMELINE_PAGE_SIZE = 100;
+const LABEL_APPLIER_TIMELINE_MAX_PAGES_DEFAULT = 5;
+
+// Page budget for the recent-timeline scan. Operators with very long-lived
+// issues can raise LABEL_APPLIER_TIMELINE_MAX_PAGES to widen the window in
+// which the trigger label event can be found (at the cost of more API calls).
+function labelApplierTimelineMaxPages(): number {
+    const raw = Number.parseInt(process.env.LABEL_APPLIER_TIMELINE_MAX_PAGES ?? '', 10);
+    return Number.isInteger(raw) && raw > 0 ? raw : LABEL_APPLIER_TIMELINE_MAX_PAGES_DEFAULT;
+}
+
+function getLabelApplierCacheKey(owner: string, repo: string, issueNumber: number, updatedAt: string): string {
+    return `${owner}/${repo}#${issueNumber}:${updatedAt}`;
+}
 
 interface GitHubIssue {
     id: number;
@@ -21,12 +41,132 @@ interface GitHubIssue {
     created_at: string;
     updated_at: string;
     pull_request?: unknown;
+    user?: { login: string } | null;
 }
 
 interface GitHubSearchResponse {
     data: {
         items: GitHubIssue[];
     };
+}
+
+interface TimelineEvent {
+    event: string;
+    actor?: { login: string } | null;
+    label?: { name: string };
+}
+
+function findLabelApplierInEvents(events: TimelineEvent[], normalizedTargetLabels: string[]): string | null {
+    for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (
+            ev.event === 'labeled' &&
+            ev.label?.name &&
+            normalizedTargetLabels.includes(ev.label.name.toLowerCase()) &&
+            ev.actor?.login
+        ) {
+            return ev.actor.login;
+        }
+    }
+    return null;
+}
+
+function lastPageFromLinkHeader(linkHeader: string | undefined): number | null {
+    if (!linkHeader) return null;
+    const lastLink = linkHeader.split(',').find(part => part.includes('rel="last"'));
+    const page = lastLink?.match(/[?&]page=(\d+)/)?.[1];
+    return page ? Number.parseInt(page, 10) : null;
+}
+
+/**
+ * Look up who most recently applied one of the given labels by walking the
+ * issue timeline backwards. Returns the actor login, or `null` when the
+ * labeler cannot be determined (API error, event pruned, etc.).
+ *
+ * Callers MUST treat `null` as "actor unknown" and fail closed (skip the
+ * issue) rather than falling back to the issue author — otherwise an
+ * attacker who applies the trigger label to a whitelisted user's issue
+ * could bypass the whitelist whenever the timeline lookup fails.
+ *
+ * Trade-off: because we use the *most recent* labeled event, a
+ * non-whitelisted user who toggles the label after a whitelisted user
+ * will block processing (fail-closed). This is safe but means an
+ * adversary can suppress processing by repeatedly toggling the label.
+ * The mitigation is branch-protection rules on who can apply labels.
+ */
+async function resolveLabelApplier(opts: {
+    octokit: PaginatedOctokitInstance;
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    targetLabels: string[];
+    log?: Logger;
+}): Promise<string | null> {
+    const { octokit, owner, repo, issueNumber, targetLabels } = opts;
+    const normalizedTargetLabels = targetLabels.map(l => l.toLowerCase());
+    // Let API errors propagate — the caller (resolveLabelApplierCached) decides
+    // whether to cache the result. Errors must NOT be cached because the cache key
+    // only rotates when the issue's updatedAt changes, which would stall the issue
+    // indefinitely after a transient failure (rate limit, network blip).
+    const firstPage = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
+        owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page: 1
+    });
+    const lastPage = lastPageFromLinkHeader(firstPage.headers.link) ?? 1;
+    if (lastPage === 1) {
+        return findLabelApplierInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels);
+    }
+
+    const firstRecentPage = Math.max(2, lastPage - labelApplierTimelineMaxPages() + 1);
+    for (let page = lastPage; page >= firstRecentPage; page--) {
+        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
+            owner, repo, issue_number: issueNumber, per_page: LABEL_APPLIER_TIMELINE_PAGE_SIZE, page
+        });
+        const actor = findLabelApplierInEvents(response.data as TimelineEvent[], normalizedTargetLabels);
+        if (actor) return actor;
+    }
+    // The recent-page window starts at page 2, but page 1 is already in hand —
+    // search it too so a label event near the start of a short multi-page
+    // timeline (e.g. 2–5 pages) is still found.
+    return findLabelApplierInEvents(firstPage.data as TimelineEvent[], normalizedTargetLabels);
+}
+
+async function resolveLabelApplierCached(opts: {
+    octokit: PaginatedOctokitInstance;
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    updatedAt: string;
+    targetLabels: string[];
+    log?: Logger;
+}): Promise<string | null> {
+    const cacheKey = getLabelApplierCacheKey(opts.owner, opts.repo, opts.issueNumber, opts.updatedAt);
+    const cached = labelApplierCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    try {
+        const result = await resolveLabelApplier(opts);
+        // Only cache non-null results. A null from a successful timeline lookup
+        // means the labeled event isn't visible yet (GitHub timeline eventual
+        // consistency). Caching null would stall the issue until updatedAt
+        // changes, since that's the only thing that rotates the cache key.
+        if (result !== null) {
+            // FIFO eviction — oldest-inserted key is dropped (not LRU).
+            if (labelApplierCache.size >= LABEL_APPLIER_CACHE_MAX) {
+                const first = labelApplierCache.keys().next().value;
+                if (first !== undefined) labelApplierCache.delete(first);
+            }
+            labelApplierCache.set(cacheKey, result);
+        }
+        return result;
+    } catch (err) {
+        // Transient API error (rate limit, network blip). Return null (fail closed)
+        // but do NOT cache so the issue is retried on the next poll cycle.
+        opts.log?.warn(
+            { owner: opts.owner, repo: opts.repo, issueNumber: opts.issueNumber, error: (err as Error).message },
+            'Timeline API lookup failed — actor unknown, will skip issue (fail closed). Will retry on next poll.'
+        );
+        return null;
+    }
 }
 
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<void> {
@@ -61,6 +201,21 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             issueLabels: issue.labels,
             expectedLabels: primaryProcessingLabels
         }, 'Issue does not have any primary processing label, skipping');
+        return;
+    }
+
+    // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
+    // configured). For webhooks this is the webhook sender; for polling it is
+    // the label applier resolved from the issue timeline (fail closed if unknown).
+    if (!isGithubUserWhitelisted(issue.triggeredBy)) {
+        correlatedLogger.warn({
+            issueNumber: issue.number,
+            repository: repoFullName,
+            triggeredBy: issue.triggeredBy ?? null,
+            source: issue.source
+        }, issue.triggeredBy
+            ? 'Trigger actor not in whitelist, skipping'
+            : 'No triggeredBy on issue — skipping (fail closed). Check that all DetectedIssue producers populate triggeredBy.');
         return;
     }
 
@@ -249,17 +404,51 @@ export async function fetchIssuesForRepo(octokit: PaginatedOctokitInstance, repo
             count: response.data.items.length
         }, `Found ${response.data.items.length} matching issues.`);
 
-        return response.data.items.map(issue => ({
-            id: issue.id,
-            number: issue.number,
-            title: issue.title,
-            url: issue.html_url,
-            repoOwner: owner,
-            repoName: repo,
-            labels: issue.labels.map(l => typeof l === 'string' ? l : l.name),
-            createdAt: issue.created_at,
-            updatedAt: issue.updated_at
-        }));
+        const detected: DetectedIssue[] = [];
+        const hasWhitelist = getGithubUserWhitelist().length > 0;
+
+        // Resolve label appliers with bounded concurrency to avoid N+1
+        // sequential timeline API calls when many issues match at once.
+        const MAX_CONCURRENT_TIMELINE = 5;
+        const items = response.data.items;
+        for (let i = 0; i < items.length; i += MAX_CONCURRENT_TIMELINE) {
+            const batch = items.slice(i, i + MAX_CONCURRENT_TIMELINE);
+            const results = await Promise.all(batch.map(async (issue) => {
+                const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
+                let triggeredBy: string | undefined = issue.user?.login;
+                if (hasWhitelist) {
+                    const labelApplier = await resolveLabelApplierCached({
+                        octokit, owner, repo, issueNumber: issue.number,
+                        updatedAt: issue.updated_at, targetLabels: primaryProcessingLabels, log: correlatedLogger
+                    });
+                    if (labelApplier === null) {
+                        correlatedLogger.warn(
+                            { issueNumber: issue.number, repository: repoFullName },
+                            'Could not determine label applier — skipping issue (fail closed). Will retry on timeline lookup failures; if the label event is too old to appear in the recent timeline window, remove and re-apply the processing label, or raise LABEL_APPLIER_TIMELINE_MAX_PAGES.'
+                        );
+                        return null;
+                    }
+                    triggeredBy = labelApplier;
+                }
+                return {
+                    id: issue.id,
+                    number: issue.number,
+                    title: issue.title,
+                    url: issue.html_url,
+                    repoOwner: owner,
+                    repoName: repo,
+                    labels,
+                    createdAt: issue.created_at,
+                    updatedAt: issue.updated_at,
+                    triggeredBy,
+                    source: 'polling' as const
+                };
+            }));
+            for (const r of results) {
+                if (r) detected.push(r);
+            }
+        }
+        return detected;
     } catch (error) {
         const err = error as Error & { status?: number };
         handleError(error, `fetch_issues_${repoFullName}`, { correlationId });

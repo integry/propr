@@ -5,7 +5,7 @@ import { Knex } from 'knex';
 import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
-import { refreshGitHubTokenIfNeeded } from '../authGithubTokens.js';
+import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
 
@@ -32,19 +32,28 @@ function isAuthError(error: unknown): boolean {
 /**
  * Handle GitHub authentication errors by attempting token refresh before clearing session
  */
-async function handleAuthError(req: Request, res: Response): Promise<void> {
+export async function handleAuthError(req: Request, res: Response): Promise<void> {
   console.warn('GitHub token expired or revoked, attempting token refresh');
 
   // Try to refresh the token before logging out
-  const refreshed = await refreshGitHubTokenIfNeeded(req, true);
+  const refreshResult = await refreshGitHubTokenWithResult(req, true);
 
-  if (refreshed) {
+  if (refreshResult.status === 'refreshed') {
     // Token was successfully refreshed, tell client to retry
     console.log('Token refresh successful, client should retry');
     res.status(401).json({
       error: 'Token refreshed',
       code: 'TOKEN_REFRESHED',
       message: 'Your GitHub token has been refreshed. Please retry your request.'
+    });
+    return;
+  }
+
+  if (refreshResult.status === 'temporarily-unavailable') {
+    res.status(503).json({
+      error: 'GitHub token refresh unavailable',
+      code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE',
+      message: 'GitHub authentication could not be refreshed right now. Please retry shortly.'
     });
     return;
   }

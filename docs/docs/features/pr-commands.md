@@ -4,99 +4,45 @@ sidebar_position: 13
 
 # PR Slash Commands
 
-Most PR refinement does not need a slash command. If you want ProPR to make a normal change, write a regular GitHub PR comment with the instruction and any screenshots or context. ProPR processes that comment directly.
+Most PR refinement does not need a slash command. If you want ProPR to make a normal change, write a regular GitHub PR comment with the instruction and any screenshots or context. ProPR processes that comment directly — see [PR Automation And Fine-Tuning](./pr-followup.md).
 
-Slash commands are for specific actions: AI review, applying AI review feedback, model routing, branch updates, and stronger correction loops.
+Slash commands are for specific actions: AI review, applying AI review feedback, model routing, branch updates, and automated correction loops.
 
 ## Quick Reference
 
-| Command | Use it when | Changes code? |
-|---|---|---|
-| `/review` | You want AI review comments on the PR | No |
-| `/fix` | You want to apply unprocessed AI review comments from `/review` | Yes |
-| `/merge` | You want to merge the base branch into the PR branch | Maybe, if conflicts need resolution |
-| `/switch <model-id>` | You want future PR work to use a different model | No, unless you include follow-up instructions |
-| `/use <model-id>` | You want one immediate follow-up run with a temporary model | Yes |
-| `/ultrafix` | You want an automated review-fix loop | Yes |
+| Command | Use it when | Changes code? | Details |
+|---|---|---|---|
+| `/review` | You want AI review comments on the PR | No | [Review And Fix Commands](./pr-review-fix-commands.md) |
+| `/fix` | You want to apply unprocessed AI review comments from `/review` | Yes | [Review And Fix Commands](./pr-review-fix-commands.md) |
+| `/merge` | You want to merge the base branch into the PR branch | Maybe, if conflicts need resolution | [Ultrafix And Branch Commands](./pr-ultrafix-commands.md) |
+| `/switch <model-id>` | You want future PR work to use a different model | No, unless you include follow-up instructions | [Model Routing Commands](./pr-model-routing-commands.md) |
+| `/use <model-id>` | You want one immediate follow-up run with a temporary model | Yes | [Model Routing Commands](./pr-model-routing-commands.md) |
+| `/ultrafix` | You want an automated review-fix loop | Yes | [Ultrafix And Branch Commands](./pr-ultrafix-commands.md) |
 
-## Model Names
+## Syntax Rules
 
-Use the model IDs configured in AI Agents. GitHub labels use the `llm-<model-id>` form.
+- The slash command must be on the first line of the PR comment. A comment with leading blank lines or text before the command is treated as a normal follow-up comment.
+- Arguments go on the same line as the command (for example `/review llm-claude-opus48` or `/ultrafix goal=8 max=10`).
+- Lines below the command become extra instructions for the run.
+- Both top-level PR comments and line-level review comments are processed; line-level comments carry their file, line, and diff context to the agent.
 
-Examples:
+## Model IDs
 
-```text
-llm-claude-sonnet46
-llm-codex-gpt54
-llm-antigravity-gemini-pro
-llm-antigravity-opus
-```
+Commands that take a model accept the model IDs configured in AI Agents. The `llm-` prefix is optional in command arguments — `/switch claude-opus48` and `/switch llm-claude-opus48` are equivalent. Unrecognized models are rejected. The built-in catalog is listed in [Agents and Models](./agents-and-models.md).
 
-## Natural Follow-Up
+## Who Can Trigger Commands
 
-Use a normal comment for direct human instructions:
+ProPR filters PR comments by author before processing anything (commands and natural follow-ups alike):
 
-```text
-Please simplify the loading state and add a regression test.
-```
+- Bot accounts (usernames containing `[bot]` or with user type `Bot`) and ProPR's own bot account are ignored.
+- If `GITHUB_USER_WHITELIST` is set (comma-separated usernames), only those users can trigger processing.
+- Users listed in `GITHUB_USER_BLACKLIST` are ignored.
+- Comments containing a configured follow-up ignore keyword are skipped.
 
-This is the preferred path for ordinary PR fine-tuning.
+Slash commands from an allowed author are processed directly. Natural follow-up comments are additionally gated: the PR must carry one of the configured processing labels (for example `AI` or `propr`), or the comment must contain a trigger keyword from `PR_FOLLOWUP_TRIGGER_KEYWORDS` (for example `!propr`).
 
-## Review And Fix
+## Completion Comments
 
-Use `/review` when you want read-only AI review feedback:
+When a command or follow-up task finishes, ProPR posts a completion comment on the PR with a summary of what was done, the commit hash when changes were committed, and an expandable "ProPR Slash Commands" reference block listing the available commands.
 
-```text
-/review
-```
-
-Use `/fix` after `/review` when you want ProPR to apply the remaining unprocessed AI review comments:
-
-```text
-/fix
-```
-
-`/fix` only processes AI review comments generated by `/review`. It is not needed for user-authored comments.
-
-More detail: [Review And Fix Commands](./pr-review-fix-commands.md).
-
-## Model Routing
-
-Use `/switch` to change the PR's model for future work:
-
-```text
-/switch <model-id>
-```
-
-Use `/use` to run one immediate follow-up task with a temporary model:
-
-```text
-/use <model-id>
-Please investigate the flaky test failure.
-```
-
-More detail: [Model Routing Commands](./pr-model-routing-commands.md).
-
-## Branch And Correction Loops
-
-Use `/merge` to bring the branch up to date:
-
-```text
-/merge
-```
-
-Use `/ultrafix` when you want ProPR to alternate review and fix cycles:
-
-```text
-/ultrafix goal=8 max=5 pause=60
-```
-
-More detail: [Ultrafix And Branch Commands](./pr-ultrafix-commands.md).
-
-## Rules To Remember
-
-- A slash command must be the first line of the PR comment.
-- Text after the command becomes extra instructions.
-- Normal user comments are processed directly.
-- `/fix` only applies unprocessed AI review comments generated by `/review`.
-- Check AI Agents in the Web UI for valid model IDs.
+{/* SCREENSHOT PLACEHOLDER: Capture a PR conversation showing a `/review` comment, the resulting AI review with severity findings and a `Score: N/10` line, and a ProPR completion comment with the expanded slash commands block. */}

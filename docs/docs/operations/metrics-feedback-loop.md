@@ -14,13 +14,15 @@ Review these signals regularly:
 - Failure categories
 - Agent and model performance
 
+Pull the numbers from the dashboard (queue stats, success rate, repository breakdown, top models, total cost), the Tasks page (per-task outcomes and failure context), and the LLM Log page (per-call cost and duration). See [System Metrics](./system-metrics.md) and [LLM Metrics](./llm-metrics.md) for where each number comes from.
+
 Look at trends, not just one-off failures.
 
 ## Failure Analysis
 
 For each recurring failure pattern, identify:
 
-- Where the failure happened
+- Where the failure happened (queue, git setup, agent execution, finalization)
 - Which repositories or agents are affected
 - Whether the task was too broad
 - Whether context was missing
@@ -36,8 +38,8 @@ Common improvement actions:
 - Split larger tasks earlier in Planner Studio
 - Add repository summaries or refresh indexing
 - Change default agent or review model
-- Tune worker concurrency
-- Adjust timeout settings
+- Tune worker concurrency (`WORKER_CONCURRENCY`)
+- Adjust agent timeout settings
 - Improve PR follow-up instructions
 - Add missing tests or workflow guidance
 
@@ -59,12 +61,13 @@ This keeps the feedback loop from becoming an unowned report.
 
 Use live dashboard signals for operational incidents:
 
-- Sudden queue growth
+- Sudden queue growth (waiting count in queue stats)
 - Repeated provider rate-limit failures
-- Authentication failures after credential changes
+- Authentication failures after credential changes (agent health in the header status)
 - Increased timeout rate
-- Cost spikes
-- A specific repository causing disproportionate failures
+- Cost spikes (total cost and recent high-cost runs)
+- A specific repository causing disproportionate failures (Repository Breakdown)
+- Provider capacity pressure (Agent Tank usage bars, when enabled)
 
 Use weekly or monthly review for product/process decisions.
 

@@ -15,53 +15,52 @@ Planning reduces the two most common failure modes in agent-driven development:
 
 Planner Studio gives you a checkpoint before code changes happen. The plan makes the intended work explicit: what should change, what should stay out of scope, which repository and branch are targeted, and how the work should be split.
 
-## Draft Workflow
+## The Three Stages
 
-A typical planning pass looks like this:
+Planner Studio moves a draft through three stages, shown in the stepper at the top of the page:
 
-1. Create a draft from the Web UI.
-2. Select the repository and branch context.
-3. Add the user request, attachments, screenshots, or supporting notes.
-4. Preview gathered context before generating the plan.
-5. Generate structured implementation steps.
-6. Edit, refine, or regenerate the plan.
-7. Approve individual issues or the full plan to run.
+1. **Define & Context** — enter the request, select the repository (and with it the configured base branch), choose the planning model, adjust the context level, and attach files. ProPR previews gathered context and an estimated issue count before generation.
+2. **Review Plan** — inspect the generated issues, edit or delete individual items, restore deleted ones, undo and redo edits, and send the plan back through refinement chat with follow-up instructions.
+3. **Execution** — after the plan is finalized into GitHub issues, track each issue's status (Pending, Processing, Under Review, Merged), pause or resume execution, and open the resulting pull requests.
 
-The draft can be paused, resumed, or reset back to setup if the inputs were wrong. That makes planning useful for exploratory work as well as well-defined tickets.
+A draft can be reset back to setup if the inputs were wrong, which makes planning useful for exploratory work as well as well-defined tickets.
+
+{/* SCREENSHOT PLACEHOLDER: Capture Planner Studio in the Review Plan stage: the stepper showing the three stages, a generated plan with several issues, and the refinement chat input visible. Use a draft generated against a real repository so issue titles look representative. */}
 
 ## Context Assembly
 
 Planner Studio can include several kinds of context before generation:
 
 - Repository selection from monitored repos
-- Branch-aware planning based on the configured repository entry
-- File and repository context previews
-- Attachments and supporting material
-- Relevance and context statistics before generation
+- Branch-aware planning based on the configured repository entry (see [Branch Configuration](./branch-config.md))
+- A context level setting that controls how much repository context is gathered
+- File attachments, selected manually or automatically
+- Context statistics and an estimated issue count before generation
 
-The goal is not to flood the model with every file. The goal is to make the proposed work easy to inspect before it runs, so reviewers can tell whether the agent saw enough relevant context.
+The goal is not to flood the model with every file. The goal is to make the proposed work easy to inspect before it runs, so reviewers can tell whether the agent saw enough relevant context. Repository summaries and indexing improve this step; see [Repository Knowledge](./repository-knowledge.md).
 
 ## Review Before Running
 
-Plans stay in draft until you approve them. Before running anything, you can:
+Plans stay in draft until you finalize them. Before running anything, you can:
 
 - Edit scope before implementation starts
-- Remove risky or low-value steps
+- Remove risky or low-value steps (and restore them if you change your mind)
 - Split oversized steps into smaller issues
 - Add acceptance criteria
-- Send the plan back for refinement
-- Approve one planned issue at a time
+- Send the plan back through refinement chat
+- Undo or redo plan edits
 
-This keeps the agent useful without letting a rough plan turn directly into repository changes.
+Finalizing the plan creates GitHub issues from the plan items (`propr plan finalize` does the same from the CLI).
 
 ## Running From A Plan
 
-After approval, ProPR can run the planned work in a controlled way:
+After finalization, ProPR runs the planned work in a controlled way:
 
-- Implement one planned issue
-- Use Epic PR auto-merge to run planned issues sequentially
+- Implement one planned issue at a time, or let the plan run sequentially
+- Enable Epic mode with auto-merge so planned issues run one after another, each PR merging before the next issue starts
+- Pause and resume execution from the Execution view
 - Track each run as a task record
 - Link generated pull requests back to the source plan
 - Continue work later from the same planning context
 
-For larger work, combine this with [Work Splitting](./work-splitting.md) so the final pull requests stay reviewable.
+For larger work, combine this with [Work Splitting](./work-splitting.md) so the final pull requests stay reviewable. For a step-by-step walkthrough, see the [Planner Studio tutorial](../tutorials/planner-studio.md).

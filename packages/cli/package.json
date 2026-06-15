@@ -1,6 +1,6 @@
 {
   "name": "@propr/cli",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "CLI for interacting with the ProPR backend",
   "type": "module",
   "main": "dist/index.js",
@@ -8,17 +8,28 @@
   "bin": {
     "propr": "./dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-assets.mjs",
+    "prepack": "npm run build",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@propr/shared": "^0.8.2",
     "commander": "^13.1.0",
-    "dotenv": "^16.5.0"
+    "dotenv": "^16.5.0",
+    "ink": "^7.0.5",
+    "react": "^19.2.7"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/react": "^19.2.17",
     "typescript": "^5.9.3"
   }
 }

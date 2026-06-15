@@ -11,22 +11,28 @@ This reference covers git configuration, worktree maintenance, performance, and 
 Common git settings:
 
 ```bash
-# Git paths
-GIT_CLONES_BASE_PATH=/app/repos/clones
-GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
+# Git paths (defaults shown)
+GIT_CLONES_BASE_PATH=/tmp/git-processor/clones
+GIT_WORKTREES_BASE_PATH=/tmp/git-processor/worktrees
 
-# Default branch
+# Fallback branch when no repository-specific default is configured
+GIT_FALLBACK_BRANCH=main
+
+# Repository-specific default branch override
+# Key format: GIT_DEFAULT_BRANCH_<OWNER>_<REPO> — owner and repo are
+# uppercased and every non-alphanumeric character becomes "_".
+# Example for my-org/web-app:
+GIT_DEFAULT_BRANCH_MY_ORG_WEB_APP=dev
+
+# Fallback base branch used by PR operations when no other source resolves
+# (distinct from branch resolution above; read by src/github/prOperations.ts)
 GIT_DEFAULT_BRANCH=main
 
-# Repository-specific override
-GIT_DEFAULT_BRANCH_owner_repo=dev
-
-# Clone options
+# Clone options (sets --depth=N when non-empty)
 GIT_SHALLOW_CLONE_DEPTH=
-
-# Retry configuration
-GIT_OPERATION_MAX_RETRIES=3
 ```
+
+Retry behavior for transient git failures is hard-coded (exponential backoff in `retryHandler.ts`) and is not environment-configurable.
 
 For image-based installs, paths should point inside the ProPR containers and be backed by the host directory passed to the launcher through `PROPR_REPOS_DIR`.
 
@@ -62,7 +68,7 @@ Repository reuse is the main performance optimization:
 - Create task-specific worktrees from the shared clone
 - Clean up old worktrees after completion
 
-For very large repositories, consider shallow clones and monitor disk pressure closely.
+For very large repositories, consider setting `GIT_SHALLOW_CLONE_DEPTH` and monitor disk pressure closely.
 
 ## Common Errors
 
@@ -90,7 +96,7 @@ Clean up old worktrees and review clone/cache size:
 
 ```bash
 git worktree prune
-du -sh /app/repos/*
+du -sh /tmp/git-processor/*
 ```
 
 Increase disk space before raising worker concurrency.
@@ -103,6 +109,6 @@ Remove the failed worktree only after confirming no job is still using it, then 
 
 1. Keep clones and worktrees on fast persistent storage.
 2. Do not share one working directory across tasks.
-3. Use repository-specific branch defaults for non-`main` repos.
+3. Use repository-specific branch defaults (`GIT_DEFAULT_BRANCH_<OWNER>_<REPO>`) for non-`main` repos.
 4. Monitor disk usage as part of normal operations.
 5. Prefer system-managed branch creation over agent-created branches.
