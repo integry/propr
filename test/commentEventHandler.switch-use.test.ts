@@ -139,7 +139,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 });
 
 // Import module under test AFTER mocks
-const { processCommentEvent } = await import(
+const { processCommentEvent, handleCommentDeleted } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
 const { applyPendingCommentCommandContext } = await import(
@@ -908,6 +908,42 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.match(pendingComment.body as string, /File: src\/auth\.ts/);
         assert.match(pendingComment.body as string, /Line: 27/);
         assert.match(pendingComment.body as string, /@@ -1,5 \+1,10 @@/);
+    });
+});
+
+describe('commentEventHandler — comment deletion queue cleanup', () => {
+    beforeEach(() => {
+        mockLoggerInstance.info.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+    });
+
+    test('removes delayed PR comment job when the source comment is deleted', async () => {
+        const remove = mock.fn(async () => {});
+        mockDelayedJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-123',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                comments: [{ id: 123, body: 'please fix this', author: 'integry', type: 'issue' }],
+            },
+            remove,
+        }];
+        const event = createPRCommentEvent('please fix this');
+        event.comment.id = 123;
+        const config = createTestConfig();
+
+        await handleCommentDeleted(event, 'issue_comment', 'corr-delete-delayed', config);
+
+        assert.strictEqual(remove.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.del.mock.callCount(), 1);
+        assert.strictEqual(
+            config.redisClient.del.mock.calls[0].arguments[0],
+            'pr-comment-processed:testowner:testrepo:42:123'
+        );
     });
 });
 

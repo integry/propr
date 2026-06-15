@@ -175,7 +175,7 @@ export class VibeAgent implements Agent {
 
     // eslint-disable-next-line complexity
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'mistral-medium-3.5';
         const suffix = responseFormat === 'json'
@@ -224,22 +224,24 @@ export class VibeAgent implements Agent {
             const usage = formatUsageMetrics(usageMetrics);
 
             if (success && analysisText) {
-                await persistLlmLog(createLlmLogFromAnalysis({
-                    executionType: (executionType || 'other') as ExecutionType,
-                    modelUsed: parsedOutput.model || effectiveModel,
-                    executionTimeMs,
-                    success: true,
-                    tokenUsage,
-                    sessionId: parsedOutput.sessionId,
-                    draftId: taskId,
-                    correlationId,
-                    repository,
-                    metadata: buildLogMetadata(metadata || {}, result, false),
-                    agentAlias: this.config.alias,
-                    usageMetrics: usage.metrics,
-                    usageMetricRecords: usage.records,
-                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
-                }));
+                if (!suppressLlmLog) {
+                    await persistLlmLog(createLlmLogFromAnalysis({
+                        executionType: (executionType || 'other') as ExecutionType,
+                        modelUsed: parsedOutput.model || effectiveModel,
+                        executionTimeMs,
+                        success: true,
+                        tokenUsage,
+                        sessionId: parsedOutput.sessionId,
+                        draftId: taskId,
+                        correlationId,
+                        repository,
+                        metadata: buildLogMetadata(metadata || {}, result, false),
+                        agentAlias: this.config.alias,
+                        usageMetrics: usage.metrics,
+                        usageMetricRecords: usage.records,
+                        workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
+                    }));
+                }
 
                 return {
                     response: analysisText,
@@ -252,23 +254,25 @@ export class VibeAgent implements Agent {
             }
 
             const errorMsg = buildVibeFailureMessage(result, parsedOutput);
-            await persistLlmLog(createLlmLogFromAnalysis({
-                executionType: (executionType || 'other') as ExecutionType,
-                modelUsed: parsedOutput.model || effectiveModel,
-                executionTimeMs,
-                success: false,
-                tokenUsage,
-                error: errorMsg,
-                sessionId: parsedOutput.sessionId,
-                draftId: taskId,
-                correlationId,
-                repository,
-                metadata: buildLogMetadata(metadata || {}, result, true),
-                agentAlias: this.config.alias,
-                usageMetrics: usage.metrics,
-                usageMetricRecords: usage.records,
-                workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
-            }));
+            if (!suppressLlmLog) {
+                await persistLlmLog(createLlmLogFromAnalysis({
+                    executionType: (executionType || 'other') as ExecutionType,
+                    modelUsed: parsedOutput.model || effectiveModel,
+                    executionTimeMs,
+                    success: false,
+                    tokenUsage,
+                    error: errorMsg,
+                    sessionId: parsedOutput.sessionId,
+                    draftId: taskId,
+                    correlationId,
+                    repository,
+                    metadata: buildLogMetadata(metadata || {}, result, true),
+                    agentAlias: this.config.alias,
+                    usageMetrics: usage.metrics,
+                    usageMetricRecords: usage.records,
+                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
+                }));
+            }
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;

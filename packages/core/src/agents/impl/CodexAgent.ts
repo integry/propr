@@ -201,7 +201,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -236,7 +236,7 @@ export class CodexAgent implements Agent {
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             if (result.exitCode === 0 || parsedOutput.result) {
-                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata });
+                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata, suppressLlmLog });
             }
 
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
@@ -277,8 +277,9 @@ export class CodexAgent implements Agent {
         usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
         executionType?: string; taskId?: string; taskNumber?: number; prNumber?: number;
         correlationId?: string; repository?: string; metadata?: Record<string, unknown>;
+        suppressLlmLog?: boolean;
     }): Promise<AnalysisResult> {
-        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata } = opts;
+        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata, suppressLlmLog } = opts;
         const analysisText = (parsedOutput.result || '').trim();
         logger.info({
             agentAlias: this.config.alias, responseLength: analysisText.length,
@@ -288,16 +289,18 @@ export class CodexAgent implements Agent {
             usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
         }, 'Lightweight analysis completed');
 
-        await persistLlmLog(createLlmLogFromAnalysis({
-            executionType: (executionType || 'other') as ExecutionType,
-            modelUsed: parsedOutput.model || effectiveModel, executionTimeMs,
-            success: true, tokenUsage: parsedOutput.tokenUsage,
-            sessionId: parsedOutput.sessionId, draftId: taskId,
-            correlationId, repository, metadata,
-            agentAlias: this.config.alias,
-            ...this.formatUsageMetrics(usageMetrics),
-            workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
-        }));
+        if (!suppressLlmLog) {
+            await persistLlmLog(createLlmLogFromAnalysis({
+                executionType: (executionType || 'other') as ExecutionType,
+                modelUsed: parsedOutput.model || effectiveModel, executionTimeMs,
+                success: true, tokenUsage: parsedOutput.tokenUsage,
+                sessionId: parsedOutput.sessionId, draftId: taskId,
+                correlationId, repository, metadata,
+                agentAlias: this.config.alias,
+                ...this.formatUsageMetrics(usageMetrics),
+                workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
+            }));
+        }
 
         return {
             response: analysisText, modelUsed: parsedOutput.model || effectiveModel,

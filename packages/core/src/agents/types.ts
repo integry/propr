@@ -117,6 +117,8 @@ export interface AnalyzeOptions {
     timeoutMs?: number;
     /** Expected response format. Defaults to plain text analysis. */
     responseFormat?: 'text' | 'json';
+    /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
+    suppressLlmLog?: boolean;
 }
 
 export interface AgentExecutionResult {

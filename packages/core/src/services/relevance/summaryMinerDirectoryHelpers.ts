@@ -12,6 +12,33 @@ export interface DirectoryResult {
   summary: string | null;
 }
 
+export function normalizeSummaryPath(pathValue: string): string {
+  return pathValue
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/home\/node\/workspace\//, '')
+    .replace(/^\/workspace\//, '')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+}
+
+export function resolveExpectedSummaryPath(pathValue: string, expectedPaths: string[]): string | null {
+  const normalizedPath = normalizeSummaryPath(pathValue);
+  const normalizedExpected = expectedPaths.map(expectedPath => ({
+    original: expectedPath,
+    normalized: normalizeSummaryPath(expectedPath)
+  }));
+
+  const exact = normalizedExpected.find(expected => expected.normalized === normalizedPath);
+  if (exact) return exact.original;
+
+  const suffixMatches = normalizedExpected.filter(expected =>
+    normalizedPath.endsWith(`/${expected.normalized}`)
+  );
+  return suffixMatches.length === 1 ? suffixMatches[0].original : null;
+}
+
 export function groupDirectoriesByDepth(directories: string[]): Map<number, string[]> {
   const byDepth = new Map<number, string[]>();
   for (const dir of directories) {
@@ -129,7 +156,8 @@ export function parseBatchDirectoryResponse(response: string, expectedPaths: str
     const summaryMap = new Map<string, string>();
     for (const s of parsed.summaries) {
       if (typeof s.path === 'string' && typeof s.summary === 'string' && s.summary.trim().length > 0) {
-        summaryMap.set(s.path.trim(), s.summary.trim());
+        const expectedPath = resolveExpectedSummaryPath(s.path, expectedPaths);
+        if (expectedPath) summaryMap.set(expectedPath, s.summary.trim());
       }
     }
 

@@ -146,7 +146,7 @@ export class ClaudeAgent implements Agent {
 
     /** Runs a lightweight, read-only analysis for planning, summarization, and PR reviews. */
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -190,15 +190,17 @@ export class ClaudeAgent implements Agent {
                     usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null
                 }, 'Lightweight analysis completed');
 
-                const usage = formatUsageMetrics(usageMetrics);
-                await persistLlmLog(createLlmLogFromAnalysis({
-                    executionType: (executionType || 'other') as ExecutionType,
-                    modelUsed: claudeOutput.model || effectiveModel, executionTimeMs, success: true,
-                    tokenUsage: correctedTokenUsage, sessionId: claudeOutput.sessionId ?? undefined,
-                    draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
-                    usageMetrics: usage.metrics, usageMetricRecords: usage.records,
-                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
-                }));
+                if (!suppressLlmLog) {
+                    const usage = formatUsageMetrics(usageMetrics);
+                    await persistLlmLog(createLlmLogFromAnalysis({
+                        executionType: (executionType || 'other') as ExecutionType,
+                        modelUsed: claudeOutput.model || effectiveModel, executionTimeMs, success: true,
+                        tokenUsage: correctedTokenUsage, sessionId: claudeOutput.sessionId ?? undefined,
+                        draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
+                        usageMetrics: usage.metrics, usageMetricRecords: usage.records,
+                        workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
+                    }));
+                }
 
                 return {
                     response: analysisText, modelUsed: claudeOutput.model || effectiveModel,

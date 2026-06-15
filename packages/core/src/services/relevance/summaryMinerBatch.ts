@@ -5,6 +5,7 @@ import { db } from '../../db/connection.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
+import { resolveExpectedSummaryPath } from './summaryMinerDirectoryHelpers.js';
 import {
   clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
@@ -166,7 +167,7 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
 
   try {
     const results = await analyzeBatchWithAgent({
-      prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`
+      prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`, fullName
     });
     await clearSummarizationPrimaryQuotaFailures({
       primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
@@ -207,6 +208,7 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         agent: fallbackAgent,
         model: fallbackModelUsed ?? fallbackModelOverride,
         context: `batch_summarization_fallback:${fullName}`,
+        fullName,
         retryOptions: SUMMARIZATION_FALLBACK_RETRY
       });
       await clearSummarizationCooldown(fullName, branch, {
@@ -259,16 +261,24 @@ async function analyzeBatchWithAgent(options: {
   agent: Agent;
   model?: string;
   context: string;
+  fullName: string;
   retryOptions?: RetryOptions;
 }): Promise<SummaryResult[]> {
-  const { prompt, batch, agent, model, context, retryOptions = SUMMARIZATION_RETRY } = options;
+  const { prompt, batch, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY } = options;
   return withRetry(
     async () => {
-      const analysisResult = await agent.analyze(prompt, { model, responseFormat: 'json' });
+      const analysisResult = await agent.analyze(prompt, {
+        model,
+        responseFormat: 'json',
+        executionType: 'summarization',
+        repository: fullName,
+        metadata: { phase: 'batch_summarization', fileCount: batch.length },
+        suppressLlmLog: true
+      });
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Summarization agent analysis failed');
       }
-      const parsed = parseBatchResponse(analysisResult.response);
+      const parsed = parseBatchResponse(analysisResult.response, batch.map(file => file.path));
       if (parsed.length === 0) {
         throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
       }
@@ -300,7 +310,7 @@ FILES:
 ${filesContent}`;
 }
 
-function parseBatchResponse(response: string): SummaryResult[] {
+export function parseBatchResponse(response: string, expectedPaths?: string[]): SummaryResult[] {
   try {
     const jsonMatch = response.match(/\{[\s\S]*"summaries"[\s\S]*\}/);
     if (!jsonMatch) {
@@ -321,7 +331,15 @@ function parseBatchResponse(response: string): SummaryResult[] {
         s.path.trim().length > 0 &&
         s.summary.trim().length > 0
       )
-      .map(s => ({ path: s.path.trim(), summary: s.summary.trim() }));
+      .map(s => {
+        const expectedPath = expectedPaths
+          ? resolveExpectedSummaryPath(s.path, expectedPaths)
+          : s.path.trim();
+        return expectedPath
+          ? { path: expectedPath, summary: s.summary.trim() }
+          : null;
+      })
+      .filter((s): s is SummaryResult => s !== null);
   } catch (error) {
     logger.warn({ error: (error as Error).message }, 'Failed to parse batch response');
     return [];

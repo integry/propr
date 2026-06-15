@@ -131,7 +131,7 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
   const { prompt, directories, agent, modelOverride, modelUsed, fullName, branch, primaryAgentAliasSetting, state } = options;
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
-      prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`
+      prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`, fullName
     });
     await clearSummarizationPrimaryQuotaFailures({
       primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
@@ -186,6 +186,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       agent: fallbackAgent as Agent,
       model: fallbackModelUsed ?? fallbackModelOverride,
       context: `directory_aggregation_fallback:${fullName}`,
+      fullName,
       retryOptions: SUMMARIZATION_FALLBACK_RETRY
     });
     state.fallbackUsed = true;
@@ -253,12 +254,20 @@ async function analyzeDirectoryBatchWithAgent(options: {
   agent: Agent;
   model?: string;
   context: string;
+  fullName: string;
   retryOptions?: RetryOptions;
 }): Promise<DirectoryResult[]> {
-  const { prompt, directories, agent, model, context, retryOptions = SUMMARIZATION_RETRY } = options;
+  const { prompt, directories, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY } = options;
   return withRetry(
     async () => {
-      const analysisResult = await agent.analyze(prompt, { model, responseFormat: 'json' });
+      const analysisResult = await agent.analyze(prompt, {
+        model,
+        responseFormat: 'json',
+        executionType: 'summarization',
+        repository: fullName,
+        metadata: { phase: 'directory_aggregation', directoryCount: directories.length },
+        suppressLlmLog: true
+      });
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
       }

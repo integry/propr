@@ -244,7 +244,7 @@ export class AntigravityAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text' } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Antigravity agent...');
         const effectiveModel = model || 'antigravity-gemini-3.5-flash-medium';
@@ -273,13 +273,15 @@ export class AntigravityAgent implements Agent {
                 const antigravityTokenUsage = this.resolveTokenUsage(tokenUsage, fullPrompt, analysisText, []);
                 logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel, executionTimeMs, inputTokens: antigravityTokenUsage?.input_tokens, outputTokens: antigravityTokenUsage?.output_tokens, estimatedTokens: !(tokenUsage.input_tokens || tokenUsage.output_tokens), usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
 
-                const usage = formatUsageMetrics(usageMetrics);
-                await persistLlmLog(createLlmLogFromAnalysis({
-                    executionType: (executionType || 'other') as ExecutionType, modelUsed: effectiveModel, executionTimeMs, success: true, tokenUsage: antigravityTokenUsage,
-                    sessionId, draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
-                    usageMetrics: usage.metrics, usageMetricRecords: usage.records,
-                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
-                }));
+                if (!suppressLlmLog) {
+                    const usage = formatUsageMetrics(usageMetrics);
+                    await persistLlmLog(createLlmLogFromAnalysis({
+                        executionType: (executionType || 'other') as ExecutionType, modelUsed: effectiveModel, executionTimeMs, success: true, tokenUsage: antigravityTokenUsage,
+                        sessionId, draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
+                        usageMetrics: usage.metrics, usageMetricRecords: usage.records,
+                        workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
+                    }));
+                }
 
                 return { response: analysisText, modelUsed: effectiveModel, executionTimeMs, success: true,
                     tokenUsage: antigravityTokenUsage, sessionId };
