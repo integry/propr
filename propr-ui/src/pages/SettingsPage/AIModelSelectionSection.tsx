@@ -17,6 +17,7 @@ interface AIModelSelectionSettings {
   planner_generation_model: string;
   default_agent_alias: string;
   pr_review_model: string;
+  pr_review_prompt: string;
 }
 
 interface AIModelSelectionSectionProps {
@@ -24,6 +25,8 @@ interface AIModelSelectionSectionProps {
   summarizationSettings: SummarizationSettings;
   agents: AgentConfig[];
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  onReviewPromptBlur: () => void;
   onSummarizationModelChange: (agentAlias: string) => void;
   onDefaultAgentChange: (agentAlias: string) => void;
   className?: string;
@@ -66,6 +69,8 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   summarizationSettings,
   agents,
   onSettingChange,
+  onReviewPromptChange,
+  onReviewPromptBlur,
   onSummarizationModelChange,
   onDefaultAgentChange,
   className
@@ -233,6 +238,24 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               ) : (
                 <NoAgentsMessage label="enabled agents" />
               )}
+            </SettingRow>
+
+            <SettingRow
+              label="Review Prompt"
+              htmlFor="pr_review_prompt"
+              helperText="Optional override for the review task guidance. Leave empty to use the built-in prompt. The required output sections (Overall Evaluation, Findings, Score) are always appended automatically."
+            >
+              <textarea
+                id="pr_review_prompt"
+                name="pr_review_prompt"
+                value={settings.pr_review_prompt}
+                onChange={onReviewPromptChange}
+                onBlur={onReviewPromptBlur}
+                rows={5}
+                maxLength={20000}
+                placeholder="Use the built-in review prompt"
+                className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border font-mono"
+              />
             </SettingRow>
 
             <SettingRow

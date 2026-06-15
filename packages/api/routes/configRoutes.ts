@@ -29,6 +29,7 @@ const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
+const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
 interface IntegerSettingConfig {
   name: string;
   value: unknown;
@@ -269,6 +270,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
         planner_context_model: settings.planner_context_model ?? envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model ?? envDefaults.planner_generation_model,
+        pr_review_prompt: typeof settings.pr_review_prompt === 'string' ? settings.pr_review_prompt : '',
         auto_followup_score_threshold: autoFollowup.value,
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         pr_review_model: prReviewModel,
@@ -297,6 +299,17 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     if (Object.keys(settingsValidation.value).length === 0) {
       res.json({ success: true, settings: {}, noop: true });
       return;
+    }
+    if ('pr_review_prompt' in settingsValidation.value) {
+      const prReviewPrompt = settingsValidation.value.pr_review_prompt;
+      if (typeof prReviewPrompt !== 'string') {
+        res.status(400).json({ error: 'pr_review_prompt must be a string' });
+        return;
+      }
+      if (prReviewPrompt.length > MAX_PR_REVIEW_PROMPT_LENGTH) {
+        res.status(400).json({ error: `pr_review_prompt must be at most ${MAX_PR_REVIEW_PROMPT_LENGTH} characters` });
+        return;
+      }
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock =>

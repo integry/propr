@@ -18,7 +18,23 @@ export interface ReviewPromptOptions {
     prDiff?: string;
     /** Full content of changed files for additional context */
     fileContents?: string;
+    /**
+     * Operator-configured review prompt (`pr_review_prompt` setting). When
+     * non-empty, this replaces the default high-level review guidance line.
+     * The mandatory structured output sections (Overall Evaluation, Findings,
+     * and the `Score: N/10` line) are always appended regardless of the
+     * override, because the /fix gatherer and ultrafix score extraction depend
+     * on that exact format. An empty/undefined value uses the built-in default.
+     */
+    reviewPromptOverride?: string;
 }
+
+/**
+ * Default high-level review guidance. This is the only part of the task block
+ * the `pr_review_prompt` override replaces — the structured sections below it
+ * are always preserved.
+ */
+const DEFAULT_REVIEW_GUIDANCE = `Perform a thorough code review of this pull request based on the CURRENT diff. Your response MUST contain exactly the following three sections with the headers shown below. Do not omit any section.`;
 
 /**
  * Build the review prompt that is sent to the reviewing model.
@@ -42,7 +58,12 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         instructions,
         prDiff,
         fileContents,
+        reviewPromptOverride,
     } = options;
+
+    const taskGuidance = reviewPromptOverride && reviewPromptOverride.trim() !== ''
+        ? reviewPromptOverride
+        : DEFAULT_REVIEW_GUIDANCE;
 
     const diffSection = prDiff
         ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT, COMPLETE state of the PR changes included below. Base your review on this actual code, not on what earlier comments may have mentioned. Only treat the review as partial if the diff contains an explicit "files omitted" note; otherwise assume it is complete and do NOT claim it was truncated.\n\n${prDiff}\n`
@@ -70,7 +91,7 @@ ${combinedCommentBody}
 ${instructions ? `**Additional Review Instructions:**\n${instructions}\n\n` : ''}**IMPORTANT:** The comment history above may reference issues that have since been fixed in subsequent commits. Always verify against the actual PR diff shown above before reporting an issue. If an earlier comment mentions a problem but the diff shows it has been addressed, do NOT report it as a current issue.
 
 **YOUR TASK:**
-Perform a thorough code review of this pull request based on the CURRENT diff. Your response MUST contain exactly the following three sections with the headers shown below. Do not omit any section.
+${taskGuidance}
 
 ## Overall Evaluation
 Provide a concise summary of the PR's purpose, approach, and overall quality. State whether the PR is ready to merge, needs minor changes, or needs significant rework.

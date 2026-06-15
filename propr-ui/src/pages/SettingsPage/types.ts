@@ -7,6 +7,7 @@ export interface Settings {
   auto_followup_score_threshold: number;
   auto_resolve_merge_conflicts: boolean;
   pr_review_model: string;
+  pr_review_prompt: string;
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
   ultrafix_pause_seconds: number;

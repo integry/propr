@@ -49,6 +49,7 @@ export function useSettingsState() {
     auto_followup_score_threshold: 4,
     auto_resolve_merge_conflicts: false,
     pr_review_model: '',
+    pr_review_prompt: '',
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60
@@ -101,6 +102,7 @@ export function useSettingsState() {
         auto_followup_score_threshold: settingsToSave.auto_followup_score_threshold,
         auto_resolve_merge_conflicts: settingsToSave.auto_resolve_merge_conflicts,
         pr_review_model: settingsToSave.pr_review_model,
+        pr_review_prompt: settingsToSave.pr_review_prompt,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds

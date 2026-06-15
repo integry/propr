@@ -93,11 +93,14 @@ const SettingsPage: React.FC = () => {
                 planner_context_model: settings.planner_context_model,
                 planner_generation_model: settings.planner_generation_model,
                 default_agent_alias: settings.default_agent_alias,
-                pr_review_model: settings.pr_review_model
+                pr_review_model: settings.pr_review_model,
+                pr_review_prompt: settings.pr_review_prompt
               }}
               summarizationSettings={summarizationSettings}
               agents={agents}
               onSettingChange={handleModelSelectionChange}
+              onReviewPromptChange={(e) => setSettings(prev => ({ ...prev, pr_review_prompt: e.target.value }))}
+              onReviewPromptBlur={triggerSettingsSave}
               onSummarizationModelChange={handleSummarizationModelChange}
               onDefaultAgentChange={handleDefaultAgentChange}
             />

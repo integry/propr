@@ -21,6 +21,7 @@ interface SettingsApiData {
   auto_followup_score_threshold?: number;
   auto_resolve_merge_conflicts?: boolean;
   pr_review_model?: string;
+  pr_review_prompt?: string;
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
@@ -36,6 +37,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
     auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
     pr_review_model: settingsData.pr_review_model || '',
+    pr_review_prompt: settingsData.pr_review_prompt || '',
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
