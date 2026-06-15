@@ -256,6 +256,14 @@ export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, is
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
+
+export {
+    toAgentTankAgent,
+    toProprAgent,
+    normalizeAgentTankStatus,
+    normalizeAgentTankAgents
+} from './services/agentTankService.js';
+export type { AgentStatusResponse } from './services/agentTankService.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export type {

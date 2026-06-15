@@ -1,6 +1,25 @@
 import { Request, Response } from 'express';
 import * as configManager from '@propr/core';
 
+interface AgentTankStatus {
+  name?: string;
+  usage?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+function toProprAgent(agent: string): string {
+  return agent === 'agy' ? 'antigravity' : agent;
+}
+
+function normalizeAgentTankAgents(agents: Record<string, AgentTankStatus>): Record<string, AgentTankStatus> {
+  return Object.fromEntries(
+    Object.entries(agents).map(([agent, status]) => {
+      const proprAgent = toProprAgent(agent);
+      return [proprAgent, { ...status, name: toProprAgent(status.name || agent) }];
+    })
+  );
+}
+
 export function createAgentTankRoutes() {
   async function getAgentTankSettings(_req: Request, res: Response): Promise<void> {
     try {
@@ -63,8 +82,8 @@ export function createAgentTankRoutes() {
         const response = await fetch(`${settings.url}/status`, { signal: controller.signal });
         clearTimeout(timer);
         if (response.ok) {
-          const data = await response.json();
-          res.json({ enabled: true, agents: data });
+          const data = await response.json() as Record<string, AgentTankStatus>;
+          res.json({ enabled: true, agents: normalizeAgentTankAgents(data) });
         } else {
           res.json({ enabled: true, error: `HTTP ${response.status}` });
         }
