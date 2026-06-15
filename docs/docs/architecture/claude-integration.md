@@ -8,7 +8,7 @@ This page is kept for compatibility with existing links to `/docs/architecture/c
 
 The architecture overview for all coding agents now lives at [Coding Agent Integration](./coding-agent-integration.md). Start there for the shared contract used by Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe.
 
-For Claude-specific runtime settings, Docker details, CLI flags, errors, and debugging, see [Claude Code Runtime Reference](./claude-code-runtime.md).
+For Claude-specific runtime settings, Docker details, CLI flags, errors, and debugging, see [Agent Runtime Reference: Claude Code](./agent-runtime.md#claude-code).
 
 ## What Moved
 
@@ -28,5 +28,5 @@ The Claude-specific pieces are still `Dockerfile.claude`, `scripts/claude-entryp
 - [Agent Routing](../features/agent-routing.md)
 - [Isolated And Safe Execution](../features/execution-safety.md)
 - [Worker Architecture](./worker.md)
-- [Claude Code Runtime Reference](./claude-code-runtime.md)
+- [Agent Runtime Reference: Claude Code](./agent-runtime.md#claude-code)
 - [OpenCode Integration](./opencode-integration.md)
