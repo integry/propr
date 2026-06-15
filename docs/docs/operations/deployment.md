@@ -109,7 +109,17 @@ Use `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` so the launcher can mount the authent
 
 ## Issue Intake: Polling Or Webhooks
 
-By default, the daemon polls configured repositories for trigger labels at `POLLING_INTERVAL_MS` (default `60000`, 60 seconds). Polling requires no inbound network access.
+Intake runs in **one mode or the other** — they are mutually exclusive. By default the daemon polls configured repositories for trigger labels at `POLLING_INTERVAL_MS` (default `60000`, 60 seconds); polling requires no inbound network access. Setting `ENABLE_GITHUB_WEBHOOKS=true` switches the daemon into webhook mode, and the periodic polling loop does not run at all (`POLLING_INTERVAL_MS` is then unused).
+
+|  | Polling (default) | Webhooks |
+|---|---|---|
+| Latency | up to one interval (~60s) | near-immediate |
+| Inbound network | none required | public `POST /webhook` endpoint |
+| GitHub API usage | higher — periodic, scales with repos and open PRs | lower — event-driven, no periodic listing |
+| Reliability | self-correcting each cycle | depends on delivery — there is no polling backstop, so a missed or undelivered event is not retried |
+| Main caveat | consumes the API budget continuously (see below) | blocked by SSO/Access gates unless `/webhook` is exempted |
+
+Choose **polling** when you cannot expose a public endpoint or you monitor only a handful of repositories; choose **webhooks** when you want low latency or run at a scale where continuous polling would strain the API budget. Because webhook mode replaces polling rather than supplementing it, there is no periodic safety net — rely on GitHub's webhook redelivery for missed events. Within each mode, deterministic job IDs and a state-label check still prevent the same issue from being processed twice when it is seen more than once (see [Daemon](../architecture/daemon.md)).
 
 To react to GitHub events immediately, enable the webhook endpoint instead:
 
@@ -121,6 +131,41 @@ GH_WEBHOOK_SECRET=your-webhook-secret
 The API container serves the endpoint at `POST /webhook` (port 4000). Point the GitHub App's webhook URL at it through your reverse proxy, and set the same secret in the GitHub App settings. The API refuses to start when `ENABLE_GITHUB_WEBHOOKS=true` is set without `GH_WEBHOOK_SECRET`.
 
 If your server cannot expose a public webhook endpoint, the optional hosted GitHub App at propr.dev can route webhook events to your instance instead.
+
+### Polling And GitHub API Rate Limits
+
+Polling authenticates as the GitHub App installation, so every request draws from that installation's shared budget — **5,000 requests/hour** (up to 15,000 for large installations). The budget is shared across all monitored repositories and workers, not allocated per repository or per user.
+
+A polling cycle's request count grows with:
+
+- the number of monitored repositories (each is polled independently);
+- the number of primary processing labels (one issue-listing call per label per repository);
+- the number of open pull requests, when PR comment polling is enabled (the default) — each open PR costs a couple of calls per cycle to read its comments;
+- the number of matched issues when `GITHUB_USER_WHITELIST` is set — ProPR reads each matched issue's timeline (up to `LABEL_APPLIER_TIMELINE_MAX_PAGES`, default 5) to confirm who applied the label.
+
+As a rough per-hour estimate, ignoring whitelist timeline reads:
+
+```
+requests/hour ≈ (3600000 / POLLING_INTERVAL_MS) × repos × (labels + open_PRs × 2)
+```
+
+For example, 20 repositories, 2 processing labels, and ~5 open PRs each, at the default 60-second interval:
+
+```
+(3600000 / 60000) × 20 × (2 + 5 × 2)
+= 60 × 20 × 12
+= 14,400 requests/hour
+```
+
+That already exceeds the standard 5,000/hour budget and approaches the 15,000 large-installation ceiling. At small scale (a few repositories) the default interval stays well within budget, but a large install — many repositories, many open PRs, a user whitelist, or a shortened interval — can exhaust the hourly budget, after which GitHub rejects requests until the window resets.
+
+ProPR's safeguards here are **reactive, not proactive**: it retries rate-limited requests with exponential backoff and logs a warning suggesting a longer interval, but it does not pause polling based on remaining budget, and it does not use conditional (ETag) requests — so every cycle costs against the budget even when nothing has changed.
+
+To stay within limits:
+
+- raise `POLLING_INTERVAL_MS` (the single biggest lever for many repositories);
+- leave `GITHUB_USER_WHITELIST` empty unless you need applier verification, since it adds per-issue timeline calls;
+- prefer **webhooks** at scale — webhook mode replaces polling entirely, so the periodic listing cost disappears (the daemon makes API calls only when reacting to an event, not on a fixed interval).
 
 ## Start The Stack
 

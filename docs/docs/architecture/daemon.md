@@ -41,10 +41,10 @@ It should stay lightweight. The daemon decides what should be processed; workers
 
 ## Intake Modes
 
-The daemon supports two intake modes:
+The daemon supports two intake modes, and runs in exactly one of them — they are mutually exclusive:
 
 - **Polling** (default): the daemon queries the GitHub API on an interval (`POLLING_INTERVAL_MS`, default `60000`) for open issues with processing labels and for PR events.
-- **Webhooks**: when `ENABLE_GITHUB_WEBHOOKS=true`, webhook events are received by the dashboard API service (port 4000), verified against `GH_WEBHOOK_SECRET`, and forwarded into the same intake path. Webhooks reduce polling pressure and latency; polling still acts as a safety net for missed events.
+- **Webhooks**: when `ENABLE_GITHUB_WEBHOOKS=true`, the daemon starts in webhook mode and the polling loop does not run. Webhook events are received by the dashboard API service (port 4000), verified against `GH_WEBHOOK_SECRET`, and forwarded into the same intake path. This removes polling pressure and latency, but there is no polling backstop — missed deliveries rely on GitHub's webhook redelivery.
 
 Each intake event receives a correlation ID so the resulting queue job, worker logs, and task record can be traced back to the original GitHub event.
 
@@ -107,7 +107,7 @@ issue-<owner>-<repo>-<number>-<agent>-<model>
 
 ## Deduplication
 
-Deterministic job IDs are the primary deduplication mechanism: enqueueing the same issue/agent/model combination again is a no-op while the original job exists. The daemon also checks state labels and task state before enqueueing, which prevents repeated processing when polling sees the same issue multiple times or when polling and webhooks both report the same event.
+Deterministic job IDs are the primary deduplication mechanism: enqueueing the same issue/agent/model combination again is a no-op while the original job exists. The daemon also checks state labels and task state before enqueueing, which prevents repeated processing when polling sees the same issue across multiple cycles, or when a webhook event arrives for an issue that is already being processed.
 
 ## Relationship To Workers
 
