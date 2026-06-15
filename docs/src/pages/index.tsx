@@ -201,7 +201,8 @@ const SECTIONS: SectionCard[] = [
     accent: 'gold',
     links: [
       {label: 'Daemon and intake', to: '/docs/architecture/daemon'},
-      {label: 'Worker runtime', to: '/docs/architecture/worker-runtime'},
+      {label: 'Coding agent integration', to: '/docs/architecture/coding-agent-integration'},
+      {label: 'Agent runtime', to: '/docs/architecture/agent-runtime'},
       {label: 'Git management', to: '/docs/architecture/git-management'},
     ],
   },

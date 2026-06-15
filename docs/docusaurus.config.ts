@@ -45,6 +45,14 @@ const legacyDocsRedirects = [
     to: '/docs/features/pr-commands',
     from: '/docs/pr-commands',
   },
+  {
+    to: '/docs/architecture/coding-agent-integration',
+    from: '/docs/architecture/claude-integration',
+  },
+  {
+    to: '/docs/architecture/agent-runtime',
+    from: '/docs/architecture/claude-code-runtime',
+  },
 ] as const;
 
 const config: Config = {

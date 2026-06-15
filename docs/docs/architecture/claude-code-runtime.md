@@ -1,5 +1,7 @@
 ---
 sidebar_position: 7
+slug: /architecture/claude-code-runtime-compat
+unlisted: true
 ---
 
 # Claude Code Runtime Reference
