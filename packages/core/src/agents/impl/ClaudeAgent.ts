@@ -17,7 +17,8 @@ import {
     parseStreamJsonOutput,
     storePromptInRedis,
     buildClaudePrompt,
-    UsageLimitError
+    UsageLimitError,
+    type ClaudeOutput
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
@@ -29,6 +30,27 @@ export { UsageLimitError };
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
+
+type AnalysisOutcome = { isSuccess: true } | { isSuccess: false; errorDetail: string };
+
+/**
+ * Decides whether a parsed agent result represents a successful analysis.
+ *
+ * A result line flagged with is_error (e.g. an API 400 such as "Prompt is too long")
+ * still carries text in `result`. It must be treated as a failure so retry/fallback logic
+ * can act, instead of handing the error string back as a "successful" analysis that
+ * downstream JSON parsing then silently rejects.
+ */
+export function resolveAnalysisOutcome(claudeOutput: ClaudeOutput, stderr: string): AnalysisOutcome {
+    const finalResult = claudeOutput.finalResult;
+    if (finalResult?.is_error !== true && (finalResult?.result || claudeOutput.success)) {
+        return { isSuccess: true };
+    }
+    const errorDetail = finalResult?.is_error && finalResult.result
+        ? finalResult.result
+        : (stderr || 'No result returned');
+    return { isSuccess: false, errorDetail };
+}
 
 export class ClaudeAgent implements Agent {
     readonly config: AgentConfig;
@@ -159,7 +181,8 @@ export class ClaudeAgent implements Agent {
             const fullConversationLog = ensurePromptInConversationLog(claudeOutput.conversationLog, analysisPrompt);
             const correctedTokenUsage = getCorrectedTokenUsage(claudeOutput.tokenUsage, fullConversationLog);
 
-            if (claudeOutput.finalResult?.result || claudeOutput.success) {
+            const outcome = resolveAnalysisOutcome(claudeOutput, result.stderr);
+            if (outcome.isSuccess) {
                 const analysisText = getClaudeAnalysisText(claudeOutput);
                 logger.info({
                     agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel,
@@ -186,7 +209,7 @@ export class ClaudeAgent implements Agent {
 
             return {
                 response: '', modelUsed: effectiveModel, executionTimeMs, success: false,
-                error: `Analysis failed: ${result.stderr || 'No result returned'}`
+                error: `Analysis failed: ${outcome.errorDetail}`
             };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;

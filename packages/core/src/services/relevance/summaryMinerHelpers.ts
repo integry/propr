@@ -36,9 +36,16 @@ export interface SummarizationAgentConfig {
 // --- Constants ---
 
 const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
-const DEFAULT_MAX_BATCH_TOKENS = 100_000; // Keep prompts well below context limits so agents reliably return JSON
+const DEFAULT_MAX_BATCH_TOKENS = 70_000; // Keep prompts well below context limits so agents reliably return JSON
 const DEFAULT_MAX_BATCH_FILES = 20; // Keep JSON responses reliable for repos with many small files
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
+// The Claude agent wraps every prompt with its own system prompt + tool definitions,
+// which measured at ~89k tokens against the model context window (the batch content is
+// only part of the real request). Reserve headroom for that overhead plus the response
+// so a batch that looks "within budget" here does not blow past the context limit and
+// come back as an unparseable "Prompt is too long" error. See issue: summarization
+// prompt-too-long failures on repos with large/dense files.
+const AGENT_PROMPT_OVERHEAD_TOKENS = 100_000;
 
 // --- Phase B: Batch Summarization ---
 
@@ -85,7 +92,9 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
   const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(DEFAULT_MAX_BATCH_TOKENS), 10);
-  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
+  // Budget only the context left after the agent's fixed system-prompt/tool overhead.
+  const usableContextTokens = Math.max(maxTokens - AGENT_PROMPT_OVERHEAD_TOKENS, 20_000);
+  const maxBatchTokens = Math.min(Math.floor(usableContextTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
   const maxBatchFiles = parseInt(process.env.SUMMARIZATION_MAX_BATCH_FILES || String(DEFAULT_MAX_BATCH_FILES), 10);
 
   log.info({ maxBatchTokens, maxBatchTokensCap, maxBatchFiles, model: modelId }, 'Calculated batch budget');
