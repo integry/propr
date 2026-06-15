@@ -67,7 +67,7 @@ Use live dashboard signals for operational incidents:
 - Increased timeout rate
 - Cost spikes (total cost and recent high-cost runs)
 - A specific repository causing disproportionate failures (Repository Breakdown)
-- Provider capacity pressure (Agent Tank usage bars, when enabled)
+- Provider capacity pressure ([Agent Tank](./agent-tank.md) usage bars, when enabled)
 
 Use weekly or monthly review for product/process decisions.
 

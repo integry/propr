@@ -1,25 +1,20 @@
-# ProPR Web UI Integration Guide
+# Web UI Integration Guide
 
-This guide explains how ProPR's browser UI fits together with the dashboard API, workers, and GitHub automation services.
+This guide explains how ProPR's browser UI fits together with the dashboard API, workers, and GitHub automation services — ports, authentication, WebSockets, and deployment. For a tour of the UI's screens and what each does, see the [Web UI Guide](../features/web-ui.md).
 
 ## Overview
 
-ProPR's Web UI is where you configure and monitor the running system. In this repository:
+The browser UI is a thin client over the dashboard API. In this repository:
 
 - The frontend lives in `propr-ui/`
 - The dashboard API lives in `packages/api/`
 - The daemon and workers handle repository polling, task execution, and PR automation
 
-The frontend talks to the dashboard API over HTTP and WebSockets. The API reads shared state from Redis plus the shared SQLite application database used by the default deployment. That gives the UI access to task activity, repository configuration, agent settings, planner workflows, and operational metrics.
+The frontend talks to the dashboard API over HTTP and WebSockets. The API reads shared state from Redis plus the shared SQLite application database used by the default deployment. That gives the UI access to task activity, repository configuration, agent settings, planner workflows, and operational metrics. What each of those surfaces looks like to a user is covered in the [Web UI Guide](../features/web-ui.md); this page focuses on how they connect.
 
-## Current Integration Model
+## Responsibility Split
 
-The Web UI is responsible for:
-
-- Showing dashboard status, queue health, task history, and execution details
-- Managing monitored repositories, settings, and AI agent configuration
-- Driving Planner Studio and other browser-based workflows
-- Sending authenticated requests to the API for follow-up actions
+The Web UI renders state and sends authenticated requests; it holds no task-execution logic. The screens it presents — dashboard, tasks, repositories, agents, planner, settings — are documented in the [Web UI Guide](../features/web-ui.md).
 
 The backend is responsible for:
 

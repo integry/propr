@@ -138,4 +138,4 @@ Increase concurrency only when the bottleneck is clear. The relevant knobs:
 - `POLLING_INTERVAL_MS` (default `60000`) — issue polling frequency
 - Agent timeouts: `CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`
 
-Watch queue depth, task duration, provider rate limits, disk usage, CPU, and memory. For provider capacity pressure, see the Agent Tank usage sidebar described in [System Metrics](./system-metrics.md).
+Watch queue depth, task duration, provider rate limits, disk usage, CPU, and memory. For provider capacity pressure, see the [Agent Tank](./agent-tank.md) usage sidebar.

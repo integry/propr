@@ -46,6 +46,11 @@ const sidebars: SidebarsConfig = {
       label: 'Feature Overview',
     },
     {
+      type: 'doc',
+      id: 'features/web-ui',
+      label: 'Web UI Guide',
+    },
+    {
       type: 'category',
       label: 'Core Workflow',
       items: [
@@ -123,6 +128,7 @@ const sidebars: SidebarsConfig = {
         'operations/system-metrics',
         'operations/metrics-feedback-loop',
         'operations/llm-metrics',
+        'operations/agent-tank',
         'operations/web-ui-integration',
       ],
     },

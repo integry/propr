@@ -31,7 +31,7 @@ End-to-end usage remains fully supported — it is just one of the ways to use P
 - **GitHub PR Automation**: Use slash commands like `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` for follow-up work on pull requests after the main setup is already handled in the UI
 - **End-to-End GitHub Flow**: Detect labeled issues via polling or GitHub webhooks, create isolated worktrees and branches, implement changes, and open linked pull requests automatically
 - **Production Operations**: Run with retries, state tracking, Docker-isolated agent runs, and real-time dashboard visibility
-- **Agent Tank**: Optionally track per-task provider capacity and rate-limit usage, with live usage bars in the sidebar; tasks proceed even if tracking is unavailable
+- **[Agent Tank](./operations/agent-tank.md)**: Optionally track per-task provider capacity and rate-limit usage, with live usage bars in the sidebar; tasks proceed even if tracking is unavailable
 
 ## How It Works
 

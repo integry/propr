@@ -56,13 +56,9 @@ Total cost and per-model task counts appear on the dashboard (from `/api/stats/o
 
 ### Agent Tank
 
-For provider capacity, ProPR integrates with [Agent Tank](https://agenttank.io), an optional local service that reports session and rate-limit usage for Claude, Codex, and Antigravity CLI tools. Enable it in **Settings → LLM Usage Tracking** (toggle plus service URL; the shipped default is `http://0.0.0.0:3456`, though `0.0.0.0` is a bind address — use `http://localhost:3456` when connecting to a local instance). When enabled:
+For provider capacity, ProPR integrates with [Agent Tank](https://agenttank.io), an optional local service that reports session and rate-limit usage for Claude, Codex, and Antigravity CLI tools. When enabled, the sidebar shows per-provider usage bars (session, weekly, and per-model windows) with reset countdowns, refreshed every 60 seconds, and LLM log entries record per-call usage deltas. The integration is best-effort: if the service is unreachable, tasks proceed normally and the sidebar hides itself.
 
-- The sidebar shows per-provider usage bars (session, weekly, and per-model windows) with reset countdowns, refreshed every 60 seconds.
-- LLM log entries record per-call usage deltas.
-- The integration is best-effort: if the Agent Tank service is unreachable, tasks proceed normally and the sidebar hides itself.
-
-{/* SCREENSHOT PLACEHOLDER: Capture the sidebar Usage section with Agent Tank enabled, showing provider rows (for example Claude and Codex) with colored usage bars and percentages, and one provider expanded to show its session and weekly metrics. Requires a running Agent Tank instance configured in Settings. */}
+See [Agent Tank Usage Tracking](./agent-tank.md) for how to run it, connect ProPR (including the Docker networking it needs), and read the bars.
 
 ## Failures
 

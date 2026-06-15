@@ -18,7 +18,7 @@ webhooks), the [Server Setup](./setup-server.md), [GitHub Authentication](../ope
 and [Deployment](../operations/deployment.md) pages go deeper; this page focuses
 on the host and network hardening around them.
 
-:::info Assumptions
+:::info[Assumptions]
 Replace `propr.example.com` with your domain, `you` with your admin username, and
 `203.0.113.10` with your server IP throughout. Steps 1–4 are run as **root** (or
 with `sudo`). From step 5 onward you must be logged in as the unprivileged `you`
@@ -89,7 +89,7 @@ sudo fail2ban-client status sshd
 
 *Run as: **root** (or `you` with `sudo`).*
 
-:::tip Cloudflare Tunnel users — read this first
+:::tip[Cloudflare Tunnel users — read this first]
 If you plan to front ProPR with Cloudflare Tunnel (see
 [Advanced VPS Hardening](./setup-vps-hardening.md)), you do **not** need to open
 ports 80/443 and can skip Certbot in step 9. The tunnel makes an outbound
@@ -122,7 +122,7 @@ If you are taking the Cloudflare Tunnel path, run everything above **except** th
 two `ufw allow 80/443` lines; the tunnel reaches nginx over localhost and needs no
 inbound web ports.
 
-:::danger Docker bypasses UFW for published ports
+:::danger[Docker bypasses UFW for published ports]
 Docker inserts its own `iptables` rules in the `DOCKER` chain when a container
 **publishes a port to all interfaces** (the default `-p 4000:4000` form). Those
 rules are evaluated before UFW's `INPUT` rules, so a published port is reachable
@@ -204,7 +204,7 @@ which propr && propr --version   # should resolve to the global npm prefix, e.g.
 
 *Run as: **you** (the unprivileged user) for this and every following section.*
 
-:::warning Switch to your unprivileged user now
+:::warning[Switch to your unprivileged user now]
 All remaining steps must run as `you`, not root. If you are still in a root
 session, switch now:
 
@@ -232,7 +232,7 @@ These two are examples, not the full set. Install and log in to whichever agents
 you plan to run; each writes its login state to a credential directory under
 `/home/you` that the stack mounts into worker runs.
 
-:::warning Prefer official install docs over `curl … | bash` on a hardened host
+:::warning[Prefer official install docs over `curl … | bash` on a hardened host]
 On a security-hardened box, follow each vendor's **official installation
 documentation** as the primary path — verify checksums or use a signed package
 repository where one is offered. The `curl -fsSL … | bash` one-liners in the
@@ -256,7 +256,7 @@ install command, login step, and credential directory — including the OpenCode
 `XDG_DATA_HOME` requirement for file-based auth, and the full Codex and Vibe
 install/login steps not shown inline above.
 
-:::warning Finish agent setup before continuing
+:::warning[Finish agent setup before continuing]
 This is a branch point: `propr check` in step 11 validates the credentials of
 every agent you intend to run. Install **and** log in to each agent — completing
 the linked agent-specific setup for any (such as Codex or Vibe) that are not
@@ -353,7 +353,7 @@ GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
 SESSION_SECRET=paste_the_generated_hex_string_here
 ```
 
-:::caution Keep the port values in `host:port` form, not URL form
+:::caution[Keep the port values in `host:port` form, not URL form]
 `API_PORT`/`UI_PORT` are Docker port bindings, so they take a bare
 `127.0.0.1:4000` host-and-port value — **not** a URL. Do not prefix them with
 `http://` or add a path: a value like `http://127.0.0.1:4000` is invalid here and
@@ -361,7 +361,7 @@ will break the published-port binding. The `http(s)://…` form belongs only on 
 `FRONTEND_URL`/`API_PUBLIC_URL`/`GH_OAUTH_CALLBACK_URL` lines below.
 :::
 
-:::warning Generate the secret first — `.env` does not run shell commands
+:::warning[Generate the secret first — `.env` does not run shell commands]
 `.env` files are read literally; they do **not** evaluate `$(...)`. If you paste
 `SESSION_SECRET=$(openssl rand -hex 32)` the app uses that literal text as the
 secret. Run the command in your shell first, then paste the resulting hex string:
@@ -381,7 +381,7 @@ chmod 600 /srv/propr/.env
 Leave `REDIS_EXTERNAL_PORT` unset — Redis then stays on the internal Docker
 network and is never published to the host at all.
 
-:::note OAuth App vs. GitHub App
+:::note[OAuth App vs. GitHub App]
 `GH_OAUTH_CLIENT_ID`/`GH_OAUTH_CLIENT_SECRET` come from a GitHub **OAuth App**
 (used for the browser sign-in flow) — these are separate from the **GitHub App**
 identifiers you set in step 7 (used to act on repositories). Register the OAuth
@@ -390,7 +390,7 @@ App with its **Authorization callback URL** set to the
 [GitHub Authentication](../operations/github-auth.md) for the full setup.
 :::
 
-:::note Why explicit URLs are required here
+:::note[Why explicit URLs are required here]
 The launcher derives `API_PUBLIC_URL`/`FRONTEND_URL` from the port value when you
 don't set them (`http://localhost:<port>`). With a `127.0.0.1:4000` port form
 that derivation would produce a malformed URL, so you must set the three public
@@ -402,7 +402,7 @@ URLs above yourself. On a TLS server you would set them regardless.
 *Run as: **you** with `sudo` (system service config); the `.env` stays owned by
 `you`.*
 
-:::tip Planning to use Cloudflare Tunnel?
+:::tip[Planning to use Cloudflare Tunnel?]
 If you intend to use Cloudflare Zero Trust, **skip this step entirely** and
 follow [Advanced VPS Hardening](./setup-vps-hardening.md) instead. That tutorial
 sets up nginx bound to localhost (Cloudflare provides edge TLS and the tunnel
@@ -410,7 +410,7 @@ reaches nginx over the loopback), so there is no Certbot and no public port to
 open. Resume this tutorial at step 10 afterward.
 :::
 
-:::warning DNS first
+:::warning[DNS first]
 Point your domain's DNS `A` record at the server (`propr.example.com →
 203.0.113.10`) **before** running Certbot, and wait for it to resolve
 (`dig +short propr.example.com` should return `203.0.113.10`). Certbot's HTTP-01
