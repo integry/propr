@@ -239,6 +239,42 @@ export async function recordPrimarySummarizationQuotaFailure(options: {
     return result;
 }
 
+export async function recordPrimarySummarizationResponseFailure(options: {
+    primaryAgentAlias: string;
+    fallbackAgentAlias: string;
+    reason: string;
+}): Promise<{ promoted: boolean; warning: SummarizationDegradationWarning }> {
+    const result = await mutateSummarizationRuntimeState(async (state, client) => {
+        const warning: SummarizationDegradationWarning = {
+            mode: 'fallback_degraded',
+            message: `Primary summarization model ${options.primaryAgentAlias} returned unusable output; using fallback ${options.fallbackAgentAlias}.`,
+            recorded_at: new Date().toISOString(),
+            primary_agent_alias: options.primaryAgentAlias,
+            fallback_agent_alias: options.fallbackAgentAlias
+        };
+        let promoted = false;
+        const currentSettings = await loadSummarizationSettings(client);
+        if (currentSettings.agent_alias === options.primaryAgentAlias) {
+            await saveSummarizationSettings({ ...currentSettings, agent_alias: options.fallbackAgentAlias, fallback_agent_alias: options.primaryAgentAlias }, client);
+            warning.mode = 'fallback_promoted';
+            warning.message = `Promoted summarization fallback ${options.fallbackAgentAlias} after primary ${options.primaryAgentAlias} returned unusable output: ${options.reason}`;
+            state.primary_quota_failures = 0;
+            state.primary_quota_failures_by_alias = {};
+            promoted = true;
+        }
+        state.warning = warning;
+        return { result: { promoted, warning }, save: true };
+    });
+    if (result.promoted) await publishSummarizationSettingsUpdate();
+    logger.warn({ promoted: result.promoted, ...options }, 'Recorded summarization primary response failure');
+    return result;
+}
+
+export function isSummarizationInvalidResponseError(error: unknown): boolean {
+    const err = error as { code?: string };
+    return err?.code === 'SUMMARIZATION_INVALID_RESPONSE';
+}
+
 function buildQuotaFailureWarning(options: {
     primaryAgentAlias: string;
     fallbackAgentAlias?: string;

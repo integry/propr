@@ -16,7 +16,8 @@ const {
   recordSummarizationCooldown,
   getSummarizationCooldown,
   clearSummarizationCooldown,
-  clearSummarizationPrimaryQuotaFailures
+  clearSummarizationPrimaryQuotaFailures,
+  recordPrimarySummarizationResponseFailure
 } = await import('../packages/core/src/index.js');
 
 describe('summarization fallback runtime state', () => {
@@ -91,6 +92,29 @@ describe('summarization fallback runtime state', () => {
     settings = await loadSummarizationSettings();
     assert.equal(settings.agent_alias, 'fallback:gpt-cheap');
     assert.equal(settings.fallback_agent_alias, 'primary:gpt-expensive');
+  });
+
+  test('promotes fallback after primary returns unusable summarization output', async () => {
+    await saveSummarizationSettings({
+      enabled: true,
+      agent_alias: 'antigravity:antigravity-gpt-oss-120b-medium',
+      fallback_agent_alias: 'claude:claude-haiku-4-5-20251001',
+      custom_prompt: 'Summarize carefully'
+    });
+
+    const result = await recordPrimarySummarizationResponseFailure({
+      primaryAgentAlias: 'antigravity:antigravity-gpt-oss-120b-medium',
+      fallbackAgentAlias: 'claude:claude-haiku-4-5-20251001',
+      reason: 'No valid summaries parsed for batch of 5 files'
+    });
+
+    assert.equal(result.promoted, true);
+    assert.equal(result.warning.mode, 'fallback_promoted');
+
+    const settings = await loadSummarizationSettings();
+    assert.equal(settings.agent_alias, 'claude:claude-haiku-4-5-20251001');
+    assert.equal(settings.fallback_agent_alias, 'antigravity:antigravity-gpt-oss-120b-medium');
+    assert.equal(settings.custom_prompt, 'Summarize carefully');
   });
 
   test('promotion clears stale alias failure counters', async () => {

@@ -40,6 +40,45 @@ describe('summary miner path parsing', () => {
     }]);
   });
 
+  test('accepts bare array directory summaries', () => {
+    const parsed = parseBatchDirectoryResponse(
+      JSON.stringify([{
+        dirPath: 'integry/gitfix/packages/core/src',
+        summary: 'Contains core service code.'
+      }]),
+      ['integry/gitfix/packages/core/src']
+    );
+
+    assert.deepEqual(parsed, [{
+      dirPath: 'integry/gitfix/packages/core/src',
+      summary: 'Contains core service code.'
+    }]);
+  });
+
+  test('accepts a single directory summary object without a path for one-directory batches', () => {
+    const parsed = parseBatchDirectoryResponse(
+      JSON.stringify({ summary: 'Contains the root application services.' }),
+      ['integry/gitfix/packages/core']
+    );
+
+    assert.deepEqual(parsed, [{
+      dirPath: 'integry/gitfix/packages/core',
+      summary: 'Contains the root application services.'
+    }]);
+  });
+
+  test('uses plain text as a summary for one-directory batches', () => {
+    const parsed = parseBatchDirectoryResponse(
+      'This directory contains the indexing services and helpers. It coordinates repository summarization and persistence.',
+      ['integry/gitfix/packages/core/src/services/relevance']
+    );
+
+    assert.deepEqual(parsed, [{
+      dirPath: 'integry/gitfix/packages/core/src/services/relevance',
+      summary: 'This directory contains the indexing services and helpers. It coordinates repository summarization and persistence.'
+    }]);
+  });
+
   test('resolves file paths with repository prefixes back to batch-relative paths', () => {
     const parsed = parseBatchResponse(
       JSON.stringify({

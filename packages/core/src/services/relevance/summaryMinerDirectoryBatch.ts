@@ -6,7 +6,9 @@ import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../util
 import {
   clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
+  isSummarizationInvalidResponseError,
   recordPrimarySummarizationQuotaFailure,
+  recordPrimarySummarizationResponseFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
 import {
@@ -215,6 +217,12 @@ async function analyzeDirectoryBatchWithFallbackAgent(
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting,
         clearDegradationWarning: true
+      });
+    } else if (isSummarizationInvalidResponseError(primaryError)) {
+      await recordPrimarySummarizationResponseFailure({
+        primaryAgentAlias,
+        fallbackAgentAlias: fallbackAgentAliasSetting as string,
+        reason: (primaryError as Error).message
       });
     }
   } catch (fallbackError) {

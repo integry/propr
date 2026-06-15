@@ -9,7 +9,9 @@ import { resolveExpectedSummaryPath } from './summaryMinerDirectoryHelpers.js';
 import {
   clearSummarizationCooldown,
   clearSummarizationPrimaryQuotaFailures,
+  isSummarizationInvalidResponseError,
   recordPrimarySummarizationQuotaFailure,
+  recordPrimarySummarizationResponseFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
 
@@ -205,6 +207,13 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
         fullName,
         retryOptions: SUMMARIZATION_FALLBACK_RETRY
       });
+      if (isSummarizationInvalidResponseError(primaryError)) {
+        await recordPrimarySummarizationResponseFailure({
+          primaryAgentAlias,
+          fallbackAgentAlias: fallbackAgentAliasSetting,
+          reason: (primaryError as Error).message
+        });
+      }
       return {
         results,
         agentUsed: fallbackAgent,
