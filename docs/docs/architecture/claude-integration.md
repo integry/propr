@@ -1,5 +1,7 @@
 ---
 sidebar_position: 5
+slug: /architecture/claude-integration-compat
+unlisted: true
 ---
 
 # Claude Code Integration
