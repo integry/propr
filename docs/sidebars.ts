@@ -46,6 +46,11 @@ const sidebars: SidebarsConfig = {
       label: 'Feature Overview',
     },
     {
+      type: 'doc',
+      id: 'features/web-ui',
+      label: 'Web UI Guide',
+    },
+    {
       type: 'category',
       label: 'Core Workflow',
       items: [
