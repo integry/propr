@@ -12,6 +12,7 @@ import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
 import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
+import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import type { GitHubToken } from './githubTypes.js';
 
 type RepoValidation = RepoValidationResult;
@@ -76,7 +77,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
     let postProcessingResult: PostProcessingResult | null = null;
 
     try {
-        let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by Claude Code using ${modelName} model.\n\n${claudeResult?.success ? 'Implementation completed successfully.' : 'Implementation attempted - see PR comments for details.'}`;
+        let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by ProPR AI using ${modelName} model.\n\n${claudeResult?.success ? 'Implementation completed successfully.' : 'Implementation attempted - see PR comments for details.'}`;
 
         if (claudeResult?.commitMessage) {
             commitMessage = claudeResult.commitMessage;
@@ -84,7 +85,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         commitResult = await commitChanges(
             worktreeInfo.worktreePath, commitMessage,
-            { name: 'Claude Code', email: 'claude-code@anthropic.com' },
+            AI_COMMIT_AUTHOR,
             { issueNumber: issueRef.number, issueTitle: currentIssueData.data.title }
         );
 

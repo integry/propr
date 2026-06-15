@@ -17,6 +17,7 @@ import type {
     WorktreeInfo,
 } from '@propr/core';
 import { buildCompletionComment } from './prCompletionComment.js';
+import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { buildCommitMessage } from './prCommentJobUtils.js';
 import { markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
@@ -73,7 +74,7 @@ async function commitAndPush(
 ) {
     const changesSummary = state.claudeResult.summary || state.claudeResult.finalResult?.result || '';
     const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: issueRef.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
-    const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, { name: 'Claude Code', email: 'claude-code@anthropic.com' }, { issueNumber: issueRef.pullRequestNumber, issueTitle: 'Follow-up changes' });
+    const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: issueRef.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
     if (commitResult) {
         const repoUrl = getRepoUrl({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });

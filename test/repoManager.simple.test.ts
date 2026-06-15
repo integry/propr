@@ -30,11 +30,11 @@ describe('Repository Manager - Enhanced Features Logic Tests', () => {
         const shortTitle = issueTitle ? issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
         const finalCommitMessage = `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}
 
-Implemented by Claude Code. Full conversation log in PR comment.`;
+Implemented by ProPR AI. Full conversation log in PR comment.`;
 
         assert(finalCommitMessage.includes('fix(ai): Resolve issue #42'));
         assert(finalCommitMessage.includes('Fix authentication bug with null pointer exception'));
-        assert(finalCommitMessage.includes('Implemented by Claude Code'));
+        assert(finalCommitMessage.includes('Implemented by ProPR AI'));
         assert(finalCommitMessage.split('\n').length >= 3, 'Should be multi-line commit message');
     });
 
@@ -57,7 +57,7 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
         const shortTitle = longTitle.substring(0, 50).replace(/\s+/g, ' ').trim();
         const commitMessage = `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}
 
-Implemented by Claude Code. Full conversation log in PR comment.`;
+Implemented by ProPR AI. Full conversation log in PR comment.`;
 
         assert(shortTitle.length <= 50, 'Title should be truncated to 50 characters');
         assert(commitMessage.includes('This is a very long issue title that exceeds the'), 'Should include truncated title');
@@ -170,7 +170,7 @@ Implemented by Claude Code. Full conversation log in PR comment.`;
                 const shortTitle = testCase.issueTitle ? testCase.issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
                 finalCommitMessage = `fix(ai): Resolve issue #${testCase.issueNumber} - ${shortTitle}
 
-Implemented by Claude Code. Full conversation log in PR comment.`;
+Implemented by ProPR AI. Full conversation log in PR comment.`;
             }
 
             if (testCase.expected) {

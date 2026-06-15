@@ -1,5 +1,6 @@
 import { simpleGit, SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
+import { AI_COMMIT_AUTHOR } from './commitOperations.js';
 
 export type MergeOutcome = 'clean' | 'conflicts' | 'failed';
 
@@ -26,8 +27,8 @@ export async function mergeBaseIntoBranch(
 
         // Configure merge author
         try {
-            await git.raw(['config', 'user.name', 'Claude Code']);
-            await git.raw(['config', 'user.email', 'claude-code@anthropic.com']);
+            await git.raw(['config', 'user.name', AI_COMMIT_AUTHOR.name]);
+            await git.raw(['config', 'user.email', AI_COMMIT_AUTHOR.email]);
         } catch (configError) {
             logger.warn({ error: (configError as Error).message }, 'Failed to set git config for merge, continuing');
         }

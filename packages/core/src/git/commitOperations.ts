@@ -9,6 +9,11 @@ interface Author {
     email: string;
 }
 
+export const AI_COMMIT_AUTHOR: Author = {
+    name: process.env.PROPR_AGENT_COMMIT_AUTHOR_NAME || 'propr-dev[bot]',
+    email: process.env.PROPR_AGENT_COMMIT_AUTHOR_EMAIL || `${process.env.GH_APP_ID || '1316198'}+propr-dev[bot]@users.noreply.github.com`,
+};
+
 interface CommitMessageObject {
     claudeSuggested?: string;
 }
@@ -91,7 +96,7 @@ function resolveCommitMessage(commitMessage: string | CommitMessageObject, issue
         return commitMessage;
     }
     const shortTitle = issueTitle ? issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
-    return `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}\n\nImplemented by Claude Code. Full conversation log in PR comment.`;
+    return `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`;
 }
 
 export async function commitChanges(worktreePath: string, commitMessage: string | CommitMessageObject, author: Author | null, options: CommitOptions = {}): Promise<CommitResult | null> {
