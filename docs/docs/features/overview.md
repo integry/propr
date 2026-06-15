@@ -8,6 +8,17 @@ ProPR helps you use AI coding agents inside a GitHub pull request workflow. It g
 
 The Web UI is the main way to configure and operate ProPR. Repositories, branches, processing labels, agents, planner settings, task history, logs, commits, and cost visibility all live there, while environment variables and scripts mainly set up the install.
 
+## Use One Stage Or All Of Them
+
+ProPR is modular. Each stage below is its own entry point, so you can introduce ProPR gradually or use only the parts that fit your team — without committing to the whole flow:
+
+- **Plan only** — generate issues in [Planner Studio](./planning.md), then implement them however you like.
+- **Implement only** — label a hand-written issue to have ProPR build it.
+- **Review or fix only** — run [PR slash commands](./pr-commands.md) on any eligible PR, including ones ProPR did not create.
+- **Take over an existing PR** — add the processing label to an open PR and keep working from [PR comments](./pr-followup.md).
+
+Running the full flow end to end is supported, but never required.
+
 ## Plan And Run Work
 
 Start with a GitHub issue, a Planner Studio draft, or a pull request comment.

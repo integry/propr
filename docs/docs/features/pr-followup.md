@@ -19,6 +19,15 @@ When ProPR finishes an implementation task, it handles the GitHub plumbing aroun
 
 This keeps the agent focused on code while ProPR handles the repeatable workflow around the code.
 
+## Use ProPR On Any Pull Request
+
+You do not have to let ProPR create a PR to use its review and fix tools. The pull request is an entry point on its own, so you can apply ProPR to PRs opened by a teammate, another agent, or yourself outside ProPR:
+
+- **Review or fix only**: comment `/review` on any eligible PR to get AI review feedback, then `/fix` to apply it. Slash commands from an allowed author are processed directly — the PR does not need a processing label for commands to run.
+- **Take over an existing PR**: add a configured processing label (for example `AI` or `propr`) to the open PR. From then on, normal follow-up comments are picked up just like on a ProPR-created PR, and ProPR continues the work in place.
+
+The only difference between a ProPR-created PR and one you hand over is who opened it — once ProPR is engaged, follow-up comments and slash commands behave the same way.
+
 ## Natural Follow-Up Comments
 
 For ordinary refinement, you do not need slash commands. Post a normal PR comment that describes the requested change:

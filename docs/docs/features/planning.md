@@ -64,3 +64,15 @@ After finalization, ProPR runs the planned work in a controlled way:
 - Continue work later from the same planning context
 
 For larger work, combine this with [Work Splitting](./work-splitting.md) so the final pull requests stay reviewable. For a step-by-step walkthrough, see the [Planner Studio tutorial](../tutorials/planner-studio.md).
+
+## Planning Only
+
+Planner Studio is a standalone entry point. You can use it purely to produce well-scoped GitHub issues and stop there — implementation does not have to happen in ProPR.
+
+When you finalize a plan, ProPR creates the GitHub issues without trigger or model labels, so nothing runs automatically. From there you can:
+
+- Implement the issues manually, or hand them to another tool or agent.
+- Refine the issue text directly on GitHub before anyone picks it up.
+- Come back later and add a processing label (`AI` or `propr`) to have ProPR implement them after all.
+
+This makes Planner Studio useful as a planning layer on its own, even for teams that do not use ProPR for implementation.
