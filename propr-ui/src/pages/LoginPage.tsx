@@ -11,12 +11,13 @@ const OAUTH_API_URL = import.meta.env.VITE_OAUTH_API_URL || API_BASE_URL;
 
 // Only same-origin, absolute in-app paths are safe redirect targets. This
 // rejects external URLs ("https://evil.example/path"), protocol-relative URLs
-// ("//evil.example/path") and backslash tricks ("/\\evil.example") that browsers
-// can treat as external.
+// ("//evil.example/path"), backslash tricks and control characters that can make
+// browser redirect handling ambiguous.
 const isSafeInternalPath = (value: unknown): value is string => {
   if (typeof value !== 'string' || value.length === 0) return false;
   if (!value.startsWith('/')) return false;
   if (value.startsWith('//') || value.startsWith('/\\')) return false;
+  if (/[\u0000-\u001F\u007F\\]/.test(value)) return false;
   return true;
 };
 
@@ -71,7 +72,7 @@ const LoginPage: React.FC = () => {
     let cancelled = false;
     (async () => {
       try {
-        const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
+        const response = await apiFetch('/api/auth/user', { credentials: 'include' });
         if (cancelled) return;
         if (response.ok) {
           // The server still has (or could refresh) a valid session, so send
@@ -103,7 +104,11 @@ const LoginPage: React.FC = () => {
   if (isRecovering) {
     return (
       <div className="min-h-full bg-light-100 flex items-center justify-center">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
+        <div
+          className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600"
+          role="status"
+          aria-label="Checking session"
+        />
       </div>
     );
   }
