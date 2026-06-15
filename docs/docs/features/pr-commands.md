@@ -4,7 +4,7 @@ sidebar_position: 13
 
 # PR Slash Commands
 
-Most PR refinement does not need a slash command. If you want ProPR to make a normal change, write a regular GitHub PR comment with the instruction and any screenshots or context. ProPR processes that comment directly — see [PR Automation And Fine-Tuning](./pr-followup.md).
+Most PR refinement does not need a slash command. If you want ProPR to make a normal change, write a regular GitHub PR comment with the instruction and any screenshots or context. When the PR carries a processing label or the comment includes a trigger keyword, ProPR processes that comment directly — see [PR Automation And Fine-Tuning](./pr-followup.md).
 
 Slash commands are for specific actions: AI review, applying AI review feedback, model routing, branch updates, and automated correction loops.
 

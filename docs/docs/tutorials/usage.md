@@ -38,7 +38,7 @@ The exact labels and model IDs come from your repository and AI Agent settings.
 
 ### How Labels Work
 
-- **Trigger labels** (configurable, e.g. `AI`, `propr`) start a run.
+- **Trigger/processing labels** (configurable, e.g. `AI`, `propr`) start a run. "Trigger label" and "processing label" refer to the same label you add yourself.
 - **State labels** are applied automatically as the run progresses: `<trigger>-processing`, `<trigger>-done`, and `<trigger>-failed-*` variants on failure (for example `AI-processing`, `AI-done`).
 - **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-opus48`, `llm-codex-gpt55`, `llm-antigravity-pro-high`, `llm-opencode-minimax-m3-free`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
 - **`base-<branch>`** targets a non-default base branch, for example `base-develop`.
