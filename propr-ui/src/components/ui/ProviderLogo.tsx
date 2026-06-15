@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, Orbit } from 'lucide-react';
+import { Bot } from 'lucide-react';
 
 interface ProviderLogoProps {
   provider?: string;
@@ -19,7 +19,12 @@ export const ProviderLogo: React.FC<ProviderLogoProps> = ({ provider, className 
   }
 
   if (normalized.includes('antigravity')) {
-    return <Orbit className={className} />;
+    // Antigravity Icon (greyscale silhouette)
+    return (
+      <svg className={className} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+        <path d="M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z" />
+      </svg>
+    );
   }
 
   if (normalized.includes('gemini') || normalized.includes('google')) {
@@ -34,10 +39,8 @@ export const ProviderLogo: React.FC<ProviderLogoProps> = ({ provider, className 
   if (normalized.includes('opencode')) {
     // OpenCode Icon
     return (
-      <svg className={className} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M8.75 5.75L3 12l5.75 6.25" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M15.25 5.75L21 12l-5.75 6.25" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M13.6 4.5L10.4 19.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <svg className={className} viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" xmlns="http://www.w3.org/2000/svg">
+        <path d="M16 6H8v12h8V6zm4 16H4V2h16v20z" />
       </svg>
     );
   }
