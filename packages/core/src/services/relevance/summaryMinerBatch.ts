@@ -161,11 +161,12 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
     const results = await analyzeBatchWithAgent({
       prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`, fullName
     });
-    await clearSummarizationPrimaryQuotaFailures({
-      primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias,
-      repository: fullName,
-      branch
-    });
+    // Clearing quota-failure bookkeeping is best-effort: a transient runtime-state
+    // read/write error here must not discard a batch the LLM summarized successfully.
+    await clearSummarizationPrimaryQuotaFailuresSafe(
+      { primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias, repository: fullName, branch },
+      log
+    );
     return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
   } catch (primaryError) {
     const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
@@ -249,6 +250,17 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
       });
       throw new SummarizationCooldownRecordedError(fallbackError);
     }
+  }
+}
+
+async function clearSummarizationPrimaryQuotaFailuresSafe(
+  options: { primaryAgentAlias?: string; repository?: string; branch?: string },
+  log: Logger
+): Promise<void> {
+  try {
+    await clearSummarizationPrimaryQuotaFailures(options);
+  } catch (error) {
+    log.warn({ error: (error as Error).message, ...options }, 'Failed to clear summarization quota-failure bookkeeping after successful batch');
   }
 }
 

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { publishIndexingStatus } from '@propr/core';
-import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob, type QueueResummarizationResult } from './indexingQueueHelpers.js';
+import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 import type { AgentConfig } from '@propr/core';
 
@@ -68,19 +68,6 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
     }
   }
 
-  function emptyResummarizationResult(): QueueResummarizationResult {
-    return { queued: 0, skippedCooldown: 0, skippedAlreadyQueued: 0, failedClone: 0 };
-  }
-
-  async function triggerResummarizationSafe(ignoreCooldown: boolean): Promise<QueueResummarizationResult> {
-    try {
-      return await queueResummarizationForAllRepos({ ignoreCooldown });
-    } catch (error) {
-      console.error('Error triggering resummarization for repositories:', error);
-      return emptyResummarizationResult();
-    }
-  }
-
   async function triggerReindexAll(req: Request, res: Response): Promise<void> {
     try {
       if (req.body?.ignoreCooldown !== undefined && typeof req.body.ignoreCooldown !== 'boolean') {
@@ -99,7 +86,11 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
       await cancelDelayedReindex(redisClient);
       const ignoreCooldown = req.body?.ignoreCooldown === true;
-      const resummarizationResult = await triggerResummarizationSafe(ignoreCooldown);
+      // Let systemic failures (auth, queue creation, DB access) propagate to the
+      // outer catch and surface as a 500. Per-repository clone/queue failures are
+      // already captured in the returned counts, so this only escalates the case
+      // where no repository could be processed at all.
+      const resummarizationResult = await queueResummarizationForAllRepos({ ignoreCooldown });
 
       await logActivityHelper(
         `Manually triggered reindexing for ${resummarizationResult.queued} repositories`,

@@ -158,7 +158,9 @@ async function queueResummarizationForRepo({
       correlationId,
       priority: 'normal',
       fullReindex: true,
-      baseBranch,
+      // Persist the normalized branch so cooldown/dedup/status checks (which all
+      // normalize to HEAD) stay consistent with the stored job payload.
+      baseBranch: effectiveBranch,
       ignoreCooldown
     },
     {
@@ -285,7 +287,7 @@ export async function queueIndexingJob(
   const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
   const job = await queue.add(
     'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch, ignoreCooldown: options.ignoreCooldown },
+    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
     { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
   );
   await updateRepositoryStatus(repository, 'indexing', effectiveBranch);

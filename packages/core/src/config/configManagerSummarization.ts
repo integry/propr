@@ -160,9 +160,7 @@ async function loadSummarizationRuntimeStateForMutation(client: Knex.Transaction
 }> {
     const query = client('system_configs').where({ key: SUMMARIZATION_RUNTIME_STATE_KEY });
     const row = await (client.client.config.client === 'better-sqlite3' ? query : query.forUpdate()).first();
-    const originalValue = typeof row?.value === 'string'
-        ? row.value
-        : row?.value === undefined ? undefined : JSON.stringify(row.value);
+    const originalValue = typeof row?.value === 'string' ? row.value : (row?.value === undefined ? undefined : JSON.stringify(row.value));
     const state = originalValue ? JSON.parse(originalValue) : DEFAULT_SUMMARIZATION_RUNTIME_STATE;
     return { state: normalizeSummarizationRuntimeState(state), originalValue };
 }
@@ -188,7 +186,15 @@ function isSummarizationRuntimeStateConflict(error: unknown): boolean {
 }
 
 export async function getSummarizationCooldown(repository: string, branch: string = 'HEAD'): Promise<SummarizationCooldown | null> {
-    const state = await loadSummarizationRuntimeState();
+    // Read-side degradation: this is consulted on the indexing hot path (e.g.
+    // indexRepo / queueIndexingJob). loadSummarizationRuntimeState() rethrows on a
+    // transient DB/parse error, so guard here and treat an unreadable state as
+    // "no cooldown" rather than letting the error mark the repository failed.
+    const state = await loadSummarizationRuntimeState().catch(error => {
+        logger.warn({ error: (error as Error).message, repository, branch }, 'Failed to load summarization runtime state; proceeding without cooldown');
+        return null;
+    });
+    if (!state) return null;
     const cooldown = state.cooldowns[getSummarizationCooldownKey(repository, branch)];
     if (!cooldown || Date.parse(cooldown.until) <= Date.now()) return null;
     return cooldown;
@@ -265,6 +271,10 @@ async function promoteFallbackIfCurrentPrimary(args: {
     const currentSettings = await loadSummarizationSettings(client);
     const currentPrimaryAlias = currentSettings.agent_alias || options.primaryAgentAlias;
     if (currentPrimaryAlias !== options.primaryAgentAlias || !options.fallbackAgentAlias) return false;
+    // Don't promote with a stale fallback: if an operator changed the fallback
+    // since this in-flight failure began, swapping in options.fallbackAgentAlias
+    // would clobber their newer choice. Only promote the fallback still configured.
+    if (currentSettings.fallback_agent_alias && currentSettings.fallback_agent_alias !== options.fallbackAgentAlias) return false;
 
     await saveSummarizationSettings({ ...currentSettings, agent_alias: options.fallbackAgentAlias, fallback_agent_alias: options.primaryAgentAlias }, client);
     warning.mode = 'fallback_promoted';
@@ -289,11 +299,7 @@ async function publishSummarizationSettingsUpdate(): Promise<void> {
     });
     try {
         await redis.connect();
-        await redis.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({
-            type: 'config_update',
-            subtype: 'summarization_settings_update',
-            timestamp: Date.now()
-        }));
+        await redis.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({ type: 'config_update', subtype: 'summarization_settings_update', timestamp: Date.now() }));
     } catch (error) {
         logger.warn({ error: (error as Error).message }, 'Failed to publish summarization promotion config update');
     } finally {
