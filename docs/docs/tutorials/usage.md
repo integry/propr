@@ -6,6 +6,8 @@ sidebar_position: 2
 
 This page is for the person using ProPR after setup. Most work happens in the Web UI and GitHub pull request comments.
 
+ProPR is modular: each section below is a stage you can use on its own. Plan without implementing, implement issues you wrote by hand, or review and fix pull requests ProPR never created. The end-to-end flow ties these together, but you only need the stages you want.
+
 ## Start With The Web UI
 
 Use the Web UI to:
@@ -30,14 +32,18 @@ Environment variables and CLI commands are mostly for install and development wo
 5. Watch the task in the Web UI.
 6. Review the pull request ProPR creates. The PR body links the issue with `Closes #N`, so merging it closes the issue.
 
+The issue can come from anywhere. It does not have to be created by Planner Studio — a hand-written issue, or one produced by another planning tool, works the same way. Adding the processing label is what triggers ProPR to implement it. This makes "issue implementation only" a valid way to use ProPR: write the spec yourself, then label it.
+
 The exact labels and model IDs come from your repository and AI Agent settings.
 
 ### How Labels Work
 
-- **Trigger labels** (configurable, e.g. `AI`, `propr`) start a run.
+- **Trigger/processing labels** (configurable, e.g. `AI`, `propr`) start a run. "Trigger label" and "processing label" refer to the same label you add yourself.
 - **State labels** are applied automatically as the run progresses: `<trigger>-processing`, `<trigger>-done`, and `<trigger>-failed-*` variants on failure (for example `AI-processing`, `AI-done`).
 - **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-opus48`, `llm-codex-gpt55`, `llm-antigravity-pro-high`, `llm-opencode-minimax-m3-free`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
 - **`base-<branch>`** targets a non-default base branch, for example `base-develop`.
+
+Throughout these docs, "processing label" means the configured trigger label you add yourself (for example `AI` or `propr`) — not the `<trigger>-processing` state label, which ProPR applies automatically while a run is in progress.
 
 ## Run Work From A Plan
 
@@ -52,7 +58,11 @@ Use Planner Studio when the work needs a plan before it runs:
 
 See [Planner Studio](./planner-studio.md) for the guided workflow.
 
+You can also use Planner Studio for **planning only**: review and finalize the plan into GitHub issues (steps 1–5), then stop there and implement the issues manually or with another tool. Finalized issues have no trigger label, so nothing runs until you choose to add one.
+
 ## Refine A Pull Request
+
+This works on any eligible pull request, not only PRs ProPR created. To **review or fix only**, comment `/review` or `/fix` on a PR opened elsewhere — slash commands from an allowed author run directly, with no processing label required. To **take over an existing PR** so natural comments are picked up too, add a processing label such as `AI` or `propr` to the PR, then comment normally.
 
 For normal follow-up, post a regular GitHub PR comment:
 
@@ -60,7 +70,7 @@ For normal follow-up, post a regular GitHub PR comment:
 Please update the empty state copy and add a regression test.
 ```
 
-ProPR processes normal user comments directly. You do not need a slash command for direct human instructions. Line-level review comments carry their file and line context, and images attached to comments are available to the agent.
+ProPR processes normal user comments directly. You do not need a slash command for direct human instructions. Line-level review comments carry their file and line context, and images attached to comments are available to the agent. Natural comments require the PR to carry a processing label or the comment to include a configured trigger keyword (for example `!propr`).
 
 Use slash commands only for specific actions:
 

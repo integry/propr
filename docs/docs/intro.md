@@ -10,6 +10,17 @@ Welcome to ProPR, an AI engineering platform for planning, building, reviewing, 
 
 ProPR connects to your GitHub repositories and keeps the pull request as the center of the workflow. It combines a Web UI dashboard, Planner Studio, a CLI, and multi-agent workers so you can move from an idea or GitHub issue to a reviewed pull request without stitching together separate tools.
 
+## A Modular Tool, Not An All-Or-Nothing Pipeline
+
+ProPR supports the full idea-to-merge flow, but it does not require it. Each stage is a separate entry point you can adopt on its own and slot into the workflow you already have:
+
+- **Planning only**: use Planner Studio to generate GitHub issues, then implement them manually or with another tool or agent.
+- **Issue implementation only**: write issues by hand (or with another planning tool), then trigger ProPR by adding a processing label such as `AI` or `propr` and an optional `llm-*` model label.
+- **PR review and fixes only**: run `/review`, `/fix`, and other slash commands on any eligible pull request — including PRs created outside ProPR.
+- **Existing PR takeover**: hand an already-open PR to ProPR by adding the configured processing label, then continue with normal follow-up comments or slash commands.
+
+End-to-end usage remains fully supported — it is just one of the ways to use ProPR, not a requirement.
+
 ## Key Capabilities
 
 - **Web UI Dashboard**: Configure GitHub repositories, labels, agents, and defaults, then track task activity, queue health, repository status, usage, and live run details from the browser
