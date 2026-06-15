@@ -40,7 +40,7 @@ mkdir propr-deploy && cd propr-deploy
 propr init stack               # creates .env + data/ logs/ repos/, detects agent credentials
 ```
 
-:::tip Global install permissions
+:::tip[Global install permissions]
 If `npm install -g` fails with `EACCES`, your Node was installed where the global
 prefix is root-owned (a system/`apt` install) — prefix the command with `sudo`.
 Use the **same convention every time** you install or update the CLI: a `sudo`

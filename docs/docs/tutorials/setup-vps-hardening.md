@@ -16,7 +16,7 @@ then close ports 80 and 443 entirely — only SSH remains reachable from the
 internet. This requires your domain to be on Cloudflare (the free plan includes
 Tunnel and Access).
 
-:::info Prerequisites
+:::info[Prerequisites]
 Complete the [Secure VPS Deployment](./setup-vps.md) tutorial **through step 8
 (Bind Service Ports To Localhost)** first, but **stop before step 9**. This
 tutorial replaces step 9's public TLS setup: instead of provisioning a public
@@ -28,7 +28,7 @@ them at the end of this tutorial. Replace `propr.example.com` with your domain a
 `203.0.113.10` with your server IP throughout, as in the base tutorial.
 :::
 
-:::tip Plan your issue-intake mode now
+:::tip[Plan your issue-intake mode now]
 If you add the optional [Access identity gate](#4-add-an-access-identity-gate)
 below, **polling** (ProPR's default) is the recommended mode — an SSO gate blocks
 GitHub's server-to-server webhook POSTs to `/webhook`. Only enable webhooks
@@ -118,7 +118,7 @@ sudo nginx -t && sudo systemctl reload nginx
 There is no Certbot step and no `listen 443` block: Cloudflare's edge holds the
 certificate, and the tunnel forwards plain HTTP to `127.0.0.1:80`.
 
-:::note Traffic is still end-to-end HTTPS — the plain HTTP hop is local
+:::note[Traffic is still end-to-end HTTPS — the plain HTTP hop is local]
 The **browser → Cloudflare edge** hop is always HTTPS; the only cleartext hop is
 **tunnel → local nginx**, which never leaves the loopback interface on your VPS.
 This is *not* Cloudflare's "Flexible" SSL mode and you do not need to touch the
@@ -236,7 +236,7 @@ In the Zero Trust dashboard, add a self-hosted Access application for
 `propr.example.com` with an Allow policy scoped to your team's emails or GitHub
 identities.
 
-:::warning Webhooks cannot pass an SSO gate — use polling
+:::warning[Webhooks cannot pass an SSO gate — use polling]
 GitHub delivers webhooks as server-to-server POSTs to `/webhook`; they cannot
 complete a Cloudflare Access login and will be silently blocked.
 
@@ -253,7 +253,7 @@ it is the user's own browser, which has already authenticated.
 
 ### 4a. (Advanced) Bypass Access For The Webhook Path
 
-:::danger Advanced and security-sensitive — polling is strongly preferred
+:::danger[Advanced and security-sensitive — polling is strongly preferred]
 **Use polling. Treat this bypass as an exception, not a recommended path.** Skip
 this entire subsection unless you have a concrete, standing reason to run webhooks
 instead of polling — polling (above) is the default, needs no exception, and
@@ -276,7 +276,7 @@ webhook path **and nothing else**. The path matters: do **not** bypass the bare
 `propr.example.com` hostname, which would disable the Access gate for the entire
 app.
 
-:::tip Decision checkpoint — polling is recommended; only continue if all apply
+:::tip[Decision checkpoint — polling is recommended; only continue if all apply]
 Before adding the bypass below, confirm every one of these. If any is "no", stop
 and stay on polling:
 

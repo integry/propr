@@ -35,7 +35,7 @@ propr stop               # stop the stack (--keep to stop without removing conta
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [on|off] [--url <url>]` toggles [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the state to print the current setting).
 
-:::warning Breaking changes in the control-plane CLI
+:::warning[Breaking changes in the control-plane CLI]
 Running bare `propr` performs the same environment checks as `propr check` (including a Docker probe) and exits nonzero when prerequisites are missing — use `propr --help` for help text. `propr status` now reports the **local Docker stack**; use `propr remote-status` for the backend health/queue JSON that older scripts read from `propr status --json`.
 :::
 
