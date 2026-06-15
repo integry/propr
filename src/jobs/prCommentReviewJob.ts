@@ -8,7 +8,7 @@ import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { loadPrReviewModel } from '@propr/core';
+import { loadPrReviewModel, loadSettings } from '@propr/core';
 import { updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment } from './prCommentJobUtils.js';
 import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
@@ -163,6 +163,7 @@ interface RunReviewsContext {
     prDiff: string;
     omittedDiffFiles: string[];
     fileContents: string;
+    reviewPromptOverride: string;
     correlatedLogger: Logger;
 }
 
@@ -184,7 +185,7 @@ async function runSingleReview(
     const reviewPrompt = buildReviewPrompt({
         pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
         originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
-        prDiff: ctx.prDiff, fileContents: ctx.fileContents,
+        prDiff: ctx.prDiff, fileContents: ctx.fileContents, reviewPromptOverride: ctx.reviewPromptOverride,
     });
 
     try {
@@ -369,6 +370,19 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
+    // Load the operator-configured review prompt override once per job. A
+    // settings load failure must NOT block the review - fall back to default.
+    let reviewPromptOverride = '';
+    try {
+        const loadedSettings = await loadSettings();
+        const configured = (loadedSettings as Record<string, unknown>).pr_review_prompt;
+        if (typeof configured === 'string') {
+            reviewPromptOverride = configured;
+        }
+    } catch (err) {
+        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load pr_review_prompt setting, using default review prompt');
+    }
+
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
         taskId, taskUrl, combinedCommentBody, commentHistory,
@@ -377,6 +391,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         prDiff,
         omittedDiffFiles,
         fileContents,
+        reviewPromptOverride,
         correlatedLogger,
     };
 

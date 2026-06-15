@@ -214,6 +214,7 @@ Settings keys:
 | `auto_followup_score_threshold` | Score threshold (0–9) for auto-followup |
 | `auto_resolve_merge_conflicts` | Automatically resolve merge conflicts |
 | `pr_review_model` | Model for full PR reviews |
+| `pr_review_prompt` | Override for the PR review prompt guidance (empty = built-in default) |
 | `ultrafix_rating_goal` | Target quality rating for ultrafix cycles |
 | `ultrafix_max_cycles` | Maximum number of ultrafix cycles |
 | `ultrafix_pause_seconds` | Pause duration between ultrafix cycles |

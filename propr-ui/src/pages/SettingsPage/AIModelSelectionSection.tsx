@@ -1,6 +1,7 @@
 import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
+import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import {
   buildAllModelOptions,
@@ -17,6 +18,7 @@ interface AIModelSelectionSettings {
   planner_generation_model: string;
   default_agent_alias: string;
   pr_review_model: string;
+  pr_review_prompt: string;
 }
 
 interface AIModelSelectionSectionProps {
@@ -24,6 +26,8 @@ interface AIModelSelectionSectionProps {
   summarizationSettings: SummarizationSettings;
   agents: AgentConfig[];
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  onReviewPromptBlur: () => void;
   onSummarizationModelChange: (agentAlias: string) => void;
   onDefaultAgentChange: (agentAlias: string) => void;
   className?: string;
@@ -66,6 +70,8 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   summarizationSettings,
   agents,
   onSettingChange,
+  onReviewPromptChange,
+  onReviewPromptBlur,
   onSummarizationModelChange,
   onDefaultAgentChange,
   className
@@ -233,6 +239,23 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               ) : (
                 <NoAgentsMessage label="enabled agents" />
               )}
+            </SettingRow>
+
+            <SettingRow
+              label="Review Prompt"
+              htmlFor="pr_review_prompt"
+              helperText="Override for the review task guidance. Prefilled with the built-in default so you can see what's customizable — edit it to change the guidance. Clear the field to fall back to the built-in default. The required output sections (Overall Evaluation, Findings, Score) are always appended automatically."
+            >
+              <textarea
+                id="pr_review_prompt"
+                name="pr_review_prompt"
+                value={settings.pr_review_prompt || DEFAULT_REVIEW_GUIDANCE}
+                onChange={onReviewPromptChange}
+                onBlur={onReviewPromptBlur}
+                rows={5}
+                maxLength={20000}
+                className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border font-mono"
+              />
             </SettingRow>
 
             <SettingRow

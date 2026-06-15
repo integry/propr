@@ -9,6 +9,12 @@
 import { ApiClient, createApiClient } from "./index.js";
 
 /**
+ * Maximum allowed length for the free-form `pr_review_prompt` setting.
+ * Mirrors the server-side limit enforced in the config routes.
+ */
+const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
+
+/**
  * System settings configuration object.
  * These settings control global system behavior.
  */
@@ -59,6 +65,12 @@ export interface SystemSettings {
    * Empty string means use the default agent model.
    */
   pr_review_model: string;
+
+  /**
+   * Operator-configured review prompt that overrides the default high-level
+   * review guidance. Empty string means use the built-in review prompt.
+   */
+  pr_review_prompt: string;
 
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
@@ -134,6 +146,12 @@ export interface UpdateSettingsOptions {
   pr_review_model?: string;
 
   /**
+   * Operator-configured review prompt that overrides the default high-level
+   * review guidance. Empty string means use the built-in review prompt.
+   */
+  pr_review_prompt?: string;
+
+  /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
   ultrafix_rating_goal?: number;
@@ -182,6 +200,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "auto_followup_score_threshold",
   "auto_resolve_merge_conflicts",
   "pr_review_model",
+  "pr_review_prompt",
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
@@ -275,6 +294,12 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must not be whitespace-only; use an empty string to clear`);
       }
       return trimmed;
+    }
+    case "pr_review_prompt": {
+      if (value.length > MAX_PR_REVIEW_PROMPT_LENGTH) {
+        throw new Error(`Invalid value for ${key}: must be at most ${MAX_PR_REVIEW_PROMPT_LENGTH} characters`);
+      }
+      return value;
     }
     default:
       return value;
