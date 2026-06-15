@@ -99,7 +99,7 @@ const sidebars: SidebarsConfig = {
         'architecture/daemon-runtime',
         'architecture/worker',
         'architecture/worker-runtime',
-        'architecture/claude-integration',
+        'architecture/coding-agent-integration',
         'architecture/opencode-integration',
         'architecture/claude-code-runtime',
         'architecture/git-management',

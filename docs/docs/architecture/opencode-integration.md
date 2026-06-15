@@ -6,6 +6,8 @@ sidebar_position: 5
 
 The OpenCode integration lets ProPR run OpenCode as an additional coding agent alongside Claude Code, Codex, Antigravity, and Mistral Vibe. It is implemented by the OpenCode agent class, the OpenCode Docker image, and the shared agent registry.
 
+This page covers OpenCode-specific setup and runtime behavior. For the common pattern shared by all coding agents, see [Coding Agent Integration](./coding-agent-integration.md).
+
 ## Components
 
 ```text

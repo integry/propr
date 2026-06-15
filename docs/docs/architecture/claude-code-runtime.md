@@ -4,7 +4,7 @@ sidebar_position: 6
 
 # Claude Code Runtime Reference
 
-This reference covers Claude Code runtime configuration, Docker isolation, debugging, and common failures. For the integration overview, see [Claude Code Integration](./claude-integration.md).
+This reference covers Claude Code runtime configuration, Docker isolation, debugging, and common failures. For the shared integration overview, see [Coding Agent Integration](./coding-agent-integration.md).
 
 ## Docker Isolation
 

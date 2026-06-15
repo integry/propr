@@ -97,7 +97,7 @@ Workers run whichever agent the job's routing metadata selects. All agents share
 - OpenCode: `Dockerfile.opencode`, `scripts/opencode-entrypoint.sh`, mounts the `HOST_OPENCODE_*` directories
 - Mistral Vibe: `Dockerfile.vibe`, `scripts/vibe-entrypoint.sh`, mounts `HOST_VIBE_DIR`
 
-See [Claude Code Integration](./claude-integration.md) and [OpenCode Integration](./opencode-integration.md) for agent-specific detail; the other agents follow the same shape.
+See [Coding Agent Integration](./coding-agent-integration.md) for the shared contract and [OpenCode Integration](./opencode-integration.md) or [Claude Code Runtime Reference](./claude-code-runtime.md) for agent-specific detail.
 
 ## Isolation Model
 
