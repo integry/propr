@@ -172,13 +172,12 @@ Common settings:
 
 ```bash
 HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode
-HOST_OPENCODE_LEGACY_DIR=/home/your-user/.opencode
 HOST_OPENCODE_DATA_DIR=/home/your-user/.local/share/opencode
 OPENCODE_TIMEOUT_MS=3600000
 OPENCODE_DOCKER_IMAGE=propr/agent-opencode:latest
 ```
 
-The entrypoint also supports legacy config through `/home/node/.opencode`, sets `OPENCODE_CONFIG_DIR=/home/node/.config/opencode`, and prepares XDG data and state directories. When `HOST_OPENCODE_DATA_DIR` is set, ProPR mounts it for OpenCode auth data; otherwise it can infer the data path from the XDG config path.
+The entrypoint sets `OPENCODE_CONFIG_DIR=/home/node/.config/opencode` and prepares XDG data and state directories. When `HOST_OPENCODE_DATA_DIR` is set, ProPR mounts it for OpenCode auth data; otherwise it can infer the data path from the XDG config path.
 
 OpenCode runs in JSON mode through the OpenCode adapter. ProPR passes the selected model with `--model <id>` and parses OpenCode responses back into the shared agent result shape.
 

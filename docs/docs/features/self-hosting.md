@@ -58,7 +58,7 @@ The launcher mounts host credential directories into the worker and API containe
 Omit a variable to skip mounts for that agent. Notes:
 
 - For Antigravity, install the CLI, run `agy login` on the host, and pass `HOST_ANTIGRAVITY_DIR` pointing at `~/.gemini` (Antigravity stores its login state there).
-- For OpenCode, also set `HOST_OPENCODE_DATA_DIR` so credentials from `opencode auth login` are visible to spawned agent containers. `HOST_OPENCODE_LEGACY_DIR` covers the legacy `~/.opencode` location.
+- For OpenCode, also set `HOST_OPENCODE_DATA_DIR` so credentials from `opencode auth login` are visible to spawned agent containers.
 - For Vibe with the launcher, also set `VIBE_PROMPT_CACHE_DIR` and `HOST_VIBE_PROMPT_CACHE_DIR` (both pointing at the same host path, for example `/tmp/propr-vibe-prompts`) so prompt files can be bind-mounted into agent containers. Vibe can also authenticate via `MISTRAL_API_KEY` instead of a mounted `~/.vibe`.
 
 ## Local Or Server

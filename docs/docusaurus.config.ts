@@ -4,57 +4,6 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
-const legacyDocsRedirects = [
-  {
-    to: '/docs/concepts/pr-review-guidelines',
-    from: '/docs/AI_PR_REVIEW_GUIDELINES',
-  },
-  {
-    to: '/docs/operations/llm-metrics',
-    from: '/docs/LLM_METRICS',
-  },
-  {
-    to: '/docs/operations/deployment',
-    from: '/docs/PRODUCTION_DEPLOYMENT',
-  },
-  {
-    to: '/docs/features/branch-config',
-    from: '/docs/REPOSITORY_BRANCH_CONFIG',
-  },
-  {
-    to: '/docs/operations/system-metrics',
-    from: '/docs/SYSTEM_METRICS',
-  },
-  {
-    to: '/docs/operations/web-ui-integration',
-    from: '/docs/WEB_UI_INTEGRATION',
-  },
-  {
-    to: '/docs/features/overview',
-    from: '/docs/features',
-  },
-  {
-    to: '/docs/tutorials/setup',
-    from: '/docs/getting-started/setup',
-  },
-  {
-    to: '/docs/tutorials/usage',
-    from: '/docs/getting-started/usage',
-  },
-  {
-    to: '/docs/features/pr-commands',
-    from: '/docs/pr-commands',
-  },
-  {
-    to: '/docs/architecture/coding-agent-integration',
-    from: '/docs/architecture/claude-integration',
-  },
-  {
-    to: '/docs/architecture/agent-runtime',
-    from: '/docs/architecture/claude-code-runtime',
-  },
-] as const;
-
 const config: Config = {
   title: 'ProPR',
   tagline: 'Plan, implement, review, and refine GitHub pull requests with AI agents — self-hosted',
@@ -109,15 +58,6 @@ const config: Config = {
         indexBlog: false,
         docsRouteBasePath: '/docs',
         highlightSearchTermsOnTargetPage: true,
-      },
-    ],
-  ],
-
-  plugins: [
-    [
-      '@docusaurus/plugin-client-redirects',
-      {
-        redirects: legacyDocsRedirects,
       },
     ],
   ],
