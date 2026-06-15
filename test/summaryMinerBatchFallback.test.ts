@@ -112,6 +112,59 @@ describe('summary miner batch fallback', () => {
     assert.notEqual(state.warning?.mode, 'cooldown');
   });
 
+  test('retries invalid primary summaries, then saves successful fallback without cooldown', async () => {
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const primaryAgent = createAgent('primary', 'primary-model', async () => {
+      primaryCalls++;
+      return {
+        success: true,
+        response: '',
+        modelUsed: 'primary-model',
+        executionTimeMs: 1
+      };
+    });
+    const fallbackAgent = createAgent('fallback', 'fallback-model', async () => {
+      fallbackCalls++;
+      return {
+        success: true,
+        response: JSON.stringify({
+          summaries: [{ path: 'src/a.ts', summary: 'Exports the A helper after fallback parsing succeeds.' }]
+        }),
+        modelUsed: 'fallback-model',
+        executionTimeMs: 1
+      };
+    });
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-model',
+      fallbackAgentAliasSetting: 'fallback',
+      branch: 'main'
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.stopProcessing, false);
+    assert.equal(primaryCalls, 3);
+    assert.equal(fallbackCalls, 1);
+
+    const saved = await db('file_summaries')
+      .where({ path: 'integry/propr/src/a.ts', branch: 'main' })
+      .first();
+    assert.equal(saved.model_used, 'fallback-model');
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(Object.keys(state.cooldowns).length, 0);
+    assert.equal(state.primary_quota_failures, 0);
+  });
+
   test('caps the fallback model to a single attempt on transient failure', async () => {
     let fallbackCalls = 0;
     const primaryAgent = createAgent('primary', 'primary-model', async () => ({
@@ -192,6 +245,59 @@ describe('summary miner batch fallback', () => {
 
     assert.equal(result.stopProcessing, true);
     assert.equal(fallbackCalls, 1);
+  });
+
+  test('directory batch retries invalid primary summaries, then uses fallback without cooldown', async () => {
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const primaryAgent = createAgent('primary', 'primary-model', async () => {
+      primaryCalls++;
+      return {
+        success: true,
+        response: '',
+        modelUsed: 'primary-model',
+        executionTimeMs: 1
+      };
+    });
+    const fallbackAgent = createAgent('fallback', 'fallback-model', async () => {
+      fallbackCalls++;
+      return {
+        success: true,
+        response: JSON.stringify({
+          summaries: [{ path: 'integry/propr/src', summary: 'Contains source modules and shared helpers.' }]
+        }),
+        modelUsed: 'fallback-model',
+        executionTimeMs: 1
+      };
+    });
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      fallbackAgent: fallbackAgent as never,
+      fallbackModelUsed: 'fallback-model',
+      fallbackAgentAliasSetting: 'fallback',
+      fullName: 'integry/propr',
+      branch: 'main'
+    });
+
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.stopProcessing, false);
+    assert.equal(result[0].summary, 'Contains source modules and shared helpers.');
+    assert.equal(primaryCalls, 3);
+    assert.equal(fallbackCalls, 1);
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(Object.keys(state.cooldowns).length, 0);
+    assert.equal(state.primary_quota_failures, 0);
   });
 
   test('passes custom prompt into file batch prompt', async () => {

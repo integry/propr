@@ -14,22 +14,25 @@ import {
 } from '../../config/configManager.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
+const SUMMARIZATION_RETRY_BASE_DELAY_MS = process.env.NODE_ENV === 'test' ? 0 : 2000;
 
-const SUMMARIZATION_RETRY = {
+const SUMMARIZATION_RETRY: RetryOptions = {
   maxAttempts: 3,
-  baseDelay: 2000,
+  baseDelay: SUMMARIZATION_RETRY_BASE_DELAY_MS,
   maxDelay: 15000,
   exponentialBase: 2,
-} as const;
+  retryableErrors: ['SUMMARIZATION_INVALID_RESPONSE'],
+};
 
 // The fallback model is given a single attempt: the requirement is to retry the
 // quota-limited batch once with the fallback, not to re-run the fallback itself.
-const SUMMARIZATION_FALLBACK_RETRY = {
+const SUMMARIZATION_FALLBACK_RETRY: RetryOptions = {
   maxAttempts: 1,
-  baseDelay: 2000,
+  baseDelay: SUMMARIZATION_RETRY_BASE_DELAY_MS,
   maxDelay: 15000,
   exponentialBase: 2,
-} as const;
+  retryableErrors: ['SUMMARIZATION_INVALID_RESPONSE'],
+};
 
 export interface BatchFile {
   path: string;
@@ -99,6 +102,10 @@ class SummarizationCooldownRecordedError extends Error {
     this.name = 'SummarizationCooldownRecordedError';
     this.cause = error;
   }
+}
+
+class RetryableSummarizationResponseError extends Error {
+  code = 'SUMMARIZATION_INVALID_RESPONSE';
 }
 
 export async function processSingleBatch(options: ProcessSingleBatchOptions): Promise<ProcessSingleBatchResult> {
@@ -176,11 +183,38 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
     });
     return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
   } catch (primaryError) {
+    const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
     if (!isQuotaExhaustionError(primaryError)) {
-      throw primaryError;
+      if (!fallbackAgent || !fallbackAgentAliasSetting) {
+        throw primaryError;
+      }
+
+      log.warn({
+        error: (primaryError as Error).message,
+        primaryAgentAlias,
+        fallbackAgentAlias: fallbackAgent.config.alias,
+        fallbackModel: fallbackModelUsed ?? fallbackModelOverride
+      }, 'Primary summarization failed; retrying batch with fallback');
+
+      const results = await analyzeBatchWithAgent({
+        prompt,
+        batch,
+        agent: fallbackAgent,
+        model: fallbackModelUsed ?? fallbackModelOverride,
+        context: `batch_summarization_fallback:${fullName}`,
+        fullName,
+        retryOptions: SUMMARIZATION_FALLBACK_RETRY
+      });
+      return {
+        results,
+        agentUsed: fallbackAgent,
+        modelLogged: fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown',
+        fallbackUsed: true,
+        primaryAgentAlias,
+        fallbackAgentAlias: fallbackAgentAliasSetting
+      };
     }
 
-    const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
     if (!fallbackAgent || !fallbackAgentAliasSetting) {
       await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
       await recordSummarizationCooldown({
@@ -280,12 +314,12 @@ async function analyzeBatchWithAgent(options: {
       }
       const parsed = parseBatchResponse(analysisResult.response, batch.map(file => file.path));
       if (parsed.length === 0) {
-        throw new Error(`No valid summaries parsed for batch of ${batch.length} files`);
+        throw new RetryableSummarizationResponseError(`No valid summaries parsed for batch of ${batch.length} files`);
       }
       const summarizedPaths = new Set(parsed.map(result => result.path));
       const missingPaths = batch.map(file => file.path).filter(filePath => !summarizedPaths.has(filePath));
       if (missingPaths.length > 0) {
-        throw new Error(`Missing summaries for ${missingPaths.length} of ${batch.length} files: ${missingPaths.slice(0, 5).join(', ')}`);
+        throw new RetryableSummarizationResponseError(`Missing summaries for ${missingPaths.length} of ${batch.length} files: ${missingPaths.slice(0, 5).join(', ')}`);
       }
       return parsed;
     },

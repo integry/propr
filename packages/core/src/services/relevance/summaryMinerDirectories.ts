@@ -17,6 +17,9 @@ import { processDirectoryBatch } from './summaryMinerDirectoryBatch.js';
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 const BATCH_TOKEN_RATIO = 0.5;
 const MAX_DIRS_PER_BATCH = 20;
+const DEFAULT_MAX_DIRECTORY_BATCH_TOKENS = 70_000;
+const DEFAULT_ANTIGRAVITY_MAX_DIRECTORY_BATCH_TOKENS = 20_000;
+const DEFAULT_ANTIGRAVITY_MAX_DIRS_PER_BATCH = 5;
 const DIRECTORY_PROGRESS_PERCENT_STEP = 5;
 
 export interface AggregateDirectoriesResult {
@@ -60,6 +63,7 @@ interface ProcessDepthOptions {
   branch: string;
   fullName: string;
   maxBatchTokens: number;
+  maxDirsPerBatch: number;
   getCurrentConfig: () => Promise<SummarizationAgentConfig>;
   initialConfig: SummarizationAgentConfig;
   log: Logger;
@@ -92,7 +96,16 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   const dirSummaryCache = new Map<string, string>();
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const maxBatchTokens = Math.floor(maxTokens * BATCH_TOKEN_RATIO);
+  const antigravityBatchProfile = isAntigravitySummarization(modelId, agent.config.alias);
+  const defaultMaxBatchTokens = antigravityBatchProfile ? DEFAULT_ANTIGRAVITY_MAX_DIRECTORY_BATCH_TOKENS : DEFAULT_MAX_DIRECTORY_BATCH_TOKENS;
+  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
+  const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
+  const maxDirsPerBatch = parseInt(
+    process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_DIRS ||
+      String(antigravityBatchProfile ? DEFAULT_ANTIGRAVITY_MAX_DIRS_PER_BATCH : MAX_DIRS_PER_BATCH),
+    10
+  );
+  log.info({ maxBatchTokens, maxBatchTokensCap, maxDirsPerBatch, model: modelId, antigravityBatchProfile }, 'Calculated directory batch budget');
 
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const initialConfig: SummarizationAgentConfig = {
@@ -115,6 +128,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
       branch,
       fullName,
       maxBatchTokens,
+      maxDirsPerBatch,
       getCurrentConfig,
       initialConfig,
       log
@@ -145,7 +159,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
 }
 
 async function processDirectoryDepth(options: ProcessDepthOptions): Promise<DirectoryAggregationState> {
-  const { dirsAtDepth, fileSummaries, dirSummaryCache, branch, fullName, maxBatchTokens } = options;
+  const { dirsAtDepth, fileSummaries, dirSummaryCache, branch, fullName, maxBatchTokens, maxDirsPerBatch } = options;
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const dirsToProcess: DirectoryInfo[] = [];
 
@@ -158,7 +172,7 @@ async function processDirectoryDepth(options: ProcessDepthOptions): Promise<Dire
     }
   }
 
-  const batches = createDirectoryBatches(dirsToProcess, maxBatchTokens, MAX_DIRS_PER_BATCH, CHARS_PER_TOKEN_ESTIMATE);
+  const batches = createDirectoryBatches(dirsToProcess, maxBatchTokens, maxDirsPerBatch, CHARS_PER_TOKEN_ESTIMATE);
   state.totalBatches = batches.length;
 
   for (const batch of batches) {
@@ -247,6 +261,15 @@ async function tryPublishDirectoryProgress(fullName: string, branch: string): Pr
   if (progress && shouldPublishDirectoryProgress(progress) && !await isIndexingCancelled(fullName, branch)) {
     try { await publishProgress(fullName, branch, progress); } catch { /* best-effort */ }
   }
+}
+
+function isAntigravitySummarization(modelId: string, agentAlias: string): boolean {
+  const normalizedModel = modelId.toLowerCase();
+  const normalizedAlias = agentAlias.toLowerCase();
+  return normalizedAlias === 'antigravity' ||
+    normalizedModel.startsWith('antigravity-') ||
+    normalizedModel.startsWith('antigravity:') ||
+    normalizedModel.includes('gpt-oss-120b');
 }
 
 function shouldPublishDirectoryProgress(progress: IndexingProgress): boolean {

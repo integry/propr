@@ -38,6 +38,8 @@ export interface SummarizationAgentConfig {
 const BATCH_TOKEN_RATIO = 0.8; // Upper bound based on model context size
 const DEFAULT_MAX_BATCH_TOKENS = 70_000; // Keep prompts well below context limits so agents reliably return JSON
 const DEFAULT_MAX_BATCH_FILES = 20; // Keep JSON responses reliable for repos with many small files
+const DEFAULT_ANTIGRAVITY_MAX_BATCH_TOKENS = 20_000; // OSS 120B often returns empty output on larger JSON batches
+const DEFAULT_ANTIGRAVITY_MAX_BATCH_FILES = 5;
 const CHARS_PER_TOKEN_ESTIMATE = 3; // Rough estimate: 3 chars per token
 // The Claude agent wraps every prompt with its own system prompt + tool definitions,
 // which measured at ~89k tokens against the model context window (the batch content is
@@ -91,13 +93,16 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(DEFAULT_MAX_BATCH_TOKENS), 10);
+  const antigravityBatchProfile = isAntigravitySummarization(modelId, agent.config.alias);
+  const defaultMaxBatchTokens = antigravityBatchProfile ? DEFAULT_ANTIGRAVITY_MAX_BATCH_TOKENS : DEFAULT_MAX_BATCH_TOKENS;
+  const defaultMaxBatchFiles = antigravityBatchProfile ? DEFAULT_ANTIGRAVITY_MAX_BATCH_FILES : DEFAULT_MAX_BATCH_FILES;
+  const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
   // Budget only the context left after the agent's fixed system-prompt/tool overhead.
   const usableContextTokens = Math.max(maxTokens - AGENT_PROMPT_OVERHEAD_TOKENS, 20_000);
   const maxBatchTokens = Math.min(Math.floor(usableContextTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
-  const maxBatchFiles = parseInt(process.env.SUMMARIZATION_MAX_BATCH_FILES || String(DEFAULT_MAX_BATCH_FILES), 10);
+  const maxBatchFiles = parseInt(process.env.SUMMARIZATION_MAX_BATCH_FILES || String(defaultMaxBatchFiles), 10);
 
-  log.info({ maxBatchTokens, maxBatchTokensCap, maxBatchFiles, model: modelId }, 'Calculated batch budget');
+  log.info({ maxBatchTokens, maxBatchTokensCap, maxBatchFiles, model: modelId, antigravityBatchProfile }, 'Calculated batch budget');
 
   let currentBatch: BatchFile[] = [];
   let currentTokens = 0;
@@ -294,6 +299,15 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     fallbackPrimaryAgentAlias,
     fallbackAgentAlias
   };
+}
+
+function isAntigravitySummarization(modelId: string, agentAlias: string): boolean {
+  const normalizedModel = modelId.toLowerCase();
+  const normalizedAlias = agentAlias.toLowerCase();
+  return normalizedAlias === 'antigravity' ||
+    normalizedModel.startsWith('antigravity-') ||
+    normalizedModel.startsWith('antigravity:') ||
+    normalizedModel.includes('gpt-oss-120b');
 }
 
 function logBatchAgentIfChanged(

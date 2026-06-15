@@ -15,22 +15,25 @@ import {
 } from './summaryMinerDirectoryHelpers.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
+const SUMMARIZATION_RETRY_BASE_DELAY_MS = process.env.NODE_ENV === 'test' ? 0 : 2000;
 
-const SUMMARIZATION_RETRY = {
+const SUMMARIZATION_RETRY: RetryOptions = {
   maxAttempts: 3,
-  baseDelay: 2000,
+  baseDelay: SUMMARIZATION_RETRY_BASE_DELAY_MS,
   maxDelay: 15000,
   exponentialBase: 2,
-} as const;
+  retryableErrors: ['SUMMARIZATION_INVALID_RESPONSE'],
+};
 
 // The fallback model is given a single attempt: the requirement is to retry the
 // quota-limited batch once with the fallback, not to re-run the fallback itself.
-const SUMMARIZATION_FALLBACK_RETRY = {
+const SUMMARIZATION_FALLBACK_RETRY: RetryOptions = {
   maxAttempts: 1,
-  baseDelay: 2000,
+  baseDelay: SUMMARIZATION_RETRY_BASE_DELAY_MS,
   maxDelay: 15000,
   exponentialBase: 2,
-} as const;
+  retryableErrors: ['SUMMARIZATION_INVALID_RESPONSE'],
+};
 
 export type DirectoryBatchResult = DirectoryResult[] & {
   fallbackUsed: boolean;
@@ -67,6 +70,10 @@ class SummarizationCooldownRecordedError extends Error {
     this.name = 'SummarizationCooldownRecordedError';
     this.cause = error;
   }
+}
+
+class RetryableSummarizationResponseError extends Error {
+  code = 'SUMMARIZATION_INVALID_RESPONSE';
 }
 
 export async function processDirectoryBatch(options: ProcessDirectoryBatchOptions): Promise<DirectoryBatchResult> {
@@ -148,9 +155,13 @@ async function handlePrimaryDirectoryFailure(
   options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState }
 ): Promise<void> {
   const { agent, primaryAgentAliasSetting, fallbackAgent, fallbackAgentAliasSetting, fullName, branch } = options;
-  if (!isQuotaExhaustionError(primaryError)) throw primaryError;
-
   const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
+  if (!isQuotaExhaustionError(primaryError)) {
+    if (!fallbackAgent || !fallbackAgentAliasSetting) throw primaryError;
+    await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, false);
+    return;
+  }
+
   if (!fallbackAgent || !fallbackAgentAliasSetting) {
     await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
     await recordSummarizationCooldown({
@@ -162,22 +173,27 @@ async function handlePrimaryDirectoryFailure(
     throw new SummarizationCooldownRecordedError(primaryError);
   }
 
-  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options);
+  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, true);
 }
 
 async function analyzeDirectoryBatchWithFallbackAgent(
   primaryError: unknown,
   primaryAgentAlias: string,
-  options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState }
+  options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState },
+  primaryWasQuotaLimited: boolean
 ): Promise<void> {
   const { prompt, directories, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch, log, state } = options;
-  await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
+  if (primaryWasQuotaLimited) {
+    await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
+  }
   log.warn({
     error: (primaryError as Error).message,
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgent?.config.alias,
     fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-  }, 'Primary directory summarization model quota-limited; retrying batch with fallback');
+  }, primaryWasQuotaLimited
+    ? 'Primary directory summarization model quota-limited; retrying batch with fallback'
+    : 'Primary directory summarization failed; retrying batch with fallback');
 
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
@@ -194,12 +210,17 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
     state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
-    await clearSummarizationCooldown(fullName, branch, {
-      primaryAgentAlias,
-      fallbackAgentAlias: fallbackAgentAliasSetting,
-      clearDegradationWarning: true
-    });
+    if (primaryWasQuotaLimited) {
+      await clearSummarizationCooldown(fullName, branch, {
+        primaryAgentAlias,
+        fallbackAgentAlias: fallbackAgentAliasSetting,
+        clearDegradationWarning: true
+      });
+    }
   } catch (fallbackError) {
+    if (!primaryWasQuotaLimited) {
+      throw fallbackError;
+    }
     await recordSummarizationCooldown({
       repository: fullName,
       branch,
@@ -273,11 +294,11 @@ async function analyzeDirectoryBatchWithAgent(options: {
       }
       const parsed = parseBatchDirectoryResponse(analysisResult.response, directories.map(d => d.dirPath));
       if (!parsed.some(r => r.summary !== null)) {
-        throw new Error(`No valid directory summaries parsed for batch of ${directories.length} directories`);
+        throw new RetryableSummarizationResponseError(`No valid directory summaries parsed for batch of ${directories.length} directories`);
       }
       const missingDirs = parsed.filter(result => result.summary === null).map(result => result.dirPath);
       if (missingDirs.length > 0) {
-        throw new Error(`Missing summaries for ${missingDirs.length} of ${directories.length} directories: ${missingDirs.slice(0, 5).join(', ')}`);
+        throw new RetryableSummarizationResponseError(`Missing summaries for ${missingDirs.length} of ${directories.length} directories: ${missingDirs.slice(0, 5).join(', ')}`);
       }
       return parsed;
     },

@@ -199,7 +199,14 @@ export async function withRetry<T>(
     options: RetryOptions = {},
     context: string = 'operation'
 ): Promise<T> {
-    const config: RetryConfig = { ...DEFAULT_RETRY_CONFIG, ...options };
+    const config: RetryConfig = {
+        ...DEFAULT_RETRY_CONFIG,
+        ...options,
+        retryableErrors: [
+            ...DEFAULT_RETRY_CONFIG.retryableErrors,
+            ...(options.retryableErrors ?? [])
+        ]
+    };
     const correlationId = options.correlationId ?? 'unknown';
 
     let lastError: Error | unknown;
