@@ -128,9 +128,8 @@ Use equivalent setup for Codex (`~/.codex`) if you plan to enable it.
 
 OpenCode keeps configuration under `~/.config/opencode` and auth state from `opencode auth login` under `~/.local/share/opencode`. Pass both to the launcher:
 
-- `HOST_OPENCODE_XDG_DIR` — usually `$HOME/.config/opencode` (`HOST_OPENCODE_DIR` is accepted as a compatibility alias)
+- `HOST_OPENCODE_XDG_DIR` — usually `$HOME/.config/opencode`
 - `HOST_OPENCODE_DATA_DIR` — usually `$HOME/.local/share/opencode`
-- `HOST_OPENCODE_LEGACY_DIR` — only for OpenCode agent entries whose saved `configPath` is `~/.opencode`
 
 ### Mistral Vibe
 

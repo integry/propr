@@ -96,14 +96,21 @@ const sidebars: SidebarsConfig = {
       items: [
         'architecture/overview',
         'architecture/daemon',
-        'architecture/daemon-runtime',
         'architecture/worker',
-        'architecture/worker-runtime',
-        'architecture/claude-integration',
-        'architecture/opencode-integration',
-        'architecture/claude-code-runtime',
+        'architecture/coding-agent-integration',
+        'architecture/agent-runtime',
         'architecture/git-management',
-        'architecture/git-runtime',
+        {
+          type: 'category',
+          label: 'Related references',
+          collapsed: true,
+          items: [
+            'architecture/daemon-runtime',
+            'architecture/worker-runtime',
+            'architecture/opencode-integration',
+            'architecture/git-runtime',
+          ],
+        },
       ],
     },
     {

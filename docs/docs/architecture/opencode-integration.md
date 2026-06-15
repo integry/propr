@@ -6,6 +6,8 @@ sidebar_position: 5
 
 The OpenCode integration lets ProPR run OpenCode as an additional coding agent alongside Claude Code, Codex, Antigravity, and Mistral Vibe. It is implemented by the OpenCode agent class, the OpenCode Docker image, and the shared agent registry.
 
+This page covers OpenCode-specific setup and runtime behavior. For the common pattern shared by all coding agents, see [Coding Agent Integration](./coding-agent-integration.md).
+
 ## Components
 
 ```text
@@ -44,7 +46,7 @@ opencode --version
 opencode auth login
 ```
 
-OpenCode's current config location is `~/.config/opencode`. Configure new agents with that path. Legacy deployments can keep using `~/.opencode` by saving the agent `configPath` as `~/.opencode`.
+OpenCode's config location is `~/.config/opencode`. Configure agents with that path.
 
 OpenCode includes built-in free models that can run without provider login. Operators only need to provide credentials for OpenCode Go or any other authenticated provider/model source they configure.
 
@@ -153,12 +155,11 @@ The API does not refresh OpenCode auth files. Runtime auth refresh is limited to
 For launcher-based production deployments, pass the host paths explicitly:
 
 ```bash
--e HOST_OPENCODE_LEGACY_DIR=/home/your-user/.opencode
 -e HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode
 -e HOST_OPENCODE_DATA_DIR=/home/your-user/.local/share/opencode
 ```
 
-Pass `HOST_OPENCODE_LEGACY_DIR` only for agents whose saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias for `HOST_OPENCODE_XDG_DIR`. `HOST_OPENCODE_DATA_DIR` supports normal `opencode auth login` credentials without copying `auth.json` into the config tree and is mounted read-write so the CLI can refresh auth metadata. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
+`HOST_OPENCODE_DATA_DIR` supports normal `opencode auth login` credentials without copying `auth.json` into the config tree and is mounted read-write so the CLI can refresh auth metadata. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
 
 Before assigning work to OpenCode, verify:
 
