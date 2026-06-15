@@ -239,8 +239,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             ))}
           </nav>
           <AgentTankSidebar />
-          <footer className="px-4 py-3 border-t border-gray-100 text-[11px] leading-tight text-gray-400">
-            <div>ProPR v{__APP_VERSION__}</div>
+          <footer className="px-4 py-3 border-t border-gray-100 text-[11px] leading-tight text-gray-400 space-y-1">
+            <div>
+              <a
+                href="https://propr.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-gray-600 hover:underline"
+              >
+                ProPR
+              </a>{' '}
+              v{__APP_VERSION__}
+            </div>
             <div>© {new Date().getFullYear()} Rinalds Uzkalns</div>
           </footer>
         </div>
