@@ -7,8 +7,9 @@
  * instruct the model to emit the mandatory `## Overall Evaluation`,
  * `## Findings`, and `## Score` (ending in `Score: N/10`) sections.
  *
- * `reviewPromptBuilder.ts` has no `@propr/core` dependency, so it can be
- * imported directly without a workspace build.
+ * `reviewPromptBuilder.ts` only depends on `@propr/shared` (for the default
+ * review guidance), which CI builds before running the test suite, so it can be
+ * imported directly without building the heavier `@propr/core` package.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert';

@@ -1,6 +1,7 @@
 import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
+import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import {
   buildAllModelOptions,
@@ -243,17 +244,16 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             <SettingRow
               label="Review Prompt"
               htmlFor="pr_review_prompt"
-              helperText="Optional override for the review task guidance. Leave empty to use the built-in prompt. The required output sections (Overall Evaluation, Findings, Score) are always appended automatically."
+              helperText="Override for the review task guidance. Prefilled with the built-in default so you can see what's customizable — edit it to change the guidance. Clear the field to fall back to the built-in default. The required output sections (Overall Evaluation, Findings, Score) are always appended automatically."
             >
               <textarea
                 id="pr_review_prompt"
                 name="pr_review_prompt"
-                value={settings.pr_review_prompt}
+                value={settings.pr_review_prompt || DEFAULT_REVIEW_GUIDANCE}
                 onChange={onReviewPromptChange}
                 onBlur={onReviewPromptBlur}
                 rows={5}
                 maxLength={20000}
-                placeholder="Use the built-in review prompt"
                 className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border font-mono"
               />
             </SettingRow>

@@ -6,6 +6,8 @@
  * machine-parseable by the /fix pipeline later.
  */
 
+import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
+
 export interface ReviewPromptOptions {
     pullRequestNumber: number;
     combinedCommentBody: string;
@@ -30,11 +32,12 @@ export interface ReviewPromptOptions {
 }
 
 /**
- * Default high-level review guidance. This is the only part of the task block
- * the `pr_review_prompt` override replaces — the structured sections below it
- * are always preserved.
+ * The default high-level review guidance lives in `@propr/shared`
+ * (`DEFAULT_REVIEW_GUIDANCE`) so the Settings UI can prefill the
+ * `pr_review_prompt` field with the exact text the override replaces. It is the
+ * only part of the task block the override replaces — the structured sections
+ * below it are always preserved.
  */
-const DEFAULT_REVIEW_GUIDANCE = `Perform a thorough code review of this pull request based on the CURRENT diff. Your response MUST contain exactly the following three sections with the headers shown below. Do not omit any section.`;
 
 /**
  * Fixed transition appended after an operator override. It re-establishes the
