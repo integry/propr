@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
 import { Lightbulb, Wrench, Search, CheckCircle2 } from 'lucide-react';
+import { formatReviewPromptOverview } from './reviewPromptOverview';
 
 // Simple thought type detection based on content
 const detectThoughtType = (content: string): 'analysis' | 'action' | 'summary' | 'search' => {
@@ -61,7 +62,8 @@ interface TerminalLogEntryProps {
 }
 
 const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext, isHighlighted }) => {
-  const thoughtType = detectThoughtType(event.content || '');
+  const displayContent = formatReviewPromptOverview(event.content) ?? event.content;
+  const thoughtType = detectThoughtType(displayContent || '');
   const categoryInfo = getCategoryInfo(thoughtType);
   const { Icon } = categoryInfo;
 
@@ -98,9 +100,9 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
 
         {/* Right Pane - Content */}
         <div className="flex-1 min-w-0 overflow-hidden">
-          {event.content && (
+          {displayContent && (
             <div className="text-sm text-slate-700 leading-relaxed break-words overflow-hidden">
-              {renderMarkdown(event.content)}
+              {renderMarkdown(displayContent)}
             </div>
           )}
         </div>

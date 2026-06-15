@@ -19,6 +19,12 @@
 
 type JsonObject = Record<string, unknown>;
 
+interface ContentBlock {
+  type: string;
+  text?: string;
+  content?: string;
+}
+
 // Wrapper keys under which a review payload may be nested (e.g. `{ prompt: {...} }`).
 const WRAPPER_KEYS = [
   'prompt',
@@ -114,6 +120,12 @@ const formatNumber = (value: number): string => value.toLocaleString('en-US');
 
 const pluralize = (count: number, singular: string, plural?: string): string =>
   count === 1 ? singular : plural ?? `${singular}s`;
+
+const parseCount = (value: string | undefined): number | undefined => {
+  if (!value) return undefined;
+  const parsed = Number(value.replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
 // Extract a PR number from either a direct numeric field or a `{ number }` object.
 const extractPrNumber = (obj: JsonObject): number | undefined => {
@@ -316,15 +328,98 @@ const buildOverview = (fields: ReviewPayloadFields): string => {
   return overview;
 };
 
+const findCountInText = (text: string, patterns: RegExp[]): number | undefined => {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const count = parseCount(match?.[1]);
+    if (count !== undefined) return count;
+  }
+  return undefined;
+};
+
+const extractReviewFieldsFromPromptText = (text: string): ReviewPayloadFields | null => {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+
+  const prMatch = normalized.match(/(?:reviewing\s+)?pull\s+request\s+#?(\d+)(?:\s+in\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?/i);
+  const prNumber = parseCount(prMatch?.[1]);
+  if (prNumber === undefined) return null;
+
+  const isReviewPrompt =
+    /you\s+are\s+reviewing\s+pull\s+request/i.test(normalized) ||
+    /review\s+pull\s+request/i.test(normalized) ||
+    /reviewing\s+pr\s+#?\d+/i.test(normalized);
+  if (!isReviewPrompt) return null;
+
+  const repoPath = prMatch?.[2]?.replace(/[.,;:!?]+$/, '');
+  const [owner, name] = repoPath ? repoPath.split('/') : [];
+
+  const changedFiles = findCountInText(normalized, [
+    /([\d,]+)\s+files?\s+changed/i,
+    /changed\s+files?\s*[:=]\s*([\d,]+)/i,
+  ]);
+  const diffLines = findCountInText(normalized, [
+    /([\d,]+)\s+diff\s+lines?(?:\s+included)?/i,
+    /diff\s+lines?(?:\s+included)?\s*[:=]\s*([\d,]+)/i,
+  ]);
+  const skippedCount = findCountInText(normalized, [
+    /([\d,]+)\s+files?\s+skipped/i,
+    /skipped\s+files?\s*[:=]\s*([\d,]+)/i,
+  ]);
+  const previousComments = findCountInText(normalized, [
+    /([\d,]+)\s+(?:previous|prior)\s+comments?(?:\s+included)?/i,
+    /(?:previous|prior)\s+comments?\s*[:=]\s*([\d,]+)/i,
+  ]);
+
+  return {
+    prNumber,
+    repo: { owner, name },
+    changedFiles,
+    diffLines,
+    skippedCount,
+    skippedNames: [],
+    previousComments,
+  };
+};
+
+const isContentBlockArray = (value: unknown): value is ContentBlock[] => {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.every(
+    block =>
+      isPlainObject(block) &&
+      typeof block.type === 'string' &&
+      (typeof block.text === 'string' || typeof block.content === 'string')
+  );
+};
+
+const extractTextFromContentBlocks = (blocks: ContentBlock[]): string => {
+  return blocks
+    .map(block => {
+      if (block.type === 'text' && block.text) return block.text;
+      if (block.content) return block.content;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n');
+};
+
 // Find a review payload either at the top level or nested under a wrapper key.
 const findReviewPayload = (root: JsonObject): ReviewPayloadFields | null => {
   const direct = extractReviewFields(root);
   if (direct) return direct;
 
+  if (isContentBlockArray(root.content)) {
+    const fields = extractReviewFieldsFromPromptText(extractTextFromContentBlocks(root.content));
+    if (fields) return fields;
+  }
+
   for (const key of WRAPPER_KEYS) {
     const nested = root[key];
     if (isPlainObject(nested)) {
       const fields = extractReviewFields(nested);
+      if (fields) return fields;
+    } else if (typeof nested === 'string') {
+      const fields = extractReviewFieldsFromPromptText(nested);
       if (fields) return fields;
     }
   }
@@ -346,7 +441,10 @@ export const formatReviewPromptOverview = (
   if (typeof content !== 'string') return null;
 
   const trimmed = content.trim();
-  if (!trimmed.startsWith('{')) return null;
+  if (!trimmed.startsWith('{')) {
+    const fields = extractReviewFieldsFromPromptText(trimmed);
+    return fields ? buildOverview(fields) : null;
+  }
 
   let parsed: unknown;
   try {

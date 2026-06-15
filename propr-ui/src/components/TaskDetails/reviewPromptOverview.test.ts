@@ -34,6 +34,27 @@ describe('formatReviewPromptOverview', () => {
     );
   });
 
+  it('formats a Claude content-block payload containing review prompt text', () => {
+    const payload = JSON.stringify({
+      content: [
+        {
+          type: 'text',
+          text: 'You are reviewing pull request #1548 in integry/propr. 8 files changed, 1,240 diff lines included, 2 files skipped, 4 previous comments included.',
+        },
+      ],
+    });
+
+    expect(formatReviewPromptOverview(payload)).toBe(
+      'Reviewing PR #1548 in integry/propr. 8 files changed, 1,240 diff lines included, 2 files skipped, 4 previous comments included.'
+    );
+  });
+
+  it('formats direct review prompt text', () => {
+    expect(
+      formatReviewPromptOverview('You are reviewing pull request #5 in owner/repo.')
+    ).toBe('Reviewing PR #5 in owner/repo.');
+  });
+
   it('lists skipped file names inline when the list is short', () => {
     const payload = JSON.stringify({
       pullRequestNumber: 7,
@@ -161,7 +182,7 @@ describe('formatReviewPromptOverview', () => {
 
   it('returns null for invalid JSON', () => {
     expect(formatReviewPromptOverview('{ not valid json')).toBeNull();
-    expect(formatReviewPromptOverview('You are reviewing pull request #5')).toBeNull();
+    expect(formatReviewPromptOverview('Review issue #5')).toBeNull();
   });
 
   it('returns null for non-string / empty input', () => {
