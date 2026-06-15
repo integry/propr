@@ -10,14 +10,14 @@ Run lint, type checks, tests, and the build on every pull request through GitHub
 
 Two ProPR features consume CI results directly, so CI is not just a reviewer aid — it changes how automation behaves:
 
-- **Auto-merge** (`--auto-merge`, or the `auto-merge` label) enables GitHub's native auto-merge, which holds the merge until all **required** status checks and approvals pass. This is only as safe as your branch protection: if no checks are marked *required*, auto-merge can merge as soon as the PR is mergeable. Define required status checks in branch protection so auto-merge waits for them. See [`--auto-merge`](../features/propr-cli.md) and [Planner Studio](../tutorials/planner-studio.md).
+- **Auto-merge** (`--auto-merge`, or the `auto-merge` label) enables GitHub's native auto-merge, which holds the merge until all **required** status checks and approvals pass. This is only as safe as your branch protection: if no checks are marked *required*, auto-merge can merge as soon as the PR is mergeable. Define required status checks in [branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) so auto-merge waits for them. See [`--auto-merge`](../features/propr-cli.md) and [Planner Studio](../tutorials/planner-studio.md).
 - **`/ultrafix`** defers its next review/fix cycle until checks are passing and resumes when a `check_run` completes. Fast, reliable CI means tighter cleanup loops; slow or flaky CI stalls them. Note that a commit with *no* check runs is treated as ready, so `/ultrafix` only benefits from CI when checks actually exist. See [UltraFix commands](../features/pr-ultrafix-commands.md).
 
 Practical implications: keep CI **fast** (loops and merges wait on it) and **deterministic** — flaky tests stall `/ultrafix`, block auto-merge, and can send fix loops chasing failures that aren't real.
 
 ## Keep A Human Gate Where You Want One
 
-Auto-merge removes the human from the loop once checks pass, which is appropriate for low-risk paths but not for everything. To keep a person in the loop on sensitive areas, add a `CODEOWNERS` file and require code-owner approval in branch protection. Required reviews are enforced by GitHub the same way required checks are, so auto-merge waits for them too — letting you mix hands-off merging for routine changes with mandatory human sign-off on the parts that matter.
+Auto-merge removes the human from the loop once checks pass, which is appropriate for low-risk paths but not for everything. To keep a person in the loop on sensitive areas, add a [`CODEOWNERS`](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners) file and [require code-owner approval](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-pull-request-reviews-before-merging) in branch protection. Required reviews are enforced by GitHub the same way required checks are, so auto-merge waits for them too — letting you mix hands-off merging for routine changes with mandatory human sign-off on the parts that matter.
 
 ## Harden Your CI
 
