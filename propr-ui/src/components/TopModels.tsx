@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getStatsOverview, StatsOverviewResponse } from '../api/taskStatsApi';
+import { getModelDisplayName } from '../utils/modelDisplay';
 import { ProviderLogo } from './ui/ProviderLogo';
 
 // Model icon component using ProviderLogo for visual grouping
@@ -93,10 +94,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
                     <div className="h-4 w-8 bg-gray-200 rounded ml-auto" />
                   </td>
                   <td className="py-2 px-2">
-                    <div className="flex items-center justify-end gap-2">
-                      <div className="w-12 h-1.5 bg-gray-200 rounded-full" />
-                      <div className="h-3 w-8 bg-gray-200 rounded" />
-                    </div>
+                    <div className="h-3 w-8 bg-gray-200 rounded ml-auto" />
                   </td>
                 </tr>
               ))}
@@ -152,7 +150,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
                     <div className="flex items-center gap-2 min-w-0">
                       <ModelIcon modelId={modelId} />
                       <span className="text-slate-800 font-medium text-sm truncate" title={modelId}>
-                        {modelId}
+                        {getModelDisplayName(modelId)}
                       </span>
                     </div>
                   </td>
@@ -160,17 +158,9 @@ const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
                     <span className="text-slate-600 text-sm">{count.toLocaleString()}</span>
                   </td>
                   <td className="py-2 px-2 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <div className="w-12 h-1.5 bg-slate-200 rounded-full overflow-hidden flex-shrink-0">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500"
-                          style={{ width: `${Math.max(percentage, 2)}%` }}
-                        />
-                      </div>
-                      <span className="text-xs font-medium text-slate-600 w-10 text-right flex-shrink-0">
-                        {percentage.toFixed(0)}%
-                      </span>
-                    </div>
+                    <span className="text-xs font-medium text-slate-600">
+                      {percentage.toFixed(0)}%
+                    </span>
                   </td>
                 </tr>
               );

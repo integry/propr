@@ -42,12 +42,12 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
       <div>
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
         <div className="overflow-hidden animate-pulse">
-          <table className="w-full">
+          <table className="w-full table-fixed">
             <thead>
               <tr className="border-b border-slate-200">
-                <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Name</th>
-                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Total</th>
-                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Success</th>
+                <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Name</th>
+                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Total</th>
+                <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Success</th>
               </tr>
             </thead>
             <tbody>
@@ -60,10 +60,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
                     <div className="h-4 w-8 bg-gray-200 rounded ml-auto" />
                   </td>
                   <td className="py-2 px-2">
-                    <div className="flex items-center justify-end gap-2">
-                      <div className="w-12 h-1.5 bg-gray-200 rounded-full" />
-                      <div className="h-3 w-8 bg-gray-200 rounded" />
-                    </div>
+                    <div className="h-3 w-8 bg-gray-200 rounded ml-auto" />
                   </td>
                 </tr>
               ))}
@@ -101,12 +98,12 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
     <div>
       <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
       <div className="overflow-hidden">
-        <table className="w-full">
+        <table className="w-full table-fixed">
           <thead>
             <tr className="border-b border-slate-200">
-              <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Name</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Total</th>
-              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500">Success</th>
+              <th className="text-left py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[55%]">Name</th>
+              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[20%]">Total</th>
+              <th className="text-right py-2 px-2 text-xs uppercase tracking-wider text-slate-500 w-[25%]">Success</th>
             </tr>
           </thead>
           <tbody>
@@ -121,23 +118,12 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
                   <span className="text-slate-600 text-sm">{repo.total}</span>
                 </td>
                 <td className="py-2 px-2 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    <div className="w-12 h-1.5 bg-slate-200 rounded-full overflow-hidden flex-shrink-0">
-                      <div
-                        className={`h-full rounded-full ${
-                          repo.successRate >= 80 ? 'bg-emerald-500' :
-                          repo.successRate >= 50 ? 'bg-amber-500' : 'bg-red-500'
-                        }`}
-                        style={{ width: `${repo.successRate}%` }}
-                      />
-                    </div>
-                    <span className={`text-xs font-medium flex-shrink-0 ${
-                      repo.successRate >= 80 ? 'text-emerald-600' :
-                      repo.successRate >= 50 ? 'text-amber-600' : 'text-red-600'
-                    }`}>
-                      {repo.successRate}%
-                    </span>
-                  </div>
+                  <span className={`text-xs font-medium ${
+                    repo.successRate >= 80 ? 'text-emerald-600' :
+                    repo.successRate >= 50 ? 'text-amber-600' : 'text-red-600'
+                  }`}>
+                    {repo.successRate}%
+                  </span>
                 </td>
               </tr>
             ))}
