@@ -37,6 +37,16 @@ export interface ReviewPromptOptions {
 const DEFAULT_REVIEW_GUIDANCE = `Perform a thorough code review of this pull request based on the CURRENT diff. Your response MUST contain exactly the following three sections with the headers shown below. Do not omit any section.`;
 
 /**
+ * Fixed transition appended after an operator override. It re-establishes the
+ * structured output contract as a non-negotiable system requirement so the
+ * model does not treat the mandatory sections below as part of the (possibly
+ * markdown-structured or format-conflicting) operator guidance. This is only
+ * inserted when an override is active — the default guidance already states
+ * the contract inline.
+ */
+const REVIEW_OUTPUT_CONTRACT_TRANSITION = `Regardless of the guidance above, you MUST use the exact output format specified below. The following three sections (Overall Evaluation, Findings, and the final \`Score: N/10\` line) are mandatory and may not be omitted, renamed, or reordered.`;
+
+/**
  * Build the review prompt that is sent to the reviewing model.
  *
  * The prompt requires the model to return:
@@ -61,8 +71,9 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         reviewPromptOverride,
     } = options;
 
-    const taskGuidance = reviewPromptOverride && reviewPromptOverride.trim() !== ''
-        ? reviewPromptOverride
+    const overrideActive = !!reviewPromptOverride && reviewPromptOverride.trim() !== '';
+    const taskGuidance = overrideActive
+        ? `${reviewPromptOverride}\n\n${REVIEW_OUTPUT_CONTRACT_TRANSITION}`
         : DEFAULT_REVIEW_GUIDANCE;
 
     const diffSection = prDiff
