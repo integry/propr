@@ -13,13 +13,12 @@ import {
   groupDirectoriesByDepth, extractDirectories, createDirectoryBatches,
 } from './summaryMinerDirectoryHelpers.js';
 import { processDirectoryBatch } from './summaryMinerDirectoryBatch.js';
+import { getSummarizationBatchLimitOverride } from './summaryMinerBatchLimits.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 const BATCH_TOKEN_RATIO = 0.5;
 const MAX_DIRS_PER_BATCH = 20;
 const DEFAULT_MAX_DIRECTORY_BATCH_TOKENS = 70_000;
-const DEFAULT_ANTIGRAVITY_MAX_DIRECTORY_BATCH_TOKENS = 20_000;
-const DEFAULT_ANTIGRAVITY_MAX_DIRS_PER_BATCH = 5;
 const DIRECTORY_PROGRESS_PERCENT_STEP = 5;
 
 export interface AggregateDirectoriesResult {
@@ -96,16 +95,22 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   const dirSummaryCache = new Map<string, string>();
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const antigravityBatchProfile = isAntigravitySummarization(modelId, agent.config.alias);
-  const defaultMaxBatchTokens = antigravityBatchProfile ? DEFAULT_ANTIGRAVITY_MAX_DIRECTORY_BATCH_TOKENS : DEFAULT_MAX_DIRECTORY_BATCH_TOKENS;
+  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
+  const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_DIRECTORY_BATCH_TOKENS;
   const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
   const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
   const maxDirsPerBatch = parseInt(
     process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_DIRS ||
-      String(antigravityBatchProfile ? DEFAULT_ANTIGRAVITY_MAX_DIRS_PER_BATCH : MAX_DIRS_PER_BATCH),
+      String(modelBatchLimitOverride?.maxItemsPerBatch ?? MAX_DIRS_PER_BATCH),
     10
   );
-  log.info({ maxBatchTokens, maxBatchTokensCap, maxDirsPerBatch, model: modelId, antigravityBatchProfile }, 'Calculated directory batch budget');
+  log.info({
+    maxBatchTokens,
+    maxBatchTokensCap,
+    maxDirsPerBatch,
+    model: modelId,
+    modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
+  }, 'Calculated directory batch budget');
 
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const initialConfig: SummarizationAgentConfig = {
@@ -261,15 +266,6 @@ async function tryPublishDirectoryProgress(fullName: string, branch: string): Pr
   if (progress && shouldPublishDirectoryProgress(progress) && !await isIndexingCancelled(fullName, branch)) {
     try { await publishProgress(fullName, branch, progress); } catch { /* best-effort */ }
   }
-}
-
-function isAntigravitySummarization(modelId: string, agentAlias: string): boolean {
-  const normalizedModel = modelId.toLowerCase();
-  const normalizedAlias = agentAlias.toLowerCase();
-  return normalizedAlias === 'antigravity' ||
-    normalizedModel.startsWith('antigravity-') ||
-    normalizedModel.startsWith('antigravity:') ||
-    normalizedModel.includes('gpt-oss-120b');
 }
 
 function shouldPublishDirectoryProgress(progress: IndexingProgress): boolean {
