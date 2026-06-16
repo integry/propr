@@ -11,12 +11,21 @@ import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
 
+// Hardening for user-configured agent env vars forwarded into the OpenCode
+// container: enforce POSIX-valid names, never forward GitHub credentials or
+// wrapper-managed vars, and reject values that could break the `-e KEY=VALUE`
+// contract (newlines/NUL).
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const BLOCKED_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
+const RESERVED_ENV_NAMES = new Set(['OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']);
+const GITHUB_CREDENTIAL_NAME_PATTERN = /^GITHUB_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
+
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
 
 export interface OpenCodeDockerArgsParams {
     config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
-    taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; allowDangerousPermissions?: boolean; configPath?: string;
-    promptMode?: 'file' | 'direct'; dataPath?: string;
+    taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; configPath?: string;
+    dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
 }
 
@@ -48,7 +57,7 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
 }
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
-    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, allowDangerousPermissions = true, promptMode = 'file', dataPath, ensureConfigPath = ensureDirectory } = params;
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, dataPath, ensureConfigPath = ensureDirectory } = params;
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
@@ -57,10 +66,16 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId, modelName);
-    const workspaceMode = readOnlyWorkspace ? 'ro' : 'rw';
+    const workspaceMode = (readOnlyWorkspace ?? issueNumber === 0) ? 'ro' : 'rw';
     const configMode = 'rw';
-    const commandArgs = buildOpenCodeCommandArgs(promptMode);
-    if (allowDangerousPermissions) commandArgs.push('--dangerously-skip-permissions');
+    // Single execution path for every OpenCode run (task and analysis alike):
+    // the prompt always arrives over stdin and is attached via the opencode-run
+    // wrapper. Permissions are always skipped — like the other agents, OpenCode
+    // runs non-interactively in an isolated container, so permission prompts
+    // would only auto-reject. Analysis uses a read-only throwaway workspace by
+    // default, with a prompt instruction as an additional behavioral guard.
+    const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
+    const commandArgs = ['opencode-run', '--format', 'json', '--title', title, '--dangerously-skip-permissions'];
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
         '-v', `${worktreePath}:/home/node/workspace:${workspaceMode}`, '-v', '/tmp/git-processor:/tmp/git-processor:rw',
@@ -78,29 +93,6 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     }
 
     return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
-}
-
-function buildOpenCodeCommandArgs(promptMode: 'file' | 'direct'): string[] {
-    if (promptMode === 'direct') {
-        return [
-            '/bin/sh',
-            '-lc',
-            // Write the prompt file INSIDE the workspace (OpenCode's project root,
-            // cwd=/home/node/workspace) rather than /tmp. OpenCode treats paths
-            // outside the project root as `external_directory`, whose permission is
-            // "ask" — auto-rejected in this non-interactive run — so a /tmp prompt
-            // file makes `--file` fail to read. The workspace is mounted rw for
-            // analysis, and the file is dot-prefixed and cleaned up on exit. The
-            // `out` capture file can stay in /tmp since OpenCode never reads it.
-            'prompt_file="$(mktemp "${PWD:-/home/node/workspace}/.opencode-analysis-prompt.XXXXXX.md")"; out="$(mktemp)"; cleanup() { rm -f "$prompt_file" "$out"; }; trap cleanup EXIT; cat > "$prompt_file"; opencode run "$@" --file "$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run. Follow the instructions in that file exactly." > "$out"; status=$?; cat "$out"; if [ "$status" -ne 0 ] || ! grep -q \'"type":"text"\' "$out"; then latest="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"; [ -n "$latest" ] && tail -80 "$latest" >&2; fi; exit "$status"',
-            'propr-opencode-direct',
-            '--format',
-            'json',
-            '--title',
-            'ProPR analysis'
-        ];
-    }
-    return ['opencode-run', '--format', 'json', '--title', 'ProPR task'];
 }
 
 interface OpenCodeDataMount { hostPath: string; mode: 'ro' | 'rw'; }
@@ -121,7 +113,7 @@ function resolveOpenCodeDataMount(configPath: string, envVars: AgentConfig['envV
     const configuredHostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
     if (configuredHostDataPath) return { hostPath: configuredHostDataPath, mode: 'rw' };
     if (explicitHostDataPath) return { hostPath: explicitHostDataPath, mode: 'rw' };
-    if (envVars?.XDG_DATA_HOME) return null;
+    if (envVars?.XDG_DATA_HOME && shouldForwardEnvVar('XDG_DATA_HOME', envVars.XDG_DATA_HOME)) return null;
     const inferredHostDataPath = inferOpenCodeDataPath(configPath);
     return inferredHostDataPath && fs.existsSync(inferredHostDataPath)
         ? { hostPath: inferredHostDataPath, mode: 'rw' }
@@ -139,8 +131,37 @@ function inferOpenCodeDataPath(configPath: string): string | null {
 function buildEnvVars(config: AgentConfig): string[] {
     const envVars: string[] = [];
     if (!config.envVars) return envVars;
-    for (const [key, value] of Object.entries(config.envVars)) envVars.push('-e', `${key}=${value}`);
+    for (const [key, value] of Object.entries(config.envVars)) {
+        if (!shouldForwardEnvVar(key, value)) continue;
+        envVars.push('-e', `${key}=${value}`);
+    }
     return envVars;
+}
+
+/**
+ * Decide whether a user-configured env var is safe to forward into the OpenCode
+ * container. Rejects invalid names, GitHub credential vars (the container gets
+ * its scoped token injected separately), wrapper-managed vars, and values
+ * containing newlines/NUL.
+ */
+export function shouldForwardEnvVar(key: string, value: string): boolean {
+    if (!ENV_NAME_PATTERN.test(key)) {
+        logger.warn({ envVar: key }, 'Skipping OpenCode env var with invalid name');
+        return false;
+    }
+    if (BLOCKED_ENV_NAMES.has(key) || GITHUB_CREDENTIAL_NAME_PATTERN.test(key)) {
+        logger.warn({ envVar: key }, 'Skipping GitHub credential env var for OpenCode container');
+        return false;
+    }
+    if (RESERVED_ENV_NAMES.has(key)) {
+        logger.warn({ envVar: key }, 'Skipping OpenCode env var managed by ProPR');
+        return false;
+    }
+    if (value.includes('\n') || value.includes('\r') || value.includes('\0')) {
+        logger.warn({ envVar: key }, 'Skipping OpenCode env var with unsupported multiline or NUL value');
+        return false;
+    }
+    return true;
 }
 
 function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
