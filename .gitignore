@@ -34,3 +34,6 @@ test/reports/
 
 # Promotional videos — lives in its own private repo (git@github.com:integry/propr-videos.git)
 apps/release-site-videos/
+
+# Standalone publish staging (scripts/build-publish.mjs)
+dist-publish/
