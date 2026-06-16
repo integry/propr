@@ -18,11 +18,13 @@ import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/ind
 import { printOutput } from "../utils/index.js";
 
 type CheckStatus = "ok" | "warn" | "fail";
+type CheckGroup = "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
 
 interface CheckResult {
   name: string;
   status: CheckStatus;
   detail: string;
+  group?: CheckGroup;
   fix?: string;
 }
 
@@ -50,6 +52,17 @@ function agentDescriptors(): AgentDescriptor[] {
 
 export const STACK_CONFIG_CHECK_NAME = "Stack config (.env)";
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
+const STATUS_LABEL: Record<CheckStatus, string> = { ok: "OK", warn: "WARN", fail: "FAIL" };
+const CHECK_GROUPS: CheckGroup[] = ["Docker", "Stack", "Images", "Agents", "GitHub", "Configuration"];
+const ANSI = {
+  reset: "\u001b[0m",
+  bold: "\u001b[1m",
+  dim: "\u001b[2m",
+  red: "\u001b[31m",
+  green: "\u001b[32m",
+  yellow: "\u001b[33m",
+  cyan: "\u001b[36m",
+};
 
 export interface RunChecksOptions {
   root?: string;
@@ -72,12 +85,13 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // 1. Docker installed
   const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
   if (dockerVersion.status === 0) {
-    results.push({ name: "Docker installed", status: "ok", detail: dockerVersion.stdout.trim() });
+    results.push({ name: "Docker installed", status: "ok", detail: dockerVersion.stdout.trim(), group: "Docker" });
   } else {
     results.push({
       name: "Docker installed",
       status: "fail",
       detail: "`docker` command not found",
+      group: "Docker",
       fix: "Install Docker: https://docs.docker.com/get-docker/",
     });
   }
@@ -88,11 +102,12 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const daemonUp = orch.dockerAvailable();
   results.push(
     daemonUp
-      ? { name: "Docker daemon", status: "ok", detail: "daemon is reachable" }
+      ? { name: "Docker daemon", status: "ok", detail: "daemon is reachable", group: "Docker" }
       : {
           name: "Docker daemon",
           status: "fail",
           detail: "cannot reach the Docker daemon (`docker info` failed)",
+          group: "Docker",
           fix: "Start Docker (e.g. `sudo systemctl start docker`) and ensure your user can access it.",
         }
   );
@@ -108,11 +123,12 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     }
     results.push(
       accessible
-        ? { name: "Docker socket", status: "ok", detail: socketPath }
+        ? { name: "Docker socket", status: "ok", detail: socketPath, group: "Docker" }
         : {
             name: "Docker socket",
             status: "warn",
             detail: `${socketPath} is not read/write for the current user`,
+            group: "Docker",
             fix: "Add your user to the `docker` group, or run with sufficient privileges.",
           }
     );
@@ -121,12 +137,13 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // 4. Stack root + .env
   const envPath = join(rootDir, ".env");
   if (existsSync(envPath)) {
-    results.push({ name: STACK_CONFIG_CHECK_NAME, status: "ok", detail: envPath });
+    results.push({ name: STACK_CONFIG_CHECK_NAME, status: "ok", detail: envPath, group: "Stack" });
   } else {
     results.push({
       name: STACK_CONFIG_CHECK_NAME,
       status: "warn",
       detail: `no .env found at ${rootDir}`,
+      group: "Stack",
       fix: "Run `propr init stack` to scaffold .env, data/, logs/ and repos/.",
     });
   }
@@ -137,13 +154,14 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       if (key === "docs" && !cfg.docsEnabled) continue;
       const present = imagePresent(orch, tag);
       if (present) {
-        results.push({ name: `Image ${key}`, status: "ok", detail: tag });
+        results.push({ name: `Image ${key}`, status: "ok", detail: tag, group: "Images" });
       } else {
         const isAgent = key.startsWith("agent-");
         results.push({
           name: `Image ${key}`,
           status: "warn",
           detail: `${tag} not present locally`,
+          group: "Images",
           fix: isAgent
             ? "Jobs using this agent fail until the image is pulled. `propr start` pulls it, or build with scripts/build-images.sh."
             : "Will be pulled automatically on `propr start`.",
@@ -157,12 +175,13 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const configured = cfg[agent.hostDirKey] as string | undefined;
     const dir = configured || agent.defaultDir;
     if (existsSync(dir)) {
-      results.push({ name: `Agent creds: ${agent.type}`, status: "ok", detail: dir });
+      results.push({ name: `Agent creds: ${agent.type}`, status: "ok", detail: dir, group: "Agents" });
     } else {
       results.push({
         name: `Agent creds: ${agent.type}`,
         status: "warn",
         detail: `${dir} not found — ${agent.type} will not authenticate`,
+        group: "Agents",
         fix: `Log in with the ${agent.type} CLI on this host, or set ${agent.envKey} in .env.`,
       });
     }
@@ -182,22 +201,23 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       name: "User whitelist",
       status: "warn",
       detail: "GITHUB_USER_WHITELIST is not set — any GitHub user who can authenticate to this instance may trigger processing and use the API (within the App's repository access)",
+      group: "GitHub",
       fix: "Set GITHUB_USER_WHITELIST to a comma-separated list of allowed GitHub usernames in .env.",
     });
   } else if (whitelistEntries.length > 0) {
-    results.push({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed` });
+    results.push({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed`, group: "GitHub" });
   }
 
   // 9. Config validation from the orchestrator (bind paths, vibe dirs, etc.)
   const validation = orch.validateEnv(cfg);
   for (const warn of validation.warnings) {
-    results.push({ name: "Config warning", status: "warn", detail: warn });
+    results.push({ name: "Config warning", status: "warn", detail: warn, group: "Configuration" });
   }
   for (const err of validation.errors) {
     // env file / data dir absence is already surfaced by steps 4–6 above; skip duplicates.
     if (/env file path is not set/i.test(err)) continue;
     if (/data directory.*is not set/i.test(err)) continue;
-    results.push({ name: "Config error", status: "fail", detail: err });
+    results.push({ name: "Config error", status: "fail", detail: err, group: "Configuration" });
   }
 
   // 10. Deep verify (opt-in): image/CLI smoke test per selected agent
@@ -212,17 +232,19 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
           name: `Verify: ${agent.type}`,
           status: "warn",
           detail: `image ${tag ?? agent.imageKey} not present — skipped`,
+          group: "Agents",
         });
         continue;
       }
       const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000 });
       if (run.status === 0) {
-        results.push({ name: `Verify: ${agent.type}`, status: "ok", detail: `image runs (${(run.stdout || "").trim().split("\n")[0]})` });
+        results.push({ name: `Verify: ${agent.type}`, status: "ok", detail: `image runs (${(run.stdout || "").trim().split("\n")[0]})`, group: "Agents" });
       } else {
         results.push({
           name: `Verify: ${agent.type}`,
           status: "warn",
           detail: `image/CLI smoke test failed: ${(run.stderr || run.stdout || "").trim().split("\n")[0]}`,
+          group: "Agents",
         });
       }
     }
@@ -280,11 +302,11 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
     installationId: val("GH_INSTALLATION_ID"),
   });
   for (const warning of warnings) {
-    out.push({ name: "GitHub auth", status: "warn", detail: warning });
+    out.push({ name: "GitHub auth", status: "warn", detail: warning, group: "GitHub" });
   }
 
   if (mode === "demo") {
-    out.push({ name: "GitHub auth", status: "ok", detail: "demo mode — GitHub access disabled" });
+    out.push({ name: "GitHub auth", status: "ok", detail: "demo mode — GitHub access disabled", group: "GitHub" });
     return out;
   }
 
@@ -293,6 +315,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
       name: "GitHub auth mode",
       status: "fail",
       detail: "no GitHub auth configured — the backend will exit at startup",
+      group: "GitHub",
       fix: "Set GH_APP_ID + GH_INSTALLATION_ID + a private key (own App), or PROPR_GH_RELAY_URL + PROPR_GH_RELAY_TOKEN (token relay), or PROPR_DEMO_MODE=true.",
     });
     return out;
@@ -302,36 +325,37 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
     const urlError = relayUrl ? validateRelayUrl(relayUrl) : `${RELAY_URL_KEY} must be set for relay mode`;
     out.push(
       urlError
-        ? { name: "GitHub auth mode", status: "fail", detail: urlError, fix: "Use an https:// relay URL (http only for localhost)." }
-        : { name: "GitHub auth mode", status: "ok", detail: `token relay (${relayUrl})` }
+        ? { name: "GitHub auth mode", status: "fail", detail: urlError, group: "GitHub", fix: "Use an https:// relay URL (http only for localhost)." }
+        : { name: "GitHub auth mode", status: "ok", detail: `token relay (${relayUrl})`, group: "GitHub" }
     );
     if (!relayToken) {
       out.push({
         name: "Relay credential",
         status: "fail",
         detail: `${RELAY_TOKEN_KEY} is not set`,
+        group: "GitHub",
         fix: `Set ${RELAY_TOKEN_KEY} to the relay credential issued for your installation.`,
       });
     } else {
-      out.push({ name: "Relay credential", status: "ok", detail: `${RELAY_TOKEN_KEY} is set` });
+      out.push({ name: "Relay credential", status: "ok", detail: `${RELAY_TOKEN_KEY} is set`, group: "GitHub" });
     }
     return out;
   }
 
   // App mode (default).
-  out.push({ name: "GitHub auth mode", status: "ok", detail: "GitHub App (own/shared app)" });
+  out.push({ name: "GitHub auth mode", status: "ok", detail: "GitHub App (own/shared app)", group: "GitHub" });
 
   const appId = val("GH_APP_ID");
   const installationId = val("GH_INSTALLATION_ID");
   out.push(
     isPlaceholder(appId)
-      ? { name: "GH_APP_ID", status: "fail", detail: "missing or placeholder", fix: "Set GH_APP_ID from your GitHub App settings." }
-      : { name: "GH_APP_ID", status: "ok", detail: appId! }
+      ? { name: "GH_APP_ID", status: "fail", detail: "missing or placeholder", group: "GitHub", fix: "Set GH_APP_ID from your GitHub App settings." }
+      : { name: "GH_APP_ID", status: "ok", detail: appId!, group: "GitHub" }
   );
   out.push(
     isPlaceholder(installationId)
-      ? { name: "GH_INSTALLATION_ID", status: "fail", detail: "missing or placeholder", fix: "Set GH_INSTALLATION_ID for the App's installation on your account/org." }
-      : { name: "GH_INSTALLATION_ID", status: "ok", detail: installationId! }
+      ? { name: "GH_INSTALLATION_ID", status: "fail", detail: "missing or placeholder", group: "GitHub", fix: "Set GH_INSTALLATION_ID for the App's installation on your account/org." }
+      : { name: "GH_INSTALLATION_ID", status: "ok", detail: installationId!, group: "GitHub" }
   );
 
   // Private key reachability. Prefer the explicit host mount (HOST_GH_PRIVATE_KEY).
@@ -339,7 +363,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   const keyPath = val("GH_PRIVATE_KEY_PATH");
   if (hostKey) {
     if (!existsSync(hostKey)) {
-      out.push({ name: "GitHub App key", status: "fail", detail: `HOST_GH_PRIVATE_KEY (${hostKey}) does not exist` });
+      out.push({ name: "GitHub App key", status: "fail", detail: `HOST_GH_PRIVATE_KEY (${hostKey}) does not exist`, group: "GitHub" });
     } else {
       let readable = true;
       try {
@@ -350,11 +374,12 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
       const looksLikePem = readable && /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(safeRead(hostKey));
       out.push(
         readable && looksLikePem
-          ? { name: "GitHub App key", status: "ok", detail: `${hostKey} (mounted read-only)` }
+          ? { name: "GitHub App key", status: "ok", detail: `${hostKey} (mounted read-only)`, group: "GitHub" }
           : {
               name: "GitHub App key",
               status: "fail",
               detail: readable ? `${hostKey} does not look like a PEM private key` : `${hostKey} is not readable`,
+              group: "GitHub",
             }
       );
     }
@@ -363,6 +388,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
       name: "GitHub App key",
       status: "fail",
       detail: "no private key configured",
+      group: "GitHub",
       fix: "Set HOST_GH_PRIVATE_KEY to your .pem host path (recommended), or stage the key under data/ and set GH_PRIVATE_KEY_PATH.",
     });
   } else {
@@ -370,6 +396,7 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
       name: "GitHub App key",
       status: "warn",
       detail: `GH_PRIVATE_KEY_PATH=${keyPath} — reachability inside the container not verified`,
+      group: "GitHub",
       fix: "Prefer HOST_GH_PRIVATE_KEY (bind-mounts the key), or ensure this path resolves inside the container (e.g. under data/).",
     });
   }
@@ -385,22 +412,86 @@ function safeRead(path: string): string {
   }
 }
 
-/** Print a human-readable check table. */
+function shouldUseColor(): boolean {
+  return Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
+}
+
+function color(text: string, enabled: boolean, ...codes: string[]): string {
+  return enabled ? `${codes.join("")}${text}${ANSI.reset}` : text;
+}
+
+function statusColor(status: CheckStatus): string {
+  if (status === "ok") return ANSI.green;
+  if (status === "warn") return ANSI.yellow;
+  return ANSI.red;
+}
+
+function formatStatus(status: CheckStatus, colorEnabled: boolean): string {
+  const text = `${STATUS_GLYPH[status]} ${STATUS_LABEL[status].padEnd(4)}`;
+  return color(text, colorEnabled, statusColor(status), ANSI.bold);
+}
+
+function countStatuses(results: CheckResult[]): Record<CheckStatus, number> {
+  const counts: Record<CheckStatus, number> = { ok: 0, warn: 0, fail: 0 };
+  for (const result of results) counts[result.status]++;
+  return counts;
+}
+
+function plural(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+function formatSummary(counts: Record<CheckStatus, number>, colorEnabled: boolean): string {
+  const failures = color(plural(counts.fail, "failure"), colorEnabled && counts.fail > 0, ANSI.red, ANSI.bold);
+  const warnings = color(plural(counts.warn, "warning"), colorEnabled && counts.warn > 0, ANSI.yellow, ANSI.bold);
+  const ok = color(`${counts.ok} ok`, colorEnabled, ANSI.green);
+  return `Summary: ${failures}, ${warnings}, ${ok}`;
+}
+
+/** Print human-readable checks grouped by subsystem. */
 export function printChecks(outcome: ChecksOutcome): void {
+  const colorEnabled = shouldUseColor();
+  const counts = countStatuses(outcome.results);
+
   console.log("");
-  console.log(`ProPR environment check  (stack root: ${outcome.rootDir})`);
+  console.log(`${color("ProPR environment check", colorEnabled, ANSI.bold)}  ${color(`(stack root: ${outcome.rootDir})`, colorEnabled, ANSI.dim)}`);
+  console.log(formatSummary(counts, colorEnabled));
   console.log("─".repeat(60));
-  for (const r of outcome.results) {
-    const glyph = STATUS_GLYPH[r.status];
-    console.log(`${glyph}  ${r.name.padEnd(24)} ${r.detail}`);
-    if (r.fix && r.status !== "ok") {
-      console.log(`   ↳ ${r.fix}`);
+
+  let printedGroup = false;
+  for (const group of CHECK_GROUPS) {
+    const groupResults = outcome.results.filter((result) => result.group === group);
+    if (groupResults.length === 0) continue;
+    const groupCounts = countStatuses(groupResults);
+    const nameWidth = Math.max(18, ...groupResults.map((result) => result.name.length));
+
+    if (printedGroup) console.log("");
+    printedGroup = true;
+    console.log(color(`${group} (${plural(groupCounts.fail, "failure")}, ${plural(groupCounts.warn, "warning")})`, colorEnabled, ANSI.cyan, ANSI.bold));
+
+    for (const r of groupResults) {
+      console.log(`  ${formatStatus(r.status, colorEnabled)} ${r.name.padEnd(nameWidth)}  ${r.detail}`);
+      if (r.fix && r.status !== "ok") {
+        console.log(`         ${color("↳", colorEnabled, ANSI.dim)} ${r.fix}`);
+      }
     }
   }
+
+  const ungrouped = outcome.results.filter((result) => !result.group);
+  if (ungrouped.length > 0) {
+    const nameWidth = Math.max(18, ...ungrouped.map((result) => result.name.length));
+    if (printedGroup) console.log("");
+    console.log(color("Other", colorEnabled, ANSI.cyan, ANSI.bold));
+    for (const r of ungrouped) {
+      console.log(`  ${formatStatus(r.status, colorEnabled)} ${r.name.padEnd(nameWidth)}  ${r.detail}`);
+      if (r.fix && r.status !== "ok") {
+        console.log(`         ${color("↳", colorEnabled, ANSI.dim)} ${r.fix}`);
+      }
+    }
+  }
+
   console.log("─".repeat(60));
-  const counts: Record<CheckStatus, number> = { ok: 0, warn: 0, fail: 0 };
-  for (const r of outcome.results) counts[r.status]++;
-  console.log(`${counts.ok} ok, ${counts.warn} warning(s), ${counts.fail} failure(s)`);
+  console.log(formatSummary(counts, colorEnabled));
 }
 
 /** Creates the `check` command. */
