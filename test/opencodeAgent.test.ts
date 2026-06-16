@@ -372,6 +372,7 @@ describe('OpenCodeAgent Docker args', () => {
         assert.ok(!analysisArgs.includes('/bin/sh'));
         assert.ok(analysisArgs.includes('opencode-run'));
         assert.ok(analysisArgs.includes('--dangerously-skip-permissions'));
+        assert.ok(analysisArgs.includes('/tmp/worktree:/home/node/workspace:ro'));
         assert.strictEqual(analysisArgs[analysisArgs.indexOf('--format') + 1], 'json');
         assert.strictEqual(analysisArgs[analysisArgs.indexOf('--title') + 1], 'ProPR analysis');
         assert.strictEqual(analysisArgs[analysisArgs.indexOf('--model') + 1], 'openai/gpt-5.5');
@@ -454,7 +455,9 @@ describe('OpenCodeAgent Docker args', () => {
         config.envVars = {
             SAFE_VAR: 'keep-me',
             GH_TOKEN: 'leaked-secret',
-            GITHUB_API_URL: 'https://evil.example',
+            GITHUB_API_URL: 'https://github.enterprise.example',
+            GITHUB_PAT: 'leaked-secret',
+            OPENCODE_CONFIG_DIR: '/tmp/override',
             'bad-name': 'nope',
             MULTILINE: 'line1\nline2'
         };
@@ -469,21 +472,27 @@ describe('OpenCodeAgent Docker args', () => {
 
         // The user-configured safe var is forwarded.
         assert.ok(envValues.includes('SAFE_VAR=keep-me'));
+        assert.ok(envValues.includes('GITHUB_API_URL=https://github.enterprise.example'));
         // The scoped token is still injected (token removal is deferred), but the
         // user-supplied GH_TOKEN value is never forwarded.
         assert.ok(envValues.includes('GH_TOKEN=scoped-token'));
         assert.ok(!envValues.includes('GH_TOKEN=leaked-secret'));
-        // GITHUB_*, invalid names, and multiline values are dropped entirely.
-        assert.ok(!envValues.some(v => v.startsWith('GITHUB_API_URL=')));
+        // Credential-like GitHub vars, reserved wrapper vars, invalid names, and
+        // multiline values are dropped entirely.
+        assert.ok(!envValues.some(v => v.startsWith('GITHUB_PAT=')));
+        assert.ok(!envValues.includes('OPENCODE_CONFIG_DIR=/tmp/override'));
         assert.ok(!envValues.some(v => v.startsWith('bad-name=')));
         assert.ok(!envValues.some(v => v.startsWith('MULTILINE=')));
     });
 
     test('shouldForwardEnvVar enforces name, credential, and value rules', () => {
         assert.ok(shouldForwardEnvVar('OPENROUTER_API_KEY', 'sk-123'));
+        assert.ok(shouldForwardEnvVar('GITHUB_API_URL', 'https://github.enterprise.example'));
         assert.ok(!shouldForwardEnvVar('GH_TOKEN', 'x'));
         assert.ok(!shouldForwardEnvVar('GITHUB_TOKEN', 'x'));
-        assert.ok(!shouldForwardEnvVar('GITHUB_ANYTHING', 'x'));
+        assert.ok(!shouldForwardEnvVar('GITHUB_PAT', 'x'));
+        assert.ok(!shouldForwardEnvVar('GITHUB_APP_PRIVATE_KEY', 'x'));
+        assert.ok(!shouldForwardEnvVar('XDG_DATA_HOME', '/tmp/data'));
         assert.ok(!shouldForwardEnvVar('1INVALID', 'x'));
         assert.ok(!shouldForwardEnvVar('has space', 'x'));
         assert.ok(!shouldForwardEnvVar('OK', 'line1\nline2'));
@@ -494,6 +503,7 @@ describe('OpenCodeAgent Docker args', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
         assert.match(script, /OPENCODE_PROMPT_MAX_BYTES:-20971520/);
+        assert.match(script, /expected an integer byte limit/);
         assert.match(script, /exceeding OPENCODE_PROMPT_MAX_BYTES/);
     });
 

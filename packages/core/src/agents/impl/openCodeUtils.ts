@@ -12,10 +12,13 @@ import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
 
 // Hardening for user-configured agent env vars forwarded into the OpenCode
-// container: enforce POSIX-valid names, never forward GitHub credentials, and
-// reject values that could break the `-e KEY=VALUE` contract (newlines/NUL).
+// container: enforce POSIX-valid names, never forward GitHub credentials or
+// wrapper-managed vars, and reject values that could break the `-e KEY=VALUE`
+// contract (newlines/NUL).
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const BLOCKED_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
+const RESERVED_ENV_NAMES = new Set(['OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']);
+const GITHUB_CREDENTIAL_NAME_PATTERN = /^GITHUB_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
 
@@ -63,14 +66,14 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId, modelName);
-    const workspaceMode = readOnlyWorkspace ? 'ro' : 'rw';
+    const workspaceMode = (readOnlyWorkspace ?? issueNumber === 0) ? 'ro' : 'rw';
     const configMode = 'rw';
     // Single execution path for every OpenCode run (task and analysis alike):
     // the prompt always arrives over stdin and is attached via the opencode-run
     // wrapper. Permissions are always skipped — like the other agents, OpenCode
     // runs non-interactively in an isolated container, so permission prompts
-    // would only auto-reject. Analysis stays read-only via its prompt
-    // instruction and its throwaway workspace.
+    // would only auto-reject. Analysis uses a read-only throwaway workspace by
+    // default, with a prompt instruction as an additional behavioral guard.
     const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
     const commandArgs = ['opencode-run', '--format', 'json', '--title', title, '--dangerously-skip-permissions'];
     const dockerArgs = [
@@ -110,7 +113,7 @@ function resolveOpenCodeDataMount(configPath: string, envVars: AgentConfig['envV
     const configuredHostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
     if (configuredHostDataPath) return { hostPath: configuredHostDataPath, mode: 'rw' };
     if (explicitHostDataPath) return { hostPath: explicitHostDataPath, mode: 'rw' };
-    if (envVars?.XDG_DATA_HOME) return null;
+    if (envVars?.XDG_DATA_HOME && shouldForwardEnvVar('XDG_DATA_HOME', envVars.XDG_DATA_HOME)) return null;
     const inferredHostDataPath = inferOpenCodeDataPath(configPath);
     return inferredHostDataPath && fs.existsSync(inferredHostDataPath)
         ? { hostPath: inferredHostDataPath, mode: 'rw' }
@@ -138,15 +141,20 @@ function buildEnvVars(config: AgentConfig): string[] {
 /**
  * Decide whether a user-configured env var is safe to forward into the OpenCode
  * container. Rejects invalid names, GitHub credential vars (the container gets
- * its scoped token injected separately), and values containing newlines/NUL.
+ * its scoped token injected separately), wrapper-managed vars, and values
+ * containing newlines/NUL.
  */
 export function shouldForwardEnvVar(key: string, value: string): boolean {
     if (!ENV_NAME_PATTERN.test(key)) {
         logger.warn({ envVar: key }, 'Skipping OpenCode env var with invalid name');
         return false;
     }
-    if (BLOCKED_ENV_NAMES.has(key) || key.startsWith('GITHUB_')) {
+    if (BLOCKED_ENV_NAMES.has(key) || GITHUB_CREDENTIAL_NAME_PATTERN.test(key)) {
         logger.warn({ envVar: key }, 'Skipping GitHub credential env var for OpenCode container');
+        return false;
+    }
+    if (RESERVED_ENV_NAMES.has(key)) {
+        logger.warn({ envVar: key }, 'Skipping OpenCode env var managed by ProPR');
         return false;
     }
     if (value.includes('\n') || value.includes('\r') || value.includes('\0')) {

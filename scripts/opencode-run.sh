@@ -13,20 +13,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-prompt="$(cat)"
-
-if [ -z "$prompt" ]; then
-    exec opencode run "$@"
-fi
-
 prompt_file="$(mktemp -t opencode-prompt.XXXXXX.md)"
 chmod 600 "$prompt_file"
-printf '%s' "$prompt" > "$prompt_file"
+cat > "$prompt_file"
+
+# Empty stdin means there is no prompt file to attach and no prompt to cap.
+if [ ! -s "$prompt_file" ]; then
+    rm -f "$prompt_file"
+    prompt_file=""
+    exec opencode run "$@"
+fi
 
 # Guard against pathologically large prompts (default 20 MiB). Overridable via
 # OPENCODE_PROMPT_MAX_BYTES; a non-positive value disables the check.
 prompt_bytes="$(wc -c < "$prompt_file" | tr -d ' ')"
 max_prompt_bytes="${OPENCODE_PROMPT_MAX_BYTES:-20971520}"
+if ! [[ "$max_prompt_bytes" =~ ^-?[0-9]+$ ]]; then
+    echo "Invalid OPENCODE_PROMPT_MAX_BYTES=${max_prompt_bytes}; expected an integer byte limit" >&2
+    exit 1
+fi
 if [ "$max_prompt_bytes" -gt 0 ] && [ "$prompt_bytes" -gt "$max_prompt_bytes" ]; then
     echo "OpenCode prompt is ${prompt_bytes} bytes, exceeding OPENCODE_PROMPT_MAX_BYTES=${max_prompt_bytes}" >&2
     exit 1
@@ -38,7 +43,7 @@ opencode run "$@" --file "$prompt_file" -- "The attached file is the trusted use
 # On failure, surface the latest OpenCode log to stderr to aid debugging. stdout
 # is left untouched so live streaming of the run is unaffected.
 if [ "$status" -ne 0 ]; then
-    latest_log="$(ls -t /home/node/.local/share/opencode/log/*.log 2>/dev/null | head -1)"
+    latest_log="$(find /home/node/.local/share/opencode/log -type f -name '*.log' -newer "$prompt_file" -exec ls -t {} + 2>/dev/null | head -1)"
     if [ -n "$latest_log" ]; then
         tail -80 "$latest_log" >&2
     fi
