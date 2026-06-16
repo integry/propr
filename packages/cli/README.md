@@ -5,7 +5,7 @@ Command-line interface for interacting with the ProPR backend. ProPR enables AI-
 ## Installation
 
 ```bash
-npm install -g @propr/cli
+npm install -g propr-cli
 ```
 
 The host CLI requires Node.js 22 or newer. The Docker launcher image is separate
@@ -348,7 +348,7 @@ import {
   createConfigManager,
   createApiClient,
   resolveProject,
-} from '@propr/cli';
+} from 'propr-cli';
 
 const config = await createConfigManager();
 const client = await createApiClient();

@@ -1,555 +1,178 @@
-# ProPR - Automated GitHub Issue Processor
+# ProPR
 
-A production-ready automated system that monitors GitHub issues, runs configured AI coding agents to generate solutions, and provides a complete end-to-end workflow from issue detection to pull request creation.
+**An AI engineering platform for planning, building, reviewing, and shipping changes through GitHub.** Self-hosted.
 
-## Features
+ProPR monitors GitHub issues and pull requests, runs your choice of AI coding agents in isolated containers, and drives a complete workflow from a labeled issue to an opened pull request — with a Web UI for configuration and monitoring and a CLI that doubles as the local control plane.
 
-### ✅ Complete End-to-End Automation
-- **Issue Detection**: Automatic monitoring of GitHub repositories for AI-eligible issues
-- **Multiple Primary Labels**: Support for multiple trigger labels (e.g., 'AI', 'propr') with dynamic state label generation
-- **Model-Specific Processing**: Support for multiple models through configured coding agents
-- **Deterministic Git Workflow**: Reliable 3-phase workflow separating AI implementation from git operations
-- **Automatic PR Creation**: Direct GitHub API integration with proper issue linking
-- **Quality Assurance**: Comprehensive validation and retry mechanisms
+📖 **Full documentation: [docs.propr.dev](https://docs.propr.dev/docs/intro)**
 
-### ✅ Advanced Multi-Model Support
-- **Model-Specific Enqueueing**: Separate jobs for different agent/model labels
-- **Concurrent Processing**: Multiple workers can process different models simultaneously
-- **Model-Specific Branch Naming**: Unique branch names include model identifier for traceability
-- **Model Selection**: Automatic model detection from issue labels such as `llm-claude-opus48`, `llm-codex-gpt54`, `llm-opencode-minimax-m3-free`, `llm-antigravity-pro-high`, and `llm-antigravity-opus46-thinking`
+---
 
-### ✅ Robust Git Management
-- **Isolated Worktrees**: Each issue processed in separate git worktree for conflict prevention
-- **Repository-Specific Configuration**: Support for different default branches per repository
-- **Authentication Handling**: Seamless private repository access with token-based authentication
-- **Branch Management**: Automatic creation, pushing, and cleanup of feature branches
+## Modular, not all-or-nothing
 
-### ✅ Intelligent Agent Integration
-- **Implementation-Focused Prompts**: Agents focus on code implementation, not git operations
-- **Context-Aware Processing**: Reads both issue descriptions and all comments for complete context
-- **Docker Isolation**: Containerized execution environment per task. An optional iptables firewall script ships in the agent images but is disabled by default (it requires privileged containers); outbound network access is otherwise unrestricted
-- **Output Parsing**: Intelligent extraction of implementation details and commit messages
+ProPR is a set of stages you can adopt independently — use one or all:
 
-### ✅ Production-Ready Reliability
-- **Deterministic 3-Phase Workflow**: Pre-agent setup → AI implementation → post-agent finalization
-- **Error Recovery**: Comprehensive retry mechanisms with exponential backoff
-- **GitHub API Integration**: Direct API calls with timing fixes and proper error handling
-- **State Management**: Redis-based job state tracking with correlation IDs for debugging
+- **Plan** — turn an issue or idea into a reviewable implementation plan (Planner Studio)
+- **Implement** — label an issue and let an agent open a PR for it
+- **Review & fix** — drive existing PRs with slash commands (`/review`, `/fix`, `/ultrafix`, model routing)
+- **Operate** — monitor tasks, costs, logs, and agent capacity from the Web UI
 
-### ✅ Dynamic Label System
-- **Multiple Primary Labels**: Configure multiple labels to trigger processing (e.g., 'AI', 'propr', 'automation')
-- **Automatic State Labels**: State labels are dynamically generated based on the triggering label:
-  - Issue with 'AI' label → Uses 'AI-processing', 'AI-waiting', 'AI-done', 'AI-failed-*' labels
-  - Issue with 'propr' label → Uses 'propr-processing', 'propr-waiting', 'propr-done', 'propr-failed-*' labels
-- **Correct Label Attribution**: Each issue is tracked with labels specific to its trigger, avoiding conflicts
-- **Flexible Configuration**: Add or remove primary labels via environment variables or UI without code changes
+## Highlights
 
-## Prerequisites
+- **Multi-agent**: Claude Code, OpenAI Codex, Google Antigravity, OpenCode, and Mistral Vibe — all first-class, selectable per issue
+- **Label-based model routing**: pick the agent/model per issue with `llm-<agent>-<model>` labels; multiple labels fan out into parallel jobs
+- **Web UI dashboard**: configure repositories, branches, labels, agents, and defaults; watch tasks, logs, commits, and cost in real time
+- **CLI control plane**: scaffold, verify, start, and stop the local Docker stack — and drive plans, issues, tasks, and repos against the backend
+- **GitHub PR automation**: slash commands, automatic state labels, and PR follow-ups
+- **Deterministic git workflow**: isolated worktrees, model-specific branches, and a strict setup → implement → finalize pipeline
+- **Production-ready**: Docker-isolated agent execution, Redis-backed job state with correlation IDs, retries with backoff, and Agent Tank capacity/rate-limit tracking
 
-- **Docker** - Runs the ProPR stack and isolated agent execution containers
-- **GitHub App** - Created with appropriate permissions (see setup below)
-- **Agent credentials** - Credentials for at least one enabled coding agent
-- **Disk Space** - Sufficient space for repository clones, worktrees, logs, and application data
+## Quick start (recommended: CLI)
 
-Node.js, Redis, Git, and a source checkout are only required when developing ProPR itself. The normal local or server setup uses prebuilt Docker images.
-
-## Setup
-
-Most users should start ProPR from the prebuilt images. Use the source setup only if you plan to modify the codebase.
-
-### 1. GitHub App Configuration
-
-Create a GitHub App with the following permissions:
-
-**Repository Permissions:**
-- **Contents**: Read & Write (for code changes and file operations)
-- **Metadata**: Read (for repository information)
-- **Issues**: Read & Write (for issue management and comments)
-- **Pull Requests**: Read & Write (for PR creation and management)
-- **Actions**: Read (optional, for workflow integration)
-
-**Installation:**
-1. Create a new GitHub App in your account/organization settings
-2. Generate and download the private key (`.pem` file)
-3. Install the app on your repository
-4. Note down the App ID and Installation ID
-
-### 2. Local Runtime Directory
-
-Create a directory for local configuration and persistent data:
+The CLI is the simplest way to run a local stack. It requires **Docker** and **Node.js 22+**.
 
 ```bash
-mkdir -p propr-deploy/{data,logs,repos}
-cd propr-deploy
+npm install -g propr-cli
+
+propr init stack    # scaffold .env, detect agent credentials
+propr check         # verify Docker, images, agents, and GitHub auth
+propr start         # boot the stack with a live dashboard
 ```
 
-Place your GitHub App private key in this directory and restrict its permissions:
+Then open the Web UI at **http://localhost:5173** and add a repository and an agent (`propr repo add`, `propr agent add`, or via the UI).
+
+See the [Local Setup tutorial](https://docs.propr.dev/docs/tutorials/setup-local) for the full walkthrough, [Server Setup](https://docs.propr.dev/docs/tutorials/setup-server) for shared/production hosts, and [Secure VPS Deployment](https://docs.propr.dev/docs/tutorials/setup-vps) for a hardened install.
+
+> **No Node.js on the host?** The stack can also be launched from the prebuilt `propr/launcher` image with a single `docker run`. See [Setup](https://docs.propr.dev/docs/tutorials/setup).
+
+## Supported agents
+
+| Agent | Type | Provider | Execution image |
+|---|---|---|---|
+| Claude Code | `claude` | Anthropic | `propr/agent-claude` |
+| Codex | `codex` | OpenAI | `propr/agent-codex` |
+| Antigravity | `antigravity` | Google (multi-model) | `propr/agent-antigravity` |
+| OpenCode | `opencode` | OpenCode (multi-provider) | `propr/agent-opencode` |
+| Mistral Vibe | `vibe` | Mistral | `propr/agent-vibe` |
+
+You supply your own provider credentials. The full model catalog, per-agent credential setup, and label formats live in [Agents & Models](https://docs.propr.dev/docs/features/agents-and-models).
+
+### Selecting a model with labels
+
+Add an `llm-<agent>-<model>` label to an issue to choose who processes it:
+
+- `llm-claude-opus48` — Claude Opus 4.8
+- `llm-codex-gpt54` — Codex GPT-5.4
+- `llm-opencode-minimax-m3-free` — OpenCode MiniMax M3 Free
+- `llm-antigravity-pro-high` — Antigravity Gemini 3.1 Pro High
+- `llm-antigravity-opus46-thinking` — Antigravity Claude Opus 4.6 Thinking
+
+Multiple model labels on one issue create one independent job (and branch) per model. Add a `base-<branch>` label to target a non-default branch.
+
+## How it works
+
+Each labeled issue runs through a deterministic three-phase pipeline:
+
+1. **Pre-agent setup** — clone/update the repo, create an isolated worktree on a model-specific branch, and push it to GitHub.
+2. **AI implementation** — run the selected agent in a sandboxed container with implementation-only prompts and full issue + comment context.
+3. **Post-agent finalization** — commit changes, push, and open a pull request linked to the issue (`Closes #123`), then manage state labels.
+
+Branches follow `<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`, e.g. `349/claude-opus48-feat-implement-onboarding-20260529-1506-3he`.
+
+State labels are derived from the trigger label, so an issue labeled `AI` moves through `AI-processing` → `AI-waiting` → `AI-done` / `AI-failed-*`, while a `propr`-labeled issue uses the `propr-*` set. Configure trigger labels in the UI or via `PRIMARY_PROCESSING_LABELS`.
+
+## Documentation
+
+| Topic | Link |
+|---|---|
+| Introduction | https://docs.propr.dev/docs/intro |
+| Feature overview | https://docs.propr.dev/docs/features/overview |
+| Local setup (recommended) | https://docs.propr.dev/docs/tutorials/setup-local |
+| Server setup | https://docs.propr.dev/docs/tutorials/setup-server |
+| Secure VPS deployment | https://docs.propr.dev/docs/tutorials/setup-vps |
+| Daily usage | https://docs.propr.dev/docs/tutorials/usage |
+| Planner Studio | https://docs.propr.dev/docs/tutorials/planner-studio |
+| CLI reference | https://docs.propr.dev/docs/features/propr-cli |
+| Agents & models | https://docs.propr.dev/docs/features/agents-and-models |
+| Web UI guide | https://docs.propr.dev/docs/features/web-ui |
+| PR slash commands | https://docs.propr.dev/docs/features/pr-commands |
+| GitHub authentication | https://docs.propr.dev/docs/operations/github-auth |
+| Deployment | https://docs.propr.dev/docs/operations/deployment |
+| Architecture | https://docs.propr.dev/docs/architecture/overview |
+
+The docs site also ships inside the stack — run `propr docs` to open the bundled copy.
+
+## Configuration
+
+Bootstrap credentials and infrastructure paths are set once via a `.env` file (GitHub App ID/key, OAuth, session secret, storage paths). Everything operational — repositories, branches, labels, agents, supported models, defaults — is managed in the Web UI or via the CLI.
+
+Start from [`.env.example`](.env.example) and see [GitHub authentication](https://docs.propr.dev/docs/operations/github-auth) and [Deployment](https://docs.propr.dev/docs/operations/deployment) for the full reference.
+
+## Prebuilt images
+
+ProPR ships as a set of prebuilt images orchestrated by the `propr/launcher` umbrella image (mirrored to `ghcr.io/proprdev/*`):
+
+| Image | Contents |
+|---|---|
+| `propr/launcher` | Orchestrator that spawns the stack |
+| `propr/app` | Server — daemon / workers / API (role selected at launch) |
+| `propr/ui` | Web UI static bundle |
+| `propr/docs` | Docusaurus documentation site (optional) |
+| `propr/agent-base` | Shared base for agent images |
+| `propr/agent-{claude,codex,antigravity,opencode,vibe}` | Per-agent execution containers |
+
+End users must supply their own provider API credentials and accept those providers' terms. Bundled third-party attributions are preserved at `/usr/share/licenses/propr/` in each image; offline copies are in [`NOTICE`](NOTICE) and [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+## Developing from source
+
+A source checkout is only needed to modify ProPR itself (requires Node.js, Redis, Git, and Docker).
 
 ```bash
-chmod 600 your-app-private-key.pem
+npm ci                 # install workspace dependencies
+npm run compose:up     # build and run the full stack from source
+npm test               # run the test suite
 ```
 
-### 3. Environment Configuration
-
-Create a `.env` file for bootstrap credentials and default paths:
+Common workspace scripts:
 
 ```bash
-# GitHub App Configuration
-GH_APP_ID=your_app_id
-GH_PRIVATE_KEY_PATH=/app/config/your-app-private-key.pem
-GH_INSTALLATION_ID=your_installation_id
-
-# Dashboard API and Auth
-DASHBOARD_API_PORT=4000
-FRONTEND_URL=http://localhost:5173
-GH_OAUTH_CLIENT_ID=your_github_oauth_client_id
-GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
-GH_OAUTH_CALLBACK_URL=http://localhost:4000/api/auth/github/callback
-SESSION_SECRET=generate-a-strong-secret-here
-
-# Issue Detection Defaults
-PRIMARY_PROCESSING_LABELS=AI,propr
-
-# PR Comment Monitoring
-GITHUB_BOT_USERNAME=your_bot_username
-GITHUB_USER_WHITELIST=
-GITHUB_USER_BLACKLIST=
-
-# Git Storage Inside The ProPR Containers
-GIT_CLONES_BASE_PATH=/app/repos/clones
-GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
-# Fallback base branch for PR operations; per-repository overrides use GIT_DEFAULT_BRANCH_<OWNER>_<REPO>
-GIT_DEFAULT_BRANCH=main
-GIT_SHALLOW_CLONE_DEPTH=
-
-# Shared SQLite Database
-DB_FILENAME=/app/data/propr.sqlite
+npm run daemon:dev     # issue-detection daemon (debug logging)
+npm run worker:dev     # job worker (debug logging)
+npm run dashboard:dev  # dashboard API
+npm run images:build   # build all Docker images locally
+npm run images:smoke   # smoke-test locally built images
 ```
 
-### 4. Agent Credential Setup
+See the [source setup tutorial](https://docs.propr.dev/docs/tutorials/setup-source) for the development flow and the [architecture docs](https://docs.propr.dev/docs/architecture/overview) for how the pieces fit together.
 
-Configure at least one coding agent before sending real work through the system. The Web UI is the normal place to add enabled agent entries, supported models, default models, Docker images, and credential paths.
-
-Authenticate with the provider CLI for the agents you plan to enable. For example, Claude Code uses:
-
-```bash
-npm install -g @anthropic-ai/claude-code
-claude login
-```
-
-Use equivalent login and credential setup for Codex or Antigravity if those are the agents you plan to enable.
-For Antigravity, install the official CLI and authenticate before mounting the credential directory:
-
-```bash
-curl -fsSL https://antigravity.google/cli/install.sh | bash
-agy login
-```
-
-Set `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` when starting the launcher so the worker can mount the authenticated CLI state.
-
-### 5. Start From Prebuilt Images
-
-```bash
-docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$PWD/.env:/app/.env:ro" \
-  -v "$PWD/your-app-private-key.pem:/app/config/your-app-private-key.pem:ro" \
-  -e PROPR_ENV_FILE="$PWD/.env" \
-  -e PROPR_DATA_DIR="$PWD/data" \
-  -e PROPR_LOGS_DIR="$PWD/logs" \
-  -e PROPR_REPOS_DIR="$PWD/repos" \
-  -e HOST_CLAUDE_DIR="$HOME/.claude" \
-  -e HOST_CODEX_DIR="$HOME/.codex" \
-  -e HOST_ANTIGRAVITY_DIR="$HOME/.gemini" \
-  propr/launcher:latest
-```
-
-Open the local Web UI at `http://localhost:5173`. For a remote server, use the same image-based flow with server paths and public `FRONTEND_URL` / `GH_OAUTH_CALLBACK_URL` values.
-
-### 6. Source Development Setup
-
-Install dependencies from a source checkout only when you are changing ProPR code:
-
-```bash
-npm ci
-```
-
-For local platform development, use `npm run compose:up` to build and run the stack from source.
-
-## Project Structure
+### Project structure
 
 ```
 propr/
-├── src/                       # Daemon, workers, jobs, polling, GitHub handling (TypeScript)
-│   ├── daemon.ts              # Multi-model issue detection daemon
-│   ├── jobs/                  # Issue, PR-comment, merge-conflict, and system-task processors
-│   └── polling/               # GitHub polling intake
+├── src/            # Daemon, workers, jobs, polling, GitHub handling
 ├── packages/
-│   ├── core/                  # Git/worktree management, agents, queue, config, DB migrations
-│   ├── api/                   # Dashboard REST API, webhooks, authentication
-│   ├── cli/                   # @propr/cli — the end-user `propr` command
-│   └── shared/                # Shared model catalog and types
-├── propr-ui/                  # Web UI (React + Vite)
-├── docs/                      # Docusaurus documentation site
-├── scripts/                   # Agent entrypoints, init-firewall.sh, build/compose helpers
-├── docker/                    # Launcher and agent-base images
-├── Dockerfile.claude          # Agent runtime images (also .codex, .antigravity, .opencode, .vibe)
-├── docker-compose*.yml        # Development and production stacks
-├── .env.example               # Environment configuration template
-└── package.json               # Workspace dependencies and npm scripts
+│   ├── core/       # Git/worktree management, agents, queue, config, DB migrations
+│   ├── api/        # Dashboard REST API, webhooks, authentication
+│   ├── cli/        # The `propr` command (published to npm as propr-cli)
+│   └── shared/     # Shared model catalog and types
+├── propr-ui/       # Web UI (React + Vite)
+├── docs/           # Docusaurus documentation site
+├── docker/         # Launcher and agent-base images
+├── scripts/        # Agent entrypoints, build/compose/release helpers
+└── docker-compose*.yml
 ```
 
-## Usage
+### Releasing
 
-### Running the Issue Detection Daemon
-
-Start the daemon to monitor GitHub repositories for AI-eligible issues:
+Docker image releases run via the **Docker Images** GitHub Actions workflow. Bump the version, then tag the merged commit (the workflow verifies the tag matches `package.json`):
 
 ```bash
-# Production mode
-npm run daemon
-
-# Development mode with debug logging
-npm run daemon:dev
-
-# Reset all queue data and issue labels, then start daemon
-npm run daemon:reset:dev
+git tag v0.8.3
+git push origin v0.8.3
 ```
 
-The daemon will:
-- Poll configured repositories at the specified interval
-- Search for open issues with configured primary labels such as `AI` or `propr`
-- Exclude issues already being processed or completed
-- Add detected issues to the task queue for processing
-
-#### Resetting Queue State
-
-If jobs get stuck in failed/processing states, use the reset option to clear all queue data:
-
-```bash
-# Clear all queue data and remove processing labels from issues
-npm run daemon:reset:dev
-
-# Or against a production build
-npm run daemon:reset
-```
-
-This will:
-- Clear all Redis queue data (waiting, active, completed, failed jobs)
-- Remove "AI-processing" and "AI-done" labels from GitHub issues
-- Allow issues to be reprocessed from a clean state
-
-### Running the Worker Process
-
-Start one or more workers to process issues from the queue:
-
-```bash
-# Production mode
-npm run worker
-
-# Development mode with debug logging
-npm run worker:dev
-
-# Run multiple workers (in separate terminals)
-npm run worker & npm run worker
-```
-
-The worker will:
-- **Phase 1 (Pre-Agent Setup)**: Pull jobs from queue, update base branch, create isolated git worktree, push initial branch to GitHub
-- **Phase 2 (AI Implementation)**: Execute the selected agent with implementation-focused prompts in a secure Docker environment
-- **Phase 3 (Post-Agent Finalization)**: Commit any changes, push to GitHub, create pull request with automatic issue linking
-- Handle multiple models concurrently with model-specific delays to prevent conflicts
-- Provide comprehensive error handling and retry mechanisms
-
-### GitHub Authentication
-
-```typescript
-import { getAuthenticatedOctokit } from '@propr/core';
-
-const octokit = await getAuthenticatedOctokit();
-// Use octokit for GitHub API operations
-```
-
-### Logging
-
-```typescript
-import { logger } from '@propr/core';
-
-logger.info('Application started');
-logger.error('An error occurred', { error: err });
-logger.debug('Debug information', { data: someData });
-```
-
-### Configuration
-
-```typescript
-import config from './config/index.js';
-
-console.log(config.github.appId);
-console.log(config.logging.level);
-```
-
-## Production Docker Images
-
-For self-hosted production deployments, ProPR ships as a set of pre-built Docker
-images orchestrated by a single umbrella `propr/launcher` image. This replaces
-`docker-compose` for install-time scenarios and installs in one command.
-
-### Quick install
-
-```bash
-# Start the full stack from pre-built images
-docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v $PWD/.env:/app/.env:ro \
-  -e PROPR_ENV_FILE=$PWD/.env \
-  -e PROPR_DATA_DIR=$PWD/data \
-  -e PROPR_LOGS_DIR=$PWD/logs \
-  -e PROPR_REPOS_DIR=$PWD/repos \
-  -e HOST_CLAUDE_DIR=$HOME/.claude \
-  -e HOST_CODEX_DIR=$HOME/.codex \
-  -e HOST_ANTIGRAVITY_DIR=$HOME/.gemini \
-  -e HOST_OPENCODE_XDG_DIR=$HOME/.config/opencode \
-  -e HOST_OPENCODE_DATA_DIR=$HOME/.local/share/opencode \
-  propr/launcher:latest
-```
-
-Paths are passed as host paths (not mounted into the launcher) because the
-launcher uses the host docker daemon via the mounted socket to spawn sibling
-containers — any `-v` values it passes need to resolve on the host.
-Pass `HOST_OPENCODE_LEGACY_DIR=/home/your-user/.opencode` only for OpenCode agents whose
-saved `configPath` is `/home/your-user/.opencode`. `HOST_OPENCODE_DIR` is accepted as a compatibility alias
-for `HOST_OPENCODE_XDG_DIR`. OpenCode auth from `opencode auth login` normally lives under
-`~/.local/share/opencode`, so pass `HOST_OPENCODE_DATA_DIR` or provide provider API keys
-through the agent config. Launcher values must be absolute host paths; `.env` parsing does not expand `~` or `$HOME`.
-
-The launcher pulls redis + app + ui images on first run and orchestrates them
-via the mounted docker socket. See `.env.example` for required configuration.
-
-### Images published
-
-| Image | Contents | Size |
-|---|---|---|
-| `propr/launcher` | Orchestrator that spawns the stack | ~170 MB |
-| `propr/app` | Server (daemon / workers / api, command selects role) | ~525 MB |
-| `propr/ui` | Web UI static bundle | ~225 MB |
-| `propr/docs` | Docusaurus site (optional) | ~215 MB |
-| `propr/agent-base` | Shared base for agent images | ~220 MB |
-| `propr/agent-claude` | Claude Code execution container | ~315 MB |
-| `propr/agent-codex` | OpenAI Codex execution container | ~470 MB |
-| `propr/agent-antigravity` | Antigravity execution container | ~380 MB |
-| `propr/agent-opencode` | OpenCode CLI execution container | ~TBD |
-| `propr/agent-vibe` | Mistral Vibe execution container | ~TBD |
-
-Images are also mirrored to GHCR. The current GitHub Actions release workflow
-publishes under `ghcr.io/proprdev/*` by default (override with `GHCR_NS` when running `scripts/build-images.sh`)
-once the organization package permissions are ready.
-
-### Building locally
-
-```bash
-npm run images:build          # build all images, no push
-npm run images:build:push     # build + push to Docker Hub + GHCR (requires login)
-npm run images:smoke          # run the smoke test against locally built images
-```
-
-The smoke test boots the full stack from the built images with fake
-credentials, confirms the API responds to `/health`, and checks no container
-crashes on startup. It's the first-line defense for catching broken images
-before release.
-
-### Releasing images
-
-Docker image releases are driven by the `Docker Images` GitHub Actions workflow.
-Create a version bump PR first, then tag the merged commit:
-
-```bash
-git tag v0.8.0
-git push origin v0.8.0
-```
-
-The workflow verifies that the tag matches `package.json`, builds GHCR-tagged
-images, smoke-tests the app image, logs into GHCR with `GITHUB_TOKEN`, and
-pushes `0.8.0`, the short git SHA, and `latest` tags. It can also be run
-manually from GitHub Actions with a custom GHCR namespace or without updating
-`latest`.
-
-### Running integration tests against the stack
-
-Full end-to-end tests in `test/e2e.test.ts` hit a running ProPR API with real
-GitHub credentials. To run them against a launcher-started stack:
-
-```bash
-# 1. Start the prod stack (see Quick install above)
-
-# 2. Point the test harness at it
-export PROPR_E2E_API_URL=http://localhost:4000
-export PROPR_E2E_REPO=your-test-org/your-test-repo
-export PROPR_E2E_TOKEN=$(gh auth token)   # or a GitHub PAT
-npm run test:e2e
-```
-
-The test suite creates plans, triggers agent runs, and verifies end-to-end
-behavior. Expect it to take several minutes and to consume real API credits.
-Use `PROPR_E2E_SKIP_SLOW=1` to skip long-running agent invocations during
-quick validation.
-
-### Third-party notices
-
-Bundled third-party software attributions are preserved inside each image at
-`/usr/share/licenses/propr/`. See `NOTICE` and `THIRD_PARTY_LICENSES.md` in
-the repo root for the offline copies. End users must supply their own API
-credentials for Anthropic, OpenAI, Google, OpenCode Go, and/or any other
-provider configured through OpenCode, and accept those providers' terms of
-service independently.
-
-## Docker Compose Setup (development)
-
-For local development, `docker-compose` builds images from source and runs
-the stack with hot-reload-friendly volumes. Use this for iterating on code;
-use the production images above for real deployments.
-
-### Docker Compose Commands
-
-Manage the entire application stack with these npm scripts:
-
-```bash
-# Start all services (builds if necessary)
-npm run compose:up
-
-# Stop all services
-npm run compose:down
-
-# View logs from all services
-npm run compose:logs
-
-# Force rebuild of all images
-npm run compose:build
-```
-
-These commands use the `scripts/compose.sh` script which wraps Docker Compose operations for convenience.
-
-### Docker Compose Services
-
-- **daemon**: Polls GitHub and enqueues issue work
-- **worker**: Runs issue, PR comment, and merge-conflict jobs
-- **api**: Serves the dashboard API, auth, and webhooks
-- **web-ui**: Web UI for monitoring and management (port 5173)
-- **redis**: Redis server for task queue management
-- **indexing-worker** and **analysis-worker**: Optional support workers in the development Compose stack
-
-All services are configured in `docker-compose.yml` with proper networking and volume management.
-For OpenCode development, create `~/.opencode`, `~/.config/opencode`, and
-`~/.local/share/opencode`, then add `-f docker-compose.opencode.yml` to include
-the optional OpenCode credential mounts.
-
-## Redis Setup
-
-The task queue requires Redis. Install and start Redis:
-
-```bash
-# macOS
-brew install redis
-brew services start redis
-
-# Ubuntu/Debian
-sudo apt-get install redis-server
-sudo systemctl start redis
-
-# Docker
-docker run -d -p 6379:6379 redis:alpine
-```
-
-**Note**: When using Docker Compose, Redis is automatically included and configured - no separate installation needed.
-
-## Error Handling
-
-The project implements consistent error handling patterns:
-
-1. All async operations use try-catch blocks
-2. Errors are logged with full context
-3. Critical configuration errors cause early exit
-4. Non-critical errors are handled gracefully
-5. Queue jobs retry automatically with exponential backoff
-
-## Security Best Practices
-
-- **Never commit sensitive credentials** to the repository
-- Store all secrets in environment variables
-- Keep the GitHub App private key file secure with restricted permissions
-- Use `.gitignore` to prevent accidental commits of sensitive files
-
-## Testing
-
-Run tests with:
-```bash
-npm test
-```
-
-## Workflow Overview
-
-### Issue Labels for Model Selection
-Add labels to GitHub issues to specify which enabled agent/model pair should process them:
-- `llm-claude-opus48` - Use the configured Claude Opus 4.8 model
-- `llm-codex-gpt54` - Use the configured Codex GPT-5.4 model
-- `llm-opencode-minimax-m3-free` - Use the configured OpenCode MiniMax M3 Free model
-- `llm-antigravity-pro-high` - Use the configured Antigravity Gemini 3.1 Pro High model
-- `llm-antigravity-opus46-thinking` - Use the configured Antigravity Claude Opus 4.6 Thinking model
-- Multiple model labels can be used together for multi-model processing
-
-To target a non-default branch for direct labeled issue execution, add a `base-<branch>` label before processing starts.
-
-### Deterministic 3-Phase Processing
-1. **Pre-Agent Setup** (Deterministic)
-   - Repository cloning/updating with latest changes
-   - Isolated git worktree creation with unique model-specific branch names
-   - Initial branch push to GitHub (eliminates timing issues)
-
-2. **AI Implementation** (Agent Focus)
-   - Implementation-only prompts (no git operations)
-   - Complete issue and comment context analysis
-   - Code implementation in isolated environment
-
-3. **Post-Agent Finalization** (Deterministic)
-   - Automatic commit of any changes the agent made
-   - Branch push and PR creation via GitHub API
-   - Proper issue linking with keywords (`Closes #123` or `Addresses #123`)
-   - Label management and cleanup
-
-### Branch Naming Convention
-`<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`
-
-Example: `349/claude-opus48-feat-implement-onboarding-20260529-1506-3he`
-
-## Advanced Features
-
-### Multi-Model Processing
-- Issues with multiple model labels create separate jobs for each model
-- Each model gets its own branch and processes the issue independently
-- Concurrent execution with conflict prevention mechanisms
-
-### Quality Assurance
-- Comprehensive PR validation and retry mechanisms
-- Anti-hallucination prompts and repository validation
-- Automatic detection and handling of edge cases
-
-### Error Recovery
-- Exponential backoff retry for API operations
-- Graceful handling of git conflicts and timing issues
-- State management with correlation IDs for debugging
-
-### Repository Configuration
-- Per-repository default branch configuration
-- Custom branch naming and processing rules
-- Flexible label-based model selection
+The `propr-cli` npm package is published separately with `npm run cli:publish` (build + publish the standalone, unscoped package).
 
 ## Contributing
 
-When contributing to this project:
-1. Follow existing code patterns and conventions
-2. Ensure all tests pass
-3. Update documentation as needed
-4. Use the structured logger for all output
-5. Handle errors consistently
-
-<!-- CI trigger: 2026-05-28 -->
+Contributions are welcome. Please follow existing code patterns, keep tests passing, update docs alongside code, and use the structured logger for output. See [`CHANGELOG.md`](CHANGELOG.md) for release history.

@@ -187,7 +187,7 @@ curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
 echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
   | sudo tee /etc/apt/sources.list.d/nodesource.list
 sudo apt update && sudo apt -y install nodejs
-sudo npm install -g @propr/cli
+sudo npm install -g propr-cli
 ```
 
 The one-line `curl … | sudo -E bash -` form from the
@@ -218,7 +218,7 @@ files under `/root`, where the stack cannot find them.
 :::
 
 Each coding agent runs from credentials mounted off the host. **Install the CLI
-for each agent you intend to use first** (only `@propr/cli`, Docker, and Node were
+for each agent you intend to use first** (only `propr-cli`, Docker, and Node were
 installed above — the agent CLIs are separate), then log in **as `you`** (not
 root) so the credential directory lives under `/home/you` where the stack expects
 it. For example:
@@ -579,7 +579,7 @@ CLI install from step 4.*
   the right runtime root:
 
   ```bash
-  sudo npm update -g @propr/cli
+  sudo npm update -g propr-cli
   cd /srv/propr && propr start --restart   # pulls matching images, recreates the stack
   ```
 

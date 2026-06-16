@@ -171,7 +171,7 @@ To stay within limits:
 
 ### Option A — CLI (Recommended)
 
-The ProPR CLI (`@propr/cli`, Node.js 22+) is the recommended control plane. It
+The ProPR CLI (`propr-cli`, Node.js 22+) is the recommended control plane. It
 reads `.env`, pulls images, creates the Docker network, and starts service
 containers — the same orchestration the launcher performs, but managed from the
 host rather than from inside a container.
@@ -273,7 +273,7 @@ Update the CLI package, then restart the stack. The CLI manifest pins exact
 image versions; the new version pulls the matching service and agent images:
 
 ```bash
-sudo npm update -g @propr/cli
+sudo npm update -g propr-cli
 which propr && propr --version   # confirm the updated CLI is the one on PATH
 cd /srv/propr                # run --restart from the stack runtime directory
 propr start --restart        # pulls updated images and recreates containers
@@ -283,7 +283,7 @@ propr start --restart        # pulls updated images and recreates containers
 directory (or an explicit `--root`), so `cd` into the runtime directory first to
 avoid restarting against the wrong path.
 
-Run the update with the **same method you installed `@propr/cli` with**. `sudo`
+Run the update with the **same method you installed `propr-cli` with**. `sudo`
 matches a root-owned global install (the default for a system `apt`/NodeSource
 Node). If your global prefix is user-owned — for example an `nvm`-managed Node or
 a custom `npm config set prefix` under your home directory — omit `sudo`, since
