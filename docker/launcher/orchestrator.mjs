@@ -337,7 +337,7 @@ function latestTagFor(imageTag) {
     return tagIndex > slashIndex ? `${imageTag.slice(0, tagIndex)}:latest` : null;
 }
 
-function tagAgentLatest(key, imageTag) {
+export function tagAgentLatest(key, imageTag) {
     if (!key.startsWith('agent-')) return;
     const latestTag = latestTagFor(imageTag);
     if (!latestTag || latestTag === imageTag) return;
@@ -426,6 +426,9 @@ function remoteManifestDigest(tag) {
         const digest = remoteDigestFromManifestInspectOutput(res.stdout);
         if (digest) return { ok: true, digest };
 
+        // Multi-platform manifest inspect output lists platform-specific Ref
+        // digests, not the tag's manifest-list digest, so buildx is the
+        // intentional fallback for comparing a multi-arch tag as a whole.
         const buildx = docker(['buildx', 'imagetools', 'inspect', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
         if (buildx.status !== 0) {
             return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };

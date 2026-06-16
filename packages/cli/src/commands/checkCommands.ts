@@ -100,10 +100,18 @@ export interface ChecksOutcome {
   anyFail: boolean;
 }
 
+interface JsonCheckResult {
+  name: string;
+  status: CheckStatus;
+  detail: string;
+  fix?: string;
+}
+
 /** Run all checks and return the structured outcome (no printing). */
 export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksOutcome> {
   const results: CheckResult[] = [];
   const configManager = await createConfigManager();
+  const skipRemoteImageCheck = Boolean(options.skipRemoteImageCheck || envSkipsRemoteImageCheck());
 
   // 1. Docker installed
   const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
@@ -191,7 +199,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         });
       };
 
-      if (options.skipRemoteImageCheck) {
+      if (skipRemoteImageCheck) {
         if (imagePresent(orch, tag)) {
           results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local; remote check skipped)`, group: "Images" });
         } else {
@@ -507,6 +515,20 @@ function countStatuses(results: CheckResult[]): Record<CheckStatus, number> {
   return counts;
 }
 
+function envSkipsRemoteImageCheck(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PROPR_SKIP_REMOTE_IMAGE_CHECK === "true" || env.PROPR_SKIP_REMOTE_IMAGE_CHECK === "1";
+}
+
+function jsonResult(result: CheckResult): JsonCheckResult {
+  const out: JsonCheckResult = {
+    name: result.name,
+    status: result.status,
+    detail: result.detail,
+  };
+  if (result.fix) out.fix = result.fix;
+  return out;
+}
+
 function plural(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
@@ -572,7 +594,7 @@ function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] 
       label: `Pull ${plural(imageRemediations.length, "Docker image")}`,
       detail: imageRemediations.map((remediation) => remediation.tag).join(", "),
       confirm: `Pull ${plural(imageRemediations.length, "Docker image")} now?`,
-      run: async () => pullMissingImages(outcome, imageRemediations),
+      run: async () => pullMissingImages(imageRemediations),
     });
   }
 
@@ -593,10 +615,7 @@ function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] 
   return actions;
 }
 
-async function pullMissingImages(
-  outcome: ChecksOutcome,
-  remediations: Extract<CheckRemediation, { kind: "pull-image" }>[]
-): Promise<RemediationResult> {
+async function pullMissingImages(remediations: Extract<CheckRemediation, { kind: "pull-image" }>[]): Promise<RemediationResult> {
   let changed = false;
   let ok = true;
   const orch = await loadOrchestrator();
@@ -605,7 +624,13 @@ async function pullMissingImages(
     const pulled = orch.docker(["pull", remediation.tag], { capture: true });
     if (pulled.status === 0) {
       changed = true;
-      console.log(`  ok: ${remediation.tag}`);
+      try {
+        orch.tagAgentLatest(remediation.imageKey, remediation.tag);
+        console.log(`  ok: ${remediation.tag}`);
+      } catch (error) {
+        ok = false;
+        console.error(`  failed: ${remediation.tag}: ${(error as Error).message}`);
+      }
     } else {
       ok = false;
       const reason = (pulled.stderr || pulled.stdout || "docker pull failed").trim().split("\n")[0];
@@ -714,7 +739,8 @@ export function printChecks(outcome: ChecksOutcome): void {
 
     if (printedGroup) console.log("");
     printedGroup = true;
-    console.log(color(`${group} (${plural(groupCounts.fail, "failure")}, ${plural(groupCounts.warn, "warning")})`, colorEnabled, ANSI.cyan, ANSI.bold));
+    const countSuffix = groupCounts.fail > 0 || groupCounts.warn > 0 ? ` (${plural(groupCounts.fail, "failure")}, ${plural(groupCounts.warn, "warning")})` : "";
+    console.log(color(`${group}${countSuffix}`, colorEnabled, ANSI.cyan, ANSI.bold));
 
     for (const r of groupResults) {
       console.log(`  ${formatStatus(r.status, colorEnabled)} ${r.name.padEnd(nameWidth)}  ${r.detail}`);
@@ -748,7 +774,7 @@ export function createCheckCommand(): Command {
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to --verify (default: all)")
-    .option("--skip-remote-image-check", "Skip registry freshness checks for local Docker images")
+    .option("--skip-remote-image-check", "Skip registry freshness checks for local Docker images (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
     .addHelpText("after", `
@@ -758,6 +784,10 @@ Examples:
   $ propr check --verify
   $ propr check --verify --agents claude,codex
   $ propr check --json
+
+Notes:
+  Image checks contact the registry by default to compare local and remote digests.
+  Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline environments.
 `)
     .action(async (options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean }) => {
       try {
@@ -779,7 +809,7 @@ Examples:
         let outcome = await runChecks(runOptions);
 
         if (options.json) {
-          printOutput({ rootDir: outcome.rootDir, results: outcome.results }, true);
+          printOutput({ rootDir: outcome.rootDir, results: outcome.results.map(jsonResult) }, true);
         } else {
           printChecks(outcome);
           if (options.fix) {

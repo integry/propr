@@ -74,6 +74,19 @@ export type ImageFreshnessResult =
   | { status: "stale"; tag: string; localDigests: string[]; remoteDigest: string }
   | { status: "unknown"; tag: string; localDigests?: string[]; error: string; localOnly?: boolean; skipped?: boolean };
 
+export interface DockerCommandOptions {
+  capture?: boolean;
+  timeout?: number;
+}
+
+export interface DockerCommandResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error & { code?: string };
+  signal?: NodeJS.Signals | null;
+}
+
 export interface ResolveHostConfigOptions {
   rootDir?: string;
   env?: NodeJS.ProcessEnv;
@@ -96,6 +109,7 @@ export interface OrchestratorModule {
 
   dockerAvailable(): boolean;
   inspectImageFreshness(tag: string, opts?: { skipRemoteCheck?: boolean }): ImageFreshnessResult;
+  tagAgentLatest(key: string, imageTag: string): void;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
   ensureServiceImage(cfg: OrchestratorConfig, service: string, onLog?: (line: string) => void): void;
   pullImages(
@@ -129,5 +143,5 @@ export interface OrchestratorModule {
   ): ChildProcess;
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
-  docker(args: string[], opts?: { capture?: boolean }): { status: number | null; stdout: string; stderr: string };
+  docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
 }
