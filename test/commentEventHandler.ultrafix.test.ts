@@ -183,8 +183,10 @@ function createMockRedis() {
         setex: mock.fn(async (key: string, _ttl: number, value: string) => {
             store.set(key, value);
         }),
-        set: mock.fn(async (key: string, value: string) => {
+        set: mock.fn(async (key: string, value: string, ...args: string[]) => {
+            if (args.includes('NX') && store.has(key)) return null;
             store.set(key, value);
+            return 'OK';
         }),
         del: mock.fn(async (key: string) => {
             store.delete(key);
@@ -292,6 +294,23 @@ describe('commentEventHandler — /ultrafix command', () => {
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
         );
         assert.ok(postCalls.length > 0, 'Expected a POST request to create a comment');
+    });
+
+    test('duplicate /ultrafix deliveries for the same comment initialize only one loop', async () => {
+        const event = createPRCommentEvent('/ultrafix goal=8 max=4');
+        const config = createTestConfig();
+
+        await Promise.all([
+            processCommentEvent(event, 'issue_comment', 'corr-uf-dupe-1', config),
+            processCommentEvent(event, 'issue_comment', 'corr-uf-dupe-2', config),
+        ]);
+
+        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const postCalls = mockOctokit.request.mock.calls.filter(
+            (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST') && (c.arguments[0] as string).includes('comments')
+        );
+        assert.strictEqual(postCalls.length, 1, 'Expected only one ultrafix started comment');
     });
 
     test('/ultrafix with positional goal override', async () => {

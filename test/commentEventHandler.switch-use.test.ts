@@ -155,8 +155,10 @@ function createMockRedis() {
         setex: mock.fn(async (key: string, _ttl: number, value: string) => {
             store.set(key, value);
         }),
-        set: mock.fn(async (key: string, value: string) => {
+        set: mock.fn(async (key: string, value: string, ...args: string[]) => {
+            if (args.includes('NX') && store.has(key)) return null;
             store.set(key, value);
+            return 'OK';
         }),
         del: mock.fn(async (key: string) => {
             store.delete(key);

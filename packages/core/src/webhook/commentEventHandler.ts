@@ -88,6 +88,11 @@ type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'co
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type PRComment = { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 
+async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
+    const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
+    return result === 'OK';
+}
+
 async function prHasProcessingLabel(prLabels: Label[]): Promise<boolean> {
     const processingLabels = await loadPrimaryProcessingLabels();
     return prLabels.some(label => processingLabels.includes(label.name));
@@ -534,18 +539,21 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     if (parsedCommand) {
-        // Deduplicate redelivered webhooks — same check used for normal follow-up comments
+        // Deduplicate redelivered webhooks and synthetic+webhook races. This must be
+        // atomic: system-created commands can be processed locally before GitHub
+        // delivers the real issue_comment.created webhook for the same comment.
         const slashCommentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
-        const alreadyProcessed = await redisClient.get(slashCommentTrackingKey);
-        if (alreadyProcessed) {
+        const claimed = await claimCommentForProcessing(redisClient, slashCommentTrackingKey);
+        if (!claimed) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Slash command comment already processed, skipping redelivery');
             return;
         }
-        await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
-        // Mark as processed to prevent duplicate webhook delivery.
-        // enqueueNewCommentJob also sets this key, but not all slash command paths enqueue
-        // (e.g. /merge, /switch without instructions), so set it unconditionally here.
-        await redisClient.setex(slashCommentTrackingKey, 86400, Date.now().toString());
+        try {
+            await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
+        } catch (error) {
+            await redisClient.del(slashCommentTrackingKey);
+            throw error;
+        }
         return;
     }
 
