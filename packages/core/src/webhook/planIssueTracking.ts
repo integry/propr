@@ -270,7 +270,7 @@ export async function handlePlanPRCommentTracking(
 
         if (payload.action === 'created') {
             const commentAuthor = payload.comment.user?.login;
-            const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
+            const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
             if (commentAuthor === botUsername) return;
 
             // Don't update status if the issue is already merged or closed

@@ -327,9 +327,9 @@ describe('detectBotUsername logic', async () => {
     });
 
     test('should fallback to default bot username on API error', () => {
-        // When Octokit fails, detectBotUsername falls back to 'propr.dev[bot]'
-        const defaultBotUsername = 'propr.dev[bot]';
-        assert.strictEqual(defaultBotUsername, 'propr.dev[bot]');
+        // When Octokit fails, detectBotUsername falls back to 'propr-dev[bot]'
+        const defaultBotUsername = 'propr-dev[bot]';
+        assert.strictEqual(defaultBotUsername, 'propr-dev[bot]');
     });
 
     test('should handle app_slug with special characters', () => {

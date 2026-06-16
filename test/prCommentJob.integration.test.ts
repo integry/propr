@@ -842,7 +842,7 @@ function getPendingPrCommentsKey(owner: string, repo: string, prNumber: number):
 }
 
 function filterCommentByAuthor(commentAuthor: string, userType: string | null = null): { shouldFilter: boolean; reason: string | null } {
-    const GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
+    const GITHUB_BOT_USERNAME = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
 
     if (GITHUB_BOT_USERNAME && commentAuthor === GITHUB_BOT_USERNAME) {
         return { shouldFilter: true, reason: 'bot_own_comment' };
@@ -959,7 +959,7 @@ describe('PR Comment Validation - Integration Tests', () => {
 
     describe('Bot Comment Filtering', () => {
         test('filters comments from default bot username', () => {
-            const result = filterCommentByAuthor('propr.dev[bot]');
+            const result = filterCommentByAuthor('propr-dev[bot]');
 
             assert.strictEqual(result.shouldFilter, true);
             assert.strictEqual(result.reason, 'bot_own_comment');
@@ -1015,7 +1015,7 @@ describe('PR Comment Validation - Integration Tests', () => {
                 'dependabot[bot]',
                 'codecov[bot]',
                 'sonarcloud[bot]',
-                'propr.dev[bot]'
+                'propr-dev[bot]'
             ];
 
             for (const bot of bots) {
@@ -1043,13 +1043,13 @@ describe('PR Comment Validation - Integration Tests', () => {
             const prComments: PRComment[] = [
                 {
                     id: 99999,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: '✅ **Applied the requested follow-up changes**\n\n---\n_Processing comment ID: 12345✓_',
                     created_at: '2024-01-01T00:00:00Z'
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 0, 'Already processed comment should be filtered out');
         });
@@ -1062,13 +1062,13 @@ describe('PR Comment Validation - Integration Tests', () => {
             const prComments: PRComment[] = [
                 {
                     id: 99999,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: '🔄 **Processing your request...**',
                     created_at: '2024-01-01T00:00:00Z'
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1, 'Comment without marker should remain');
             assert.strictEqual(filtered[0].id, 12345);
@@ -1084,13 +1084,13 @@ describe('PR Comment Validation - Integration Tests', () => {
             const prComments: PRComment[] = [
                 {
                     id: 99999,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: '✅ **Applied changes**\n\n---\n_Processing comment IDs: 111✓, 222✓_',
                     created_at: '2024-01-01T00:00:00Z'
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1, 'Only unprocessed comment should remain');
             assert.strictEqual(filtered[0].id, 333, 'Comment 333 should be the only one remaining');
@@ -1110,7 +1110,7 @@ describe('PR Comment Validation - Integration Tests', () => {
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1, 'Comment should remain since marker is from non-bot');
         });
@@ -1131,13 +1131,13 @@ describe('PR Comment Validation - Integration Tests', () => {
                 const prComments: PRComment[] = [
                     {
                         id: 99999,
-                        user: { login: 'propr.dev[bot]', type: 'Bot' },
+                        user: { login: 'propr-dev[bot]', type: 'Bot' },
                         body: tc.marker,
                         created_at: '2024-01-01T00:00:00Z'
                     }
                 ];
 
-                const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+                const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
                 const isFiltered = filtered.length === 0;
 
                 assert.strictEqual(isFiltered, tc.shouldMatch, `Marker "${tc.marker}" should${tc.shouldMatch ? '' : ' not'} match`);
@@ -1414,7 +1414,7 @@ describe('PR Comment Validation - Integration Tests', () => {
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1);
             assert.strictEqual(filtered[0].body_html, '<p>Test comment with <img src="signed-url"/></p>');
@@ -1434,7 +1434,7 @@ describe('PR Comment Validation - Integration Tests', () => {
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1);
             assert.strictEqual(filtered[0].body_html, undefined);
@@ -1464,7 +1464,7 @@ describe('PR Comment Validation - Integration Tests', () => {
                 },
                 {
                     id: 999,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: '✅ Applied changes\n\n---\n_Processing comment ID: 100✓_',
                     created_at: '2024-01-01T00:00:30Z'
                 }
@@ -1478,7 +1478,7 @@ describe('PR Comment Validation - Integration Tests', () => {
             );
 
             // Step 1: Filter already processed
-            const afterProcessedFilter = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const afterProcessedFilter = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
             assert.strictEqual(afterProcessedFilter.length, 1, 'Should filter out processed comment');
             assert.strictEqual(afterProcessedFilter[0].id, 200);
 
@@ -1540,20 +1540,20 @@ describe('PR Comment Validation - Integration Tests', () => {
                 // First batch processed
                 {
                     id: 1001,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: '✅ Batch 1\n---\n_Processing comment IDs: 100✓, 200✓_',
                     created_at: '2024-01-01T00:01:00Z'
                 },
                 // Second batch only processed 300
                 {
                     id: 1002,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: '✅ Batch 2\n---\n_Processing comment ID: 300✓_',
                     created_at: '2024-01-01T00:02:00Z'
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1, 'Only comment 400 should remain');
             assert.strictEqual(filtered[0].id, 400);
@@ -1582,13 +1582,13 @@ describe('PR Comment Validation - Integration Tests', () => {
             const prComments: PRComment[] = [
                 {
                     id: 999,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: null,
                     created_at: '2024-01-01T00:00:00Z'
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1, 'Should not crash on null body');
         });
@@ -1602,13 +1602,13 @@ describe('PR Comment Validation - Integration Tests', () => {
             const prComments: PRComment[] = [
                 {
                     id: 999,
-                    user: { login: 'propr.dev[bot]', type: 'Bot' },
+                    user: { login: 'propr-dev[bot]', type: 'Bot' },
                     body: '_Processing comment ID: 123✓_',  // Only 123 is marked
                     created_at: '2024-01-01T00:00:00Z'
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 1, 'Only 123 should be filtered');
             assert.strictEqual(filtered[0].id, 1234, '1234 should remain (different ID)');
@@ -1636,7 +1636,7 @@ describe('PR Comment Validation - Integration Tests', () => {
                 }
             ];
 
-            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr.dev[bot]');
+            const filtered = filterUnprocessedComments(commentsToProcess, prComments, 'propr-dev[bot]');
 
             assert.strictEqual(filtered.length, 2, 'Both types should be processed');
             assert.ok(filtered.some(c => c.type === 'review'), 'Review comment should be present');

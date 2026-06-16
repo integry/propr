@@ -159,7 +159,7 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
         owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
         mediaType: { format: 'full' }  // Get body_html with signed image URLs
     }) as PRData;
-    const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr.dev[bot]';
+    const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
     // Fetch ALL comments with pagination to handle PRs with 100+ comments
     const allCommentsForValidation = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
     // Separate issue comments for unprocessed detection (issue comments are first in the array from fetchAllComments)

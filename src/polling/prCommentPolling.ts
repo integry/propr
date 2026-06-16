@@ -149,7 +149,7 @@ async function processPullRequestComments(
     ]);
 
     const allComments = [...issueComments, ...reviewComments];
-    const botUsername = GITHUB_BOT_USERNAME || 'propr.dev[bot]';
+    const botUsername = GITHUB_BOT_USERNAME || 'propr-dev[bot]';
     const commentsByTime = allComments.sort((a, b) =>
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );

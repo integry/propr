@@ -53,7 +53,7 @@ services:
     env_file:
       - .env
     environment:
-      - GITHUB_BOT_USERNAME=${GITHUB_BOT_USERNAME:-propr.dev[bot]}
+      - GITHUB_BOT_USERNAME=${GITHUB_BOT_USERNAME:-propr-dev[bot]}
       - STAGING_ENV_FILE=/usr/src/app/.env
     depends_on:
       redis:

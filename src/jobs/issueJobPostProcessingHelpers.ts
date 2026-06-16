@@ -129,7 +129,7 @@ export async function triggerSystemUltrafix(options: {
         body,
     });
 
-    const botLogin = process.env.GITHUB_BOT_USERNAME || response.data.user?.login || 'propr.dev[bot]';
+    const botLogin = process.env.GITHUB_BOT_USERNAME || response.data.user?.login || 'propr-dev[bot]';
     const syntheticPayload = {
         action: 'created',
         repository: {

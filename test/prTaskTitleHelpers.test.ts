@@ -109,7 +109,7 @@ describe('prTaskTitleHelpers context selection', () => {
             id: 4,
             body: 'Starting work on follow-up changes',
             created_at: '2026-05-29T08:03:00Z',
-            user: { login: 'propr.dev[bot]', type: 'Bot' },
+            user: { login: 'propr-dev[bot]', type: 'Bot' },
         },
     ];
 
@@ -124,7 +124,7 @@ describe('prTaskTitleHelpers context selection', () => {
                 id: 5,
                 body: 'starting work on follow-up changes',
                 created_at: '2026-05-29T08:05:00Z',
-                user: { login: 'propr.dev[bot]', type: 'User' },
+                user: { login: 'propr-dev[bot]', type: 'User' },
             },
             comments[2],
         ], { limit: 2 });
