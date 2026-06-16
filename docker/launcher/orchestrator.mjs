@@ -297,10 +297,13 @@ export function validateDockerBindPath(name, value, { containerPath = false } = 
 // docker exec helpers
 // ---------------------------------------------------------------------------
 
-export function docker(args, { capture = false } = {}) {
+const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 15000;
+
+export function docker(args, { capture = false, timeout } = {}) {
     const res = spawnSync('docker', args, {
         stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         encoding: 'utf8',
+        timeout,
     });
     if (res.status !== 0 && !capture) {
         throw new Error(`docker ${args.join(' ')} failed with code ${res.status}`);
@@ -369,11 +372,126 @@ function imagePresentLocally(tag) {
     return res.stdout.trim().length > 0;
 }
 
-/** Pull a single non-agent service image if it is not already present locally. */
+function firstLine(value) {
+    return (value || '').trim().split('\n')[0] || '';
+}
+
+export function normalizeDigest(value) {
+    const digest = firstLine(value);
+    if (!digest) return null;
+    const atIndex = digest.lastIndexOf('@');
+    return atIndex >= 0 ? digest.slice(atIndex + 1) : digest;
+}
+
+function localRepoDigests(tag) {
+    const res = docker(['image', 'inspect', '--format', '{{json .RepoDigests}}', tag], { capture: true });
+    if (res.status !== 0) return null;
+    try {
+        const parsed = JSON.parse(res.stdout.trim() || '[]');
+        return Array.isArray(parsed) ? parsed.map(normalizeDigest).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
+
+export function remoteDigestFromManifestInspectOutput(output) {
+    const parsed = JSON.parse(output);
+    if (Array.isArray(parsed)) {
+        const refs = parsed.map((entry) => normalizeDigest(entry?.Ref)).filter(Boolean);
+        return refs.length > 0 && refs.every((digest) => digest === refs[0]) ? refs[0] : null;
+    }
+    const descriptor = parsed?.Descriptor;
+    return descriptor?.digest || descriptor?.Digest || parsed?.digest || parsed?.Digest || null;
+}
+
+export function remoteDigestFromImagetoolsInspectOutput(output) {
+    const match = output.match(/^\s*Digest:\s*([^\s]+)\s*$/im);
+    return match ? match[1] : null;
+}
+
+function dockerError(res, fallback) {
+    if (res.error?.code === 'ETIMEDOUT') return 'remote image check timed out';
+    return firstLine(res.stderr || res.stdout || fallback);
+}
+
+function remoteManifestDigest(tag) {
+    // Older Docker CLIs may require experimental manifest support. Treat those
+    // failures like any other registry issue so callers can warn or skip.
+    const res = docker(['manifest', 'inspect', '--verbose', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+    if (res.status !== 0) {
+        return { ok: false, error: dockerError(res, 'docker manifest inspect failed') };
+    }
+
+    try {
+        const digest = remoteDigestFromManifestInspectOutput(res.stdout);
+        if (digest) return { ok: true, digest };
+
+        const buildx = docker(['buildx', 'imagetools', 'inspect', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+        if (buildx.status !== 0) {
+            return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
+        }
+        const buildxDigest = remoteDigestFromImagetoolsInspectOutput(buildx.stdout);
+        if (buildxDigest) return { ok: true, digest: buildxDigest };
+
+        return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect or docker buildx imagetools inspect' };
+    } catch {
+        return { ok: false, error: 'could not parse docker manifest inspect output' };
+    }
+}
+
+function skipRemoteImageCheck(env = process.env) {
+    return env.PROPR_SKIP_REMOTE_IMAGE_CHECK === 'true' || env.PROPR_SKIP_REMOTE_IMAGE_CHECK === '1';
+}
+
+/**
+ * Inspect whether a local image tag is current with the remote registry tag.
+ * Registry and metadata errors are reported as "unknown" so callers can warn
+ * without treating offline/air-gapped environments as hard failures.
+ */
+export function inspectImageFreshness(tag, { skipRemoteCheck = false } = {}) {
+    if (!imagePresentLocally(tag)) {
+        return { status: 'missing', tag };
+    }
+
+    const localDigests = localRepoDigests(tag);
+    if (!localDigests) {
+        return { status: 'unknown', tag, error: 'local image metadata could not be inspected' };
+    }
+
+    if (localDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
+    }
+
+    if (skipRemoteCheck) {
+        return { status: 'unknown', tag, localDigests, skipped: true, error: 'remote image check skipped' };
+    }
+
+    const remote = remoteManifestDigest(tag);
+    if (!remote.ok) {
+        return { status: 'unknown', tag, localDigests, error: remote.error };
+    }
+
+    const remoteDigest = normalizeDigest(remote.digest);
+    if (!remoteDigest) {
+        return { status: 'unknown', tag, localDigests, error: 'remote manifest digest was empty' };
+    }
+
+    return localDigests.includes(remoteDigest)
+        ? { status: 'current', tag, localDigests, remoteDigest }
+        : { status: 'stale', tag, localDigests, remoteDigest };
+}
+
+/** Pull a single non-agent service image if it is not already present locally or is stale. */
 export function ensureServiceImage(cfg, service, onLog) {
     const tag = imageTagForService(cfg, service);
     if (!tag) return;
-    if (imagePresentLocally(tag)) return;
+    const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipRemoteImageCheck() });
+    if (freshness.status === 'current') return;
+    if (freshness.status === 'unknown') {
+        if (freshness.localOnly || freshness.skipped) return;
+        onLog?.(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+        return;
+    }
     onLog?.(`  · pulling ${tag}`);
     const res = docker(['pull', tag], { capture: true });
     if (res.status !== 0) {
@@ -762,6 +880,7 @@ export function validateEnv(cfg) {
 export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
     const skipAgentPull = env.PROPR_SKIP_AGENT_PULL === 'true' || env.PROPR_SKIP_AGENT_PULL === '1';
     const strictAgentPull = env.PROPR_STRICT_AGENT_PULL !== 'false' && env.PROPR_STRICT_AGENT_PULL !== '0';
+    const skipFreshnessCheck = skipRemoteImageCheck(env);
     onLog('pulling images…');
     const failedAgentImages = [];
 
@@ -778,13 +897,35 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
             continue;
         }
 
-        if (imagePresentLocally(tag)) {
-            onLog(`  · ${tag} (local)`);
+        const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipFreshnessCheck });
+
+        if (freshness.status === 'current') {
+            onLog(`  · ${tag} (local, current)`);
             tagAgentLatest(key, tag);
             continue;
         }
 
-        onLog(`  · ${tag}`);
+        if (freshness.status === 'unknown') {
+            if (freshness.localOnly) {
+                onLog(`  · ${tag} (local)`);
+                tagAgentLatest(key, tag);
+                continue;
+            }
+            if (freshness.skipped) {
+                onLog(`  · ${tag} (local, remote check skipped via PROPR_SKIP_REMOTE_IMAGE_CHECK)`);
+                tagAgentLatest(key, tag);
+                continue;
+            }
+            onLog(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+            tagAgentLatest(key, tag);
+            continue;
+        }
+
+        if (freshness.status === 'stale') {
+            onLog(`  · ${tag} (stale, pulling)`);
+        } else {
+            onLog(`  · ${tag}`);
+        }
         const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
         if (key.startsWith('agent-') && pulled.status !== 0) {
             failedAgentImages.push(tag);

@@ -90,6 +90,7 @@ export interface RunChecksOptions {
   root?: string;
   verify?: boolean;
   agents?: string[];
+  skipRemoteImageCheck?: boolean;
 }
 
 export interface ChecksOutcome {
@@ -176,10 +177,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   if (daemonUp) {
     for (const [key, tag] of Object.entries(cfg.images)) {
       if (key === "docs" && !cfg.docsEnabled) continue;
-      const present = imagePresent(orch, tag);
-      if (present) {
-        results.push({ name: `Image ${key}`, status: "ok", detail: tag, group: "Images" });
-      } else {
+      const addMissingImageResult = () => {
         const isAgent = key.startsWith("agent-");
         results.push({
           name: `Image ${key}`,
@@ -190,6 +188,44 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
             ? "Jobs using this agent fail until the image is pulled. `propr start` pulls it, or build with scripts/build-images.sh."
             : "Will be pulled automatically on `propr start`.",
           remediation: { kind: "pull-image", imageKey: key, tag },
+        });
+      };
+
+      if (options.skipRemoteImageCheck) {
+        if (imagePresent(orch, tag)) {
+          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local; remote check skipped)`, group: "Images" });
+        } else {
+          addMissingImageResult();
+        }
+        continue;
+      }
+
+      const freshness = orch.inspectImageFreshness(tag);
+      if (freshness.status === "missing") {
+        addMissingImageResult();
+      } else if (freshness.status === "current") {
+        results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (current)`, group: "Images" });
+      } else if (freshness.status === "stale") {
+        results.push({
+          name: `Image ${key}`,
+          status: "warn",
+          detail: `${tag} is stale; remote digest ${freshness.remoteDigest}`,
+          group: "Images",
+          fix: `Pull the updated image: docker pull ${tag}`,
+          remediation: { kind: "pull-image", imageKey: key, tag },
+        });
+      } else if (freshness.status === "unknown") {
+        if (freshness.localOnly) {
+          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local build; freshness not verified)`, group: "Images" });
+          continue;
+        }
+
+        results.push({
+          name: `Image ${key}`,
+          status: "warn",
+          detail: `${tag} is present, but freshness could not be verified: ${freshness.error}`,
+          group: "Images",
+          fix: "Check registry access or rerun with --skip-remote-image-check for offline environments.",
         });
       }
     }
@@ -533,7 +569,7 @@ function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] 
   if (imageRemediations.length > 0) {
     actions.push({
       key: "pull-images",
-      label: `Pull ${plural(imageRemediations.length, "missing Docker image")}`,
+      label: `Pull ${plural(imageRemediations.length, "Docker image")}`,
       detail: imageRemediations.map((remediation) => remediation.tag).join(", "),
       confirm: `Pull ${plural(imageRemediations.length, "Docker image")} now?`,
       run: async () => pullMissingImages(outcome, imageRemediations),
@@ -712,6 +748,7 @@ export function createCheckCommand(): Command {
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to --verify (default: all)")
+    .option("--skip-remote-image-check", "Skip registry freshness checks for local Docker images")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
     .addHelpText("after", `
@@ -722,7 +759,7 @@ Examples:
   $ propr check --verify --agents claude,codex
   $ propr check --json
 `)
-    .action(async (options: { root?: string; verify?: boolean; agents?: string; json?: boolean; fix?: boolean }) => {
+    .action(async (options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean }) => {
       try {
         if (options.json && options.fix) {
           console.error("Error: --json cannot be combined with --fix; JSON output is data-only and never prompts.");
@@ -737,6 +774,7 @@ Examples:
           root: options.root,
           verify: options.verify,
           agents: options.agents ? options.agents.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+          skipRemoteImageCheck: options.skipRemoteImageCheck,
         };
         let outcome = await runChecks(runOptions);
 
