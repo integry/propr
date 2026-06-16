@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, shouldForwardEnvVar, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
@@ -341,14 +341,13 @@ describe('OpenCodeAgent Docker args', () => {
         assert.strictEqual(args[args.indexOf('--format') + 1], 'json');
     });
 
-    test('keeps workspace read-only while allowing OpenCode config writes during analysis', () => {
+    test('honours a read-only workspace mount while keeping OpenCode config writable', () => {
         const args = buildOpenCodeDockerArgs({
             config: createAgent().config,
             worktreePath: '/tmp/worktree',
             githubToken: 'token',
             issueNumber: 0,
             readOnlyWorkspace: true,
-            allowDangerousPermissions: false,
             configPath: '/tmp/opencode-analysis-config-test',
             ensureConfigPath: () => undefined
         });
@@ -356,33 +355,26 @@ describe('OpenCodeAgent Docker args', () => {
         assert.ok(args.includes('-v'));
         assert.ok(args.includes('/tmp/worktree:/home/node/workspace:ro'));
         assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:rw'));
-        assert.ok(!args.includes('--dangerously-skip-permissions'));
     });
 
-    test('uses direct stdin prompt mode for lightweight analysis', () => {
-        const args = buildOpenCodeDockerArgs({
+    test('analysis uses the same opencode-run wrapper path as task execution', () => {
+        const analysisArgs = buildOpenCodeDockerArgs({
             config: createAgent().config,
             worktreePath: '/tmp/worktree',
             githubToken: 'token',
             issueNumber: 0,
             modelName: 'opencode-openai/gpt-5.5',
-            readOnlyWorkspace: false,
-            allowDangerousPermissions: false,
-            promptMode: 'direct',
             configPath: '/tmp/opencode-analysis-config-test',
             ensureConfigPath: () => undefined
         });
-        const shellIndex = args.indexOf('/bin/sh');
 
-        assert.ok(shellIndex > -1);
-        assert.strictEqual(args[shellIndex + 1], '-lc');
-        assert.match(args[shellIndex + 2], /cat > "\$prompt_file"/);
-        assert.match(args[shellIndex + 2], /opencode run "\$@" --file "\$prompt_file"/);
-        assert.doesNotMatch(args[shellIndex + 2], /prompt="\$\(cat\)"/);
-        assert.strictEqual(args[shellIndex + 3], 'propr-opencode-direct');
-        assert.ok(!args.includes('opencode-run'));
-        assert.strictEqual(args[args.indexOf('--format') + 1], 'json');
-        assert.strictEqual(args[args.indexOf('--model') + 1], 'openai/gpt-5.5');
+        // No bespoke "direct" shell mode any more — one wrapper for everything.
+        assert.ok(!analysisArgs.includes('/bin/sh'));
+        assert.ok(analysisArgs.includes('opencode-run'));
+        assert.ok(analysisArgs.includes('--dangerously-skip-permissions'));
+        assert.strictEqual(analysisArgs[analysisArgs.indexOf('--format') + 1], 'json');
+        assert.strictEqual(analysisArgs[analysisArgs.indexOf('--title') + 1], 'ProPR analysis');
+        assert.strictEqual(analysisArgs[analysisArgs.indexOf('--model') + 1], 'openai/gpt-5.5');
     });
 
     test('can mount real OpenCode data alongside an analysis config snapshot', () => {
@@ -424,7 +416,6 @@ describe('OpenCodeAgent Docker args', () => {
             githubToken: 'token',
             issueNumber: 0,
             readOnlyWorkspace: true,
-            allowDangerousPermissions: false,
             configPath: '/tmp/opencode-analysis-config-test',
             ensureConfigPath: () => undefined
         });
@@ -436,6 +427,74 @@ describe('OpenCodeAgent Docker args', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
         assert.match(script, /opencode run "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
+    });
+
+    test('always skips permissions for isolated non-interactive runs, like the other agents', () => {
+        const taskArgs = buildOpenCodeDockerArgs({
+            config: createAgent().config,
+            worktreePath: '/tmp/worktree',
+            githubToken: 'token',
+            issueNumber: 42,
+            ensureConfigPath: () => undefined
+        });
+        const analysisArgs = buildOpenCodeDockerArgs({
+            config: createAgent().config,
+            worktreePath: '/tmp/worktree',
+            githubToken: 'token',
+            issueNumber: 0,
+            ensureConfigPath: () => undefined
+        });
+
+        assert.ok(taskArgs.includes('--dangerously-skip-permissions'));
+        assert.ok(analysisArgs.includes('--dangerously-skip-permissions'));
+    });
+
+    test('filters unsafe and GitHub credential env vars before forwarding to the container', () => {
+        const config = createAgent().config;
+        config.envVars = {
+            SAFE_VAR: 'keep-me',
+            GH_TOKEN: 'leaked-secret',
+            GITHUB_API_URL: 'https://evil.example',
+            'bad-name': 'nope',
+            MULTILINE: 'line1\nline2'
+        };
+        const args = buildOpenCodeDockerArgs({
+            config,
+            worktreePath: '/tmp/worktree',
+            githubToken: 'scoped-token',
+            issueNumber: 42,
+            ensureConfigPath: () => undefined
+        });
+        const envValues = args.filter((_, i) => args[i - 1] === '-e');
+
+        // The user-configured safe var is forwarded.
+        assert.ok(envValues.includes('SAFE_VAR=keep-me'));
+        // The scoped token is still injected (token removal is deferred), but the
+        // user-supplied GH_TOKEN value is never forwarded.
+        assert.ok(envValues.includes('GH_TOKEN=scoped-token'));
+        assert.ok(!envValues.includes('GH_TOKEN=leaked-secret'));
+        // GITHUB_*, invalid names, and multiline values are dropped entirely.
+        assert.ok(!envValues.some(v => v.startsWith('GITHUB_API_URL=')));
+        assert.ok(!envValues.some(v => v.startsWith('bad-name=')));
+        assert.ok(!envValues.some(v => v.startsWith('MULTILINE=')));
+    });
+
+    test('shouldForwardEnvVar enforces name, credential, and value rules', () => {
+        assert.ok(shouldForwardEnvVar('OPENROUTER_API_KEY', 'sk-123'));
+        assert.ok(!shouldForwardEnvVar('GH_TOKEN', 'x'));
+        assert.ok(!shouldForwardEnvVar('GITHUB_TOKEN', 'x'));
+        assert.ok(!shouldForwardEnvVar('GITHUB_ANYTHING', 'x'));
+        assert.ok(!shouldForwardEnvVar('1INVALID', 'x'));
+        assert.ok(!shouldForwardEnvVar('has space', 'x'));
+        assert.ok(!shouldForwardEnvVar('OK', 'line1\nline2'));
+        assert.ok(!shouldForwardEnvVar('OK', 'has\0nul'));
+    });
+
+    test('enforces a configurable prompt size cap in opencode-run.sh', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
+
+        assert.match(script, /OPENCODE_PROMPT_MAX_BYTES:-20971520/);
+        assert.match(script, /exceeding OPENCODE_PROMPT_MAX_BYTES/);
     });
 
     test('prevents duplicate opencode- prefix on round-trip conversions', () => {
