@@ -19,10 +19,10 @@ import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/ind
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
 
-type CheckStatus = "ok" | "warn" | "fail";
-type CheckGroup = "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
+export type CheckStatus = "ok" | "warn" | "fail";
+export type CheckGroup = "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
 
-interface CheckResult {
+export interface CheckResult {
   name: string;
   status: CheckStatus;
   detail: string;
@@ -75,7 +75,7 @@ function agentDescriptors(): AgentDescriptor[] {
 export const STACK_CONFIG_CHECK_NAME = "Stack config (.env)";
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
 const STATUS_LABEL: Record<CheckStatus, string> = { ok: "OK", warn: "WARN", fail: "FAIL" };
-const CHECK_GROUPS: CheckGroup[] = ["Docker", "Stack", "Images", "Agents", "GitHub", "Configuration"];
+export const CHECK_GROUPS: CheckGroup[] = ["Docker", "Stack", "Images", "Agents", "GitHub", "Configuration"];
 const ANSI = {
   reset: "\u001b[0m",
   bold: "\u001b[1m",
@@ -193,8 +193,8 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
           detail: `${tag} not present locally`,
           group: "Images",
           fix: isAgent
-            ? "Jobs using this agent fail until the image is pulled. `propr start` pulls it, or build with scripts/build-images.sh."
-            : "Will be pulled automatically on `propr start`.",
+            ? "Jobs using this agent fail until the image is pulled. Run `propr images pull`, `propr start`, or build with scripts/build-images.sh."
+            : "Run `propr images pull`, or let `propr start` pull it automatically.",
           remediation: { kind: "pull-image", imageKey: key, tag },
         });
       };
@@ -219,7 +219,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
           status: "warn",
           detail: `${tag} is stale; remote digest ${freshness.remoteDigest}`,
           group: "Images",
-          fix: `Pull the updated image: docker pull ${tag}`,
+          fix: "Pull the updated image: `propr images pull`.",
           remediation: { kind: "pull-image", imageKey: key, tag },
         });
       } else if (freshness.status === "unknown") {
@@ -509,7 +509,7 @@ function formatStatus(status: CheckStatus, colorEnabled: boolean): string {
   return color(text, colorEnabled, statusColor(status), ANSI.bold);
 }
 
-function countStatuses(results: CheckResult[]): Record<CheckStatus, number> {
+export function countStatuses(results: CheckResult[]): Record<CheckStatus, number> {
   const counts: Record<CheckStatus, number> = { ok: 0, warn: 0, fail: 0 };
   for (const result of results) counts[result.status]++;
   return counts;
@@ -529,7 +529,7 @@ function jsonResult(result: CheckResult): JsonCheckResult {
   return out;
 }
 
-function plural(count: number, singular: string): string {
+export function plural(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
@@ -542,6 +542,20 @@ function formatSummary(counts: Record<CheckStatus, number>, colorEnabled: boolea
 
 function isInteractiveTerminal(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+async function renderHumanChecks(outcome: ChecksOutcome, showRemediationHint: boolean): Promise<void> {
+  if (!isInteractiveTerminal() || process.env.NO_COLOR !== undefined) {
+    printChecks(outcome);
+    if (showRemediationHint) {
+      console.log("");
+      console.log("Run `propr check --fix` to review interactive remediation options.");
+    }
+    return;
+  }
+
+  const { renderCheck } = await import("../tui/app.js");
+  await renderCheck(outcome, { showRemediationHint });
 }
 
 function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] {
@@ -811,12 +825,10 @@ Notes:
         if (options.json) {
           printOutput({ rootDir: outcome.rootDir, results: outcome.results.map(jsonResult) }, true);
         } else {
-          printChecks(outcome);
+          const showRemediationHint = !options.fix && collectRemediationActions(outcome).length > 0;
+          await renderHumanChecks(outcome, showRemediationHint);
           if (options.fix) {
             outcome = await runRemediationPrompts(outcome, runOptions);
-          } else if (isInteractiveTerminal() && collectRemediationActions(outcome).length > 0) {
-            console.log("");
-            console.log("Run `propr check --fix` to review interactive remediation options.");
           }
         }
 

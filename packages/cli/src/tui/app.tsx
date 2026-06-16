@@ -6,8 +6,10 @@
 import React from "react";
 import { render } from "ink";
 import { StartApp } from "./StartApp.js";
+import { CheckApp } from "./CheckApp.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { ConfigManager } from "../config/index.js";
+import type { ChecksOutcome } from "../commands/checkCommands.js";
 
 export interface DashboardProps {
   orch: OrchestratorModule;
@@ -23,4 +25,12 @@ export async function renderDashboard(props: DashboardProps): Promise<"backgroun
   );
   await instance.waitUntilExit();
   return result.outcome;
+}
+
+export async function renderCheck(outcome: ChecksOutcome, opts: { showRemediationHint?: boolean } = {}): Promise<void> {
+  const instance = render(
+    <CheckApp outcome={outcome} showRemediationHint={opts.showRemediationHint} />,
+    { exitOnCtrlC: false },
+  );
+  await instance.waitUntilExit();
 }
