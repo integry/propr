@@ -474,7 +474,7 @@ describe('Webhook Event Factory Integration', () => {
                 labels: ['AI', 'auto-merge']
             },
             label: { name: 'AI', color: '0366d6' },
-            sender: { login: 'gitfixio[bot]', type: 'Bot' }
+            sender: { login: 'propr-dev[bot]', type: 'Bot' }
         });
 
         assert.strictEqual(labeledEvent.repository.full_name, 'integry/gitfix');

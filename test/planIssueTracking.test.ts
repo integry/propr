@@ -1442,7 +1442,7 @@ function simulateHandlePlanPRCommentTracking(
     }
 ): { skipped: boolean; reason?: string; updatedFollowupCount?: number; updatedStatus?: PlanIssueStatus } {
     const repository = payload.repository.full_name;
-    const botUsername = mockDependencies.botUsername || 'propr.dev[bot]';
+    const botUsername = mockDependencies.botUsername || 'propr-dev[bot]';
 
     // Determine PR number based on event type
     let prNumber: number | null = null;
@@ -1576,13 +1576,13 @@ describe('handlePlanPRCommentTracking', () => {
     });
 
     describe('skip bot comments', () => {
-        test('skips comments from default bot username (propr.dev[bot])', () => {
+        test('skips comments from default bot username (propr-dev[bot])', () => {
             const context = createCommentTrackingTestContext();
             const payload: MockPullRequestReviewCommentEvent = {
                 action: 'created',
                 repository: { full_name: 'owner/repo' },
                 pull_request: { number: 42 },
-                comment: { user: { login: 'propr.dev[bot]' } }
+                comment: { user: { login: 'propr-dev[bot]' } }
             };
 
             const mockPlanIssue: MockPlanIssueFromDB = {

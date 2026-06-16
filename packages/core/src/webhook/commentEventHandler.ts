@@ -516,7 +516,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const commentAuthor = comment.user.login;
     const parsedCommand = parseSlashCommand(comment.body);
     const configuredBotUsernames = new Set(
-        [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr.dev[bot]']
+        [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]']
             .filter((value): value is string => typeof value === 'string' && value.length > 0)
     );
     const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix'
