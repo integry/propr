@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation, type InitialEntry } from 'react-router-dom';
 import LoginPage from './LoginPage';
-import { apiFetch } from '../api/proprApi';
+import { getCurrentUser } from '../api/proprApi';
 
 vi.mock('../hooks/useDocumentTitle', () => ({
   useDocumentTitle: vi.fn(),
@@ -15,10 +15,10 @@ vi.mock('../contexts/DemoModeContext', () => ({
 
 vi.mock('../api/proprApi', () => ({
   API_BASE_URL: '',
-  apiFetch: vi.fn(),
+  getCurrentUser: vi.fn(),
 }));
 
-const mockApiFetch = vi.mocked(apiFetch);
+const mockGetCurrentUser = vi.mocked(getCurrentUser);
 
 const LocationProbe = () => {
   const location = useLocation();
@@ -45,20 +45,20 @@ describe('LoginPage session recovery', () => {
   });
 
   it('redirects to the previous page when /api/auth/user succeeds', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+    mockGetCurrentUser.mockResolvedValue({});
 
     renderLogin({ pathname: '/login', state: { from: '/plans' } });
 
     await waitFor(() => {
       expect(screen.getByText('plans page')).toBeInTheDocument();
     });
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/auth/user', { credentials: 'include' });
+    expect(mockGetCurrentUser).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Sign in with GitHub')).not.toBeInTheDocument();
     expect(screen.getByTestId('location')).toHaveTextContent('/plans');
   });
 
   it('falls back to the dashboard for an external redirect_to query param', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+    mockGetCurrentUser.mockResolvedValue({});
 
     renderLogin('/login?redirect_to=https%3A%2F%2Fevil.example');
 
@@ -69,7 +69,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('falls back to the dashboard for a protocol-relative redirect_to query param', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+    mockGetCurrentUser.mockResolvedValue({});
 
     renderLogin('/login?redirect_to=%2F%2Fevil.example');
 
@@ -80,7 +80,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('falls back to the dashboard for an external router state return path', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+    mockGetCurrentUser.mockResolvedValue({});
 
     renderLogin({ pathname: '/login', state: { from: 'https://evil.example' } });
 
@@ -91,7 +91,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('uses object-shaped router state with pathname, search, and hash', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+    mockGetCurrentUser.mockResolvedValue({});
 
     renderLogin({
       pathname: '/login',
@@ -105,7 +105,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('falls back to the dashboard for return paths containing backslashes', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+    mockGetCurrentUser.mockResolvedValue({});
 
     renderLogin({ pathname: '/login', state: { from: '/plans\\evil' } });
 
@@ -116,19 +116,19 @@ describe('LoginPage session recovery', () => {
   });
 
   it('keeps the login button visible when the auth check fails', async () => {
-    mockApiFetch.mockResolvedValue({ ok: false, status: 401 } as Response);
+    mockGetCurrentUser.mockRejectedValue(new Error('Authentication required'));
 
     renderLogin('/login');
 
     await waitFor(() => {
       expect(screen.getByText('Sign in with GitHub')).toBeInTheDocument();
     });
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(mockGetCurrentUser).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('location')).toHaveTextContent('/login');
   });
 
   it('skips the session recovery check after an explicit logout', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true } as Response);
+    mockGetCurrentUser.mockResolvedValue({});
 
     renderLogin('/login?logged_out=true');
 
@@ -136,7 +136,7 @@ describe('LoginPage session recovery', () => {
       expect(screen.getByText('Sign in with GitHub')).toBeInTheDocument();
     });
     expect(screen.getByText('You have been successfully logged out.')).toBeInTheDocument();
-    expect(mockApiFetch).not.toHaveBeenCalled();
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
   });
 
   it('shows an accessible status indicator while checking the current session', () => {
@@ -145,6 +145,6 @@ describe('LoginPage session recovery', () => {
     renderLogin('/login');
 
     expect(screen.getByRole('status', { name: 'Checking session' })).toBeInTheDocument();
-    expect(mockApiFetch).not.toHaveBeenCalled();
+    expect(mockGetCurrentUser).not.toHaveBeenCalled();
   });
 });

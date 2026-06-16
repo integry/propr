@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDemoMode } from '../contexts/DemoModeContext';
-import { apiFetch } from '../api/proprApi';
+import { getCurrentUser } from '../api/proprApi';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 // For OAuth, use main API to avoid registering multiple callback URLs
@@ -86,19 +86,14 @@ const LoginPage: React.FC = () => {
     let cancelled = false;
     (async () => {
       try {
-        const response = await apiFetch('/api/auth/user', { credentials: 'include' });
+        await getCurrentUser();
         if (cancelled) return;
-        if (response.ok) {
-          // The server still has (or could refresh) a valid session, so send
-          // the user back to where they came from.
-          navigate(returnPath, { replace: true });
-          return;
-        }
-        // 401/403/503 and any other non-OK status mean we cannot recover the
-        // session silently, so keep the login UI.
-        setIsRecovering(false);
+        // The server still has (or could refresh) a valid session, so send
+        // the user back to where they came from.
+        navigate(returnPath, { replace: true });
       } catch {
-        // Network errors fall through to the login UI as well.
+        // Auth failures, network errors, and invalid responses fall through to
+        // the login UI.
         if (!cancelled) setIsRecovering(false);
       }
     })();
