@@ -7,7 +7,8 @@ import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
-import { getGithubUserWhitelist, isGithubUserWhitelisted } from '../utils/userWhitelist.js';
+import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
+import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
 import type { DetectedIssue } from '../webhook/webhookHandler.js';
 
 export type { DetectedIssue };
@@ -205,9 +206,9 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     }
 
     // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
-    // configured). For webhooks this is the webhook sender; for polling it is
-    // the label applier resolved from the issue timeline (fail closed if unknown).
-    if (!isGithubUserWhitelisted(issue.triggeredBy)) {
+    // configured). The configured GitHub App bot is also trusted for issue-label
+    // triggers so app-driven label application can start work.
+    if (!isAuthorizedIssueTriggerActor(issue.triggeredBy)) {
         correlatedLogger.warn({
             issueNumber: issue.number,
             repository: repoFullName,
