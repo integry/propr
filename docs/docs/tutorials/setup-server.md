@@ -134,7 +134,7 @@ After the stack is reachable:
 Each step works from the Web UI or from the [ProPR CLI](../features/propr-cli.md) against the public API URL — useful for scripted provisioning:
 
 ```bash
-npm install -g @propr/cli
+npm install -g propr-cli
 propr remote https://propr.example.com   # the API origin behind your proxy
 propr login <personal-access-token>
 propr repo add owner/repo

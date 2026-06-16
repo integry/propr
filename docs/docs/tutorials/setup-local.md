@@ -33,7 +33,7 @@ Install the app on every repository ProPR should process, and note the App ID an
 The ProPR CLI doubles as the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack:
 
 ```bash
-npm install -g @propr/cli      # Node.js 22+ — prefix sudo if your global npm needs it
+npm install -g propr-cli      # Node.js 22+ — prefix sudo if your global npm needs it
 which propr && propr --version # confirm the CLI is on PATH (catches root/user prefix mismatches)
 
 mkdir propr-deploy && cd propr-deploy
@@ -200,7 +200,7 @@ From here, `propr plan create "..." --wait` and `propr issue implement <draft-id
 
 Service images are pinned to the release version of the control plane that starts them.
 
-- **CLI path:** update the CLI, then restart from the stack directory so it acts on the right runtime root — `propr start` pulls the matching images (`npm update -g @propr/cli && cd propr-deploy && propr start --restart`). `propr start --restart` resolves the stack relative to the current directory (or `--root <dir>`), so run it from `propr-deploy` to avoid restarting against the wrong path.
+- **CLI path:** update the CLI, then restart from the stack directory so it acts on the right runtime root — `propr start` pulls the matching images (`npm update -g propr-cli && cd propr-deploy && propr start --restart`). `propr start --restart` resolves the stack relative to the current directory (or `--root <dir>`), so run it from `propr-deploy` to avoid restarting against the wrong path.
 - **Launcher path:** `docker pull propr/launcher:latest`, then re-run the `docker run` command; the launcher pulls the matching service images.
 
 Data, logs, and repositories persist in your runtime directory either way.

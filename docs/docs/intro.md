@@ -27,7 +27,7 @@ End-to-end usage remains fully supported — it is just one of the ways to use P
 - **Planner Studio**: Build draft plans, attach extra context, generate structured implementation steps, refine them, and run approved work
 - **Multi-Agent Support**: Run Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe agents, choose different models per task, and use the right agent for review or implementation
 - **Label-Based Model Routing**: Route any issue to a specific agent and model with `llm-*` labels such as `llm-claude-opus48`, `llm-codex-gpt55`, or `llm-antigravity-pro-high`; several model labels on one issue produce a separate run, branch, and PR per model
-- **CLI**: Use the `propr` command (`@propr/cli`) as the local stack control plane (`propr init stack`, `propr check`, `propr start`) and to manage plans, implement issues, inspect tasks, and configure repositories and agents from the terminal
+- **CLI**: Use the `propr` command (`propr-cli`) as the local stack control plane (`propr init stack`, `propr check`, `propr start`) and to manage plans, implement issues, inspect tasks, and configure repositories and agents from the terminal
 - **GitHub PR Automation**: Use slash commands like `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` for follow-up work on pull requests after the main setup is already handled in the UI
 - **End-to-End GitHub Flow**: Detect labeled issues via polling or GitHub webhooks, create isolated worktrees and branches, implement changes, and open linked pull requests automatically
 - **Production Operations**: Run with retries, state tracking, Docker-isolated agent runs, and real-time dashboard visibility

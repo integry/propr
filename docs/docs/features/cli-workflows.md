@@ -5,7 +5,7 @@ sidebar_position: 11
 # CLI Workflows
 
 :::info[Looking for the `propr` command?]
-This page covers the npm scripts and Docker commands used to develop and operate ProPR itself from a source checkout. The end-user command-line client (`@propr/cli`, command `propr`) — plans, issue implementation, tasks, repos, and settings from the terminal — is documented in [ProPR CLI](./propr-cli.md).
+This page covers the npm scripts and Docker commands used to develop and operate ProPR itself from a source checkout. The end-user command-line client (`propr-cli`, command `propr`) — plans, issue implementation, tasks, repos, and settings from the terminal — is documented in [ProPR CLI](./propr-cli.md).
 :::
 
 Most day-to-day ProPR operation should happen in the Web UI and GitHub comments. The workflows on this page are for developers and operators who need to run services directly, validate docs, build images, inspect logs, or recover local environments.
