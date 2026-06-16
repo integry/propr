@@ -72,7 +72,7 @@ export type ImageFreshnessResult =
   | { status: "missing"; tag: string }
   | { status: "current"; tag: string; localDigests: string[]; remoteDigest: string }
   | { status: "stale"; tag: string; localDigests: string[]; remoteDigest: string }
-  | { status: "unknown"; tag: string; localDigests?: string[]; error: string };
+  | { status: "unknown"; tag: string; localDigests?: string[]; error: string; localOnly?: boolean; skipped?: boolean };
 
 export interface ResolveHostConfigOptions {
   rootDir?: string;
@@ -95,7 +95,7 @@ export interface OrchestratorModule {
   validateDockerBindPath(name: string, value?: string, opts?: { containerPath?: boolean }): string | null;
 
   dockerAvailable(): boolean;
-  inspectImageFreshness(tag: string): ImageFreshnessResult;
+  inspectImageFreshness(tag: string, opts?: { skipRemoteCheck?: boolean }): ImageFreshnessResult;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
   ensureServiceImage(cfg: OrchestratorConfig, service: string, onLog?: (line: string) => void): void;
   pullImages(

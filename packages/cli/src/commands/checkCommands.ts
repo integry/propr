@@ -177,46 +177,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   if (daemonUp) {
     for (const [key, tag] of Object.entries(cfg.images)) {
       if (key === "docs" && !cfg.docsEnabled) continue;
-      const present = imagePresent(orch, tag);
-      if (present) {
-        if (options.skipRemoteImageCheck) {
-          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local; remote check skipped)`, group: "Images" });
-          continue;
-        }
-
-        const freshness = orch.inspectImageFreshness(tag);
-        if (freshness.status === "current") {
-          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (current)`, group: "Images" });
-        } else if (freshness.status === "stale") {
-          results.push({
-            name: `Image ${key}`,
-            status: "warn",
-            detail: `${tag} is stale; remote digest ${freshness.remoteDigest}`,
-            group: "Images",
-            fix: `Pull the updated image: docker pull ${tag}`,
-            remediation: { kind: "pull-image", imageKey: key, tag },
-          });
-        } else if (freshness.status === "unknown") {
-          results.push({
-            name: `Image ${key}`,
-            status: "warn",
-            detail: `${tag} is present, but freshness could not be verified: ${freshness.error}`,
-            group: "Images",
-            fix: "Check registry access or rerun with --skip-remote-image-check for offline environments.",
-          });
-        } else {
-          results.push({
-            name: `Image ${key}`,
-            status: "warn",
-            detail: `${tag} not present locally`,
-            group: "Images",
-            fix: key.startsWith("agent-")
-              ? "Jobs using this agent fail until the image is pulled. `propr start` pulls it, or build with scripts/build-images.sh."
-              : "Will be pulled automatically on `propr start`.",
-            remediation: { kind: "pull-image", imageKey: key, tag },
-          });
-        }
-      } else {
+      const addMissingImageResult = () => {
         const isAgent = key.startsWith("agent-");
         results.push({
           name: `Image ${key}`,
@@ -227,6 +188,44 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
             ? "Jobs using this agent fail until the image is pulled. `propr start` pulls it, or build with scripts/build-images.sh."
             : "Will be pulled automatically on `propr start`.",
           remediation: { kind: "pull-image", imageKey: key, tag },
+        });
+      };
+
+      if (options.skipRemoteImageCheck) {
+        if (imagePresent(orch, tag)) {
+          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local; remote check skipped)`, group: "Images" });
+        } else {
+          addMissingImageResult();
+        }
+        continue;
+      }
+
+      const freshness = orch.inspectImageFreshness(tag);
+      if (freshness.status === "missing") {
+        addMissingImageResult();
+      } else if (freshness.status === "current") {
+        results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (current)`, group: "Images" });
+      } else if (freshness.status === "stale") {
+        results.push({
+          name: `Image ${key}`,
+          status: "warn",
+          detail: `${tag} is stale; remote digest ${freshness.remoteDigest}`,
+          group: "Images",
+          fix: `Pull the updated image: docker pull ${tag}`,
+          remediation: { kind: "pull-image", imageKey: key, tag },
+        });
+      } else if (freshness.status === "unknown") {
+        if (freshness.localOnly) {
+          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local build; freshness not verified)`, group: "Images" });
+          continue;
+        }
+
+        results.push({
+          name: `Image ${key}`,
+          status: "warn",
+          detail: `${tag} is present, but freshness could not be verified: ${freshness.error}`,
+          group: "Images",
+          fix: "Check registry access or rerun with --skip-remote-image-check for offline environments.",
         });
       }
     }
