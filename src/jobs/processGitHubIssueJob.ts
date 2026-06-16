@@ -117,7 +117,16 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     }
 
     await job.updateProgress(100);
-    await markTaskComplete({ stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger });
+    await markTaskComplete({
+      stateManager,
+      taskId,
+      issueRef,
+      currentIssueLabels: currentLabels,
+      claudeResult,
+      postProcessingResult,
+      commitResult,
+      correlatedLogger
+    });
     return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
   } catch (error) {

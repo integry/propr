@@ -53,6 +53,8 @@ export interface LabelCheckResult {
 export interface TaskCompletionParams {
   stateManager: WorkerStateManager;
   taskId: string;
+  issueRef: IssueJobData;
+  currentIssueLabels: string[];
   claudeResult: ClaudeCodeResponse | null;
   postProcessingResult: PostProcessingResult | null;
   commitResult: CommitResult | null;

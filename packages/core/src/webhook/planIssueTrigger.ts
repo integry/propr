@@ -1,6 +1,8 @@
 import logger from '../utils/logger.js';
 import {
-    getPlanIssuesByDraft
+    getPlanIssuesByDraft,
+    updatePlanIssueStatus,
+    type PlanIssue
 } from '../config/planIssueManager.js';
 import {
     isInProgressStatus,
@@ -9,6 +11,71 @@ import {
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPrimaryProcessingLabels } from '../daemon/configLoader.js';
 import { isDraftPaused } from '../services/taskPlanning/draftPauseResume.js';
+import { db } from '../db/connection.js';
+
+interface LatestTaskHistoryRow {
+    state: string;
+    metadata?: string | Record<string, unknown> | null;
+}
+
+function parseHistoryMetadata(metadata: LatestTaskHistoryRow['metadata']): Record<string, unknown> {
+    if (!metadata) return {};
+    if (typeof metadata === 'object') return metadata;
+    try {
+        const parsed = JSON.parse(metadata);
+        return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+    } catch {
+        return {};
+    }
+}
+
+function isTerminalNoPrTask(row: LatestTaskHistoryRow | undefined): boolean {
+    if (!row) return false;
+    if (row.state === 'failed' || row.state === 'cancelled') return true;
+    if (row.state !== 'completed') return false;
+
+    const metadata = parseHistoryMetadata(row.metadata);
+    const prResult = metadata.prResult && typeof metadata.prResult === 'object'
+        ? metadata.prResult as Record<string, unknown>
+        : {};
+
+    return metadata.pr === null || prResult.prCreated === false || prResult.prNumber === null;
+}
+
+async function latestTaskHistory(taskId: string): Promise<LatestTaskHistoryRow | undefined> {
+    return db('task_history')
+        .where({ task_id: taskId })
+        .select('state', 'metadata')
+        .orderBy('timestamp', 'desc')
+        .orderBy('history_id', 'desc')
+        .first<LatestTaskHistoryRow>();
+}
+
+async function reconcileTerminalInProgressIssues(
+    repository: string,
+    planIssues: PlanIssue[],
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<PlanIssue[]> {
+    const reconciledIssues = [...planIssues];
+
+    await Promise.all(reconciledIssues.map(async (issue, index) => {
+        if (!isInProgressStatus(issue.status) || !issue.task_id || issue.pr_number) return;
+
+        const latestHistory = await latestTaskHistory(issue.task_id);
+        if (!isTerminalNoPrTask(latestHistory)) return;
+
+        await updatePlanIssueStatus(repository, issue.issue_number, PlanIssueStatus.CLOSED);
+        reconciledIssues[index] = { ...issue, status: PlanIssueStatus.CLOSED };
+        log.warn({
+            repository,
+            issueNumber: issue.issue_number,
+            taskId: issue.task_id,
+            taskState: latestHistory?.state
+        }, 'Reconciled stale in-progress plan issue from terminal task without PR');
+    }));
+
+    return reconciledIssues;
+}
 
 /**
  * Gets all labels from an issue.
@@ -126,7 +193,11 @@ export async function triggerNextPendingIssue(
         }
 
         // Get all issues in the same plan
-        const planIssues = await getPlanIssuesByDraft(draftId);
+        const planIssues = await reconcileTerminalInProgressIssues(
+            repository,
+            await getPlanIssuesByDraft(draftId),
+            log
+        );
 
         // Check if there are any issues currently in progress (processing or under_review)
         // These statuses indicate an active PR or processing that hasn't completed yet

@@ -3,7 +3,13 @@
  */
 
 import type { Logger } from 'pino';
-import { db } from '@propr/core';
+import {
+  db,
+  findPlanIssueByRepoAndNumber,
+  PlanIssueStatus,
+  triggerNextPendingIssue,
+  updatePlanIssueStatus
+} from '@propr/core';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
@@ -47,6 +53,28 @@ async function persistTaskUpdateFields(
   }
 }
 
+async function closeFailedPlanIssueAndContinue(taskCompletionParams: TaskCompletionParams): Promise<void> {
+  const { issueRef, currentIssueLabels, claudeResult, postProcessingResult, correlatedLogger } = taskCompletionParams;
+  if (claudeResult?.success || postProcessingResult?.pr) return;
+
+  const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+  const planIssue = await findPlanIssueByRepoAndNumber(repository, issueRef.number);
+  if (!planIssue?.draft_id) return;
+
+  await updatePlanIssueStatus(repository, issueRef.number, PlanIssueStatus.CLOSED);
+  correlatedLogger.warn({
+    repository,
+    issueNumber: issueRef.number,
+    draftId: planIssue.draft_id
+  }, 'Marked plan issue closed after terminal task without PR');
+
+  const hasAutoMerge = currentIssueLabels.includes('auto-merge');
+  const epicLabel = currentIssueLabels.find((label) => label.startsWith('base-'));
+  if (!hasAutoMerge && !epicLabel) return;
+
+  await triggerNextPendingIssue(planIssue.draft_id, repository, epicLabel, correlatedLogger);
+}
+
 export async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
   const { stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
   try {
@@ -66,6 +94,7 @@ export async function markTaskComplete(taskCompletionParams: TaskCompletionParam
 
     const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
+    await closeFailedPlanIssueAndContinue(taskCompletionParams);
   } catch (stateError) {
     correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to completed');
   }
