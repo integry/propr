@@ -11,10 +11,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
 import { resolveGithubAuthMode, validateRelayUrl } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
-import { getHostConfig } from "../orchestrator/index.js";
+import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
+import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
 
 type CheckStatus = "ok" | "warn" | "fail";
@@ -26,6 +28,26 @@ interface CheckResult {
   detail: string;
   group?: CheckGroup;
   fix?: string;
+  remediation?: CheckRemediation;
+}
+
+type CheckRemediation =
+  | { kind: "init-stack"; rootDir: string }
+  | { kind: "pull-image"; imageKey: string; tag: string }
+  | { kind: "add-agent-credential"; envKey: string; path: string; agentType: string }
+  | { kind: "start-docker" };
+
+interface RemediationAction {
+  key: string;
+  label: string;
+  detail: string;
+  confirm: string;
+  run: () => Promise<RemediationResult>;
+}
+
+interface RemediationResult {
+  changed: boolean;
+  ok: boolean;
 }
 
 interface AgentDescriptor {
@@ -109,6 +131,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
           detail: "cannot reach the Docker daemon (`docker info` failed)",
           group: "Docker",
           fix: "Start Docker (e.g. `sudo systemctl start docker`) and ensure your user can access it.",
+          remediation: { kind: "start-docker" },
         }
   );
 
@@ -145,6 +168,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       detail: `no .env found at ${rootDir}`,
       group: "Stack",
       fix: "Run `propr init stack` to scaffold .env, data/, logs/ and repos/.",
+      remediation: { kind: "init-stack", rootDir },
     });
   }
 
@@ -165,6 +189,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
           fix: isAgent
             ? "Jobs using this agent fail until the image is pulled. `propr start` pulls it, or build with scripts/build-images.sh."
             : "Will be pulled automatically on `propr start`.",
+          remediation: { kind: "pull-image", imageKey: key, tag },
         });
       }
     }
@@ -174,8 +199,17 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   for (const agent of agentDescriptors()) {
     const configured = cfg[agent.hostDirKey] as string | undefined;
     const dir = configured || agent.defaultDir;
-    if (existsSync(dir)) {
+    if (configured && existsSync(dir)) {
       results.push({ name: `Agent creds: ${agent.type}`, status: "ok", detail: dir, group: "Agents" });
+    } else if (!configured && existsSync(agent.defaultDir)) {
+      results.push({
+        name: `Agent creds: ${agent.type}`,
+        status: "warn",
+        detail: `${agent.defaultDir} detected but ${agent.envKey} is not set in .env`,
+        group: "Agents",
+        fix: `Add ${agent.envKey}=${agent.defaultDir} to .env so containers can mount these credentials.`,
+        remediation: { kind: "add-agent-credential", envKey: agent.envKey, path: agent.defaultDir, agentType: agent.type },
+      });
     } else {
       results.push({
         name: `Agent creds: ${agent.type}`,
@@ -448,6 +482,183 @@ function formatSummary(counts: Record<CheckStatus, number>, colorEnabled: boolea
   return `Summary: ${failures}, ${warnings}, ${ok}`;
 }
 
+function isInteractiveTerminal(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] {
+  const actions: RemediationAction[] = [];
+  const remediations = outcome.results
+    .filter((result) => result.status !== "ok")
+    .map((result) => result.remediation)
+    .filter((remediation): remediation is CheckRemediation => Boolean(remediation));
+
+  if (remediations.some((remediation) => remediation.kind === "init-stack")) {
+    actions.push({
+      key: "init-stack",
+      label: "Show stack initialization guidance",
+      detail: `Create the stack root and .env with: propr init stack --root ${outcome.rootDir}`,
+      confirm: "Show stack initialization guidance?",
+      run: async () => {
+        console.log("");
+        console.log("Stack root/.env is missing. Run:");
+        console.log(`  propr init stack --root ${outcome.rootDir}`);
+        console.log("Then review .env and run `propr check` again.");
+        return { changed: false, ok: true };
+      },
+    });
+  }
+
+  if (remediations.some((remediation) => remediation.kind === "start-docker")) {
+    actions.push({
+      key: "start-docker",
+      label: "Show Docker daemon guidance",
+      detail: "Print commands and checks for starting Docker or fixing daemon access.",
+      confirm: "Show Docker daemon guidance?",
+      run: async () => {
+        console.log("");
+        console.log("Docker is installed but the daemon is not reachable.");
+        console.log("Start Docker, then make sure this user can run `docker info` without failing.");
+        console.log("Common Linux command:");
+        console.log("  sudo systemctl start docker");
+        console.log("If the socket exists but access fails, add your user to the docker group and start a new shell.");
+        return { changed: false, ok: true };
+      },
+    });
+  }
+
+  const imageRemediations = remediations
+    .filter((remediation): remediation is Extract<CheckRemediation, { kind: "pull-image" }> => remediation.kind === "pull-image")
+    .filter((remediation, index, all) => all.findIndex((other) => other.tag === remediation.tag) === index);
+  if (imageRemediations.length > 0) {
+    actions.push({
+      key: "pull-images",
+      label: `Pull ${plural(imageRemediations.length, "missing Docker image")}`,
+      detail: imageRemediations.map((remediation) => remediation.tag).join(", "),
+      confirm: `Pull ${plural(imageRemediations.length, "Docker image")} now?`,
+      run: async () => pullMissingImages(outcome, imageRemediations),
+    });
+  }
+
+  const credentialRemediations = remediations
+    .filter((remediation): remediation is Extract<CheckRemediation, { kind: "add-agent-credential" }> => remediation.kind === "add-agent-credential")
+    .filter((remediation) => existsSync(remediation.path))
+    .filter((remediation, index, all) => all.findIndex((other) => other.envKey === remediation.envKey) === index);
+  if (credentialRemediations.length > 0 && existsSync(outcome.cfg.envFileLocal)) {
+    actions.push({
+      key: "add-agent-credentials",
+      label: `Add ${plural(credentialRemediations.length, "detected agent credential directory")} to .env`,
+      detail: credentialRemediations.map((remediation) => `${remediation.envKey}=${remediation.path}`).join(", "),
+      confirm: `Write ${plural(credentialRemediations.length, "agent credential directory")} to ${outcome.cfg.envFileLocal}?`,
+      run: async () => addAgentCredentials(outcome, credentialRemediations),
+    });
+  }
+
+  return actions;
+}
+
+async function pullMissingImages(
+  outcome: ChecksOutcome,
+  remediations: Extract<CheckRemediation, { kind: "pull-image" }>[]
+): Promise<RemediationResult> {
+  let changed = false;
+  let ok = true;
+  const orch = await loadOrchestrator();
+  for (const remediation of remediations) {
+    console.log(`Pulling ${remediation.tag}...`);
+    const pulled = orch.docker(["pull", remediation.tag], { capture: true });
+    if (pulled.status === 0) {
+      changed = true;
+      console.log(`  ok: ${remediation.tag}`);
+    } else {
+      ok = false;
+      const reason = (pulled.stderr || pulled.stdout || "docker pull failed").trim().split("\n")[0];
+      console.error(`  failed: ${remediation.tag}: ${reason}`);
+    }
+  }
+  return { changed, ok };
+}
+
+async function addAgentCredentials(
+  outcome: ChecksOutcome,
+  remediations: Extract<CheckRemediation, { kind: "add-agent-credential" }>[]
+): Promise<RemediationResult> {
+  const vars: Record<string, string> = {};
+  for (const remediation of remediations) {
+    if (existsSync(remediation.path)) {
+      vars[remediation.envKey] = remediation.path;
+    }
+  }
+  if (Object.keys(vars).length === 0) {
+    console.log("No detected credential directories still exist on this host.");
+    return { changed: false, ok: false };
+  }
+  upsertEnvVars(outcome.cfg.envFileLocal, vars);
+  console.log(`Updated ${outcome.cfg.envFileLocal}:`);
+  for (const [key, value] of Object.entries(vars)) {
+    console.log(`  ${key}=${value}`);
+  }
+  return { changed: true, ok: true };
+}
+
+async function confirmAction(rl: ReadlineInterface, prompt: string): Promise<boolean> {
+  const answer = (await rl.question(`${prompt} [y/N] `)).trim().toLowerCase();
+  return answer === "y" || answer === "yes";
+}
+
+async function promptForAction(rl: ReadlineInterface, actions: RemediationAction[]): Promise<RemediationAction | undefined> {
+  console.log("");
+  console.log("Available remediations:");
+  actions.forEach((action, index) => {
+    console.log(`  ${index + 1}. ${action.label}`);
+    console.log(`     ${action.detail}`);
+  });
+  console.log("  q. Quit");
+
+  const answer = (await rl.question("Choose an action: ")).trim().toLowerCase();
+  if (answer === "" || answer === "q" || answer === "quit") return undefined;
+  const selected = Number(answer);
+  if (!Number.isInteger(selected) || selected < 1 || selected > actions.length) {
+    console.log("Invalid selection.");
+    return promptForAction(rl, actions);
+  }
+  return actions[selected - 1];
+}
+
+async function runRemediationPrompts(outcome: ChecksOutcome, options: RunChecksOptions): Promise<ChecksOutcome> {
+  let current = outcome;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    while (true) {
+      const actions = collectRemediationActions(current);
+      if (actions.length === 0) {
+        console.log("");
+        console.log("No actionable remediations found.");
+        return current;
+      }
+
+      const action = await promptForAction(rl, actions);
+      if (!action) return current;
+
+      if (!(await confirmAction(rl, action.confirm))) {
+        console.log("Skipped.");
+        continue;
+      }
+
+      const result = await action.run();
+      if (!result.ok) {
+        console.log("Remediation did not fully complete. Continuing with the current check results.");
+      }
+      if (result.changed) {
+        current = await runChecks(options);
+        printChecks(current);
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 /** Print human-readable checks grouped by subsystem. */
 export function printChecks(outcome: ChecksOutcome): void {
   const colorEnabled = shouldUseColor();
@@ -502,25 +713,43 @@ export function createCheckCommand(): Command {
     .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to --verify (default: all)")
     .option("--json", "Output raw JSON")
+    .option("--fix", "Offer interactive remediation prompts for actionable issues")
     .addHelpText("after", `
 Examples:
   $ propr check
+  $ propr check --fix
   $ propr check --verify
   $ propr check --verify --agents claude,codex
   $ propr check --json
 `)
-    .action(async (options: { root?: string; verify?: boolean; agents?: string; json?: boolean }) => {
+    .action(async (options: { root?: string; verify?: boolean; agents?: string; json?: boolean; fix?: boolean }) => {
       try {
-        const outcome = await runChecks({
+        if (options.json && options.fix) {
+          console.error("Error: --json cannot be combined with --fix; JSON output is data-only and never prompts.");
+          process.exit(1);
+        }
+        if (options.fix && !isInteractiveTerminal()) {
+          console.error("Error: --fix requires an interactive terminal.");
+          process.exit(1);
+        }
+
+        const runOptions: RunChecksOptions = {
           root: options.root,
           verify: options.verify,
           agents: options.agents ? options.agents.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
-        });
+        };
+        let outcome = await runChecks(runOptions);
 
         if (options.json) {
           printOutput({ rootDir: outcome.rootDir, results: outcome.results }, true);
         } else {
           printChecks(outcome);
+          if (options.fix) {
+            outcome = await runRemediationPrompts(outcome, runOptions);
+          } else if (isInteractiveTerminal() && collectRemediationActions(outcome).length > 0) {
+            console.log("");
+            console.log("Run `propr check --fix` to review interactive remediation options.");
+          }
         }
 
         if (outcome.anyFail) process.exit(1);
