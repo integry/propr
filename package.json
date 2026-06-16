@@ -1,6 +1,7 @@
 {
   "name": "propr",
   "version": "0.8.3",
+  "private": true,
   "type": "module",
   "main": "index.js",
   "workspaces": [
