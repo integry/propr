@@ -68,6 +68,12 @@ export interface ValidationResult {
   warnings: string[];
 }
 
+export type ImageFreshnessResult =
+  | { status: "missing"; tag: string }
+  | { status: "current"; tag: string; localDigests: string[]; remoteDigest: string }
+  | { status: "stale"; tag: string; localDigests: string[]; remoteDigest: string }
+  | { status: "unknown"; tag: string; localDigests?: string[]; error: string };
+
 export interface ResolveHostConfigOptions {
   rootDir?: string;
   env?: NodeJS.ProcessEnv;
@@ -89,6 +95,7 @@ export interface OrchestratorModule {
   validateDockerBindPath(name: string, value?: string, opts?: { containerPath?: boolean }): string | null;
 
   dockerAvailable(): boolean;
+  inspectImageFreshness(tag: string): ImageFreshnessResult;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
   ensureServiceImage(cfg: OrchestratorConfig, service: string, onLog?: (line: string) => void): void;
   pullImages(

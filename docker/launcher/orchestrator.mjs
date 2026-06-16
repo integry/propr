@@ -369,11 +369,91 @@ function imagePresentLocally(tag) {
     return res.stdout.trim().length > 0;
 }
 
-/** Pull a single non-agent service image if it is not already present locally. */
+function firstLine(value) {
+    return (value || '').trim().split('\n')[0] || '';
+}
+
+function normalizeDigest(value) {
+    const digest = firstLine(value);
+    if (!digest) return null;
+    const atIndex = digest.lastIndexOf('@');
+    return atIndex >= 0 ? digest.slice(atIndex + 1) : digest;
+}
+
+function localRepoDigests(tag) {
+    const res = docker(['image', 'inspect', '--format', '{{json .RepoDigests}}', tag], { capture: true });
+    if (res.status !== 0) return null;
+    try {
+        const parsed = JSON.parse(res.stdout.trim() || '[]');
+        return Array.isArray(parsed) ? parsed.map(normalizeDigest).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
+
+function remoteManifestDigest(tag) {
+    const res = docker(['manifest', 'inspect', '--verbose', tag], { capture: true });
+    if (res.status !== 0) {
+        return { ok: false, error: firstLine(res.stderr || res.stdout || 'docker manifest inspect failed') };
+    }
+
+    try {
+        const parsed = JSON.parse(res.stdout);
+        const descriptor = Array.isArray(parsed) ? null : parsed?.Descriptor;
+        const digest = descriptor?.digest || descriptor?.Digest || parsed?.digest || parsed?.Digest;
+        if (!digest) {
+            return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect' };
+        }
+        return { ok: true, digest };
+    } catch {
+        return { ok: false, error: 'could not parse docker manifest inspect output' };
+    }
+}
+
+/**
+ * Inspect whether a local image tag is current with the remote registry tag.
+ * Registry and metadata errors are reported as "unknown" so callers can warn
+ * without treating offline/air-gapped environments as hard failures.
+ */
+export function inspectImageFreshness(tag) {
+    if (!imagePresentLocally(tag)) {
+        return { status: 'missing', tag };
+    }
+
+    const localDigests = localRepoDigests(tag);
+    if (!localDigests) {
+        return { status: 'missing', tag };
+    }
+
+    if (localDigests.length === 0) {
+        return { status: 'unknown', tag, error: 'local image has no registry digest; pull the tag to verify freshness' };
+    }
+
+    const remote = remoteManifestDigest(tag);
+    if (!remote.ok) {
+        return { status: 'unknown', tag, localDigests, error: remote.error };
+    }
+
+    const remoteDigest = normalizeDigest(remote.digest);
+    if (!remoteDigest) {
+        return { status: 'unknown', tag, localDigests, error: 'remote manifest digest was empty' };
+    }
+
+    return localDigests.includes(remoteDigest)
+        ? { status: 'current', tag, localDigests, remoteDigest }
+        : { status: 'stale', tag, localDigests, remoteDigest };
+}
+
+/** Pull a single non-agent service image if it is not already present locally or is stale. */
 export function ensureServiceImage(cfg, service, onLog) {
     const tag = imageTagForService(cfg, service);
     if (!tag) return;
-    if (imagePresentLocally(tag)) return;
+    const freshness = inspectImageFreshness(tag);
+    if (freshness.status === 'current') return;
+    if (freshness.status === 'unknown') {
+        onLog?.(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+        return;
+    }
     onLog?.(`  · pulling ${tag}`);
     const res = docker(['pull', tag], { capture: true });
     if (res.status !== 0) {
@@ -778,13 +858,25 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
             continue;
         }
 
-        if (imagePresentLocally(tag)) {
-            onLog(`  · ${tag} (local)`);
+        const freshness = inspectImageFreshness(tag);
+
+        if (freshness.status === 'current') {
+            onLog(`  · ${tag} (local, current)`);
             tagAgentLatest(key, tag);
             continue;
         }
 
-        onLog(`  · ${tag}`);
+        if (freshness.status === 'unknown') {
+            onLog(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+            tagAgentLatest(key, tag);
+            continue;
+        }
+
+        if (freshness.status === 'stale') {
+            onLog(`  · ${tag} (stale, pulling)`);
+        } else {
+            onLog(`  · ${tag}`);
+        }
         const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
         if (key.startsWith('agent-') && pulled.status !== 0) {
             failedAgentImages.push(tag);
