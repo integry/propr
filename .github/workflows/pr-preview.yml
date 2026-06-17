@@ -17,8 +17,9 @@ jobs:
   deploy:
     name: Deploy Preview
     if: >-
-      github.event.action != 'closed' &&
+      github.event.pull_request.state == 'open' &&
       github.event.action != 'unlabeled' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'preview-env') &&
       contains(github.event.pull_request.labels.*.name, 'preview-env')
     runs-on: [self-hosted, linux, x64, propr]
     env:
@@ -36,6 +37,8 @@ jobs:
           persist-credentials: false
 
       - name: Deploy approved PR preview
+        # This runs PR code on self-hosted infrastructure. The preview-env label
+        # is the maintainer approval gate for that trust boundary.
         run: ./scripts/deploy-pr.sh "$PR_NUMBER"
 
   teardown:

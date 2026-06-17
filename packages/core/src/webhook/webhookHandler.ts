@@ -297,11 +297,8 @@ export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
     correlationId: string,
-    deliveryId?: string,
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
-
-    void deliveryId;
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 
