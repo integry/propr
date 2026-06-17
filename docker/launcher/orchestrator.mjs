@@ -158,9 +158,14 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostOpencodeXdgDir = get('HOST_OPENCODE_XDG_DIR');
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
+    const mistralApiKey = get('MISTRAL_API_KEY');
 
     const vibePromptCacheDir = get('VIBE_PROMPT_CACHE_DIR') || '/tmp/propr-vibe-prompts';
-    const hostVibePromptCacheDir = get('HOST_VIBE_PROMPT_CACHE_DIR');
+    // The host bind path defaults to the same location as the container path when
+    // Vibe is enabled, so the prompt cache works out of the box without the user
+    // setting HOST_VIBE_PROMPT_CACHE_DIR. An explicit value is still validated.
+    const vibeEnabled = Boolean(hostVibeDir || mistralApiKey);
+    const hostVibePromptCacheDir = get('HOST_VIBE_PROMPT_CACHE_DIR') || (vibeEnabled ? '/tmp/propr-vibe-prompts' : undefined);
 
     // Host path to the GitHub App private key (.pem). When set, the key is
     // bind-mounted into the app containers (HOST:HOST, read-only) and
@@ -187,7 +192,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
-        mistralApiKey: get('MISTRAL_API_KEY'),
+        mistralApiKey,
         vibeConfigPath: get('VIBE_CONFIG_PATH'),
         manifest, images: manifest.images, manifestPath,
     });
@@ -899,7 +904,12 @@ export function validateEnv(cfg) {
         );
     }
     if (vibeEnabled || cfg.hostVibePromptCacheDir) {
-        const invalid = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', cfg.hostVibePromptCacheDir)
+        // Only validate the host path when it is actually set — a missing value is
+        // already reported above, so this avoids a misleading second "must be an
+        // absolute path" error for the same root cause.
+        const invalid = (cfg.hostVibePromptCacheDir
+                ? validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', cfg.hostVibePromptCacheDir)
+                : null)
             || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', cfg.vibePromptCacheDir, { containerPath: true });
         if (invalid) {
             errors.push(invalid);
