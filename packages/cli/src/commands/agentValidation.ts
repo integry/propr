@@ -247,7 +247,10 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     }),
     versionArgs: ["agy", "--version"],
     containerConfigPath: "/home/node/.gemini",
-    loginArgs: ["agy", "login"],
+    // `agy` (installed via the antigravity script, not an npm global) isn't on
+    // sudo's PATH when the entrypoint drops to the node user, so run it through a
+    // login shell — matching the validation invocation.
+    loginArgs: ["/bin/bash", "-lc", "exec agy login"],
     loginExtraArgs: () => ["-e", "ANTIGRAVITY_CLI=1", "-e", "ANTIGRAVITY_CLI_TRUST_WORKSPACE=true"],
   },
   {
