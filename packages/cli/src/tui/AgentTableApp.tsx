@@ -105,7 +105,7 @@ export function AgentTableApp({ agents, hub }: Props): React.ReactElement {
       </Box>
       {rows.map((r) => {
         const drift = r.versionDone ? (r.drift ?? (r.hostVersion && r.imageVersion ? "same" : "")) : "";
-        const driftColor = drift === "older" ? "yellow" : drift && drift !== "same" ? "gray" : "gray";
+        const driftColor = drift === "older" ? "yellow" : "gray";
         return (
           <Box key={r.type}>
             <Box width={agentW + GAP}><Text>{r.type}</Text></Box>

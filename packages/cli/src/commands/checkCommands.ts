@@ -226,13 +226,13 @@ async function runCliChecks(
       const target = `${effectiveRemote.replace(/\/+$/, "")}/api/status`;
       const res = await fetchWithTimeout(target, 4000);
       const suffix = remoteUrl ? "" : " (default)";
-      if (res) {
+      if (res?.ok) {
         return { name: "Backend remote", status: "ok", detail: `${effectiveRemote}${suffix} — reachable`, group: "CLI" };
       }
       return {
         name: "Backend remote",
         status: "warn",
-        detail: `${effectiveRemote}${suffix} — not reachable`,
+        detail: res ? `${effectiveRemote}${suffix} — returned HTTP ${res.status}` : `${effectiveRemote}${suffix} — not reachable`,
         group: "CLI",
         fix: remoteUrl
           ? "Verify the backend is running and the URL is correct (`propr remote <url>`)."
@@ -256,7 +256,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const skipRemoteImageCheck = Boolean(options.skipRemoteImageCheck || envSkipsRemoteImageCheck());
 
   // 0. CLI version + backend remote (network; runs concurrently with the rest).
-  const cliChecksDone = runCliChecks(configManager, emit, options.onPending, skipRemoteImageCheck);
+  const cliChecksDone = runCliChecks(configManager, emit, options.onPending);
 
   // 1. Docker installed
   const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
@@ -748,6 +748,7 @@ async function runChecksInteractive(
       if (!result.ok) {
         console.log("Remediation did not fully complete. Continuing with the current check results.");
       }
+      if (!result.changed) return { outcome: lastOutcome, validate: false };
       // Loop: re-run a fresh live pass to reflect changes and offer more fixes.
     }
   } catch {
@@ -1097,24 +1098,25 @@ export function createCheckCommand(): Command {
     .option("--skip-remote-image-check", "Skip registry freshness checks for local Docker images (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
-    .option("--validate-agents", "Append live agent validation to a system check (same as `check all`)")
+    .option("--validate-agents", "Append live agent validation to a system check (makes billable LLM calls; same as `check all`)")
     .addHelpText("after", `
 Modes:
   system   Docker, images, stack, agent credentials, GitHub, config (default)
-  agents   Live test call to each agent (host CLI + image) to confirm auth works
-  all      Everything: system checks followed by agent validation
+  agents   Live test call to each agent (host CLI + image); makes billable LLM calls
+  all      Everything: system checks followed by billable agent validation
 
 Examples:
   $ propr check                 # system checks
   $ propr check agents          # only validate agents (billable LLM calls)
-  $ propr check all             # system checks + agent validation
+  $ propr check all             # system checks + billable agent validation
   $ propr check --fix
   $ propr check agents --agents claude,codex
   $ propr check --json
 
 Notes:
-  Agent validation runs a real prompt through each agent's host CLI and Docker
-  image (mounts its credentials, makes billable LLM calls). Restrict with --agents.
+  "check all", "check agents", and --validate-agents run a real prompt through
+  each agent's host CLI and Docker image (mounts credentials, makes billable LLM
+  calls). This is also true with --json. Restrict with --agents.
   Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline runs.
 `)
     .action(async (mode: string, options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {

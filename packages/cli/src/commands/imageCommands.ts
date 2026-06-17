@@ -51,6 +51,11 @@ Examples:
   $ propr images pull
   $ propr images pull --skip-remote-image-check
   $ propr images pull --root ~/propr
+
+Notes:
+  --skip-remote-image-check is for offline runs. It still pulls missing images,
+  but local images are treated as acceptable because stale tags cannot be
+  detected without the registry freshness check.
 `)
     .action(async (options: PullOptions) => {
       try {

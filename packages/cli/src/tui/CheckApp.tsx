@@ -15,7 +15,6 @@ import {
   CHECK_GROUPS,
   GROUP_DESCRIPTIONS,
   GROUP_TITLES,
-  countStatuses,
   plural,
   type CheckGroup,
   type CheckResult,
@@ -47,6 +46,7 @@ export interface RemediationMenuItem {
   key: string;
   label: string;
   detail: string;
+  confirm: string;
 }
 
 interface Props {
@@ -79,6 +79,16 @@ function statusColor(status: CheckStatus): string {
   if (status === "ok") return "green";
   if (status === "warn") return "yellow";
   return "red";
+}
+
+function countRowStatuses(rows: Array<{ status: CheckStatus }>): Record<CheckStatus, number> {
+  return rows.reduce(
+    (acc, row) => {
+      acc[row.status] += 1;
+      return acc;
+    },
+    { ok: 0, warn: 0, fail: 0 } as Record<CheckStatus, number>
+  );
 }
 
 // A "pending" slot (only emitted for images, whose names are unique) is upserted
@@ -162,7 +172,7 @@ function ResultRow({ row, nameWidth, frame }: { row: Row; nameWidth: number; fra
 
 function SummaryLine({ rows, running }: { rows: Row[]; running: boolean }): React.ReactElement {
   const finalized = rows.filter((row): row is Row & { status: CheckStatus } => row.status !== "pending");
-  const counts = countStatuses(finalized as unknown as CheckResult[]);
+  const counts = countRowStatuses(finalized);
   return (
     <Box>
       <Text>Summary: </Text>
@@ -185,7 +195,7 @@ function Groups({ rows, frame }: { rows: Row[]; frame: number }): React.ReactEle
     if (groupRows.length === 0) continue;
     const nameWidth = Math.max(18, ...groupRows.map((row) => row.name.length));
     const finalized = groupRows.filter((row): row is Row & { status: CheckStatus } => row.status !== "pending");
-    const groupCounts = countStatuses(finalized as unknown as CheckResult[]);
+    const groupCounts = countRowStatuses(finalized);
     const countSuffix =
       groupCounts.fail > 0 || groupCounts.warn > 0
         ? ` (${plural(groupCounts.fail, "failure")}, ${plural(groupCounts.warn, "warning")})`
@@ -218,7 +228,7 @@ function Menu({ items, selected }: { items: RemediationMenuItem[]; selected: num
           </Box>
         );
       })}
-      <Box marginTop={1}><Text dimColor>↑/↓ select · enter apply · q quit</Text></Box>
+      <Box marginTop={1}><Text dimColor>↑/↓ select · enter choose · q quit</Text></Box>
     </Box>
   );
 }
@@ -226,7 +236,7 @@ function Menu({ items, selected }: { items: RemediationMenuItem[]; selected: num
 export function CheckApp({ hub, fix, getActions, onSelect, offerValidate, onValidate }: Props): React.ReactElement {
   const { exit } = useApp();
   const [rowState, dispatch] = useReducer(rowReducer, { rows: [], pendingByName: new Map<string, number>(), nextId: 0 });
-  const [phase, setPhase] = useState<"running" | "menu" | "done" | "confirm">("running");
+  const [phase, setPhase] = useState<"running" | "menu" | "done" | "validate-confirm" | "action-confirm">("running");
   const [outcome, setOutcome] = useState<ChecksOutcome | null>(null);
   const [actions, setActions] = useState<RemediationMenuItem[]>([]);
   const [selected, setSelected] = useState(0);
@@ -242,7 +252,7 @@ export function CheckApp({ hub, fix, getActions, onSelect, offerValidate, onVali
         if (fix && available.length > 0) {
           setPhase("menu");
         } else if (offerValidate && !fix) {
-          setPhase("confirm");
+          setPhase("validate-confirm");
         } else {
           setPhase("done");
         }
@@ -277,18 +287,26 @@ export function CheckApp({ hub, fix, getActions, onSelect, offerValidate, onVali
       exit();
       return;
     }
-    if (phase === "confirm") {
+    if (phase === "validate-confirm") {
       if (input.toLowerCase() === "y") onValidate?.(true);
       else onValidate?.(false); // n / enter / esc / anything else
       exit();
+      return;
+    }
+    if (phase === "action-confirm") {
+      if (input.toLowerCase() === "y") {
+        onSelect(actions[selected]?.key);
+        exit();
+      } else {
+        setPhase("menu");
+      }
       return;
     }
     if (phase !== "menu") return;
     if (key.upArrow) setSelected((index) => (index - 1 + actions.length) % actions.length);
     else if (key.downArrow) setSelected((index) => (index + 1) % actions.length);
     else if (key.return) {
-      onSelect(actions[selected]?.key);
-      exit();
+      setPhase("action-confirm");
     } else if (input === "q" || key.escape) {
       onSelect(undefined);
       exit();
@@ -315,17 +333,25 @@ export function CheckApp({ hub, fix, getActions, onSelect, offerValidate, onVali
 
       {phase === "menu" ? <Menu items={actions} selected={selected} /> : null}
 
-      {phase === "done" || phase === "confirm" ? (
+      {phase === "done" || phase === "validate-confirm" || phase === "action-confirm" ? (
         <Box marginTop={1}>
           <SummaryLine rows={rows} running={running} />
         </Box>
       ) : null}
 
-      {phase === "confirm" ? (
+      {phase === "validate-confirm" ? (
         <Box marginTop={1} flexDirection="column">
           <Text color="cyan" bold>Validate agents?</Text>
           <Text>Make a live test call to each agent image to confirm auth works.</Text>
           <Text dimColor>This makes real, billable LLM calls. Press y to run, any other key to skip.</Text>
+        </Box>
+      ) : null}
+
+      {phase === "action-confirm" ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text color="cyan" bold>Confirm remediation</Text>
+          <Text>{actions[selected]?.confirm}</Text>
+          <Text dimColor>Press y to run, any other key to go back.</Text>
         </Box>
       ) : null}
 

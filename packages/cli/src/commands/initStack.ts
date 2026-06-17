@@ -151,8 +151,7 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
   //     agent containers can bind-mount a writable host directory. Creating it
   //     here (owned by the invoking user) avoids Docker auto-creating it as
   //     root. Defaults to /tmp/propr-vibe-prompts (matching the launcher
-  //     default); an explicit HOST_VIBE_PROMPT_CACHE_DIR is honored. It is an
-  //     ephemeral, world-writable cache shared across containers.
+  //     default); an explicit HOST_VIBE_PROMPT_CACHE_DIR is honored.
   const vibeConfigured =
     detected.some((c) => c.envKey === "HOST_VIBE_DIR") ||
     /^\s*(?:export\s+)?(?:HOST_VIBE_DIR|MISTRAL_API_KEY)\s*=\s*\S/m.test(envContent);
@@ -162,7 +161,7 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
     const cacheDir = configured || DEFAULT_VIBE_PROMPT_CACHE_DIR;
     if (isAbsolute(cacheDir) && !cacheDir.includes(":") && !existsSync(cacheDir)) {
       mkdirSync(cacheDir, { recursive: true });
-      try { chmodSync(cacheDir, 0o777); } catch { /* best-effort: cross-container write access */ }
+      try { chmodSync(cacheDir, 0o700); } catch { /* best-effort: keep prompt cache private */ }
       result.dirsCreated.push(cacheDir);
     }
   }

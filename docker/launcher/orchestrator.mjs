@@ -301,7 +301,8 @@ export function docker(args, { capture = false, timeout } = {}) {
         timeout,
     });
     if (res.status !== 0 && !capture) {
-        throw new Error(`docker ${args.join(' ')} failed with code ${res.status}`);
+        const detail = res.error?.message || (res.signal ? `signal ${res.signal}` : `code ${res.status}`);
+        throw new Error(`docker ${args.join(' ')} failed with ${detail}`);
     }
     return res;
 }
@@ -319,6 +320,7 @@ export function dockerAsync(args, { timeout } = {}) {
         let stdout = '';
         let stderr = '';
         let settled = false;
+        let timeoutError = null;
         const finish = (res) => {
             if (settled) return;
             settled = true;
@@ -327,14 +329,14 @@ export function dockerAsync(args, { timeout } = {}) {
         };
         const timer = timeout
             ? setTimeout(() => {
+                  timeoutError = Object.assign(new Error('docker command timed out'), { code: 'ETIMEDOUT' });
                   child.kill('SIGKILL');
-                  finish({ status: null, stdout, stderr, error: Object.assign(new Error('docker command timed out'), { code: 'ETIMEDOUT' }) });
               }, timeout)
             : null;
         child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
         child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
         child.on('error', (error) => finish({ status: null, stdout, stderr, error }));
-        child.on('close', (code) => finish({ status: code, stdout, stderr }));
+        child.on('close', (code, signal) => finish({ status: code, stdout, stderr, signal, error: timeoutError || undefined }));
     });
 }
 
@@ -473,6 +475,11 @@ function skipRemoteImageCheck(env = process.env) {
     return env.PROPR_SKIP_REMOTE_IMAGE_CHECK === 'true' || env.PROPR_SKIP_REMOTE_IMAGE_CHECK === '1';
 }
 
+function isProprPublishedImage(cfg, tag) {
+    const registry = typeof cfg.manifest?.registry === 'string' ? cfg.manifest.registry : 'propr';
+    return tag.startsWith(`${registry}/`);
+}
+
 /**
  * Inspect whether a local image tag is current with the remote registry tag.
  * Registry and metadata errors are reported as "unknown" so callers can warn
@@ -576,7 +583,8 @@ export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false 
 export function ensureServiceImage(cfg, service, onLog) {
     const tag = imageTagForService(cfg, service);
     if (!tag) return;
-    const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipRemoteImageCheck() });
+    const skipFreshness = skipRemoteImageCheck() || !isProprPublishedImage(cfg, tag);
+    const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipFreshness });
     if (freshness.status === 'current') return;
     if (freshness.status === 'unknown') {
         if (freshness.localOnly || freshness.skipped) return;
@@ -761,9 +769,9 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {
 }
 
 /**
- * Stop every container belonging to this stack (discovered by label + legacy
- * name pattern). Returns `{ failed }` listing containers that could not be
- * stopped/removed so callers can surface partial failures.
+ * Stop every container belonging to this stack, discovered by the stack label.
+ * Returns `{ failed }` listing containers that could not be stopped/removed so
+ * callers can surface partial failures.
  */
 export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } = {}) {
     const res = docker(['ps', '-a', '--filter', `label=propr.stack=${cfg.stack}`, '--format', '{{.Names}}'], { capture: true });
@@ -805,7 +813,7 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 // status
 // ---------------------------------------------------------------------------
 
-/** Per-service state for the whole stack, discovered by canonical/legacy container name. */
+/** Per-service state for the whole stack, discovered by canonical container name. */
 export function getStackStatus(cfg) {
     const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
     const res = docker([
@@ -992,7 +1000,8 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
             continue;
         }
 
-        const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipFreshnessCheck });
+        const skipFreshnessForImage = skipFreshnessCheck || !isProprPublishedImage(cfg, tag);
+        const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipFreshnessForImage });
 
         if (freshness.status === 'current') {
             onLog(`  · ${tag} (local, current)`);
@@ -1007,7 +1016,8 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
                 continue;
             }
             if (freshness.skipped) {
-                onLog(`  · ${tag} (local, remote check skipped via PROPR_SKIP_REMOTE_IMAGE_CHECK)`);
+                const reason = skipFreshnessCheck ? 'remote check skipped via PROPR_SKIP_REMOTE_IMAGE_CHECK' : 'third-party image';
+                onLog(`  · ${tag} (local, ${reason})`);
                 tagAgentLatest(key, tag);
                 continue;
             }
