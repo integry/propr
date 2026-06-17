@@ -2,6 +2,7 @@ node_modules
 npm-debug.log
 .git
 .gitignore
+.github/
 README.md
 .env
 .env.example
@@ -15,6 +16,14 @@ coverage/
 dist/
 packages/*/dist/
 data/
+logs/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+build_log.txt
+failure_comment.md
+scripts/deploy-pr.sh
+scripts/teardown-pr.sh
+config/nginx-preview-environments.conf
+config/nginx-propr-maps.conf
+config/nginx-propr-server.conf
