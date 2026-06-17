@@ -156,6 +156,12 @@ interface AgentValidationDescriptor {
   imageInvocation: (ctx: ImageContext) => { args: string[]; stdin?: string };
   /** Args (after the image) that print the CLI version inside the container. */
   versionArgs: string[];
+  /** Where the host credential dir mounts inside the container. */
+  containerConfigPath: string;
+  /** Interactive login command (after the image), or undefined if none exists. */
+  loginArgs?: string[];
+  /** Extra docker args (env / mounts) the login needs beyond the credential mount. */
+  loginExtraArgs?: (cfg: OrchestratorConfig) => string[];
 }
 
 /** Shared `docker run` prefix (ends with the image). */
@@ -200,6 +206,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       stdin: VALIDATION_PROMPT,
     }),
     versionArgs: ["claude", "--version"],
+    containerConfigPath: "/home/node/.claude",
+    loginArgs: ["claude", "login"],
   },
   {
     type: "codex",
@@ -218,6 +226,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       stdin: VALIDATION_PROMPT,
     }),
     versionArgs: ["codex", "--version"],
+    containerConfigPath: "/home/node/.codex",
+    loginArgs: ["codex", "login"],
   },
   {
     type: "antigravity",
@@ -236,6 +246,9 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       stdin: VALIDATION_PROMPT,
     }),
     versionArgs: ["agy", "--version"],
+    containerConfigPath: "/home/node/.gemini",
+    loginArgs: ["agy", "login"],
+    loginExtraArgs: () => ["-e", "ANTIGRAVITY_CLI=1", "-e", "ANTIGRAVITY_CLI_TRUST_WORKSPACE=true"],
   },
   {
     type: "opencode",
@@ -256,6 +269,10 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       };
     },
     versionArgs: ["opencode", "--version"],
+    containerConfigPath: "/home/node/.config/opencode",
+    loginArgs: ["opencode", "auth", "login"],
+    loginExtraArgs: (cfg) =>
+      cfg.hostOpencodeDataDir ? ["-v", `${cfg.hostOpencodeDataDir}:/home/node/.local/share/opencode:rw`] : [],
   },
   {
     type: "vibe",
@@ -284,6 +301,9 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       ],
     }),
     versionArgs: ["--version"],
+    containerConfigPath: "/home/node/.vibe",
+    // Vibe has no interactive login flow here — it uses MISTRAL_API_KEY or a
+    // pre-populated ~/.vibe — so loginArgs is intentionally omitted.
   },
 ];
 
@@ -407,10 +427,11 @@ export async function validateAgents(
     const { args, stdin } = d.imageInvocation({ image, hostDir, workspaceDir, promptFileHost, cfg });
     const run = await execAsync("docker", args, { input: stdin, timeoutMs: VALIDATION_TIMEOUT_MS });
     const ev = evaluateRun(run);
+    const loginHint = d.loginArgs ? ` Re-authenticate with: propr agent login ${d.type}.` : "";
     return {
       status: ev.ok ? "ok" : "fail",
       detail: ev.detail,
-      ...(ev.ok ? {} : { fix: `Check ${d.type} auth/mounts (creds: ${hostDir}). If "Host: ${d.type}" passed but this failed, it's a credential mount/config issue.` }),
+      ...(ev.ok ? {} : { fix: `Check ${d.type} auth/mounts (creds: ${hostDir}).${loginHint} If "Host: ${d.type}" passed but this failed, it's a credential mount/config issue.` }),
     };
   };
 
@@ -440,4 +461,50 @@ export async function validateAgents(
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+export interface AgentLoginPlan {
+  image: string;
+  hostDir: string;
+  dockerArgs: string[];
+}
+
+/** Agent types that support an interactive login through their image. */
+export function loginableAgents(): string[] {
+  return DESCRIPTORS.filter((d) => d.loginArgs).map((d) => d.type);
+}
+
+/**
+ * Build the interactive `docker run` invocation that logs the user into an agent
+ * through its image, writing credentials to the mounted host directory. The
+ * caller runs the returned dockerArgs with inherited stdio (-it).
+ */
+export function planAgentLogin(
+  type: string,
+  cfg: OrchestratorConfig,
+  workspaceDir: string
+): { plan?: AgentLoginPlan; error?: string } {
+  const d = DESCRIPTORS.find((x) => x.type === type);
+  if (!d) return { error: `unknown agent '${type}'` };
+  if (!d.loginArgs) {
+    return { error: `${type} has no interactive login — authenticate via its API key (e.g. MISTRAL_API_KEY) or a pre-populated ${d.defaultHostDir}` };
+  }
+  const image = cfg.images[d.imageKey];
+  if (!image) return { error: `no image configured for ${type}` };
+  const hostDir = (cfg[d.hostDirKey] as string | undefined) ?? d.defaultHostDir;
+
+  const dockerArgs = [
+    "run", "--rm", "-it",
+    "--security-opt", "no-new-privileges",
+    "--cap-add", "CHOWN",
+    "--network", "bridge",
+    "--user", "0:0",
+    "-v", `${workspaceDir}:${WORKSPACE}:rw`,
+    "-v", `${hostDir}:${d.containerConfigPath}:rw`,
+    ...(d.loginExtraArgs?.(cfg) ?? []),
+    "-w", WORKSPACE,
+    image,
+    ...d.loginArgs,
+  ];
+  return { plan: { image, hostDir, dockerArgs } };
 }
