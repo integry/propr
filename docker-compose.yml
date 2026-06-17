@@ -24,7 +24,8 @@ services:
   redis:
     image: redis:alpine
     ports:
-      # REDIS_EXTERNAL_PORT allows overriding the host port.
+      # Expose Redis for PR preview environments to share sessions
+      # REDIS_EXTERNAL_PORT allows different ports for different stacks
       - '${REDIS_EXTERNAL_PORT:-6380}:6379'
     volumes:
       - redis_data:/data
@@ -43,10 +44,11 @@ services:
       - ./logs:/usr/src/app/logs
       - ./data:/usr/src/app/data
       - /tmp/git-processor:/tmp/git-processor
+      # Docker socket for PR preview deployments
       - /var/run/docker.sock:/var/run/docker.sock
       # Worktrees directory for PR branch checkouts
       - /tmp/pr-worktrees:/tmp/pr-worktrees
-      # Mount .env for daemon operations that need runtime configuration.
+      # Mount .env for deploy-pr.sh script
       - ./.env:/usr/src/app/.env:ro
     env_file:
       - .env
@@ -188,7 +190,7 @@ services:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL}
         - VITE_OAUTH_API_URL=${VITE_OAUTH_API_URL}
     ports:
-      # UI_PORT overrides the host port for local development.
+      # Allow injection of UI_PORT for PR preview environments, default to 5173
       - '${UI_PORT:-5173}:5173'
     networks:
       - propr-net
@@ -206,7 +208,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      # API_PORT overrides the host port for local development.
+      # Allow injection of API_PORT for PR preview environments, default to 4000
       - '${API_PORT:-4000}:4000'
     volumes:
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
@@ -234,9 +236,13 @@ services:
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
       - CONFIG_REPO_PATH=/tmp/config_repo
+      # Allow injection of API_PUBLIC_URL for PR preview environments
       - API_PUBLIC_URL=${API_PUBLIC_URL:-http://localhost:4000}
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
-      - GH_OAUTH_CALLBACK_URL=${GH_OAUTH_CALLBACK_URL:-http://localhost:4000/api/auth/github/callback}
+      # Allow injection of FRONTEND_URL for CORS in PR preview environments
+      - FRONTEND_URL=${FRONTEND_URL:-https://ui.gitfix.dev}
+      # Allow injection of GH_OAUTH_CALLBACK_URL for PR preview environments
+      - GH_OAUTH_CALLBACK_URL=${GH_OAUTH_CALLBACK_URL:-https://api.gitfix.dev/api/auth/github/callback}
+      # Allow PR previews to share sessions via host Redis
       - SESSION_REDIS_HOST=${SESSION_REDIS_HOST:-redis}
       - SESSION_REDIS_PORT=${SESSION_REDIS_PORT:-6379}
     depends_on:
@@ -252,7 +258,7 @@ services:
       context: ./docs
       dockerfile: Dockerfile
     ports:
-      # DOCS_PORT overrides the host port for local development.
+      # Allow injection of DOCS_PORT for PR preview environments, default to 8080
       - '${DOCS_PORT:-8080}:3000'
     networks:
       - propr-net

@@ -119,9 +119,9 @@ jobs:
               echo "✅ Core Lint passed" >> build_log.txt
             fi
 
-            BUILD_OUTPUT=$(npm run build 2>&1) || {
+            BUILD_OUTPUT=$(docker build -t propr-core -f Dockerfile . 2>&1) || {
               echo "❌ Core Build FAILED" >> build_log.txt
-              echo "$BUILD_OUTPUT" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               CORE_FAILED=1
               EXIT_CODE=1
             }
@@ -156,9 +156,10 @@ jobs:
               fi
             fi
 
-            BUILD_OUTPUT=$(npm run build -w propr-ui 2>&1) || {
+            # Docker Build (from root context to include packages/shared)
+            BUILD_OUTPUT=$(docker build -t propr-ui -f propr-ui/Dockerfile . 2>&1) || {
               echo "❌ UI Build FAILED" >> build_log.txt
-              echo "$BUILD_OUTPUT" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
               EXIT_CODE=1
               UI_FAILED=1
             }
@@ -193,16 +194,12 @@ jobs:
             fi
             cd ..
 
-            if [ $DOCS_FAILED -eq 0 ]; then
-              cd docs
-              BUILD_OUTPUT=$(npm run build 2>&1) || {
-                echo "❌ Docs Build FAILED" >> ../build_log.txt
-                echo "$BUILD_OUTPUT" >> ../build_log.txt
-                DOCS_FAILED=1
-                EXIT_CODE=1
-              }
-              cd ..
-            fi
+            BUILD_OUTPUT=$(docker build -t propr-docs ./docs 2>&1) || {
+              echo "❌ Docs Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              DOCS_FAILED=1
+              EXIT_CODE=1
+            }
             if [ $DOCS_FAILED -eq 0 ]; then
               echo "✅ Docs Build passed" >> build_log.txt
             fi
@@ -300,6 +297,16 @@ jobs:
               fi
             fi
 
+            # 4. Docker Build
+            BUILD_OUTPUT=$(docker build -t propr-api -f packages/api/Dockerfile.prod . 2>&1) || {
+              echo "❌ API Docker Build FAILED" >> build_log.txt
+              echo "$BUILD_OUTPUT" | tail -100 >> build_log.txt
+              API_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $API_FAILED -eq 0 ]; then
+              echo "✅ API Docker Build passed" >> build_log.txt
+            fi
           fi
 
           exit $EXIT_CODE

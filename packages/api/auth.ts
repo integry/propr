@@ -59,6 +59,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
 
     if (!demoModeAtStartup) {
         // Create Redis client for session store
+        // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
         const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
         const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
         const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
@@ -121,6 +122,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
     }
 
     // Routes
+    // Accept optional redirect_to parameter for PR preview environments
     app.get('/api/auth/github', (req: Request, res: Response, next: NextFunction) => {
         const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
 
@@ -156,7 +158,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                     return;
                 }
 
-                // Check for stored redirect URL
+                // Check for stored redirect URL (for PR preview environments)
                 const redirectTo = (req.session as session.Session & { redirectTo?: string }).redirectTo;
                 if (redirectTo) {
                     // Clear the stored redirect

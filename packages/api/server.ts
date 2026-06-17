@@ -140,6 +140,8 @@ if (!process.env.FRONTEND_URL) {
   process.exit(1);
 }
 
+// Allow all subdomains of COOKIE_DOMAIN for CORS to support PR preview environments
+// that share sessions via cross-subdomain cookies
 const cookieDomain = process.env.COOKIE_DOMAIN;
 // Remove leading dot if present for hostname matching
 const baseDomain = cookieDomain?.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
