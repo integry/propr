@@ -19,6 +19,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
+import { validateAgents } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -722,17 +723,25 @@ function printStaticChecks(outcome: ChecksOutcome, showRemediationHint: boolean)
  * fresh pass — until the user quits or no actions remain. Falls back to the
  * static renderer + readline prompts if the terminal can't drive the live UI.
  */
-async function runChecksInteractive(runOptions: RunChecksOptions, fix: boolean): Promise<ChecksOutcome | undefined> {
+async function runChecksInteractive(
+  runOptions: RunChecksOptions,
+  fix: boolean,
+  offerValidate: boolean
+): Promise<{ outcome: ChecksOutcome | undefined; validate: boolean }> {
   try {
     const { renderLiveChecks } = await import("../tui/app.js");
     let lastOutcome: ChecksOutcome | undefined;
     while (true) {
-      const { outcome, selectedKey } = await renderLiveChecks(runOptions, { fix, getActions: collectRemediationActions });
+      const { outcome, selectedKey, validate } = await renderLiveChecks(runOptions, {
+        fix,
+        offerValidate,
+        getActions: collectRemediationActions,
+      });
       lastOutcome = outcome ?? lastOutcome;
-      if (!fix || !selectedKey || !outcome) return lastOutcome;
+      if (!fix || !selectedKey || !outcome) return { outcome: lastOutcome, validate };
 
       const action = collectRemediationActions(outcome).find((a) => a.key === selectedKey);
-      if (!action) return lastOutcome;
+      if (!action) return { outcome: lastOutcome, validate };
 
       console.log("");
       const result = await action.run();
@@ -743,14 +752,15 @@ async function runChecksInteractive(runOptions: RunChecksOptions, fix: boolean):
     }
   } catch {
     // The terminal can't support the live UI (e.g. raw mode unavailable): fall
-    // back to the static renderer and readline-based remediation prompts.
+    // back to the static renderer and readline-based prompts (no Ink to clobber).
     const outcome = await runChecks(runOptions);
     if (fix) {
       printChecks(outcome);
-      return runRemediationPrompts(outcome, runOptions);
+      return { outcome: await runRemediationPrompts(outcome, runOptions), validate: false };
     }
     printStaticChecks(outcome, collectRemediationActions(outcome).length > 0);
-    return outcome;
+    const validate = offerValidate ? await confirmValidateAgents() : false;
+    return { outcome, validate };
   }
 }
 
@@ -978,6 +988,47 @@ export function printChecks(outcome: ChecksOutcome): void {
   console.log(formatSummary(counts, colorEnabled));
 }
 
+/** Ask (readline) whether to run live agent validation. TTY-only. */
+async function confirmValidateAgents(): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (
+      await rl.question("\nValidate agents now with live test calls? This makes real (billable) LLM calls. [y/N] ")
+    ).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Run live agent validation and print the results. Returns true if any agent
+ * failed. Loads its own orchestrator/config so it can run after the main check.
+ */
+async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<boolean> {
+  const colorEnabled = shouldUseColor();
+  const configManager = await createConfigManager();
+  const { orch, cfg } = await getHostConfig({ configManager, root: runOptions.root });
+
+  console.log("");
+  console.log(color("Agent Validation", colorEnabled, ANSI.cyan, ANSI.bold));
+  console.log(color("  Live test call to each agent image to confirm auth works", colorEnabled, ANSI.dim));
+
+  const results = await validateAgents(orch, cfg, {
+    agents: runOptions.agents,
+    onProgress: (message) => console.log(color(`  … ${message}`, colorEnabled, ANSI.dim)),
+  });
+
+  const nameWidth = Math.max(18, ...results.map((r) => r.name.length));
+  for (const r of results) {
+    console.log(`  ${formatStatus(r.status, colorEnabled)} ${r.name.padEnd(nameWidth)}  ${r.detail}`);
+    if (r.fix && r.status !== "ok") {
+      console.log(`         ${color("↳", colorEnabled, ANSI.dim)} ${r.fix}`);
+    }
+  }
+  return results.some((r) => r.status === "fail");
+}
+
 /** Creates the `check` command. */
 export function createCheckCommand(): Command {
   return new Command("check")
@@ -988,19 +1039,24 @@ export function createCheckCommand(): Command {
     .option("--skip-remote-image-check", "Skip registry freshness checks for local Docker images (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
+    .option("--validate-agents", "Make a live test call to each agent image to confirm auth works (billable LLM calls)")
     .addHelpText("after", `
 Examples:
   $ propr check
   $ propr check --fix
   $ propr check --verify
   $ propr check --verify --agents claude,codex
+  $ propr check --validate-agents
   $ propr check --json
 
 Notes:
   Image checks contact the registry by default to compare local and remote digests.
   Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline environments.
+  --validate-agents runs a real prompt through each agent image (mounts its
+  credentials, makes a billable LLM call). In an interactive terminal without
+  the flag, check offers to run it at the end. Restrict with --agents.
 `)
-    .action(async (options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean }) => {
+    .action(async (options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {
       try {
         if (options.json && options.fix) {
           console.error("Error: --json cannot be combined with --fix; JSON output is data-only and never prompts.");
@@ -1018,11 +1074,17 @@ Notes:
           skipRemoteImageCheck: options.skipRemoteImageCheck,
         };
 
-        // JSON: data-only, no streaming/printing decoration.
+        // JSON: data-only, no streaming/printing decoration. With --validate-agents
+        // the live results are merged into the output array.
         if (options.json) {
           const outcome = await runChecks(runOptions);
-          printOutput({ rootDir: outcome.rootDir, results: outcome.results.map(jsonResult) }, true);
-          if (outcome.anyFail) process.exit(1);
+          let results = outcome.results;
+          if (options.validateAgents) {
+            const { orch, cfg } = await getHostConfig({ configManager: await createConfigManager(), root: runOptions.root });
+            results = [...results, ...(await validateAgents(orch, cfg, { agents: runOptions.agents }))];
+          }
+          printOutput({ rootDir: outcome.rootDir, results: results.map(jsonResult) }, true);
+          if (results.some((r) => r.status === "fail")) process.exit(1);
           return;
         }
 
@@ -1030,13 +1092,24 @@ Notes:
         if (!isInteractiveTerminal() || process.env.NO_COLOR !== undefined) {
           const outcome = await runChecks(runOptions);
           printStaticChecks(outcome, !options.fix && collectRemediationActions(outcome).length > 0);
-          if (outcome.anyFail) process.exit(1);
+          let anyFail = outcome.anyFail;
+          if (options.validateAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+          if (anyFail) process.exit(1);
           return;
         }
 
-        // Interactive TTY: live, streaming view (+ in-app remediation with --fix).
-        const outcome = await runChecksInteractive(runOptions, Boolean(options.fix));
-        if (outcome?.anyFail) process.exit(1);
+        // Interactive TTY: live, streaming view (+ in-app remediation with --fix,
+        // and an in-app "validate agents?" prompt unless the flag forces it).
+        const { outcome, validate } = await runChecksInteractive(
+          runOptions,
+          Boolean(options.fix),
+          !options.validateAgents
+        );
+        let anyFail = outcome?.anyFail ?? false;
+        if (options.validateAgents || validate) {
+          anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+        }
+        if (anyFail) process.exit(1);
       } catch (error) {
         console.error(`Error running checks: ${(error as Error).message}`);
         process.exit(1);

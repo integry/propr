@@ -54,6 +54,10 @@ interface Props {
   fix: boolean;
   getActions: (outcome: ChecksOutcome) => RemediationMenuItem[];
   onSelect: (key: string | undefined) => void;
+  /** When true (and not in --fix mode), offer a y/N agent-validation prompt at the end. */
+  offerValidate?: boolean;
+  /** Reports the agent-validation choice (only meaningful when offerValidate). */
+  onValidate?: (yes: boolean) => void;
 }
 
 type RowStatus = CheckStatus | "pending";
@@ -219,10 +223,10 @@ function Menu({ items, selected }: { items: RemediationMenuItem[]; selected: num
   );
 }
 
-export function CheckApp({ hub, fix, getActions, onSelect }: Props): React.ReactElement {
+export function CheckApp({ hub, fix, getActions, onSelect, offerValidate, onValidate }: Props): React.ReactElement {
   const { exit } = useApp();
   const [rowState, dispatch] = useReducer(rowReducer, { rows: [], pendingByName: new Map<string, number>(), nextId: 0 });
-  const [phase, setPhase] = useState<"running" | "menu" | "done">("running");
+  const [phase, setPhase] = useState<"running" | "menu" | "done" | "confirm">("running");
   const [outcome, setOutcome] = useState<ChecksOutcome | null>(null);
   const [actions, setActions] = useState<RemediationMenuItem[]>([]);
   const [selected, setSelected] = useState(0);
@@ -237,6 +241,8 @@ export function CheckApp({ hub, fix, getActions, onSelect }: Props): React.React
         setActions(available);
         if (fix && available.length > 0) {
           setPhase("menu");
+        } else if (offerValidate && !fix) {
+          setPhase("confirm");
         } else {
           setPhase("done");
         }
@@ -247,7 +253,7 @@ export function CheckApp({ hub, fix, getActions, onSelect }: Props): React.React
         dispatch(event);
       }
     });
-  }, [hub, fix, getActions]);
+  }, [hub, fix, getActions, offerValidate]);
 
   // Animate the spinner only while checks are in flight.
   useEffect(() => {
@@ -267,6 +273,13 @@ export function CheckApp({ hub, fix, getActions, onSelect }: Props): React.React
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       onSelect(undefined);
+      onValidate?.(false);
+      exit();
+      return;
+    }
+    if (phase === "confirm") {
+      if (input.toLowerCase() === "y") onValidate?.(true);
+      else onValidate?.(false); // n / enter / esc / anything else
       exit();
       return;
     }
@@ -302,9 +315,17 @@ export function CheckApp({ hub, fix, getActions, onSelect }: Props): React.React
 
       {phase === "menu" ? <Menu items={actions} selected={selected} /> : null}
 
-      {phase === "done" ? (
+      {phase === "done" || phase === "confirm" ? (
         <Box marginTop={1}>
           <SummaryLine rows={rows} running={running} />
+        </Box>
+      ) : null}
+
+      {phase === "confirm" ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text color="cyan" bold>Validate agents?</Text>
+          <Text>Make a live test call to each agent image to confirm auth works.</Text>
+          <Text dimColor>This makes real, billable LLM calls. Press y to run, any other key to skip.</Text>
         </Box>
       ) : null}
 

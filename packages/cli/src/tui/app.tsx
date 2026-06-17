@@ -36,12 +36,20 @@ export async function renderDashboard(props: DashboardProps): Promise<"backgroun
  */
 export async function renderLiveChecks(
   runOptions: RunChecksOptions,
-  opts: { fix?: boolean; getActions: (outcome: ChecksOutcome) => RemediationMenuItem[] }
-): Promise<{ outcome: ChecksOutcome | undefined; selectedKey: string | undefined }> {
+  opts: { fix?: boolean; offerValidate?: boolean; getActions: (outcome: ChecksOutcome) => RemediationMenuItem[] }
+): Promise<{ outcome: ChecksOutcome | undefined; selectedKey: string | undefined; validate: boolean }> {
   const hub = new CheckHub();
   let selectedKey: string | undefined;
+  let validate = false;
   const instance = render(
-    <CheckApp hub={hub} fix={Boolean(opts.fix)} getActions={opts.getActions} onSelect={(key) => { selectedKey = key; }} />,
+    <CheckApp
+      hub={hub}
+      fix={Boolean(opts.fix)}
+      getActions={opts.getActions}
+      onSelect={(key) => { selectedKey = key; }}
+      offerValidate={Boolean(opts.offerValidate)}
+      onValidate={(yes) => { validate = yes; }}
+    />,
     { exitOnCtrlC: false },
   );
 
@@ -64,5 +72,5 @@ export async function renderLiveChecks(
   await instance.waitUntilExit();
   const outcome = await outcomePromise;
   if (engineError) throw engineError;
-  return { outcome, selectedKey };
+  return { outcome, selectedKey, validate };
 }
