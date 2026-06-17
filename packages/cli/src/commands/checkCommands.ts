@@ -205,11 +205,19 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       remediation: { kind: "pull-image", imageKey: key, tag },
     });
 
+    // ProPR only publishes images in its own registry namespace (propr/*).
+    // Third-party images (e.g. redis:7-alpine) are pinned by tag and not part of
+    // ProPR's update story, so their registry "freshness" is not actionable here
+    // — and the remote digest probe for them is the main source of slow timeouts.
+    const registry = typeof cfg.manifest?.registry === "string" ? cfg.manifest.registry : "propr";
+    const isProprPublished = (tag: string): boolean => tag.startsWith(`${registry}/`);
+
     const computeImageResult = async (key: string, tag: string): Promise<CheckResult> => {
-      if (skipRemoteImageCheck) {
-        return imagePresent(orch, tag)
-          ? { name: `Image ${key}`, status: "ok", detail: `${tag} (local; remote check skipped)`, group: "Images" }
-          : missingImageResult(key, tag);
+      // Presence-only for third-party images and when remote checks are skipped.
+      if (skipRemoteImageCheck || !isProprPublished(tag)) {
+        if (!imagePresent(orch, tag)) return missingImageResult(key, tag);
+        const detail = skipRemoteImageCheck ? `${tag} (local; remote check skipped)` : `${tag} (present)`;
+        return { name: `Image ${key}`, status: "ok", detail, group: "Images" };
       }
 
       const freshness = await orch.inspectImageFreshnessAsync(tag);
