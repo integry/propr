@@ -6,10 +6,10 @@
 import React from "react";
 import { render } from "ink";
 import { StartApp } from "./StartApp.js";
-import { CheckApp } from "./CheckApp.js";
+import { CheckApp, CheckHub, type RemediationMenuItem } from "./CheckApp.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { ConfigManager } from "../config/index.js";
-import type { ChecksOutcome } from "../commands/checkCommands.js";
+import { runChecks, type ChecksOutcome, type RunChecksOptions } from "../commands/checkCommands.js";
 
 export interface DashboardProps {
   orch: OrchestratorModule;
@@ -27,10 +27,42 @@ export async function renderDashboard(props: DashboardProps): Promise<"backgroun
   return result.outcome;
 }
 
-export async function renderCheck(outcome: ChecksOutcome, opts: { showRemediationHint?: boolean } = {}): Promise<void> {
+/**
+ * Render a single live check pass in an interactive terminal. The check engine
+ * streams results into the Ink view (spinners while slow checks run); with
+ * `fix`, the view ends in an arrow-key remediation menu. Resolves with the
+ * finished outcome and the remediation key the user selected (if any) so the
+ * caller can run that action outside the Ink tree.
+ */
+export async function renderLiveChecks(
+  runOptions: RunChecksOptions,
+  opts: { fix?: boolean; getActions: (outcome: ChecksOutcome) => RemediationMenuItem[] }
+): Promise<{ outcome: ChecksOutcome | undefined; selectedKey: string | undefined }> {
+  const hub = new CheckHub();
+  let selectedKey: string | undefined;
   const instance = render(
-    <CheckApp outcome={outcome} showRemediationHint={opts.showRemediationHint} />,
+    <CheckApp hub={hub} fix={Boolean(opts.fix)} getActions={opts.getActions} onSelect={(key) => { selectedKey = key; }} />,
     { exitOnCtrlC: false },
   );
+
+  let engineError: Error | undefined;
+  const outcomePromise = runChecks({
+    ...runOptions,
+    onPending: (slot) => hub.emit({ type: "pending", slot }),
+    onResult: (result) => hub.emit({ type: "result", result }),
+  })
+    .then((outcome) => {
+      hub.emit({ type: "done", outcome });
+      return outcome;
+    })
+    .catch((error: Error) => {
+      engineError = error;
+      hub.emit({ type: "error", error });
+      return undefined;
+    });
+
   await instance.waitUntilExit();
+  const outcome = await outcomePromise;
+  if (engineError) throw engineError;
+  return { outcome, selectedKey };
 }

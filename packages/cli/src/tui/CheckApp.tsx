@@ -1,23 +1,71 @@
 /**
- * Ink renderer for `propr check` in interactive terminals.
+ * Live Ink renderer for `propr check` in interactive terminals.
+ *
+ * Rather than rendering a finished report, this subscribes to a CheckHub fed by
+ * the streaming check engine: rows appear as each check resolves, slow checks
+ * (image freshness) show an animated spinner while they run, and the summary
+ * header updates live. With --fix, it ends in an arrow-key remediation menu;
+ * the selected action's key is reported to the caller, which runs it (and any
+ * console output) outside the Ink tree before re-rendering a fresh pass.
  */
 
-import React, { useEffect } from "react";
-import { Box, Text, useApp } from "ink";
+import React, { useEffect, useReducer, useState } from "react";
+import { Box, Text, useApp, useInput } from "ink";
 import {
   CHECK_GROUPS,
   countStatuses,
   plural,
+  type CheckGroup,
   type CheckResult,
   type CheckStatus,
   type ChecksOutcome,
 } from "../commands/checkCommands.js";
 
-interface Props {
-  outcome: ChecksOutcome;
-  showRemediationHint?: boolean;
+export type CheckEvent =
+  | { type: "pending"; slot: { name: string; group?: CheckGroup } }
+  | { type: "result"; result: CheckResult }
+  | { type: "done"; outcome: ChecksOutcome }
+  | { type: "error"; error: Error };
+
+/** Minimal pub/sub bridge between the async engine and the React tree. */
+export class CheckHub {
+  private listeners = new Set<(event: CheckEvent) => void>();
+  emit(event: CheckEvent): void {
+    for (const listener of [...this.listeners]) listener(event);
+  }
+  subscribe(listener: (event: CheckEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
 }
 
+export interface RemediationMenuItem {
+  key: string;
+  label: string;
+  detail: string;
+}
+
+interface Props {
+  hub: CheckHub;
+  fix: boolean;
+  getActions: (outcome: ChecksOutcome) => RemediationMenuItem[];
+  onSelect: (key: string | undefined) => void;
+}
+
+type RowStatus = CheckStatus | "pending";
+
+interface Row {
+  id: number;
+  name: string;
+  group?: CheckGroup;
+  status: RowStatus;
+  detail?: string;
+  fix?: string;
+}
+
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
 const STATUS_LABEL: Record<CheckStatus, string> = { ok: "OK", warn: "WARN", fail: "FAIL" };
 
@@ -27,8 +75,88 @@ function statusColor(status: CheckStatus): string {
   return "red";
 }
 
-function Summary({ results }: { results: CheckResult[] }): React.ReactElement {
-  const counts = countStatuses(results);
+// A "pending" slot (only emitted for images, whose names are unique) is upserted
+// in place when its result arrives. Every other result is appended with a fresh
+// id, so checks that share a name (e.g. several "Config error" rows) all show.
+type RowState = { rows: Row[]; pendingByName: Map<string, number>; nextId: number };
+
+function rowReducer(state: RowState, event: CheckEvent): RowState {
+  if (event.type === "pending") {
+    if (state.pendingByName.has(event.slot.name)) return state;
+    const id = state.nextId;
+    const pendingByName = new Map(state.pendingByName).set(event.slot.name, id);
+    return {
+      rows: [...state.rows, { id, name: event.slot.name, group: event.slot.group, status: "pending" }],
+      pendingByName,
+      nextId: id + 1,
+    };
+  }
+  if (event.type === "result") {
+    const { result } = event;
+    const pendingId = state.pendingByName.get(result.name);
+    if (pendingId !== undefined) {
+      const pendingByName = new Map(state.pendingByName);
+      pendingByName.delete(result.name);
+      return {
+        rows: state.rows.map((row) =>
+          row.id === pendingId
+            ? { id: pendingId, name: result.name, group: result.group, status: result.status, detail: result.detail, fix: result.fix }
+            : row
+        ),
+        pendingByName,
+        nextId: state.nextId,
+      };
+    }
+    const id = state.nextId;
+    return {
+      rows: [...state.rows, { id, name: result.name, group: result.group, status: result.status, detail: result.detail, fix: result.fix }],
+      pendingByName: state.pendingByName,
+      nextId: id + 1,
+    };
+  }
+  return state;
+}
+
+function StatusBadge({ status, frame }: { status: RowStatus; frame: number }): React.ReactElement {
+  if (status === "pending") {
+    return (
+      <Text color="cyan" bold>
+        {SPINNER[frame % SPINNER.length]} ····
+      </Text>
+    );
+  }
+  return (
+    <Text color={statusColor(status)} bold>
+      {STATUS_GLYPH[status]} {STATUS_LABEL[status].padEnd(4)}
+    </Text>
+  );
+}
+
+function ResultRow({ row, nameWidth, frame }: { row: Row; nameWidth: number; frame: number }): React.ReactElement {
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Box flexShrink={0}>
+          <StatusBadge status={row.status} frame={frame} />
+          <Text> {row.name.padEnd(nameWidth)}  </Text>
+        </Box>
+        <Box flexGrow={1}>
+          <Text>{row.status === "pending" ? <Text dimColor>checking…</Text> : row.detail}</Text>
+        </Box>
+      </Box>
+      {row.fix && row.status !== "ok" && row.status !== "pending" ? (
+        <Box paddingLeft={9}>
+          <Box marginRight={1}><Text dimColor>↳</Text></Box>
+          <Box flexGrow={1}><Text>{row.fix}</Text></Box>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function SummaryLine({ rows, running }: { rows: Row[]; running: boolean }): React.ReactElement {
+  const finalized = rows.filter((row): row is Row & { status: CheckStatus } => row.status !== "pending");
+  const counts = countStatuses(finalized as unknown as CheckResult[]);
   return (
     <Box>
       <Text>Summary: </Text>
@@ -37,76 +165,146 @@ function Summary({ results }: { results: CheckResult[] }): React.ReactElement {
       <Text color={counts.warn > 0 ? "yellow" : undefined} bold={counts.warn > 0}>{plural(counts.warn, "warning")}</Text>
       <Text>, </Text>
       <Text color="green">{counts.ok} ok</Text>
+      {running ? <Text dimColor> · checking…</Text> : null}
     </Box>
   );
 }
 
-function ResultRow({ result, nameWidth }: { result: CheckResult; nameWidth: number }): React.ReactElement {
-  return (
-    <Box flexDirection="column">
-      <Box>
-        <Text color={statusColor(result.status)} bold>
-          {STATUS_GLYPH[result.status]} {STATUS_LABEL[result.status].padEnd(4)}
-        </Text>
-        <Text> {result.name.padEnd(nameWidth)}  </Text>
-        <Text>{result.detail}</Text>
+function Groups({ rows, frame }: { rows: Row[]; frame: number }): React.ReactElement {
+  const sections: React.ReactElement[] = [];
+  const groupsInOrder: (CheckGroup | undefined)[] = [...CHECK_GROUPS, undefined];
+
+  for (const group of groupsInOrder) {
+    const groupRows = rows.filter((row) => row.group === group);
+    if (groupRows.length === 0) continue;
+    const nameWidth = Math.max(18, ...groupRows.map((row) => row.name.length));
+    const finalized = groupRows.filter((row): row is Row & { status: CheckStatus } => row.status !== "pending");
+    const groupCounts = countStatuses(finalized as unknown as CheckResult[]);
+    const countSuffix =
+      groupCounts.fail > 0 || groupCounts.warn > 0
+        ? ` (${plural(groupCounts.fail, "failure")}, ${plural(groupCounts.warn, "warning")})`
+        : "";
+    sections.push(
+      <Box key={group ?? "Other"} marginTop={1} flexDirection="column">
+        <Text color="cyan" bold>{group ?? "Other"}{countSuffix}</Text>
+        {groupRows.map((row) => (
+          <ResultRow key={row.id} row={row} nameWidth={nameWidth} frame={frame} />
+        ))}
       </Box>
-      {result.fix && result.status !== "ok" ? (
-        <Box paddingLeft={9}>
-          <Text dimColor>↳ </Text>
-          <Text>{result.fix}</Text>
-        </Box>
-      ) : null}
+    );
+  }
+  return <>{sections}</>;
+}
+
+function Menu({ items, selected }: { items: RemediationMenuItem[]; selected: number }): React.ReactElement {
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text color="cyan" bold>Remediations</Text>
+      {items.map((item, index) => {
+        const active = index === selected;
+        return (
+          <Box key={item.key} flexDirection="column">
+            <Text color={active ? "cyan" : undefined} bold={active}>
+              {active ? "❯ " : "  "}{item.label}
+            </Text>
+            <Box paddingLeft={4}><Text dimColor>{item.detail}</Text></Box>
+          </Box>
+        );
+      })}
+      <Box marginTop={1}><Text dimColor>↑/↓ select · enter apply · q quit</Text></Box>
     </Box>
   );
 }
 
-export function CheckApp({ outcome, showRemediationHint }: Props): React.ReactElement {
+export function CheckApp({ hub, fix, getActions, onSelect }: Props): React.ReactElement {
   const { exit } = useApp();
+  const [rowState, dispatch] = useReducer(rowReducer, { rows: [], pendingByName: new Map<string, number>(), nextId: 0 });
+  const [phase, setPhase] = useState<"running" | "menu" | "done">("running");
+  const [outcome, setOutcome] = useState<ChecksOutcome | null>(null);
+  const [actions, setActions] = useState<RemediationMenuItem[]>([]);
+  const [selected, setSelected] = useState(0);
+  const [frame, setFrame] = useState(0);
+  const [errored, setErrored] = useState<Error | null>(null);
 
   useEffect(() => {
-    const timer = setTimeout(() => exit(), 20);
+    return hub.subscribe((event) => {
+      if (event.type === "done") {
+        setOutcome(event.outcome);
+        const available = fix ? getActions(event.outcome) : [];
+        setActions(available);
+        if (fix && available.length > 0) {
+          setPhase("menu");
+        } else {
+          setPhase("done");
+        }
+      } else if (event.type === "error") {
+        setErrored(event.error);
+        setPhase("done");
+      } else {
+        dispatch(event);
+      }
+    });
+  }, [hub, fix, getActions]);
+
+  // Animate the spinner only while checks are in flight.
+  useEffect(() => {
+    if (phase !== "running") return;
+    const timer = setInterval(() => setFrame((f) => f + 1), 80);
+    return () => clearInterval(timer);
+  }, [phase]);
+
+  // Leave a short beat for the final frame to paint before unmounting.
+  useEffect(() => {
+    if (phase !== "done") return;
+    onSelect(undefined);
+    const timer = setTimeout(() => exit(errored ?? undefined), 20);
     return () => clearTimeout(timer);
-  }, [exit]);
+  }, [phase, exit, onSelect, errored]);
+
+  useInput((input, key) => {
+    if (key.ctrl && input === "c") {
+      onSelect(undefined);
+      exit();
+      return;
+    }
+    if (phase !== "menu") return;
+    if (key.upArrow) setSelected((index) => (index - 1 + actions.length) % actions.length);
+    else if (key.downArrow) setSelected((index) => (index + 1) % actions.length);
+    else if (key.return) {
+      onSelect(actions[selected]?.key);
+      exit();
+    } else if (input === "q" || key.escape) {
+      onSelect(undefined);
+      exit();
+    }
+  });
+
+  const rows = rowState.rows;
+  const running = phase === "running";
+  const showRemediationHint = !fix && phase === "done" && outcome != null && getActions(outcome).length > 0;
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text bold>ProPR environment check</Text>
-        <Text dimColor>  (stack root: {outcome.rootDir})</Text>
+        {outcome ? <Text dimColor>  (stack root: {outcome.rootDir})</Text> : null}
       </Box>
-      <Summary results={outcome.results} />
+      <SummaryLine rows={rows} running={running} />
 
-      {CHECK_GROUPS.map((group) => {
-        const groupResults = outcome.results.filter((result) => result.group === group);
-        if (groupResults.length === 0) return null;
-        const groupCounts = countStatuses(groupResults);
-        const nameWidth = Math.max(18, ...groupResults.map((result) => result.name.length));
-        const countSuffix = groupCounts.fail > 0 || groupCounts.warn > 0
-          ? ` (${plural(groupCounts.fail, "failure")}, ${plural(groupCounts.warn, "warning")})`
-          : "";
-        return (
-          <Box key={group} marginTop={1} flexDirection="column">
-            <Text color="cyan" bold>{group}{countSuffix}</Text>
-            {groupResults.map((result) => (
-              <ResultRow key={`${result.name}:${result.detail}`} result={result} nameWidth={nameWidth} />
-            ))}
-          </Box>
-        );
-      })}
+      <Groups rows={rows} frame={frame} />
 
-      {outcome.results.some((result) => !result.group) ? (
-        <Box marginTop={1} flexDirection="column">
-          <Text color="cyan" bold>Other</Text>
-          {outcome.results.filter((result) => !result.group).map((result) => (
-            <ResultRow key={`${result.name}:${result.detail}`} result={result} nameWidth={18} />
-          ))}
+      {errored ? (
+        <Box marginTop={1}><Text color="red">Error running checks: {errored.message}</Text></Box>
+      ) : null}
+
+      {phase === "menu" ? <Menu items={actions} selected={selected} /> : null}
+
+      {phase !== "menu" ? (
+        <Box marginTop={1}>
+          <SummaryLine rows={rows} running={running} />
         </Box>
       ) : null}
 
-      <Box marginTop={1}>
-        <Summary results={outcome.results} />
-      </Box>
       {showRemediationHint ? (
         <Box marginTop={1}>
           <Text dimColor>Run `propr check --fix` to review interactive remediation options.</Text>

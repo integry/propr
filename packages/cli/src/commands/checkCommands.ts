@@ -66,7 +66,6 @@ function agentDescriptors(): AgentDescriptor[] {
     { type: "codex", hostDirKey: "hostCodexDir", envKey: "HOST_CODEX_DIR", defaultDir: join(home, ".codex"), imageKey: "agent-codex", bin: "codex" },
     { type: "antigravity", hostDirKey: "hostAntigravityDir", envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini"), imageKey: "agent-antigravity", bin: "gemini" },
     { type: "opencode", hostDirKey: "hostOpencodeXdgDir", envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
-    { type: "opencode-legacy", hostDirKey: "hostOpencodeLegacyDir", envKey: "HOST_OPENCODE_LEGACY_DIR", defaultDir: join(home, ".opencode"), imageKey: "agent-opencode", bin: "opencode" },
     { type: "opencode-data", hostDirKey: "hostOpencodeDataDir", envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
     { type: "vibe", hostDirKey: "hostVibeDir", envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe"), imageKey: "agent-vibe", bin: "vibe" },
   ];
@@ -91,6 +90,10 @@ export interface RunChecksOptions {
   verify?: boolean;
   agents?: string[];
   skipRemoteImageCheck?: boolean;
+  /** Fired when a slow check begins, so a live UI can show a pending row. */
+  onPending?: (slot: { name: string; group?: CheckGroup }) => void;
+  /** Fired as each result is finalized, so a live UI can update incrementally. */
+  onResult?: (result: CheckResult) => void;
 }
 
 export interface ChecksOutcome {
@@ -110,15 +113,20 @@ interface JsonCheckResult {
 /** Run all checks and return the structured outcome (no printing). */
 export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksOutcome> {
   const results: CheckResult[] = [];
+  // Record a finalized result and notify any live presenter immediately.
+  const emit = (result: CheckResult): void => {
+    results.push(result);
+    options.onResult?.(result);
+  };
   const configManager = await createConfigManager();
   const skipRemoteImageCheck = Boolean(options.skipRemoteImageCheck || envSkipsRemoteImageCheck());
 
   // 1. Docker installed
   const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
   if (dockerVersion.status === 0) {
-    results.push({ name: "Docker installed", status: "ok", detail: dockerVersion.stdout.trim(), group: "Docker" });
+    emit({ name: "Docker installed", status: "ok", detail: dockerVersion.stdout.trim(), group: "Docker" });
   } else {
-    results.push({
+    emit({
       name: "Docker installed",
       status: "fail",
       detail: "`docker` command not found",
@@ -131,7 +139,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 2. Docker daemon running
   const daemonUp = orch.dockerAvailable();
-  results.push(
+  emit(
     daemonUp
       ? { name: "Docker daemon", status: "ok", detail: "daemon is reachable", group: "Docker" }
       : {
@@ -153,7 +161,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     } catch {
       accessible = false;
     }
-    results.push(
+    emit(
       accessible
         ? { name: "Docker socket", status: "ok", detail: socketPath, group: "Docker" }
         : {
@@ -169,9 +177,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // 4. Stack root + .env
   const envPath = join(rootDir, ".env");
   if (existsSync(envPath)) {
-    results.push({ name: STACK_CONFIG_CHECK_NAME, status: "ok", detail: envPath, group: "Stack" });
+    emit({ name: STACK_CONFIG_CHECK_NAME, status: "ok", detail: envPath, group: "Stack" });
   } else {
-    results.push({
+    emit({
       name: STACK_CONFIG_CHECK_NAME,
       status: "warn",
       detail: `no .env found at ${rootDir}`,
@@ -181,61 +189,71 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     });
   }
 
-  // 5. Stack images present locally
+  // 5. Stack images present locally. The remote freshness probe is the slowest
+  // check, so it runs for every image concurrently (off the event loop) instead
+  // of serially — results are emitted live as each settles, then appended to the
+  // outcome in manifest order so non-streaming consumers stay deterministic.
   if (daemonUp) {
-    for (const [key, tag] of Object.entries(cfg.images)) {
-      if (key === "docs" && !cfg.docsEnabled) continue;
-      const addMissingImageResult = () => {
-        const isAgent = key.startsWith("agent-");
-        results.push({
-          name: `Image ${key}`,
-          status: "warn",
-          detail: `${tag} not present locally`,
-          group: "Images",
-          fix: isAgent
-            ? "Jobs using this agent fail until the image is pulled. Run `propr images pull`, `propr start`, or build with scripts/build-images.sh."
-            : "Run `propr images pull`, or let `propr start` pull it automatically.",
-          remediation: { kind: "pull-image", imageKey: key, tag },
-        });
-      };
+    const missingImageResult = (key: string, tag: string): CheckResult => ({
+      name: `Image ${key}`,
+      status: "warn",
+      detail: `${tag} not present locally`,
+      group: "Images",
+      fix: key.startsWith("agent-")
+        ? "Jobs using this agent fail until the image is pulled. Run `propr images pull`, `propr start`, or build with scripts/build-images.sh."
+        : "Run `propr images pull`, or let `propr start` pull it automatically.",
+      remediation: { kind: "pull-image", imageKey: key, tag },
+    });
 
+    const computeImageResult = async (key: string, tag: string): Promise<CheckResult> => {
       if (skipRemoteImageCheck) {
-        if (imagePresent(orch, tag)) {
-          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local; remote check skipped)`, group: "Images" });
-        } else {
-          addMissingImageResult();
-        }
-        continue;
+        return imagePresent(orch, tag)
+          ? { name: `Image ${key}`, status: "ok", detail: `${tag} (local; remote check skipped)`, group: "Images" }
+          : missingImageResult(key, tag);
       }
 
-      const freshness = orch.inspectImageFreshness(tag);
-      if (freshness.status === "missing") {
-        addMissingImageResult();
-      } else if (freshness.status === "current") {
-        results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (current)`, group: "Images" });
-      } else if (freshness.status === "stale") {
-        results.push({
+      const freshness = await orch.inspectImageFreshnessAsync(tag);
+      if (freshness.status === "missing") return missingImageResult(key, tag);
+      if (freshness.status === "current") {
+        return { name: `Image ${key}`, status: "ok", detail: `${tag} (current)`, group: "Images" };
+      }
+      if (freshness.status === "stale") {
+        return {
           name: `Image ${key}`,
           status: "warn",
           detail: `${tag} is stale; remote digest ${freshness.remoteDigest}`,
           group: "Images",
           fix: "Pull the updated image: `propr images pull`.",
           remediation: { kind: "pull-image", imageKey: key, tag },
-        });
-      } else if (freshness.status === "unknown") {
-        if (freshness.localOnly) {
-          results.push({ name: `Image ${key}`, status: "ok", detail: `${tag} (local build; freshness not verified)`, group: "Images" });
-          continue;
-        }
-
-        results.push({
-          name: `Image ${key}`,
-          status: "warn",
-          detail: `${tag} is present, but freshness could not be verified: ${freshness.error}`,
-          group: "Images",
-          fix: "Check registry access or rerun with --skip-remote-image-check for offline environments.",
-        });
+        };
       }
+      if (freshness.localOnly) {
+        return { name: `Image ${key}`, status: "ok", detail: `${tag} (local build; freshness not verified)`, group: "Images" };
+      }
+      return {
+        name: `Image ${key}`,
+        status: "warn",
+        detail: `${tag} is present, but freshness could not be verified: ${freshness.error}`,
+        group: "Images",
+        fix: "Check registry access or rerun with --skip-remote-image-check for offline environments.",
+      };
+    };
+
+    const imageEntries = Object.entries(cfg.images).filter(([key]) => !(key === "docs" && !cfg.docsEnabled));
+    for (const [key] of imageEntries) options.onPending?.({ name: `Image ${key}`, group: "Images" });
+
+    const computed = new Map<string, CheckResult>();
+    await Promise.all(
+      imageEntries.map(async ([key, tag]) => {
+        const result = await computeImageResult(key, tag);
+        computed.set(key, result);
+        options.onResult?.(result); // live update in completion order
+      })
+    );
+    // Append in manifest order so outcome.results is stable across runs.
+    for (const [key] of imageEntries) {
+      const result = computed.get(key);
+      if (result) results.push(result);
     }
   }
 
@@ -244,9 +262,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const configured = cfg[agent.hostDirKey] as string | undefined;
     const dir = configured || agent.defaultDir;
     if (configured && existsSync(dir)) {
-      results.push({ name: `Agent creds: ${agent.type}`, status: "ok", detail: dir, group: "Agents" });
+      emit({ name: `Agent creds: ${agent.type}`, status: "ok", detail: dir, group: "Agents" });
     } else if (!configured && existsSync(agent.defaultDir)) {
-      results.push({
+      emit({
         name: `Agent creds: ${agent.type}`,
         status: "warn",
         detail: `${agent.defaultDir} detected but ${agent.envKey} is not set in .env`,
@@ -255,7 +273,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         remediation: { kind: "add-agent-credential", envKey: agent.envKey, path: agent.defaultDir, agentType: agent.type },
       });
     } else {
-      results.push({
+      emit({
         name: `Agent creds: ${agent.type}`,
         status: "warn",
         detail: `${dir} not found — ${agent.type} will not authenticate`,
@@ -267,7 +285,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
-  for (const r of checkGithubAuth(fileEnv, cfg)) results.push(r);
+  for (const r of checkGithubAuth(fileEnv, cfg)) emit(r);
 
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
@@ -275,7 +293,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const authMode = (process.env.GH_AUTH_MODE ?? fileEnv.GH_AUTH_MODE ?? "").trim().toLowerCase();
   const isDemo = isTruthy(process.env.PROPR_DEMO_MODE ?? fileEnv.PROPR_DEMO_MODE) || authMode === "demo";
   if (whitelistEntries.length === 0 && !isDemo) {
-    results.push({
+    emit({
       name: "User whitelist",
       status: "warn",
       detail: "GITHUB_USER_WHITELIST is not set — any GitHub user who can authenticate to this instance may trigger processing and use the API (within the App's repository access)",
@@ -283,19 +301,19 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       fix: "Set GITHUB_USER_WHITELIST to a comma-separated list of allowed GitHub usernames in .env.",
     });
   } else if (whitelistEntries.length > 0) {
-    results.push({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed`, group: "GitHub" });
+    emit({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed`, group: "GitHub" });
   }
 
   // 9. Config validation from the orchestrator (bind paths, vibe dirs, etc.)
   const validation = orch.validateEnv(cfg);
   for (const warn of validation.warnings) {
-    results.push({ name: "Config warning", status: "warn", detail: warn, group: "Configuration" });
+    emit({ name: "Config warning", status: "warn", detail: warn, group: "Configuration" });
   }
   for (const err of validation.errors) {
     // env file / data dir absence is already surfaced by steps 4–6 above; skip duplicates.
     if (/env file path is not set/i.test(err)) continue;
     if (/data directory.*is not set/i.test(err)) continue;
-    results.push({ name: "Config error", status: "fail", detail: err, group: "Configuration" });
+    emit({ name: "Config error", status: "fail", detail: err, group: "Configuration" });
   }
 
   // 10. Deep verify (opt-in): image/CLI smoke test per selected agent
@@ -306,7 +324,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     for (const agent of selected) {
       const tag = cfg.images[agent.imageKey];
       if (!tag || !imagePresent(orch, tag)) {
-        results.push({
+        emit({
           name: `Verify: ${agent.type}`,
           status: "warn",
           detail: `image ${tag ?? agent.imageKey} not present — skipped`,
@@ -316,9 +334,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       }
       const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000 });
       if (run.status === 0) {
-        results.push({ name: `Verify: ${agent.type}`, status: "ok", detail: `image runs (${(run.stdout || "").trim().split("\n")[0]})`, group: "Agents" });
+        emit({ name: `Verify: ${agent.type}`, status: "ok", detail: `image runs (${(run.stdout || "").trim().split("\n")[0]})`, group: "Agents" });
       } else {
-        results.push({
+        emit({
           name: `Verify: ${agent.type}`,
           status: "warn",
           detail: `image/CLI smoke test failed: ${(run.stderr || run.stdout || "").trim().split("\n")[0]}`,
@@ -544,18 +562,51 @@ function isInteractiveTerminal(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
-async function renderHumanChecks(outcome: ChecksOutcome, showRemediationHint: boolean): Promise<void> {
-  if (!isInteractiveTerminal() || process.env.NO_COLOR !== undefined) {
-    printChecks(outcome);
-    if (showRemediationHint) {
-      console.log("");
-      console.log("Run `propr check --fix` to review interactive remediation options.");
-    }
-    return;
+/** Static, non-interactive renderer (pipes, CI, NO_COLOR). */
+function printStaticChecks(outcome: ChecksOutcome, showRemediationHint: boolean): void {
+  printChecks(outcome);
+  if (showRemediationHint) {
+    console.log("");
+    console.log("Run `propr check --fix` to review interactive remediation options.");
   }
+}
 
-  const { renderCheck } = await import("../tui/app.js");
-  await renderCheck(outcome, { showRemediationHint });
+/**
+ * Interactive TTY flow: render a live check pass, and (with --fix) loop —
+ * applying the selected remediation outside the Ink tree, then re-rendering a
+ * fresh pass — until the user quits or no actions remain. Falls back to the
+ * static renderer + readline prompts if the terminal can't drive the live UI.
+ */
+async function runChecksInteractive(runOptions: RunChecksOptions, fix: boolean): Promise<ChecksOutcome | undefined> {
+  try {
+    const { renderLiveChecks } = await import("../tui/app.js");
+    let lastOutcome: ChecksOutcome | undefined;
+    while (true) {
+      const { outcome, selectedKey } = await renderLiveChecks(runOptions, { fix, getActions: collectRemediationActions });
+      lastOutcome = outcome ?? lastOutcome;
+      if (!fix || !selectedKey || !outcome) return lastOutcome;
+
+      const action = collectRemediationActions(outcome).find((a) => a.key === selectedKey);
+      if (!action) return lastOutcome;
+
+      console.log("");
+      const result = await action.run();
+      if (!result.ok) {
+        console.log("Remediation did not fully complete. Continuing with the current check results.");
+      }
+      // Loop: re-run a fresh live pass to reflect changes and offer more fixes.
+    }
+  } catch {
+    // The terminal can't support the live UI (e.g. raw mode unavailable): fall
+    // back to the static renderer and readline-based remediation prompts.
+    const outcome = await runChecks(runOptions);
+    if (fix) {
+      printChecks(outcome);
+      return runRemediationPrompts(outcome, runOptions);
+    }
+    printStaticChecks(outcome, collectRemediationActions(outcome).length > 0);
+    return outcome;
+  }
 }
 
 function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] {
@@ -820,19 +871,26 @@ Notes:
           agents: options.agents ? options.agents.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
           skipRemoteImageCheck: options.skipRemoteImageCheck,
         };
-        let outcome = await runChecks(runOptions);
 
+        // JSON: data-only, no streaming/printing decoration.
         if (options.json) {
+          const outcome = await runChecks(runOptions);
           printOutput({ rootDir: outcome.rootDir, results: outcome.results.map(jsonResult) }, true);
-        } else {
-          const showRemediationHint = !options.fix && collectRemediationActions(outcome).length > 0;
-          await renderHumanChecks(outcome, showRemediationHint);
-          if (options.fix) {
-            outcome = await runRemediationPrompts(outcome, runOptions);
-          }
+          if (outcome.anyFail) process.exit(1);
+          return;
         }
 
-        if (outcome.anyFail) process.exit(1);
+        // Non-interactive (pipes, CI, NO_COLOR): static one-shot report.
+        if (!isInteractiveTerminal() || process.env.NO_COLOR !== undefined) {
+          const outcome = await runChecks(runOptions);
+          printStaticChecks(outcome, !options.fix && collectRemediationActions(outcome).length > 0);
+          if (outcome.anyFail) process.exit(1);
+          return;
+        }
+
+        // Interactive TTY: live, streaming view (+ in-app remediation with --fix).
+        const outcome = await runChecksInteractive(runOptions, Boolean(options.fix));
+        if (outcome?.anyFail) process.exit(1);
       } catch (error) {
         console.error(`Error running checks: ${(error as Error).message}`);
         process.exit(1);

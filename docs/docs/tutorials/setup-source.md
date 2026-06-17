@@ -44,7 +44,7 @@ npm run compose:up
 
 The development Compose stack includes Redis.
 
-To enable the OpenCode agent, create `~/.opencode`, `~/.config/opencode`, and `~/.local/share/opencode`, then include the OpenCode override file:
+To enable the OpenCode agent, create `~/.config/opencode` and `~/.local/share/opencode`, then include the OpenCode override file:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.opencode.yml up -d

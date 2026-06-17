@@ -13,16 +13,9 @@ else
 fi
 
 opencode_config_dir="${OPENCODE_CONFIG_DIR:-${OPENCODE_CONFIG_PATH:-/home/node/.config/opencode}}"
-opencode_legacy_config_dir="${OPENCODE_LEGACY_CONFIG_DIR:-${OPENCODE_LEGACY_CONFIG_PATH:-/home/node/.opencode}}"
 xdg_data_home="${XDG_DATA_HOME:-/home/node/.local/share}"
 xdg_state_home="${XDG_STATE_HOME:-/home/node/.local/state}"
 opencode_data_dir="$xdg_data_home/opencode"
-
-if [ ! -d "$opencode_config_dir" ] && [ -d "$opencode_legacy_config_dir" ]; then
-    echo "Using legacy OpenCode config directory at $opencode_legacy_config_dir" >&2
-    mkdir -p "$(dirname "$opencode_config_dir")"
-    ln -s "$opencode_legacy_config_dir" "$opencode_config_dir" 2>/dev/null || true
-fi
 
 if [ -d "$opencode_config_dir" ]; then
     echo "OpenCode config directory available at $opencode_config_dir" >&2

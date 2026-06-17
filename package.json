@@ -9,6 +9,10 @@
     "packages/*",
     "propr-ui"
   ],
+  "overrides": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
   "scripts": {
     "build": "tsc",
     "lint": "eslint src/",

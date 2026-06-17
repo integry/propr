@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   inspectImageFreshness,
+  inspectImageFreshnessAsync,
   normalizeDigest,
   remoteDigestFromImagetoolsInspectOutput,
   remoteDigestFromManifestInspectOutput,
@@ -141,6 +142,72 @@ test('inspectImageFreshness can skip the remote registry check', () => {
       localDigests: ['sha256:remote'],
       skipped: true,
       error: 'remote image check skipped',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshnessAsync mirrors the sync classification', async () => {
+  const restore = installFakeDocker();
+  try {
+    assert.deepEqual(await inspectImageFreshnessAsync('example/app:latest'), {
+      status: 'current',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:remote'],
+      remoteDigest: 'sha256:remote',
+    });
+
+    process.env.DOCKER_FAKE_INSPECT = 'stale';
+    assert.deepEqual(await inspectImageFreshnessAsync('example/app:latest'), {
+      status: 'stale',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:local'],
+      remoteDigest: 'sha256:remote',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshnessAsync uses buildx for multi-arch manifest output', async () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_MANIFEST = 'array';
+    assert.deepEqual(await inspectImageFreshnessAsync('example/app:latest'), {
+      status: 'current',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:remote'],
+      remoteDigest: 'sha256:remote',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshnessAsync can skip the remote registry check', async () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_MANIFEST = 'fail';
+    assert.deepEqual(await inspectImageFreshnessAsync('example/app:latest', { skipRemoteCheck: true }), {
+      status: 'unknown',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:remote'],
+      skipped: true,
+      error: 'remote image check skipped',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshnessAsync reports missing images without a remote call', async () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_PRESENT = '0';
+    assert.deepEqual(await inspectImageFreshnessAsync('example/app:latest'), {
+      status: 'missing',
+      tag: 'example/app:latest',
     });
   } finally {
     restore();

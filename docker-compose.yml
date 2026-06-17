@@ -14,7 +14,7 @@
 #
 # For OpenCode support, also create the OpenCode directories and include the
 # override file:
-#   mkdir -p ~/.opencode ~/.config/opencode ~/.local/share/opencode
+#   mkdir -p ~/.config/opencode ~/.local/share/opencode
 #   docker compose -f docker-compose.yml -f docker-compose.opencode.yml up
 #
 # For production deployments that only use a subset of agents, use the launcher

@@ -28,7 +28,6 @@ export interface OrchestratorConfig {
   readonly hostClaudeDir?: string;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
-  readonly hostOpencodeLegacyDir?: string;
   readonly hostOpencodeXdgDir?: string;
   readonly hostOpencodeDataDir?: string;
   readonly hostVibeDir?: string;
@@ -109,6 +108,7 @@ export interface OrchestratorModule {
 
   dockerAvailable(): boolean;
   inspectImageFreshness(tag: string, opts?: { skipRemoteCheck?: boolean }): ImageFreshnessResult;
+  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean }): Promise<ImageFreshnessResult>;
   tagAgentLatest(key: string, imageTag: string): void;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
   ensureServiceImage(cfg: OrchestratorConfig, service: string, onLog?: (line: string) => void): void;

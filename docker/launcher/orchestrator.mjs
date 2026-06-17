@@ -151,15 +151,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
-    // resolve the same path end-to-end). HOST_OPENCODE_DIR is a back-compat alias.
+    // resolve the same path end-to-end).
     const hostClaudeDir = get('HOST_CLAUDE_DIR');
     const hostCodexDir = get('HOST_CODEX_DIR');
     const hostAntigravityDir = get('HOST_ANTIGRAVITY_DIR');
-    const hostOpencodeLegacyDir = get('HOST_OPENCODE_LEGACY_DIR');
-    const hostOpencodeXdgDir = env.HOST_OPENCODE_XDG_DIR !== undefined ? env.HOST_OPENCODE_XDG_DIR
-        : env.HOST_OPENCODE_DIR !== undefined ? env.HOST_OPENCODE_DIR
-            : envFileValueFrom(envFileLocal, 'HOST_OPENCODE_XDG_DIR')
-            || envFileValueFrom(envFileLocal, 'HOST_OPENCODE_DIR') || undefined;
+    const hostOpencodeXdgDir = get('HOST_OPENCODE_XDG_DIR');
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
 
@@ -181,7 +177,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         hostData, hostLogs, hostRepos,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
-        hostOpencodeLegacyDir, hostOpencodeXdgDir, hostOpencodeDataDir,
+        hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
         hostGhPrivateKey,
         // misc -e overrides the launcher computed from ports/env
@@ -223,7 +219,7 @@ export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, 
 // Mount host credentials at the same path on both sides (HOST:HOST) and set the
 // *_CONFIG_PATH env vars to that path, so the worker/api can re-mount them into
 // agent containers without any path translation.
-function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {}) {
+export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {}) {
     const args = [];
     if (cfg.hostClaudeDir) {
         args.push('-v', `${cfg.hostClaudeDir}:${cfg.hostClaudeDir}`);
@@ -237,15 +233,9 @@ function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {}) {
         args.push('-v', `${cfg.hostAntigravityDir}:${cfg.hostAntigravityDir}`);
         args.push('-e', `ANTIGRAVITY_CONFIG_PATH=${cfg.hostAntigravityDir}`);
     }
-    if (cfg.hostOpencodeLegacyDir) {
-        args.push('-v', `${cfg.hostOpencodeLegacyDir}:${cfg.hostOpencodeLegacyDir}`);
-        args.push('-e', `OPENCODE_LEGACY_CONFIG_PATH=${cfg.hostOpencodeLegacyDir}`);
-    }
     if (cfg.hostOpencodeXdgDir) {
         args.push('-v', `${cfg.hostOpencodeXdgDir}:${cfg.hostOpencodeXdgDir}`);
         args.push('-e', `OPENCODE_CONFIG_PATH=${cfg.hostOpencodeXdgDir}`);
-    } else if (cfg.hostOpencodeLegacyDir) {
-        args.push('-e', `OPENCODE_CONFIG_PATH=${cfg.hostOpencodeLegacyDir}`);
     }
     if (cfg.hostOpencodeDataDir) {
         const dataMode = opencodeDataReadWrite ? 'rw' : 'ro';
@@ -309,6 +299,38 @@ export function docker(args, { capture = false, timeout } = {}) {
         throw new Error(`docker ${args.join(' ')} failed with code ${res.status}`);
     }
     return res;
+}
+
+/**
+ * Async, captured docker exec. Mirrors `docker(..., { capture: true })`'s result
+ * shape ({ status, stdout, stderr, error }) but keeps the event loop free, so
+ * callers can run several probes concurrently and animate UI while they wait.
+ * On timeout it kills the child and reports an ETIMEDOUT error, matching the
+ * spawnSync timeout contract that `dockerError` inspects.
+ */
+export function dockerAsync(args, { timeout } = {}) {
+    return new Promise((resolveResult) => {
+        const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+        const finish = (res) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolveResult(res);
+        };
+        const timer = timeout
+            ? setTimeout(() => {
+                  child.kill('SIGKILL');
+                  finish({ status: null, stdout, stderr, error: Object.assign(new Error('docker command timed out'), { code: 'ETIMEDOUT' }) });
+              }, timeout)
+            : null;
+        child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+        child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+        child.on('error', (error) => finish({ status: null, stdout, stderr, error }));
+        child.on('close', (code) => finish({ status: code, stdout, stderr }));
+    });
 }
 
 /** Returns true if the docker daemon is reachable. */
@@ -470,6 +492,67 @@ export function inspectImageFreshness(tag, { skipRemoteCheck = false } = {}) {
     }
 
     const remote = remoteManifestDigest(tag);
+    if (!remote.ok) {
+        return { status: 'unknown', tag, localDigests, error: remote.error };
+    }
+
+    const remoteDigest = normalizeDigest(remote.digest);
+    if (!remoteDigest) {
+        return { status: 'unknown', tag, localDigests, error: 'remote manifest digest was empty' };
+    }
+
+    return localDigests.includes(remoteDigest)
+        ? { status: 'current', tag, localDigests, remoteDigest }
+        : { status: 'stale', tag, localDigests, remoteDigest };
+}
+
+/** Async mirror of remoteManifestDigest using non-blocking docker exec. */
+async function remoteManifestDigestAsync(tag) {
+    const res = await dockerAsync(['manifest', 'inspect', '--verbose', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+    if (res.status !== 0) {
+        return { ok: false, error: dockerError(res, 'docker manifest inspect failed') };
+    }
+    try {
+        const digest = remoteDigestFromManifestInspectOutput(res.stdout);
+        if (digest) return { ok: true, digest };
+
+        const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+        if (buildx.status !== 0) {
+            return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
+        }
+        const buildxDigest = remoteDigestFromImagetoolsInspectOutput(buildx.stdout);
+        if (buildxDigest) return { ok: true, digest: buildxDigest };
+
+        return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect or docker buildx imagetools inspect' };
+    } catch {
+        return { ok: false, error: 'could not parse docker manifest inspect output' };
+    }
+}
+
+/**
+ * Async mirror of inspectImageFreshness. The local (fast) docker calls stay
+ * synchronous; only the remote registry probe is awaited, so many tags can be
+ * checked concurrently without blocking the event loop.
+ */
+export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false } = {}) {
+    if (!imagePresentLocally(tag)) {
+        return { status: 'missing', tag };
+    }
+
+    const localDigests = localRepoDigests(tag);
+    if (!localDigests) {
+        return { status: 'unknown', tag, error: 'local image metadata could not be inspected' };
+    }
+
+    if (localDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
+    }
+
+    if (skipRemoteCheck) {
+        return { status: 'unknown', tag, localDigests, skipped: true, error: 'remote image check skipped' };
+    }
+
+    const remote = await remoteManifestDigestAsync(tag);
     if (!remote.ok) {
         return { status: 'unknown', tag, localDigests, error: remote.error };
     }
@@ -846,7 +929,6 @@ export function validateEnv(cfg) {
         ['HOST_CLAUDE_DIR', cfg.hostClaudeDir],
         ['HOST_CODEX_DIR', cfg.hostCodexDir],
         ['HOST_ANTIGRAVITY_DIR', cfg.hostAntigravityDir],
-        ['HOST_OPENCODE_LEGACY_DIR', cfg.hostOpencodeLegacyDir],
         ['HOST_OPENCODE_XDG_DIR', cfg.hostOpencodeXdgDir],
         ['HOST_OPENCODE_DATA_DIR', cfg.hostOpencodeDataDir],
         ['HOST_VIBE_DIR', cfg.hostVibeDir],
@@ -865,7 +947,7 @@ export function validateEnv(cfg) {
         }
     }
 
-    const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir || cfg.hostOpencodeLegacyDir);
+    const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);
     if (hasOpenCodeConfig && !cfg.hostOpencodeDataDir) {
         warnings.push(
             'OpenCode config is mounted but HOST_OPENCODE_DATA_DIR is not set. ' +
