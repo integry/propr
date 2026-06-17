@@ -13,6 +13,8 @@ import React, { useEffect, useReducer, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import {
   CHECK_GROUPS,
+  GROUP_DESCRIPTIONS,
+  GROUP_TITLES,
   countStatuses,
   plural,
   type CheckGroup,
@@ -186,7 +188,8 @@ function Groups({ rows, frame }: { rows: Row[]; frame: number }): React.ReactEle
         : "";
     sections.push(
       <Box key={group ?? "Other"} marginTop={1} flexDirection="column">
-        <Text color="cyan" bold>{group ?? "Other"}{countSuffix}</Text>
+        <Text color="cyan" bold>{group ? GROUP_TITLES[group] : "Other"}{countSuffix}</Text>
+        {group ? <Text dimColor>  {GROUP_DESCRIPTIONS[group]}</Text> : null}
         {groupRows.map((row) => (
           <ResultRow key={row.id} row={row} nameWidth={nameWidth} frame={frame} />
         ))}

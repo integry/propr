@@ -75,6 +75,27 @@ export const STACK_CONFIG_CHECK_NAME = "Stack config (.env)";
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
 const STATUS_LABEL: Record<CheckStatus, string> = { ok: "OK", warn: "WARN", fail: "FAIL" };
 export const CHECK_GROUPS: CheckGroup[] = ["Docker", "Stack", "Images", "Agents", "GitHub", "Configuration"];
+
+// Display titles for section headers — more descriptive than the internal
+// single-word CheckGroup keys (which stay stable for filtering/data).
+export const GROUP_TITLES: Record<CheckGroup, string> = {
+  Docker: "Docker Engine",
+  Stack: "Stack Configuration",
+  Images: "Container Images",
+  Agents: "Agent Credentials",
+  GitHub: "GitHub Authentication",
+  Configuration: "Environment Configuration",
+};
+
+// One-line, new-user-friendly explanation of what each section verifies.
+export const GROUP_DESCRIPTIONS: Record<CheckGroup, string> = {
+  Docker: "Container engine that runs the stack and agents",
+  Stack: "Local stack root and .env configuration",
+  Images: "ProPR service and agent container images",
+  Agents: "Host credential directories mounted into agent containers",
+  GitHub: "Credentials the backend needs to access GitHub",
+  Configuration: "Environment variable validation",
+};
 const ANSI = {
   reset: "\u001b[0m",
   bold: "\u001b[1m",
@@ -813,7 +834,8 @@ export function printChecks(outcome: ChecksOutcome): void {
     if (printedGroup) console.log("");
     printedGroup = true;
     const countSuffix = groupCounts.fail > 0 || groupCounts.warn > 0 ? ` (${plural(groupCounts.fail, "failure")}, ${plural(groupCounts.warn, "warning")})` : "";
-    console.log(color(`${group}${countSuffix}`, colorEnabled, ANSI.cyan, ANSI.bold));
+    console.log(color(`${GROUP_TITLES[group]}${countSuffix}`, colorEnabled, ANSI.cyan, ANSI.bold));
+    console.log(color(`  ${GROUP_DESCRIPTIONS[group]}`, colorEnabled, ANSI.dim));
 
     for (const r of groupResults) {
       console.log(`  ${formatStatus(r.status, colorEnabled)} ${r.name.padEnd(nameWidth)}  ${r.detail}`);
