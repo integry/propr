@@ -1,0 +1,58 @@
+name: PR Preview
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled, closed]
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  deploy:
+    name: Deploy Preview
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.action != 'unlabeled' &&
+      contains(github.event.pull_request.labels.*.name, 'preview-env')
+    runs-on: [self-hosted, linux, x64, propr]
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      STAGING_ENV_FILE: ${{ vars.PR_PREVIEW_STAGING_ENV_FILE || '/root/gitfix/.env' }}
+      STAGING_DB_PATH: ${{ vars.PR_PREVIEW_STAGING_DB_PATH || '' }}
+
+    steps:
+      - name: Checkout trusted workflow source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Deploy approved PR preview
+        run: ./scripts/deploy-pr.sh "$PR_NUMBER"
+
+  teardown:
+    name: Teardown Preview
+    if: >-
+      (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview-env')) ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'preview-env')
+    runs-on: [self-hosted, linux, x64, propr]
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout trusted workflow source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Tear down PR preview
+        run: ./scripts/teardown-pr.sh "$PR_NUMBER"

@@ -9,7 +9,6 @@ import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type Sta
 import { clearUltrafixLoopState } from './checkRunHelpers.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
-import { handlePreviewRouting } from './previewRouting.js';
 import type {
     IssuesEvent,
     IssuesLabeledEvent,
@@ -36,7 +35,6 @@ export const SUPPORTED_WEBHOOK_EVENTS = [
 
 /** Derived union type — always in sync with the runtime array. */
 export type WebhookEventType = (typeof SUPPORTED_WEBHOOK_EVENTS)[number];
-export { getProcessorPrNumber } from './previewRouting.js';
 export type { CommentEventType };
 
 export interface DetectedIssue {
@@ -303,7 +301,7 @@ export async function processWebhookEvent(
 ): Promise<void> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    if (await handlePreviewRouting(payload, eventType, correlationId, deliveryId)) return;
+    void deliveryId;
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 
