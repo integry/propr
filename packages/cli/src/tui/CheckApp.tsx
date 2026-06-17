@@ -302,7 +302,7 @@ export function CheckApp({ hub, fix, getActions, onSelect }: Props): React.React
 
       {phase === "menu" ? <Menu items={actions} selected={selected} /> : null}
 
-      {phase !== "menu" ? (
+      {phase === "done" ? (
         <Box marginTop={1}>
           <SummaryLine rows={rows} running={running} />
         </Box>

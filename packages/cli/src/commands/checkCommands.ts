@@ -10,17 +10,18 @@ import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
 import { resolveGithubAuthMode, validateRelayUrl } from "@propr/shared";
-import { createConfigManager } from "../config/index.js";
+import { createConfigManager, type ConfigManager } from "../config/index.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
-export type CheckGroup = "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
+export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
 
 export interface CheckResult {
   name: string;
@@ -74,11 +75,12 @@ function agentDescriptors(): AgentDescriptor[] {
 export const STACK_CONFIG_CHECK_NAME = "Stack config (.env)";
 const STATUS_GLYPH: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
 const STATUS_LABEL: Record<CheckStatus, string> = { ok: "OK", warn: "WARN", fail: "FAIL" };
-export const CHECK_GROUPS: CheckGroup[] = ["Docker", "Stack", "Images", "Agents", "GitHub", "Configuration"];
+export const CHECK_GROUPS: CheckGroup[] = ["CLI", "Docker", "Stack", "Images", "Agents", "GitHub", "Configuration"];
 
 // Display titles for section headers — more descriptive than the internal
 // single-word CheckGroup keys (which stay stable for filtering/data).
 export const GROUP_TITLES: Record<CheckGroup, string> = {
+  CLI: "ProPR CLI",
   Docker: "Docker Engine",
   Stack: "Stack Configuration",
   Images: "Container Images",
@@ -89,6 +91,7 @@ export const GROUP_TITLES: Record<CheckGroup, string> = {
 
 // One-line, new-user-friendly explanation of what each section verifies.
 export const GROUP_DESCRIPTIONS: Record<CheckGroup, string> = {
+  CLI: "CLI version and backend connection",
   Docker: "Container engine that runs the stack and agents",
   Stack: "Local stack root and .env configuration",
   Images: "ProPR service and agent container images",
@@ -131,6 +134,115 @@ interface JsonCheckResult {
   fix?: string;
 }
 
+// npm package name the CLI is published under (see packages/cli/scripts/build-publish.mjs).
+const NPM_PACKAGE_NAME = "propr-cli";
+const DEFAULT_REMOTE_URL = "http://localhost:4000";
+
+/** Read this CLI's version from its package.json (two levels up from src|dist/commands). */
+function readCliVersion(): string {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/** Compare dotted versions, ignoring any pre-release suffix. */
+function isNewerVersion(latest: string, current: string): boolean {
+  const parse = (v: string): number[] => v.split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const a = parse(latest);
+  const b = parse(current);
+  for (let i = 0; i < 3; i += 1) {
+    if ((a[i] ?? 0) > (b[i] ?? 0)) return true;
+    if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
+  }
+  return false;
+}
+
+/** fetch() with an abort timeout; resolves to null on any error/timeout. */
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * CLI-level checks: the installed CLI version (with an npm update check) and the
+ * configured backend remote (with a reachability probe). Both are network calls,
+ * run concurrently and emitted live; they degrade gracefully when offline.
+ */
+async function runCliChecks(
+  configManager: ConfigManager,
+  emit: (result: CheckResult) => void,
+  onPending?: (slot: { name: string; group?: CheckGroup }) => void,
+  skipUpdateCheck = false
+): Promise<void> {
+  const cliVersion = readCliVersion();
+  const remoteUrl = configManager.getRemoteUrl();
+  const effectiveRemote = remoteUrl ?? DEFAULT_REMOTE_URL;
+
+  onPending?.({ name: "CLI version", group: "CLI" });
+  onPending?.({ name: "Backend remote", group: "CLI" });
+
+  // Run both probes concurrently, but emit in a fixed order (version, remote).
+  const [versionResult, remoteResult] = await Promise.all([
+    (async (): Promise<CheckResult> => {
+      if (skipUpdateCheck) {
+        return { name: "CLI version", status: "ok", detail: `${cliVersion} (update check skipped)`, group: "CLI" };
+      }
+      const res = await fetchWithTimeout(`https://registry.npmjs.org/${NPM_PACKAGE_NAME}/latest`, 4000);
+      if (res?.ok) {
+        try {
+          const data = (await res.json()) as { version?: string };
+          const latest = data.version;
+          if (latest && isNewerVersion(latest, cliVersion)) {
+            return {
+              name: "CLI version",
+              status: "warn",
+              detail: `${cliVersion} installed; ${latest} available`,
+              group: "CLI",
+              fix: `Update with: npm install -g ${NPM_PACKAGE_NAME}`,
+            };
+          }
+          if (latest) {
+            return { name: "CLI version", status: "ok", detail: `${cliVersion} (up to date)`, group: "CLI" };
+          }
+        } catch {
+          /* fall through to "update check unavailable" */
+        }
+      }
+      return { name: "CLI version", status: "ok", detail: `${cliVersion} (update check unavailable)`, group: "CLI" };
+    })(),
+    (async (): Promise<CheckResult> => {
+      const target = `${effectiveRemote.replace(/\/+$/, "")}/api/status`;
+      const res = await fetchWithTimeout(target, 4000);
+      const suffix = remoteUrl ? "" : " (default)";
+      if (res) {
+        return { name: "Backend remote", status: "ok", detail: `${effectiveRemote}${suffix} — reachable`, group: "CLI" };
+      }
+      return {
+        name: "Backend remote",
+        status: "warn",
+        detail: `${effectiveRemote}${suffix} — not reachable`,
+        group: "CLI",
+        fix: remoteUrl
+          ? "Verify the backend is running and the URL is correct (`propr remote <url>`)."
+          : "Start the local stack (`propr start`), or point at a backend with `propr remote <url>`.",
+      };
+    })(),
+  ]);
+  emit(versionResult);
+  emit(remoteResult);
+}
+
 /** Run all checks and return the structured outcome (no printing). */
 export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksOutcome> {
   const results: CheckResult[] = [];
@@ -141,6 +253,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   };
   const configManager = await createConfigManager();
   const skipRemoteImageCheck = Boolean(options.skipRemoteImageCheck || envSkipsRemoteImageCheck());
+
+  // 0. CLI version + backend remote (network; runs concurrently with the rest).
+  const cliChecksDone = runCliChecks(configManager, emit, options.onPending, skipRemoteImageCheck);
 
   // 1. Docker installed
   const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
@@ -375,6 +490,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     }
   }
 
+  await cliChecksDone; // ensure CLI/remote results are recorded before returning
   const anyFail = results.some((r) => r.status === "fail");
   return { results, cfg, rootDir, anyFail };
 }
