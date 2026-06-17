@@ -7,9 +7,11 @@ import React from "react";
 import { render } from "ink";
 import { StartApp } from "./StartApp.js";
 import { CheckApp, CheckHub, type RemediationMenuItem } from "./CheckApp.js";
+import { AgentTableApp, AgentTableHub } from "./AgentTableApp.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { ConfigManager } from "../config/index.js";
 import { runChecks, type ChecksOutcome, type RunChecksOptions } from "../commands/checkCommands.js";
+import { validateAgents, agentTypesFor, type AgentValidationRow } from "../commands/agentValidation.js";
 
 export interface DashboardProps {
   orch: OrchestratorModule;
@@ -73,4 +75,27 @@ export async function renderLiveChecks(
   const outcome = await outcomePromise;
   if (engineError) throw engineError;
   return { outcome, selectedKey, validate };
+}
+
+/**
+ * Render the agent validation as a live table: rows appear immediately with
+ * spinners and each cell fills in as its check resolves. Returns the finished
+ * rows so the caller can print the raw responses below.
+ */
+export async function renderAgentValidation(
+  orch: OrchestratorModule,
+  cfg: OrchestratorConfig,
+  agentsFilter: string[] | undefined
+): Promise<AgentValidationRow[]> {
+  const hub = new AgentTableHub();
+  const instance = render(<AgentTableApp agents={agentTypesFor(agentsFilter)} hub={hub} />, { exitOnCtrlC: false });
+
+  const rows = await validateAgents(orch, cfg, {
+    agents: agentsFilter,
+    onUpdate: (agent, update) => hub.emit({ type: "update", agent, update }),
+  });
+  hub.emit({ type: "done" });
+
+  await instance.waitUntilExit();
+  return rows;
 }

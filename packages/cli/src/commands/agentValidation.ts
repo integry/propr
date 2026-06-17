@@ -22,9 +22,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
-import type { CheckResult } from "./checkCommands.js";
+import type { CheckResult, CheckStatus } from "./checkCommands.js";
 
-const VALIDATION_PROMPT = "Respond with only the word OK.";
+const VALIDATION_PROMPT = "Respond in 3 words: which model are you?";
 const VALIDATION_TIMEOUT_MS = 120_000;
 const VERSION_TIMEOUT_MS = 30_000;
 const WORKSPACE = "/home/node/workspace";
@@ -116,12 +116,25 @@ function evaluateRun(run: ExecResult): { ok: boolean; detail: string } {
     return { ok: false, detail: (line || "authentication/availability error").slice(0, 160) };
   }
   const response = responseSummary(run.stdout, run.stderr);
-  return { ok: true, detail: response ? `responded: ${response.slice(0, 100)}` : "responded" };
+  return { ok: true, detail: response ? response.slice(0, 200) : "(responded, no text captured)" };
 }
 
 function parseVersion(text: string): string | undefined {
   const match = text.replace(ANSI_RE, "").match(/\b(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\b/);
   return match?.[1];
+}
+
+/** Numeric-segment compare; returns sign of (a - b). */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(/[-.]/).map((n) => parseInt(n, 10) || 0);
+  const pb = b.split(/[-.]/).map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
 }
 
 interface ImageContext {
@@ -250,7 +263,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostDirKey: "hostVibeDir",
     defaultHostDir: join(home, ".vibe"),
     hostBin: "vibe",
-    hostInvocation: ({ promptFileHost }) => ({ args: ["--prompt-file", promptFileHost] }),
+    // Host vibe (newer CLI) uses -p; the image's vibe build uses --prompt-file.
+    hostInvocation: ({ prompt }) => ({ args: ["-p", prompt] }),
     imageInvocation: ({ image, hostDir, workspaceDir, promptFileHost }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.vibe", workspaceDir, {
@@ -281,52 +295,87 @@ function commandExists(bin: string): boolean {
   return spawnSync("which", [bin], { encoding: "utf-8" }).status === 0;
 }
 
+export interface AgentCell {
+  status: CheckStatus;
+  detail: string;
+  fix?: string;
+}
+
+/** Streamed per-cell result, emitted as each check resolves. */
+export type AgentCellUpdate =
+  | { field: "version"; hostVersion?: string; imageVersion?: string; drift?: "older" | "newer" }
+  | { field: "host"; cell: AgentCell }
+  | { field: "image"; cell: AgentCell };
+
 export interface ValidateAgentsOptions {
   /** Restrict validation to these agent types (defaults to all). */
   agents?: string[];
-  /** Progress callback fired once before the parallel run. */
+  /** Progress callback fired once before the parallel run (plain renderer). */
   onProgress?: (message: string) => void;
+  /** Fired as each agent cell (version/host/image) resolves, for live rendering. */
+  onUpdate?: (agent: string, update: AgentCellUpdate) => void;
 }
 
-interface OrderedResult {
-  order: number;
-  result: CheckResult;
+/** The agent types that would be validated for the given filter (for seeding a live view). */
+export function agentTypesFor(filter?: string[]): string[] {
+  const selected = filter?.length ? DESCRIPTORS.filter((d) => filter.includes(d.type)) : DESCRIPTORS;
+  return selected.map((d) => d.type);
 }
 
-async function versionResult(
+export interface AgentValidationRow {
+  type: string;
+  hostVersion?: string;
+  imageVersion?: string;
+  drift?: "older" | "newer"; // image relative to host (only when both known and differ)
+  host?: AgentCell; // undefined when the agent has no known host invocation
+  image: AgentCell;
+}
+
+async function versionInfo(
   d: AgentValidationDescriptor,
   image: string | undefined,
   orch: OrchestratorModule
-): Promise<CheckResult> {
-  const name = `Version: ${d.type}`;
+): Promise<{ host?: string; image?: string; drift?: "older" | "newer" }> {
   const hostPromise = d.hostBin && commandExists(d.hostBin)
     ? execAsync(d.hostBin, ["--version"], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
     : Promise.resolve(undefined);
   const imagePromise = image && imagePresent(orch, image)
     ? execAsync("docker", ["run", "--rm", "--network=none", image, ...d.versionArgs], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
     : Promise.resolve(undefined);
-  const [hostVersion, imageVersion] = await Promise.all([hostPromise, imagePromise]);
+  const [host, img] = await Promise.all([hostPromise, imagePromise]);
+  const drift = host && img && host !== img ? (compareVersions(img, host) < 0 ? "older" : "newer") : undefined;
+  return { host, image: img, drift };
+}
 
-  if (!hostVersion && !imageVersion) {
-    return { name, status: "warn", detail: "version not detected", group: "Agents" };
-  }
+function versionText(row: AgentValidationRow): string {
   const parts: string[] = [];
-  if (hostVersion) parts.push(`host ${hostVersion}`);
-  if (imageVersion) parts.push(`image ${imageVersion}`);
-  const differ = hostVersion && imageVersion && hostVersion !== imageVersion;
-  return { name, status: "ok", detail: `${parts.join(" · ")}${differ ? " (differ)" : ""}`, group: "Agents" };
+  if (row.hostVersion) parts.push(`host ${row.hostVersion}`);
+  if (row.imageVersion) parts.push(`image ${row.imageVersion}`);
+  if (parts.length === 0) return "version not detected";
+  return `${parts.join(" / ")}${row.drift ? ` (image ${row.drift})` : ""}`;
+}
+
+/** Flatten structured rows into CheckResults (for --json and exit-code logic). */
+export function agentRowsToChecks(rows: AgentValidationRow[]): CheckResult[] {
+  const out: CheckResult[] = [];
+  for (const row of rows) {
+    const versionDetected = Boolean(row.hostVersion || row.imageVersion);
+    out.push({ name: `Version: ${row.type}`, status: versionDetected ? "ok" : "warn", detail: versionText(row), group: "Agents" });
+    if (row.host) out.push({ name: `Host: ${row.type}`, status: row.host.status, detail: row.host.detail, group: "Agents", ...(row.host.fix ? { fix: row.host.fix } : {}) });
+    out.push({ name: `Image: ${row.type}`, status: row.image.status, detail: row.image.detail, group: "Agents", ...(row.image.fix ? { fix: row.image.fix } : {}) });
+  }
+  return out;
 }
 
 /**
- * Validate each present agent: version (host vs image), host CLI call, image
- * call — all in parallel. Returns CheckResults (group "Agents") in a stable
- * order (version, host, image per agent).
+ * Validate each present agent — version (host vs image), host CLI call, image
+ * call — all concurrently. Returns one structured row per agent.
  */
 export async function validateAgents(
   orch: OrchestratorModule,
   cfg: OrchestratorConfig,
   options: ValidateAgentsOptions = {}
-): Promise<CheckResult[]> {
+): Promise<AgentValidationRow[]> {
   const selected = options.agents?.length
     ? DESCRIPTORS.filter((d) => options.agents!.includes(d.type))
     : DESCRIPTORS;
@@ -337,77 +386,57 @@ export async function validateAgents(
   const promptFileHost = join(tmp, "prompt.txt");
   writeFileSync(promptFileHost, `${VALIDATION_PROMPT}\n`);
 
-  const tasks: Array<Promise<OrderedResult>> = [];
-  let order = 0;
-  const fixed = (o: number, result: CheckResult): Promise<OrderedResult> => Promise.resolve({ order: o, result });
+  const runHost = async (d: AgentValidationDescriptor): Promise<AgentCell | undefined> => {
+    if (!d.hostInvocation || !d.hostBin) return undefined;
+    if (!commandExists(d.hostBin)) {
+      return { status: "warn", detail: `${d.hostBin} not installed on host — skipped` };
+    }
+    const { args, stdin } = d.hostInvocation({ prompt: VALIDATION_PROMPT, promptFileHost });
+    const run = await execAsync(d.hostBin, args, { input: stdin, cwd: workspaceDir, timeoutMs: VALIDATION_TIMEOUT_MS });
+    const ev = evaluateRun(run);
+    return { status: ev.ok ? "ok" : "fail", detail: ev.detail, ...(ev.ok ? {} : { fix: `Run \`${d.hostBin} -p "test"\` on the host to debug ${d.type} auth.` }) };
+  };
+
+  const runImage = async (d: AgentValidationDescriptor, image: string | undefined, hostDir: string): Promise<AgentCell> => {
+    if (!image || !imagePresent(orch, image)) {
+      return { status: "warn", detail: `image ${image ?? d.imageKey} not present — skipped` };
+    }
+    if (!existsSync(hostDir)) {
+      return { status: "warn", detail: `credentials dir ${hostDir} not found — skipped` };
+    }
+    const { args, stdin } = d.imageInvocation({ image, hostDir, workspaceDir, promptFileHost, cfg });
+    const run = await execAsync("docker", args, { input: stdin, timeoutMs: VALIDATION_TIMEOUT_MS });
+    const ev = evaluateRun(run);
+    return {
+      status: ev.ok ? "ok" : "fail",
+      detail: ev.detail,
+      ...(ev.ok ? {} : { fix: `Check ${d.type} auth/mounts (creds: ${hostDir}). If "Host: ${d.type}" passed but this failed, it's a credential mount/config issue.` }),
+    };
+  };
 
   try {
-    for (const d of selected) {
-      const image = cfg.images[d.imageKey];
-      const hostDir = (cfg[d.hostDirKey] as string | undefined) ?? d.defaultHostDir;
-
-      // Version comparison (free).
-      const ov = order++;
-      tasks.push(versionResult(d, image, orch).then((result) => ({ order: ov, result })));
-
-      // Level 1: host CLI (billable).
-      if (d.hostInvocation && d.hostBin) {
-        const o = order++;
-        if (!commandExists(d.hostBin)) {
-          tasks.push(fixed(o, { name: `Host: ${d.type}`, status: "warn", detail: `${d.hostBin} not installed on host — skipped`, group: "Agents" }));
-        } else {
-          const { args, stdin } = d.hostInvocation({ prompt: VALIDATION_PROMPT, promptFileHost });
-          const bin = d.hostBin;
-          tasks.push(
-            execAsync(bin, args, { input: stdin, cwd: workspaceDir, timeoutMs: VALIDATION_TIMEOUT_MS }).then((run) => {
-              const ev = evaluateRun(run);
-              return {
-                order: o,
-                result: {
-                  name: `Host: ${d.type}`,
-                  status: ev.ok ? "ok" : "fail",
-                  detail: ev.detail,
-                  group: "Agents",
-                  ...(ev.ok ? {} : { fix: `Run \`${bin} -p "test"\` on the host to debug ${d.type} auth.` }),
-                } as CheckResult,
-              };
-            })
-          );
-        }
-      }
-
-      // Level 2: Docker image (billable).
-      const oi = order++;
-      if (!image || !imagePresent(orch, image)) {
-        tasks.push(fixed(oi, { name: `Image: ${d.type}`, status: "warn", detail: `image ${image ?? d.imageKey} not present — skipped`, group: "Agents" }));
-      } else if (!existsSync(hostDir)) {
-        tasks.push(fixed(oi, { name: `Image: ${d.type}`, status: "warn", detail: `credentials dir ${hostDir} not found — skipped`, group: "Agents" }));
-      } else {
-        const { args, stdin } = d.imageInvocation({ image, hostDir, workspaceDir, promptFileHost, cfg });
-        tasks.push(
-          execAsync("docker", args, { input: stdin, timeoutMs: VALIDATION_TIMEOUT_MS }).then((run) => {
-            const ev = evaluateRun(run);
-            return {
-              order: oi,
-              result: {
-                name: `Image: ${d.type}`,
-                status: ev.ok ? "ok" : "fail",
-                detail: ev.detail,
-                group: "Agents",
-                ...(ev.ok
-                  ? {}
-                  : { fix: `Check ${d.type} auth/mounts (creds: ${hostDir}). If "Host: ${d.type}" passed but this failed, it's a credential mount/config issue.` }),
-              } as CheckResult,
-            };
-          })
-        );
-      }
-    }
-
-    options.onProgress?.(`running ${tasks.length} checks in parallel…`);
-    const settled = await Promise.all(tasks);
-    settled.sort((a, b) => a.order - b.order);
-    return settled.map((s) => s.result);
+    options.onProgress?.(`running checks for ${selected.length} agents in parallel…`);
+    return await Promise.all(
+      selected.map(async (d) => {
+        const image = cfg.images[d.imageKey];
+        const hostDir = (cfg[d.hostDirKey] as string | undefined) ?? d.defaultHostDir;
+        // Emit each cell as it resolves so a live view can fill the table in.
+        const versionP = versionInfo(d, image, orch).then((v) => {
+          options.onUpdate?.(d.type, { field: "version", hostVersion: v.host, imageVersion: v.image, drift: v.drift });
+          return v;
+        });
+        const hostP = runHost(d).then((h) => {
+          options.onUpdate?.(d.type, { field: "host", cell: h ?? { status: "warn", detail: "no host CLI invocation" } });
+          return h;
+        });
+        const imageP = runImage(d, image, hostDir).then((i) => {
+          options.onUpdate?.(d.type, { field: "image", cell: i });
+          return i;
+        });
+        const [version, host, imageResult] = await Promise.all([versionP, hostP, imageP]);
+        return { type: d.type, hostVersion: version.host, imageVersion: version.image, drift: version.drift, host, image: imageResult };
+      })
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

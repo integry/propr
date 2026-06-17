@@ -19,7 +19,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
-import { validateAgents } from "./agentValidation.js";
+import { validateAgents, agentRowsToChecks, type AgentCell, type AgentValidationRow } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -1001,9 +1001,63 @@ async function confirmValidateAgents(): Promise<boolean> {
   }
 }
 
+/** Status badge for an agent cell: plain text + optional ANSI color code. */
+function agentBadge(cell: AgentCell | undefined): { text: string; code?: string } {
+  if (!cell) return { text: "n/a" };
+  if (cell.status === "ok") return { text: "✓ ok", code: ANSI.green };
+  if (cell.status === "fail") return { text: "✗ fail", code: ANSI.red };
+  return { text: "— skip", code: ANSI.yellow };
+}
+
+const DASH = "—";
+const driftText = (r: AgentValidationRow): string => r.drift ?? (r.hostVersion && r.imageVersion ? "same" : "");
+
+/** Static (non-TTY) agent table — the live equivalent is AgentTableApp. */
+function printAgentTable(rows: AgentValidationRow[], colorEnabled: boolean): void {
+  const pad = (s: string, w: number): string => s.padEnd(w);
+  const colored = (text: string, w: number, code?: string): string => (code ? color(pad(text, w), colorEnabled, code) : pad(text, w));
+  const w = {
+    agent: Math.max("Agent".length, ...rows.map((r) => r.type.length)),
+    host: Math.max("Host ver".length, ...rows.map((r) => (r.hostVersion ?? DASH).length)),
+    image: Math.max("Image ver".length, ...rows.map((r) => (r.imageVersion ?? DASH).length)),
+    drift: Math.max("Drift".length, ...rows.map((r) => driftText(r).length)),
+    hstat: Math.max("Host".length, ...rows.map((r) => agentBadge(r.host).text.length)),
+  };
+  console.log("");
+  console.log(`  ${color([pad("Agent", w.agent), pad("Host ver", w.host), pad("Image ver", w.image), pad("Drift", w.drift), pad("Host", w.hstat), "Image"].join("  "), colorEnabled, ANSI.bold)}`);
+  for (const r of rows) {
+    const hb = agentBadge(r.host);
+    const ib = agentBadge(r.image);
+    const drift = driftText(r);
+    const driftCode = drift === "older" ? ANSI.yellow : drift && drift !== "same" ? ANSI.dim : undefined;
+    console.log(
+      `  ${pad(r.type, w.agent)}  ${pad(r.hostVersion ?? DASH, w.host)}  ${pad(r.imageVersion ?? DASH, w.image)}  ${colored(drift, w.drift, driftCode)}  ${colored(hb.text, w.hstat, hb.code)}  ${colored(ib.text, ib.text.length, ib.code)}`
+    );
+  }
+}
+
+/** Raw host/image responses (and errors) per agent, for debugging. */
+function printAgentResponses(rows: AgentValidationRow[], colorEnabled: boolean): void {
+  const agentW = Math.max("Agent".length, ...rows.map((r) => r.type.length));
+  const pad = (s: string, len: number): string => s.padEnd(len);
+  console.log("");
+  console.log(`  ${color("Responses", colorEnabled, ANSI.bold)}`);
+  for (const r of rows) {
+    const entries: Array<[string, AgentCell]> = [];
+    if (r.host) entries.push(["host", r.host]);
+    entries.push(["image", r.image]);
+    entries.forEach(([level, cell], i) => {
+      console.log(`  ${pad(i === 0 ? r.type : "", agentW)}  ${pad(level, 5)}  ${cell.detail}`);
+      if (cell.fix) console.log(`  ${pad("", agentW)}  ${pad("", 5)}  ${color("↳", colorEnabled, ANSI.dim)} ${cell.fix}`);
+    });
+  }
+}
+
 /**
- * Run live agent validation and print the results. Returns true if any agent
- * failed. Loads its own orchestrator/config so it can run after the main check.
+ * Run agent validation and print results. Uses a live, streaming table on an
+ * interactive terminal; a static table otherwise. Raw responses follow. Returns
+ * true if any agent failed. Loads its own orchestrator/config so it can run
+ * after the main check.
  */
 async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<boolean> {
   const colorEnabled = shouldUseColor();
@@ -1012,52 +1066,64 @@ async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<bool
 
   console.log("");
   console.log(color("Agent Validation", colorEnabled, ANSI.cyan, ANSI.bold));
-  console.log(color("  Live test call to each agent image to confirm auth works", colorEnabled, ANSI.dim));
+  console.log(color("  Live test call to each agent (host CLI + image) to confirm auth works", colorEnabled, ANSI.dim));
+  console.log("");
 
-  const results = await validateAgents(orch, cfg, {
-    agents: runOptions.agents,
-    onProgress: (message) => console.log(color(`  … ${message}`, colorEnabled, ANSI.dim)),
-  });
-
-  const nameWidth = Math.max(18, ...results.map((r) => r.name.length));
-  for (const r of results) {
-    console.log(`  ${formatStatus(r.status, colorEnabled)} ${r.name.padEnd(nameWidth)}  ${r.detail}`);
-    if (r.fix && r.status !== "ok") {
-      console.log(`         ${color("↳", colorEnabled, ANSI.dim)} ${r.fix}`);
-    }
+  let rows: AgentValidationRow[];
+  if (isInteractiveTerminal() && process.env.NO_COLOR === undefined) {
+    const { renderAgentValidation } = await import("../tui/app.js");
+    rows = await renderAgentValidation(orch, cfg, runOptions.agents);
+  } else {
+    rows = await validateAgents(orch, cfg, {
+      agents: runOptions.agents,
+      onProgress: (message) => console.log(color(`  … ${message}`, colorEnabled, ANSI.dim)),
+    });
+    if (rows.length > 0) printAgentTable(rows, colorEnabled);
   }
-  return results.some((r) => r.status === "fail");
+  if (rows.length === 0) return false;
+
+  printAgentResponses(rows, colorEnabled);
+  return rows.some((r) => r.host?.status === "fail" || r.image.status === "fail");
 }
 
 /** Creates the `check` command. */
 export function createCheckCommand(): Command {
   return new Command("check")
-    .description("Verify the host is ready to run a local ProPR stack (Docker, images, agents)")
+    .description("Verify the host is ready to run a local ProPR stack")
+    .argument("[mode]", "what to check: system (default) | agents | all", "system")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
-    .option("--agents <list>", "Comma-separated agent types to --verify (default: all)")
+    .option("--agents <list>", "Comma-separated agent types to validate (default: all)")
     .option("--skip-remote-image-check", "Skip registry freshness checks for local Docker images (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
-    .option("--validate-agents", "Make a live test call to each agent image to confirm auth works (billable LLM calls)")
+    .option("--validate-agents", "Append live agent validation to a system check (same as `check all`)")
     .addHelpText("after", `
+Modes:
+  system   Docker, images, stack, agent credentials, GitHub, config (default)
+  agents   Live test call to each agent (host CLI + image) to confirm auth works
+  all      Everything: system checks followed by agent validation
+
 Examples:
-  $ propr check
+  $ propr check                 # system checks
+  $ propr check agents          # only validate agents (billable LLM calls)
+  $ propr check all             # system checks + agent validation
   $ propr check --fix
-  $ propr check --verify
-  $ propr check --verify --agents claude,codex
-  $ propr check --validate-agents
+  $ propr check agents --agents claude,codex
   $ propr check --json
 
 Notes:
-  Image checks contact the registry by default to compare local and remote digests.
-  Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline environments.
-  --validate-agents runs a real prompt through each agent image (mounts its
-  credentials, makes a billable LLM call). In an interactive terminal without
-  the flag, check offers to run it at the end. Restrict with --agents.
+  Agent validation runs a real prompt through each agent's host CLI and Docker
+  image (mounts its credentials, makes billable LLM calls). Restrict with --agents.
+  Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline runs.
 `)
-    .action(async (options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {
+    .action(async (mode: string, options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {
       try {
+        const MODES = ["system", "agents", "all"];
+        if (!MODES.includes(mode)) {
+          console.error(`Error: unknown check mode '${mode}'. Use one of: ${MODES.join(", ")}.`);
+          process.exit(1);
+        }
         if (options.json && options.fix) {
           console.error("Error: --json cannot be combined with --fix; JSON output is data-only and never prompts.");
           process.exit(1);
@@ -1074,14 +1140,31 @@ Notes:
           skipRemoteImageCheck: options.skipRemoteImageCheck,
         };
 
-        // JSON: data-only, no streaming/printing decoration. With --validate-agents
-        // the live results are merged into the output array.
+        // `check agents`: only agent validation, no system checks.
+        if (mode === "agents") {
+          if (options.json) {
+            const { cfg, rootDir, orch } = await getHostConfig({ configManager: await createConfigManager(), root: runOptions.root });
+            const rows = await validateAgents(orch, cfg, { agents: runOptions.agents });
+            const results = agentRowsToChecks(rows);
+            printOutput({ rootDir, results: results.map(jsonResult) }, true);
+            if (results.some((r) => r.status === "fail")) process.exit(1);
+            return;
+          }
+          if (await runAndPrintValidation(runOptions)) process.exit(1);
+          return;
+        }
+
+        // `check` / `check system` / `check all`. Agents run when mode=all or --validate-agents.
+        const runAgents = mode === "all" || Boolean(options.validateAgents);
+
+        // JSON: data-only; agent results merged in when requested.
         if (options.json) {
           const outcome = await runChecks(runOptions);
           let results = outcome.results;
-          if (options.validateAgents) {
+          if (runAgents) {
             const { orch, cfg } = await getHostConfig({ configManager: await createConfigManager(), root: runOptions.root });
-            results = [...results, ...(await validateAgents(orch, cfg, { agents: runOptions.agents }))];
+            const rows = await validateAgents(orch, cfg, { agents: runOptions.agents });
+            results = [...results, ...agentRowsToChecks(rows)];
           }
           printOutput({ rootDir: outcome.rootDir, results: results.map(jsonResult) }, true);
           if (results.some((r) => r.status === "fail")) process.exit(1);
@@ -1093,20 +1176,16 @@ Notes:
           const outcome = await runChecks(runOptions);
           printStaticChecks(outcome, !options.fix && collectRemediationActions(outcome).length > 0);
           let anyFail = outcome.anyFail;
-          if (options.validateAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+          if (runAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
           if (anyFail) process.exit(1);
           return;
         }
 
         // Interactive TTY: live, streaming view (+ in-app remediation with --fix,
-        // and an in-app "validate agents?" prompt unless the flag forces it).
-        const { outcome, validate } = await runChecksInteractive(
-          runOptions,
-          Boolean(options.fix),
-          !options.validateAgents
-        );
+        // and an in-app "validate agents?" prompt unless agents already run).
+        const { outcome, validate } = await runChecksInteractive(runOptions, Boolean(options.fix), !runAgents);
         let anyFail = outcome?.anyFail ?? false;
-        if (options.validateAgents || validate) {
+        if (runAgents || validate) {
           anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
         }
         if (anyFail) process.exit(1);
