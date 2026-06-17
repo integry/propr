@@ -764,15 +764,6 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
     const res = docker(['ps', '-a', '--filter', `label=propr.stack=${cfg.stack}`, '--format', '{{.Names}}'], { capture: true });
     const names = new Set(res.stdout.split('\n').map((s) => s.trim()).filter(Boolean));
 
-    // Also discover legacy containers that were created before labeling was added
-    // (named <stack>-<service> but missing the propr.stack label).
-    for (const service of SERVICES) {
-        const legacyName = `${cfg.stack}-${service}`;
-        if (!names.has(legacyName) && containerExists(cfg, legacyName)) {
-            names.add(legacyName);
-        }
-    }
-
     const failed = [];
     for (const name of names) {
         // docker() with capture never throws — check the exit status explicitly so
