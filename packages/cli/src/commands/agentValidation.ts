@@ -33,16 +33,25 @@ const FAILURE_MARKERS =
   /authentication required|please (?:visit|log ?in|sign ?in|authenticate)|not (?:logged ?in|authenticated|signed ?in)|unauthorized|\b401\b|\b403\b|invalid (?:api ?key|credentials|token)|(?:missing|no) api key|api key (?:not|is missing|required)|login required|permission denied|errno 13|command not found|must provide a (?:message|command)|quota|rate limit/i;
 
 // Container entrypoint / setup chatter to drop from the captured response.
+// The real agent answer is emitted last (entrypoint setup runs first), so the
+// response summary takes the final non-noise line rather than joining everything.
 const NOISE_MARKERS =
-  /skipping firewall|gh_token|github token|safe\.directory|using legacy|config directory (?:available|not)|ownership|^warning:/i;
+  /skipping firewall|gh_token|github token|safe\.directory|using legacy|config(?:uration)? (?:directory )?(?:available|not|mounted|found)|ownership|^warning:|operations may fail|contents of|^total \d|^[-d][rwx-]{9}|setting up|executing command|wrapper|operational comment|filtering/i;
 
-function cleanOutput(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !NOISE_MARKERS.test(line))
-    .join(" ")
-    .trim();
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+/** Best-effort extraction of the agent's actual reply: the last non-noise line. */
+function responseSummary(stdout: string, stderr: string): string {
+  const meaningful = (text: string): string[] =>
+    text
+      .replace(ANSI_RE, "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !NOISE_MARKERS.test(l));
+  const lines = meaningful(stdout);
+  const last = lines.length ? lines[lines.length - 1] : meaningful(stderr).pop();
+  return (last ?? "").trim();
 }
 
 /** Classify a finished run as ok/fail with a concise human detail. */
@@ -72,8 +81,8 @@ function evaluateRun(run: ReturnType<typeof spawnSync>): { ok: boolean; detail: 
     return { ok: false, detail: (line || "authentication/availability error").slice(0, 160) };
   }
 
-  const cleaned = cleanOutput(stdout) || cleanOutput(stderr);
-  return { ok: true, detail: cleaned ? `responded: ${cleaned.slice(0, 100)}` : "responded" };
+  const response = responseSummary(stdout, stderr);
+  return { ok: true, detail: response ? `responded: ${response.slice(0, 100)}` : "responded" };
 }
 
 interface ImageContext {
@@ -91,7 +100,7 @@ interface AgentValidationDescriptor {
   defaultHostDir: string;
   /** Host CLI binary name, or undefined when no host invocation is known. */
   hostBin?: string;
-  hostInvocation?: (prompt: string) => { args: string[]; stdin?: string };
+  hostInvocation?: (ctx: { prompt: string; promptFileHost: string }) => { args: string[]; stdin?: string };
   imageInvocation: (ctx: ImageContext) => { args: string[]; stdin?: string };
 }
 
@@ -128,7 +137,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostDirKey: "hostClaudeDir",
     defaultHostDir: join(home, ".claude"),
     hostBin: "claude",
-    hostInvocation: (prompt) => ({ args: ["-p", prompt, "--output-format", "text"] }),
+    hostInvocation: ({ prompt }) => ({ args: ["-p", prompt, "--output-format", "text"] }),
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.claude", workspaceDir),
@@ -143,7 +152,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostDirKey: "hostCodexDir",
     defaultHostDir: join(home, ".codex"),
     hostBin: "codex",
-    hostInvocation: (prompt) => ({ args: ["exec", "--skip-git-repo-check", prompt] }),
+    hostInvocation: ({ prompt }) => ({ args: ["exec", "--skip-git-repo-check", prompt] }),
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.codex", workspaceDir, {
@@ -160,7 +169,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostDirKey: "hostAntigravityDir",
     defaultHostDir: join(home, ".gemini"),
     hostBin: "agy",
-    hostInvocation: (prompt) => ({ args: ["-p", prompt] }),
+    hostInvocation: ({ prompt }) => ({ args: ["-p", prompt] }),
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.gemini", workspaceDir, {
@@ -177,7 +186,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostDirKey: "hostOpencodeXdgDir",
     defaultHostDir: join(home, ".config", "opencode"),
     hostBin: "opencode",
-    hostInvocation: (prompt) => ({ args: ["run", prompt] }),
+    hostInvocation: ({ prompt }) => ({ args: ["run", prompt] }),
     imageInvocation: ({ image, hostDir, workspaceDir, cfg }) => {
       const extra = cfg.hostOpencodeDataDir
         ? ["-v", `${cfg.hostOpencodeDataDir}:/home/node/.local/share/opencode:rw`]
@@ -195,7 +204,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     imageKey: "agent-vibe",
     hostDirKey: "hostVibeDir",
     defaultHostDir: join(home, ".vibe"),
-    // Host vibe invocation is not well-defined here; skip the host level.
+    hostBin: "vibe",
+    hostInvocation: ({ promptFileHost }) => ({ args: ["--prompt-file", promptFileHost] }),
     imageInvocation: ({ image, hostDir, workspaceDir, promptFileHost }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.vibe", workspaceDir, {
@@ -273,7 +283,7 @@ export async function validateAgents(
         if (!commandExists(d.hostBin)) {
           tasks.push(ok(o, { name: `Host: ${d.type}`, status: "warn", detail: `${d.hostBin} not installed on host — skipped`, group: "Agents" }));
         } else {
-          const { args, stdin } = d.hostInvocation(VALIDATION_PROMPT);
+          const { args, stdin } = d.hostInvocation({ prompt: VALIDATION_PROMPT, promptFileHost });
           const bin = d.hostBin;
           tasks.push(
             (async () => {
