@@ -10,7 +10,7 @@
 import { Command } from "commander";
 import { existsSync, copyFileSync, chmodSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createConfigManager } from "../config/index.js";
 
@@ -18,6 +18,10 @@ interface DetectedCred {
   envKey: string;
   path: string;
 }
+
+// Mirrors the launcher's HOST_VIBE_PROMPT_CACHE_DIR / VIBE_PROMPT_CACHE_DIR
+// default in docker/launcher/orchestrator.mjs.
+const DEFAULT_VIBE_PROMPT_CACHE_DIR = "/tmp/propr-vibe-prompts";
 
 /** Resolve the bundled .env.example, falling back to a repo checkout. */
 function resolveEnvExample(): string | undefined {
@@ -142,6 +146,26 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
   }
   result.detected = detected;
   result.pendingCredentials = toAppend;
+
+  // 3b. When Vibe is in play, pre-create its prompt-cache dir so spawned Vibe
+  //     agent containers can bind-mount a writable host directory. Creating it
+  //     here (owned by the invoking user) avoids Docker auto-creating it as
+  //     root. Defaults to /tmp/propr-vibe-prompts (matching the launcher
+  //     default); an explicit HOST_VIBE_PROMPT_CACHE_DIR is honored. It is an
+  //     ephemeral, world-writable cache shared across containers.
+  const vibeConfigured =
+    detected.some((c) => c.envKey === "HOST_VIBE_DIR") ||
+    /^\s*(?:export\s+)?(?:HOST_VIBE_DIR|MISTRAL_API_KEY)\s*=\s*\S/m.test(envContent);
+  if (vibeConfigured) {
+    const match = envContent.match(/^\s*(?:export\s+)?HOST_VIBE_PROMPT_CACHE_DIR\s*=\s*(.+)\s*$/m);
+    const configured = match?.[1]?.trim().replace(/^["']|["']$/g, "");
+    const cacheDir = configured || DEFAULT_VIBE_PROMPT_CACHE_DIR;
+    if (isAbsolute(cacheDir) && !cacheDir.includes(":") && !existsSync(cacheDir)) {
+      mkdirSync(cacheDir, { recursive: true });
+      try { chmodSync(cacheDir, 0o777); } catch { /* best-effort: cross-container write access */ }
+      result.dirsCreated.push(cacheDir);
+    }
+  }
 
   // 4. Persist the stack root so other commands can find it.
   const configManager = await createConfigManager();

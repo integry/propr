@@ -915,7 +915,16 @@ export function validateEnv(cfg) {
             errors.push(invalid);
         } else if (cfg.hostVibePromptCacheDir && cfg.validateHostPaths) {
             if (!existsSync(cfg.hostVibePromptCacheDir)) {
-                errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist. Create it: mkdir -p ${cfg.hostVibePromptCacheDir}`);
+                // A missing prompt cache is trivially recoverable — `propr init
+                // stack`, `propr start`, or Docker's bind-mount setup will create
+                // it — so only fail when its parent location is not writable and
+                // it therefore cannot be created.
+                const parent = dirname(cfg.hostVibePromptCacheDir);
+                let creatable = false;
+                try { accessSync(parent, fsConstants.W_OK); creatable = true; } catch { /* parent not writable */ }
+                if (!creatable) {
+                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist and ${parent} is not writable. Create it manually: mkdir -p ${cfg.hostVibePromptCacheDir}`);
+                }
             } else {
                 try {
                     accessSync(cfg.hostVibePromptCacheDir, fsConstants.W_OK);
