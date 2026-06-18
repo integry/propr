@@ -2,7 +2,7 @@ name: PR Preview
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, labeled, unlabeled, closed]
+    types: [labeled, unlabeled, closed]
 
 concurrency:
   group: pr-preview-${{ github.event.pull_request.number }}
@@ -18,9 +18,8 @@ jobs:
     name: Deploy Preview
     if: >-
       github.event.pull_request.state == 'open' &&
-      github.event.action != 'unlabeled' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'preview-env') &&
-      contains(github.event.pull_request.labels.*.name, 'preview-env')
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'preview-env'
     runs-on: [self-hosted, linux, x64, propr]
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -38,7 +37,8 @@ jobs:
 
       - name: Deploy approved PR preview
         # This runs PR code on self-hosted infrastructure. The preview-env label
-        # is the maintainer approval gate for that trust boundary.
+        # is the maintainer approval gate for that exact deployment event. New
+        # commits require removing and re-adding the label before redeployment.
         run: ./scripts/deploy-pr.sh "$PR_NUMBER"
 
   teardown:
