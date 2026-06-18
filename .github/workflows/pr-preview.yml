@@ -11,7 +11,6 @@ concurrency:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
 
 jobs:
   deploy:
@@ -26,7 +25,9 @@ jobs:
         github.event.pull_request.author_association == 'MEMBER' ||
         github.event.pull_request.author_association == 'COLLABORATOR'
       )
+    # The propr label must target the single host that owns preview Docker stacks.
     runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 45
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -91,14 +92,20 @@ jobs:
             done
 
       - name: Deploy approved PR preview
+        id: deploy_preview
         # This still runs same-repository PR code on self-hosted infrastructure.
         # The preview-env label is the maintainer approval gate for this exact
         # deployment event. New commits require removing and re-adding the label
         # before redeployment.
+        # Fork PR previews are intentionally blocked because compose builds run
+        # PR-controlled code against the self-hosted Docker daemon.
         env:
           PR_SOURCE_DIR: ${{ github.workspace }}/${{ env.PR_CHECKOUT_DIR }}
         run: |
-          env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_REPOSITORY \
+          env -i \
+            HOME="$HOME" \
+            PATH="$PATH" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             PR_SOURCE_DIR="$PR_SOURCE_DIR" \
             PR_HEAD_SHA="$PR_HEAD_SHA" \
             PR_HAS_DEMO_LABEL="$PR_HAS_DEMO_LABEL" \
@@ -115,11 +122,23 @@ jobs:
           comment_marker="<!-- preview-env-comment -->"
           ui_url="https://pr-${PR_NUMBER}.gitfix.dev"
 
-          comments_json="$(curl -fsS \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+          comments_json="[]"
+          page=1
+          while :; do
+            page_json="$(curl -fsS \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100&page=${page}")"
+            comments_json="$(jq -s '.[0] + .[1]' \
+              <(printf '%s\n' "$comments_json") \
+              <(printf '%s\n' "$page_json"))"
+            count="$(printf '%s\n' "$page_json" | jq 'length')"
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+            page=$((page + 1))
+          done
 
           comment_body="$(printf '%s\n' \
             "$comment_marker" \
@@ -156,6 +175,32 @@ jobs:
               -d "{\"body\": $escaped_body}" >/dev/null
           fi
 
+      - name: Post deploy failure comment
+        if: failure() && steps.deploy_preview.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -e
+          comment_body="$(printf '%s\n' \
+            "## Preview Environment Deployment Failed" \
+            "" \
+            "The preview deployment for commit \`${PR_HEAD_SHA}\` failed." \
+            "" \
+            "**Workflow:** ${RUN_URL}")"
+          escaped_body="$(printf '%s' "$comment_body" | jq -Rs .)"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -d "{\"body\": $escaped_body}" >/dev/null
+
+      - name: Clean PR checkout
+        if: failure() && steps.deploy_preview.outcome == 'failure'
+        run: rm -rf "$PR_CHECKOUT_DIR"
+
   teardown:
     name: Teardown Preview
     if: >-
@@ -169,7 +214,9 @@ jobs:
         (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview-env')) ||
         (github.event.action == 'unlabeled' && github.event.label.name == 'preview-env')
       )
+    # The propr label must target the same single host used by deploy.
     runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 15
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_CHECKOUT_DIR: pr-checkout/pr-${{ github.event.pull_request.number }}

@@ -14,7 +14,8 @@
 #                         /usr/src/app/data/propr.sqlite as a local/container fallback.
 #   PR_SOURCE_DIR       - Path to the pre-checked-out PR source tree.
 #   PR_HEAD_SHA         - Optional PR head SHA for deployment logs.
-#   PR_HAS_DEMO_LABEL   - Set to "true" to enable PROPR_DEMO_MODE in the preview.
+#   PR_HAS_DEMO_LABEL   - Deprecated for CI previews; sanitized PR previews run
+#                         in PROPR_DEMO_MODE because secrets are not copied.
 #
 
 set -e
@@ -215,6 +216,10 @@ fi
 PREVIEW_ENV_FILE="$REPO_ROOT/.env"
 if [ -n "${PR_SOURCE_DIR:-}" ]; then
     write_sanitized_preview_env "$ENV_FILE" "$PREVIEW_ENV_FILE"
+    set_env_var "$PREVIEW_ENV_FILE" "PROPR_DEMO_MODE" "true"
+    set_env_var "$PREVIEW_ENV_FILE" "ENABLE_GITHUB_WEBHOOKS" "false"
+    set_env_var "$PREVIEW_ENV_FILE" "ENABLE_BEARER_AUTH" "false"
+    echo "Sanitized PR preview env uses demo mode with webhooks and bearer auth disabled"
 elif [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$PREVIEW_ENV_FILE" ]; then
     cp "$ENV_FILE" "$PREVIEW_ENV_FILE"
 fi
@@ -236,12 +241,9 @@ fi
 # Inline env vars override the env file values for PR-specific settings
 # --build: Ensures we build the latest code from the branch
 #
-# IMPORTANT: We must unset STAGING_ENV_FILE when running docker compose because:
-# - docker-compose.yml uses ${STAGING_ENV_FILE:-./.env} for volume mounts
-# - If STAGING_ENV_FILE is set to a HOST path (e.g., /root/gitfix/.env), docker compose
-#   will try to mount that path, which doesn't exist inside the container
-# - By unsetting it, docker-compose.yml will use the default "./.env" which is relative
-#   to the compose file location (the repo root)
+# IMPORTANT: Clear deploy-only host paths when running PR-controlled compose.
+# The PR compose file can interpolate environment variables, so staging paths
+# must not be visible to compose after the trusted script has used them.
 #
 # Deploy all services for preview environments
 # Note: VITE_OAUTH_API_URL points to main API for OAuth to avoid registering multiple callback URLs
@@ -257,10 +259,13 @@ FRONTEND_URL="https://pr-${PR_NUMBER}.gitfix.dev" \
 SESSION_REDIS_HOST="host.docker.internal" \
 SESSION_REDIS_PORT="6380" \
 STAGING_ENV_FILE="" \
+STAGING_DB_PATH="" \
+PR_SOURCE_DIR="" \
+PR_HEAD_SHA="" \
 $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" up -d --build
 
 # 5. Database State Handling - copy from staging site
-CONTAINER_ID=$(STAGING_ENV_FILE="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" ps -q api 2>/dev/null || true)
+CONTAINER_ID=$(STAGING_ENV_FILE="" STAGING_DB_PATH="" PR_SOURCE_DIR="" PR_HEAD_SHA="" $DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" $ENV_FILE_ARG -p "propr-pr-${PR_NUMBER}" ps -q api 2>/dev/null || true)
 
 if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"
