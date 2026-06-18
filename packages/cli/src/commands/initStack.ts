@@ -19,9 +19,12 @@ interface DetectedCred {
   path: string;
 }
 
-// Mirrors the launcher's HOST_VIBE_PROMPT_CACHE_DIR / VIBE_PROMPT_CACHE_DIR
-// default in docker/launcher/orchestrator.mjs.
-const DEFAULT_VIBE_PROMPT_CACHE_DIR = "/tmp/propr-vibe-prompts";
+// Mirrors the launcher's HOST_VIBE_PROMPT_CACHE_DIR default in
+// docker/launcher/orchestrator.mjs. Keep it per-user and private because prompt
+// files can contain task/repository context.
+function defaultVibePromptCacheDir(): string {
+  return `/tmp/propr-vibe-prompts-${process.getuid?.() ?? "user"}`;
+}
 
 /** Resolve the bundled .env.example, falling back to a repo checkout. */
 function resolveEnvExample(): string | undefined {
@@ -150,18 +153,19 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
   // 3b. When Vibe is in play, pre-create its prompt-cache dir so spawned Vibe
   //     agent containers can bind-mount a writable host directory. Creating it
   //     here (owned by the invoking user) avoids Docker auto-creating it as
-  //     root. Defaults to /tmp/propr-vibe-prompts (matching the launcher
-  //     default); an explicit HOST_VIBE_PROMPT_CACHE_DIR is honored.
+  //     root. Defaults to a per-user /tmp/propr-vibe-prompts-$uid path
+  //     (matching the launcher default); an explicit
+  //     HOST_VIBE_PROMPT_CACHE_DIR is honored.
   const vibeConfigured =
     detected.some((c) => c.envKey === "HOST_VIBE_DIR") ||
     /^\s*(?:export\s+)?(?:HOST_VIBE_DIR|MISTRAL_API_KEY)\s*=\s*\S/m.test(envContent);
   if (vibeConfigured) {
     const match = envContent.match(/^\s*(?:export\s+)?HOST_VIBE_PROMPT_CACHE_DIR\s*=\s*(.+)\s*$/m);
     const configured = match?.[1]?.trim().replace(/^["']|["']$/g, "");
-    const cacheDir = configured || DEFAULT_VIBE_PROMPT_CACHE_DIR;
+    const cacheDir = configured || defaultVibePromptCacheDir();
     if (isAbsolute(cacheDir) && !cacheDir.includes(":") && !existsSync(cacheDir)) {
-      mkdirSync(cacheDir, { recursive: true });
-      try { chmodSync(cacheDir, 0o777); } catch { /* best-effort: keep bind mount writable across host/container UIDs */ }
+      mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+      try { chmodSync(cacheDir, 0o700); } catch { /* best-effort: keep prompt material private */ }
       result.dirsCreated.push(cacheDir);
     }
   }

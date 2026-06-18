@@ -53,10 +53,10 @@ interface ExecResult {
 function execAsync(
   cmd: string,
   args: string[],
-  opts: { input?: string; cwd?: string; timeoutMs: number }
+  opts: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number }
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -182,7 +182,7 @@ function baseArgs(
     "--security-opt", "no-new-privileges",
     "--cap-add", "CHOWN",
     "--network", "bridge",
-    "--user", "0:0",
+    "--user", hostUserSpec(),
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
     "-v", `${hostDir}:${containerConfigPath}:${opts.configMode ?? "ro"}`,
     "-e", "GH_TOKEN",
@@ -296,10 +296,11 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostBin: "vibe",
     // Host vibe (newer CLI) uses -p; the image's vibe build uses --prompt-file.
     hostInvocation: ({ prompt }) => ({ args: ["-p", prompt] }),
-    imageInvocation: ({ image, hostDir, workspaceDir, promptFileHost }) => ({
+    imageInvocation: ({ image, hostDir, workspaceDir, promptFileHost, cfg }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.vibe", workspaceDir, {
           env: [
+            ...(cfg.mistralApiKey ? ["-e", "MISTRAL_API_KEY"] : []),
             "-e", "VIBE_SOURCE_HOME=/home/node/.vibe",
             "-e", "HOME=/tmp/propr-vibe-home",
             "-e", "VIBE_RUNTIME_HOME=/tmp/propr-vibe-home",
@@ -380,13 +381,18 @@ export interface ValidateAgentsOptions {
 
 /** The agent types that would be validated for the given filter (for seeding a live view). */
 export function agentTypesFor(filter?: string[]): string[] {
-  const selected = filter?.length ? DESCRIPTORS.filter((d) => filter.includes(d.type)) : DESCRIPTORS;
+  const normalized = normalizeAgentFilter(filter);
+  const selected = normalized.length ? DESCRIPTORS.filter((d) => normalized.includes(d.type)) : DESCRIPTORS;
   return selected.map((d) => d.type);
+}
+
+function normalizeAgentFilter(filter?: string[]): string[] {
+  return Array.from(new Set((filter ?? []).map((agent) => agent.trim().toLowerCase()).filter(Boolean)));
 }
 
 export function validateAgentFilter(filter?: string[]): { agents: string[]; unknown: string[] } {
   const known = new Set(DESCRIPTORS.map((d) => d.type));
-  const agents = Array.from(new Set((filter ?? []).map((agent) => agent.trim()).filter(Boolean)));
+  const agents = normalizeAgentFilter(filter);
   return { agents, unknown: agents.filter((agent) => !known.has(agent)) };
 }
 
@@ -499,7 +505,11 @@ export async function validateAgents(
       };
     }
     const { args, stdin } = d.imageInvocation({ image, hostDir, workspaceDir, promptFileHost, cfg });
-    const run = await execAsync("docker", args, { input: stdin, timeoutMs: VALIDATION_TIMEOUT_MS });
+    const run = await execAsync("docker", args, {
+      input: stdin,
+      env: d.type === "vibe" && cfg.mistralApiKey ? { ...process.env, MISTRAL_API_KEY: cfg.mistralApiKey } : undefined,
+      timeoutMs: VALIDATION_TIMEOUT_MS,
+    });
     const ev = evaluateRun(run);
     const loginHint = d.loginArgs ? ` Re-authenticate with: propr agent login ${d.type}.` : "";
     return {
@@ -514,7 +524,11 @@ export async function validateAgents(
     return await Promise.all(
       selected.map(async (d) => {
         const image = cfg.images[d.imageKey];
-        const hostDir = cfg[d.hostDirKey] as string | undefined;
+        let hostDir = cfg[d.hostDirKey] as string | undefined;
+        if (d.type === "vibe" && !hostDir && cfg.mistralApiKey) {
+          hostDir = join(tmp, "vibe-config");
+          mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        }
         // Emit each cell as it resolves so a live view can fill the table in.
         const versionP = versionInfo(d, image, orch).then((v) => {
           options.onUpdate?.(d.type, { field: "version", hostVersion: v.host, imageVersion: v.image, drift: v.drift });

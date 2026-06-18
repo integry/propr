@@ -42,6 +42,10 @@ function isDirectory(path) {
     }
 }
 
+function defaultHostVibePromptCacheDir() {
+    return `/tmp/propr-vibe-prompts-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`;
+}
+
 // ---------------------------------------------------------------------------
 // .env file parsing (parameterized by the file path so it works for both the
 // launcher's local env file and the host's <root>/.env)
@@ -161,11 +165,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const mistralApiKey = get('MISTRAL_API_KEY');
 
     const vibePromptCacheDir = get('VIBE_PROMPT_CACHE_DIR') || '/tmp/propr-vibe-prompts';
-    // The host bind path defaults to the same location as the container path when
-    // Vibe is enabled, so the prompt cache works out of the box without the user
-    // setting HOST_VIBE_PROMPT_CACHE_DIR. An explicit value is still validated.
+    // The host bind path defaults to a per-user private /tmp location when Vibe
+    // is enabled, so prompt files are not exposed through a shared 0777 cache.
+    // An explicit HOST_VIBE_PROMPT_CACHE_DIR is still honored and validated.
     const vibeEnabled = Boolean(hostVibeDir || mistralApiKey);
-    const hostVibePromptCacheDir = get('HOST_VIBE_PROMPT_CACHE_DIR') || (vibeEnabled ? '/tmp/propr-vibe-prompts' : undefined);
+    const hostVibePromptCacheDir = get('HOST_VIBE_PROMPT_CACHE_DIR') || (vibeEnabled ? defaultHostVibePromptCacheDir() : undefined);
 
     // Host path to the GitHub App private key (.pem). When set, the key is
     // bind-mounted into the app containers (HOST:HOST, read-only) and
@@ -917,13 +921,6 @@ export function validateEnv(cfg) {
         );
     }
     const vibeEnabled = Boolean(cfg.hostVibeDir || cfg.mistralApiKey);
-    if (vibeEnabled && !cfg.hostVibePromptCacheDir) {
-        const vibeSource = cfg.hostVibeDir ? 'HOST_VIBE_DIR' : 'MISTRAL_API_KEY';
-        errors.push(
-            `Vibe support is enabled (via ${vibeSource}) but HOST_VIBE_PROMPT_CACHE_DIR is missing. ` +
-            'Set it to a host-visible directory path (e.g. /tmp/propr-vibe-prompts).'
-        );
-    }
     if (vibeEnabled || cfg.hostVibePromptCacheDir) {
         // Only validate the host path when it is actually set — a missing value is
         // already reported above, so this avoids a misleading second "must be an

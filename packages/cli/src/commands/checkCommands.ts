@@ -165,8 +165,8 @@ function runCliChecks(emit: (result: CheckResult) => void): void {
 export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksOutcome> {
   const results: CheckResult[] = [];
   // Record a finalized result and notify any live presenter immediately.
-  const emit = (result: CheckResult): void => {
-    results.push(result);
+  const emit = (result: CheckResult, opts: { record?: boolean } = {}): void => {
+    if (opts.record !== false) results.push(result);
     options.onResult?.(result);
   };
   const configManager = await createConfigManager();
@@ -322,7 +322,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       imageEntries.map(async ([key, tag]) => {
         const result = await computeImageResult(key, tag);
         computed.set(key, result);
-        options.onResult?.(result); // live update in completion order
+        emit(result, { record: false }); // live update in completion order
       })
     );
     // Append in manifest order so outcome.results is stable across runs.
@@ -1006,15 +1006,24 @@ async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<bool
   console.log("");
 
   let rows: AgentValidationRow[];
-  if (isInteractiveTerminal() && process.env.NO_COLOR === undefined) {
-    const { renderAgentValidation } = await import("../tui/app.js");
-    rows = await renderAgentValidation(orch, cfg, runOptions.agents);
-  } else {
+  const runStaticValidation = async (): Promise<AgentValidationRow[]> => {
     rows = await validateAgents(orch, cfg, {
       agents: runOptions.agents,
       onProgress: (message) => console.log(color(`  … ${message}`, colorEnabled, ANSI.dim)),
     });
     if (rows.length > 0) printAgentTable(rows, colorEnabled);
+    return rows;
+  };
+  if (isInteractiveTerminal() && process.env.NO_COLOR === undefined) {
+    try {
+      const { renderAgentValidation } = await import("../tui/app.js");
+      rows = await renderAgentValidation(orch, cfg, runOptions.agents);
+    } catch (error) {
+      if (!isLiveRendererFallbackError(error)) throw error;
+      rows = await runStaticValidation();
+    }
+  } else {
+    rows = await runStaticValidation();
   }
   if (rows.length === 0) return false;
 
@@ -1085,6 +1094,9 @@ Notes:
 
         // `check agents`: only agent validation, no system checks.
         if (mode === "agents") {
+          if (options.fix && !options.json) {
+            console.error("Note: --fix has no remediation flow for `propr check agents`; running validation only.");
+          }
           if (options.json) {
             const { cfg, rootDir, orch } = await getHostConfig({ configManager: await createConfigManager(), root: runOptions.root });
             const rows = await validateAgents(orch, cfg, { agents: runOptions.agents });
@@ -1134,8 +1146,8 @@ Notes:
         }
 
         // Interactive TTY: live, streaming view (+ in-app remediation with --fix,
-        // and an in-app "validate agents?" prompt unless agents already run).
-        const { outcome, validate } = await runChecksInteractive(runOptions, Boolean(options.fix), !runAgents);
+        // and an in-app "validate agents?" prompt only during --fix).
+        const { outcome, validate } = await runChecksInteractive(runOptions, Boolean(options.fix), Boolean(options.fix) && !runAgents);
         let anyFail = outcome?.anyFail ?? false;
         if (runAgents || validate) {
           anyFail = (await runAndPrintValidation(runOptions)) || anyFail;

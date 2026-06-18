@@ -498,6 +498,10 @@ Examples:
           console.log(`Agents with interactive login: ${available.join(", ")}`);
           return;
         }
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          console.error("Error: propr agent login requires an interactive terminal because Docker login runs with -it.");
+          process.exit(1);
+        }
 
         const configManager = await createConfigManager();
         const { orch, cfg } = await getHostConfig({ configManager, root: options.root });
