@@ -19,7 +19,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
-import { validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, type AgentCell, type AgentValidationRow } from "./agentValidation.js";
+import { validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -989,6 +989,46 @@ function printAgentResponses(rows: AgentValidationRow[], colorEnabled: boolean):
   }
 }
 
+/** Render Agent Tank subscription usage (or an install hint when absent). */
+function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void {
+  console.log("");
+  console.log(color("Subscription Usage (Agent Tank)", colorEnabled, ANSI.cyan, ANSI.bold));
+  if (!usage.installed) {
+    console.log(color("  Not installed — track Claude/Codex/Antigravity plan limits with:", colorEnabled, ANSI.dim));
+    console.log("  npm install -g agent-tank");
+    return;
+  }
+  console.log(color(`  agent-tank ${usage.version ?? ""}`.trimEnd(), colorEnabled, ANSI.dim));
+  if (usage.error) {
+    console.log(`  ${color("!", colorEnabled, ANSI.yellow)} could not read usage: ${usage.error}`);
+    return;
+  }
+  const agents = Object.keys(usage.usage ?? {});
+  if (agents.length === 0) {
+    console.log(color("  No agents reported.", colorEnabled, ANSI.dim));
+    return;
+  }
+  const nameWidth = Math.max(5, ...agents.map((a) => a.length));
+  for (const name of agents) {
+    const entry = usage.usage![name];
+    if (entry?.error) {
+      console.log(`  ${name.padEnd(nameWidth)}  ${color(entry.error, colorEnabled, ANSI.yellow)}`);
+      continue;
+    }
+    const metrics = Object.values(entry?.usage ?? {});
+    if (metrics.length === 0) {
+      console.log(`  ${name.padEnd(nameWidth)}  (no data)`);
+      continue;
+    }
+    metrics.forEach((m, i) => {
+      const label = m.label ?? "usage";
+      const pct = m.percent ?? m.percentUsed;
+      const resets = m.resetsIn ? ` (resets ${m.resetsIn})` : "";
+      console.log(`  ${(i === 0 ? name : "").padEnd(nameWidth)}  ${label}: ${pct ?? "?"}%${resets}`);
+    });
+  }
+}
+
 /**
  * Run agent validation and print results. Uses a live, streaming table on an
  * interactive terminal; a static table otherwise. Raw responses follow. Returns
@@ -1004,6 +1044,10 @@ async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<bool
   console.log(color("Agent Validation", colorEnabled, ANSI.cyan, ANSI.bold));
   console.log(color("  Live test call to each agent (host CLI + image) to confirm auth works", colorEnabled, ANSI.dim));
   console.log("");
+
+  // Read Agent Tank subscription usage concurrently with the validation (it is
+  // slow and independent), then render it after the responses.
+  const tankUsagePromise = getAgentTankUsage();
 
   let rows: AgentValidationRow[];
   const runStaticValidation = async (): Promise<AgentValidationRow[]> => {
@@ -1028,6 +1072,7 @@ async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<bool
   if (rows.length === 0) return false;
 
   printAgentResponses(rows, colorEnabled);
+  printAgentTankUsage(await tankUsagePromise, colorEnabled);
   return rows.some((r) => r.host?.status === "fail" || r.image.status === "fail");
 }
 

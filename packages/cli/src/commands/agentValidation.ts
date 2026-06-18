@@ -605,3 +605,49 @@ export function planAgentLogin(
   ];
   return { plan: { image, hostDir, dockerArgs } };
 }
+
+// ---------------------------------------------------------------------------
+// Agent Tank — subscription usage (optional, external `agent-tank` CLI)
+// ---------------------------------------------------------------------------
+
+interface AgentTankMetric {
+  label?: string;
+  percent?: number;
+  percentUsed?: number;
+  resetsIn?: string;
+}
+
+interface AgentTankAgent {
+  usage?: Record<string, AgentTankMetric>;
+  metadata?: { email?: string; model?: string };
+  error?: string | null;
+}
+
+export interface AgentTankUsage {
+  installed: boolean;
+  version?: string;
+  usage?: Record<string, AgentTankAgent>;
+  error?: string;
+}
+
+/**
+ * Read subscription usage from the external `agent-tank` CLI (if installed),
+ * via `agent-tank --once --json`. Tracks Claude/Codex/Antigravity plan limits;
+ * never throws. Slow (it runs each CLI's /usage), so callers run it concurrently.
+ */
+export async function getAgentTankUsage(): Promise<AgentTankUsage> {
+  if (!commandExists("agent-tank")) return { installed: false };
+
+  const ver = await execAsync("agent-tank", ["--version"], { timeoutMs: 10_000 });
+  const version = parseVersion(`${ver.stdout}\n${ver.stderr}`);
+
+  const res = await execAsync("agent-tank", ["--once", "--json"], { timeoutMs: 90_000 });
+  if (res.error?.code === "ETIMEDOUT") return { installed: true, version, error: "timed out reading usage" };
+  try {
+    const data = JSON.parse(res.stdout.trim()) as Record<string, AgentTankAgent>;
+    return { installed: true, version, usage: data };
+  } catch {
+    const reason = (res.stderr || res.stdout || "could not parse agent-tank output").trim().split("\n").pop();
+    return { installed: true, version, error: (reason || "could not parse agent-tank output").slice(0, 160) };
+  }
+}
