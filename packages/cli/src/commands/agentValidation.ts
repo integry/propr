@@ -89,7 +89,12 @@ function responseSummary(stdout: string, stderr: string): string {
       .filter((l) => l.length > 0 && !NOISE_MARKERS.test(l));
   const lines = meaningful(stdout);
   const last = lines.length ? lines[lines.length - 1] : meaningful(stderr).pop();
-  return (last ?? "").trim();
+  // Strip opencode's TUI status prefix (e.g. "> build · <model>") so the reply
+  // reads like the others.
+  return (last ?? "")
+    .replace(/^>\s*\w+\s*[·•∙]\s*/u, "")
+    .replace(/^>\s*/u, "")
+    .trim();
 }
 
 function truncateDetail(text: string, max: number): string {
