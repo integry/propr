@@ -8,10 +8,12 @@
 # Usage: ./scripts/deploy-pr.sh <pr_number>
 #
 # Environment Variables:
-#   STAGING_ENV_FILE    - Path to the staging .env file (defaults to /home/node/workspace/.env)
-#   STAGING_DB_PATH     - Path to the staging database file to copy (optional)
+#   STAGING_ENV_FILE    - Path to the staging .env file (required in GitHub Actions)
+#   STAGING_DB_PATH     - Optional staging database file to copy. When unset,
+#                         DB_FILENAME from the staging env file is used, then
+#                         /usr/src/app/data/propr.sqlite as a final fallback.
 #   GITHUB_REPOSITORY   - Repository in format owner/repo (required for PR comments)
-#   GITHUB_TOKEN        - GitHub token for API calls (required for PR comments)
+#   GITHUB_TOKEN        - Host-side GitHub token for API calls and checkout.
 #
 
 set -e
@@ -26,6 +28,11 @@ PR_HAS_DEMO_LABEL="false"
 
 if [ -z "$PR_NUMBER" ]; then
   echo "Usage: $0 <pr_number>"
+  exit 1
+fi
+
+if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -z "$STAGING_ENV_FILE" ]; then
+  echo "Error: STAGING_ENV_FILE is required in GitHub Actions. Set the PR_PREVIEW_STAGING_ENV_FILE repository variable."
   exit 1
 fi
 
@@ -231,24 +238,28 @@ if [ -n "$CONTAINER_ID" ]; then
     echo "Preview environment deployed successfully!"
     echo "API container: $CONTAINER_ID"
 
-    # Copy database from staging site
-    # Resolve the DB path from the env file (falls back to default)
-    STAGING_DB_PATH=""
-    if [ -n "$ENV_FILE" ]; then
-        STAGING_DB_PATH=$(grep -E '^DB_FILENAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    # Copy database from staging site. Prefer an explicit STAGING_DB_PATH, then
+    # DB_FILENAME from the staging env file, then the historical default.
+    SEED_DB_PATH="${STAGING_DB_PATH:-}"
+    if [ -n "$SEED_DB_PATH" ] && [ ! -f "$SEED_DB_PATH" ]; then
+        echo "Warning: Explicit STAGING_DB_PATH not found at $SEED_DB_PATH; falling back to DB_FILENAME"
+        SEED_DB_PATH=""
     fi
-    STAGING_DB_PATH="${STAGING_DB_PATH:-/usr/src/app/data/propr.sqlite}"
+    if [ -z "$SEED_DB_PATH" ] && [ -n "$ENV_FILE" ]; then
+        SEED_DB_PATH=$(grep -E '^DB_FILENAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+    fi
+    SEED_DB_PATH="${SEED_DB_PATH:-/usr/src/app/data/propr.sqlite}"
     # Extract just the filename for the destination path
-    DB_FILENAME=$(basename "$STAGING_DB_PATH")
-    if [ -f "$STAGING_DB_PATH" ]; then
-        echo "Copying database from staging site ($STAGING_DB_PATH)..."
-        if docker cp "$STAGING_DB_PATH" "$CONTAINER_ID":/usr/src/app/data/"$DB_FILENAME"; then
+    DB_FILENAME=$(basename "$SEED_DB_PATH")
+    if [ -f "$SEED_DB_PATH" ]; then
+        echo "Copying database from staging site ($SEED_DB_PATH)..."
+        if docker cp "$SEED_DB_PATH" "$CONTAINER_ID":/usr/src/app/data/"$DB_FILENAME"; then
             echo "Database seeded successfully"
         else
             echo "Warning: Failed to copy database"
         fi
     else
-        echo "Warning: Staging database not found at $STAGING_DB_PATH"
+        echo "Warning: Staging database not found at $SEED_DB_PATH"
     fi
 fi
 

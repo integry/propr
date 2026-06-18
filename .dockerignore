@@ -22,6 +22,7 @@ logs/
 *.sqlite-shm
 build_log.txt
 failure_comment.md
+# Only preview deployment entrypoints are excluded; other scripts are runtime tools.
 scripts/deploy-pr.sh
 scripts/teardown-pr.sh
 config/nginx-preview-environments.conf
