@@ -20,10 +20,17 @@ jobs:
       github.event.pull_request.state == 'open' &&
       github.event.action == 'labeled' &&
       github.event.label.name == 'preview-env' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.pull_request.author_association == 'OWNER' ||
+        github.event.pull_request.author_association == 'MEMBER' ||
+        github.event.pull_request.author_association == 'COLLABORATOR'
+      )
     runs-on: [self-hosted, linux, x64, propr]
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_HAS_DEMO_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'demo') }}
       STAGING_ENV_FILE: ${{ vars.PR_PREVIEW_STAGING_ENV_FILE }}
       STAGING_DB_PATH: ${{ vars.PR_PREVIEW_STAGING_DB_PATH }}
       PR_CHECKOUT_DIR: pr-checkout/pr-${{ github.event.pull_request.number }}
@@ -55,36 +62,18 @@ jobs:
             echo "::warning::PR_PREVIEW_STAGING_DB_PATH points to '$STAGING_DB_PATH', but that file does not exist. deploy-pr.sh will fall back to DB_FILENAME from the staging env file."
           fi
 
-      - name: Read PR metadata
-        id: pr-metadata
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+      - name: Validate approved PR SHA
         run: |
           set -e
-          pr_json="$(curl -fsS \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
-
-          head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
-          has_demo_label="$(printf '%s' "$pr_json" | jq -r 'if any(.labels[]?; ((.name // "") | ascii_downcase) == "demo") then "true" else "false" end')"
-
-          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
-            echo "::error::Could not determine PR head SHA."
+          if [ -z "$PR_HEAD_SHA" ]; then
+            echo "::error::Could not determine PR head SHA from the label event payload."
             exit 1
           fi
-
-          {
-            echo "head_sha=$head_sha"
-            echo "has_demo_label=$has_demo_label"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout approved PR source
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.pr-metadata.outputs.head_sha }}
+          ref: ${{ env.PR_HEAD_SHA }}
           path: ${{ env.PR_CHECKOUT_DIR }}
           persist-credentials: false
 
@@ -108,8 +97,6 @@ jobs:
         # before redeployment.
         env:
           PR_SOURCE_DIR: ${{ github.workspace }}/${{ env.PR_CHECKOUT_DIR }}
-          PR_HEAD_SHA: ${{ steps.pr-metadata.outputs.head_sha }}
-          PR_HAS_DEMO_LABEL: ${{ steps.pr-metadata.outputs.has_demo_label }}
         run: |
           env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_REPOSITORY \
             PR_SOURCE_DIR="$PR_SOURCE_DIR" \
@@ -117,7 +104,7 @@ jobs:
             PR_HAS_DEMO_LABEL="$PR_HAS_DEMO_LABEL" \
             STAGING_ENV_FILE="$STAGING_ENV_FILE" \
             STAGING_DB_PATH="$STAGING_DB_PATH" \
-            ./scripts/deploy-pr.sh "$PR_NUMBER"
+            sh ./scripts/deploy-pr.sh "$PR_NUMBER"
 
       - name: Post preview comment
         env:
@@ -134,15 +121,6 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
 
-          comment_ids="$(printf '%s' "$comments_json" | jq -r '.[] | select(.body | contains("preview-env-comment")) | .id')"
-          for comment_id in $comment_ids; do
-            curl -fsS -X DELETE \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" >/dev/null
-          done
-
           comment_body="$(printf '%s\n' \
             "$comment_marker" \
             "## Preview Environment Deployed" \
@@ -151,25 +129,50 @@ jobs:
             "" \
             "**UI:** ${ui_url}" \
             "" \
+            "Deployed commit: \`${PR_HEAD_SHA}\`" \
+            "" \
+            "Preview deployments are approval-gated by the \`preview-env\` label. To redeploy after new commits, remove and re-add the label." \
+            "" \
             "---" \
             "*This comment is automatically updated on each deployment.*")"
 
           escaped_body="$(printf '%s' "$comment_body" | jq -Rs .)"
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-            -d "{\"body\": $escaped_body}" >/dev/null
+          comment_id="$(printf '%s' "$comments_json" | jq -r --arg marker "$comment_marker" '
+            [.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker))) | .id][0] // empty
+          ')"
+          if [ -n "$comment_id" ]; then
+            curl -fsS -X PATCH \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
+              -d "{\"body\": $escaped_body}" >/dev/null
+          else
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -d "{\"body\": $escaped_body}" >/dev/null
+          fi
 
   teardown:
     name: Teardown Preview
     if: >-
-      (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview-env')) ||
-      (github.event.action == 'unlabeled' && github.event.label.name == 'preview-env')
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.pull_request.author_association == 'OWNER' ||
+        github.event.pull_request.author_association == 'MEMBER' ||
+        github.event.pull_request.author_association == 'COLLABORATOR'
+      ) &&
+      (
+        (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview-env')) ||
+        (github.event.action == 'unlabeled' && github.event.label.name == 'preview-env')
+      )
     runs-on: [self-hosted, linux, x64, propr]
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_CHECKOUT_DIR: pr-checkout/pr-${{ github.event.pull_request.number }}
 
     steps:
       - name: Checkout trusted workflow source
@@ -179,4 +182,8 @@ jobs:
           persist-credentials: false
 
       - name: Tear down PR preview
-        run: ./scripts/teardown-pr.sh "$PR_NUMBER"
+        run: sh ./scripts/teardown-pr.sh "$PR_NUMBER"
+
+      - name: Clean PR checkout
+        if: always()
+        run: rm -rf "$PR_CHECKOUT_DIR"

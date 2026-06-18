@@ -11,7 +11,7 @@
 #   STAGING_ENV_FILE    - Path to the staging .env file (required in GitHub Actions)
 #   STAGING_DB_PATH     - Optional staging database file to copy. When unset,
 #                         DB_FILENAME from the staging env file is used, then
-#                         /usr/src/app/data/propr.sqlite as a final fallback.
+#                         /usr/src/app/data/propr.sqlite as a local/container fallback.
 #   PR_SOURCE_DIR       - Path to the pre-checked-out PR source tree.
 #   PR_HEAD_SHA         - Optional PR head SHA for deployment logs.
 #   PR_HAS_DEMO_LABEL   - Set to "true" to enable PROPR_DEMO_MODE in the preview.
@@ -42,7 +42,7 @@ if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
   exit 1
 fi
 
-for required_tool in docker grep sed cut basename cp; do
+for required_tool in docker grep sed cut basename cp mv; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
         echo "Error: Required tool '$required_tool' is not installed"
         exit 1
@@ -90,17 +90,6 @@ if [ -n "${PR_SOURCE_DIR:-}" ]; then
         PR_SHA_SHORT=$(printf '%s' "$PR_HEAD_SHA" | cut -c1-8)
         echo "PR SHA: $PR_SHA_SHORT"
     fi
-
-    # Copy .env file to checkout (needed for docker compose)
-    if [ -f "/usr/src/app/.env" ]; then
-        cp /usr/src/app/.env "$PR_SOURCE_DIR/.env"
-    fi
-    # Copy private key file (gitignored, needed for GitHub App auth)
-    for pemfile in /usr/src/app/*.pem; do
-        if [ -f "$pemfile" ]; then
-            cp "$pemfile" "$PR_SOURCE_DIR/"
-        fi
-    done
     REPO_ROOT="$PR_SOURCE_DIR"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     echo "Error: PR_SOURCE_DIR is required in GitHub Actions"
@@ -140,23 +129,68 @@ set_env_var() {
     fi
 }
 
+is_sensitive_env_key() {
+    case "$1" in
+        *TOKEN*|*SECRET*|*PRIVATE*|*PASSWORD*|*KEY*|*CREDENTIAL*|*COOKIE*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+write_sanitized_preview_env() {
+    source_env_file=$1
+    preview_env_file=$2
+
+    tmp_file="${preview_env_file}.tmp.$$"
+    : > "$tmp_file"
+
+    if [ -n "$source_env_file" ] && [ -f "$source_env_file" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                ''|'#'*|*'='*)
+                    ;;
+                *)
+                    continue
+                    ;;
+            esac
+
+            env_key=${line%%=*}
+            case "$env_key" in
+                ''|[0-9]*|*[!A-Za-z0-9_]*)
+                    continue
+                    ;;
+            esac
+            if is_sensitive_env_key "$env_key"; then
+                continue
+            fi
+
+            printf '%s\n' "$line" >> "$tmp_file"
+        done < "$source_env_file"
+    fi
+
+    mv "$tmp_file" "$preview_env_file"
+}
+
 # 3. Determine the env file to use (staging .env provides base config)
-# When running inside a container, STAGING_ENV_FILE may point to a host path
-# that doesn't exist inside the container. We need to check multiple locations.
+# In GitHub Actions, STAGING_ENV_FILE is an explicit host path validated by the
+# trusted workflow. The /usr/src/app fallback is only for local/container runs.
 #
 # Priority:
 # 1. STAGING_ENV_FILE if it exists (for host execution)
-# 2. /usr/src/app/.env (mounted inside container via docker-compose.yml)
+# 2. /usr/src/app/.env (local container execution only)
 # 3. $REPO_ROOT/.env (fallback for local development)
 
 ENV_FILE=""
 if [ -n "$STAGING_ENV_FILE" ] && [ -f "$STAGING_ENV_FILE" ]; then
     # STAGING_ENV_FILE is set and exists (running on host or correctly mounted)
     ENV_FILE="$STAGING_ENV_FILE"
-elif [ -f "/usr/src/app/.env" ]; then
+elif [ "${GITHUB_ACTIONS:-}" != "true" ] && [ -f "/usr/src/app/.env" ]; then
     # Running inside container - use the mounted .env file
     ENV_FILE="/usr/src/app/.env"
-elif [ -f "$REPO_ROOT/.env" ]; then
+elif [ "${GITHUB_ACTIONS:-}" != "true" ] && [ -f "$REPO_ROOT/.env" ]; then
     # Fallback to repo root (local development)
     ENV_FILE="$REPO_ROOT/.env"
 fi
@@ -167,16 +201,21 @@ if [ -n "$ENV_FILE" ]; then
 else
     echo "Warning: No env file found, proceeding without it"
     echo "  Checked: STAGING_ENV_FILE=${STAGING_ENV_FILE:-<not set>}"
-    echo "  Checked: /usr/src/app/.env"
-    echo "  Checked: $REPO_ROOT/.env"
+    if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+        echo "  Checked: /usr/src/app/.env"
+        echo "  Checked: $REPO_ROOT/.env"
+    fi
     # Don't pass --env-file at all when no env file exists
     ENV_FILE_ARG=""
 fi
 
-# Docker Compose env_file entries are relative to the PR checkout, so keep the
-# checkout .env in sync with the selected staging env and apply PR-specific vars.
+# Docker Compose env_file entries are relative to the PR checkout, but the PR
+# checkout is also the Docker build context. Never copy staging secrets or PEM
+# files there; generate only a sanitized preview .env for compose compatibility.
 PREVIEW_ENV_FILE="$REPO_ROOT/.env"
-if [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$PREVIEW_ENV_FILE" ]; then
+if [ -n "${PR_SOURCE_DIR:-}" ]; then
+    write_sanitized_preview_env "$ENV_FILE" "$PREVIEW_ENV_FILE"
+elif [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$PREVIEW_ENV_FILE" ]; then
     cp "$ENV_FILE" "$PREVIEW_ENV_FILE"
 fi
 
