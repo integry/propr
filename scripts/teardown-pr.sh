@@ -64,7 +64,7 @@ fi
 
 # Stop containers and remove anonymous volumes
 echo "Stopping containers..."
-$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" down -v
+$DOCKER_COMPOSE -f "$REPO_ROOT/docker-compose.yml" -p "$PROJECT_NAME" down -v --remove-orphans
 
 # Optional: Clean up any orphaned networks
 echo "Cleaning up networks..."
