@@ -98,7 +98,7 @@ for the full walkthrough.
 
 Use the same launcher command as local setup, but run it from `/srv/propr` or your chosen server directory. All `PROPR_*` and `HOST_*` paths must be absolute; the launcher does not expand `~`.
 
-Authenticate Antigravity on the host first with `agy login`; the launcher mounts `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` for Antigravity agent runs. For OpenCode and Mistral Vibe credential preparation (including the required `/tmp/propr-vibe-prompts` directory), see [Local Setup](./setup-local.md#prepare-agent-credentials).
+Authenticate Antigravity on the host first with `agy login`; the launcher mounts `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` for Antigravity agent runs. For OpenCode and Mistral Vibe credential preparation (including the host prompt cache directory, `/tmp/propr-vibe-prompts-$(id -u)` by default), see [Local Setup](./setup-local.md#prepare-agent-credentials).
 
 ```bash
 docker run --rm \
@@ -115,7 +115,7 @@ docker run --rm \
   -e HOST_OPENCODE_XDG_DIR="$HOME/.config/opencode" \
   -e HOST_OPENCODE_DATA_DIR="$HOME/.local/share/opencode" \
   -e HOST_VIBE_DIR="$HOME/.vibe" \
-  -e HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
+  -e HOST_VIBE_PROMPT_CACHE_DIR="/tmp/propr-vibe-prompts-$(id -u)" \
   -e VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
   propr/launcher:latest
 ```

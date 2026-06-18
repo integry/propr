@@ -43,12 +43,14 @@ export async function renderLiveChecks(
   const hub = new CheckHub();
   let selectedKey: string | undefined;
   let validate = false;
+  let cancelled = false;
   const instance = render(
     <CheckApp
       hub={hub}
       fix={Boolean(opts.fix)}
       getActions={opts.getActions}
       onSelect={(key) => { selectedKey = key; }}
+      onCancel={() => { cancelled = true; }}
       offerValidate={Boolean(opts.offerValidate)}
       onValidate={(yes) => { validate = yes; }}
     />,
@@ -72,6 +74,7 @@ export async function renderLiveChecks(
     });
 
   await instance.waitUntilExit();
+  if (cancelled) return { outcome: undefined, selectedKey: undefined, validate: false };
   const outcome = await outcomePromise;
   if (engineError) throw engineError;
   return { outcome, selectedKey, validate };

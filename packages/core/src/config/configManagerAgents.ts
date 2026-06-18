@@ -87,7 +87,7 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     vibe: AGENT_DEFAULT_VERSIONS.vibe
 };
 
-const CURRENT_DEFAULT_MODELS: Record<AgentConfig['type'], string[]> = {
+const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     claude: AGENT_DEFAULTS.claude.defaultModels,
     codex: AGENT_DEFAULTS.codex.defaultModels,
     antigravity: AGENT_DEFAULTS.antigravity.defaultModels,
@@ -164,7 +164,7 @@ function updateCodexDefaults(agent: AgentConfig): boolean {
         return false;
     }
 
-    if (!agent.defaultModel) {
+    if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
         agent.defaultModel = 'gpt-5.5';
         migrated = true;
         logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Updated Codex default model');
@@ -187,7 +187,7 @@ function updateAntigravityDefaults(agent: AgentConfig): boolean {
         return false;
     }
 
-    if (!agent.configPath) {
+    if (!agent.configPath || agent.configPath === '~/.antigravity' || agent.configPath.endsWith('/.antigravity')) {
         agent.configPath = '~/.gemini';
         migrated = true;
     }
@@ -256,25 +256,32 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
 /**
  * Migrates agent configurations to include CLI version fields and new models.
  */
+export function migrateAgentConfig(agent: AgentConfig): boolean {
+    let migrated = false;
+    migrated = migrateCliVersion(agent) || migrated;
+    migrated = applyDefaultAgentFields(agent) || migrated;
+    const currentDefaultModels = CURRENT_DEFAULT_MODELS[agent.type];
+    if (agent.type !== 'opencode' && currentDefaultModels) {
+        migrated = addMissingModels(agent, currentDefaultModels, 'Added current default models to agent') || migrated;
+    }
+
+    if (agent.type === 'vibe') {
+        migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
+    }
+    migrated = updateCodexDefaults(agent) || migrated;
+    migrated = updateAntigravityDefaults(agent) || migrated;
+    migrated = normalizeOpenCodeModelIds(agent) || migrated;
+    migrated = removeDeprecatedModels(agent) || migrated;
+    return migrated;
+}
+
 export async function migrateAgentConfigs(): Promise<boolean> {
     try {
         const agents = await getConfig<AgentConfig[]>('agents', []);
         let migrated = false;
 
         for (const agent of agents) {
-            migrated = migrateCliVersion(agent) || migrated;
-            migrated = applyDefaultAgentFields(agent) || migrated;
-            if (agent.type !== 'opencode') {
-                migrated = addMissingModels(agent, CURRENT_DEFAULT_MODELS[agent.type], 'Added current default models to agent') || migrated;
-            }
-
-            if (agent.type === 'vibe') {
-                migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
-            }
-            migrated = updateCodexDefaults(agent) || migrated;
-            migrated = updateAntigravityDefaults(agent) || migrated;
-            migrated = normalizeOpenCodeModelIds(agent) || migrated;
-            migrated = removeDeprecatedModels(agent) || migrated;
+            migrated = migrateAgentConfig(agent) || migrated;
         }
 
         if (migrated) {

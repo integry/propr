@@ -210,6 +210,22 @@ test('inspectImageFreshnessAsync can skip the remote registry check', async () =
   }
 });
 
+test('inspectImageFreshness treats local-only images as acceptable when remote checks are skipped', () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_INSPECT = 'empty';
+    assert.deepEqual(inspectImageFreshness('example/app:latest', { skipRemoteCheck: true }), {
+      status: 'unknown',
+      tag: 'example/app:latest',
+      localDigests: [],
+      skipped: true,
+      error: 'remote image check skipped',
+    });
+  } finally {
+    restore();
+  }
+});
+
 test('inspectImageFreshnessAsync reports missing images without a remote call', async () => {
   const restore = installFakeDocker();
   try {
@@ -218,6 +234,27 @@ test('inspectImageFreshnessAsync reports missing images without a remote call', 
       status: 'missing',
       tag: 'example/app:latest',
     });
+  } finally {
+    restore();
+  }
+});
+
+test('pullImages leaves local-only images alone when remote checks are skipped', () => {
+  const restore = installFakeDocker();
+  try {
+    const logPath = join(mkdtempSync(join(tmpdir(), 'propr-fake-docker-log-')), 'commands.log');
+    const logs = [];
+    process.env.DOCKER_FAKE_INSPECT = 'empty';
+    process.env.DOCKER_FAKE_LOG = logPath;
+    writeFileSync(logPath, '');
+
+    pullImages(
+      { images: { app: 'propr/app:1.0.0' }, manifest: { registry: 'propr' } },
+      { onLog: (line) => logs.push(line), env: { ...process.env, PROPR_SKIP_REMOTE_IMAGE_CHECK: '1' } }
+    );
+
+    assert.ok(logs.includes('  · propr/app:1.0.0 (local, remote check skipped via PROPR_SKIP_REMOTE_IMAGE_CHECK)'));
+    assert.equal(readFileSync(logPath, 'utf8').trim(), '');
   } finally {
     restore();
   }

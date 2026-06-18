@@ -296,7 +296,7 @@ export function validateDockerBindPath(name, value, { containerPath = false } = 
 // docker exec helpers
 // ---------------------------------------------------------------------------
 
-const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 15000;
+const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 5000;
 
 export function docker(args, { capture = false, timeout } = {}) {
     const res = spawnSync('docker', args, {
@@ -443,7 +443,9 @@ export function remoteDigestFromImagetoolsInspectOutput(output) {
 }
 
 function dockerError(res, fallback) {
-    if (res.error?.code === 'ETIMEDOUT') return 'remote image check timed out';
+    if (res.error?.code === 'ETIMEDOUT') {
+        return `remote image check timed out after ${REMOTE_IMAGE_CHECK_TIMEOUT_MS / 1000}s; set PROPR_SKIP_REMOTE_IMAGE_CHECK=1 to skip registry probes`;
+    }
     return firstLine(res.stderr || res.stdout || fallback);
 }
 
@@ -499,12 +501,12 @@ export function inspectImageFreshness(tag, { skipRemoteCheck = false } = {}) {
         return { status: 'unknown', tag, error: 'local image metadata could not be inspected' };
     }
 
-    if (localDigests.length === 0) {
-        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
-    }
-
     if (skipRemoteCheck) {
         return { status: 'unknown', tag, localDigests, skipped: true, error: 'remote image check skipped' };
+    }
+
+    if (localDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
     }
 
     const remote = remoteManifestDigest(tag);
@@ -560,12 +562,12 @@ export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false 
         return { status: 'unknown', tag, error: 'local image metadata could not be inspected' };
     }
 
-    if (localDigests.length === 0) {
-        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
-    }
-
     if (skipRemoteCheck) {
         return { status: 'unknown', tag, localDigests, skipped: true, error: 'remote image check skipped' };
+    }
+
+    if (localDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
     }
 
     const remote = await remoteManifestDigestAsync(tag);

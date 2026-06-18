@@ -136,10 +136,10 @@ OpenCode keeps configuration under `~/.config/opencode` and auth state from `ope
 Vibe authenticates either through a mounted `~/.vibe` directory (`HOST_VIBE_DIR`) or a `MISTRAL_API_KEY` value in `.env`. Vibe also requires a prompt cache directory that must exist on the host before you start the launcher:
 
 ```bash
-mkdir -p /tmp/propr-vibe-prompts
+mkdir -p "/tmp/propr-vibe-prompts-$(id -u)"
 ```
 
-Pass it with both `HOST_VIBE_PROMPT_CACHE_DIR` and `VIBE_PROMPT_CACHE_DIR` set to `/tmp/propr-vibe-prompts`.
+The launcher uses `/tmp/propr-vibe-prompts-$(id -u)` as the default host path and `/tmp/propr-vibe-prompts` inside containers. Override with `HOST_VIBE_PROMPT_CACHE_DIR` for the host path and `VIBE_PROMPT_CACHE_DIR` for the container path only when needed.
 
 ## Alternative: Launcher Container Without The CLI
 
@@ -173,7 +173,7 @@ To enable Mistral Vibe, add:
 
 ```bash
   -e HOST_VIBE_DIR="$HOME/.vibe" \
-  -e HOST_VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
+  -e HOST_VIBE_PROMPT_CACHE_DIR="/tmp/propr-vibe-prompts-$(id -u)" \
   -e VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
 ```
 

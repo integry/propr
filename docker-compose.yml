@@ -8,6 +8,9 @@
 # agents you intend to use (Docker will create missing directories as root-owned
 # otherwise, which can cause write failures):
 #   mkdir -p ~/.claude ~/.codex ~/.gemini /tmp/propr-vibe-prompts
+# The CLI/launcher default host Vibe prompt cache is UID-suffixed
+# (/tmp/propr-vibe-prompts-$(id -u)); this development compose file mounts the
+# explicit /tmp/propr-vibe-prompts path shown below.
 #
 # For Vibe support, also create:
 #   mkdir -p ~/.vibe
@@ -90,7 +93,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
       # Vibe prompt cache — mounted by default so Vibe works when MISTRAL_API_KEY
-      # is set. PREFLIGHT: mkdir -p /tmp/propr-vibe-prompts
+      # is set. PREFLIGHT for this compose file: mkdir -p /tmp/propr-vibe-prompts
       - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
     env_file:
       - .env

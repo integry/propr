@@ -54,6 +54,7 @@ interface Props {
   fix: boolean;
   getActions: (outcome: ChecksOutcome) => RemediationMenuItem[];
   onSelect: (key: string | undefined) => void;
+  onCancel?: () => void;
   /** When true (and not in --fix mode), offer a y/N agent-validation prompt at the end. */
   offerValidate?: boolean;
   /** Reports the agent-validation choice (only meaningful when offerValidate). */
@@ -233,7 +234,7 @@ function Menu({ items, selected }: { items: RemediationMenuItem[]; selected: num
   );
 }
 
-export function CheckApp({ hub, fix, getActions, onSelect, offerValidate, onValidate }: Props): React.ReactElement {
+export function CheckApp({ hub, fix, getActions, onSelect, onCancel, offerValidate, onValidate }: Props): React.ReactElement {
   const { exit } = useApp();
   const [rowState, dispatch] = useReducer(rowReducer, { rows: [], pendingByName: new Map<string, number>(), nextId: 0 });
   const [phase, setPhase] = useState<"running" | "menu" | "done" | "validate-confirm" | "action-confirm">("running");
@@ -284,6 +285,7 @@ export function CheckApp({ hub, fix, getActions, onSelect, offerValidate, onVali
     if (key.ctrl && input === "c") {
       onSelect(undefined);
       onValidate?.(false);
+      onCancel?.();
       exit();
       return;
     }

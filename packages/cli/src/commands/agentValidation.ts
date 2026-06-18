@@ -31,7 +31,9 @@ const WORKSPACE = "/home/node/workspace";
 const PROMPT_FILE = "/home/node/propr-prompt.txt";
 
 // Treated as failure even when the process exits 0 (e.g. an agent that prints
-// "Authentication required …" and exits cleanly).
+// "Authentication required …" and exits cleanly). This intentionally scans the
+// whole response; the validation prompt is constrained enough that accidental
+// mentions of words like "quota" should be rare.
 const FAILURE_MARKERS =
   /authentication required|please (?:visit|log ?in|sign ?in|authenticate)|not (?:logged ?in|authenticated|signed ?in)|unauthorized|\b401\b|\b403\b|invalid (?:api ?key|credentials|token)|(?:missing|no) api key|api key (?:not|is missing|required)|login required|permission denied|errno 13|command not found|must provide a (?:message|command)|quota|rate limit/i;
 
@@ -99,6 +101,16 @@ function responseSummary(stdout: string, stderr: string): string {
 
 function truncateDetail(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
+}
+
+function shellArg(arg: string): string {
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(arg) ? arg : `"${arg.replace(/["\\$`]/g, "\\$&")}"`;
+}
+
+function hostDebugCommand(d: AgentValidationDescriptor): string {
+  if (!d.hostBin || !d.hostInvocation) return d.type;
+  const { args } = d.hostInvocation({ prompt: "test", promptFileHost: "test" });
+  return [d.hostBin, ...args].map(shellArg).join(" ");
 }
 
 /** Classify a finished run as ok/fail with a concise human detail. */
@@ -479,7 +491,7 @@ export async function validateAgents(
     const { args, stdin } = d.hostInvocation({ prompt: VALIDATION_PROMPT, promptFileHost });
     const run = await execAsync(d.hostBin, args, { input: stdin, cwd: workspaceDir, timeoutMs: VALIDATION_TIMEOUT_MS });
     const ev = evaluateRun(run);
-    return { status: ev.ok ? "ok" : "fail", detail: ev.detail, ...(ev.ok ? {} : { fix: `Run \`${d.hostBin} -p "test"\` on the host to debug ${d.type} auth.` }) };
+    return { status: ev.ok ? "ok" : "fail", detail: ev.detail, ...(ev.ok ? {} : { fix: `Run \`${hostDebugCommand(d)}\` on the host to debug ${d.type} auth.` }) };
   };
 
   const runImage = async (d: AgentValidationDescriptor, image: string | undefined, hostDir: string | undefined): Promise<AgentCell> => {

@@ -17,7 +17,7 @@ Use this path only when you want to change ProPR code, run tests, validate docs,
 Before starting services, create the host directories that agent containers mount:
 
 ```bash
-mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts
+mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe "/tmp/propr-vibe-prompts-$(id -u)"
 ```
 
 ## Install Dependencies

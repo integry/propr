@@ -1,6 +1,7 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert';
 import type { AgentConfig } from '../packages/core/src/config/configManagerAgents.js';
+import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
 
 process.env.NODE_ENV = 'test';
 
@@ -30,7 +31,7 @@ function createAgent(overrides: Partial<AgentConfig>): AgentConfig {
 }
 
 describe('agent config migration', () => {
-    test('migrates legacy Claude default images when CLI version fields are missing', () => {
+    test('adds Claude CLI defaults when CLI version fields are missing', () => {
         const agent = createAgent({
             type: 'claude',
             dockerImage: 'claude-code-processor:latest',
@@ -41,13 +42,13 @@ describe('agent config migration', () => {
 
         assert.strictEqual(migrated, true);
         assert.strictEqual(agent.cliVersionType, 'default');
-        assert.strictEqual(agent.cliVersionResolved, '2.1.85');
-        assert.strictEqual(agent.dockerImage, 'propr/agent-claude:latest');
+        assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.claude);
+        assert.strictEqual(agent.dockerImage, 'claude-code-processor:latest');
         assert.ok(agent.supportedModels.includes('claude-opus-4-6'));
         assert.ok(agent.supportedModels.includes('claude-sonnet-4-6'));
     });
 
-    test('migrates legacy Gemini and Codex image names to registry-qualified defaults', () => {
+    test('preserves existing images while updating Codex defaults', () => {
         const gemini = createAgent({
             id: 'gemini-1',
             type: 'gemini',
@@ -63,8 +64,8 @@ describe('agent config migration', () => {
 
         assert.strictEqual(migrateAgentConfig(gemini), true);
         assert.strictEqual(migrateAgentConfig(codex), true);
-        assert.strictEqual(gemini.dockerImage, 'propr/agent-gemini:latest');
-        assert.strictEqual(codex.dockerImage, 'propr/agent-codex:latest');
+        assert.strictEqual(gemini.dockerImage, 'propr-gemini:latest');
+        assert.strictEqual(codex.dockerImage, 'codex-code-processor:latest');
         assert.ok(codex.supportedModels.includes('gpt-5.5'));
         assert.strictEqual(codex.defaultModel, 'gpt-5.5');
     });
@@ -80,5 +81,17 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.strictEqual(agent.cliVersionType, 'default');
         assert.strictEqual(agent.dockerImage, 'local/codex-custom:latest');
+    });
+
+    test('migrates legacy Antigravity config paths to Gemini credentials', () => {
+        const agent = createAgent({
+            type: 'antigravity',
+            dockerImage: 'propr/agent-antigravity:latest',
+            configPath: '~/.antigravity',
+            supportedModels: ['gemini-3-pro']
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        assert.strictEqual(agent.configPath, '~/.gemini');
     });
 });

@@ -37,7 +37,6 @@ type CheckRemediation =
   | { kind: "init-stack"; rootDir: string }
   | { kind: "pull-image"; imageKey: string; tag: string }
   | { kind: "add-agent-credential"; envKey: string; path: string; agentType: string }
-  | { kind: "install-agent-tank" }
   | { kind: "start-docker" };
 
 interface RemediationAction {
@@ -368,11 +367,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   } else {
     emit({
       name: "Agent Tank",
-      status: "warn",
+      status: "ok",
       detail: "not installed (optional — tracks Claude/Codex/Antigravity plan usage per task)",
       group: "Agents",
-      fix: "Install with `npm install -g agent-tank`; then `propr check agents` shows usage.",
-      remediation: { kind: "install-agent-tank" },
     });
   }
 
@@ -631,6 +628,8 @@ function envSkipsRemoteImageCheck(env: NodeJS.ProcessEnv = process.env): boolean
 }
 
 function jsonResult(result: CheckResult): JsonCheckResult {
+  // JSON intentionally stays data-only/stable: UI grouping and remediation
+  // metadata are for human renderers and interactive prompts.
   const out: JsonCheckResult = {
     name: result.name,
     status: result.status,
@@ -653,6 +652,10 @@ function formatSummary(counts: Record<CheckStatus, number>, colorEnabled: boolea
 
 function isInteractiveTerminal(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+function warnBillableValidationJson(): void {
+  console.error("Warning: agent validation makes real, billable LLM calls even with --json. Restrict with --agents when needed.");
 }
 
 /** Static, non-interactive renderer (pipes, CI, NO_COLOR). */
@@ -786,28 +789,7 @@ function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] 
     });
   }
 
-  if (remediations.some((remediation) => remediation.kind === "install-agent-tank")) {
-    actions.push({
-      key: "install-agent-tank",
-      label: "Install Agent Tank",
-      detail: "npm install -g agent-tank (subscription-usage monitor)",
-      confirm: "Install Agent Tank now (npm install -g agent-tank)?",
-      run: async () => installAgentTank(),
-    });
-  }
-
   return actions;
-}
-
-async function installAgentTank(): Promise<RemediationResult> {
-  console.log("Installing agent-tank...");
-  const installed = spawnSync("npm", ["install", "-g", "agent-tank"], { stdio: "inherit" });
-  if (installed.status === 0) {
-    console.log("  ok: agent-tank installed");
-    return { changed: true, ok: true };
-  }
-  console.error("  failed: npm install -g agent-tank exited with a non-zero status");
-  return { changed: false, ok: false };
 }
 
 async function pullMissingImages(remediations: Extract<CheckRemediation, { kind: "pull-image" }>[]): Promise<RemediationResult> {
@@ -1182,6 +1164,7 @@ Notes:
             console.error("Note: --fix has no remediation flow for `propr check agents`; running validation only.");
           }
           if (options.json) {
+            warnBillableValidationJson();
             const { cfg, rootDir, orch } = await getHostConfig({ configManager: await createConfigManager(), root: runOptions.root });
             const rows = await validateAgents(orch, cfg, { agents: runOptions.agents });
             const results = agentRowsToChecks(rows);
@@ -1201,6 +1184,7 @@ Notes:
           const outcome = await runChecks(runOptions);
           let results = outcome.results;
           if (runAgents) {
+            warnBillableValidationJson();
             const { orch, cfg } = await getHostConfig({ configManager: await createConfigManager(), root: runOptions.root });
             const rows = await validateAgents(orch, cfg, { agents: runOptions.agents });
             results = [...results, ...agentRowsToChecks(rows)];
@@ -1230,8 +1214,8 @@ Notes:
         }
 
         // Interactive TTY: live, streaming view (+ in-app remediation with --fix,
-        // and an in-app "validate agents?" prompt only during --fix).
-        const { outcome, validate } = await runChecksInteractive(runOptions, Boolean(options.fix), Boolean(options.fix) && !runAgents);
+        // and an optional in-app "validate agents?" prompt after plain system checks).
+        const { outcome, validate } = await runChecksInteractive(runOptions, Boolean(options.fix), !options.fix && !runAgents);
         let anyFail = outcome?.anyFail ?? false;
         if (runAgents || validate) {
           anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
