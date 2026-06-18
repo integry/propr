@@ -12,8 +12,9 @@
 #   STAGING_DB_PATH     - Optional staging database file to copy. When unset,
 #                         DB_FILENAME from the staging env file is used, then
 #                         /usr/src/app/data/propr.sqlite as a final fallback.
-#   GITHUB_REPOSITORY   - Repository in format owner/repo (required for PR comments)
-#   GITHUB_TOKEN        - Host-side GitHub token for API calls and checkout.
+#   PR_SOURCE_DIR       - Path to the pre-checked-out PR source tree.
+#   PR_HEAD_SHA         - Optional PR head SHA for deployment logs.
+#   PR_HAS_DEMO_LABEL   - Set to "true" to enable PROPR_DEMO_MODE in the preview.
 #
 
 set -e
@@ -24,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PR_NUMBER=$1
-PR_HAS_DEMO_LABEL="false"
+PR_HAS_DEMO_LABEL="${PR_HAS_DEMO_LABEL:-false}"
 
 if [ -z "$PR_NUMBER" ]; then
   echo "Usage: $0 <pr_number>"
@@ -35,6 +36,18 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -z "$STAGING_ENV_FILE" ]; then
   echo "Error: STAGING_ENV_FILE is required in GitHub Actions. Set the PR_PREVIEW_STAGING_ENV_FILE repository variable."
   exit 1
 fi
+
+if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
+  echo "Error: deploy-pr.sh must not run with GitHub tokens in its environment"
+  exit 1
+fi
+
+for required_tool in docker grep sed cut basename cp; do
+    if ! command -v "$required_tool" >/dev/null 2>&1; then
+        echo "Error: Required tool '$required_tool' is not installed"
+        exit 1
+    fi
+done
 
 # Validate PR_NUMBER is a positive integer and within safe range (POSIX-compatible)
 case "$PR_NUMBER" in
@@ -65,63 +78,39 @@ echo "  UI URL:     https://pr-${PR_NUMBER}.gitfix.dev"
 echo "  API URL:    https://pr-${PR_NUMBER}-api.gitfix.dev"
 echo "============================================"
 
-# 1.5. Setup PR branch checkout
-PR_CHECKOUT_BASE="/tmp/pr-worktrees"
-PR_CHECKOUT_DIR="$PR_CHECKOUT_BASE/pr-${PR_NUMBER}"
-
-# Get the PR branch name from GitHub API
-if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPOSITORY" ]; then
-    echo "Fetching PR branch info..."
-    PR_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
-    PR_BRANCH=$(echo "$PR_INFO" | jq -r '.head.ref')
-    PR_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
-    PR_CLONE_URL=$(echo "$PR_INFO" | jq -r '.head.repo.clone_url')
-    PR_HAS_DEMO_LABEL=$(printf '%s' "$PR_INFO" | jq -r 'if any(.labels[]?; ((.name // "") | ascii_downcase) == "demo") then "true" else "false" end' 2>/dev/null || echo "false")
-
-    if [ "$PR_HAS_DEMO_LABEL" = "true" ]; then
-        echo "PR has demo label; enabling PROPR_DEMO_MODE"
+# 1.5. Use the PR source checked out by the trusted workflow step.
+if [ -n "${PR_SOURCE_DIR:-}" ]; then
+    if [ ! -f "$PR_SOURCE_DIR/docker-compose.yml" ]; then
+        echo "Error: PR_SOURCE_DIR does not contain docker-compose.yml: $PR_SOURCE_DIR"
+        exit 1
     fi
 
-    if [ "$PR_BRANCH" = "null" ] || [ -z "$PR_BRANCH" ]; then
-        echo "Warning: Could not get PR branch, using current code"
-    else
-        echo "PR Branch: $PR_BRANCH"
-        PR_SHA_SHORT=$(printf '%s' "$PR_SHA" | cut -c1-8)
+    echo "Using PR source at: $PR_SOURCE_DIR"
+    if [ -n "${PR_HEAD_SHA:-}" ]; then
+        PR_SHA_SHORT=$(printf '%s' "$PR_HEAD_SHA" | cut -c1-8)
         echo "PR SHA: $PR_SHA_SHORT"
-
-        mkdir -p "$PR_CHECKOUT_BASE"
-
-        # Always fresh clone - shallow clones don't update well and it's fast anyway
-        echo "Cloning PR branch (shallow)..."
-        rm -rf "$PR_CHECKOUT_DIR" 2>/dev/null || true
-        CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-        if git clone --depth=1 --single-branch --branch "$PR_BRANCH" "$CLONE_URL" "$PR_CHECKOUT_DIR" 2>/dev/null; then
-            echo "Clone successful"
-        else
-            echo "Warning: Clone failed, using current code"
-        fi
-
-        if [ -f "$PR_CHECKOUT_DIR/docker-compose.yml" ]; then
-            echo "Using PR checkout at: $PR_CHECKOUT_DIR"
-            # Copy .env file to checkout (needed for docker compose)
-            if [ -f "/usr/src/app/.env" ]; then
-                cp /usr/src/app/.env "$PR_CHECKOUT_DIR/.env"
-            fi
-            # Copy private key file (gitignored, needed for GitHub App auth)
-            for pemfile in /usr/src/app/*.pem; do
-                if [ -f "$pemfile" ]; then
-                    cp "$pemfile" "$PR_CHECKOUT_DIR/"
-                fi
-            done
-            REPO_ROOT="$PR_CHECKOUT_DIR"
-        else
-            echo "Warning: PR checkout failed or incomplete, using current code"
-        fi
     fi
+
+    # Copy .env file to checkout (needed for docker compose)
+    if [ -f "/usr/src/app/.env" ]; then
+        cp /usr/src/app/.env "$PR_SOURCE_DIR/.env"
+    fi
+    # Copy private key file (gitignored, needed for GitHub App auth)
+    for pemfile in /usr/src/app/*.pem; do
+        if [ -f "$pemfile" ]; then
+            cp "$pemfile" "$PR_SOURCE_DIR/"
+        fi
+    done
+    REPO_ROOT="$PR_SOURCE_DIR"
+elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "Error: PR_SOURCE_DIR is required in GitHub Actions"
+    exit 1
 else
-    echo "Warning: GITHUB_TOKEN not set, cannot fetch PR branch info"
+    echo "Warning: PR_SOURCE_DIR not set, using current code"
+fi
+
+if [ "$PR_HAS_DEMO_LABEL" = "true" ]; then
+    echo "PR has demo label; enabling PROPR_DEMO_MODE"
 fi
 
 # 2. Detect docker compose command (v2 plugin vs v1 standalone)
@@ -263,61 +252,7 @@ if [ -n "$CONTAINER_ID" ]; then
     fi
 fi
 
-# 6. Post GitHub PR Comment with build link
 UI_URL="https://pr-${PR_NUMBER}.gitfix.dev"
-
-post_pr_comment() {
-    if [ -z "$GITHUB_TOKEN" ] || [ -z "$GITHUB_REPOSITORY" ]; then
-        echo "Skipping PR comment: GITHUB_TOKEN or GITHUB_REPOSITORY not set"
-        return 0
-    fi
-
-    echo "Posting PR comment to GitHub..."
-
-    # Comment marker to identify preview environment comments
-    COMMENT_MARKER="<!-- preview-env-comment -->"
-
-    # Find and delete previous preview environment comments
-    echo "Checking for previous preview environment comments..."
-    COMMENTS_JSON=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")
-
-    # Extract comment IDs that contain our marker using jq
-    COMMENT_IDS=$(echo "$COMMENTS_JSON" | jq -r '.[] | select(.body | contains("preview-env-comment")) | .id' || true)
-
-    for COMMENT_ID in $COMMENT_IDS; do
-        echo "Deleting previous preview comment: $COMMENT_ID"
-        curl -s -X DELETE \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}"
-    done
-
-    # Post new comment
-    COMMENT_BODY="${COMMENT_MARKER}
-## 🚀 Preview Environment Deployed
-
-Your PR preview environment is now available:
-
-**UI:** ${UI_URL}
-
----
-*This comment is automatically updated on each deployment.*"
-
-    # Escape the comment body for JSON
-    ESCAPED_BODY=$(echo "$COMMENT_BODY" | jq -Rs .)
-
-    curl -s -X POST \
-        -H "Authorization: token $GITHUB_TOKEN" \
-        -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-        -d "{\"body\": $ESCAPED_BODY}" > /dev/null
-
-    echo "PR comment posted successfully!"
-}
-
-post_pr_comment
 
 echo ""
 echo "Preview environment is now available at:"

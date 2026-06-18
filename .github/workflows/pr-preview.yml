@@ -19,14 +19,14 @@ jobs:
     if: >-
       github.event.pull_request.state == 'open' &&
       github.event.action == 'labeled' &&
-      github.event.label.name == 'preview-env'
+      github.event.label.name == 'preview-env' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, propr]
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      GITHUB_TOKEN: ${{ github.token }}
-      GITHUB_REPOSITORY: ${{ github.repository }}
       STAGING_ENV_FILE: ${{ vars.PR_PREVIEW_STAGING_ENV_FILE }}
       STAGING_DB_PATH: ${{ vars.PR_PREVIEW_STAGING_DB_PATH }}
+      PR_CHECKOUT_DIR: pr-checkout/pr-${{ github.event.pull_request.number }}
 
     steps:
       - name: Checkout trusted workflow source
@@ -37,6 +37,12 @@ jobs:
 
       - name: Validate preview configuration
         run: |
+          for tool in curl jq git docker; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::Required tool '$tool' is not installed on the self-hosted runner."
+              exit 1
+            fi
+          done
           if [ -z "$STAGING_ENV_FILE" ]; then
             echo "::error::Set the PR_PREVIEW_STAGING_ENV_FILE repository variable to the staging .env path on the self-hosted runner."
             exit 1
@@ -49,13 +55,112 @@ jobs:
             echo "::warning::PR_PREVIEW_STAGING_DB_PATH points to '$STAGING_DB_PATH', but that file does not exist. deploy-pr.sh will fall back to DB_FILENAME from the staging env file."
           fi
 
+      - name: Read PR metadata
+        id: pr-metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -e
+          pr_json="$(curl -fsS \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+
+          head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha')"
+          has_demo_label="$(printf '%s' "$pr_json" | jq -r 'if any(.labels[]?; ((.name // "") | ascii_downcase) == "demo") then "true" else "false" end')"
+
+          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
+            echo "::error::Could not determine PR head SHA."
+            exit 1
+          fi
+
+          {
+            echo "head_sha=$head_sha"
+            echo "has_demo_label=$has_demo_label"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout approved PR source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-metadata.outputs.head_sha }}
+          path: ${{ env.PR_CHECKOUT_DIR }}
+          persist-credentials: false
+
+      - name: Sanitize PR checkout credentials
+        env:
+          PR_SOURCE_DIR: ${{ github.workspace }}/${{ env.PR_CHECKOUT_DIR }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -e
+          git -C "$PR_SOURCE_DIR" remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$PR_SOURCE_DIR" config --local --get-regexp '^http\..*\.extraheader$' 2>/dev/null |
+            cut -d' ' -f1 |
+            while IFS= read -r key; do
+              git -C "$PR_SOURCE_DIR" config --local --unset-all "$key" || true
+            done
+
       - name: Deploy approved PR preview
-        # This runs PR code on self-hosted infrastructure. The preview-env label
-        # is the maintainer approval gate for that exact deployment event. New
-        # commits require removing and re-adding the label before redeployment.
-        # GITHUB_TOKEN is used only by trusted host-side script steps before and
-        # after compose; it is not passed as a compose environment variable.
-        run: ./scripts/deploy-pr.sh "$PR_NUMBER"
+        # This still runs same-repository PR code on self-hosted infrastructure.
+        # The preview-env label is the maintainer approval gate for this exact
+        # deployment event. New commits require removing and re-adding the label
+        # before redeployment.
+        env:
+          PR_SOURCE_DIR: ${{ github.workspace }}/${{ env.PR_CHECKOUT_DIR }}
+          PR_HEAD_SHA: ${{ steps.pr-metadata.outputs.head_sha }}
+          PR_HAS_DEMO_LABEL: ${{ steps.pr-metadata.outputs.has_demo_label }}
+        run: |
+          env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_REPOSITORY \
+            PR_SOURCE_DIR="$PR_SOURCE_DIR" \
+            PR_HEAD_SHA="$PR_HEAD_SHA" \
+            PR_HAS_DEMO_LABEL="$PR_HAS_DEMO_LABEL" \
+            STAGING_ENV_FILE="$STAGING_ENV_FILE" \
+            STAGING_DB_PATH="$STAGING_DB_PATH" \
+            ./scripts/deploy-pr.sh "$PR_NUMBER"
+
+      - name: Post preview comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -e
+          comment_marker="<!-- preview-env-comment -->"
+          ui_url="https://pr-${PR_NUMBER}.gitfix.dev"
+
+          comments_json="$(curl -fsS \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+
+          comment_ids="$(printf '%s' "$comments_json" | jq -r '.[] | select(.body | contains("preview-env-comment")) | .id')"
+          for comment_id in $comment_ids; do
+            curl -fsS -X DELETE \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" >/dev/null
+          done
+
+          comment_body="$(printf '%s\n' \
+            "$comment_marker" \
+            "## Preview Environment Deployed" \
+            "" \
+            "Your PR preview environment is now available:" \
+            "" \
+            "**UI:** ${ui_url}" \
+            "" \
+            "---" \
+            "*This comment is automatically updated on each deployment.*")"
+
+          escaped_body="$(printf '%s' "$comment_body" | jq -Rs .)"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -d "{\"body\": $escaped_body}" >/dev/null
 
   teardown:
     name: Teardown Preview
