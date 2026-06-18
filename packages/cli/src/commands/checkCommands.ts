@@ -37,6 +37,7 @@ type CheckRemediation =
   | { kind: "init-stack"; rootDir: string }
   | { kind: "pull-image"; imageKey: string; tag: string }
   | { kind: "add-agent-credential"; envKey: string; path: string; agentType: string }
+  | { kind: "install-agent-tank" }
   | { kind: "start-docker" };
 
 interface RemediationAction {
@@ -356,6 +357,23 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         fix: `Log in with the ${agent.type} CLI on this host, or set ${agent.envKey} in .env.`,
       });
     }
+  }
+
+  // 6b. Agent Tank (optional subscription-usage monitor). Presence only — the
+  // actual usage refresh (slow PTY /usage calls) runs in `propr check agents`.
+  if (spawnSync("which", ["agent-tank"], { encoding: "utf-8" }).status === 0) {
+    const ver = spawnSync("agent-tank", ["--version"], { encoding: "utf-8", timeout: 10000 });
+    const version = `${ver.stdout ?? ""}${ver.stderr ?? ""}`.match(/\d+\.\d+\.\d+/)?.[0];
+    emit({ name: "Agent Tank", status: "ok", detail: version ? `agent-tank ${version} installed` : "installed", group: "Agents" });
+  } else {
+    emit({
+      name: "Agent Tank",
+      status: "warn",
+      detail: "not installed (optional — tracks Claude/Codex/Antigravity plan usage per task)",
+      group: "Agents",
+      fix: "Install with `npm install -g agent-tank`; then `propr check agents` shows usage.",
+      remediation: { kind: "install-agent-tank" },
+    });
   }
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
@@ -768,7 +786,28 @@ function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] 
     });
   }
 
+  if (remediations.some((remediation) => remediation.kind === "install-agent-tank")) {
+    actions.push({
+      key: "install-agent-tank",
+      label: "Install Agent Tank",
+      detail: "npm install -g agent-tank (subscription-usage monitor)",
+      confirm: "Install Agent Tank now (npm install -g agent-tank)?",
+      run: async () => installAgentTank(),
+    });
+  }
+
   return actions;
+}
+
+async function installAgentTank(): Promise<RemediationResult> {
+  console.log("Installing agent-tank...");
+  const installed = spawnSync("npm", ["install", "-g", "agent-tank"], { stdio: "inherit" });
+  if (installed.status === 0) {
+    console.log("  ok: agent-tank installed");
+    return { changed: true, ok: true };
+  }
+  console.error("  failed: npm install -g agent-tank exited with a non-zero status");
+  return { changed: false, ok: false };
 }
 
 async function pullMissingImages(remediations: Extract<CheckRemediation, { kind: "pull-image" }>[]): Promise<RemediationResult> {
@@ -994,7 +1033,7 @@ function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void
   console.log("");
   console.log(color("Subscription Usage (Agent Tank)", colorEnabled, ANSI.cyan, ANSI.bold));
   if (!usage.installed) {
-    console.log(color("  Not installed — track Claude/Codex/Antigravity plan limits with:", colorEnabled, ANSI.dim));
+    console.log(color("  Not installed — track Claude/Codex/Antigravity plan usage per task with:", colorEnabled, ANSI.dim));
     console.log("  npm install -g agent-tank");
     return;
   }
