@@ -114,6 +114,7 @@ jobs:
             sh ./scripts/deploy-pr.sh "$PR_NUMBER"
 
       - name: Post preview comment
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
