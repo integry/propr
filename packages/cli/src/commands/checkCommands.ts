@@ -364,13 +364,6 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const ver = spawnSync("agent-tank", ["--version"], { encoding: "utf-8", timeout: 10000 });
     const version = `${ver.stdout ?? ""}${ver.stderr ?? ""}`.match(/\d+\.\d+\.\d+/)?.[0];
     emit({ name: "Agent Tank", status: "ok", detail: version ? `agent-tank ${version} installed` : "installed", group: "Agents" });
-  } else {
-    emit({
-      name: "Agent Tank",
-      status: "ok",
-      detail: "not installed (optional — tracks Claude/Codex/Antigravity plan usage per task)",
-      group: "Agents",
-    });
   }
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
@@ -1063,7 +1056,7 @@ async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<bool
 
   console.log("");
   console.log(color("Agent Validation", colorEnabled, ANSI.cyan, ANSI.bold));
-  console.log(color("  Live test call to each agent (host CLI + image) to confirm auth works", colorEnabled, ANSI.dim));
+  console.log(color("  Live test calls for configured agents (host CLI + image) to confirm auth works", colorEnabled, ANSI.dim));
   console.log("");
 
   // Read Agent Tank subscription usage concurrently with the validation (it is
@@ -1104,7 +1097,7 @@ export function createCheckCommand(): Command {
     .argument("[mode]", "what to check: system (default) | agents | all", "system")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
-    .option("--agents <list>", "Comma-separated agent types to validate (default: all)")
+    .option("--agents <list>", "Comma-separated agent types to validate (default: configured stack agents)")
     .option("--skip-remote-image-check", "Skip registry image freshness checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
@@ -1112,7 +1105,7 @@ export function createCheckCommand(): Command {
     .addHelpText("after", `
 Modes:
   system   Docker, images, stack, agent credentials, GitHub, config (default)
-  agents   Live test call to each agent (host CLI + image); makes billable LLM calls
+  agents   Live test calls for configured agents (host CLI + image); makes billable LLM calls
   all      Everything: system checks followed by billable agent validation
 
 Examples:
@@ -1125,8 +1118,8 @@ Examples:
 
 Notes:
   "check all", "check agents", and --validate-agents run a real prompt through
-  each agent's host CLI and Docker image (mounts credentials, makes billable LLM
-  calls). This is also true with --json. Restrict with --agents.
+  configured agents' host CLIs and Docker images (mounts credentials, makes
+  billable LLM calls). This is also true with --json. Override with --agents.
   Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline image checks.
 `)
     .action(async (mode: string, options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {
@@ -1140,11 +1133,6 @@ Notes:
           console.error("Error: --json cannot be combined with --fix; JSON output is data-only and never prompts.");
           process.exit(1);
         }
-        if (options.fix && !isInteractiveTerminal()) {
-          console.error("Error: --fix requires an interactive terminal.");
-          process.exit(1);
-        }
-
         const runOptions: RunChecksOptions = {
           root: options.root,
           verify: options.verify,
@@ -1174,6 +1162,11 @@ Notes:
           }
           if (await runAndPrintValidation(runOptions)) process.exit(1);
           return;
+        }
+
+        if (options.fix && !isInteractiveTerminal()) {
+          console.error("Error: --fix requires an interactive terminal.");
+          process.exit(1);
         }
 
         // `check` / `check system` / `check all`. Agents run when mode=all or --validate-agents.

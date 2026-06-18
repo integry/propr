@@ -428,18 +428,35 @@ function localRepoDigests(tag) {
 }
 
 export function remoteDigestFromManifestInspectOutput(output) {
+    return remoteDigestsFromManifestInspectOutput(output)[0] ?? null;
+}
+
+export function remoteDigestsFromManifestInspectOutput(output) {
     const parsed = JSON.parse(output);
+    const digests = new Set();
     if (Array.isArray(parsed)) {
-        const refs = parsed.map((entry) => normalizeDigest(entry?.Ref)).filter(Boolean);
-        return refs.length > 0 && refs.every((digest) => digest === refs[0]) ? refs[0] : null;
+        for (const entry of parsed) {
+            const refDigest = normalizeDigest(entry?.Ref);
+            if (refDigest) digests.add(refDigest);
+            const descriptor = entry?.Descriptor;
+            const descriptorDigest = normalizeDigest(descriptor?.digest || descriptor?.Digest || entry?.digest || entry?.Digest);
+            if (descriptorDigest) digests.add(descriptorDigest);
+        }
+        return [...digests];
     }
     const descriptor = parsed?.Descriptor;
-    return descriptor?.digest || descriptor?.Digest || parsed?.digest || parsed?.Digest || null;
+    const digest = normalizeDigest(descriptor?.digest || descriptor?.Digest || parsed?.digest || parsed?.Digest);
+    return digest ? [digest] : [];
 }
 
 export function remoteDigestFromImagetoolsInspectOutput(output) {
     const match = output.match(/^\s*Digest:\s*([^\s]+)\s*$/im);
     return match ? match[1] : null;
+}
+
+function appendDigest(digests, digest) {
+    const normalized = normalizeDigest(digest);
+    return normalized && !digests.includes(normalized) ? [...digests, normalized] : digests;
 }
 
 function dockerError(res, fallback) {
@@ -458,23 +475,48 @@ function remoteManifestDigest(tag) {
     }
 
     try {
-        const digest = remoteDigestFromManifestInspectOutput(res.stdout);
-        if (digest) return { ok: true, digest };
+        const digests = remoteDigestsFromManifestInspectOutput(res.stdout);
+        if (digests.length > 0) {
+            let allDigests = digests;
+            if (res.stdout.trim().startsWith('[')) {
+                const buildx = docker(['buildx', 'imagetools', 'inspect', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+                if (buildx.status === 0) allDigests = appendDigest(allDigests, remoteDigestFromImagetoolsInspectOutput(buildx.stdout));
+            }
+            return { ok: true, digests: allDigests, digest: allDigests[0] };
+        }
 
-        // Multi-platform manifest inspect output lists platform-specific Ref
-        // digests, not the tag's manifest-list digest, so buildx is the
-        // intentional fallback for comparing a multi-arch tag as a whole.
+        // Older Docker manifest output may omit digest fields. buildx can still
+        // expose the tag's index digest, which is useful when the local daemon
+        // recorded that digest in RepoDigests.
         const buildx = docker(['buildx', 'imagetools', 'inspect', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
         if (buildx.status !== 0) {
             return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
         }
         const buildxDigest = remoteDigestFromImagetoolsInspectOutput(buildx.stdout);
-        if (buildxDigest) return { ok: true, digest: buildxDigest };
+        if (buildxDigest) return { ok: true, digests: [buildxDigest], digest: buildxDigest };
 
         return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect or docker buildx imagetools inspect' };
     } catch {
         return { ok: false, error: 'could not parse docker manifest inspect output' };
     }
+}
+
+function classifyImageFreshness(tag, localDigests, remote) {
+    if (!remote.ok) {
+        return { status: 'unknown', tag, localDigests, error: remote.error };
+    }
+
+    const remoteDigests = (remote.digests ?? [remote.digest]).map(normalizeDigest).filter(Boolean);
+    if (remoteDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, error: 'remote manifest digest was empty' };
+    }
+
+    const digestFields = remoteDigests.length > 1
+        ? { remoteDigest: remoteDigests[0], remoteDigests }
+        : { remoteDigest: remoteDigests[0] };
+    return localDigests.some((digest) => remoteDigests.includes(digest))
+        ? { status: 'current', tag, localDigests, ...digestFields }
+        : { status: 'stale', tag, localDigests, ...digestFields };
 }
 
 function skipRemoteImageCheck(env = process.env) {
@@ -509,19 +551,7 @@ export function inspectImageFreshness(tag, { skipRemoteCheck = false } = {}) {
         return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
     }
 
-    const remote = remoteManifestDigest(tag);
-    if (!remote.ok) {
-        return { status: 'unknown', tag, localDigests, error: remote.error };
-    }
-
-    const remoteDigest = normalizeDigest(remote.digest);
-    if (!remoteDigest) {
-        return { status: 'unknown', tag, localDigests, error: 'remote manifest digest was empty' };
-    }
-
-    return localDigests.includes(remoteDigest)
-        ? { status: 'current', tag, localDigests, remoteDigest }
-        : { status: 'stale', tag, localDigests, remoteDigest };
+    return classifyImageFreshness(tag, localDigests, remoteManifestDigest(tag));
 }
 
 /** Async mirror of remoteManifestDigest using non-blocking docker exec. */
@@ -531,15 +561,22 @@ async function remoteManifestDigestAsync(tag) {
         return { ok: false, error: dockerError(res, 'docker manifest inspect failed') };
     }
     try {
-        const digest = remoteDigestFromManifestInspectOutput(res.stdout);
-        if (digest) return { ok: true, digest };
+        const digests = remoteDigestsFromManifestInspectOutput(res.stdout);
+        if (digests.length > 0) {
+            let allDigests = digests;
+            if (res.stdout.trim().startsWith('[')) {
+                const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+                if (buildx.status === 0) allDigests = appendDigest(allDigests, remoteDigestFromImagetoolsInspectOutput(buildx.stdout));
+            }
+            return { ok: true, digests: allDigests, digest: allDigests[0] };
+        }
 
         const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
         if (buildx.status !== 0) {
             return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
         }
         const buildxDigest = remoteDigestFromImagetoolsInspectOutput(buildx.stdout);
-        if (buildxDigest) return { ok: true, digest: buildxDigest };
+        if (buildxDigest) return { ok: true, digests: [buildxDigest], digest: buildxDigest };
 
         return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect or docker buildx imagetools inspect' };
     } catch {
@@ -570,19 +607,7 @@ export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false 
         return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
     }
 
-    const remote = await remoteManifestDigestAsync(tag);
-    if (!remote.ok) {
-        return { status: 'unknown', tag, localDigests, error: remote.error };
-    }
-
-    const remoteDigest = normalizeDigest(remote.digest);
-    if (!remoteDigest) {
-        return { status: 'unknown', tag, localDigests, error: 'remote manifest digest was empty' };
-    }
-
-    return localDigests.includes(remoteDigest)
-        ? { status: 'current', tag, localDigests, remoteDigest }
-        : { status: 'stale', tag, localDigests, remoteDigest };
+    return classifyImageFreshness(tag, localDigests, await remoteManifestDigestAsync(tag));
 }
 
 function cachedImageFreshness(cache, tag, opts) {

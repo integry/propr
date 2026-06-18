@@ -79,6 +79,29 @@ test("validateAgents skips image validation when the stack credential mount is n
   }
 });
 
+test("validateAgents defaults to configured stack agents only", async () => {
+  const restore = installFakeDocker();
+  try {
+    const rows = await validateAgents(fakeOrchestrator(), fakeConfig());
+    assert.deepEqual(rows, []);
+  } finally {
+    restore();
+  }
+});
+
+test("validateAgents includes a configured credential mount by default", async () => {
+  const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "claude");
+  mkdirSync(hostDir);
+  const restore = installFakeDocker();
+  try {
+    const rows = await validateAgents(fakeOrchestrator(), fakeConfig({ hostClaudeDir: hostDir }));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].type, "claude");
+  } finally {
+    restore();
+  }
+});
+
 test("validateAgentFilter accepts mixed-case agent names", () => {
   assert.deepEqual(validateAgentFilter(["Claude", " CODEX "]), { agents: ["claude", "codex"], unknown: [] });
 });

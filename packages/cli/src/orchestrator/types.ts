@@ -69,8 +69,8 @@ export interface ValidationResult {
 
 export type ImageFreshnessResult =
   | { status: "missing"; tag: string }
-  | { status: "current"; tag: string; localDigests: string[]; remoteDigest: string }
-  | { status: "stale"; tag: string; localDigests: string[]; remoteDigest: string }
+  | { status: "current"; tag: string; localDigests: string[]; remoteDigest: string; remoteDigests?: string[] }
+  | { status: "stale"; tag: string; localDigests: string[]; remoteDigest: string; remoteDigests?: string[] }
   | { status: "unknown"; tag: string; localDigests?: string[]; error: string; localOnly?: boolean; skipped?: boolean };
 
 export interface DockerCommandOptions {

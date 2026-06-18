@@ -91,7 +91,7 @@ export async function renderAgentValidation(
   agentsFilter: string[] | undefined
 ): Promise<AgentValidationRow[]> {
   const hub = new AgentTableHub();
-  const instance = render(<AgentTableApp agents={agentTypesFor(agentsFilter)} hub={hub} />, { exitOnCtrlC: false });
+  const instance = render(<AgentTableApp agents={agentTypesFor(agentsFilter, cfg)} hub={hub} />, { exitOnCtrlC: false });
 
   const rows = await validateAgents(orch, cfg, {
     agents: agentsFilter,

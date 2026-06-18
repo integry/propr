@@ -27,6 +27,7 @@ import type { CheckResult, CheckStatus } from "./checkCommands.js";
 const VALIDATION_PROMPT = "Respond in 3 words: which model are you?";
 const VALIDATION_TIMEOUT_MS = 120_000;
 const VERSION_TIMEOUT_MS = 30_000;
+const AGENT_VALIDATION_CONCURRENCY = 1;
 const WORKSPACE = "/home/node/workspace";
 const PROMPT_FILE = "/home/node/propr-prompt.txt";
 
@@ -386,7 +387,7 @@ export type AgentCellUpdate =
   | { field: "image"; cell: AgentCell };
 
 export interface ValidateAgentsOptions {
-  /** Restrict validation to these agent types (defaults to all). */
+  /** Restrict validation to these agent types (defaults to configured stack agents). */
   agents?: string[];
   /** Progress callback fired once before the parallel run (plain renderer). */
   onProgress?: (message: string) => void;
@@ -395,9 +396,9 @@ export interface ValidateAgentsOptions {
 }
 
 /** The agent types that would be validated for the given filter (for seeding a live view). */
-export function agentTypesFor(filter?: string[]): string[] {
+export function agentTypesFor(filter?: string[], cfg?: OrchestratorConfig): string[] {
   const normalized = normalizeAgentFilter(filter);
-  const selected = normalized.length ? DESCRIPTORS.filter((d) => normalized.includes(d.type)) : DESCRIPTORS;
+  const selected = normalized.length ? DESCRIPTORS.filter((d) => normalized.includes(d.type)) : configuredDescriptors(cfg);
   return selected.map((d) => d.type);
 }
 
@@ -413,6 +414,30 @@ export function validateAgentFilter(filter?: string[]): { agents: string[]; unkn
 
 export function validAgentTypes(): string[] {
   return DESCRIPTORS.map((d) => d.type);
+}
+
+function configuredDescriptors(cfg?: OrchestratorConfig): AgentValidationDescriptor[] {
+  if (!cfg) return DESCRIPTORS;
+  return DESCRIPTORS.filter((d) => {
+    const hasImage = Boolean(cfg.images[d.imageKey]);
+    const hasCredentialMount = Boolean(cfg[d.hostDirKey]);
+    const hasApiOnlyCredential = d.type === "vibe" && Boolean(cfg.mistralApiKey);
+    return hasImage && (hasCredentialMount || hasApiOnlyCredential);
+  });
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await mapper(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 export interface AgentValidationRow {
@@ -461,8 +486,8 @@ export function agentRowsToChecks(rows: AgentValidationRow[]): CheckResult[] {
 }
 
 /**
- * Validate each present agent — version (host vs image), host CLI call, image
- * call — all concurrently. Returns one structured row per agent.
+ * Validate configured agents by default — version (host vs image), host CLI
+ * call, image call. Explicit --agents can still request any known agent.
  */
 export async function validateAgents(
   orch: OrchestratorModule,
@@ -475,7 +500,7 @@ export async function validateAgents(
   }
   const selected = agents.length
     ? DESCRIPTORS.filter((d) => agents.includes(d.type))
-    : DESCRIPTORS;
+    : configuredDescriptors(cfg);
 
   const tmp = mkdtempSync(join(tmpdir(), "propr-validate-"));
   const workspaceDir = join(tmp, "workspace");
@@ -535,9 +560,12 @@ export async function validateAgents(
   };
 
   try {
-    options.onProgress?.(`running checks for ${selected.length} agents in parallel…`);
-    return await Promise.all(
-      selected.map(async (d) => {
+    if (selected.length === 0) {
+      options.onProgress?.("no configured agents found; set agent credential mounts in .env or pass --agents to validate a specific agent");
+      return [];
+    }
+    options.onProgress?.(`running checks for ${selected.length} configured agent${selected.length === 1 ? "" : "s"} (one agent at a time)…`);
+    return await mapWithConcurrency(selected, AGENT_VALIDATION_CONCURRENCY, async (d) => {
         const image = cfg.images[d.imageKey];
         let hostDir = cfg[d.hostDirKey] as string | undefined;
         if (d.type === "vibe" && !hostDir && cfg.mistralApiKey) {
@@ -559,8 +587,7 @@ export async function validateAgents(
         });
         const [version, host, imageResult] = await Promise.all([versionP, hostP, imageP]);
         return { type: d.type, hostVersion: version.host, imageVersion: version.image, drift: version.drift, host, image: imageResult };
-      })
-    );
+      });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

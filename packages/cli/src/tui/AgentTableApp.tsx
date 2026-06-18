@@ -19,11 +19,14 @@ export type AgentTableEvent = { type: "update"; agent: string; update: AgentCell
 /** Pub/sub bridge between the streaming validator and the React tree. */
 export class AgentTableHub {
   private listeners = new Set<(event: AgentTableEvent) => void>();
+  private history: AgentTableEvent[] = [];
   emit(event: AgentTableEvent): void {
+    this.history.push(event);
     for (const listener of [...this.listeners]) listener(event);
   }
   subscribe(listener: (event: AgentTableEvent) => void): () => void {
     this.listeners.add(listener);
+    for (const event of this.history) listener(event);
     return () => {
       this.listeners.delete(listener);
     };

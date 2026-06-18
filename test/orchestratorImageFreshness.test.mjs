@@ -29,6 +29,7 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
     fail) echo "inspect failed" >&2; exit 1 ;;
     empty) echo "[]" ; exit 0 ;;
     stale) echo '["example/app@sha256:local"]' ; exit 0 ;;
+    platform-a) echo '["example/app@sha256:platform-a"]' ; exit 0 ;;
     *) echo '["example/app@sha256:remote"]' ; exit 0 ;;
   esac
 fi
@@ -75,9 +76,9 @@ test('normalizes image repo digests and plain digests', () => {
 });
 
 test('parses remote manifest digests from docker output shapes', () => {
-  assert.equal(remoteDigestFromManifestInspectOutput('{"Descriptor":{"Digest":"sha256:index"}}'), 'sha256:index');
-  assert.equal(remoteDigestFromManifestInspectOutput('[{"Ref":"example/app:latest@sha256:index"},{"Ref":"example/app:latest@sha256:index"}]'), 'sha256:index');
-  assert.equal(remoteDigestFromManifestInspectOutput('[{"Ref":"example/app:latest@sha256:a"},{"Ref":"example/app:latest@sha256:b"}]'), null);
+    assert.equal(remoteDigestFromManifestInspectOutput('{"Descriptor":{"Digest":"sha256:index"}}'), 'sha256:index');
+    assert.equal(remoteDigestFromManifestInspectOutput('[{"Ref":"example/app:latest@sha256:index"},{"Ref":"example/app:latest@sha256:index"}]'), 'sha256:index');
+  assert.equal(remoteDigestFromManifestInspectOutput('[{"Ref":"example/app:latest@sha256:a"},{"Ref":"example/app:latest@sha256:b"}]'), 'sha256:a');
   assert.equal(remoteDigestFromImagetoolsInspectOutput('Name: example/app:latest\nDigest: sha256:index\n'), 'sha256:index');
 });
 
@@ -103,7 +104,41 @@ test('inspectImageFreshness classifies current and stale images', () => {
   }
 });
 
-test('inspectImageFreshness uses buildx for multi-arch manifest output', () => {
+test('inspectImageFreshness treats an old multi-arch platform digest as stale', () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_MANIFEST = 'array';
+    process.env.DOCKER_FAKE_INSPECT = 'stale';
+    assert.deepEqual(inspectImageFreshness('example/app:latest'), {
+      status: 'stale',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:local'],
+      remoteDigest: 'sha256:platform-a',
+      remoteDigests: ['sha256:platform-a', 'sha256:platform-b', 'sha256:remote'],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshness treats a current multi-arch platform digest as current', () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_MANIFEST = 'array';
+    process.env.DOCKER_FAKE_INSPECT = 'platform-a';
+    assert.deepEqual(inspectImageFreshness('example/app:latest'), {
+      status: 'current',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:platform-a'],
+      remoteDigest: 'sha256:platform-a',
+      remoteDigests: ['sha256:platform-a', 'sha256:platform-b', 'sha256:remote'],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshness accepts a current multi-arch index digest when recorded locally', () => {
   const restore = installFakeDocker();
   try {
     process.env.DOCKER_FAKE_MANIFEST = 'array';
@@ -111,7 +146,8 @@ test('inspectImageFreshness uses buildx for multi-arch manifest output', () => {
       status: 'current',
       tag: 'example/app:latest',
       localDigests: ['sha256:remote'],
-      remoteDigest: 'sha256:remote',
+      remoteDigest: 'sha256:platform-a',
+      remoteDigests: ['sha256:platform-a', 'sha256:platform-b', 'sha256:remote'],
     });
   } finally {
     restore();
@@ -179,7 +215,41 @@ test('inspectImageFreshnessAsync mirrors the sync classification', async () => {
   }
 });
 
-test('inspectImageFreshnessAsync uses buildx for multi-arch manifest output', async () => {
+test('inspectImageFreshnessAsync treats an old multi-arch platform digest as stale', async () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_MANIFEST = 'array';
+    process.env.DOCKER_FAKE_INSPECT = 'stale';
+    assert.deepEqual(await inspectImageFreshnessAsync('example/app:latest'), {
+      status: 'stale',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:local'],
+      remoteDigest: 'sha256:platform-a',
+      remoteDigests: ['sha256:platform-a', 'sha256:platform-b', 'sha256:remote'],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshnessAsync treats a current multi-arch platform digest as current', async () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_MANIFEST = 'array';
+    process.env.DOCKER_FAKE_INSPECT = 'platform-a';
+    assert.deepEqual(await inspectImageFreshnessAsync('example/app:latest'), {
+      status: 'current',
+      tag: 'example/app:latest',
+      localDigests: ['sha256:platform-a'],
+      remoteDigest: 'sha256:platform-a',
+      remoteDigests: ['sha256:platform-a', 'sha256:platform-b', 'sha256:remote'],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshnessAsync accepts a current multi-arch index digest when recorded locally', async () => {
   const restore = installFakeDocker();
   try {
     process.env.DOCKER_FAKE_MANIFEST = 'array';
@@ -187,7 +257,8 @@ test('inspectImageFreshnessAsync uses buildx for multi-arch manifest output', as
       status: 'current',
       tag: 'example/app:latest',
       localDigests: ['sha256:remote'],
-      remoteDigest: 'sha256:remote',
+      remoteDigest: 'sha256:platform-a',
+      remoteDigests: ['sha256:platform-a', 'sha256:platform-b', 'sha256:remote'],
     });
   } finally {
     restore();

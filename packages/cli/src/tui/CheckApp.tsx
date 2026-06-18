@@ -31,11 +31,14 @@ export type CheckEvent =
 /** Minimal pub/sub bridge between the async engine and the React tree. */
 export class CheckHub {
   private listeners = new Set<(event: CheckEvent) => void>();
+  private history: CheckEvent[] = [];
   emit(event: CheckEvent): void {
+    this.history.push(event);
     for (const listener of [...this.listeners]) listener(event);
   }
   subscribe(listener: (event: CheckEvent) => void): () => void {
     this.listeners.add(listener);
+    for (const event of this.history) listener(event);
     return () => {
       this.listeners.delete(listener);
     };
@@ -344,7 +347,7 @@ export function CheckApp({ hub, fix, getActions, onSelect, onCancel, offerValida
       {phase === "validate-confirm" ? (
         <Box marginTop={1} flexDirection="column">
           <Text color="cyan" bold>Validate agents?</Text>
-          <Text>Make a live test call to each agent image to confirm auth works.</Text>
+          <Text>Make live test calls for configured agent images to confirm auth works.</Text>
           <Text dimColor>This makes real, billable LLM calls. Press y to run, any other key to skip.</Text>
         </Box>
       ) : null}
