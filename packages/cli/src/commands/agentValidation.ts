@@ -182,9 +182,12 @@ function baseArgs(
     "--security-opt", "no-new-privileges",
     "--cap-add", "CHOWN",
     "--network", "bridge",
-    "--user", hostUserSpec(),
+    // Start as root so the image entrypoints can chown the mounts and drop to
+    // the node user — matching how @propr/core actually runs these images.
+    // Running as the host user breaks sudo/chown/mkdir inside the containers.
+    "--user", "0:0",
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
-    "-v", `${hostDir}:${containerConfigPath}:${opts.configMode ?? "ro"}`,
+    "-v", `${hostDir}:${containerConfigPath}:${opts.configMode ?? "rw"}`,
     "-e", "GH_TOKEN",
     ...(opts.env ?? []),
     ...(opts.extra ?? []),
@@ -299,6 +302,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     imageInvocation: ({ image, hostDir, workspaceDir, promptFileHost, cfg }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.vibe", workspaceDir, {
+          configMode: "ro",
           env: [
             ...(cfg.mistralApiKey ? ["-e", "MISTRAL_API_KEY"] : []),
             "-e", "VIBE_SOURCE_HOME=/home/node/.vibe",
@@ -350,12 +354,6 @@ function resolveOpenCodeDataDir(configDir: string, cfg: OrchestratorConfig): str
   if (cfg.hostOpencodeDataDir) return cfg.hostOpencodeDataDir;
   const inferred = inferOpenCodeDataDir(configDir);
   return inferred && existsSync(inferred) ? inferred : undefined;
-}
-
-function hostUserSpec(): string {
-  const getuid = process.getuid;
-  const getgid = process.getgid;
-  return typeof getuid === "function" && typeof getgid === "function" ? `${getuid()}:${getgid()}` : "1000:1000";
 }
 
 export interface AgentCell {
@@ -591,7 +589,7 @@ export function planAgentLogin(
     "--security-opt", "no-new-privileges",
     "--cap-add", "CHOWN",
     "--network", "bridge",
-    "--user", hostUserSpec(),
+    "--user", "0:0",
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
     "-v", `${hostDir}:${d.containerConfigPath}:rw`,
     "-e", "GH_TOKEN",

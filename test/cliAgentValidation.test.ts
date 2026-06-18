@@ -94,7 +94,7 @@ test("validateAgents supports Vibe image validation with only MISTRAL_API_KEY", 
   }
 });
 
-test("validateAgents runs validation containers as the invoking host user", async () => {
+test("validateAgents starts validation containers as root so entrypoints can drop to node", async () => {
   const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
   const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "claude");
   mkdirSync(hostDir);
@@ -102,7 +102,7 @@ test("validateAgents runs validation containers as the invoking host user", asyn
   try {
     await validateAgents(fakeOrchestrator(), fakeConfig({ hostClaudeDir: hostDir }), { agents: ["claude"] });
     const logged = readFileSync(logFile, "utf8");
-    assert.match(logged, new RegExp(`run .*--user ${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`));
+    assert.match(logged, /run .*--user 0:0/);
   } finally {
     restore();
   }
@@ -119,9 +119,9 @@ test("planAgentLogin validates configured host paths before callers create them"
   assert.equal(error, "HOST_CLAUDE_DIR must be absolute");
 });
 
-test("planAgentLogin runs the login container as the invoking host user", () => {
+test("planAgentLogin starts the login container as root so the entrypoint can drop to node", () => {
   const { plan, error } = planAgentLogin("claude", fakeConfig({ hostClaudeDir: "/tmp/claude" }), "/tmp/propr-login");
   assert.equal(error, undefined);
   assert.ok(plan);
-  assert.equal(plan.dockerArgs[plan.dockerArgs.indexOf("--user") + 1], `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`);
+  assert.equal(plan.dockerArgs[plan.dockerArgs.indexOf("--user") + 1], "0:0");
 });
