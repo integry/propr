@@ -96,6 +96,7 @@ export interface ResolveHostConfigOptions {
 export interface OnLogOption {
   onLog?: (line: string) => void;
   pull?: boolean;
+  freshnessCache?: Map<string, ImageFreshnessResult>;
 }
 
 /** Public surface of orchestrator.mjs consumed by the CLI. */
@@ -111,7 +112,12 @@ export interface OrchestratorModule {
   inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean }): Promise<ImageFreshnessResult>;
   tagAgentLatest(key: string, imageTag: string): void;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
-  ensureServiceImage(cfg: OrchestratorConfig, service: string, onLog?: (line: string) => void): void;
+  ensureServiceImage(
+    cfg: OrchestratorConfig,
+    service: string,
+    onLog?: (line: string) => void,
+    opts?: { freshnessCache?: Map<string, ImageFreshnessResult> }
+  ): void;
   pullImages(
     cfg: OrchestratorConfig,
     opts?: { onLog?: (line: string) => void; env?: NodeJS.ProcessEnv }

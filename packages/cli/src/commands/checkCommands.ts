@@ -14,7 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
 import { resolveGithubAuthMode, validateRelayUrl } from "@propr/shared";
-import { createConfigManager, type ConfigManager } from "../config/index.js";
+import { createConfigManager } from "../config/index.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
@@ -92,7 +92,7 @@ export const GROUP_TITLES: Record<CheckGroup, string> = {
 
 // One-line, new-user-friendly explanation of what each section verifies.
 export const GROUP_DESCRIPTIONS: Record<CheckGroup, string> = {
-  CLI: "CLI version and backend connection",
+  CLI: "Local CLI version",
   Docker: "Container engine that runs the stack and agents",
   Stack: "Local stack root and .env configuration",
   Images: "ProPR service and agent container images",
@@ -135,10 +135,6 @@ interface JsonCheckResult {
   fix?: string;
 }
 
-// npm package name the CLI is published under (see packages/cli/scripts/build-publish.mjs).
-const NPM_PACKAGE_NAME = "propr-cli";
-const DEFAULT_REMOTE_URL = "http://localhost:4000";
-
 /** Read this CLI's version from package.json across TS source, workspace dist, and published dist layouts. */
 function readCliVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -151,7 +147,7 @@ function readCliVersion(): string {
     for (const pkgPath of candidates) {
       if (!existsSync(pkgPath)) continue;
       const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { name?: string; version?: string };
-      if ((pkg.name === "@propr/cli" || pkg.name === NPM_PACKAGE_NAME || pkg.name === "propr") && pkg.version) {
+      if ((pkg.name === "@propr/cli" || pkg.name === "propr-cli" || pkg.name === "propr") && pkg.version) {
         return pkg.version;
       }
     }
@@ -161,98 +157,8 @@ function readCliVersion(): string {
   return "0.0.0";
 }
 
-/** Compare dotted versions, ignoring any pre-release suffix. */
-function isNewerVersion(latest: string, current: string): boolean {
-  const parse = (v: string): number[] => v.split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
-  const a = parse(latest);
-  const b = parse(current);
-  for (let i = 0; i < 3; i += 1) {
-    if ((a[i] ?? 0) > (b[i] ?? 0)) return true;
-    if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
-  }
-  return false;
-}
-
-/** fetch() with an abort timeout; resolves to null on any error/timeout. */
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * CLI-level checks: the installed CLI version (with an npm update check) and the
- * configured backend remote (with a reachability probe). Both are network calls,
- * run concurrently and emitted live; they degrade gracefully when offline.
- */
-async function runCliChecks(
-  configManager: ConfigManager,
-  emit: (result: CheckResult) => void,
-  onPending?: (slot: { name: string; group?: CheckGroup }) => void,
-  skipUpdateCheck = false
-): Promise<void> {
-  const cliVersion = readCliVersion();
-  const remoteUrl = configManager.getRemoteUrl();
-  const effectiveRemote = remoteUrl ?? DEFAULT_REMOTE_URL;
-
-  onPending?.({ name: "CLI version", group: "CLI" });
-  onPending?.({ name: "Backend remote", group: "CLI" });
-
-  // Run both probes concurrently, but emit in a fixed order (version, remote).
-  const [versionResult, remoteResult] = await Promise.all([
-    (async (): Promise<CheckResult> => {
-      if (skipUpdateCheck) {
-        return { name: "CLI version", status: "ok", detail: `${cliVersion} (update check skipped)`, group: "CLI" };
-      }
-      const res = await fetchWithTimeout(`https://registry.npmjs.org/${NPM_PACKAGE_NAME}/latest`, 4000);
-      if (res?.ok) {
-        try {
-          const data = (await res.json()) as { version?: string };
-          const latest = data.version;
-          if (latest && isNewerVersion(latest, cliVersion)) {
-            return {
-              name: "CLI version",
-              status: "warn",
-              detail: `${cliVersion} installed; ${latest} available`,
-              group: "CLI",
-              fix: `Update with: npm install -g ${NPM_PACKAGE_NAME}`,
-            };
-          }
-          if (latest) {
-            return { name: "CLI version", status: "ok", detail: `${cliVersion} (up to date)`, group: "CLI" };
-          }
-        } catch {
-          /* fall through to "update check unavailable" */
-        }
-      }
-      return { name: "CLI version", status: "ok", detail: `${cliVersion} (update check unavailable)`, group: "CLI" };
-    })(),
-    (async (): Promise<CheckResult> => {
-      const target = `${effectiveRemote.replace(/\/+$/, "")}/api/status`;
-      const res = await fetchWithTimeout(target, 4000);
-      const suffix = remoteUrl ? "" : " (default)";
-      if (res?.ok) {
-        return { name: "Backend remote", status: "ok", detail: `${effectiveRemote}${suffix} — reachable`, group: "CLI" };
-      }
-      return {
-        name: "Backend remote",
-        status: "warn",
-        detail: res ? `${effectiveRemote}${suffix} — returned HTTP ${res.status}` : `${effectiveRemote}${suffix} — not reachable`,
-        group: "CLI",
-        fix: remoteUrl
-          ? "Verify the backend is running and the URL is correct (`propr remote <url>`)."
-          : "Start the local stack (`propr start`), or point at a backend with `propr remote <url>`.",
-      };
-    })(),
-  ]);
-  emit(versionResult);
-  emit(remoteResult);
+function runCliChecks(emit: (result: CheckResult) => void): void {
+  emit({ name: "CLI version", status: "ok", detail: readCliVersion(), group: "CLI" });
 }
 
 /** Run all checks and return the structured outcome (no printing). */
@@ -266,8 +172,8 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const configManager = await createConfigManager();
   const skipRemoteImageCheck = Boolean(options.skipRemoteImageCheck || envSkipsRemoteImageCheck());
 
-  // 0. CLI version + backend remote (network; runs concurrently with the rest).
-  const cliChecksDone = runCliChecks(configManager, emit, options.onPending, skipRemoteImageCheck);
+  // 0. CLI version (local-only; `propr check` should not phone home by default).
+  runCliChecks(emit);
 
   // 1. Docker installed
   const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
@@ -359,6 +265,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     // — and the remote digest probe for them is the main source of slow timeouts.
     const registry = typeof cfg.manifest?.registry === "string" ? cfg.manifest.registry : "propr";
     const isProprPublished = (tag: string): boolean => tag.startsWith(`${registry}/`);
+    const freshnessByTag = new Map<string, Promise<ReturnType<OrchestratorModule["inspectImageFreshness"]>>>();
 
     const computeImageResult = async (key: string, tag: string): Promise<CheckResult> => {
       // Presence-only for third-party images and when remote checks are skipped.
@@ -368,7 +275,12 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         return { name: `Image ${key}`, status: "ok", detail, group: "Images" };
       }
 
-      const freshness = await orch.inspectImageFreshnessAsync(tag);
+      let freshnessPromise = freshnessByTag.get(tag);
+      if (!freshnessPromise) {
+        freshnessPromise = orch.inspectImageFreshnessAsync(tag);
+        freshnessByTag.set(tag, freshnessPromise);
+      }
+      const freshness = await freshnessPromise;
       if (freshness.status === "missing") return missingImageResult(key, tag);
       if (freshness.status === "current") {
         return { name: `Image ${key}`, status: "ok", detail: `${tag} (current)`, group: "Images" };
@@ -509,7 +421,6 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     }
   }
 
-  await cliChecksDone; // ensure CLI/remote results are recorded before returning
   const anyFail = results.some((r) => r.status === "fail");
   return { results, cfg, rootDir, anyFail };
 }
@@ -769,7 +680,8 @@ async function runChecksInteractive(
       if (!result.changed) return { outcome: lastOutcome, validate: false };
       // Loop: re-run a fresh live pass to reflect changes and offer more fixes.
     }
-  } catch {
+  } catch (error) {
+    if (!isLiveRendererFallbackError(error)) throw error;
     // The terminal can't support the live UI (e.g. raw mode unavailable): fall
     // back to the static renderer and readline-based prompts (no Ink to clobber).
     const outcome = await runChecks(runOptions);
@@ -781,6 +693,11 @@ async function runChecksInteractive(
     const validate = offerValidate ? await confirmValidateAgents() : false;
     return { outcome, validate };
   }
+}
+
+function isLiveRendererFallbackError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /raw mode|setRawMode|stdin.*tty|not a tty|ink/i.test(message);
 }
 
 function collectRemediationActions(outcome: ChecksOutcome): RemediationAction[] {
@@ -1113,7 +1030,7 @@ export function createCheckCommand(): Command {
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to validate (default: all)")
-    .option("--skip-remote-image-check", "Skip registry image freshness and CLI update checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
+    .option("--skip-remote-image-check", "Skip registry image freshness checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
     .option("--validate-agents", "Append live agent validation to a system check (makes billable LLM calls; same as `check all`)")
@@ -1135,7 +1052,7 @@ Notes:
   "check all", "check agents", and --validate-agents run a real prompt through
   each agent's host CLI and Docker image (mounts credentials, makes billable LLM
   calls). This is also true with --json. Restrict with --agents.
-  Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline runs; this also skips the npm CLI update probe.
+  Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline image checks.
 `)
     .action(async (mode: string, options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {
       try {

@@ -20,7 +20,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { CheckResult, CheckStatus } from "./checkCommands.js";
 
@@ -92,6 +92,10 @@ function responseSummary(stdout: string, stderr: string): string {
   return (last ?? "").trim();
 }
 
+function truncateDetail(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
+}
+
 /** Classify a finished run as ok/fail with a concise human detail. */
 function evaluateRun(run: ExecResult): { ok: boolean; detail: string } {
   if (run.error?.code === "ETIMEDOUT") {
@@ -104,7 +108,7 @@ function evaluateRun(run: ExecResult): { ok: boolean; detail: string } {
       .map((l) => l.trim())
       .filter(Boolean)
       .pop();
-    return { ok: false, detail: `exit ${run.status ?? "?"}: ${(reason || "failed").slice(0, 160)}` };
+    return { ok: false, detail: `exit ${run.status ?? "?"}: ${truncateDetail(reason || "failed", 160)}` };
   }
   const combined = `${run.stdout}\n${run.stderr}`;
   if (FAILURE_MARKERS.test(combined)) {
@@ -113,10 +117,10 @@ function evaluateRun(run: ExecResult): { ok: boolean; detail: string } {
       .split("\n")
       .map((l) => l.trim())
       .find((l) => FAILURE_MARKERS.test(l));
-    return { ok: false, detail: (line || "authentication/availability error").slice(0, 160) };
+    return { ok: false, detail: truncateDetail(line || "authentication/availability error", 160) };
   }
   const response = responseSummary(run.stdout, run.stderr);
-  return { ok: true, detail: response ? response.slice(0, 200) : "(responded, no text captured)" };
+  return { ok: true, detail: response ? truncateDetail(response, 200) : "(responded, no text captured)" };
 }
 
 function parseVersion(text: string): string | undefined {
@@ -149,6 +153,7 @@ interface AgentValidationDescriptor {
   type: string;
   imageKey: string;
   hostDirKey: keyof OrchestratorConfig;
+  envKey: string;
   defaultHostDir: string;
   /** Host CLI binary name, or undefined when no host invocation is known. */
   hostBin?: string;
@@ -170,7 +175,7 @@ function baseArgs(
   hostDir: string,
   containerConfigPath: string,
   workspaceDir: string,
-  opts: { env?: string[]; extra?: string[] } = {}
+  opts: { env?: string[]; extra?: string[]; configMode?: "ro" | "rw" } = {}
 ): string[] {
   return [
     "run", "--rm", "-i",
@@ -179,7 +184,7 @@ function baseArgs(
     "--network", "bridge",
     "--user", "0:0",
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
-    "-v", `${hostDir}:${containerConfigPath}:rw`,
+    "-v", `${hostDir}:${containerConfigPath}:${opts.configMode ?? "ro"}`,
     "-e", "GH_TOKEN",
     ...(opts.env ?? []),
     ...(opts.extra ?? []),
@@ -195,6 +200,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     type: "claude",
     imageKey: "agent-claude",
     hostDirKey: "hostClaudeDir",
+    envKey: "HOST_CLAUDE_DIR",
     defaultHostDir: join(home, ".claude"),
     hostBin: "claude",
     hostInvocation: ({ prompt }) => ({ args: ["-p", prompt, "--output-format", "text"] }),
@@ -213,6 +219,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     type: "codex",
     imageKey: "agent-codex",
     hostDirKey: "hostCodexDir",
+    envKey: "HOST_CODEX_DIR",
     defaultHostDir: join(home, ".codex"),
     hostBin: "codex",
     hostInvocation: ({ prompt }) => ({ args: ["exec", "--skip-git-repo-check", prompt] }),
@@ -233,6 +240,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     type: "antigravity",
     imageKey: "agent-antigravity",
     hostDirKey: "hostAntigravityDir",
+    envKey: "HOST_ANTIGRAVITY_DIR",
     defaultHostDir: join(home, ".gemini"),
     hostBin: "agy",
     hostInvocation: ({ prompt }) => ({ args: ["-p", prompt] }),
@@ -257,12 +265,14 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     type: "opencode",
     imageKey: "agent-opencode",
     hostDirKey: "hostOpencodeXdgDir",
+    envKey: "HOST_OPENCODE_XDG_DIR",
     defaultHostDir: join(home, ".config", "opencode"),
     hostBin: "opencode",
     hostInvocation: ({ prompt }) => ({ args: ["run", prompt] }),
     imageInvocation: ({ image, hostDir, workspaceDir, cfg }) => {
-      const extra = cfg.hostOpencodeDataDir
-        ? ["-v", `${cfg.hostOpencodeDataDir}:/home/node/.local/share/opencode:rw`]
+      const opencodeDataDir = resolveOpenCodeDataDir(hostDir, cfg);
+      const extra = opencodeDataDir
+        ? ["-v", `${opencodeDataDir}:/home/node/.local/share/opencode:rw`, "-e", "XDG_DATA_HOME=/home/node/.local/share"]
         : [];
       return {
         args: [
@@ -281,6 +291,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     type: "vibe",
     imageKey: "agent-vibe",
     hostDirKey: "hostVibeDir",
+    envKey: "HOST_VIBE_DIR",
     defaultHostDir: join(home, ".vibe"),
     hostBin: "vibe",
     // Host vibe (newer CLI) uses -p; the image's vibe build uses --prompt-file.
@@ -316,6 +327,34 @@ function imagePresent(orch: OrchestratorModule, tag: string): boolean {
 
 function commandExists(bin: string): boolean {
   return spawnSync("which", [bin], { encoding: "utf-8" }).status === 0;
+}
+
+function validateBindPath(name: string, value?: string): string | null {
+  if (!value || !isAbsolute(value) || value.includes("~") || /[\0\r\n]/.test(value)) {
+    return `${name} must be an absolute path without '~' or control characters (requires Linux host paths)`;
+  }
+  if (value.includes(":")) {
+    return `${name} cannot contain ':' because it is used in a Docker bind mount (requires Linux — Windows-style paths like C:\\... are not supported)`;
+  }
+  return null;
+}
+
+function inferOpenCodeDataDir(configDir: string): string | undefined {
+  const normalized = configDir.replace(/\/+$/, "");
+  if (!normalized.endsWith("/.config/opencode")) return undefined;
+  return `${normalized.slice(0, -"/.config/opencode".length)}/.local/share/opencode`;
+}
+
+function resolveOpenCodeDataDir(configDir: string, cfg: OrchestratorConfig): string | undefined {
+  if (cfg.hostOpencodeDataDir) return cfg.hostOpencodeDataDir;
+  const inferred = inferOpenCodeDataDir(configDir);
+  return inferred && existsSync(inferred) ? inferred : undefined;
+}
+
+function hostUserSpec(): string {
+  const getuid = process.getuid;
+  const getgid = process.getgid;
+  return typeof getuid === "function" && typeof getgid === "function" ? `${getuid()}:${getgid()}` : "1000:1000";
 }
 
 export interface AgentCell {
@@ -434,12 +473,30 @@ export async function validateAgents(
     return { status: ev.ok ? "ok" : "fail", detail: ev.detail, ...(ev.ok ? {} : { fix: `Run \`${d.hostBin} -p "test"\` on the host to debug ${d.type} auth.` }) };
   };
 
-  const runImage = async (d: AgentValidationDescriptor, image: string | undefined, hostDir: string): Promise<AgentCell> => {
+  const runImage = async (d: AgentValidationDescriptor, image: string | undefined, hostDir: string | undefined): Promise<AgentCell> => {
     if (!image || !imagePresent(orch, image)) {
       return { status: "warn", detail: `image ${image ?? d.imageKey} not present — skipped` };
     }
+    if (!hostDir) {
+      return {
+        status: "warn",
+        detail: `${d.envKey} is not set — image validation skipped because the stack will not mount ${d.defaultHostDir}`,
+        fix: `Set ${d.envKey} in .env or run \`propr check --fix\` to add a detected credential directory.`,
+      };
+    }
+    const invalidHostDir = validateBindPath(d.envKey, hostDir);
+    if (invalidHostDir) {
+      return { status: "warn", detail: `${invalidHostDir} — image validation skipped` };
+    }
     if (!existsSync(hostDir)) {
       return { status: "warn", detail: `credentials dir ${hostDir} not found — skipped` };
+    }
+    if (d.type === "opencode" && !resolveOpenCodeDataDir(hostDir, cfg)) {
+      return {
+        status: "warn",
+        detail: `OpenCode config is mounted but auth data dir was not found for ${hostDir}`,
+        fix: "Set HOST_OPENCODE_DATA_DIR to the host OpenCode data path (usually ~/.local/share/opencode).",
+      };
     }
     const { args, stdin } = d.imageInvocation({ image, hostDir, workspaceDir, promptFileHost, cfg });
     const run = await execAsync("docker", args, { input: stdin, timeoutMs: VALIDATION_TIMEOUT_MS });
@@ -457,7 +514,7 @@ export async function validateAgents(
     return await Promise.all(
       selected.map(async (d) => {
         const image = cfg.images[d.imageKey];
-        const hostDir = (cfg[d.hostDirKey] as string | undefined) ?? d.defaultHostDir;
+        const hostDir = cfg[d.hostDirKey] as string | undefined;
         // Emit each cell as it resolves so a live view can fill the table in.
         const versionP = versionInfo(d, image, orch).then((v) => {
           options.onUpdate?.(d.type, { field: "version", hostVersion: v.host, imageVersion: v.image, drift: v.drift });
@@ -499,7 +556,8 @@ export function loginableAgents(): string[] {
 export function planAgentLogin(
   type: string,
   cfg: OrchestratorConfig,
-  workspaceDir: string
+  workspaceDir: string,
+  validateDockerBindPath: (name: string, value?: string, opts?: { containerPath?: boolean }) => string | null = validateBindPath
 ): { plan?: AgentLoginPlan; error?: string } {
   const d = DESCRIPTORS.find((x) => x.type === type);
   if (!d) return { error: `unknown agent '${type}'` };
@@ -509,13 +567,17 @@ export function planAgentLogin(
   const image = cfg.images[d.imageKey];
   if (!image) return { error: `no image configured for ${type}` };
   const hostDir = (cfg[d.hostDirKey] as string | undefined) ?? d.defaultHostDir;
+  const invalidHostDir = validateDockerBindPath(d.envKey, hostDir);
+  if (invalidHostDir) return { error: invalidHostDir };
+  const invalidWorkspaceDir = validateDockerBindPath("workspace", workspaceDir);
+  if (invalidWorkspaceDir) return { error: invalidWorkspaceDir };
 
   const dockerArgs = [
     "run", "--rm", "-it",
     "--security-opt", "no-new-privileges",
     "--cap-add", "CHOWN",
     "--network", "bridge",
-    "--user", "0:0",
+    "--user", hostUserSpec(),
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
     "-v", `${hostDir}:${d.containerConfigPath}:rw`,
     "-e", "GH_TOKEN",

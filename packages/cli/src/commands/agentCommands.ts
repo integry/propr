@@ -507,7 +507,7 @@ Examples:
         mkdirSync(workspaceDir, { recursive: true });
         try {
           const loginType = type.toLowerCase();
-          const { plan, error } = planAgentLogin(loginType, cfg, workspaceDir);
+          const { plan, error } = planAgentLogin(loginType, cfg, workspaceDir, orch.validateDockerBindPath);
           if (error || !plan) {
             console.error(`Error: ${error ?? "could not plan login"}`);
             if (available.length > 0) console.error(`Agents with interactive login: ${available.join(", ")}`);

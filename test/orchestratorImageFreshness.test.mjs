@@ -9,6 +9,7 @@ import {
   inspectImageFreshnessAsync,
   normalizeDigest,
   pullImages,
+  ensureServiceImage,
   remoteDigestFromImagetoolsInspectOutput,
   remoteDigestFromManifestInspectOutput,
 } from '../docker/launcher/orchestrator.mjs';
@@ -33,6 +34,7 @@ if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
 fi
 
 if [ "$1" = "manifest" ] && [ "$2" = "inspect" ]; then
+  [ -n "$DOCKER_FAKE_MANIFEST_LOG" ] && echo "manifest $4" >> "$DOCKER_FAKE_MANIFEST_LOG"
   case "$DOCKER_FAKE_MANIFEST" in
     array) echo '[{"Ref":"example/app:latest@sha256:platform-a"},{"Ref":"example/app:latest@sha256:platform-b"}]' ; exit 0 ;;
     fail) echo "manifest failed" >&2; exit 1 ;;
@@ -235,8 +237,29 @@ test('pullImages pulls local-only ProPR images', () => {
     );
 
     assert.ok(logs.includes('  · propr/app:1.0.0 (local-only, pulling)'));
+    assert.equal(logs.filter((line) => line === '  · propr/app:1.0.0 (local-only, pulling)').length, 1);
+    assert.ok(!logs.includes('  · propr/app:1.0.0'));
     assert.equal(readFileSync(logPath, 'utf8').trim(), 'pull propr/app:1.0.0');
   } finally {
     restore();
+  }
+});
+
+test('ensureServiceImage caches freshness per image tag during a startup pass', () => {
+  const restore = installFakeDocker();
+  try {
+    const logPath = join(mkdtempSync(join(tmpdir(), 'propr-fake-docker-manifest-log-')), 'manifest.log');
+    process.env.DOCKER_FAKE_MANIFEST_LOG = logPath;
+    const cache = new Map();
+    const cfg = { images: { app: 'propr/app:1.0.0' }, manifest: { registry: 'propr' } };
+
+    ensureServiceImage(cfg, 'daemon', () => {}, { freshnessCache: cache });
+    ensureServiceImage(cfg, 'worker', () => {}, { freshnessCache: cache });
+    ensureServiceImage(cfg, 'api', () => {}, { freshnessCache: cache });
+
+    assert.equal(readFileSync(logPath, 'utf8').trim(), 'manifest propr/app:1.0.0');
+  } finally {
+    restore();
+    delete process.env.DOCKER_FAKE_MANIFEST_LOG;
   }
 });

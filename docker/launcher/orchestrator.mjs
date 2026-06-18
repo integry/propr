@@ -579,19 +579,31 @@ export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false 
         : { status: 'stale', tag, localDigests, remoteDigest };
 }
 
+function cachedImageFreshness(cache, tag, opts) {
+    if (!cache) return inspectImageFreshness(tag, opts);
+    const key = `${opts.skipRemoteCheck ? 'skip' : 'remote'}\0${tag}`;
+    if (!cache.has(key)) cache.set(key, inspectImageFreshness(tag, opts));
+    return cache.get(key);
+}
+
 /** Pull a single non-agent service image if it is not already present locally or is stale. */
-export function ensureServiceImage(cfg, service, onLog) {
+export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {}) {
     const tag = imageTagForService(cfg, service);
     if (!tag) return;
     const skipFreshness = skipRemoteImageCheck() || !isProprPublishedImage(cfg, tag);
-    const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipFreshness });
+    const freshness = cachedImageFreshness(freshnessCache, tag, { skipRemoteCheck: skipFreshness });
     if (freshness.status === 'current') return;
     if (freshness.status === 'unknown') {
-        if (freshness.localOnly || freshness.skipped) return;
-        onLog?.(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
-        return;
+        if (freshness.skipped) return;
+        if (freshness.localOnly) {
+            onLog?.(`  · ${tag} (local-only, pulling)`);
+        } else {
+            onLog?.(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+            return;
+        }
+    } else {
+        onLog?.(`  · pulling ${tag}`);
     }
-    onLog?.(`  · pulling ${tag}`);
     const res = docker(['pull', tag], { capture: true });
     if (res.status !== 0) {
         throw new Error(`Failed to pull ${tag}: ${(res.stderr || '').trim()}`);
@@ -703,9 +715,9 @@ function buildServiceSpec(cfg, service) {
  * the service image if it is missing so toggles (`propr docs on`) work even when
  * the image was skipped at startup.
  */
-export function startService(cfg, service, { onLog, pull = true } = {}) {
+export function startService(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
     const name = `${cfg.stack}-${service}`;
-    if (pull) ensureServiceImage(cfg, service, onLog);
+    if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
     const spec = buildServiceSpec(cfg, service);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
@@ -749,9 +761,10 @@ export function isStackRunning(cfg) {
 export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
     const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
     const started = [];
+    const freshnessCache = new Map();
     try {
         for (const service of toStart) {
-            startService(cfg, service, { onLog });
+            startService(cfg, service, { onLog, freshnessCache });
             started.push(service);
         }
     } catch (err) {
@@ -984,6 +997,7 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
     const skipAgentPull = env.PROPR_SKIP_AGENT_PULL === 'true' || env.PROPR_SKIP_AGENT_PULL === '1';
     const strictAgentPull = env.PROPR_STRICT_AGENT_PULL !== 'false' && env.PROPR_STRICT_AGENT_PULL !== '0';
     const skipFreshnessCheck = skipRemoteImageCheck(env);
+    const freshnessCache = new Map();
     onLog('pulling images…');
     const failedAgentImages = [];
 
@@ -1001,7 +1015,7 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
         }
 
         const skipFreshnessForImage = skipFreshnessCheck || !isProprPublishedImage(cfg, tag);
-        const freshness = inspectImageFreshness(tag, { skipRemoteCheck: skipFreshnessForImage });
+        const freshness = cachedImageFreshness(freshnessCache, tag, { skipRemoteCheck: skipFreshnessForImage });
 
         if (freshness.status === 'current') {
             onLog(`  · ${tag} (local, current)`);
@@ -1012,6 +1026,7 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
         if (freshness.status === 'unknown') {
             if (freshness.localOnly) {
                 onLog(`  · ${tag} (local-only, pulling)`);
+                // fall through and pull once; do not print the generic line too.
             } else if (freshness.skipped) {
                 const reason = skipFreshnessCheck ? 'remote check skipped via PROPR_SKIP_REMOTE_IMAGE_CHECK' : 'third-party image';
                 onLog(`  · ${tag} (local, ${reason})`);
@@ -1026,7 +1041,7 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
 
         if (freshness.status === 'stale') {
             onLog(`  · ${tag} (stale, pulling)`);
-        } else {
+        } else if (!(freshness.status === 'unknown' && freshness.localOnly)) {
             onLog(`  · ${tag}`);
         }
         const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
