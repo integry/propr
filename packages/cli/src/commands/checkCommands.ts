@@ -10,7 +10,7 @@ import { Command } from "commander";
 import { spawnSync } from "node:child_process";
 import { existsSync, accessSync, readFileSync, constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
 import { resolveGithubAuthMode, validateRelayUrl } from "@propr/shared";
@@ -19,7 +19,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
-import { validateAgents, agentRowsToChecks, type AgentCell, type AgentValidationRow } from "./agentValidation.js";
+import { validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, type AgentCell, type AgentValidationRow } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -66,7 +66,7 @@ function agentDescriptors(): AgentDescriptor[] {
   return [
     { type: "claude", hostDirKey: "hostClaudeDir", envKey: "HOST_CLAUDE_DIR", defaultDir: join(home, ".claude"), imageKey: "agent-claude", bin: "claude" },
     { type: "codex", hostDirKey: "hostCodexDir", envKey: "HOST_CODEX_DIR", defaultDir: join(home, ".codex"), imageKey: "agent-codex", bin: "codex" },
-    { type: "antigravity", hostDirKey: "hostAntigravityDir", envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini"), imageKey: "agent-antigravity", bin: "gemini" },
+    { type: "antigravity", hostDirKey: "hostAntigravityDir", envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini"), imageKey: "agent-antigravity", bin: "agy" },
     { type: "opencode", hostDirKey: "hostOpencodeXdgDir", envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
     { type: "opencode-data", hostDirKey: "hostOpencodeDataDir", envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
     { type: "vibe", hostDirKey: "hostVibeDir", envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe"), imageKey: "agent-vibe", bin: "vibe" },
@@ -139,15 +139,26 @@ interface JsonCheckResult {
 const NPM_PACKAGE_NAME = "propr-cli";
 const DEFAULT_REMOTE_URL = "http://localhost:4000";
 
-/** Read this CLI's version from its package.json (two levels up from src|dist/commands). */
+/** Read this CLI's version from package.json across TS source, workspace dist, and published dist layouts. */
 function readCliVersion(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, "..", "..", "package.json"),
+    join(here, "..", "..", "..", "package.json"),
+    resolve(process.cwd(), "package.json"),
+  ];
   try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
-    return pkg.version ?? "0.0.0";
+    for (const pkgPath of candidates) {
+      if (!existsSync(pkgPath)) continue;
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { name?: string; version?: string };
+      if ((pkg.name === "@propr/cli" || pkg.name === NPM_PACKAGE_NAME || pkg.name === "propr") && pkg.version) {
+        return pkg.version;
+      }
+    }
   } catch {
-    return "0.0.0";
+    /* fall through */
   }
+  return "0.0.0";
 }
 
 /** Compare dotted versions, ignoring any pre-release suffix. */
@@ -256,7 +267,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const skipRemoteImageCheck = Boolean(options.skipRemoteImageCheck || envSkipsRemoteImageCheck());
 
   // 0. CLI version + backend remote (network; runs concurrently with the rest).
-  const cliChecksDone = runCliChecks(configManager, emit, options.onPending);
+  const cliChecksDone = runCliChecks(configManager, emit, options.onPending, skipRemoteImageCheck);
 
   // 1. Docker installed
   const dockerVersion = spawnSync("docker", ["--version"], { encoding: "utf-8" });
@@ -373,7 +384,14 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         };
       }
       if (freshness.localOnly) {
-        return { name: `Image ${key}`, status: "ok", detail: `${tag} (local build; freshness not verified)`, group: "Images" };
+        return {
+          name: `Image ${key}`,
+          status: "warn",
+          detail: `${tag} is local-only; registry freshness not verified`,
+          group: "Images",
+          fix: "Replace the unverifiable local tag with the registry image: `propr images pull`.",
+          remediation: { kind: "pull-image", imageKey: key, tag },
+        };
       }
       return {
         name: `Image ${key}`,
@@ -1095,7 +1113,7 @@ export function createCheckCommand(): Command {
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--verify", "Also run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to validate (default: all)")
-    .option("--skip-remote-image-check", "Skip registry freshness checks for local Docker images (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
+    .option("--skip-remote-image-check", "Skip registry image freshness and CLI update checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
     .option("--json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
     .option("--validate-agents", "Append live agent validation to a system check (makes billable LLM calls; same as `check all`)")
@@ -1117,7 +1135,7 @@ Notes:
   "check all", "check agents", and --validate-agents run a real prompt through
   each agent's host CLI and Docker image (mounts credentials, makes billable LLM
   calls). This is also true with --json. Restrict with --agents.
-  Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline runs.
+  Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline runs; this also skips the npm CLI update probe.
 `)
     .action(async (mode: string, options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {
       try {
@@ -1141,6 +1159,12 @@ Notes:
           agents: options.agents ? options.agents.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
           skipRemoteImageCheck: options.skipRemoteImageCheck,
         };
+        const { agents: agentFilter, unknown } = validateAgentFilter(runOptions.agents);
+        if (unknown.length > 0) {
+          console.error(`Error: unknown agent type${unknown.length === 1 ? "" : "s"} '${unknown.join(", ")}'. Valid agents: ${validAgentTypes().join(", ")}.`);
+          process.exit(1);
+        }
+        runOptions.agents = agentFilter.length ? agentFilter : undefined;
 
         // `check agents`: only agent validation, no system checks.
         if (mode === "agents") {
@@ -1174,8 +1198,17 @@ Notes:
         }
 
         // Non-interactive (pipes, CI, NO_COLOR): static one-shot report.
+        // With --fix on a TTY, NO_COLOR only disables Ink/color; readline prompts still run.
         if (!isInteractiveTerminal() || process.env.NO_COLOR !== undefined) {
           const outcome = await runChecks(runOptions);
+          if (options.fix) {
+            printChecks(outcome);
+            const remediated = await runRemediationPrompts(outcome, runOptions);
+            let anyFail = remediated.anyFail;
+            if (runAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+            if (anyFail) process.exit(1);
+            return;
+          }
           printStaticChecks(outcome, !options.fix && collectRemediationActions(outcome).length > 0);
           let anyFail = outcome.anyFail;
           if (runAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;

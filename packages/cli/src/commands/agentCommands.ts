@@ -506,7 +506,8 @@ Examples:
         const workspaceDir = join(tmp, "workspace");
         mkdirSync(workspaceDir, { recursive: true });
         try {
-          const { plan, error } = planAgentLogin(type, cfg, workspaceDir);
+          const loginType = type.toLowerCase();
+          const { plan, error } = planAgentLogin(loginType, cfg, workspaceDir);
           if (error || !plan) {
             console.error(`Error: ${error ?? "could not plan login"}`);
             if (available.length > 0) console.error(`Agents with interactive login: ${available.join(", ")}`);
@@ -518,15 +519,16 @@ Examples:
             process.exit(1);
           }
 
-          console.log(`Logging in to ${type} via ${plan.image}`);
+          mkdirSync(plan.hostDir, { recursive: true, mode: 0o700 });
+          console.log(`Logging in to ${loginType} via ${plan.image}`);
           console.log(`Credentials will be written to ${plan.hostDir}`);
           console.log("");
           const res = spawnSync("docker", plan.dockerArgs, { stdio: "inherit" });
           if (res.status === 0) {
             console.log("");
-            console.log(`${type} login finished. Verify with: propr check agents --agents ${type}`);
+            console.log(`${loginType} login finished. Verify with: propr check agents --agents ${loginType}`);
           } else {
-            console.error(`\n${type} login exited with code ${res.status ?? "?"}.`);
+            console.error(`\n${loginType} login exited with code ${res.status ?? "?"}.`);
             process.exit(1);
           }
         } finally {

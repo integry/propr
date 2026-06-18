@@ -161,7 +161,7 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
     const cacheDir = configured || DEFAULT_VIBE_PROMPT_CACHE_DIR;
     if (isAbsolute(cacheDir) && !cacheDir.includes(":") && !existsSync(cacheDir)) {
       mkdirSync(cacheDir, { recursive: true });
-      try { chmodSync(cacheDir, 0o700); } catch { /* best-effort: keep prompt cache private */ }
+      try { chmodSync(cacheDir, 0o777); } catch { /* best-effort: keep bind mount writable across host/container UIDs */ }
       result.dirsCreated.push(cacheDir);
     }
   }

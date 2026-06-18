@@ -1011,19 +1011,17 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
 
         if (freshness.status === 'unknown') {
             if (freshness.localOnly) {
-                onLog(`  · ${tag} (local)`);
-                tagAgentLatest(key, tag);
-                continue;
-            }
-            if (freshness.skipped) {
+                onLog(`  · ${tag} (local-only, pulling)`);
+            } else if (freshness.skipped) {
                 const reason = skipFreshnessCheck ? 'remote check skipped via PROPR_SKIP_REMOTE_IMAGE_CHECK' : 'third-party image';
                 onLog(`  · ${tag} (local, ${reason})`);
                 tagAgentLatest(key, tag);
                 continue;
+            } else {
+                onLog(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+                tagAgentLatest(key, tag);
+                continue;
             }
-            onLog(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
-            tagAgentLatest(key, tag);
-            continue;
         }
 
         if (freshness.status === 'stale') {

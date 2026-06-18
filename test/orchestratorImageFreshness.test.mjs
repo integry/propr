@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,7 @@ import {
   inspectImageFreshness,
   inspectImageFreshnessAsync,
   normalizeDigest,
+  pullImages,
   remoteDigestFromImagetoolsInspectOutput,
   remoteDigestFromManifestInspectOutput,
 } from '../docker/launcher/orchestrator.mjs';
@@ -45,6 +46,11 @@ if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ] && [ "$3" = "inspect" ]; then
   exit 0
 fi
 
+if [ "$1" = "pull" ]; then
+  [ -n "$DOCKER_FAKE_LOG" ] && echo "pull $2" >> "$DOCKER_FAKE_LOG"
+  exit 0
+fi
+
 echo "unexpected docker command: $*" >&2
 exit 1
 `);
@@ -56,6 +62,7 @@ exit 1
     delete process.env.DOCKER_FAKE_PRESENT;
     delete process.env.DOCKER_FAKE_INSPECT;
     delete process.env.DOCKER_FAKE_MANIFEST;
+    delete process.env.DOCKER_FAKE_LOG;
   };
 }
 
@@ -209,6 +216,26 @@ test('inspectImageFreshnessAsync reports missing images without a remote call', 
       status: 'missing',
       tag: 'example/app:latest',
     });
+  } finally {
+    restore();
+  }
+});
+
+test('pullImages pulls local-only ProPR images', () => {
+  const restore = installFakeDocker();
+  try {
+    const logPath = join(mkdtempSync(join(tmpdir(), 'propr-fake-docker-log-')), 'commands.log');
+    const logs = [];
+    process.env.DOCKER_FAKE_INSPECT = 'empty';
+    process.env.DOCKER_FAKE_LOG = logPath;
+
+    pullImages(
+      { images: { app: 'propr/app:1.0.0' }, manifest: { registry: 'propr' } },
+      { onLog: (line) => logs.push(line), env: process.env }
+    );
+
+    assert.ok(logs.includes('  · propr/app:1.0.0 (local-only, pulling)'));
+    assert.equal(readFileSync(logPath, 'utf8').trim(), 'pull propr/app:1.0.0');
   } finally {
     restore();
   }

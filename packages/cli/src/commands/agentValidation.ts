@@ -180,7 +180,7 @@ function baseArgs(
     "--user", "0:0",
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
     "-v", `${hostDir}:${containerConfigPath}:rw`,
-    "-e", `GH_TOKEN=${process.env.GH_TOKEN ?? ""}`,
+    "-e", "GH_TOKEN",
     ...(opts.env ?? []),
     ...(opts.extra ?? []),
     "-w", WORKSPACE,
@@ -345,6 +345,16 @@ export function agentTypesFor(filter?: string[]): string[] {
   return selected.map((d) => d.type);
 }
 
+export function validateAgentFilter(filter?: string[]): { agents: string[]; unknown: string[] } {
+  const known = new Set(DESCRIPTORS.map((d) => d.type));
+  const agents = Array.from(new Set((filter ?? []).map((agent) => agent.trim()).filter(Boolean)));
+  return { agents, unknown: agents.filter((agent) => !known.has(agent)) };
+}
+
+export function validAgentTypes(): string[] {
+  return DESCRIPTORS.map((d) => d.type);
+}
+
 export interface AgentValidationRow {
   type: string;
   hostVersion?: string;
@@ -399,8 +409,12 @@ export async function validateAgents(
   cfg: OrchestratorConfig,
   options: ValidateAgentsOptions = {}
 ): Promise<AgentValidationRow[]> {
-  const selected = options.agents?.length
-    ? DESCRIPTORS.filter((d) => options.agents!.includes(d.type))
+  const { agents, unknown } = validateAgentFilter(options.agents);
+  if (unknown.length > 0) {
+    throw new Error(`unknown agent type${unknown.length === 1 ? "" : "s"} '${unknown.join(", ")}'. Valid agents: ${validAgentTypes().join(", ")}`);
+  }
+  const selected = agents.length
+    ? DESCRIPTORS.filter((d) => agents.includes(d.type))
     : DESCRIPTORS;
 
   const tmp = mkdtempSync(join(tmpdir(), "propr-validate-"));
@@ -504,6 +518,7 @@ export function planAgentLogin(
     "--user", "0:0",
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
     "-v", `${hostDir}:${d.containerConfigPath}:rw`,
+    "-e", "GH_TOKEN",
     ...(d.loginExtraArgs?.(cfg) ?? []),
     "-w", WORKSPACE,
     image,
