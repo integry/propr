@@ -25,11 +25,15 @@ function parseGitHubHtmlError(html: string): string {
 
 export function sanitizeErrorMessage(message: string | undefined): string {
     if (!message) return 'Unknown error';
+    const sanitized = message
+        .replace(/https:\/\/x-access-token:[^@\s'"]+@github\.com\//g, 'https://x-access-token:[REDACTED]@github.com/')
+        .replace(/https:\/\/[^:\s'"]+:[^@\s'"]+@github\.com\//g, 'https://[REDACTED]@github.com/')
+        .replace(/\b(?:ghs|ghp|gho|ghu|ghr|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED_GITHUB_TOKEN]');
     if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
-        return parseGitHubHtmlError(message);
+        return parseGitHubHtmlError(sanitized);
     }
-    if (message.length > 500) {
-        return message.slice(0, 500) + '... [truncated]';
+    if (sanitized.length > 500) {
+        return sanitized.slice(0, 500) + '... [truncated]';
     }
-    return message;
+    return sanitized;
 }

@@ -13,7 +13,7 @@ import {
     getWorktreePath
 } from './worktreeOperations.js';
 import { cleanupExistingBranch, createWorktreeFromExistingBranch } from './worktreeCreation.js';
-import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './repoBranching.js';
+import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch, redactAuthenticatedGitUrl } from './repoBranching.js';
 import { commitChanges } from './commitOperations.js';
 import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
 import { ensureSeedCommitIfEmpty } from './seedCommit.js';
@@ -142,7 +142,11 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
     if (baseBranch && baseBranch !== 'HEAD') cloneOptions.push(`--branch=${baseBranch}`);
 
     const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
-    await simpleGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
+    try {
+        await simpleGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
+    } catch (error) {
+        throw new Error(redactAuthenticatedGitUrl((error as Error).message));
+    }
 
     const repoGit: SimpleGit = simpleGit(localRepoPath);
     await configureGcWorktreePrune(repoGit);

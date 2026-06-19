@@ -121,7 +121,14 @@ async function performGitResetAndPush(
     correlatedLogger.info({ commitHash }, 'Git reset to parent commit complete');
 
     const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${token}@`);
-    await git.push([authenticatedUrl, prBranch, '--force']);
+    try {
+        await git.push([authenticatedUrl, prBranch, '--force']);
+    } catch (error) {
+        const sanitizedMessage = (error as Error).message
+            .replace(/https:\/\/x-access-token:[^@\s'"]+@github\.com\//g, 'https://x-access-token:[REDACTED]@github.com/')
+            .replace(/\b(?:ghs|ghp|gho|ghu|ghr|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED_GITHUB_TOKEN]');
+        throw new Error(sanitizedMessage);
+    }
     correlatedLogger.info({ prBranch }, 'Git force push complete');
 
     return { worktreePath, localRepoPath };
