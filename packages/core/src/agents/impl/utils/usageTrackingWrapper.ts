@@ -1,9 +1,10 @@
 /**
  * Wraps LLM execution with Agent Tank usage tracking.
  *
- * Fetches usage status from the local Agent Tank daemon before and after
- * the LLM call, computes the delta, and returns the combined metrics
- * alongside the execution result.
+ * Fetches usage status from the local Agent Tank daemon around the LLM call,
+ * computes the delta, and returns the combined metrics alongside the execution
+ * result. The pre-call snapshot is started concurrently with the LLM call so
+ * Agent Tank never delays the actual model request.
  *
  * If Agent Tank is disabled (AGENT_TANK_URL is empty or set to "false"),
  * the wrapper skips status fetching and runs the LLM call directly.
@@ -234,14 +235,69 @@ async function refreshAndGetStatus(
     return getStatus(agent, timeoutMs);
 }
 
+function isAgentTankTimeout(error: unknown): boolean {
+    return error instanceof Error && (
+        error.message.includes('Agent Tank refresh timed out') ||
+        error.message.includes('Agent Tank request timed out')
+    );
+}
+
+interface StatusSnapshotHandle {
+    promise: Promise<AgentStatusResponse | null>;
+    getSettled: () => AgentStatusResponse | null | undefined;
+}
+
+async function fetchStatusBestEffort(
+    agent: string,
+    phase: 'pre-call' | 'post-call',
+    timeoutMs?: number,
+): Promise<AgentStatusResponse | null> {
+    try {
+        const status = await refreshAndGetStatus(agent, timeoutMs);
+        logger.debug({ agent, phase, usage: status.usage }, `Agent Tank ${phase} status`);
+        return status;
+    } catch (err: unknown) {
+        const logContext = { agent, err };
+        const message = `Failed to fetch Agent Tank ${phase} status`;
+        if (isAgentTankTimeout(err)) {
+            logger.debug(logContext, `${message} — continuing without usage tracking`);
+        } else {
+            logger.warn(logContext, `${message} — continuing without usage tracking`);
+        }
+        return null;
+    }
+}
+
+function startStatusSnapshot(
+    agent: string,
+    phase: 'pre-call' | 'post-call',
+    timeoutMs?: number,
+): StatusSnapshotHandle {
+    let settled = false;
+    let settledStatus: AgentStatusResponse | null = null;
+
+    const promise = fetchStatusBestEffort(agent, phase, timeoutMs).then(status => {
+        settled = true;
+        settledStatus = status;
+        return status;
+    });
+
+    return {
+        promise,
+        getSettled: () => settled ? settledStatus : undefined,
+    };
+}
+
 /**
  * Execute an LLM call wrapped with Agent Tank usage tracking.
  *
- * 1. Refreshes the agent and fetches status (pre-call).
- * 2. Runs the provided `executeFn` (the actual LLM call).
- * 3. Refreshes the agent again and fetches status (post-call).
- * 4. Computes the delta and extracts structured metric records.
- * 5. Returns both the execution result and the usage metrics.
+ * 1. Starts Agent Tank refresh/status capture (pre-call) in the background.
+ * 2. Immediately runs the provided `executeFn` (the actual LLM call).
+ * 3. Uses the pre-call snapshot only if it is already available when the LLM
+ *    call finishes.
+ * 4. Refreshes the agent again and fetches status (post-call).
+ * 5. Computes the delta and extracts structured metric records.
+ * 6. Returns both the execution result and the usage metrics.
  *
  * If Agent Tank is disabled or a status fetch fails, the LLM call still
  * proceeds — usage tracking is best-effort and never blocks execution.
@@ -262,29 +318,28 @@ export async function executeWithUsageTracking<T>(
         return { result, usageMetrics: null };
     }
 
-    // Pre-call: refresh agent and fetch status (best-effort)
-    let preCall: AgentStatusResponse | null = null;
-    try {
-        preCall = await refreshAndGetStatus(agent, timeoutMs);
-        logger.debug({ agent, preCall: preCall.usage }, 'Agent Tank pre-call status');
-    } catch (err: unknown) {
-        logger.warn({ agent, err }, 'Failed to fetch Agent Tank pre-call status — proceeding without tracking');
-    }
+    // Pre-call: start Agent Tank refresh/status capture, but do not wait before
+    // launching the LLM. This keeps local usage monitoring from adding latency
+    // to model execution, especially for indexing analysis batches.
+    const preCallSnapshot = startStatusSnapshot(agent, 'pre-call', timeoutMs);
 
     // Execute the LLM call (always runs, even if pre-call failed)
     const result = await executeFn();
+    const preCall = preCallSnapshot.getSettled();
+
+    if (preCall === undefined) {
+        void preCallSnapshot.promise;
+        logger.debug({ agent }, 'Agent Tank pre-call status still pending — returning without usage metrics');
+        return { result, usageMetrics: null };
+    }
 
     // Post-call: refresh agent and fetch status (best-effort)
     if (preCall === null) {
         return { result, usageMetrics: null };
     }
 
-    let postCall: AgentStatusResponse | null = null;
-    try {
-        postCall = await refreshAndGetStatus(agent, timeoutMs);
-        logger.debug({ agent, postCall: postCall.usage }, 'Agent Tank post-call status');
-    } catch (err: unknown) {
-        logger.warn({ agent, err }, 'Failed to fetch Agent Tank post-call status');
+    const postCall = await fetchStatusBestEffort(agent, 'post-call', timeoutMs);
+    if (postCall === null) {
         return { result, usageMetrics: null };
     }
 
