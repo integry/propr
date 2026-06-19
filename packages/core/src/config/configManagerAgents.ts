@@ -2,8 +2,7 @@ import path from 'path';
 import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS, type AgentType } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
-import { DEFAULT_AGENT_DOCKER_IMAGES } from '../agents/constants.js';
-import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from '../agents/version/types.js';
+import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
 import { computeContentHash, generateImageTag } from '../agents/version/versionService.js';
 import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 
@@ -88,7 +87,7 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     vibe: AGENT_DEFAULT_VERSIONS.vibe
 };
 
-const CURRENT_DEFAULT_MODELS: Record<AgentConfig['type'], string[]> = {
+const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     claude: AGENT_DEFAULTS.claude.defaultModels,
     codex: AGENT_DEFAULTS.codex.defaultModels,
     antigravity: AGENT_DEFAULTS.antigravity.defaultModels,
@@ -96,21 +95,6 @@ const CURRENT_DEFAULT_MODELS: Record<AgentConfig['type'], string[]> = {
     vibe: AGENT_DEFAULTS.vibe.defaultModels
 };
 const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
-const LEGACY_AGENT_IMAGE_NAMES: Record<AgentConfig['type'], string[]> = {
-    claude: ['propr-claude'],
-    codex: ['propr-codex'],
-    antigravity: ['propr-antigravity'],
-    opencode: ['propr-opencode'],
-    vibe: ['propr-vibe']
-};
-
-const LEGACY_DEFAULT_DOCKER_IMAGES: Record<AgentConfig['type'], string[]> = {
-    claude: ['claude-code-processor:latest', 'propr-claude:latest'],
-    codex: ['codex-code-processor:latest', 'propr-codex:latest'],
-    antigravity: ['antigravity-code-processor:latest', 'propr-antigravity:latest'],
-    opencode: [],
-    vibe: []
-};
 
 function migrateCliVersion(agent: AgentConfig): boolean {
     if (agent.cliVersionType) {
@@ -156,21 +140,6 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
     }
 
     return migrated;
-}
-
-function migrateLegacyAgentImageName(agent: AgentConfig): boolean {
-    const legacyNames = LEGACY_AGENT_IMAGE_NAMES[agent.type];
-    const currentName = AGENT_IMAGE_NAMES[agent.type];
-
-    for (const legacyName of legacyNames) {
-        if (agent.dockerImage?.startsWith(`${legacyName}:`)) {
-            agent.dockerImage = `${currentName}:${agent.dockerImage.slice(legacyName.length + 1)}`;
-            logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Migrated agent Docker image to registry namespace');
-            return true;
-        }
-    }
-
-    return false;
 }
 
 function addMissingModels(agent: AgentConfig, models: string[], logMessage: string): boolean {
@@ -287,32 +256,32 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
 /**
  * Migrates agent configurations to include CLI version fields and new models.
  */
+export function migrateAgentConfig(agent: AgentConfig): boolean {
+    let migrated = false;
+    migrated = migrateCliVersion(agent) || migrated;
+    migrated = applyDefaultAgentFields(agent) || migrated;
+    const currentDefaultModels = CURRENT_DEFAULT_MODELS[agent.type];
+    if (agent.type !== 'opencode' && currentDefaultModels) {
+        migrated = addMissingModels(agent, currentDefaultModels, 'Added current default models to agent') || migrated;
+    }
+
+    if (agent.type === 'vibe') {
+        migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
+    }
+    migrated = updateCodexDefaults(agent) || migrated;
+    migrated = updateAntigravityDefaults(agent) || migrated;
+    migrated = normalizeOpenCodeModelIds(agent) || migrated;
+    migrated = removeDeprecatedModels(agent) || migrated;
+    return migrated;
+}
+
 export async function migrateAgentConfigs(): Promise<boolean> {
     try {
         const agents = await getConfig<AgentConfig[]>('agents', []);
         let migrated = false;
 
         for (const agent of agents) {
-            migrated = migrateCliVersion(agent) || migrated;
-            migrated = applyDefaultAgentFields(agent) || migrated;
-            migrated = migrateLegacyAgentImageName(agent) || migrated;
-            if (agent.type !== 'opencode') {
-                migrated = addMissingModels(agent, CURRENT_DEFAULT_MODELS[agent.type], 'Added current default models to agent') || migrated;
-            }
-
-            if (agent.cliVersionType === 'default' && LEGACY_DEFAULT_DOCKER_IMAGES[agent.type].includes(agent.dockerImage)) {
-                agent.dockerImage = DEFAULT_AGENT_DOCKER_IMAGES[agent.type];
-                migrated = true;
-                logger.info({ agentAlias: agent.alias, type: agent.type, dockerImage: agent.dockerImage }, 'Migrated legacy default agent Docker image');
-            }
-
-            if (agent.type === 'vibe') {
-                migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
-            }
-            migrated = updateCodexDefaults(agent) || migrated;
-            migrated = updateAntigravityDefaults(agent) || migrated;
-            migrated = normalizeOpenCodeModelIds(agent) || migrated;
-            migrated = removeDeprecatedModels(agent) || migrated;
+            migrated = migrateAgentConfig(agent) || migrated;
         }
 
         if (migrated) {

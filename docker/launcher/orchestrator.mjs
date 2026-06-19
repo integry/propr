@@ -42,6 +42,10 @@ function isDirectory(path) {
     }
 }
 
+function defaultHostVibePromptCacheDir() {
+    return `/tmp/propr-vibe-prompts-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`;
+}
+
 // ---------------------------------------------------------------------------
 // .env file parsing (parameterized by the file path so it works for both the
 // launcher's local env file and the host's <root>/.env)
@@ -151,20 +155,21 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
-    // resolve the same path end-to-end). HOST_OPENCODE_DIR is a back-compat alias.
+    // resolve the same path end-to-end).
     const hostClaudeDir = get('HOST_CLAUDE_DIR');
     const hostCodexDir = get('HOST_CODEX_DIR');
     const hostAntigravityDir = get('HOST_ANTIGRAVITY_DIR');
-    const hostOpencodeLegacyDir = get('HOST_OPENCODE_LEGACY_DIR');
-    const hostOpencodeXdgDir = env.HOST_OPENCODE_XDG_DIR !== undefined ? env.HOST_OPENCODE_XDG_DIR
-        : env.HOST_OPENCODE_DIR !== undefined ? env.HOST_OPENCODE_DIR
-            : envFileValueFrom(envFileLocal, 'HOST_OPENCODE_XDG_DIR')
-            || envFileValueFrom(envFileLocal, 'HOST_OPENCODE_DIR') || undefined;
+    const hostOpencodeXdgDir = get('HOST_OPENCODE_XDG_DIR');
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
+    const mistralApiKey = get('MISTRAL_API_KEY');
 
     const vibePromptCacheDir = get('VIBE_PROMPT_CACHE_DIR') || '/tmp/propr-vibe-prompts';
-    const hostVibePromptCacheDir = get('HOST_VIBE_PROMPT_CACHE_DIR');
+    // The host bind path defaults to a per-user private /tmp location when Vibe
+    // is enabled, so prompt files are not exposed through a shared 0777 cache.
+    // An explicit HOST_VIBE_PROMPT_CACHE_DIR is still honored and validated.
+    const vibeEnabled = Boolean(hostVibeDir || mistralApiKey);
+    const hostVibePromptCacheDir = get('HOST_VIBE_PROMPT_CACHE_DIR') || (vibeEnabled ? defaultHostVibePromptCacheDir() : undefined);
 
     // Host path to the GitHub App private key (.pem). When set, the key is
     // bind-mounted into the app containers (HOST:HOST, read-only) and
@@ -181,7 +186,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         hostData, hostLogs, hostRepos,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
-        hostOpencodeLegacyDir, hostOpencodeXdgDir, hostOpencodeDataDir,
+        hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
         hostGhPrivateKey,
         // misc -e overrides the launcher computed from ports/env
@@ -191,7 +196,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
-        mistralApiKey: get('MISTRAL_API_KEY'),
+        mistralApiKey,
         vibeConfigPath: get('VIBE_CONFIG_PATH'),
         manifest, images: manifest.images, manifestPath,
     });
@@ -223,7 +228,7 @@ export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, 
 // Mount host credentials at the same path on both sides (HOST:HOST) and set the
 // *_CONFIG_PATH env vars to that path, so the worker/api can re-mount them into
 // agent containers without any path translation.
-function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {}) {
+export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {}) {
     const args = [];
     if (cfg.hostClaudeDir) {
         args.push('-v', `${cfg.hostClaudeDir}:${cfg.hostClaudeDir}`);
@@ -237,15 +242,9 @@ function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {}) {
         args.push('-v', `${cfg.hostAntigravityDir}:${cfg.hostAntigravityDir}`);
         args.push('-e', `ANTIGRAVITY_CONFIG_PATH=${cfg.hostAntigravityDir}`);
     }
-    if (cfg.hostOpencodeLegacyDir) {
-        args.push('-v', `${cfg.hostOpencodeLegacyDir}:${cfg.hostOpencodeLegacyDir}`);
-        args.push('-e', `OPENCODE_LEGACY_CONFIG_PATH=${cfg.hostOpencodeLegacyDir}`);
-    }
     if (cfg.hostOpencodeXdgDir) {
         args.push('-v', `${cfg.hostOpencodeXdgDir}:${cfg.hostOpencodeXdgDir}`);
         args.push('-e', `OPENCODE_CONFIG_PATH=${cfg.hostOpencodeXdgDir}`);
-    } else if (cfg.hostOpencodeLegacyDir) {
-        args.push('-e', `OPENCODE_CONFIG_PATH=${cfg.hostOpencodeLegacyDir}`);
     }
     if (cfg.hostOpencodeDataDir) {
         const dataMode = opencodeDataReadWrite ? 'rw' : 'ro';
@@ -297,15 +296,52 @@ export function validateDockerBindPath(name, value, { containerPath = false } = 
 // docker exec helpers
 // ---------------------------------------------------------------------------
 
-export function docker(args, { capture = false } = {}) {
+const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 5000;
+
+export function docker(args, { capture = false, timeout } = {}) {
     const res = spawnSync('docker', args, {
         stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         encoding: 'utf8',
+        timeout,
     });
     if (res.status !== 0 && !capture) {
-        throw new Error(`docker ${args.join(' ')} failed with code ${res.status}`);
+        const detail = res.error?.message || (res.signal ? `signal ${res.signal}` : `code ${res.status}`);
+        throw new Error(`docker ${args.join(' ')} failed with ${detail}`);
     }
     return res;
+}
+
+/**
+ * Async, captured docker exec. Mirrors `docker(..., { capture: true })`'s result
+ * shape ({ status, stdout, stderr, error }) but keeps the event loop free, so
+ * callers can run several probes concurrently and animate UI while they wait.
+ * On timeout it kills the child and reports an ETIMEDOUT error, matching the
+ * spawnSync timeout contract that `dockerError` inspects.
+ */
+export function dockerAsync(args, { timeout } = {}) {
+    return new Promise((resolveResult) => {
+        const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+        let timeoutError = null;
+        const finish = (res) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolveResult(res);
+        };
+        const timer = timeout
+            ? setTimeout(() => {
+                  timeoutError = Object.assign(new Error('docker command timed out'), { code: 'ETIMEDOUT' });
+                  child.kill('SIGKILL');
+              }, timeout)
+            : null;
+        child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+        child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+        child.on('error', (error) => finish({ status: null, stdout, stderr, error }));
+        child.on('close', (code, signal) => finish({ status: code, stdout, stderr, signal, error: timeoutError || undefined }));
+    });
 }
 
 /** Returns true if the docker daemon is reachable. */
@@ -334,7 +370,7 @@ function latestTagFor(imageTag) {
     return tagIndex > slashIndex ? `${imageTag.slice(0, tagIndex)}:latest` : null;
 }
 
-function tagAgentLatest(key, imageTag) {
+export function tagAgentLatest(key, imageTag) {
     if (!key.startsWith('agent-')) return;
     const latestTag = latestTagFor(imageTag);
     if (!latestTag || latestTag === imageTag) return;
@@ -369,12 +405,236 @@ function imagePresentLocally(tag) {
     return res.stdout.trim().length > 0;
 }
 
-/** Pull a single non-agent service image if it is not already present locally. */
-export function ensureServiceImage(cfg, service, onLog) {
+function firstLine(value) {
+    return (value || '').trim().split('\n')[0] || '';
+}
+
+export function normalizeDigest(value) {
+    const digest = firstLine(value);
+    if (!digest) return null;
+    const atIndex = digest.lastIndexOf('@');
+    return atIndex >= 0 ? digest.slice(atIndex + 1) : digest;
+}
+
+function localRepoDigests(tag) {
+    const res = docker(['image', 'inspect', '--format', '{{json .RepoDigests}}', tag], { capture: true });
+    if (res.status !== 0) return null;
+    try {
+        const parsed = JSON.parse(res.stdout.trim() || '[]');
+        return Array.isArray(parsed) ? parsed.map(normalizeDigest).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
+
+export function remoteDigestFromManifestInspectOutput(output) {
+    return remoteDigestsFromManifestInspectOutput(output)[0] ?? null;
+}
+
+export function remoteDigestsFromManifestInspectOutput(output) {
+    const parsed = JSON.parse(output);
+    const digests = new Set();
+    if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+            const refDigest = normalizeDigest(entry?.Ref);
+            if (refDigest) digests.add(refDigest);
+            const descriptor = entry?.Descriptor;
+            const descriptorDigest = normalizeDigest(descriptor?.digest || descriptor?.Digest || entry?.digest || entry?.Digest);
+            if (descriptorDigest) digests.add(descriptorDigest);
+        }
+        return [...digests];
+    }
+    const descriptor = parsed?.Descriptor;
+    const digest = normalizeDigest(descriptor?.digest || descriptor?.Digest || parsed?.digest || parsed?.Digest);
+    return digest ? [digest] : [];
+}
+
+export function remoteDigestFromImagetoolsInspectOutput(output) {
+    const match = output.match(/^\s*Digest:\s*([^\s]+)\s*$/im);
+    return match ? match[1] : null;
+}
+
+function appendDigest(digests, digest) {
+    const normalized = normalizeDigest(digest);
+    return normalized && !digests.includes(normalized) ? [...digests, normalized] : digests;
+}
+
+function dockerError(res, fallback) {
+    if (res.error?.code === 'ETIMEDOUT') {
+        return `remote image check timed out after ${REMOTE_IMAGE_CHECK_TIMEOUT_MS / 1000}s; set PROPR_SKIP_REMOTE_IMAGE_CHECK=1 to skip registry probes`;
+    }
+    return firstLine(res.stderr || res.stdout || fallback);
+}
+
+function remoteManifestDigest(tag) {
+    // Older Docker CLIs may require experimental manifest support. Treat those
+    // failures like any other registry issue so callers can warn or skip.
+    const res = docker(['manifest', 'inspect', '--verbose', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+    if (res.status !== 0) {
+        return { ok: false, error: dockerError(res, 'docker manifest inspect failed') };
+    }
+
+    try {
+        const digests = remoteDigestsFromManifestInspectOutput(res.stdout);
+        if (digests.length > 0) {
+            let allDigests = digests;
+            if (res.stdout.trim().startsWith('[')) {
+                const buildx = docker(['buildx', 'imagetools', 'inspect', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+                if (buildx.status === 0) allDigests = appendDigest(allDigests, remoteDigestFromImagetoolsInspectOutput(buildx.stdout));
+            }
+            return { ok: true, digests: allDigests, digest: allDigests[0] };
+        }
+
+        // Older Docker manifest output may omit digest fields. buildx can still
+        // expose the tag's index digest, which is useful when the local daemon
+        // recorded that digest in RepoDigests.
+        const buildx = docker(['buildx', 'imagetools', 'inspect', tag], { capture: true, timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+        if (buildx.status !== 0) {
+            return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
+        }
+        const buildxDigest = remoteDigestFromImagetoolsInspectOutput(buildx.stdout);
+        if (buildxDigest) return { ok: true, digests: [buildxDigest], digest: buildxDigest };
+
+        return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect or docker buildx imagetools inspect' };
+    } catch {
+        return { ok: false, error: 'could not parse docker manifest inspect output' };
+    }
+}
+
+function classifyImageFreshness(tag, localDigests, remote) {
+    if (!remote.ok) {
+        return { status: 'unknown', tag, localDigests, error: remote.error };
+    }
+
+    const remoteDigests = (remote.digests ?? [remote.digest]).map(normalizeDigest).filter(Boolean);
+    if (remoteDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, error: 'remote manifest digest was empty' };
+    }
+
+    const digestFields = remoteDigests.length > 1
+        ? { remoteDigest: remoteDigests[0], remoteDigests }
+        : { remoteDigest: remoteDigests[0] };
+    return localDigests.some((digest) => remoteDigests.includes(digest))
+        ? { status: 'current', tag, localDigests, ...digestFields }
+        : { status: 'stale', tag, localDigests, ...digestFields };
+}
+
+function skipRemoteImageCheck(env = process.env) {
+    return env.PROPR_SKIP_REMOTE_IMAGE_CHECK === 'true' || env.PROPR_SKIP_REMOTE_IMAGE_CHECK === '1';
+}
+
+function isProprPublishedImage(cfg, tag) {
+    const registry = typeof cfg.manifest?.registry === 'string' ? cfg.manifest.registry : 'propr';
+    return tag.startsWith(`${registry}/`);
+}
+
+/**
+ * Inspect whether a local image tag is current with the remote registry tag.
+ * Registry and metadata errors are reported as "unknown" so callers can warn
+ * without treating offline/air-gapped environments as hard failures.
+ */
+export function inspectImageFreshness(tag, { skipRemoteCheck = false } = {}) {
+    if (!imagePresentLocally(tag)) {
+        return { status: 'missing', tag };
+    }
+
+    const localDigests = localRepoDigests(tag);
+    if (!localDigests) {
+        return { status: 'unknown', tag, error: 'local image metadata could not be inspected' };
+    }
+
+    if (skipRemoteCheck) {
+        return { status: 'unknown', tag, localDigests, skipped: true, error: 'remote image check skipped' };
+    }
+
+    if (localDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
+    }
+
+    return classifyImageFreshness(tag, localDigests, remoteManifestDigest(tag));
+}
+
+/** Async mirror of remoteManifestDigest using non-blocking docker exec. */
+async function remoteManifestDigestAsync(tag) {
+    const res = await dockerAsync(['manifest', 'inspect', '--verbose', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+    if (res.status !== 0) {
+        return { ok: false, error: dockerError(res, 'docker manifest inspect failed') };
+    }
+    try {
+        const digests = remoteDigestsFromManifestInspectOutput(res.stdout);
+        if (digests.length > 0) {
+            let allDigests = digests;
+            if (res.stdout.trim().startsWith('[')) {
+                const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+                if (buildx.status === 0) allDigests = appendDigest(allDigests, remoteDigestFromImagetoolsInspectOutput(buildx.stdout));
+            }
+            return { ok: true, digests: allDigests, digest: allDigests[0] };
+        }
+
+        const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS });
+        if (buildx.status !== 0) {
+            return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
+        }
+        const buildxDigest = remoteDigestFromImagetoolsInspectOutput(buildx.stdout);
+        if (buildxDigest) return { ok: true, digests: [buildxDigest], digest: buildxDigest };
+
+        return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect or docker buildx imagetools inspect' };
+    } catch {
+        return { ok: false, error: 'could not parse docker manifest inspect output' };
+    }
+}
+
+/**
+ * Async mirror of inspectImageFreshness. The local (fast) docker calls stay
+ * synchronous; only the remote registry probe is awaited, so many tags can be
+ * checked concurrently without blocking the event loop.
+ */
+export async function inspectImageFreshnessAsync(tag, { skipRemoteCheck = false } = {}) {
+    if (!imagePresentLocally(tag)) {
+        return { status: 'missing', tag };
+    }
+
+    const localDigests = localRepoDigests(tag);
+    if (!localDigests) {
+        return { status: 'unknown', tag, error: 'local image metadata could not be inspected' };
+    }
+
+    if (skipRemoteCheck) {
+        return { status: 'unknown', tag, localDigests, skipped: true, error: 'remote image check skipped' };
+    }
+
+    if (localDigests.length === 0) {
+        return { status: 'unknown', tag, localDigests, localOnly: true, error: 'local image has no registry digest; pull the tag to verify freshness' };
+    }
+
+    return classifyImageFreshness(tag, localDigests, await remoteManifestDigestAsync(tag));
+}
+
+function cachedImageFreshness(cache, tag, opts) {
+    if (!cache) return inspectImageFreshness(tag, opts);
+    const key = `${opts.skipRemoteCheck ? 'skip' : 'remote'}\0${tag}`;
+    if (!cache.has(key)) cache.set(key, inspectImageFreshness(tag, opts));
+    return cache.get(key);
+}
+
+/** Pull a single non-agent service image if it is not already present locally or is stale. */
+export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {}) {
     const tag = imageTagForService(cfg, service);
     if (!tag) return;
-    if (imagePresentLocally(tag)) return;
-    onLog?.(`  · pulling ${tag}`);
+    const skipFreshness = skipRemoteImageCheck() || !isProprPublishedImage(cfg, tag);
+    const freshness = cachedImageFreshness(freshnessCache, tag, { skipRemoteCheck: skipFreshness });
+    if (freshness.status === 'current') return;
+    if (freshness.status === 'unknown') {
+        if (freshness.skipped) return;
+        if (freshness.localOnly) {
+            onLog?.(`  · ${tag} (local-only, pulling)`);
+        } else {
+            onLog?.(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+            return;
+        }
+    } else {
+        onLog?.(`  · pulling ${tag}`);
+    }
     const res = docker(['pull', tag], { capture: true });
     if (res.status !== 0) {
         throw new Error(`Failed to pull ${tag}: ${(res.stderr || '').trim()}`);
@@ -486,9 +746,9 @@ function buildServiceSpec(cfg, service) {
  * the service image if it is missing so toggles (`propr docs on`) work even when
  * the image was skipped at startup.
  */
-export function startService(cfg, service, { onLog, pull = true } = {}) {
+export function startService(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
     const name = `${cfg.stack}-${service}`;
-    if (pull) ensureServiceImage(cfg, service, onLog);
+    if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
     const spec = buildServiceSpec(cfg, service);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
@@ -532,9 +792,10 @@ export function isStackRunning(cfg) {
 export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
     const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
     const started = [];
+    const freshnessCache = new Map();
     try {
         for (const service of toStart) {
-            startService(cfg, service, { onLog });
+            startService(cfg, service, { onLog, freshnessCache });
             started.push(service);
         }
     } catch (err) {
@@ -552,22 +813,13 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {
 }
 
 /**
- * Stop every container belonging to this stack (discovered by label + legacy
- * name pattern). Returns `{ failed }` listing containers that could not be
- * stopped/removed so callers can surface partial failures.
+ * Stop every container belonging to this stack, discovered by the stack label.
+ * Returns `{ failed }` listing containers that could not be stopped/removed so
+ * callers can surface partial failures.
  */
 export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } = {}) {
     const res = docker(['ps', '-a', '--filter', `label=propr.stack=${cfg.stack}`, '--format', '{{.Names}}'], { capture: true });
     const names = new Set(res.stdout.split('\n').map((s) => s.trim()).filter(Boolean));
-
-    // Also discover legacy containers that were created before labeling was added
-    // (named <stack>-<service> but missing the propr.stack label).
-    for (const service of SERVICES) {
-        const legacyName = `${cfg.stack}-${service}`;
-        if (!names.has(legacyName) && containerExists(cfg, legacyName)) {
-            names.add(legacyName);
-        }
-    }
 
     const failed = [];
     for (const name of names) {
@@ -605,7 +857,7 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 // status
 // ---------------------------------------------------------------------------
 
-/** Per-service state for the whole stack, discovered by canonical/legacy container name. */
+/** Per-service state for the whole stack, discovered by canonical container name. */
 export function getStackStatus(cfg) {
     const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
     const res = docker([
@@ -696,21 +948,28 @@ export function validateEnv(cfg) {
         );
     }
     const vibeEnabled = Boolean(cfg.hostVibeDir || cfg.mistralApiKey);
-    if (vibeEnabled && !cfg.hostVibePromptCacheDir) {
-        const vibeSource = cfg.hostVibeDir ? 'HOST_VIBE_DIR' : 'MISTRAL_API_KEY';
-        errors.push(
-            `Vibe support is enabled (via ${vibeSource}) but HOST_VIBE_PROMPT_CACHE_DIR is missing. ` +
-            'Set it to a host-visible directory path (e.g. /tmp/propr-vibe-prompts).'
-        );
-    }
     if (vibeEnabled || cfg.hostVibePromptCacheDir) {
-        const invalid = validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', cfg.hostVibePromptCacheDir)
+        // Only validate the host path when it is actually set — a missing value is
+        // already reported above, so this avoids a misleading second "must be an
+        // absolute path" error for the same root cause.
+        const invalid = (cfg.hostVibePromptCacheDir
+                ? validateDockerBindPath('HOST_VIBE_PROMPT_CACHE_DIR', cfg.hostVibePromptCacheDir)
+                : null)
             || validateDockerBindPath('VIBE_PROMPT_CACHE_DIR', cfg.vibePromptCacheDir, { containerPath: true });
         if (invalid) {
             errors.push(invalid);
         } else if (cfg.hostVibePromptCacheDir && cfg.validateHostPaths) {
             if (!existsSync(cfg.hostVibePromptCacheDir)) {
-                errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist. Create it: mkdir -p ${cfg.hostVibePromptCacheDir}`);
+                // A missing prompt cache is trivially recoverable — `propr init
+                // stack`, `propr start`, or Docker's bind-mount setup will create
+                // it — so only fail when its parent location is not writable and
+                // it therefore cannot be created.
+                const parent = dirname(cfg.hostVibePromptCacheDir);
+                let creatable = false;
+                try { accessSync(parent, fsConstants.W_OK); creatable = true; } catch { /* parent not writable */ }
+                if (!creatable) {
+                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist and ${parent} is not writable. Create it manually: mkdir -p ${cfg.hostVibePromptCacheDir}`);
+                }
             } else {
                 try {
                     accessSync(cfg.hostVibePromptCacheDir, fsConstants.W_OK);
@@ -725,7 +984,6 @@ export function validateEnv(cfg) {
         ['HOST_CLAUDE_DIR', cfg.hostClaudeDir],
         ['HOST_CODEX_DIR', cfg.hostCodexDir],
         ['HOST_ANTIGRAVITY_DIR', cfg.hostAntigravityDir],
-        ['HOST_OPENCODE_LEGACY_DIR', cfg.hostOpencodeLegacyDir],
         ['HOST_OPENCODE_XDG_DIR', cfg.hostOpencodeXdgDir],
         ['HOST_OPENCODE_DATA_DIR', cfg.hostOpencodeDataDir],
         ['HOST_VIBE_DIR', cfg.hostVibeDir],
@@ -744,7 +1002,7 @@ export function validateEnv(cfg) {
         }
     }
 
-    const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir || cfg.hostOpencodeLegacyDir);
+    const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);
     if (hasOpenCodeConfig && !cfg.hostOpencodeDataDir) {
         warnings.push(
             'OpenCode config is mounted but HOST_OPENCODE_DATA_DIR is not set. ' +
@@ -762,6 +1020,8 @@ export function validateEnv(cfg) {
 export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
     const skipAgentPull = env.PROPR_SKIP_AGENT_PULL === 'true' || env.PROPR_SKIP_AGENT_PULL === '1';
     const strictAgentPull = env.PROPR_STRICT_AGENT_PULL !== 'false' && env.PROPR_STRICT_AGENT_PULL !== '0';
+    const skipFreshnessCheck = skipRemoteImageCheck(env);
+    const freshnessCache = new Map();
     onLog('pulling images…');
     const failedAgentImages = [];
 
@@ -778,13 +1038,36 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
             continue;
         }
 
-        if (imagePresentLocally(tag)) {
-            onLog(`  · ${tag} (local)`);
+        const skipFreshnessForImage = skipFreshnessCheck || !isProprPublishedImage(cfg, tag);
+        const freshness = cachedImageFreshness(freshnessCache, tag, { skipRemoteCheck: skipFreshnessForImage });
+
+        if (freshness.status === 'current') {
+            onLog(`  · ${tag} (local, current)`);
             tagAgentLatest(key, tag);
             continue;
         }
 
-        onLog(`  · ${tag}`);
+        if (freshness.status === 'unknown') {
+            if (freshness.localOnly) {
+                onLog(`  · ${tag} (local-only, pulling)`);
+                // fall through and pull once; do not print the generic line too.
+            } else if (freshness.skipped) {
+                const reason = skipFreshnessCheck ? 'remote check skipped via PROPR_SKIP_REMOTE_IMAGE_CHECK' : 'third-party image';
+                onLog(`  · ${tag} (local, ${reason})`);
+                tagAgentLatest(key, tag);
+                continue;
+            } else {
+                onLog(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+                tagAgentLatest(key, tag);
+                continue;
+            }
+        }
+
+        if (freshness.status === 'stale') {
+            onLog(`  · ${tag} (stale, pulling)`);
+        } else if (!(freshness.status === 'unknown' && freshness.localOnly)) {
+            onLog(`  · ${tag}`);
+        }
         const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
         if (key.startsWith('agent-') && pulled.status !== 0) {
             failedAgentImages.push(tag);

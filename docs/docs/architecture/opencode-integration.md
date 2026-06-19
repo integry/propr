@@ -143,7 +143,6 @@ propr/agent-opencode:<version>-<content-hash>
 For Docker Compose development, the compose files mount:
 
 ```text
-~/.opencode
 ~/.config/opencode
 ~/.local/share/opencode
 ```

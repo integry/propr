@@ -17,7 +17,7 @@ Use this path only when you want to change ProPR code, run tests, validate docs,
 Before starting services, create the host directories that agent containers mount:
 
 ```bash
-mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts
+mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe "/tmp/propr-vibe-prompts-$(id -u)"
 ```
 
 ## Install Dependencies
@@ -44,7 +44,7 @@ npm run compose:up
 
 The development Compose stack includes Redis.
 
-To enable the OpenCode agent, create `~/.opencode`, `~/.config/opencode`, and `~/.local/share/opencode`, then include the OpenCode override file:
+To enable the OpenCode agent, create `~/.config/opencode` and `~/.local/share/opencode`, then include the OpenCode override file:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.opencode.yml up -d

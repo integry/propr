@@ -223,12 +223,12 @@ For OpenCode agents, install and authenticate OpenCode on the host before adding
 
 ```bash
 curl -fsSL https://opencode.ai/install | bash
-mkdir -p ~/.config/opencode ~/.opencode
+mkdir -p ~/.config/opencode
 opencode auth login
 mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
 ```
 
-OpenCode stores `auth.json` under `~/.local/share/opencode`, but ProPR mounts the configured OpenCode config directory into the agent container. When using copied file-based auth, set `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` on the OpenCode agent. Legacy agents can keep `~/.opencode` as their `configPath`; new agents should use `~/.config/opencode`.
+OpenCode stores `auth.json` under `~/.local/share/opencode`, but ProPR mounts the configured OpenCode config directory into the agent container. When using copied file-based auth, set `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` on the OpenCode agent. Use `~/.config/opencode` as the agent `configPath`.
 
 The example model `opencode-minimax-m3-free` is a built-in free OpenCode model. OpenCode's model list changes with auth providers; run `opencode models` after logging in and register any desired provider/model IDs with ProPR's `opencode-` prefix, such as `opencode-openai/gpt-5.5`. ProPR converts these IDs back to OpenCode's native `provider/model` syntax at execution time and does not add authenticated provider models by default.
 Dynamic OpenCode GitHub labels use the format `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` separator is an intentional public contract — these labels are persisted on GitHub issues and resolved later for execution routing.

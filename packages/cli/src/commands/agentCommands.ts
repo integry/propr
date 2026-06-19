@@ -6,6 +6,10 @@
  */
 
 import { Command } from "commander";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   listAgents,
   addAgent,
@@ -15,6 +19,9 @@ import {
   AgentType,
   AGENT_TYPES,
 } from "../api/agents.js";
+import { createConfigManager } from "../config/index.js";
+import { getHostConfig } from "../orchestrator/index.js";
+import { planAgentLogin, loginableAgents } from "./agentValidation.js";
 import { ApiError, NetworkError, NotFoundError, UnauthorizedError } from "../api/errors.js";
 import {
   printOutput,
@@ -465,6 +472,74 @@ Examples:
         } else {
           console.error(`Error deleting agent: ${(error as Error).message}`);
         }
+        process.exit(1);
+      }
+    });
+
+  // agent login
+  agent
+    .command("login [type]")
+    .description("Authenticate an agent by logging in through its Docker image (writes host credentials)")
+    .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
+    .addHelpText("after", `
+Logs in using the agent's own pinned CLI inside its image, with the credential
+directory mounted — so the credentials match exactly what runs jobs (no host
+install or host/image version drift). Useful after a failed image check.
+
+Examples:
+  $ propr agent login antigravity
+  $ propr agent login opencode
+`)
+    .action(async (type: string | undefined, options: { root?: string }) => {
+      try {
+        const available = loginableAgents();
+        if (!type) {
+          console.log("Usage: propr agent login <type>");
+          console.log(`Agents with interactive login: ${available.join(", ")}`);
+          return;
+        }
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          console.error("Error: propr agent login requires an interactive terminal because Docker login runs with -it.");
+          process.exit(1);
+        }
+
+        const configManager = await createConfigManager();
+        const { orch, cfg } = await getHostConfig({ configManager, root: options.root });
+
+        const tmp = mkdtempSync(join(tmpdir(), "propr-login-"));
+        const workspaceDir = join(tmp, "workspace");
+        mkdirSync(workspaceDir, { recursive: true });
+        try {
+          const loginType = type.toLowerCase();
+          const { plan, error } = planAgentLogin(loginType, cfg, workspaceDir, orch.validateDockerBindPath);
+          if (error || !plan) {
+            console.error(`Error: ${error ?? "could not plan login"}`);
+            if (available.length > 0) console.error(`Agents with interactive login: ${available.join(", ")}`);
+            process.exit(1);
+          }
+
+          if (orch.docker(["images", "-q", plan.image], { capture: true }).stdout.trim().length === 0) {
+            console.error(`Image ${plan.image} is not present locally. Pull it first: propr images pull`);
+            process.exit(1);
+          }
+
+          mkdirSync(plan.hostDir, { recursive: true, mode: 0o700 });
+          console.log(`Logging in to ${loginType} via ${plan.image}`);
+          console.log(`Credentials will be written to ${plan.hostDir}`);
+          console.log("");
+          const res = spawnSync("docker", plan.dockerArgs, { stdio: "inherit" });
+          if (res.status === 0) {
+            console.log("");
+            console.log(`${loginType} login finished. Verify with: propr check agents --agents ${loginType}`);
+          } else {
+            console.error(`\n${loginType} login exited with code ${res.status ?? "?"}.`);
+            process.exit(1);
+          }
+        } finally {
+          rmSync(tmp, { recursive: true, force: true });
+        }
+      } catch (error) {
+        console.error(`Error during agent login: ${(error as Error).message}`);
         process.exit(1);
       }
     });

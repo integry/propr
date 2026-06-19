@@ -9,7 +9,7 @@
 #   - Agent images pulled or built locally (propr/agent-{vibe,antigravity,opencode})
 #   - `gh auth login` or PROPR_E2E_TOKEN
 #   - Mounted agent credentials on the host ($HOME/.vibe, /.gemini,
-#     and /.config/opencode or /.opencode as applicable for the tests being run)
+#     and /.config/opencode as applicable for the tests being run)
 #
 # Env:
 #   PROPR_E2E_REPO   (default: integry/propr-test)
@@ -170,19 +170,14 @@ elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
   exit 1
 fi
 
-OPENCODE_LEGACY_CFG="$HOME/.opencode"
 OPENCODE_XDG_CFG="$HOME/.config/opencode"
 OPENCODE_CFG=""
-[ -d "$OPENCODE_LEGACY_CFG" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_LEGACY_DIR=$OPENCODE_LEGACY_CFG")
 [ -d "$OPENCODE_XDG_CFG" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_XDG_DIR=$OPENCODE_XDG_CFG")
 [ -d "$HOME/.local/share/opencode" ] && LAUNCHER_ARGS+=(-e "HOST_OPENCODE_DATA_DIR=$HOME/.local/share/opencode")
-# Prefer XDG config when both OpenCode layouts exist, matching the app default.
 if [ -d "$OPENCODE_XDG_CFG" ]; then
   OPENCODE_CFG="$OPENCODE_XDG_CFG"
-elif [ -d "$OPENCODE_LEGACY_CFG" ]; then
-  OPENCODE_CFG="$OPENCODE_LEGACY_CFG"
 elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
-  echo "✗ OpenCode credentials not found at $OPENCODE_XDG_CFG or $OPENCODE_LEGACY_CFG" >&2
+  echo "✗ OpenCode credentials not found at $OPENCODE_XDG_CFG" >&2
   echo "  Required for OpenCode-backed image integration tests; set PROPR_E2E_SKIP_SLOW=1 to skip agent execution." >&2
   exit 1
 fi

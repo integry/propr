@@ -95,7 +95,7 @@ OpenCode host setup. The `auth.json` copy into `xdg-data` (and the matching `XDG
 
 ```bash
 curl -fsSL https://opencode.ai/install | bash
-mkdir -p ~/.config/opencode ~/.opencode
+mkdir -p ~/.config/opencode
 opencode auth login
 mkdir -p ~/.config/opencode/xdg-data/opencode && \
   cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
