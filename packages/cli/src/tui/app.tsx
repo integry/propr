@@ -38,11 +38,10 @@ export async function renderDashboard(props: DashboardProps): Promise<"backgroun
  */
 export async function renderLiveChecks(
   runOptions: RunChecksOptions,
-  opts: { fix?: boolean; offerValidate?: boolean; getActions: (outcome: ChecksOutcome) => RemediationMenuItem[] }
-): Promise<{ outcome: ChecksOutcome | undefined; selectedKey: string | undefined; validate: boolean }> {
+  opts: { fix?: boolean; showAgentValidationHint?: boolean; getActions: (outcome: ChecksOutcome) => RemediationMenuItem[] }
+): Promise<{ outcome: ChecksOutcome | undefined; selectedKey: string | undefined }> {
   const hub = new CheckHub();
   let selectedKey: string | undefined;
-  let validate = false;
   let cancelled = false;
   const instance = render(
     <CheckApp
@@ -51,8 +50,7 @@ export async function renderLiveChecks(
       getActions={opts.getActions}
       onSelect={(key) => { selectedKey = key; }}
       onCancel={() => { cancelled = true; }}
-      offerValidate={Boolean(opts.offerValidate)}
-      onValidate={(yes) => { validate = yes; }}
+      showAgentValidationHint={Boolean(opts.showAgentValidationHint)}
     />,
     { exitOnCtrlC: false },
   );
@@ -74,10 +72,10 @@ export async function renderLiveChecks(
     });
 
   await instance.waitUntilExit();
-  if (cancelled) return { outcome: undefined, selectedKey: undefined, validate: false };
+  if (cancelled) return { outcome: undefined, selectedKey: undefined };
   const outcome = await outcomePromise;
   if (engineError) throw engineError;
-  return { outcome, selectedKey, validate };
+  return { outcome, selectedKey };
 }
 
 /**

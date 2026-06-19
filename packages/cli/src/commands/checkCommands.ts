@@ -651,6 +651,11 @@ function warnBillableValidationJson(): void {
   console.error("Warning: agent validation makes real, billable LLM calls even with --json. Restrict with --agents when needed.");
 }
 
+function printAgentValidationHint(): void {
+  console.log("");
+  console.log("To validate agents with live, billable LLM calls, run `propr check agents` or `propr check all`.");
+}
+
 /** Static, non-interactive renderer (pipes, CI, NO_COLOR). */
 function printStaticChecks(outcome: ChecksOutcome, showRemediationHint: boolean): void {
   printChecks(outcome);
@@ -669,29 +674,29 @@ function printStaticChecks(outcome: ChecksOutcome, showRemediationHint: boolean)
 async function runChecksInteractive(
   runOptions: RunChecksOptions,
   fix: boolean,
-  offerValidate: boolean
-): Promise<{ outcome: ChecksOutcome | undefined; validate: boolean }> {
+  showAgentValidationHint: boolean
+): Promise<{ outcome: ChecksOutcome | undefined }> {
   try {
     const { renderLiveChecks } = await import("../tui/app.js");
     let lastOutcome: ChecksOutcome | undefined;
     while (true) {
-      const { outcome, selectedKey, validate } = await renderLiveChecks(runOptions, {
+      const { outcome, selectedKey } = await renderLiveChecks(runOptions, {
         fix,
-        offerValidate,
+        showAgentValidationHint,
         getActions: collectRemediationActions,
       });
       lastOutcome = outcome ?? lastOutcome;
-      if (!fix || !selectedKey || !outcome) return { outcome: lastOutcome, validate };
+      if (!fix || !selectedKey || !outcome) return { outcome: lastOutcome };
 
       const action = collectRemediationActions(outcome).find((a) => a.key === selectedKey);
-      if (!action) return { outcome: lastOutcome, validate };
+      if (!action) return { outcome: lastOutcome };
 
       console.log("");
       const result = await action.run();
       if (!result.ok) {
         console.log("Remediation did not fully complete. Continuing with the current check results.");
       }
-      if (!result.changed) return { outcome: lastOutcome, validate: false };
+      if (!result.changed) return { outcome: lastOutcome };
       // Loop: re-run a fresh live pass to reflect changes and offer more fixes.
     }
   } catch (error) {
@@ -701,11 +706,11 @@ async function runChecksInteractive(
     const outcome = await runChecks(runOptions);
     if (fix) {
       printChecks(outcome);
-      return { outcome: await runRemediationPrompts(outcome, runOptions), validate: false };
+      return { outcome: await runRemediationPrompts(outcome, runOptions) };
     }
     printStaticChecks(outcome, collectRemediationActions(outcome).length > 0);
-    const validate = offerValidate ? await confirmValidateAgents() : false;
-    return { outcome, validate };
+    if (showAgentValidationHint) printAgentValidationHint();
+    return { outcome };
   }
 }
 
@@ -936,19 +941,6 @@ export function printChecks(outcome: ChecksOutcome): void {
 
   console.log("─".repeat(60));
   console.log(formatSummary(counts, colorEnabled));
-}
-
-/** Ask (readline) whether to run live agent validation. TTY-only. */
-async function confirmValidateAgents(): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = (
-      await rl.question("\nValidate agents now with live test calls? This makes real (billable) LLM calls. [y/N] ")
-    ).trim().toLowerCase();
-    return answer === "y" || answer === "yes";
-  } finally {
-    rl.close();
-  }
 }
 
 /** Status badge for an agent cell: plain text + optional ANSI color code. */
@@ -1202,15 +1194,16 @@ Notes:
           printStaticChecks(outcome, !options.fix && collectRemediationActions(outcome).length > 0);
           let anyFail = outcome.anyFail;
           if (runAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+          else printAgentValidationHint();
           if (anyFail) process.exit(1);
           return;
         }
 
         // Interactive TTY: live, streaming view (+ in-app remediation with --fix,
-        // and an optional in-app "validate agents?" prompt after plain system checks).
-        const { outcome, validate } = await runChecksInteractive(runOptions, Boolean(options.fix), !options.fix && !runAgents);
+        // plus a hint showing how to opt into billable agent validation).
+        const { outcome } = await runChecksInteractive(runOptions, Boolean(options.fix), !options.fix && !runAgents);
         let anyFail = outcome?.anyFail ?? false;
-        if (runAgents || validate) {
+        if (runAgents) {
           anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
         }
         if (anyFail) process.exit(1);

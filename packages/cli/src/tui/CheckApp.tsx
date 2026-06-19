@@ -58,10 +58,8 @@ interface Props {
   getActions: (outcome: ChecksOutcome) => RemediationMenuItem[];
   onSelect: (key: string | undefined) => void;
   onCancel?: () => void;
-  /** When true (and not in --fix mode), offer a y/N agent-validation prompt at the end. */
-  offerValidate?: boolean;
-  /** Reports the agent-validation choice (only meaningful when offerValidate). */
-  onValidate?: (yes: boolean) => void;
+  /** When true (and not in --fix mode), show how to opt into agent validation. */
+  showAgentValidationHint?: boolean;
 }
 
 type RowStatus = CheckStatus | "pending";
@@ -237,10 +235,10 @@ function Menu({ items, selected }: { items: RemediationMenuItem[]; selected: num
   );
 }
 
-export function CheckApp({ hub, fix, getActions, onSelect, onCancel, offerValidate, onValidate }: Props): React.ReactElement {
+export function CheckApp({ hub, fix, getActions, onSelect, onCancel, showAgentValidationHint }: Props): React.ReactElement {
   const { exit } = useApp();
   const [rowState, dispatch] = useReducer(rowReducer, { rows: [], pendingByName: new Map<string, number>(), nextId: 0 });
-  const [phase, setPhase] = useState<"running" | "menu" | "done" | "validate-confirm" | "action-confirm">("running");
+  const [phase, setPhase] = useState<"running" | "menu" | "done" | "action-confirm">("running");
   const [outcome, setOutcome] = useState<ChecksOutcome | null>(null);
   const [actions, setActions] = useState<RemediationMenuItem[]>([]);
   const [selected, setSelected] = useState(0);
@@ -255,8 +253,6 @@ export function CheckApp({ hub, fix, getActions, onSelect, onCancel, offerValida
         setActions(available);
         if (fix && available.length > 0) {
           setPhase("menu");
-        } else if (offerValidate && !fix) {
-          setPhase("validate-confirm");
         } else {
           setPhase("done");
         }
@@ -267,7 +263,7 @@ export function CheckApp({ hub, fix, getActions, onSelect, onCancel, offerValida
         dispatch(event);
       }
     });
-  }, [hub, fix, getActions, offerValidate]);
+  }, [hub, fix, getActions]);
 
   // Animate the spinner only while checks are in flight.
   useEffect(() => {
@@ -287,14 +283,7 @@ export function CheckApp({ hub, fix, getActions, onSelect, onCancel, offerValida
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       onSelect(undefined);
-      onValidate?.(false);
       onCancel?.();
-      exit();
-      return;
-    }
-    if (phase === "validate-confirm") {
-      if (input.toLowerCase() === "y") onValidate?.(true);
-      else onValidate?.(false); // n / enter / esc / anything else
       exit();
       return;
     }
@@ -338,17 +327,17 @@ export function CheckApp({ hub, fix, getActions, onSelect, onCancel, offerValida
 
       {phase === "menu" ? <Menu items={actions} selected={selected} /> : null}
 
-      {phase === "done" || phase === "validate-confirm" || phase === "action-confirm" ? (
+      {phase === "done" || phase === "action-confirm" ? (
         <Box marginTop={1}>
           <SummaryLine rows={rows} running={running} />
         </Box>
       ) : null}
 
-      {phase === "validate-confirm" ? (
+      {phase === "done" && showAgentValidationHint ? (
         <Box marginTop={1} flexDirection="column">
-          <Text color="cyan" bold>Validate agents?</Text>
-          <Text>Make live test calls for configured agent images to confirm auth works.</Text>
-          <Text dimColor>This makes real, billable LLM calls. Press y to run, any other key to skip.</Text>
+          <Text color="cyan" bold>Agent validation</Text>
+          <Text>Run `propr check agents` to validate agents only, or `propr check all` to include system checks.</Text>
+          <Text dimColor>Agent validation makes live, billable LLM calls.</Text>
         </Box>
       ) : null}
 
