@@ -49,6 +49,7 @@ import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
+import { startEventIntake } from './daemon/eventIntakeStartup.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -291,51 +292,23 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         });
     };
 
-    switch (EVENT_INTAKE_MODE) {
-        case 'polling': {
-            logger.info({
-                ...baseStartupLog,
-                pollingInterval: POLLING_INTERVAL_MS,
-            }, 'GitHub Issue Detection Daemon starting in polling mode...');
-
-            safePoll();
-            intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
-            break;
-        }
-
-        case 'direct_webhook': {
-            logger.info({
-                ...baseStartupLog,
-                webhookEnabled: true,
-                webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
-            }, 'GitHub Issue Detection Daemon starting in direct webhook mode...');
-
-            if (!process.env.GH_WEBHOOK_SECRET) {
-                logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
-            }
-
-            await initSharedWebhookHandler();
-            logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
-            break;
-        }
-
-        case 'routing_websocket': {
-            logger.info({
-                ...baseStartupLog,
-                routingUrl: process.env.PROPR_ROUTING_URL || 'not configured',
-            }, 'GitHub Issue Detection Daemon starting in routing WebSocket mode...');
-
-            // The routing relay forwards events into the same shared handler, so
-            // initialize it before opening the connection to avoid dropping events.
-            await initSharedWebhookHandler();
-            logger.info('Webhook handler initialized. GitHub events will be received over the routing WebSocket.');
-
-            routingService = new RoutingWebSocketIntakeService();
-            await routingService.start();
-            routingStatusPublisher = await startRoutingStatusPublisher(routingService, heartbeatRedis);
-            break;
-        }
-    }
+    // Start only the components for the resolved intake mode. The mode-selection
+    // logic is extracted into startEventIntake so it can be unit-tested with injected
+    // dependencies, without standing up real Redis/GitHub/WebSocket connections.
+    const intakeStartup = await startEventIntake(EVENT_INTAKE_MODE, {
+        safePoll,
+        pollingIntervalMs: POLLING_INTERVAL_MS,
+        initWebhookHandler: initSharedWebhookHandler,
+        createRoutingService: () => new RoutingWebSocketIntakeService(),
+        startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
+        logger,
+        startupLogContext: baseStartupLog,
+        webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
+        routingUrl: process.env.PROPR_ROUTING_URL,
+    });
+    intervalId = intakeStartup.intervalId;
+    routingService = intakeStartup.routingService;
+    routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
     const configReloadInterval = setInterval(reloadConfigs, 5 * 60 * 1000);
 
