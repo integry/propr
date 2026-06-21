@@ -127,12 +127,17 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log("");
   console.log("=".repeat(50));
 
+  // When routing state is published, an unhealthy routing WebSocket means the
+  // default intake path is down, so it must count against overall health.
+  const routingHealthy = !status.routing || status.routing.connected === true;
+
   const allHealthy =
     status.api === "healthy" &&
     status.redis === "connected" &&
     status.daemon === "running" &&
     status.worker === "running" &&
-    status.githubAuth === "connected";
+    status.githubAuth === "connected" &&
+    routingHealthy;
 
   console.log("");
   if (allHealthy) {
@@ -150,10 +155,17 @@ function displaySystemStatus(status: SystemStatus): void {
       console.log("  - No workers active. Check worker processes.");
     }
     if (status.githubAuth !== "connected") {
-      console.log("  - GitHub auth not configured. Check GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID.");
+      // githubAuth is derived from the resolved auth mode, so a relay deployment
+      // only lands here when nothing valid is configured — mention both paths.
+      console.log(
+        `  - GitHub auth not configured (mode: ${status.githubAuthMode ?? "unknown"}). Set GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID for app auth, or PROPR_GH_RELAY_URL and PROPR_GH_RELAY_TOKEN for relay auth.`
+      );
     }
     if (status.claudeAuth !== "connected") {
       console.log("  - Claude auth status unknown or no recent activity.");
+    }
+    if (!routingHealthy) {
+      console.log("  - Routing WebSocket disconnected. The daemon is not connected to the routing relay; check PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN and the daemon logs.");
     }
   }
 }

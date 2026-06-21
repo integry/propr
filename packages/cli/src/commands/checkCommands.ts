@@ -693,8 +693,11 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
   }
 
   // Live routing state from the running backend (best-effort, short timeout).
+  // A stopped local backend rejects immediately (ECONNREFUSED); the timeout only
+  // bounds the wait when the configured API URL is reachable but slow, so keep it
+  // tight to avoid a noticeable stall during offline/pre-start checks.
   try {
-    const client = await createApiClient({ defaultTimeout: 2000 });
+    const client = await createApiClient({ defaultTimeout: 1000 });
     const status = await getSystemStatus(client);
     const routing = status.routing;
     if (routing) {

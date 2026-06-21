@@ -48,6 +48,7 @@ import { startLoop, clearState } from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 import { parseArgs } from './daemon/cliArgs.js';
+import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -249,7 +250,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
     let intervalId: NodeJS.Timeout | null = null;
     let routingService: RoutingWebSocketIntakeService | null = null;
-    let routingStatusInterval: NodeJS.Timeout | null = null;
+    let routingStatusPublisher: RoutingStatusPublisher | null = null;
 
     const commentConfig = getCommentConfig();
     const primaryProcessingLabels = getPrimaryProcessingLabels();
@@ -331,26 +332,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
             routingService = new RoutingWebSocketIntakeService();
             await routingService.start();
-
-            // Publish the routing connection's runtime state to Redis so the API
-            // status route (a separate process) and `propr check` can report
-            // connectivity, last delivery id, and last ACK for the default intake
-            // path. The key carries a TTL so it disappears if the daemon dies.
-            const publishRoutingStatus = async (): Promise<void> => {
-                if (!routingService) return;
-                try {
-                    await heartbeatRedis.set(
-                        'system:status:routing',
-                        JSON.stringify(routingService.getStatus()),
-                        'EX',
-                        90,
-                    );
-                } catch (error) {
-                    logger.error({ error: (error as Error).message }, 'Failed to publish routing status');
-                }
-            };
-            await publishRoutingStatus();
-            routingStatusInterval = setInterval(() => { void publishRoutingStatus(); }, 30000);
+            routingStatusPublisher = await startRoutingStatusPublisher(routingService, heartbeatRedis);
             break;
         }
     }
@@ -421,16 +403,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
-        if (routingStatusInterval) clearInterval(routingStatusInterval);
+        if (routingStatusPublisher) await routingStatusPublisher.stop();
         if (routingService) {
             await routingService.stop();
-            // Clear the published state promptly so status consumers see the
-            // routing path is down instead of waiting for the TTL to lapse.
-            try {
-                await heartbeatRedis.del('system:status:routing');
-            } catch (error) {
-                logger.error({ error: (error as Error).message }, 'Failed to clear routing status on shutdown');
-            }
         }
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
