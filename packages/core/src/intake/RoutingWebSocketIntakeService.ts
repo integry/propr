@@ -20,6 +20,9 @@
  *     after the local webhook handler has accepted (processed) the event.
  *   - `token`: an installation access token pushed out of band. Cached by
  *     installation id and used as a fallback credential when pulling a payload.
+ *     May carry an `expiresAt` (epoch ms or ISO-8601); an expired cached token is
+ *     treated as a miss, so the relay must refresh it before expiry. GitHub
+ *     installation tokens live ~1 hour.
  *   - `error`: a relay-side error notification. Logged; never fatal.
  *   - `ping`: an application-level keepalive. Answered with a `pong` frame.
  *
@@ -48,12 +51,12 @@ import {
     WS_OPEN,
     buildConnectUrl,
     isSupportedEventType,
-    pullDeliveryPayload,
+    parseTokenExpiry,
     rawDataToString,
+    resolveDeliveryPayload,
     type FetchLike,
     type MinimalWebSocket,
     type RawData,
-    type RoutingDelivery,
     type RoutingFrame,
     type WebSocketCtor,
 } from './routingWebSocketProtocol.js';
@@ -92,6 +95,13 @@ export interface RoutingWebSocketIntakeServiceOptions {
     /** Timeout for pulling a delivery payload over HTTP, in ms. */
     pullTimeoutMs?: number;
     /**
+     * Maximum time {@link stop} waits to drain in-flight event handling before
+     * closing the socket anyway. Bounds shutdown so a wedged `dispatch` (which,
+     * unlike a payload pull, has no timeout of its own) cannot block the daemon's
+     * SIGINT/SIGTERM handler forever.
+     */
+    shutdownDrainTimeoutMs?: number;
+    /**
      * WebSocket constructor to use. Defaults to a lazy import of the `ws`
      * package; primarily a seam for tests to inject a fake transport.
      */
@@ -108,6 +118,7 @@ export class RoutingWebSocketIntakeService {
     private readonly maxReconnectDelayMs: number;
     private readonly pingIntervalMs: number;
     private readonly pullTimeoutMs: number;
+    private readonly shutdownDrainTimeoutMs: number;
     private readonly webSocketFactory?: WebSocketCtor;
     private readonly fetchImpl?: FetchLike;
 
@@ -137,6 +148,7 @@ export class RoutingWebSocketIntakeService {
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
         this.pingIntervalMs = options.pingIntervalMs ?? 30_000;
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
+        this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;
         this.fetchImpl = options.fetchImpl;
         this.currentReconnectDelayMs = this.initialReconnectDelayMs;
@@ -228,7 +240,7 @@ export class RoutingWebSocketIntakeService {
         });
 
         socket.on('message', (data: RawData) => {
-            void this.handleMessage(data);
+            void this.handleMessage(data, socket);
         });
 
         socket.on('error', (err: Error) => {
@@ -247,7 +259,7 @@ export class RoutingWebSocketIntakeService {
         });
     }
 
-    private async handleMessage(data: RawData): Promise<void> {
+    private async handleMessage(data: RawData, socket: MinimalWebSocket): Promise<void> {
         let frame: RoutingFrame;
         try {
             frame = JSON.parse(rawDataToString(data)) as RoutingFrame;
@@ -267,7 +279,9 @@ export class RoutingWebSocketIntakeService {
                 // advancement — so out-of-order ACKs are acceptable. In-flight
                 // duplicate suppression (see handleEventFrame) prevents a redelivery
                 // from being processed twice while the first attempt is running.
-                await this.trackWork(this.handleEventFrame(frame));
+                // The receiving socket is bound to the work so its ACK is only sent
+                // back over the same connection it arrived on.
+                await this.trackWork(this.handleEventFrame(frame, socket));
                 return;
             case 'token':
                 this.handleTokenFrame(frame);
@@ -279,7 +293,7 @@ export class RoutingWebSocketIntakeService {
                 );
                 return;
             case 'ping':
-                this.send({ type: 'pong' });
+                this.send({ type: 'pong' }, socket);
                 return;
             default:
                 logger.debug({ type: frame.type }, 'Ignoring routing frame with unknown type');
@@ -304,11 +318,12 @@ export class RoutingWebSocketIntakeService {
             logger.warn('Discarding token frame missing installationId or token');
             return;
         }
-        this.installationTokens.set(String(installationId), token);
-        logger.debug({ installationId }, 'Cached installation token from routing relay');
+        const expiresAt = parseTokenExpiry(frame.expiresAt);
+        this.installationTokens.set(String(installationId), token, expiresAt);
+        logger.debug({ installationId, expiresAt }, 'Cached installation token from routing relay');
     }
 
-    private async handleEventFrame(frame: RoutingFrame): Promise<void> {
+    private async handleEventFrame(frame: RoutingFrame, socket: MinimalWebSocket): Promise<void> {
         const correlationId = generateCorrelationId();
         const log = logger.withCorrelation(correlationId);
 
@@ -333,7 +348,7 @@ export class RoutingWebSocketIntakeService {
             log.warn({ deliveryId, sequence }, 'Discarding event frame with no event type');
             // ACK so the relay does not redeliver an event we can never handle.
             this.deliveries.accept(deliveryId);
-            this.sendAck(sequence, deliveryId);
+            this.sendAck(sequence, deliveryId, socket);
             return;
         }
 
@@ -341,7 +356,7 @@ export class RoutingWebSocketIntakeService {
         // never reprocess.
         if (this.deliveries.isAccepted(deliveryId)) {
             log.debug({ deliveryId, sequence }, 'Re-ACKing already-accepted routing delivery');
-            this.sendAck(sequence, deliveryId);
+            this.sendAck(sequence, deliveryId, socket);
             return;
         }
 
@@ -357,7 +372,7 @@ export class RoutingWebSocketIntakeService {
         if (!isSupportedEventType(rawEventType)) {
             log.debug({ eventType: rawEventType, deliveryId, sequence }, 'Ignoring unsupported routing event type');
             this.deliveries.accept(deliveryId);
-            this.sendAck(sequence, deliveryId);
+            this.sendAck(sequence, deliveryId, socket);
             return;
         }
 
@@ -367,7 +382,14 @@ export class RoutingWebSocketIntakeService {
 
         let payload: unknown;
         try {
-            payload = await this.resolvePayload(delivery, log);
+            payload = await resolveDeliveryPayload({
+                delivery,
+                routingUrl: this.routingUrl,
+                tokens: this.installationTokens,
+                fetchImpl: this.fetchImpl,
+                pullTimeoutMs: this.pullTimeoutMs,
+                log,
+            });
         } catch (error) {
             this.deliveries.fail(deliveryId);
             log.error(
@@ -398,66 +420,27 @@ export class RoutingWebSocketIntakeService {
         // handler must tolerate a duplicate. Draining in stop() narrows, but does
         // not eliminate, that window (accepted ids are not persisted across restart).
         this.deliveries.accept(deliveryId);
-        this.sendAck(sequence, deliveryId);
-    }
-
-    /**
-     * Materialize the GitHub webhook payload for a delivery: prefer the inline
-     * `delivery.payload.rawPayload`, otherwise pull it over HTTP from the relay.
-     */
-    private async resolvePayload(delivery: RoutingDelivery, log: ReturnType<typeof logger.withCorrelation>): Promise<unknown> {
-        const inline = delivery.payload?.rawPayload;
-        if (inline !== undefined && inline !== null) {
-            return inline;
-        }
-        return this.pullPayload(delivery, log);
-    }
-
-    /** Resolve credentials/transport and pull a delivery payload over HTTP. */
-    private async pullPayload(delivery: RoutingDelivery, log: ReturnType<typeof logger.withCorrelation>): Promise<unknown> {
-        const deliveryId = delivery.deliveryId as string;
-        const token = this.resolveInstallationToken(delivery);
-        if (!token) {
-            throw new Error(`No installation token available to pull delivery ${deliveryId}`);
-        }
-
-        const fetchImpl = this.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
-        if (!fetchImpl) {
-            throw new Error('No fetch implementation available to pull delivery payload');
-        }
-
-        return pullDeliveryPayload({
-            routingUrl: this.routingUrl,
-            deliveryId,
-            token,
-            fetchImpl,
-            pullTimeoutMs: this.pullTimeoutMs,
-            log,
-        });
-    }
-
-    /** Resolve the credential for a payload pull: frame token, else cached token. */
-    private resolveInstallationToken(delivery: RoutingDelivery): string | undefined {
-        if (delivery.installationToken) return delivery.installationToken;
-        if (delivery.installationId !== undefined) {
-            return this.installationTokens.get(String(delivery.installationId));
-        }
-        return undefined;
+        this.sendAck(sequence, deliveryId, socket);
     }
 
     /** Send an ACK frame to the relay for an accepted delivery. */
-    private sendAck(sequence: number, deliveryId: string): void {
-        this.send({ type: 'ack', sequence, deliveryId });
+    private sendAck(sequence: number, deliveryId: string, socket: MinimalWebSocket): void {
+        this.send({ type: 'ack', sequence, deliveryId }, socket);
     }
 
-    /** Serialize and send a frame to the relay if the socket is open. */
-    private send(frame: Record<string, unknown>): void {
-        if (!this.socket || this.socket.readyState !== WS_OPEN) {
-            logger.warn({ type: frame.type }, 'Cannot send routing frame; socket not open');
+    /**
+     * Serialize and send a frame to the relay. Sends only when `socket` is still
+     * the current connection and open: work that started on a connection which has
+     * since dropped/reconnected must not push a (now stale, connection-scoped)
+     * `sequence` over the new socket, where the relay could treat it as invalid.
+     */
+    private send(frame: Record<string, unknown>, socket: MinimalWebSocket): void {
+        if (socket !== this.socket || socket.readyState !== WS_OPEN) {
+            logger.warn({ type: frame.type }, 'Cannot send routing frame; socket not open or no longer current');
             return;
         }
         try {
-            this.socket.send(JSON.stringify(frame));
+            socket.send(JSON.stringify(frame));
         } catch (error) {
             logger.error({ error: (error as Error).message, type: frame.type }, 'Failed to send routing frame');
         }
@@ -517,7 +500,23 @@ export class RoutingWebSocketIntakeService {
         // relay to redeliver (and risk duplicate processing) after restart.
         if (this.inFlightWork.size > 0) {
             logger.info({ inFlight: this.inFlightWork.size }, 'Draining in-flight routing deliveries before shutdown');
-            await Promise.allSettled([...this.inFlightWork]);
+            // Bound the drain: a payload pull has its own timeout, but `dispatch`
+            // does not, so an indefinitely-hung handler must not block shutdown
+            // forever. After the deadline we stop waiting and close the socket; any
+            // still-running work loses its ACK window and the relay redelivers.
+            let drainTimer: NodeJS.Timeout | undefined;
+            const drained = Promise.allSettled([...this.inFlightWork]);
+            const timeout = new Promise<void>((resolve) => {
+                drainTimer = setTimeout(() => {
+                    logger.warn(
+                        { inFlight: this.inFlightWork.size, timeoutMs: this.shutdownDrainTimeoutMs },
+                        'Timed out draining in-flight routing deliveries; closing socket anyway',
+                    );
+                    resolve();
+                }, this.shutdownDrainTimeoutMs);
+            });
+            await Promise.race([drained, timeout]);
+            if (drainTimer) clearTimeout(drainTimer);
         }
 
         if (this.socket) {

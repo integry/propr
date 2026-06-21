@@ -142,27 +142,42 @@ export class DeliveryTracker {
     }
 }
 
+/** A cached installation token together with its optional absolute expiry (epoch ms). */
+interface CachedToken {
+    token: string;
+    /** Epoch-ms expiry; `undefined` means the relay sent no expiry (treated as non-expiring). */
+    expiresAt?: number;
+}
+
 /**
  * Bounded, insertion-ordered map of installation id -> access token. Re-setting a
  * key refreshes its recency; once the cap is reached the oldest entry is evicted,
  * so a long-running multi-tenant daemon cannot accumulate stale tokens forever.
+ *
+ * Tokens may carry an absolute expiry (GitHub installation tokens live ~1 hour):
+ * an expired entry is treated as a cache miss (and dropped) so a stale credential
+ * is never used for a payload pull. The relay is still expected to push a refreshed
+ * `token` frame before expiry; the expiry check is the safety net for when it does
+ * not. A clock is injectable for deterministic tests.
  */
 export class BoundedTokenCache {
-    private readonly tokens = new Map<string, string>();
+    private readonly tokens = new Map<string, CachedToken>();
     private readonly maxEntries: number;
+    private readonly now: () => number;
 
     /**
      * `maxEntries` is clamped to a minimum of 1: a cap of 0 or a negative number
      * would evict every token the instant it is cached, silently disabling the
      * fallback credential path used for payload pulls.
      */
-    constructor(maxEntries: number) {
+    constructor(maxEntries: number, now: () => number = () => Date.now()) {
         this.maxEntries = Math.max(1, Math.floor(maxEntries));
+        this.now = now;
     }
 
-    set(key: string, value: string): void {
+    set(key: string, value: string, expiresAt?: number): void {
         this.tokens.delete(key);
-        this.tokens.set(key, value);
+        this.tokens.set(key, { token: value, expiresAt });
         while (this.tokens.size > this.maxEntries) {
             const oldest = this.tokens.keys().next().value as string | undefined;
             if (oldest === undefined) break;
@@ -171,8 +186,30 @@ export class BoundedTokenCache {
     }
 
     get(key: string): string | undefined {
-        return this.tokens.get(key);
+        const entry = this.tokens.get(key);
+        if (!entry) return undefined;
+        if (entry.expiresAt !== undefined && entry.expiresAt <= this.now()) {
+            // Stale: drop it so we fall through to "no token" rather than pulling
+            // with a credential the relay has already rotated.
+            this.tokens.delete(key);
+            return undefined;
+        }
+        return entry.token;
     }
+}
+
+/**
+ * Normalize a relay-supplied token expiry into epoch ms. Accepts an epoch-ms
+ * number or an ISO-8601 string; returns `undefined` for anything unparseable so
+ * a bad expiry degrades to "non-expiring" rather than instantly evicting the token.
+ */
+export function parseTokenExpiry(expiresAt: number | string | undefined): number | undefined {
+    if (typeof expiresAt === 'number') return Number.isFinite(expiresAt) ? expiresAt : undefined;
+    if (typeof expiresAt === 'string') {
+        const ms = Date.parse(expiresAt);
+        return Number.isNaN(ms) ? undefined : ms;
+    }
+    return undefined;
 }
 
 /** A GitHub delivery descriptor carried inside an `event` frame. */
@@ -201,6 +238,8 @@ export interface RoutingFrame {
     /** Present on `token` frames. */
     installationId?: number | string;
     token?: string;
+    /** Optional token expiry on `token` frames (epoch ms or ISO-8601 string). */
+    expiresAt?: number | string;
     /** Present on `error` frames. */
     message?: string;
     code?: string;
@@ -314,4 +353,51 @@ export function extractPulledPayload(body: unknown): unknown {
         }
     }
     return body;
+}
+
+/** Resolve the credential for a payload pull: frame token, else cached token. */
+export function resolveInstallationToken(delivery: RoutingDelivery, tokens: BoundedTokenCache): string | undefined {
+    if (delivery.installationToken) return delivery.installationToken;
+    if (delivery.installationId !== undefined) {
+        return tokens.get(String(delivery.installationId));
+    }
+    return undefined;
+}
+
+/** Inputs for {@link resolveDeliveryPayload}. Grouped to stay within max-params. */
+export interface ResolveDeliveryPayloadOptions {
+    delivery: RoutingDelivery;
+    routingUrl: string;
+    tokens: BoundedTokenCache;
+    fetchImpl: FetchLike | undefined;
+    pullTimeoutMs: number;
+    log: PullLogger;
+}
+
+/**
+ * Materialize the GitHub webhook payload for a delivery: prefer the inline
+ * `delivery.payload.rawPayload`, otherwise pull it over HTTP from the relay,
+ * resolving the installation credential (frame token, else cached token) and a
+ * `fetch` implementation first. Throws if no payload can be produced — the
+ * caller's signal to withhold the ACK so the relay can redeliver.
+ */
+export async function resolveDeliveryPayload(opts: ResolveDeliveryPayloadOptions): Promise<unknown> {
+    const { delivery, routingUrl, tokens, fetchImpl, pullTimeoutMs, log } = opts;
+    const inline = delivery.payload?.rawPayload;
+    if (inline !== undefined && inline !== null) {
+        return inline;
+    }
+
+    const deliveryId = delivery.deliveryId as string;
+    const token = resolveInstallationToken(delivery, tokens);
+    if (!token) {
+        throw new Error(`No installation token available to pull delivery ${deliveryId}`);
+    }
+
+    const fetcher = fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
+    if (!fetcher) {
+        throw new Error('No fetch implementation available to pull delivery payload');
+    }
+
+    return pullDeliveryPayload({ routingUrl, deliveryId, token, fetchImpl: fetcher, pullTimeoutMs, log });
 }

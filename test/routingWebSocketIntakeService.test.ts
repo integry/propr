@@ -330,6 +330,35 @@ test('uses an installation token from a token frame when the event omits one', a
     await service.stop();
 });
 
+test('an expired cached installation token is not used for a payload pull', async () => {
+    let fetchCalls = 0;
+    const fakeFetch = async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ rawPayload: { ok: true } }), { status: 200 });
+    };
+    const { service, dispatched } = makeService({ fetchImpl: fakeFetch });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    // Token already expired (expiresAt in the distant past): the cache must treat
+    // it as a miss so the stale credential is never sent to the relay.
+    socket.emit('message', JSON.stringify({ type: 'token', installationId: 7, token: 'stale', expiresAt: 1 }));
+    socket.emit('message', JSON.stringify({
+        type: 'event',
+        sequence: 1,
+        delivery: { deliveryId: 'exp-1', eventType: 'issues', installationId: 7 },
+    }));
+    await flush();
+    await flush();
+
+    assert.equal(fetchCalls, 0, 'no pull may be attempted without a valid token');
+    assert.equal(dispatched.length, 0);
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0, 'no ACK without a valid token');
+
+    await service.stop();
+});
+
 test('does not ACK when payload pull fails (relay may redeliver)', async () => {
     const fakeFetch = async () => new Response('nope', { status: 500 });
     const { service, dispatched } = makeService({ fetchImpl: fakeFetch });
@@ -464,6 +493,31 @@ test('stop() drains in-flight work and lets its ACK reach the relay before closi
     assert.equal(socket.closed, true);
 });
 
+test('stop() does not hang forever when in-flight work never completes', async () => {
+    // Dispatch never resolves: stop() must give up after the drain timeout and
+    // close the socket anyway rather than blocking the daemon's signal handler.
+    const { service } = makeService({
+        shutdownDrainTimeoutMs: 20,
+        dispatch: () => new Promise<void>(() => {}),
+    });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', eventFrame({ sequence: 1, deliveryId: 'hang-1', eventType: 'issues', rawPayload: {} }));
+    await flush();
+
+    // Bound the assertion so a regression (an unbounded drain) fails the test
+    // instead of hanging the whole run.
+    const timedOut = Symbol('timedOut');
+    const result = await Promise.race([
+        service.stop().then(() => 'stopped'),
+        new Promise((r) => setTimeout(() => r(timedOut), 1_000)),
+    ]);
+    assert.equal(result, 'stopped', 'stop() must resolve despite the wedged dispatch');
+    assert.equal(socket.closed, true, 'socket is closed after the drain times out');
+});
+
 test('does not ACK when the webhook handler throws', async () => {
     const { service } = makeService({
         dispatch: async () => {
@@ -546,6 +600,46 @@ test('reconnects after an unexpected close', async () => {
     // Wait past the reconnect delay.
     await new Promise((r) => setTimeout(r, 25));
     assert.ok(FakeWebSocket.instances.length >= 2, 'expected a reconnect attempt');
+
+    await service.stop();
+});
+
+test('does not ACK on a reconnected socket for work started on a dropped connection', async () => {
+    // Gate dispatch so the delivery is still in flight when its connection drops.
+    let resolveDispatch: () => void = () => {};
+    const dispatchGate = new Promise<void>((r) => {
+        resolveDispatch = r;
+    });
+    const { service } = makeService({
+        reconnectDelayMs: 5,
+        maxReconnectDelayMs: 5,
+        dispatch: async () => {
+            await dispatchGate;
+        },
+    });
+    await service.start();
+    const first = FakeWebSocket.instances[0];
+    first.emit('open');
+
+    first.emit('message', eventFrame({ sequence: 9, deliveryId: 'reconn-1', eventType: 'issues', rawPayload: {} }));
+    await flush();
+
+    // The first connection drops mid-dispatch and the service reconnects.
+    first.emit('close', 1006, Buffer.from(''));
+    await new Promise((r) => setTimeout(r, 25));
+    assert.ok(FakeWebSocket.instances.length >= 2, 'expected a reconnect attempt');
+    const second = FakeWebSocket.instances[1];
+    second.emit('open');
+
+    // Dispatch finishes only now — the original connection is gone. The ACK (whose
+    // sequence is scoped to the dropped connection) must NOT be sent on either the
+    // old socket or the new one.
+    resolveDispatch();
+    await flush();
+    await flush();
+
+    assert.equal(first.sentFrames().filter((f) => f.type === 'ack').length, 0, 'no ACK on the dropped socket');
+    assert.equal(second.sentFrames().filter((f) => f.type === 'ack').length, 0, 'no ACK on the reconnected socket');
 
     await service.stop();
 });
