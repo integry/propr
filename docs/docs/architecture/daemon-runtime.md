@@ -95,7 +95,7 @@ Important tuning knobs:
 - Queue depth
 - Worker capacity
 
-Shorter polling intervals increase responsiveness but use more GitHub API capacity. Webhook-driven flows reduce polling pressure where configured.
+Shorter polling intervals increase responsiveness but use more GitHub API capacity. Event-driven intake (`routing_websocket` by default, or `direct_webhook`) avoids polling pressure entirely by receiving events as they happen.
 
 ## Monitoring
 
@@ -115,5 +115,5 @@ These signals help separate intake problems from worker execution problems.
 1. Keep repository configuration in the Web UI where possible.
 2. Use clear primary labels for human-triggered automation.
 3. Keep model labels aligned with configured AI Agents.
-4. Avoid aggressive polling unless the GitHub API budget supports it; prefer webhooks for low-latency intake.
+4. Prefer event-driven intake for low-latency processing; the default `routing_websocket` mode needs no inbound URL, and `direct_webhook` suits an own GitHub App. Reserve `polling` for environments that cannot receive events, and avoid aggressive polling intervals unless the GitHub API budget supports it.
 5. Treat reset mode as a deliberate recovery action.

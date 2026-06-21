@@ -13,6 +13,7 @@ import {
     getDefaultModel,
     db,
     initializeWebhookHandler,
+    validateGithubIntakePrerequisites,
     RoutingWebSocketIntakeService,
     handleCommentDeleted,
     handleCommentEdited,
@@ -266,6 +267,14 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     for (const warning of eventIntakeModeResult.warnings) {
         logger.warn({ eventIntakeMode: EVENT_INTAKE_MODE }, warning);
     }
+
+    // The daemon owns the GitHub intake surface, so it is the process that
+    // validates mode-specific prerequisites at boot (relay credentials for
+    // routing_websocket, a webhook secret for direct_webhook, usable auth for
+    // polling). Doing it here — rather than as a side effect of importing GitHub
+    // auth — keeps workers and other core consumers from failing startup over
+    // intake settings they do not own.
+    validateGithubIntakePrerequisites();
 
     const baseStartupLog = {
         repositories: repos,

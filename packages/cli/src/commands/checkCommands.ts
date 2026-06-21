@@ -737,7 +737,7 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
       out.push({
         name: "Last ACK",
         status: "ok",
-        detail: routing.lastAckAt ? new Date(routing.lastAckAt).toLocaleString() : "no ACK sent yet",
+        detail: formatRoutingTimestamp(routing.lastAckAt),
         group: "GitHub",
       });
     }
@@ -748,6 +748,15 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
   }
 
   return out;
+}
+
+// `lastAckAt` comes from a live Redis value the daemon publishes; a stale or
+// malformed entry must not surface as "Invalid Date" in operator output. Parse it
+// and fall back to the raw string when it is not a usable timestamp.
+function formatRoutingTimestamp(value: string | null): string {
+  if (!value) return "no ACK sent yet";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
 function safeRead(path: string): string {

@@ -40,7 +40,7 @@ export interface EventIntakeStartupDeps {
     logger?: EventIntakeLogger;
     /** Base fields merged into the startup log line. */
     startupLogContext?: Record<string, unknown>;
-    /** Whether the webhook signing secret is configured (used for a direct_webhook warning/log only). */
+    /** Whether the webhook signing secret is configured (surfaced in the direct_webhook startup log only). */
     webhookSecretConfigured?: boolean;
     /** Routing relay URL, surfaced in the routing_websocket startup log only. */
     routingUrl?: string;
@@ -86,15 +86,16 @@ export async function startEventIntake(
         }
 
         case 'direct_webhook': {
+            // A missing GH_WEBHOOK_SECRET is rejected before we get here: the shared
+            // intake prerequisites validation (run at daemon boot) and the API both
+            // refuse to start direct_webhook mode without a secret. So there is no
+            // "secret missing, signatures skipped" fallback — reaching this branch
+            // means the secret is configured.
             log.info({
                 ...baseLog,
                 webhookEnabled: true,
                 webhookSecretConfigured: !!deps.webhookSecretConfigured,
             }, 'GitHub Issue Detection Daemon starting in direct webhook mode...');
-
-            if (!deps.webhookSecretConfigured) {
-                log.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
-            }
 
             await deps.initWebhookHandler();
             log.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');

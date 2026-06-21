@@ -108,10 +108,17 @@ if (authMode === 'relay') {
 // Mode-specific GitHub intake prerequisites. Auth resolution above proves the
 // stack can talk to GitHub; this proves the *resolved intake mode*
 // (routing_websocket, polling, or direct_webhook) has the extra config it needs
-// — a routing URL, a webhook secret, etc. — so the daemon/worker/api never boot
+// — a routing URL, a webhook secret, etc. — so the process never boots
 // half-configured. It uses the same shared helper `propr check` reports against,
 // so the CLI preview and the boot path can never drift.
-function validateIntakeModePrerequisitesAtBoot(): void {
+//
+// This is exported and called explicitly by the daemon entrypoint (which owns the
+// intake surface) rather than run as a module side effect: simply importing GitHub
+// auth — as workers and other core consumers do — must not fail startup over intake
+// settings that the importing process does not own. For example, `GH_WEBHOOK_SECRET`
+// is a direct_webhook concern and should not gate a worker that merely needs an
+// installation token.
+export function validateGithubIntakePrerequisites(): void {
     // An unconfigured stack ('none') is already handled above (production exits,
     // tests stay quiet); intake prerequisites only add signal once auth is usable.
     if (authMode === 'none') {
@@ -142,8 +149,6 @@ function validateIntakeModePrerequisitesAtBoot(): void {
     for (const warning of warnings) console.warn(`WARNING: ${warning}`);
     for (const error of errors) fatalConfigError(`ERROR: ${error}`);
 }
-
-validateIntakeModePrerequisitesAtBoot();
 
 export async function getGitHubInstallationToken(): Promise<string> {
     if (!appOctokit) {
