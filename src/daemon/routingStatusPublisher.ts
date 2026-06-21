@@ -5,8 +5,14 @@ import { logger, type RoutingWebSocketIntakeService } from '@propr/core';
 const ROUTING_STATUS_KEY = 'system:status:routing';
 /** TTL so the key disappears shortly after the daemon dies without a clean shutdown. */
 const ROUTING_STATUS_TTL_SECONDS = 90;
-/** Re-publish cadence; comfortably shorter than the TTL above. */
+/** Periodic refresh cadence; comfortably shorter than the TTL above. Keeps the key
+ *  alive and recovers from a missed change-triggered publish even when the routing
+ *  connection is idle. */
 const PUBLISH_INTERVAL_MS = 30000;
+/** Debounce window for change-triggered publishes, so a burst of ACKs coalesces
+ *  into a single Redis write instead of one per delivery. Small enough that
+ *  operators see near-immediate freshness. */
+const CHANGE_DEBOUNCE_MS = 250;
 
 export interface RoutingStatusPublisher {
     /** Stop publishing and clear the published state so consumers see the path is down. */
@@ -38,9 +44,30 @@ export async function startRoutingStatusPublisher(
     await publish();
     const interval = setInterval(() => { void publish(); }, PUBLISH_INTERVAL_MS);
 
+    // Publish promptly on connection state changes and ACKs so the operator-facing
+    // diagnostics (connected, lastDeliveryId, lastAckAt) are fresh instead of lagging
+    // up to one full PUBLISH_INTERVAL_MS behind the actual routing state. Bursts are
+    // coalesced through a short debounce to avoid a Redis write per delivery.
+    let changeTimer: NodeJS.Timeout | null = null;
+    let stopped = false;
+    routingService.onStatusChange(() => {
+        // Ignore late status changes after stop() (e.g. the service emitting a
+        // disconnect while it drains) so we never re-publish after clearing the key.
+        if (stopped || changeTimer) return;
+        changeTimer = setTimeout(() => {
+            changeTimer = null;
+            void publish();
+        }, CHANGE_DEBOUNCE_MS);
+    });
+
     return {
         async stop(): Promise<void> {
+            stopped = true;
             clearInterval(interval);
+            if (changeTimer) {
+                clearTimeout(changeTimer);
+                changeTimer = null;
+            }
             // Clear the published state promptly so status consumers see the routing
             // path is down instead of waiting for the TTL to lapse.
             try {

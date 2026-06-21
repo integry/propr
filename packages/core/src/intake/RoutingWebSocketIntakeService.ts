@@ -162,6 +162,15 @@ export class RoutingWebSocketIntakeService {
     private lastAckAt: number | null = null;
 
     /**
+     * Optional listener notified whenever the diagnostic status changes (connect,
+     * disconnect, ACK). Lets the daemon's status publisher refresh the published
+     * snapshot immediately instead of only on its periodic timer, so operators are
+     * not looking at up-to-30s-stale connectivity/last-ACK state. Best-effort and
+     * diagnostic only: a throwing listener never affects protocol behavior.
+     */
+    private statusChangeListener: (() => void) | null = null;
+
+    /**
      * Event-frame handling in progress. Tracked so {@link stop} can drain accepted
      * work (and let its ACK reach the relay) before the socket is closed, rather
      * than cutting it off mid-flight and relying on relay redelivery.
@@ -250,6 +259,7 @@ export class RoutingWebSocketIntakeService {
             this.connected = true;
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.startPing();
+            this.notifyStatusChange();
         });
 
         socket.on('message', (data: RawData) => {
@@ -264,6 +274,7 @@ export class RoutingWebSocketIntakeService {
             this.stopPing();
             this.socket = null;
             this.connected = false;
+            this.notifyStatusChange();
             if (this.stopped) {
                 logger.info('Routing WebSocket closed during shutdown');
                 return;
@@ -457,6 +468,28 @@ export class RoutingWebSocketIntakeService {
         if (this.send({ type: 'ack', sequence, deliveryId }, socket)) {
             this.lastDeliveryId = deliveryId;
             this.lastAckAt = this.now();
+            this.notifyStatusChange();
+        }
+    }
+
+    /**
+     * Register a listener invoked whenever {@link getStatus} would return a changed
+     * snapshot (connect, disconnect, ACK). The daemon's status publisher uses this
+     * to refresh the published Redis snapshot promptly rather than waiting for its
+     * periodic timer. Only one listener is supported (the publisher); a later call
+     * replaces the previous one.
+     */
+    onStatusChange(listener: () => void): void {
+        this.statusChangeListener = listener;
+    }
+
+    /** Fire the status-change listener, isolating it from protocol flow. */
+    private notifyStatusChange(): void {
+        if (!this.statusChangeListener) return;
+        try {
+            this.statusChangeListener();
+        } catch (error) {
+            logger.warn({ error: (error as Error).message }, 'Routing status-change listener threw; ignoring');
         }
     }
 

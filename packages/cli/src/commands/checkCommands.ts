@@ -743,8 +743,16 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
     }
   } catch {
     // Backend not reachable (stack down or not logged in): live routing state is
-    // unavailable. This is expected during a pre-start host check, so stay quiet
-    // rather than emitting a noisy failure.
+    // unavailable. This is expected during a pre-start host check, so surface it as
+    // a low-noise warning (not a failure) so the user knows live WebSocket state
+    // could not be read, without failing an otherwise-valid offline check.
+    out.push({
+      name: "Routing WebSocket",
+      status: "warn",
+      detail: "live state unavailable — backend not reachable",
+      group: "GitHub",
+      fix: "Start the ProPR stack (and ensure you are logged in) to read live routing WebSocket state.",
+    });
   }
 
   return out;

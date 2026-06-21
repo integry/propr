@@ -74,15 +74,6 @@ const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
-// Resolve how GitHub events are delivered. The new default is `routing_websocket`,
-// with explicit `polling` and `direct_webhook` opt-ins. The legacy boolean
-// ENABLE_GITHUB_WEBHOOKS is deprecated and no longer selects the mode — the
-// resolver surfaces a deprecation warning when it is still set (logged at startup).
-const eventIntakeModeResult = resolveGithubEventIntakeMode({
-    eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
-    enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
-});
-const EVENT_INTAKE_MODE = eventIntakeModeResult.mode;
 const ENABLE_PR_COMMENT_POLLING = process.env.ENABLE_PR_COMMENT_POLLING === undefined
     ? true
     : parseTruthyEnvValue(process.env.ENABLE_PR_COMMENT_POLLING);
@@ -262,6 +253,21 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // Define safePoll function for polling mode (used for both regular polling and on-demand config updates)
     const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
 
+    // Resolve how GitHub events are delivered. The new default is `routing_websocket`,
+    // with explicit `polling` and `direct_webhook` opt-ins. The legacy boolean
+    // ENABLE_GITHUB_WEBHOOKS is deprecated and no longer selects the mode — the
+    // resolver surfaces a deprecation warning when it is still set (logged below).
+    //
+    // Resolved inside startDaemon (not at module load) so an invalid
+    // GITHUB_EVENT_INTAKE_MODE throws here and is reported through the daemon's
+    // structured logger via startDaemon(...).catch(...), instead of crashing during
+    // module initialization before any logging is wired up.
+    const eventIntakeModeResult = resolveGithubEventIntakeMode({
+        eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+        enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
+    });
+    const EVENT_INTAKE_MODE = eventIntakeModeResult.mode;
+
     // Surface resolver warnings on startup (e.g. a still-present, deprecated
     // ENABLE_GITHUB_WEBHOOKS that no longer affects mode selection).
     for (const warning of eventIntakeModeResult.warnings) {
@@ -385,10 +391,14 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
-        if (routingStatusPublisher) await routingStatusPublisher.stop();
+        // Stop the routing service first so it can drain in-flight deliveries and
+        // send their ACKs while the connection is still up, THEN stop the publisher
+        // (which clears the published routing state). Clearing first would report the
+        // routing path as down in Redis while it is still actively draining.
         if (routingService) {
             await routingService.stop();
         }
+        if (routingStatusPublisher) await routingStatusPublisher.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
