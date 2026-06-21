@@ -47,6 +47,10 @@ The daemon supports three intake modes, selected by `GITHUB_EVENT_INTAKE_MODE`, 
 - **Polling** (`polling`): the daemon queries the GitHub API on an interval (`POLLING_INTERVAL_MS`, default `60000`) for open issues with processing labels and for PR events.
 - **Direct webhook** (`direct_webhook`): GitHub delivers events to your own App's public `POST /webhook` endpoint on the dashboard API service (port 4000), verified against `GH_WEBHOOK_SECRET`, and forwarded into the same intake path. This removes polling pressure and latency, but there is no polling backstop — missed deliveries rely on GitHub's webhook redelivery.
 
+The intake mode is independent of how the backend authenticates to GitHub (`GH_AUTH_MODE`); see [GitHub Authentication](../operations/github-auth.md). `GH_WEBHOOK_SECRET` is required only for `direct_webhook` and is not used by `routing_websocket` or `polling`.
+
+> **Migration:** the legacy boolean `ENABLE_GITHUB_WEBHOOKS` is **deprecated** and no longer selects an intake mode. If it is still set, the daemon logs a deprecation warning at startup and ignores it. Use `GITHUB_EVENT_INTAKE_MODE` (`routing_websocket`, `polling`, or `direct_webhook`) instead; leaving it unset resolves to `routing_websocket`.
+
 Each intake event receives a correlation ID so the resulting queue job, worker logs, and task record can be traced back to the original GitHub event.
 
 ## Repository Monitoring

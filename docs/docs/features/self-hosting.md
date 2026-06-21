@@ -71,7 +71,7 @@ Local setup is useful for trying ProPR, testing configuration, or running it for
 - Longer-lived persistent storage
 - More careful credential and Docker socket access controls
 
-See [Server Setup](../tutorials/setup-server.md). For webhook intake without exposing a public endpoint, ProPR also works with polling (default), or with the optional hosted GitHub App at propr.dev that routes webhooks to your install.
+See [Server Setup](../tutorials/setup-server.md). By default ProPR receives GitHub events over a routing WebSocket from the hosted ProPR App at propr.dev — no inbound public endpoint required. Polling and running your own GitHub App with a direct webhook remain available as advanced intake options selected by `GITHUB_EVENT_INTAKE_MODE`.
 
 ## Source Development
 

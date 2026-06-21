@@ -29,7 +29,7 @@ ProPR has four main parts:
 
 ## What Happens During A Run
 
-1. A plan, issue label, or PR comment triggers work. Intake happens through polling (default 60 seconds) or GitHub webhooks.
+1. A plan, issue label, or PR comment triggers work. Intake runs in one of three modes selected by `GITHUB_EVENT_INTAKE_MODE` — routing WebSocket (the default when unset), polling, or direct webhook.
 2. ProPR creates a task record.
 3. A worker prepares an isolated branch and worktree.
 4. The selected agent runs in a dedicated Docker container.
