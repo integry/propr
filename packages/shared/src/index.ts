@@ -84,6 +84,14 @@ export {
   resolveGithubEventIntakeMode,
 } from './githubEventIntakeMode.js';
 
+// Export mode-specific GitHub intake prerequisite validation (shared by backend
+// boot and `propr check` so the two agree on what each intake mode requires)
+export {
+  type IntakeModePrerequisitesEnv,
+  type IntakeModePrerequisitesResult,
+  validateIntakeModePrerequisites,
+} from './intakeModePrerequisites.js';
+
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';
 
 // Export the default review guidance (the overridable part of the /review prompt)
