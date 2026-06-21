@@ -17,7 +17,7 @@ const LOCALHOST_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
  *
  * Note the `wss://`/`ws://` (and `https://`/`http://`) schemes are all accepted
  * because the service derives both the WebSocket connect URL and the HTTP
- * payload-pull URL from this single value. The default `wss://routing.propr.dev`
+ * payload-pull URL from this single value. The default `wss://webhook.propr.dev`
  * is valid under this policy.
  *
  * Returns an error message string, or `null` when valid.
@@ -27,7 +27,7 @@ export function validateRoutingUrl(url: string): string | null {
     try {
         parsed = new URL(url);
     } catch {
-        return `Routing URL ("${url}") is not a valid URL. Set PROPR_ROUTING_URL to a wss:// origin, e.g. wss://routing.propr.dev.`;
+        return `Routing URL ("${url}") is not a valid URL. Set PROPR_ROUTING_URL to a wss:// origin, e.g. wss://webhook.propr.dev.`;
     }
     const scheme = parsed.protocol;
     if (scheme !== 'ws:' && scheme !== 'wss:' && scheme !== 'http:' && scheme !== 'https:') {
@@ -39,7 +39,7 @@ export function validateRoutingUrl(url: string): string | null {
         return 'Routing URL must use wss:// or https:// (ws://, http:// is only allowed for localhost).';
     }
     if (parsed.pathname.replace(/\/+$/, '') !== '' || parsed.search || parsed.hash) {
-        return `Routing URL must be an origin without a path (e.g. wss://routing.propr.dev), got "${url}".`;
+        return `Routing URL must be an origin without a path (e.g. wss://webhook.propr.dev), got "${url}".`;
     }
     return null;
 }

@@ -16,6 +16,7 @@
 import type { GithubAuthMode } from './githubAuthMode.js';
 import type { GithubEventIntakeMode } from './githubEventIntakeMode.js';
 import { validateRoutingUrl } from './validateRoutingUrl.js';
+import { DEFAULT_PROPR_ROUTING_URL } from './proprServiceUrls.js';
 
 export interface IntakeModePrerequisitesEnv {
   /** Resolved GitHub event intake mode (see resolveGithubEventIntakeMode). */
@@ -67,21 +68,20 @@ export function validateIntakeModePrerequisites(
           'routing_websocket intake requires relay auth mode. Set GH_AUTH_MODE=relay (or configure PROPR_GH_RELAY_URL + PROPR_GH_RELAY_TOKEN so relay mode is inferred).',
         );
       }
-      if (!isPresent(env.routingUrl)) {
-        errors.push('PROPR_ROUTING_URL must be set for routing_websocket intake.');
-      } else {
-        // validateRoutingUrl is the single source of truth for the routing-URL
-        // policy — the same function the daemon service uses before it dials —
-        // so the boot/CLI check and the dialer can never disagree. It accepts
-        // the documented default wss:// origin (and https://), rejecting
-        // insecure non-local schemes and path-bearing origins.
-        const routingUrlError = validateRoutingUrl(env.routingUrl);
-        if (routingUrlError) {
-          errors.push(`PROPR_ROUTING_URL is invalid: ${routingUrlError}`);
-        }
-      }
-      if (!isPresent(env.relayUrl)) {
-        errors.push('PROPR_GH_RELAY_URL must be set for routing_websocket intake.');
+      // PROPR_ROUTING_URL / PROPR_GH_RELAY_URL default to the hosted relay
+      // (webhook.propr.dev) — the same fallbacks the daemon dialer and
+      // `propr relay enroll` apply — so an unset value is not an error here; it
+      // resolves to the default. Only the relay TOKEN (a secret, minted by
+      // enrollment) cannot be defaulted.
+      const routingUrl = isPresent(env.routingUrl) ? env.routingUrl : DEFAULT_PROPR_ROUTING_URL;
+      // validateRoutingUrl is the single source of truth for the routing-URL
+      // policy — the same function the daemon service uses before it dials —
+      // so the boot/CLI check and the dialer can never disagree. It accepts
+      // the default wss:// origin (and https://), rejecting insecure non-local
+      // schemes and path-bearing origins.
+      const routingUrlError = validateRoutingUrl(routingUrl);
+      if (routingUrlError) {
+        errors.push(`PROPR_ROUTING_URL is invalid: ${routingUrlError}`);
       }
       if (!isPresent(env.relayToken)) {
         errors.push('PROPR_GH_RELAY_TOKEN must be set for routing_websocket intake.');

@@ -6,8 +6,8 @@ import { validateIntakeModePrerequisites } from '../packages/shared/src/intakeMo
 const ROUTING_OK = {
   intakeMode: 'routing_websocket' as const,
   authMode: 'relay' as const,
-  routingUrl: 'https://routing.propr.dev',
-  relayUrl: 'https://relay.propr.dev/v1',
+  routingUrl: 'https://webhook.propr.dev',
+  relayUrl: 'https://webhook.propr.dev/v1',
   relayToken: 'tok_123',
 };
 
@@ -18,15 +18,28 @@ test('valid routing_websocket config passes with no errors', () => {
     assert.deepEqual(result.warnings, []);
 });
 
-test('routing_websocket fails without routing URL, relay URL, or relay token', () => {
+test('routing_websocket requires only the relay token; URLs default to the hosted relay', () => {
+    // PROPR_ROUTING_URL and PROPR_GH_RELAY_URL fall back to webhook.propr.dev,
+    // so an unset URL is not an error — only the relay token (minted by
+    // enrollment) is mandatory.
     const result = validateIntakeModePrerequisites({
         intakeMode: 'routing_websocket',
         authMode: 'relay',
     });
     assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => /PROPR_ROUTING_URL must be set/.test(e)));
-    assert.ok(result.errors.some((e) => /PROPR_GH_RELAY_URL must be set/.test(e)));
+    assert.ok(result.errors.every((e) => !/PROPR_ROUTING_URL must be set/.test(e)));
+    assert.ok(result.errors.every((e) => !/PROPR_GH_RELAY_URL must be set/.test(e)));
     assert.ok(result.errors.some((e) => /PROPR_GH_RELAY_TOKEN must be set/.test(e)));
+});
+
+test('routing_websocket passes with only a relay token (URLs defaulted)', () => {
+    const result = validateIntakeModePrerequisites({
+        intakeMode: 'routing_websocket',
+        authMode: 'relay',
+        relayToken: 'tok_123',
+    });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
 });
 
 test('routing_websocket requires relay auth mode', () => {
@@ -36,11 +49,11 @@ test('routing_websocket requires relay auth mode', () => {
 });
 
 test('routing_websocket accepts the documented default wss:// routing URL', () => {
-    // The default in .env.example is wss://routing.propr.dev; it must pass the
-    // boot/CLI check or fresh installs would fail `propr check` out of the box.
+    // The hosted default is wss://webhook.propr.dev; it must pass the boot/CLI
+    // check or fresh installs would fail `propr check` out of the box.
     const result = validateIntakeModePrerequisites({
         ...ROUTING_OK,
-        routingUrl: 'wss://routing.propr.dev',
+        routingUrl: 'wss://webhook.propr.dev',
     });
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
@@ -49,7 +62,7 @@ test('routing_websocket accepts the documented default wss:// routing URL', () =
 test('routing_websocket rejects an insecure non-localhost routing URL', () => {
     const result = validateIntakeModePrerequisites({
         ...ROUTING_OK,
-        routingUrl: 'http://routing.propr.dev',
+        routingUrl: 'http://webhook.propr.dev',
     });
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => /PROPR_ROUTING_URL is invalid/.test(e)));

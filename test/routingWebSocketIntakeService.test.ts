@@ -96,14 +96,19 @@ function eventFrame(opts: { sequence: number; deliveryId: string; eventType: str
     });
 }
 
-test('start() rejects when no routing URL is configured', async () => {
+test('start() falls back to the hosted routing relay when no routing URL is configured', async () => {
     const prev = process.env.PROPR_ROUTING_URL;
     delete process.env.PROPR_ROUTING_URL;
+    FakeWebSocket.instances = [];
     try {
         const service = new RoutingWebSocketIntakeService({
+            relayToken: 'relay-secret',
             webSocketFactory: FakeWebSocket as unknown as new (address: string) => MinimalWebSocket,
         });
-        await assert.rejects(() => service.start(), /routing URL/);
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        assert.equal(socket.address, 'wss://webhook.propr.dev/v1/connect');
+        await service.stop();
     } finally {
         if (prev !== undefined) process.env.PROPR_ROUTING_URL = prev;
     }

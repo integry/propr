@@ -11,7 +11,7 @@
 import { Command } from "commander";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { validateRelayUrl } from "@propr/shared";
+import { validateRelayUrl, DEFAULT_PROPR_GH_RELAY_URL } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { loadOrchestrator, resolveStackRoot } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
@@ -42,12 +42,14 @@ async function resolveContext(options: {
   const orch = await loadOrchestrator();
   const fileEnv = orch.readEnvFile(envPath);
 
-  const relayBaseUrl = options.url ?? process.env.PROPR_GH_RELAY_URL ?? fileEnv.PROPR_GH_RELAY_URL;
-  if (!relayBaseUrl) {
-    throw new Error(
-      "No relay URL. Pass --url <https://relay/v1> or set PROPR_GH_RELAY_URL in .env (run `propr init stack` first)."
-    );
-  }
+  // Falls back to the hosted relay (webhook.propr.dev) so `propr relay enroll`
+  // works out of the box; an explicit --url or PROPR_GH_RELAY_URL overrides it
+  // for self-hosted relays.
+  const relayBaseUrl =
+    options.url ??
+    process.env.PROPR_GH_RELAY_URL ??
+    fileEnv.PROPR_GH_RELAY_URL ??
+    DEFAULT_PROPR_GH_RELAY_URL;
   const urlError = validateRelayUrl(relayBaseUrl);
   if (urlError) {
     throw new Error(urlError);
@@ -80,8 +82,12 @@ export function createRelayCommand(): Command {
 The relay lets a shared-app stack obtain GitHub installation tokens without
 holding the App's private key. Enroll once; the token is saved to your .env.
 
+The relay URL defaults to the hosted service (${DEFAULT_PROPR_GH_RELAY_URL});
+pass --url only when running a self-hosted relay.
+
 Examples:
-  $ propr relay enroll --url https://relay.propr.dev/v1
+  $ propr relay enroll
+  $ propr relay enroll --url https://relay.example.com/v1
   $ propr relay list
   $ propr relay revoke <token-id>
 `);

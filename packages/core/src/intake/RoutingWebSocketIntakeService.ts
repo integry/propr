@@ -38,6 +38,7 @@
  * stop it on SIGINT/SIGTERM without leaking sockets or timers.
  */
 
+import { DEFAULT_PROPR_ROUTING_URL } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import { processWebhookEvent, type WebhookEventType } from '../webhook/webhookHandler.js';
@@ -68,7 +69,8 @@ export type { FetchLike, MinimalWebSocket, RawData, WebSocketCtor } from './rout
 export interface RoutingWebSocketIntakeServiceOptions {
     /**
      * Routing relay origin (scheme + host, no path). Defaults to
-     * `process.env.PROPR_ROUTING_URL`. The service owns the paths it appends:
+     * `process.env.PROPR_ROUTING_URL`, then to the hosted relay
+     * ({@link DEFAULT_PROPR_ROUTING_URL}). The service owns the paths it appends:
      * it dials `${origin}/v1/connect` as a `ws://`/`wss://` URL and derives the
      * HTTP origin (for payload pulls at `/v1/delivery/:id`) from the same value.
      * A configured path/query/hash is rejected at {@link start}.
@@ -183,7 +185,11 @@ export class RoutingWebSocketIntakeService {
     private readonly installationTokens: BoundedTokenCache;
 
     constructor(options: RoutingWebSocketIntakeServiceOptions = {}) {
-        this.routingUrl = (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? '').trim();
+        // Falls back to the hosted routing relay (webhook.propr.dev) so the
+        // daemon connects out of the box; an explicit routingUrl or
+        // PROPR_ROUTING_URL overrides it for self-hosted relays.
+        this.routingUrl =
+            (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
         this.relayToken = (options.relayToken ?? process.env.PROPR_GH_RELAY_TOKEN ?? '').trim();
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;

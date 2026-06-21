@@ -65,6 +65,14 @@ export {
 // Export relay URL validation
 export { validateRelayUrl } from './validateRelayUrl.js';
 
+// Export the hosted propr-routing service default URLs (one source of truth for
+// the webhook.propr.dev host shared by the CLI, the daemon dialer, and the
+// boot/check prerequisite validators)
+export {
+  DEFAULT_PROPR_ROUTING_URL,
+  DEFAULT_PROPR_GH_RELAY_URL,
+} from './proprServiceUrls.js';
+
 // Export routing URL validation (shared by intake prerequisites and the daemon
 // routing service so the boot/CLI checks and the dialer agree on one policy)
 export { validateRoutingUrl } from './validateRoutingUrl.js';
