@@ -35,15 +35,26 @@ test('routing_websocket requires relay auth mode', () => {
     assert.ok(result.errors.some((e) => /requires relay auth mode/.test(e)));
 });
 
-test('routing_websocket rejects a non-https routing URL', () => {
+test('routing_websocket accepts the documented default wss:// routing URL', () => {
+    // The default in .env.example is wss://routing.propr.dev; it must pass the
+    // boot/CLI check or fresh installs would fail `propr check` out of the box.
+    const result = validateIntakeModePrerequisites({
+        ...ROUTING_OK,
+        routingUrl: 'wss://routing.propr.dev',
+    });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+});
+
+test('routing_websocket rejects an insecure non-localhost routing URL', () => {
     const result = validateIntakeModePrerequisites({
         ...ROUTING_OK,
         routingUrl: 'http://routing.propr.dev',
     });
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => /PROPR_ROUTING_URL is invalid/.test(e)));
-    // The shared relay URL validator backs the check, but its message is reworded
-    // so the user sees the routing variable they actually set, not "relay URL".
+    // The shared routing URL validator backs the check; its message names the
+    // routing variable the user actually set, never "relay URL".
     assert.ok(result.errors.every((e) => !/relay url/i.test(e)));
 });
 

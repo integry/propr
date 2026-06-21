@@ -6,6 +6,8 @@
  * stays focused on connection lifecycle and dispatch.
  */
 
+import { validateRoutingUrl as validateRoutingUrlPolicy } from '@propr/shared';
+
 import { SUPPORTED_WEBHOOK_EVENTS, type WebhookEventType } from '../webhook/webhookHandler.js';
 
 /** Raw frame payload types `ws` can surface on a 'message' event. */
@@ -37,9 +39,6 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
 /** WebSocket.OPEN — the numeric readyState for an open connection. */
 export const WS_OPEN = 1;
-
-/** Schemes the routing origin may be configured with. */
-export const ALLOWED_ROUTING_PROTOCOLS = ['ws:', 'wss:', 'http:', 'https:'];
 
 /** Default ceiling for the delivery-id dedupe set. */
 export const DEFAULT_MAX_DEDUPE_ENTRIES = 10_000;
@@ -281,32 +280,21 @@ export function toHttpOrigin(routingUrl: string): string {
 
 /**
  * Validate a routing origin before the service dials it. Throws an actionable
- * error when the value is unparseable, uses an unsupported scheme, or carries a
- * path/query/hash. The routing URL is an ORIGIN only — the service owns the
- * `/v1/...` paths it appends (connect + payload pull) — so a configured path like
- * `wss://relay/v1` would corrupt the derived URLs (e.g. `/v1/v1/connect`).
+ * error when the value fails the shared routing-URL policy: unparseable, an
+ * insecure non-localhost scheme, or a path/query/hash. The policy itself lives
+ * in `@propr/shared` (validateRoutingUrlPolicy) so this dialer and the boot/CLI
+ * prerequisite checks agree on exactly one rule — in particular both reject
+ * insecure `ws://`/`http://` to anything but localhost, closing the gap where a
+ * directly-constructed service could dial an unencrypted non-local origin.
+ *
+ * The routing URL is an ORIGIN only — the service owns the `/v1/...` paths it
+ * appends (connect + payload pull) — so a configured path like `wss://relay/v1`
+ * would corrupt the derived URLs (e.g. `/v1/v1/connect`).
  */
 export function validateRoutingUrl(routingUrl: string): void {
-    let parsedUrl: URL;
-    try {
-        parsedUrl = new URL(routingUrl);
-    } catch {
-        throw new Error(
-            `RoutingWebSocketIntakeService routing URL ("${routingUrl}") is not a valid URL. ` +
-                'Set PROPR_ROUTING_URL to a ws://, wss://, http://, or https:// origin.',
-        );
-    }
-    if (!ALLOWED_ROUTING_PROTOCOLS.includes(parsedUrl.protocol)) {
-        throw new Error(
-            `RoutingWebSocketIntakeService routing URL must use ws://, wss://, http://, or https:// ` +
-                `(got "${parsedUrl.protocol}//"). Check PROPR_ROUTING_URL.`,
-        );
-    }
-    if (parsedUrl.pathname.replace(/\/+$/, '') !== '' || parsedUrl.search || parsedUrl.hash) {
-        throw new Error(
-            `RoutingWebSocketIntakeService routing URL must be an origin without a path ` +
-                `(got "${routingUrl}"). Set PROPR_ROUTING_URL to e.g. wss://routing.example.`,
-        );
+    const error = validateRoutingUrlPolicy(routingUrl);
+    if (error) {
+        throw new Error(`RoutingWebSocketIntakeService: ${error} Check PROPR_ROUTING_URL.`);
     }
 }
 

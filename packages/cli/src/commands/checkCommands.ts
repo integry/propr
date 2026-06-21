@@ -607,15 +607,31 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
-  const { mode: authMode } = resolveGithubAuthMode({
-    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
-    ghAuthMode: val("GH_AUTH_MODE"),
-    relayUrl: val(RELAY_URL_KEY),
-    relayToken: val(RELAY_TOKEN_KEY),
-    appId: val("GH_APP_ID"),
-    privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
-    installationId: val("GH_INSTALLATION_ID"),
-  });
+  // `propr check` is a diagnostic command: a bad value for one variable must
+  // surface as a structured failure, never abort the whole run. Both resolvers
+  // are therefore guarded — resolveGithubAuthMode is side-effect free today, but
+  // guarding it keeps the check resilient if its contract ever changes.
+  let authMode;
+  try {
+    ({ mode: authMode } = resolveGithubAuthMode({
+      demoMode: isTruthy(val("PROPR_DEMO_MODE")),
+      ghAuthMode: val("GH_AUTH_MODE"),
+      relayUrl: val(RELAY_URL_KEY),
+      relayToken: val(RELAY_TOKEN_KEY),
+      appId: val("GH_APP_ID"),
+      privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+      installationId: val("GH_INSTALLATION_ID"),
+    }));
+  } catch (error) {
+    out.push({
+      name: "GitHub intake mode",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+      group: "GitHub",
+      fix: 'Set GH_AUTH_MODE to "app", "relay", or "demo" (or leave it unset to auto-detect).',
+    });
+    return out;
+  }
 
   let intakeMode;
   try {

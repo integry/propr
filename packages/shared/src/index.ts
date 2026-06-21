@@ -65,6 +65,10 @@ export {
 // Export relay URL validation
 export { validateRelayUrl } from './validateRelayUrl.js';
 
+// Export routing URL validation (shared by intake prerequisites and the daemon
+// routing service so the boot/CLI checks and the dialer agree on one policy)
+export { validateRoutingUrl } from './validateRoutingUrl.js';
+
 // Export GitHub auth mode inference (shared by backend boot and `propr check`)
 export {
   type GithubAuthMode,

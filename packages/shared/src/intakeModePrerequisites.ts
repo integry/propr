@@ -15,7 +15,7 @@
 
 import type { GithubAuthMode } from './githubAuthMode.js';
 import type { GithubEventIntakeMode } from './githubEventIntakeMode.js';
-import { validateRelayUrl } from './validateRelayUrl.js';
+import { validateRoutingUrl } from './validateRoutingUrl.js';
 
 export interface IntakeModePrerequisitesEnv {
   /** Resolved GitHub event intake mode (see resolveGithubEventIntakeMode). */
@@ -70,17 +70,14 @@ export function validateIntakeModePrerequisites(
       if (!isPresent(env.routingUrl)) {
         errors.push('PROPR_ROUTING_URL must be set for routing_websocket intake.');
       } else {
-        // The routing endpoint is a relay-family websocket origin, so it shares
-        // the relay URL policy by design: parseable, https:// (http only for
-        // localhost). validateRelayUrl encodes exactly that policy; if routing
-        // ever needs a different scheme/host rule, give it a dedicated validator
-        // rather than loosening this one. The message is reworded so the user
-        // sees PROPR_ROUTING_URL, not "relay URL".
-        const routingUrlError = validateRelayUrl(env.routingUrl);
+        // validateRoutingUrl is the single source of truth for the routing-URL
+        // policy — the same function the daemon service uses before it dials —
+        // so the boot/CLI check and the dialer can never disagree. It accepts
+        // the documented default wss:// origin (and https://), rejecting
+        // insecure non-local schemes and path-bearing origins.
+        const routingUrlError = validateRoutingUrl(env.routingUrl);
         if (routingUrlError) {
-          errors.push(
-            `PROPR_ROUTING_URL is invalid: ${routingUrlError.replace(/relay url/gi, 'routing URL')}`,
-          );
+          errors.push(`PROPR_ROUTING_URL is invalid: ${routingUrlError}`);
         }
       }
       if (!isPresent(env.relayUrl)) {

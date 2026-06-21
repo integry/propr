@@ -131,7 +131,7 @@ test('start() rejects unsupported schemes and unparseable URLs', async () => {
         routingUrl: 'ftp://routing.example',
         webSocketFactory: FakeWebSocket as unknown as new (address: string) => MinimalWebSocket,
     });
-    await assert.rejects(() => bad.start(), /ws:\/\/, wss:\/\/, http:\/\/, or https:\/\//);
+    await assert.rejects(() => bad.start(), /wss:\/\/ or https:\/\//);
 
     const unparseable = new RoutingWebSocketIntakeService({
         routingUrl: 'not a url',

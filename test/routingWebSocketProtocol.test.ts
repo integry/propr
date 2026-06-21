@@ -41,21 +41,30 @@ test('toHttpOrigin maps ws(s) to http(s) and trims a trailing slash', () => {
     assert.equal(toHttpOrigin('http://routing.example'), 'http://routing.example');
 });
 
-test('validateRoutingUrl accepts bare ws/wss/http/https origins', () => {
+test('validateRoutingUrl accepts secure origins and insecure localhost origins', () => {
     for (const url of [
         'wss://routing.example',
-        'ws://routing.example',
         'https://routing.example',
-        'http://routing.example',
         'wss://routing.example/', // a lone trailing slash is an empty path
+        'ws://localhost:8080', // insecure allowed only for localhost
+        'http://127.0.0.1:8080',
+        'http://[::1]:8080',
     ]) {
         assert.doesNotThrow(() => validateRoutingUrl(url), `expected ${url} to be valid`);
     }
 });
 
+test('validateRoutingUrl rejects insecure non-localhost origins', () => {
+    // The hardened policy refuses unencrypted ws://, http:// to anything but
+    // localhost, so a directly-constructed service cannot dial an insecure
+    // remote origin even though the boot/CLI check would have caught it too.
+    assert.throws(() => validateRoutingUrl('ws://routing.example'), /wss:\/\/ or https:\/\//);
+    assert.throws(() => validateRoutingUrl('http://routing.example'), /wss:\/\/ or https:\/\//);
+});
+
 test('validateRoutingUrl rejects unparseable, wrong-scheme, and path-bearing URLs', () => {
     assert.throws(() => validateRoutingUrl('not a url'), /not a valid URL/);
-    assert.throws(() => validateRoutingUrl('ftp://routing.example'), /ws:\/\/, wss:\/\/, http:\/\/, or https:\/\//);
+    assert.throws(() => validateRoutingUrl('ftp://routing.example'), /wss:\/\/ or https:\/\//);
     assert.throws(() => validateRoutingUrl('wss://routing.example/v1'), /origin without a path/);
     assert.throws(() => validateRoutingUrl('wss://routing.example/v1/connect'), /origin without a path/);
     assert.throws(() => validateRoutingUrl('wss://routing.example?foo=bar'), /origin without a path/);

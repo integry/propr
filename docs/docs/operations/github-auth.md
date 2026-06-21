@@ -6,16 +6,17 @@ bot identity. There are three ways to configure how the backend obtains a GitHub
 **installation access token**. The mode is inferred from your environment
 (precedence: demo → relay → app), or set explicitly with `GH_AUTH_MODE`.
 
-> **Auth mode is independent of event intake mode.** `GH_AUTH_MODE` controls only
-> how the backend *authenticates* to GitHub (how it obtains an installation
-> token). How ProPR *receives* GitHub events — routing WebSocket, polling, or a
-> direct webhook — is a separate concern configured by `GITHUB_EVENT_INTAKE_MODE`
-> (default `routing_websocket`). Neither setting dictates the other: for example,
-> you can authenticate in App mode while still receiving events over the routing
-> WebSocket, or use relay auth with polling. See
-> [Issue Intake Modes](./deployment.md#issue-intake-modes) for event delivery, and
-> note that `GH_WEBHOOK_SECRET` belongs to the intake configuration (it applies
-> only to `direct_webhook`), not to auth mode.
+> **Auth mode and event intake mode are configured separately.** `GH_AUTH_MODE`
+> controls only how the backend *authenticates* to GitHub (how it obtains an
+> installation token). How ProPR *receives* GitHub events — routing WebSocket,
+> polling, or a direct webhook — is configured by `GITHUB_EVENT_INTAKE_MODE`
+> (default `routing_websocket`). They are set independently, but not every
+> combination is valid: the routing WebSocket shares the vendor's relay
+> infrastructure, so `routing_websocket` intake **requires relay auth mode**.
+> Polling works with either relay or App auth, and `direct_webhook` requires App
+> auth. See [Issue Intake Modes](./deployment.md#issue-intake-modes) for event
+> delivery, and note that `GH_WEBHOOK_SECRET` belongs to the intake configuration
+> (it applies only to `direct_webhook`), not to auth mode.
 
 ## Modes
 
