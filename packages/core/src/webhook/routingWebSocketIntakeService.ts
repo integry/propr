@@ -46,6 +46,25 @@ export type WebSocketCtor = new (address: string, options?: Record<string, unkno
 const WS_OPEN = 1;
 
 /**
+ * Schemes the `ws` package accepts for a connection address. The routing URL is
+ * validated as an https relay origin at boot (validateIntakeModePrerequisites),
+ * but the service also self-validates so a misconfigured or directly-constructed
+ * instance fails fast with a clear message instead of reconnecting forever
+ * against a malformed address.
+ */
+const ALLOWED_ROUTING_PROTOCOLS = ['ws:', 'wss:', 'http:', 'https:'];
+
+/** Normalize any `RawData` frame the `ws` package can emit into a UTF-8 string. */
+function rawDataToString(data: RawData): string {
+    if (typeof data === 'string') return data;
+    if (Buffer.isBuffer(data)) return data.toString('utf8');
+    // Fragmented frames arrive as an array of Buffer chunks.
+    if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+    // ArrayBuffer (or a typed-array view) — wrap without copying the bytes.
+    return Buffer.from(data).toString('utf8');
+}
+
+/**
  * A single GitHub event forwarded by the routing relay. The relay wraps each
  * GitHub webhook delivery in a small JSON envelope so the event type (normally
  * carried in the `X-GitHub-Event` header) survives the WebSocket hop.
@@ -80,10 +99,28 @@ export interface RoutingWebSocketIntakeServiceOptions {
     /** Keepalive ping interval in ms. */
     pingIntervalMs?: number;
     /**
+     * Headers sent on the WebSocket upgrade request so the routing relay can
+     * authenticate this backend. Defaults to a Bearer `Authorization` header
+     * built from `process.env.PROPR_GH_RELAY_TOKEN` (the durable relay
+     * credential) when present. Pass `{}` to send no headers.
+     */
+    headers?: Record<string, string>;
+    /**
      * WebSocket constructor to use. Defaults to a lazy import of the `ws`
      * package; primarily a seam for tests to inject a fake transport.
      */
     webSocketFactory?: WebSocketCtor;
+}
+
+/**
+ * Build the default upgrade headers from the relay credential. The routing
+ * relay shares the relay token (PROPR_GH_RELAY_TOKEN) for authentication, so we
+ * present it as a Bearer token when available. Returns an empty object when no
+ * token is configured (boot-time validation already requires it in routing mode).
+ */
+function buildDefaultHeaders(): Record<string, string> {
+    const relayToken = process.env.PROPR_GH_RELAY_TOKEN?.trim();
+    return relayToken ? { Authorization: `Bearer ${relayToken}` } : {};
 }
 
 function isSupportedEventType(value: string): value is WebhookEventType {
@@ -96,6 +133,7 @@ export class RoutingWebSocketIntakeService {
     private readonly initialReconnectDelayMs: number;
     private readonly maxReconnectDelayMs: number;
     private readonly pingIntervalMs: number;
+    private readonly headers: Record<string, string>;
     private readonly webSocketFactory?: WebSocketCtor;
 
     private socket: MinimalWebSocket | null = null;
@@ -111,6 +149,7 @@ export class RoutingWebSocketIntakeService {
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
         this.pingIntervalMs = options.pingIntervalMs ?? 30_000;
+        this.headers = options.headers ?? buildDefaultHeaders();
         this.webSocketFactory = options.webSocketFactory;
         this.currentReconnectDelayMs = this.initialReconnectDelayMs;
     }
@@ -124,6 +163,24 @@ export class RoutingWebSocketIntakeService {
         if (!this.routingUrl) {
             throw new Error(
                 'RoutingWebSocketIntakeService requires a routing URL. Set PROPR_ROUTING_URL or pass options.routingUrl.',
+            );
+        }
+
+        // Fail fast on a malformed/wrong-scheme URL rather than letting `ws`
+        // reject it at connect time and reconnecting against it forever.
+        let parsedUrl: URL;
+        try {
+            parsedUrl = new URL(this.routingUrl);
+        } catch {
+            throw new Error(
+                `RoutingWebSocketIntakeService routing URL ("${this.routingUrl}") is not a valid URL. ` +
+                    'Set PROPR_ROUTING_URL to a ws://, wss://, http://, or https:// origin.',
+            );
+        }
+        if (!ALLOWED_ROUTING_PROTOCOLS.includes(parsedUrl.protocol)) {
+            throw new Error(
+                `RoutingWebSocketIntakeService routing URL must use ws://, wss://, http://, or https:// ` +
+                    `(got "${parsedUrl.protocol}//"). Check PROPR_ROUTING_URL.`,
             );
         }
 
@@ -149,7 +206,9 @@ export class RoutingWebSocketIntakeService {
 
         let socket: MinimalWebSocket;
         try {
-            socket = new WebSocketImpl(this.routingUrl);
+            // Authenticate the upgrade request so the relay accepts this backend.
+            const wsOptions = Object.keys(this.headers).length > 0 ? { headers: this.headers } : undefined;
+            socket = new WebSocketImpl(this.routingUrl, wsOptions);
         } catch (error) {
             logger.error(
                 { error: (error as Error).message },
@@ -193,8 +252,7 @@ export class RoutingWebSocketIntakeService {
 
         let envelope: RoutingEventEnvelope;
         try {
-            const text = typeof data === 'string' ? data : data.toString();
-            envelope = JSON.parse(text) as RoutingEventEnvelope;
+            envelope = JSON.parse(rawDataToString(data)) as RoutingEventEnvelope;
         } catch (error) {
             correlatedLogger.warn(
                 { error: (error as Error).message },
@@ -203,21 +261,23 @@ export class RoutingWebSocketIntakeService {
             return;
         }
 
+        const deliveryId = envelope.deliveryId;
         const rawEventType = (envelope.eventType ?? envelope.event ?? '').trim();
         if (!rawEventType) {
-            correlatedLogger.warn('Discarding routing message with no event type');
+            correlatedLogger.warn({ deliveryId }, 'Discarding routing message with no event type');
             return;
         }
         if (!isSupportedEventType(rawEventType)) {
-            correlatedLogger.debug({ eventType: rawEventType }, 'Ignoring unsupported routing event type');
+            correlatedLogger.debug({ eventType: rawEventType, deliveryId }, 'Ignoring unsupported routing event type');
             return;
         }
 
         try {
+            correlatedLogger.debug({ eventType: rawEventType, deliveryId }, 'Dispatching routing event');
             await this.dispatch(envelope.payload, rawEventType, correlationId);
         } catch (error) {
             correlatedLogger.error(
-                { error: (error as Error).message, eventType: rawEventType },
+                { error: (error as Error).message, eventType: rawEventType, deliveryId },
                 'Failed to process routing event',
             );
         }

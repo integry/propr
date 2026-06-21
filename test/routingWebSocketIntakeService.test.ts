@@ -15,7 +15,10 @@ class FakeWebSocket implements MinimalWebSocket {
 
     private listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
 
-    constructor(public readonly address: string) {
+    constructor(
+        public readonly address: string,
+        public readonly options?: { headers?: Record<string, string> },
+    ) {
         FakeWebSocket.instances.push(this);
     }
 
@@ -115,6 +118,65 @@ test('stop() closes the socket and prevents reconnects', async () => {
     socket.emit('close', 1006, Buffer.from(''));
     await new Promise((r) => setImmediate(r));
     assert.equal(FakeWebSocket.instances.length, 1);
+});
+
+test('start() rejects when the routing URL has an unsupported scheme', async () => {
+    const service = new RoutingWebSocketIntakeService({
+        routingUrl: 'ftp://routing.example/v1/events',
+        webSocketFactory: FakeWebSocket as unknown as new (address: string) => MinimalWebSocket,
+    });
+    await assert.rejects(() => service.start(), /ws:\/\/, wss:\/\/, http:\/\/, or https:\/\//);
+});
+
+test('start() rejects when the routing URL is not parseable', async () => {
+    const service = new RoutingWebSocketIntakeService({
+        routingUrl: 'not a url',
+        webSocketFactory: FakeWebSocket as unknown as new (address: string) => MinimalWebSocket,
+    });
+    await assert.rejects(() => service.start(), /not a valid URL/);
+});
+
+test('sends the relay token as a Bearer Authorization header', async () => {
+    const { service } = makeService({ headers: { Authorization: 'Bearer relay-secret' } });
+    await service.start();
+
+    const socket = FakeWebSocket.instances[0];
+    assert.deepEqual(socket.options?.headers, { Authorization: 'Bearer relay-secret' });
+
+    await service.stop();
+});
+
+test('omits headers when none are configured', async () => {
+    const { service } = makeService({ headers: {} });
+    await service.start();
+
+    const socket = FakeWebSocket.instances[0];
+    assert.equal(socket.options, undefined);
+
+    await service.stop();
+});
+
+test('parses Buffer, Buffer[], and ArrayBuffer message frames', async () => {
+    const { service, dispatched } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+
+    const buf = Buffer.from(JSON.stringify({ eventType: 'issues', payload: { n: 1 } }));
+    socket.emit('message', buf);
+
+    const json = JSON.stringify({ eventType: 'pull_request', payload: { n: 2 } });
+    const mid = Math.floor(json.length / 2);
+    socket.emit('message', [Buffer.from(json.slice(0, mid)), Buffer.from(json.slice(mid))]);
+
+    const ab = new TextEncoder().encode(JSON.stringify({ eventType: 'check_run', payload: { n: 3 } })).buffer;
+    socket.emit('message', ab as unknown as RawData);
+
+    await new Promise((r) => setImmediate(r));
+
+    assert.deepEqual(dispatched.map((d) => d.eventType), ['issues', 'pull_request', 'check_run']);
+    assert.deepEqual(dispatched.map((d) => d.payload), [{ n: 1 }, { n: 2 }, { n: 3 }]);
+
+    await service.stop();
 });
 
 test('reconnects after an unexpected close', async () => {
