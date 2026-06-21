@@ -29,7 +29,7 @@ The backend is responsible for:
 |---|---|---|
 | Web UI | 5173 | Static bundle served by a dedicated container (`propr/ui` image, `serve`); Vite dev server in development |
 | Dashboard API | 4000 | Express server (`packages/api/server.ts`), `DASHBOARD_API_PORT` |
-| Webhook endpoint | 4000 | `POST /webhook` on the API, when `ENABLE_GITHUB_WEBHOOKS=true` |
+| Webhook endpoint | 4000 | `POST /webhook` on the API, when `GITHUB_EVENT_INTAKE_MODE=direct_webhook` |
 | WebSockets | 4000 | socket.io at `/socket.io/` on the API origin |
 
 The UI is not served by the API container. In both the launcher stack and the development Compose stack it runs as its own container; the API, daemon, and workers share the SQLite database volume while Redis handles queue and cache state.

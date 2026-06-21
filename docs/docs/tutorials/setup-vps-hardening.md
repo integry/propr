@@ -30,11 +30,14 @@ them at the end of this tutorial. Replace `propr.example.com` with your domain a
 
 :::tip[Plan your issue-intake mode now]
 If you add the optional [Access identity gate](#4-add-an-access-identity-gate)
-below, **polling** (ProPR's default) is the recommended mode — an SSO gate blocks
-GitHub's server-to-server webhook POSTs to `/webhook`. Only enable webhooks
-behind Access if you explicitly add a *Bypass* policy for the `/webhook` path, as
-detailed at the end of this tutorial. Decide before configuring webhooks to avoid
-silently dropped deliveries.
+below, the default **routing WebSocket** mode (`routing_websocket`, the hosted
+ProPR App over an outbound connection) is the recommended fit — it needs no
+inbound endpoint, so an SSO gate never interferes with it. **Polling** is also
+safe behind Access. Only the advanced own-App `direct_webhook` mode is a problem:
+an SSO gate blocks GitHub's server-to-server webhook POSTs to `/webhook`, so it
+works behind Access only if you explicitly add a *Bypass* policy for the
+`/webhook` path, as detailed at the end of this tutorial. Decide before
+configuring a direct webhook to avoid silently dropped deliveries.
 :::
 
 ## 1. Configure nginx For Localhost Only
@@ -236,16 +239,18 @@ In the Zero Trust dashboard, add a self-hosted Access application for
 `propr.example.com` with an Allow policy scoped to your team's emails or GitHub
 identities.
 
-:::warning[Webhooks cannot pass an SSO gate — use polling]
-GitHub delivers webhooks as server-to-server POSTs to `/webhook`; they cannot
+:::warning[A direct webhook cannot pass an SSO gate — use the default routing WebSocket]
+A direct GitHub webhook delivers server-to-server POSTs to `/webhook`; they cannot
 complete a Cloudflare Access login and will be silently blocked.
 
-**The recommended posture behind Access is to use polling** (ProPR's default) and
-**not** enable webhooks at all. With the tunnel and an SSO gate, polling is the
-cleanest and safest option: no endpoint needs to accept unauthenticated public
-traffic, so there is nothing to carve an exception around. If you do not have a
-specific reason to run webhooks, stop here — leave `ENABLE_GITHUB_WEBHOOKS` unset
-and skip the advanced subsection below.
+**The recommended posture behind Access is the default routing WebSocket mode**
+(`routing_websocket`) — the hosted ProPR App streams events over an outbound
+connection, so nothing inbound needs to pass the gate. **Polling** is equally safe
+for the same reason. With the tunnel and an SSO gate, both are clean and safe: no
+endpoint needs to accept unauthenticated public traffic, so there is nothing to
+carve an exception around. If you do not have a specific reason to run your own
+App's `direct_webhook`, stop here — leave `GITHUB_EVENT_INTAKE_MODE` at its
+default and skip the advanced subsection below.
 
 The GitHub OAuth callback (`/api/auth/github/callback`) is fine through Access —
 it is the user's own browser, which has already authenticated.
@@ -253,11 +258,12 @@ it is the user's own browser, which has already authenticated.
 
 ### 4a. (Advanced) Bypass Access For The Webhook Path
 
-:::danger[Advanced and security-sensitive — polling is strongly preferred]
-**Use polling. Treat this bypass as an exception, not a recommended path.** Skip
-this entire subsection unless you have a concrete, standing reason to run webhooks
-instead of polling — polling (above) is the default, needs no exception, and
-carries none of the risk below.
+:::danger[Advanced and security-sensitive — the default routing WebSocket is strongly preferred]
+**Use the default routing WebSocket (or polling). Treat this bypass as an
+exception, not a recommended path.** Skip this entire subsection unless you have a
+concrete, standing reason to run your own App's `direct_webhook` instead — the
+default routing WebSocket and polling (above) need no exception and carry none of
+the risk below.
 
 A bypass carves a public, unauthenticated hole through your SSO gate, and its
 safety depends entirely on Cloudflare's path-matching and route-precedence
@@ -267,27 +273,29 @@ the boundary is this fragile, the bypass is **not** a set-and-forget control: it
 must be re-validated after every Cloudflare configuration change and after every
 ProPR upgrade that could alter routes (see the re-audit note at the end of this
 subsection). If you cannot commit to that revalidation discipline, do not enable
-it — stay on polling.
+it — stay on the default routing WebSocket.
 :::
 
-If you genuinely need webhook delivery behind Access, add a second,
+If you genuinely need direct webhook delivery behind Access, add a second,
 **path-scoped** Access application with a single *Bypass* policy. Scope it to the
 webhook path **and nothing else**. The path matters: do **not** bypass the bare
 `propr.example.com` hostname, which would disable the Access gate for the entire
 app.
 
-:::tip[Decision checkpoint — polling is recommended; only continue if all apply]
+:::tip[Decision checkpoint — the default routing WebSocket is recommended; only continue if all apply]
 Before adding the bypass below, confirm every one of these. If any is "no", stop
-and stay on polling:
+and stay on the default routing WebSocket (or polling):
 
-- [ ] You have a concrete, standing reason webhooks must be used instead of
-      polling (latency-sensitive intake, deactivated polling, etc.).
+- [ ] You have a concrete, standing reason your own App's `direct_webhook` must be
+      used instead of the default routing WebSocket (e.g. you run your own GitHub
+      App and require direct delivery).
 - [ ] You will **re-validate** the bypass after every Cloudflare config change and
       every ProPR upgrade (the two-direction test below).
 - [ ] `GH_WEBHOOK_SECRET` is set so the endpoint still verifies the HMAC signature
       even though Access no longer gates it.
 
-Polling needs none of this — it is the default and carries none of the bypass risk.
+The default routing WebSocket needs none of this — it is outbound-only and carries
+none of the bypass risk.
 :::
 
 ProPR serves a single `POST /webhook` route, so scope the bypass to that **exact

@@ -20,9 +20,10 @@ PRIMARY_PROCESSING_LABELS=AI,propr
 MODEL_LABEL_PATTERN=^llm-(.+)$
 DEFAULT_MODEL_NAME=<model-id-used-when-no-llm-label-is-present>
 
-# Webhook intake (received by the dashboard API service on port 4000)
-ENABLE_GITHUB_WEBHOOKS=false
-GH_WEBHOOK_SECRET=your-webhook-secret
+# Event intake mode: routing_websocket (default), polling, or direct_webhook.
+# GH_WEBHOOK_SECRET applies only to direct_webhook (your own GitHub App).
+GITHUB_EVENT_INTAKE_MODE=routing_websocket
+# GH_WEBHOOK_SECRET=your-webhook-secret
 
 # GitHub authentication
 GH_APP_ID=your_app_id
@@ -87,8 +88,8 @@ The daemon should log enough context to identify the repository, issue or PR, tr
 
 Important tuning knobs:
 
-- Polling interval
-- Webhook intake (`ENABLE_GITHUB_WEBHOOKS`) as a polling alternative
+- Event intake mode (`GITHUB_EVENT_INTAKE_MODE`: `routing_websocket` default, `polling`, or `direct_webhook`)
+- Polling interval (`polling` mode)
 - Number of monitored repositories
 - GitHub API rate limits
 - Queue depth
