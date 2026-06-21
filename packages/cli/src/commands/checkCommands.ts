@@ -20,6 +20,7 @@ import {
   validateRelayUrl,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
+import { createApiClient, getSystemStatus } from "../api/index.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
@@ -379,6 +380,11 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // needs the right credentials before the daemon/API can serve it).
   for (const r of checkGithubIntakeMode(fileEnv)) emit(r);
 
+  // 7c. Routing intake diagnostics: routing URL plus live WebSocket state, last
+  // delivery id, and last ACK (when the backend is reachable) for the default
+  // routing_websocket path.
+  for (const r of await checkRoutingDiagnostics(fileEnv)) emit(r);
+
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
   const whitelistEntries = (whitelistRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -645,6 +651,84 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
   }
   if (valid) {
     out.push({ name: "GitHub intake mode", status: "ok", detail: intakeMode, group: "GitHub" });
+  }
+
+  return out;
+}
+
+/**
+ * Surface the routing intake configuration and, when the backend is reachable,
+ * its live connection state. routing_websocket is the default intake mode, so
+ * `propr check` reports the routing URL plus the daemon's WebSocket connectivity,
+ * last delivery id, and last ACK to make a default deployment diagnosable.
+ *
+ * The live state is best-effort: it comes from GET /api/status (published there
+ * by the daemon), so a host check run before the stack is up simply omits it
+ * rather than failing.
+ */
+async function checkRoutingDiagnostics(env: Record<string, string>): Promise<CheckResult[]> {
+  const val = (k: string): string | undefined => process.env[k] ?? env[k];
+  const out: CheckResult[] = [];
+
+  let intakeMode;
+  try {
+    ({ mode: intakeMode } = resolveGithubEventIntakeMode({
+      eventIntakeMode: val("GITHUB_EVENT_INTAKE_MODE"),
+      enableGithubWebhooks: val("ENABLE_GITHUB_WEBHOOKS"),
+    }));
+  } catch {
+    // An invalid mode is already reported by checkGithubIntakeMode; nothing to add.
+    return out;
+  }
+
+  // Routing diagnostics only apply to the routing_websocket intake path.
+  if (intakeMode !== "routing_websocket") return out;
+
+  // Config-level routing URL (offline-safe). A missing/invalid URL is already
+  // reported as a failure by the mode prerequisites check, so only show it here
+  // when it is present to avoid duplicating that failure.
+  const routingUrl = val("PROPR_ROUTING_URL");
+  if (routingUrl && routingUrl.trim() !== "") {
+    out.push({ name: "Routing URL", status: "ok", detail: routingUrl, group: "GitHub" });
+  }
+
+  // Live routing state from the running backend (best-effort, short timeout).
+  // A stopped local backend rejects immediately (ECONNREFUSED); the timeout only
+  // bounds the wait when the configured API URL is reachable but slow, so keep it
+  // tight to avoid a noticeable stall during offline/pre-start checks.
+  try {
+    const client = await createApiClient({ defaultTimeout: 1000 });
+    const status = await getSystemStatus(client);
+    const routing = status.routing;
+    if (routing) {
+      out.push(
+        routing.connected
+          ? { name: "Routing WebSocket", status: "ok", detail: "connected to relay", group: "GitHub" }
+          : {
+              name: "Routing WebSocket",
+              status: "warn",
+              detail: "disconnected — daemon is not connected to the routing relay",
+              group: "GitHub",
+              fix: "Check the daemon logs and that PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN are valid.",
+            }
+      );
+      out.push({
+        name: "Last delivery ID",
+        status: "ok",
+        detail: routing.lastDeliveryId ?? "no deliveries received yet",
+        group: "GitHub",
+      });
+      out.push({
+        name: "Last ACK",
+        status: "ok",
+        detail: routing.lastAckAt ? new Date(routing.lastAckAt).toLocaleString() : "no ACK sent yet",
+        group: "GitHub",
+      });
+    }
+  } catch {
+    // Backend not reachable (stack down or not logged in): live routing state is
+    // unavailable. This is expected during a pre-start host check, so stay quiet
+    // rather than emitting a noisy failure.
   }
 
   return out;

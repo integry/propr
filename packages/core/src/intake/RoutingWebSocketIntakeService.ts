@@ -110,6 +110,27 @@ export interface RoutingWebSocketIntakeServiceOptions {
     webSocketFactory?: WebSocketCtor;
     /** `fetch` implementation for payload pulls; defaults to the global `fetch`. */
     fetchImpl?: FetchLike;
+    /**
+     * Clock used to stamp the last-ACK time exposed via {@link RoutingWebSocketIntakeService.getStatus}.
+     * Defaults to `Date.now`; primarily a seam for deterministic tests.
+     */
+    now?: () => number;
+}
+
+/**
+ * Runtime snapshot of the routing intake connection, surfaced so operators can
+ * diagnose default (routing_websocket) deployments. Published by the daemon to
+ * Redis and rendered by the API status route / CLI.
+ */
+export interface RoutingWebSocketStatus {
+    /** Whether the routing WebSocket is currently connected to the relay. */
+    connected: boolean;
+    /** The routing relay origin this service dials (PROPR_ROUTING_URL). */
+    routingUrl: string;
+    /** Delivery id of the most recently ACKed GitHub event, or null if none yet. */
+    lastDeliveryId: string | null;
+    /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null if none yet. */
+    lastAckAt: string | null;
 }
 
 export class RoutingWebSocketIntakeService {
@@ -123,12 +144,22 @@ export class RoutingWebSocketIntakeService {
     private readonly shutdownDrainTimeoutMs: number;
     private readonly webSocketFactory?: WebSocketCtor;
     private readonly fetchImpl?: FetchLike;
+    private readonly now: () => number;
 
     private socket: MinimalWebSocket | null = null;
     private reconnectTimer: NodeJS.Timeout | null = null;
     private pingTimer: NodeJS.Timeout | null = null;
     private currentReconnectDelayMs: number;
     private stopped = false;
+
+    /**
+     * Runtime state exposed via {@link getStatus} so `propr check` and the API
+     * status route can report routing connectivity and delivery progress. These
+     * are diagnostic only and never affect protocol behavior.
+     */
+    private connected = false;
+    private lastDeliveryId: string | null = null;
+    private lastAckAt: number | null = null;
 
     /**
      * Event-frame handling in progress. Tracked so {@link stop} can drain accepted
@@ -153,6 +184,7 @@ export class RoutingWebSocketIntakeService {
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;
         this.fetchImpl = options.fetchImpl;
+        this.now = options.now ?? Date.now;
         this.currentReconnectDelayMs = this.initialReconnectDelayMs;
         this.deliveries = new DeliveryTracker(options.maxDedupeEntries ?? DEFAULT_MAX_DEDUPE_ENTRIES);
         this.installationTokens = new BoundedTokenCache(options.maxTokenEntries ?? DEFAULT_MAX_TOKEN_ENTRIES);
@@ -215,6 +247,7 @@ export class RoutingWebSocketIntakeService {
 
         socket.on('open', () => {
             this.currentReconnectDelayMs = this.initialReconnectDelayMs;
+            this.connected = true;
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.startPing();
         });
@@ -230,6 +263,7 @@ export class RoutingWebSocketIntakeService {
         socket.on('close', (code: number) => {
             this.stopPing();
             this.socket = null;
+            this.connected = false;
             if (this.stopped) {
                 logger.info('Routing WebSocket closed during shutdown');
                 return;
@@ -414,9 +448,16 @@ export class RoutingWebSocketIntakeService {
         this.sendAck(sequence, deliveryId, socket);
     }
 
-    /** Send an ACK frame to the relay for an accepted delivery. */
+    /**
+     * Send an ACK frame to the relay for an accepted delivery. Records the
+     * delivery id and ACK time for {@link getStatus} only when the frame is
+     * actually put on the wire, so the reported "last ACK" reflects real progress.
+     */
     private sendAck(sequence: number, deliveryId: string, socket: MinimalWebSocket): void {
-        this.send({ type: 'ack', sequence, deliveryId }, socket);
+        if (this.send({ type: 'ack', sequence, deliveryId }, socket)) {
+            this.lastDeliveryId = deliveryId;
+            this.lastAckAt = this.now();
+        }
     }
 
     /**
@@ -424,17 +465,35 @@ export class RoutingWebSocketIntakeService {
      * the current connection and open: work that started on a connection which has
      * since dropped/reconnected must not push a (now stale, connection-scoped)
      * `sequence` over the new socket, where the relay could treat it as invalid.
+     * Returns true when the frame was handed to the socket.
      */
-    private send(frame: Record<string, unknown>, socket: MinimalWebSocket): void {
+    private send(frame: Record<string, unknown>, socket: MinimalWebSocket): boolean {
         if (socket !== this.socket || socket.readyState !== WS_OPEN) {
             logger.warn({ type: frame.type }, 'Cannot send routing frame; socket not open or no longer current');
-            return;
+            return false;
         }
         try {
             socket.send(JSON.stringify(frame));
+            return true;
         } catch (error) {
             logger.error({ error: (error as Error).message, type: frame.type }, 'Failed to send routing frame');
+            return false;
         }
+    }
+
+    /**
+     * Snapshot of the routing connection for diagnostics. Read by the daemon,
+     * which publishes it so the API status route and `propr check` can report
+     * whether the default routing intake path is actually receiving and ACKing
+     * GitHub events.
+     */
+    getStatus(): RoutingWebSocketStatus {
+        return {
+            connected: this.connected,
+            routingUrl: this.routingUrl,
+            lastDeliveryId: this.lastDeliveryId,
+            lastAckAt: this.lastAckAt === null ? null : new Date(this.lastAckAt).toISOString(),
+        };
     }
 
     private startPing(): void {
@@ -478,6 +537,7 @@ export class RoutingWebSocketIntakeService {
      */
     async stop(): Promise<void> {
         this.stopped = true;
+        this.connected = false;
 
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
