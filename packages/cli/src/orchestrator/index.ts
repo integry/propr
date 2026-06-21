@@ -16,6 +16,7 @@ import type { ConfigManager } from "../config/index.js";
 export type {
   OrchestratorConfig,
   OrchestratorModule,
+  ImageFreshnessResult,
   ServiceState,
   StackStatus,
   ValidationResult,

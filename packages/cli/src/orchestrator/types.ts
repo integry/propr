@@ -28,7 +28,6 @@ export interface OrchestratorConfig {
   readonly hostClaudeDir?: string;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
-  readonly hostOpencodeLegacyDir?: string;
   readonly hostOpencodeXdgDir?: string;
   readonly hostOpencodeDataDir?: string;
   readonly hostVibeDir?: string;
@@ -68,6 +67,25 @@ export interface ValidationResult {
   warnings: string[];
 }
 
+export type ImageFreshnessResult =
+  | { status: "missing"; tag: string }
+  | { status: "current"; tag: string; localDigests: string[]; remoteDigest: string; remoteDigests?: string[] }
+  | { status: "stale"; tag: string; localDigests: string[]; remoteDigest: string; remoteDigests?: string[] }
+  | { status: "unknown"; tag: string; localDigests?: string[]; error: string; localOnly?: boolean; skipped?: boolean };
+
+export interface DockerCommandOptions {
+  capture?: boolean;
+  timeout?: number;
+}
+
+export interface DockerCommandResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error & { code?: string };
+  signal?: NodeJS.Signals | null;
+}
+
 export interface ResolveHostConfigOptions {
   rootDir?: string;
   env?: NodeJS.ProcessEnv;
@@ -78,6 +96,7 @@ export interface ResolveHostConfigOptions {
 export interface OnLogOption {
   onLog?: (line: string) => void;
   pull?: boolean;
+  freshnessCache?: Map<string, ImageFreshnessResult>;
 }
 
 /** Public surface of orchestrator.mjs consumed by the CLI. */
@@ -89,8 +108,16 @@ export interface OrchestratorModule {
   validateDockerBindPath(name: string, value?: string, opts?: { containerPath?: boolean }): string | null;
 
   dockerAvailable(): boolean;
+  inspectImageFreshness(tag: string, opts?: { skipRemoteCheck?: boolean }): ImageFreshnessResult;
+  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean }): Promise<ImageFreshnessResult>;
+  tagAgentLatest(key: string, imageTag: string): void;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
-  ensureServiceImage(cfg: OrchestratorConfig, service: string, onLog?: (line: string) => void): void;
+  ensureServiceImage(
+    cfg: OrchestratorConfig,
+    service: string,
+    onLog?: (line: string) => void,
+    opts?: { freshnessCache?: Map<string, ImageFreshnessResult> }
+  ): void;
   pullImages(
     cfg: OrchestratorConfig,
     opts?: { onLog?: (line: string) => void; env?: NodeJS.ProcessEnv }
@@ -122,5 +149,5 @@ export interface OrchestratorModule {
   ): ChildProcess;
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
-  docker(args: string[], opts?: { capture?: boolean }): { status: number | null; stdout: string; stderr: string };
+  docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
 }

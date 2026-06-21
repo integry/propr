@@ -19,6 +19,7 @@ import {
   createQueueCommand,
   createInitCommand,
   createCheckCommand,
+  createImagesCommand,
   createStartCommand,
   createStackStatusCommand,
   createStopCommand,
@@ -103,6 +104,7 @@ drive the backend (plans, issues, tasks, repos, agents).
 Quick Start (local stack):
   $ propr                           Verify the environment (same as 'propr check')
   $ propr init stack                Scaffold .env + data/logs/repos, detect agents
+  $ propr images pull               Pull stack images without starting
   $ propr start                     Start the stack with a live dashboard
   $ propr status                    Show local stack status
   $ propr stop                      Stop the stack
@@ -129,7 +131,7 @@ Examples:
   $ propr remote-status
 
 Command Groups:
-  Control Plane:  check, init [repo|stack], start, status, stop, ui, docs, tank
+  Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tank
   GitHub Relay:   relay [enroll|list|revoke]
   Configuration:  remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
@@ -317,6 +319,7 @@ Example:
 
 // Control-plane commands (local Docker stack)
 program.addCommand(createCheckCommand());
+program.addCommand(createImagesCommand());
 program.addCommand(createStartCommand());
 program.addCommand(createStackStatusCommand());
 program.addCommand(createStopCommand());

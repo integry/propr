@@ -13,8 +13,13 @@
     "resolveJsonModule": true,
     "allowJs": true,
     "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": true
+    "rewriteRelativeImportExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "@propr/core": ["packages/core/src/index.ts"],
+      "@propr/shared": ["packages/shared/src/index.ts"]
+    }
   },
-  "include": ["src/**/*", "config/**/*", "scripts/**/*", "knexfile.ts", "packages/api/**/*", "packages/core/**/*"],
+  "include": ["src/**/*", "config/**/*", "scripts/**/*", "knexfile.ts", "packages/api/**/*", "packages/core/**/*", "packages/shared/**/*"],
   "exclude": ["node_modules", "dist", "test/**/*", "packages/api/node_modules", "packages/api/dist", "packages/core/node_modules", "packages/core/dist"]
 }

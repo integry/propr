@@ -41,26 +41,6 @@ function redactSettingsForLog(settings: ConfigSettings): ConfigSettings {
     return redacted;
 }
 
-// --- Exported Functions ---
-
-/**
- * @deprecated No longer needed with DB-based configuration.
- * Kept for backward compatibility - this is now a no-op.
- */
-export async function cloneOrPullConfigRepo(): Promise<void> {
-    // No-op for DB version
-    return;
-}
-
-/**
- * Ensures the configuration system is ready.
- * With DB-based configuration, the database connection handles this.
- */
-export async function ensureConfigRepoExists(): Promise<boolean> {
-    // No-op for DB version, connection check is handled in db/connection
-    return true;
-}
-
 // --- Auto-Followup Score Threshold ---
 
 /**

@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `propr check --json` remains machine-readable but now reports the additional
+  check rows introduced by the grouped check output, including CLI version and
+  configured agent validation rows.
+- `propr start` now verifies ProPR-published service image freshness and may
+  pull a stale local tag before starting; use `PROPR_SKIP_REMOTE_IMAGE_CHECK=1`
+  to skip registry probes in offline or latency-sensitive environments.
+
 ## [0.8.3] - 2026-06-16
 
 ### Added

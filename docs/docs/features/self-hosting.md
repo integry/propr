@@ -59,7 +59,7 @@ Omit a variable to skip mounts for that agent. Notes:
 
 - For Antigravity, install the CLI, run `agy login` on the host, and pass `HOST_ANTIGRAVITY_DIR` pointing at `~/.gemini` (Antigravity stores its login state there).
 - For OpenCode, also set `HOST_OPENCODE_DATA_DIR` so credentials from `opencode auth login` are visible to spawned agent containers.
-- For Vibe with the launcher, also set `VIBE_PROMPT_CACHE_DIR` and `HOST_VIBE_PROMPT_CACHE_DIR` (both pointing at the same host path, for example `/tmp/propr-vibe-prompts`) so prompt files can be bind-mounted into agent containers. Vibe can also authenticate via `MISTRAL_API_KEY` instead of a mounted `~/.vibe`.
+- For Vibe with the launcher, ensure the host prompt cache exists. The launcher defaults `HOST_VIBE_PROMPT_CACHE_DIR` to `/tmp/propr-vibe-prompts-$(id -u)` and `VIBE_PROMPT_CACHE_DIR` to `/tmp/propr-vibe-prompts` inside containers; override them only if you need different bind paths. Vibe can also authenticate via `MISTRAL_API_KEY` instead of a mounted `~/.vibe`.
 
 ## Local Or Server
 
