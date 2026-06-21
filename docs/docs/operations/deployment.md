@@ -107,30 +107,32 @@ agy login
 
 Use `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` so the launcher can mount the authenticated CLI state into Antigravity worker runs. For OpenCode and Vibe agents, see the `HOST_OPENCODE_*` and `HOST_VIBE_*` variables documented in `.env.example`.
 
-## Issue Intake: Polling Or Webhooks
+## Issue Intake Modes
 
-Intake runs in **one mode or the other** — they are mutually exclusive. By default the daemon polls configured repositories for trigger labels at `POLLING_INTERVAL_MS` (default `60000`, 60 seconds); polling requires no inbound network access. Setting `ENABLE_GITHUB_WEBHOOKS=true` switches the daemon into webhook mode, and the periodic polling loop does not run at all (`POLLING_INTERVAL_MS` is then unused).
+Intake runs in exactly **one** of three modes, selected by `GITHUB_EVENT_INTAKE_MODE`. The default is `routing_websocket`; `polling` and `direct_webhook` are advanced opt-ins.
 
-|  | Polling (default) | Webhooks |
-|---|---|---|
-| Latency | up to one interval (~60s) | near-immediate |
-| Inbound network | none required | public `POST /webhook` endpoint |
-| GitHub API usage | higher — periodic, scales with repos and open PRs | lower — event-driven, no periodic listing |
-| Reliability | self-correcting each cycle | depends on delivery — there is no polling backstop, so a missed or undelivered event is not retried |
-| Main caveat | consumes the API budget continuously (see below) | blocked by SSO/Access gates unless `/webhook` is exempted |
+| | `routing_websocket` (default) | `polling` (advanced) | `direct_webhook` (advanced) |
+|---|---|---|---|
+| How events arrive | streamed over an outbound WebSocket from the hosted ProPR App | pulled from the GitHub API each cycle | delivered by GitHub to your own public `POST /webhook` |
+| Latency | near-immediate | up to one interval (~60s) | near-immediate |
+| Inbound network | none required | none required | public `POST /webhook` endpoint |
+| GitHub App | shared, hosted ProPR App (no private key) | shared App or your own | your own App |
+| Webhook secret | not used | not used | `GH_WEBHOOK_SECRET` required |
+| GitHub API usage | low — event-driven | higher — periodic, scales with repos and open PRs | low — event-driven |
+| Main caveat | none for typical installs | consumes the API budget continuously (see below) | must expose an endpoint; blocked by SSO/Access gates unless `/webhook` is exempted |
 
-Choose **polling** when you cannot expose a public endpoint or you monitor only a handful of repositories; choose **webhooks** when you want low latency or run at a scale where continuous polling would strain the API budget. Because webhook mode replaces polling rather than supplementing it, there is no periodic safety net — rely on GitHub's webhook redelivery for missed events. Within each mode, deterministic job IDs and a state-label check still prevent the same issue from being processed twice when it is seen more than once (see [Daemon](../architecture/daemon.md)).
+Most installs should stay on `routing_websocket`: it needs no inbound public URL, no GitHub App of your own, and no private key, and it delivers events with the lowest latency. Run `propr relay enroll` to provision the shared-App install and routing/relay credentials. In every mode, deterministic job IDs and a state-label check prevent the same issue from being processed twice when it is seen more than once (see [Daemon](../architecture/daemon.md)).
 
-To react to GitHub events immediately, enable the webhook endpoint instead:
+**Polling** (`GITHUB_EVENT_INTAKE_MODE=polling`) suits installs that prefer to pull rather than maintain a streaming connection; it needs no inbound endpoint but adds latency and consumes the API budget continuously. The interval is `POLLING_INTERVAL_MS` (default `60000`).
+
+**Direct webhook** (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`) is for running your own GitHub App with GitHub delivering events to a public endpoint:
 
 ```bash
-ENABLE_GITHUB_WEBHOOKS=true
+GITHUB_EVENT_INTAKE_MODE=direct_webhook
 GH_WEBHOOK_SECRET=your-webhook-secret
 ```
 
-The API container serves the endpoint at `POST /webhook` (port 4000). Point the GitHub App's webhook URL at it through your reverse proxy, and set the same secret in the GitHub App settings. The API refuses to start when `ENABLE_GITHUB_WEBHOOKS=true` is set without `GH_WEBHOOK_SECRET`.
-
-If your server cannot expose a public webhook endpoint, the optional hosted GitHub App at propr.dev can route webhook events to your instance instead.
+The API container serves the endpoint at `POST /webhook` (port 4000). Point your GitHub App's webhook URL at it through your reverse proxy, and set the same secret in the GitHub App settings. The API refuses to start in `direct_webhook` mode without `GH_WEBHOOK_SECRET` (it is unused in the other modes). Webhook delivery has no periodic backstop, so a missed or undelivered event relies on GitHub's redelivery.
 
 ### Polling And GitHub API Rate Limits
 
@@ -165,7 +167,7 @@ To stay within limits:
 
 - raise `POLLING_INTERVAL_MS` (the single biggest lever for many repositories);
 - leave `GITHUB_USER_WHITELIST` empty unless you need applier verification, since it adds per-issue timeline calls;
-- prefer **webhooks** at scale — webhook mode replaces polling entirely, so the periodic listing cost disappears (the daemon makes API calls only when reacting to an event, not on a fixed interval).
+- prefer an event-driven mode at scale — the default `routing_websocket` (or, with your own App, `direct_webhook`) replaces polling entirely, so the periodic listing cost disappears (the daemon makes API calls only when reacting to an event, not on a fixed interval).
 
 ## Start The Stack
 

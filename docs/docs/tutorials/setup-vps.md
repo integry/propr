@@ -14,7 +14,7 @@ the host firewall denies everything except SSH and web traffic, and access is
 limited to the GitHub users you whitelist.
 
 For the ProPR-specific configuration touched here (`.env`, GitHub auth,
-webhooks), the [Server Setup](./setup-server.md), [GitHub Authentication](../operations/github-auth.md),
+event intake), the [Server Setup](./setup-server.md), [GitHub Authentication](../operations/github-auth.md),
 and [Deployment](../operations/deployment.md) pages go deeper; this page focuses
 on the host and network hardening around them.
 
@@ -504,15 +504,21 @@ allowed to use the system in `/srv/propr/.env`:
 GITHUB_USER_WHITELIST=you,teammate-a,teammate-b
 ```
 
-If you enable webhooks (optional — ProPR polls every 60s by default), a webhook
-secret is mandatory and the API refuses to start without it (if you arrived here
-from [Advanced VPS Hardening](./setup-vps-hardening.md) and put the app behind a
-Cloudflare Access SSO gate, **stay on polling** — GitHub's webhook POSTs cannot
-pass Access and will be silently dropped unless you added the explicit `/webhook`
-Bypass policy described there):
+By default ProPR receives GitHub events over the hosted-App WebSocket routing
+(`GITHUB_EVENT_INTAKE_MODE=routing_websocket`), an **outbound** connection that
+needs no inbound endpoint and no webhook secret — the natural fit behind this
+hardened, localhost-bound setup. You can leave intake as-is.
+
+The own-App `direct_webhook` mode is an advanced opt-in that requires a public
+`POST /webhook` endpoint and a webhook secret (the API refuses to start in that
+mode without one). It is **not recommended** behind a Cloudflare Access SSO gate:
+if you arrived here from [Advanced VPS Hardening](./setup-vps-hardening.md),
+GitHub's webhook POSTs cannot pass Access and are silently dropped unless you add
+the explicit `/webhook` Bypass policy described there — so prefer the default
+routing WebSocket. If you do run your own App webhook, generate the secret:
 
 ```bash
-ENABLE_GITHUB_WEBHOOKS=true
+GITHUB_EVENT_INTAKE_MODE=direct_webhook
 GH_WEBHOOK_SECRET=paste_the_generated_hex_string_here
 ```
 
@@ -525,8 +531,8 @@ openssl rand -hex 32   # copy the output into GH_WEBHOOK_SECRET above
 ```
 
 Set the same secret and the `https://propr.example.com/webhook` URL in your
-GitHub App's webhook settings. See [Server Setup](./setup-server.md#configure-github-webhooks-optional)
-for the full webhook walkthrough.
+GitHub App's webhook settings. See [Server Setup](./setup-server.md#github-event-intake)
+for the full intake walkthrough.
 
 ## 11. Verify And Start
 
