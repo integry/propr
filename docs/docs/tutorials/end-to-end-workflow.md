@@ -40,7 +40,7 @@ Small, specific issues produce better PRs than broad requests.
 4. Open the ProPR Web UI.
 5. Watch the task record.
 
-ProPR picks up the label via polling (every 60 seconds by default) or immediately if webhooks are configured. As the run progresses, ProPR replaces the trigger label with state labels: `<trigger>-processing` while running, then `<trigger>-done` on success or a `<trigger>-failed-*` label on failure.
+ProPR picks up the label through its configured event intake mode — by default it receives the event near-immediately over the routing WebSocket; with `GITHUB_EVENT_INTAKE_MODE=polling` it is detected on the next polling cycle (every 60 seconds by default), and with `direct_webhook` it arrives as GitHub delivers it. As the run progresses, ProPR replaces the trigger label with state labels: `<trigger>-processing` while running, then `<trigger>-done` on success or a `<trigger>-failed-*` label on failure.
 
 The task record shows the selected repository, branch, model, status, logs, and resulting PR.
 
