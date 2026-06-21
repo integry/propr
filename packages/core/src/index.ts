@@ -124,6 +124,18 @@ export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
 export type { RoutingWebSocketIntakeServiceOptions, MinimalWebSocket, RawData, WebSocketCtor, FetchLike } from './intake/RoutingWebSocketIntakeService.js';
+export {
+    BoundedDeliverySet,
+    BoundedTokenCache,
+    DeliveryTracker,
+    buildConnectUrl,
+    toHttpOrigin,
+    validateRoutingUrl,
+    extractPulledPayload,
+    parseTokenExpiry,
+    resolveInstallationToken,
+    rawDataToString,
+} from './intake/routingWebSocketProtocol.js';
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent, setUltrafixDeps } from './webhook/commentEventHandler.js';
 export { triggerNextPendingIssue } from './webhook/planIssueTrigger.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType, UltrafixDeps } from './webhook/commentEventHandler.js';

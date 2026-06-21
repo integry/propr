@@ -42,7 +42,6 @@ import logger from '../utils/logger.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import { processWebhookEvent, type WebhookEventType } from '../webhook/webhookHandler.js';
 import {
-    ALLOWED_ROUTING_PROTOCOLS,
     BoundedTokenCache,
     DEFAULT_MAX_DEDUPE_ENTRIES,
     DEFAULT_MAX_TOKEN_ENTRIES,
@@ -50,10 +49,13 @@ import {
     DeliveryTracker,
     WS_OPEN,
     buildConnectUrl,
+    drainWithTimeout,
     isSupportedEventType,
+    loadWebSocketCtor,
     parseTokenExpiry,
     rawDataToString,
     resolveDeliveryPayload,
+    validateRoutingUrl,
     type FetchLike,
     type MinimalWebSocket,
     type RawData,
@@ -168,43 +170,20 @@ export class RoutingWebSocketIntakeService {
             );
         }
 
-        // Fail fast on a malformed/wrong-scheme URL rather than letting `ws`
-        // reject it at connect time and reconnecting against it forever.
-        let parsedUrl: URL;
-        try {
-            parsedUrl = new URL(this.routingUrl);
-        } catch {
+        // Fail fast on a malformed/wrong-scheme/path-bearing URL rather than letting
+        // `ws` reject it at connect time and reconnecting against it forever.
+        validateRoutingUrl(this.routingUrl);
+
+        // The relay rejects an unauthenticated upgrade; surface a clear failure here
+        // (boot prerequisites also require PROPR_GH_RELAY_TOKEN, but this guards
+        // direct construction and future call sites) instead of looping on 401s.
+        if (!this.relayToken) {
             throw new Error(
-                `RoutingWebSocketIntakeService routing URL ("${this.routingUrl}") is not a valid URL. ` +
-                    'Set PROPR_ROUTING_URL to a ws://, wss://, http://, or https:// origin.',
-            );
-        }
-        if (!ALLOWED_ROUTING_PROTOCOLS.includes(parsedUrl.protocol)) {
-            throw new Error(
-                `RoutingWebSocketIntakeService routing URL must use ws://, wss://, http://, or https:// ` +
-                    `(got "${parsedUrl.protocol}//"). Check PROPR_ROUTING_URL.`,
-            );
-        }
-        // The routing URL is an ORIGIN only — the service owns the `/v1/...` paths
-        // it appends (connect + payload pull). Reject a configured path/query/hash
-        // so e.g. `wss://relay/v1` cannot become `/v1/v1/connect`.
-        if (parsedUrl.pathname.replace(/\/+$/, '') !== '' || parsedUrl.search || parsedUrl.hash) {
-            throw new Error(
-                `RoutingWebSocketIntakeService routing URL must be an origin without a path ` +
-                    `(got "${this.routingUrl}"). Set PROPR_ROUTING_URL to e.g. wss://routing.example.`,
+                'RoutingWebSocketIntakeService requires a relay token. Set PROPR_GH_RELAY_TOKEN or pass options.relayToken.',
             );
         }
 
-        // Lazy-load `ws` so the dependency is only needed when routing mode runs,
-        // and reference the specifier indirectly so the bundler/type-checker does
-        // not require `@types/ws` for this otherwise-untyped package. Tests inject
-        // a fake transport via options.webSocketFactory.
-        let WebSocketImpl = this.webSocketFactory;
-        if (!WebSocketImpl) {
-            const wsSpecifier = 'ws';
-            const wsModule = (await import(wsSpecifier)) as { default?: WebSocketCtor } & Record<string, unknown>;
-            WebSocketImpl = (wsModule.default ?? (wsModule as unknown)) as WebSocketCtor;
-        }
+        const WebSocketImpl = await loadWebSocketCtor(this.webSocketFactory);
 
         this.stopped = false;
         this.connect(WebSocketImpl);
@@ -219,9 +198,10 @@ export class RoutingWebSocketIntakeService {
         let socket: MinimalWebSocket;
         try {
             // Authenticate the upgrade request so the relay accepts this backend.
-            const headers = this.relayToken ? { Authorization: `Bearer ${this.relayToken}` } : {};
-            const wsOptions = Object.keys(headers).length > 0 ? { headers } : undefined;
-            socket = new WebSocketImpl(connectUrl, wsOptions);
+            // start() guarantees a relay token, so the header is always present.
+            socket = new WebSocketImpl(connectUrl, {
+                headers: { Authorization: `Bearer ${this.relayToken}` },
+            });
         } catch (error) {
             logger.error(
                 { error: (error as Error).message },
@@ -504,19 +484,12 @@ export class RoutingWebSocketIntakeService {
             // does not, so an indefinitely-hung handler must not block shutdown
             // forever. After the deadline we stop waiting and close the socket; any
             // still-running work loses its ACK window and the relay redelivers.
-            let drainTimer: NodeJS.Timeout | undefined;
-            const drained = Promise.allSettled([...this.inFlightWork]);
-            const timeout = new Promise<void>((resolve) => {
-                drainTimer = setTimeout(() => {
-                    logger.warn(
-                        { inFlight: this.inFlightWork.size, timeoutMs: this.shutdownDrainTimeoutMs },
-                        'Timed out draining in-flight routing deliveries; closing socket anyway',
-                    );
-                    resolve();
-                }, this.shutdownDrainTimeoutMs);
-            });
-            await Promise.race([drained, timeout]);
-            if (drainTimer) clearTimeout(drainTimer);
+            await drainWithTimeout([...this.inFlightWork], this.shutdownDrainTimeoutMs, () =>
+                logger.warn(
+                    { inFlight: this.inFlightWork.size, timeoutMs: this.shutdownDrainTimeoutMs },
+                    'Timed out draining in-flight routing deliveries; closing socket anyway',
+                ),
+            );
         }
 
         if (this.socket) {

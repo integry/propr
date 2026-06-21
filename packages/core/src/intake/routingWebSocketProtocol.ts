@@ -83,6 +83,11 @@ export class BoundedDeliverySet {
     }
 
     add(id: string): void {
+        // Delete-then-add refreshes recency: an id already present is moved to the
+        // most-recently-inserted position so it is evicted last. This matches the
+        // "recently seen" intent — a delivery that keeps being redelivered stays in
+        // the set rather than aging out and risking reprocessing under heavy traffic.
+        this.ids.delete(id);
         this.ids.add(id);
         while (this.ids.size > this.maxEntries) {
             const oldest = this.ids.values().next().value as string | undefined;
@@ -269,6 +274,74 @@ export function toHttpOrigin(routingUrl: string): string {
     if (url.protocol === 'ws:') url.protocol = 'http:';
     else if (url.protocol === 'wss:') url.protocol = 'https:';
     return url.toString().replace(/\/+$/, '');
+}
+
+/**
+ * Validate a routing origin before the service dials it. Throws an actionable
+ * error when the value is unparseable, uses an unsupported scheme, or carries a
+ * path/query/hash. The routing URL is an ORIGIN only — the service owns the
+ * `/v1/...` paths it appends (connect + payload pull) — so a configured path like
+ * `wss://relay/v1` would corrupt the derived URLs (e.g. `/v1/v1/connect`).
+ */
+export function validateRoutingUrl(routingUrl: string): void {
+    let parsedUrl: URL;
+    try {
+        parsedUrl = new URL(routingUrl);
+    } catch {
+        throw new Error(
+            `RoutingWebSocketIntakeService routing URL ("${routingUrl}") is not a valid URL. ` +
+                'Set PROPR_ROUTING_URL to a ws://, wss://, http://, or https:// origin.',
+        );
+    }
+    if (!ALLOWED_ROUTING_PROTOCOLS.includes(parsedUrl.protocol)) {
+        throw new Error(
+            `RoutingWebSocketIntakeService routing URL must use ws://, wss://, http://, or https:// ` +
+                `(got "${parsedUrl.protocol}//"). Check PROPR_ROUTING_URL.`,
+        );
+    }
+    if (parsedUrl.pathname.replace(/\/+$/, '') !== '' || parsedUrl.search || parsedUrl.hash) {
+        throw new Error(
+            `RoutingWebSocketIntakeService routing URL must be an origin without a path ` +
+                `(got "${routingUrl}"). Set PROPR_ROUTING_URL to e.g. wss://routing.example.`,
+        );
+    }
+}
+
+/**
+ * Resolve the `ws` WebSocket constructor, preferring an injected factory (the
+ * test seam) and otherwise lazy-importing the `ws` package so the dependency is
+ * only loaded when routing mode runs. The specifier is referenced indirectly so
+ * the bundler/type-checker does not require `@types/ws` for this otherwise-
+ * untyped package.
+ */
+export async function loadWebSocketCtor(factory?: WebSocketCtor): Promise<WebSocketCtor> {
+    if (factory) return factory;
+    const wsSpecifier = 'ws';
+    const wsModule = (await import(wsSpecifier)) as { default?: WebSocketCtor } & Record<string, unknown>;
+    return (wsModule.default ?? (wsModule as unknown)) as WebSocketCtor;
+}
+
+/**
+ * Await all in-flight promises, but no longer than `timeoutMs`. Used at shutdown
+ * so a wedged handler (which, unlike a payload pull, has no timeout of its own)
+ * cannot block the daemon's signal handler forever. `onTimeout` runs (for
+ * logging) when the deadline wins the race; the timer is always cleared.
+ */
+export async function drainWithTimeout(
+    work: Iterable<Promise<unknown>>,
+    timeoutMs: number,
+    onTimeout: () => void,
+): Promise<void> {
+    let drainTimer: NodeJS.Timeout | undefined;
+    const drained = Promise.allSettled([...work]);
+    const timeout = new Promise<void>((resolve) => {
+        drainTimer = setTimeout(() => {
+            onTimeout();
+            resolve();
+        }, timeoutMs);
+    });
+    await Promise.race([drained, timeout]);
+    if (drainTimer) clearTimeout(drainTimer);
 }
 
 /** Minimal logger slice the payload-pull helper needs (debug-level only). */
