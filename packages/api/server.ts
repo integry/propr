@@ -7,7 +7,7 @@ import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
-import { parseTruthyEnvValue } from '@propr/shared';
+import { resolveGithubEventIntakeMode } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
   createStatusRoutes,
@@ -322,12 +322,18 @@ function setupWebhookRoute(): void {
     return;
   }
 
-  if (!parseTruthyEnvValue(process.env.ENABLE_GITHUB_WEBHOOKS)) {
-    console.log('[webhook] Webhook endpoint disabled (ENABLE_GITHUB_WEBHOOKS not set to true)');
+  const { mode: intakeMode, warnings } = resolveGithubEventIntakeMode({
+    eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+    enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
+  });
+  for (const warning of warnings) console.warn(`[webhook] ${warning}`);
+
+  if (intakeMode !== 'direct_webhook') {
+    console.log(`[webhook] Webhook endpoint disabled (GITHUB_EVENT_INTAKE_MODE is "${intakeMode}", not "direct_webhook")`);
     return;
   }
   if (!process.env.GH_WEBHOOK_SECRET) {
-    throw new Error('[webhook] ENABLE_GITHUB_WEBHOOKS is true but GH_WEBHOOK_SECRET is not set. Refusing to start — all webhook traffic would be rejected. Set GH_WEBHOOK_SECRET in the environment.');
+    throw new Error('[webhook] GITHUB_EVENT_INTAKE_MODE is "direct_webhook" but GH_WEBHOOK_SECRET is not set. Refusing to start — all webhook traffic would be rejected. Set GH_WEBHOOK_SECRET in the environment.');
   }
   app.post('/webhook', async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
