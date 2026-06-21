@@ -335,6 +335,10 @@ function setupWebhookRoute(): void {
   if (!process.env.GH_WEBHOOK_SECRET) {
     throw new Error('[webhook] GITHUB_EVENT_INTAKE_MODE is "direct_webhook" but GH_WEBHOOK_SECRET is not set. Refusing to start — all webhook traffic would be rejected. Set GH_WEBHOOK_SECRET in the environment.');
   }
+  // The processor below (processWebhookEvent) is backed by the handler registered
+  // via initializeWebhookHandler in start(), in this same API process — so a
+  // direct_webhook delivery accepted here is processed in-process, not forwarded
+  // to the daemon. The daemon's own handler registration is for the routing path.
   app.post('/webhook', async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
     try {
@@ -385,6 +389,13 @@ async function start(): Promise<void> {
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
       console.log('[WebSocket] Queue features initialized for real-time updates');
       await initializeUltrafix(getIoRedisClient());
+      // Register the webhook processors in THIS (API) process. In direct_webhook
+      // mode the API process owns POST /webhook and dispatches deliveries via
+      // processWebhookEvent, so the processors that back it must be initialized here
+      // — process-local registration in the daemon does not configure the API. We
+      // initialize unconditionally (not only in direct_webhook mode) so a mode
+      // change does not require an API restart and the handler is always ready
+      // before the route can receive a request (this runs before httpServer.listen).
       try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
       setInterval(async () => {
         try {

@@ -293,6 +293,28 @@ test('/api/status omits malformed routing state', async () => {
   assert.equal('routing' in body, false);
 });
 
+test('/api/status omits routing state with a malformed lastAckAt timestamp', async () => {
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) =>
+      key === 'system:status:routing'
+        ? JSON.stringify({
+            connected: true,
+            routingUrl: 'wss://routing.example',
+            lastDeliveryId: 'd-1',
+            lastAckAt: 'not-a-timestamp',
+          })
+        : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  // An unparseable ACK timestamp is rejected at the API boundary rather than
+  // surfaced to consumers as a bogus date.
+  assert.equal('routing' in body, false);
+});
+
 test('/api/status omits routing state when none is published', async () => {
   const redisClient = {
     ping: async () => 'PONG',

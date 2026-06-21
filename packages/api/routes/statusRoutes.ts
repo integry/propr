@@ -4,6 +4,7 @@ import { isDemoMode } from '../demoMode.js';
 import {
   resolveGithubAuthMode,
   resolveGithubEventIntakeMode,
+  ROUTING_STATUS_REDIS_KEY,
   type GithubEventIntakeMode
 } from '@propr/shared';
 import {
@@ -206,7 +207,7 @@ interface RoutingState {
 
 async function getRoutingState(redisClient: RedisClientType): Promise<RoutingState | undefined> {
   try {
-    const raw = await redisClient.get('system:status:routing');
+    const raw = await redisClient.get(ROUTING_STATUS_REDIS_KEY);
     if (!raw) return undefined;
     const parsed: unknown = JSON.parse(raw);
     // A stale or malformed Redis value should not produce confusing CLI output;
@@ -223,7 +224,16 @@ function isRoutingState(value: unknown): value is RoutingState {
   return typeof state.connected === 'boolean'
     && typeof state.routingUrl === 'string'
     && (typeof state.lastDeliveryId === 'string' || state.lastDeliveryId === null)
-    && (typeof state.lastAckAt === 'string' || state.lastAckAt === null);
+    && isNullableTimestamp(state.lastAckAt);
+}
+
+// lastAckAt is an ISO-8601 string when present. Reject a malformed timestamp at
+// the API boundary (rather than passing any string through) so the contract stays
+// tight and a corrupt Redis value never reaches consumers as a bogus date.
+function isNullableTimestamp(value: unknown): boolean {
+  if (value === null) return true;
+  if (typeof value !== 'string') return false;
+  return !Number.isNaN(Date.parse(value));
 }
 
 async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRuntimeState): Promise<Array<{ type: string; message: string }>> {

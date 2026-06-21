@@ -10,7 +10,9 @@ after(async () => {
     await closeConnection();
 });
 
-const ROUTING_STATUS_KEY = 'system:status:routing';
+import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
+
+const ROUTING_STATUS_KEY = ROUTING_STATUS_REDIS_KEY;
 
 /** A fake ioredis recording set/del calls, with both resolving immediately. */
 function makeFakeRedis() {
@@ -28,9 +30,16 @@ function makeFakeService(status: Record<string, unknown>) {
     let listener: (() => void) | null = null;
     return {
         getStatus: mock.fn(() => status),
-        onStatusChange: mock.fn((cb: () => void) => { listener = cb; }),
+        // Mirror the real service: register the listener and return an unsubscribe
+        // that detaches only this listener.
+        onStatusChange: mock.fn((cb: () => void) => {
+            listener = cb;
+            return () => { if (listener === cb) listener = null; };
+        }),
         /** Test helper: fire the registered status-change listener. */
         fireStatusChange(): void { listener?.(); },
+        /** Test helper: whether a status-change listener is currently attached. */
+        hasListener(): boolean { return listener !== null; },
     };
 }
 
@@ -120,4 +129,21 @@ test('stop() clears the published status and stops publishing', async () => {
     service.fireStatusChange();
     mock.timers.tick(250);
     assert.equal(redis.set.mock.calls.length, publishesBeforeStop);
+});
+
+test('stop() unsubscribes the status-change listener from the service', async () => {
+    const redis = makeFakeRedis();
+    const service = makeFakeService({ connected: true });
+
+    const publisher = await startRoutingStatusPublisher(
+        service as unknown as RoutingWebSocketIntakeService,
+        redis as never,
+    );
+    assert.equal(service.hasListener(), true);
+
+    await publisher.stop();
+
+    // The publisher detaches its listener so the service no longer retains the
+    // publisher's closure (which would leak if the service were restarted).
+    assert.equal(service.hasListener(), false);
 });

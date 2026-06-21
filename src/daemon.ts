@@ -280,7 +280,11 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // polling). Doing it here — rather than as a side effect of importing GitHub
     // auth — keeps workers and other core consumers from failing startup over
     // intake settings they do not own.
-    validateGithubIntakePrerequisites();
+    //
+    // Pass the already-resolved mode so the prerequisites check does not resolve a
+    // second time and re-log the same resolver deprecation warnings already emitted
+    // above (e.g. for a still-present ENABLE_GITHUB_WEBHOOKS).
+    validateGithubIntakePrerequisites(EVENT_INTAKE_MODE);
 
     const baseStartupLog = {
         repositories: repos,

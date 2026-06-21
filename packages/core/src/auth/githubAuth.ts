@@ -11,7 +11,7 @@ import {
     validateIntakeModePrerequisites,
     validateRelayUrl,
 } from '@propr/shared';
-import type { GithubAuthMode } from '@propr/shared';
+import type { GithubAuthMode, GithubEventIntakeMode } from '@propr/shared';
 import { createRelayAuth } from './relayAuth.js';
 
 interface InstallationAuth {
@@ -118,24 +118,31 @@ if (authMode === 'relay') {
 // settings that the importing process does not own. For example, `GH_WEBHOOK_SECRET`
 // is a direct_webhook concern and should not gate a worker that merely needs an
 // installation token.
-export function validateGithubIntakePrerequisites(): void {
+export function validateGithubIntakePrerequisites(resolvedIntakeMode?: GithubEventIntakeMode): void {
     // An unconfigured stack ('none') is already handled above (production exits,
     // tests stay quiet); intake prerequisites only add signal once auth is usable.
     if (authMode === 'none') {
         return;
     }
 
-    let intakeMode;
-    try {
-        const resolved = resolveGithubEventIntakeMode({
-            eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
-            enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
-        });
-        intakeMode = resolved.mode;
-        for (const warning of resolved.warnings) console.warn(`WARNING: ${warning}`);
-    } catch (error) {
-        fatalConfigError(`ERROR: ${(error as Error).message}`);
-        return;
+    let intakeMode: GithubEventIntakeMode;
+    if (resolvedIntakeMode !== undefined) {
+        // The caller (e.g. the daemon) already resolved the mode and logged the
+        // resolver's deprecation warnings. Reuse it so we don't resolve twice and
+        // emit duplicate `ENABLE_GITHUB_WEBHOOKS` deprecation noise on startup.
+        intakeMode = resolvedIntakeMode;
+    } else {
+        try {
+            const resolved = resolveGithubEventIntakeMode({
+                eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+                enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
+            });
+            intakeMode = resolved.mode;
+            for (const warning of resolved.warnings) console.warn(`WARNING: ${warning}`);
+        } catch (error) {
+            fatalConfigError(`ERROR: ${(error as Error).message}`);
+            return;
+        }
     }
 
     const { errors, warnings } = validateIntakeModePrerequisites({

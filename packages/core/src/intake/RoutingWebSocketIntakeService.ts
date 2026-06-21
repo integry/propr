@@ -478,9 +478,19 @@ export class RoutingWebSocketIntakeService {
      * to refresh the published Redis snapshot promptly rather than waiting for its
      * periodic timer. Only one listener is supported (the publisher); a later call
      * replaces the previous one.
+     *
+     * Returns an unsubscribe function that detaches *this* listener (and only this
+     * one — a no-op if a newer listener has since replaced it), so a consumer like
+     * the status publisher can release its closure on stop() instead of the service
+     * retaining it indefinitely if it is ever restarted in-process.
      */
-    onStatusChange(listener: () => void): void {
+    onStatusChange(listener: () => void): () => void {
         this.statusChangeListener = listener;
+        return () => {
+            if (this.statusChangeListener === listener) {
+                this.statusChangeListener = null;
+            }
+        };
     }
 
     /** Fire the status-change listener, isolating it from protocol flow. */

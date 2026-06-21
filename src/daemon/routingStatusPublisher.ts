@@ -1,8 +1,9 @@
 import type { Redis } from 'ioredis';
 import { logger, type RoutingWebSocketIntakeService } from '@propr/core';
+import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
 
 /** Redis key carrying the daemon-published routing WebSocket runtime state. */
-const ROUTING_STATUS_KEY = 'system:status:routing';
+const ROUTING_STATUS_KEY = ROUTING_STATUS_REDIS_KEY;
 /** TTL so the key disappears shortly after the daemon dies without a clean shutdown. */
 const ROUTING_STATUS_TTL_SECONDS = 90;
 /** Periodic refresh cadence; comfortably shorter than the TTL above. Keeps the key
@@ -50,7 +51,10 @@ export async function startRoutingStatusPublisher(
     // coalesced through a short debounce to avoid a Redis write per delivery.
     let changeTimer: NodeJS.Timeout | null = null;
     let stopped = false;
-    routingService.onStatusChange(() => {
+    // onStatusChange returns an unsubscribe so stop() can detach this listener from
+    // the service. Without it the service would retain this publisher's closure even
+    // after stop(), leaking it if the routing service is ever restarted in-process.
+    const unsubscribe = routingService.onStatusChange(() => {
         // Ignore late status changes after stop() (e.g. the service emitting a
         // disconnect while it drains) so we never re-publish after clearing the key.
         if (stopped || changeTimer) return;
@@ -64,6 +68,8 @@ export async function startRoutingStatusPublisher(
         async stop(): Promise<void> {
             stopped = true;
             clearInterval(interval);
+            // Detach from the service so it does not keep this publisher alive.
+            if (typeof unsubscribe === 'function') unsubscribe();
             if (changeTimer) {
                 clearTimeout(changeTimer);
                 changeTimer = null;

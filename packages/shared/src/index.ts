@@ -96,6 +96,10 @@ export {
   validateIntakeModePrerequisites,
 } from './intakeModePrerequisites.js';
 
+// Export shared Redis status keys (one source of truth for cross-process status
+// keys so the daemon publisher, API status route, and CLI cannot drift)
+export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
+
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';
 
 // Export the default review guidance (the overridable part of the /review prompt)

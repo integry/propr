@@ -743,15 +743,15 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
     }
   } catch {
     // Backend not reachable (stack down or not logged in): live routing state is
-    // unavailable. This is expected during a pre-start host check, so surface it as
-    // a low-noise warning (not a failure) so the user knows live WebSocket state
-    // could not be read, without failing an otherwise-valid offline check.
+    // unavailable. This is the normal case for a pre-start / fresh-install check, so
+    // surface it as informational ("ok") rather than a warning — a valid offline
+    // setup should not light up a yellow routing warning just because the stack is
+    // not running yet. Live WebSocket state appears once the stack is up.
     out.push({
       name: "Routing WebSocket",
-      status: "warn",
-      detail: "live state unavailable — backend not reachable",
+      status: "ok",
+      detail: "live state unavailable — start the stack to read routing WebSocket state",
       group: "GitHub",
-      fix: "Start the ProPR stack (and ensure you are logged in) to read live routing WebSocket state.",
     });
   }
 
