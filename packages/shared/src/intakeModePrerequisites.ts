@@ -70,9 +70,17 @@ export function validateIntakeModePrerequisites(
       if (!isPresent(env.routingUrl)) {
         errors.push('PROPR_ROUTING_URL must be set for routing_websocket intake.');
       } else {
+        // The routing endpoint is a relay-family websocket origin, so it shares
+        // the relay URL policy by design: parseable, https:// (http only for
+        // localhost). validateRelayUrl encodes exactly that policy; if routing
+        // ever needs a different scheme/host rule, give it a dedicated validator
+        // rather than loosening this one. The message is reworded so the user
+        // sees PROPR_ROUTING_URL, not "relay URL".
         const routingUrlError = validateRelayUrl(env.routingUrl);
         if (routingUrlError) {
-          errors.push(`PROPR_ROUTING_URL is invalid: ${routingUrlError}`);
+          errors.push(
+            `PROPR_ROUTING_URL is invalid: ${routingUrlError.replace(/relay url/gi, 'routing URL')}`,
+          );
         }
       }
       if (!isPresent(env.relayUrl)) {

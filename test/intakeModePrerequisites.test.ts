@@ -42,6 +42,9 @@ test('routing_websocket rejects a non-https routing URL', () => {
     });
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => /PROPR_ROUTING_URL is invalid/.test(e)));
+    // The shared relay URL validator backs the check, but its message is reworded
+    // so the user sees the routing variable they actually set, not "relay URL".
+    assert.ok(result.errors.every((e) => !/relay url/i.test(e)));
 });
 
 test('routing_websocket allows an http localhost routing URL', () => {
