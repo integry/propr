@@ -73,6 +73,17 @@ export {
   resolveGithubAuthMode,
 } from './githubAuthMode.js';
 
+// Export GitHub event intake mode resolution (auth mode and event delivery
+// mode evolve independently; replaces the legacy ENABLE_GITHUB_WEBHOOKS boolean)
+export {
+  type GithubEventIntakeMode,
+  type GithubEventIntakeModeEnv,
+  type GithubEventIntakeModeResult,
+  GITHUB_EVENT_INTAKE_MODES,
+  DEFAULT_GITHUB_EVENT_INTAKE_MODE,
+  resolveGithubEventIntakeMode,
+} from './githubEventIntakeMode.js';
+
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';
 
 // Export the default review guidance (the overridable part of the /review prompt)
