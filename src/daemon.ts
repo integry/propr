@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
-import { parseTruthyEnvValue } from '@propr/shared';
+import { parseTruthyEnvValue, resolveGithubEventIntakeMode } from '@propr/shared';
 import {
     getAuthenticatedOctokit,
     generateCorrelationId,
@@ -13,6 +13,7 @@ import {
     getDefaultModel,
     db,
     initializeWebhookHandler,
+    RoutingWebSocketIntakeService,
     handleCommentDeleted,
     handleCommentEdited,
     processCommentEvent,
@@ -69,7 +70,15 @@ const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
-const ENABLE_WEBHOOKS = parseTruthyEnvValue(process.env.ENABLE_GITHUB_WEBHOOKS);
+// Resolve how GitHub events are delivered. The new default is `routing_websocket`,
+// with explicit `polling` and `direct_webhook` opt-ins. The legacy boolean
+// ENABLE_GITHUB_WEBHOOKS is deprecated and no longer selects the mode — the
+// resolver surfaces a deprecation warning when it is still set (logged at startup).
+const eventIntakeModeResult = resolveGithubEventIntakeMode({
+    eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+    enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
+});
+const EVENT_INTAKE_MODE = eventIntakeModeResult.mode;
 const ENABLE_PR_COMMENT_POLLING = process.env.ENABLE_PR_COMMENT_POLLING === undefined
     ? true
     : parseTruthyEnvValue(process.env.ENABLE_PR_COMMENT_POLLING);
@@ -238,6 +247,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const draftContextSweepInterval = await scheduleDraftContextSweep();
 
     let intervalId: NodeJS.Timeout | null = null;
+    let routingService: RoutingWebSocketIntakeService | null = null;
 
     const commentConfig = getCommentConfig();
     const primaryProcessingLabels = getPrimaryProcessingLabels();
@@ -247,49 +257,80 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // Define safePoll function for polling mode (used for both regular polling and on-demand config updates)
     const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
 
-    if (ENABLE_WEBHOOKS) {
-        logger.info({
-            repositories: repos,
-            webhookEnabled: true,
-            webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
-            primaryProcessingLabels: primaryProcessingLabels,
-            modelLabelPattern: MODEL_LABEL_PATTERN,
-            defaultModelName: DEFAULT_MODEL_NAME,
-            botUsername: GITHUB_BOT_USERNAME || 'not configured',
-            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
-            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
-            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
-            resetPerformed: !!options.reset
-        }, 'GitHub Issue Detection Daemon starting in webhook mode...');
+    // Surface resolver warnings on startup (e.g. a still-present, deprecated
+    // ENABLE_GITHUB_WEBHOOKS that no longer affects mode selection).
+    for (const warning of eventIntakeModeResult.warnings) {
+        logger.warn({ eventIntakeMode: EVENT_INTAKE_MODE }, warning);
+    }
 
-        if (!process.env.GH_WEBHOOK_SECRET) {
-            logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
-        }
+    const baseStartupLog = {
+        repositories: repos,
+        primaryProcessingLabels: primaryProcessingLabels,
+        modelLabelPattern: MODEL_LABEL_PATTERN,
+        defaultModelName: DEFAULT_MODEL_NAME,
+        botUsername: GITHUB_BOT_USERNAME || 'not configured',
+        userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
+        userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
+        prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
+        resetPerformed: !!options.reset
+    };
 
+    // Initialize the shared webhook handler — registers the processors that turn
+    // GitHub events into ProPR work. Used by both routing_websocket (events arrive
+    // over the routing relay) and direct_webhook (events arrive at the local
+    // webhook endpoint); only the event source differs.
+    const initSharedWebhookHandler = async (): Promise<void> => {
         await initializeWebhookHandler({
             issueProcessor: (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
             commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
             commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
         });
-        logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
-    } else {
-        logger.info({
-            repositories: repos,
-            pollingInterval: POLLING_INTERVAL_MS,
-            primaryProcessingLabels: primaryProcessingLabels,
-            modelLabelPattern: MODEL_LABEL_PATTERN,
-            defaultModelName: DEFAULT_MODEL_NAME,
-            botUsername: GITHUB_BOT_USERNAME || 'not configured',
-            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
-            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
-            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
-            resetPerformed: !!options.reset
-        }, 'GitHub Issue Detection Daemon starting in polling mode...');
+    };
 
-        safePoll();
+    switch (EVENT_INTAKE_MODE) {
+        case 'polling': {
+            logger.info({
+                ...baseStartupLog,
+                pollingInterval: POLLING_INTERVAL_MS,
+            }, 'GitHub Issue Detection Daemon starting in polling mode...');
 
-        intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
+            safePoll();
+            intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
+            break;
+        }
+
+        case 'direct_webhook': {
+            logger.info({
+                ...baseStartupLog,
+                webhookEnabled: true,
+                webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
+            }, 'GitHub Issue Detection Daemon starting in direct webhook mode...');
+
+            if (!process.env.GH_WEBHOOK_SECRET) {
+                logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
+            }
+
+            await initSharedWebhookHandler();
+            logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
+            break;
+        }
+
+        case 'routing_websocket': {
+            logger.info({
+                ...baseStartupLog,
+                routingUrl: process.env.PROPR_ROUTING_URL || 'not configured',
+            }, 'GitHub Issue Detection Daemon starting in routing WebSocket mode...');
+
+            // The routing relay forwards events into the same shared handler, so
+            // initialize it before opening the connection to avoid dropping events.
+            await initSharedWebhookHandler();
+            logger.info('Webhook handler initialized. GitHub events will be received over the routing WebSocket.');
+
+            routingService = new RoutingWebSocketIntakeService();
+            await routingService.start();
+            break;
+        }
     }
 
     const configReloadInterval = setInterval(reloadConfigs, 5 * 60 * 1000);
@@ -334,7 +375,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
                 // 3. If repos changed and we are in polling mode, trigger immediate poll
                 // This ensures new repos are picked up right away
-                if (event.subtype === 'repos_update' && !ENABLE_WEBHOOKS && intervalId) {
+                if (event.subtype === 'repos_update' && EVENT_INTAKE_MODE === 'polling' && intervalId) {
                     logger.info('Repository configuration changed, triggering immediate poll...');
 
                     // Reset the interval to avoid double-polling immediately
@@ -352,31 +393,22 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         }
     });
 
-    process.on('SIGINT', async () => {
-        logger.info('Received SIGINT, shutting down gracefully...');
+    const shutdown = async (signal: string): Promise<void> => {
+        logger.info(`Received ${signal}, shutting down gracefully...`);
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
+        if (routingService) await routingService.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
         await shutdownQueue();
         process.exit(0);
-    });
+    };
 
-    process.on('SIGTERM', async () => {
-        logger.info('Received SIGTERM, shutting down gracefully...');
-        if (intervalId) clearInterval(intervalId);
-        clearInterval(configReloadInterval);
-        clearInterval(heartbeatInterval);
-        clearInterval(draftContextSweepInterval);
-        await subscriberRedis.quit();
-        await heartbeatRedis.quit();
-        await redisClient.quit();
-        await shutdownQueue();
-        process.exit(0);
-    });
+    process.on('SIGINT', () => { void shutdown('SIGINT'); });
+    process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 }
 
 const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
@@ -424,6 +456,8 @@ Options:
 
 Environment Variables:
   GITHUB_REPOS_TO_MONITOR    Comma-separated list of repositories to monitor
+  GITHUB_EVENT_INTAKE_MODE   How GitHub events are received: routing_websocket
+                             (default), polling, or direct_webhook
   POLLING_INTERVAL_MS        Polling interval in milliseconds (default: 60000)
   AI_PRIMARY_TAG             Primary tag to look for (default: AI)
   MODEL_LABEL_PATTERN        Regex pattern for model labels (default: ^llm-(.+)$)
