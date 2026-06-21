@@ -294,6 +294,79 @@ test('ignores unsupported event types (but ACKs) and discards malformed frames',
     await service.stop();
 });
 
+test('discards an event frame with no delivery id (no dispatch, no ACK)', async () => {
+    const { service, dispatched } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    // Two unaddressable event frames: one whose `delivery` carries no deliveryId,
+    // and one with no `delivery` at all. With no id there is nothing to ACK by, so
+    // both must be dropped without dispatching or ACKing.
+    socket.emit('message', JSON.stringify({ type: 'event', sequence: 1, delivery: { eventType: 'issues' } }));
+    socket.emit('message', JSON.stringify({ type: 'event', sequence: 2 }));
+    await flush();
+
+    assert.equal(dispatched.length, 0);
+    assert.equal(
+        socket.sentFrames().filter((f) => f.type === 'ack').length,
+        0,
+        'an event frame with no delivery id must not be ACKed',
+    );
+
+    await service.stop();
+});
+
+test('ignores a token frame missing its installationId or token', async () => {
+    let fetchCalls = 0;
+    const fakeFetch = async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ rawPayload: { ok: true } }), { status: 200 });
+    };
+    const { service, dispatched } = makeService({ fetchImpl: fakeFetch });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    // Neither frame is a usable credential, so nothing is cached for installation 5.
+    socket.emit('message', JSON.stringify({ type: 'token', installationId: 5 })); // no token
+    socket.emit('message', JSON.stringify({ type: 'token', token: 'orphan' })); // no installationId
+    // An event that can only be authenticated with installation 5's token now has
+    // none available: it must not pull and must not ACK (the relay may redeliver
+    // once a well-formed token frame arrives).
+    socket.emit('message', JSON.stringify({
+        type: 'event',
+        sequence: 1,
+        delivery: { deliveryId: 'no-tok', eventType: 'issues', installationId: 5 },
+    }));
+    await flush();
+    await flush();
+
+    assert.equal(fetchCalls, 0, 'no pull may run without a cached token');
+    assert.equal(dispatched.length, 0);
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0, 'no ACK without a usable token');
+
+    await service.stop();
+});
+
+test('ignores routing frames with an unknown type without crashing', async () => {
+    const { service, dispatched } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    // An unrecognized `type` and a frame with no `type` field at all are both
+    // ignored: no dispatch, and nothing is sent back to the relay.
+    socket.emit('message', JSON.stringify({ type: 'mystery', whatever: true }));
+    socket.emit('message', JSON.stringify({ nope: 1 }));
+    await flush();
+
+    assert.equal(dispatched.length, 0);
+    assert.equal(socket.sentFrames().length, 0, 'an unknown frame produces no response');
+
+    await service.stop();
+});
+
 test('pulls the payload over HTTP when no inline payload is present', async () => {
     let pulledUrl = '';
     let authHeader = '';
