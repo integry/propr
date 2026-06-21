@@ -68,7 +68,15 @@ export function rawDataToString(data: RawData): string {
  */
 export class BoundedDeliverySet {
     private readonly ids = new Set<string>();
-    constructor(private readonly maxEntries: number) {}
+    private readonly maxEntries: number;
+
+    /**
+     * `maxEntries` is clamped to a minimum of 1: a cap of 0 or a negative number
+     * would evict every id the instant it is added, silently disabling dedupe.
+     */
+    constructor(maxEntries: number) {
+        this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    }
 
     has(id: string): boolean {
         return this.ids.has(id);
@@ -141,7 +149,16 @@ export class DeliveryTracker {
  */
 export class BoundedTokenCache {
     private readonly tokens = new Map<string, string>();
-    constructor(private readonly maxEntries: number) {}
+    private readonly maxEntries: number;
+
+    /**
+     * `maxEntries` is clamped to a minimum of 1: a cap of 0 or a negative number
+     * would evict every token the instant it is cached, silently disabling the
+     * fallback credential path used for payload pulls.
+     */
+    constructor(maxEntries: number) {
+        this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    }
 
     set(key: string, value: string): void {
         this.tokens.delete(key);
@@ -213,6 +230,72 @@ export function toHttpOrigin(routingUrl: string): string {
     if (url.protocol === 'ws:') url.protocol = 'http:';
     else if (url.protocol === 'wss:') url.protocol = 'https:';
     return url.toString().replace(/\/+$/, '');
+}
+
+/** Minimal logger slice the payload-pull helper needs (debug-level only). */
+export interface PullLogger {
+    debug(obj: Record<string, unknown>, msg: string): void;
+}
+
+/** Inputs for {@link pullDeliveryPayload}. Grouped to stay within max-params. */
+export interface PullDeliveryPayloadOptions {
+    /** Routing origin (ws/wss/http/https); converted to its HTTP(S) form. */
+    routingUrl: string;
+    /** Delivery id to pull (`/v1/delivery/:deliveryId`). */
+    deliveryId: string;
+    /** Bearer credential authenticating the pull. */
+    token: string;
+    /** `fetch` implementation to use. */
+    fetchImpl: FetchLike;
+    /** Abort the request after this many ms. */
+    pullTimeoutMs: number;
+    /** Correlation-scoped logger. */
+    log: PullLogger;
+}
+
+/**
+ * Pull a delivery payload via `GET ${origin}/v1/delivery/:deliveryId`. Throws on
+ * timeout, non-2xx status, or a malformed JSON body — every such failure is the
+ * caller's signal to withhold the ACK so the relay can redeliver. Bounds the
+ * request with an AbortController whose timer is always cleared, so a slow relay
+ * cannot wedge the connection and no timer is left dangling.
+ */
+export async function pullDeliveryPayload(opts: PullDeliveryPayloadOptions): Promise<unknown> {
+    const { routingUrl, deliveryId, token, fetchImpl, pullTimeoutMs, log } = opts;
+    const url = `${toHttpOrigin(routingUrl)}/v1/delivery/${encodeURIComponent(deliveryId)}`;
+    log.debug({ deliveryId, url }, 'Pulling routing delivery payload');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), pullTimeoutMs);
+    let response: Response;
+    try {
+        response = await fetchImpl(url, {
+            method: 'GET',
+            headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+            signal: controller.signal,
+        });
+    } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+            throw new Error(`Delivery pull for ${deliveryId} timed out after ${pullTimeoutMs}ms`);
+        }
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+
+    if (!response.ok) {
+        throw new Error(`Delivery pull for ${deliveryId} failed with HTTP ${response.status}`);
+    }
+
+    let body: unknown;
+    try {
+        body = await response.json();
+    } catch (err) {
+        // A malformed body is a retryable failure: surface it so the caller
+        // withholds the ACK rather than dispatching a half-parsed payload.
+        throw new Error(`Delivery pull for ${deliveryId} returned an unparseable JSON body: ${(err as Error).message}`);
+    }
+    return extractPulledPayload(body);
 }
 
 /**

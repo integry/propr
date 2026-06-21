@@ -357,6 +357,113 @@ test('does not ACK when payload pull fails (relay may redeliver)', async () => {
     await service.stop();
 });
 
+test('does not ACK when the pulled payload is malformed JSON (relay may redeliver)', async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+        calls += 1;
+        // First pull returns an unparseable body; the retry returns valid JSON.
+        if (calls === 1) {
+            return new Response('not json{', { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return new Response(JSON.stringify({ rawPayload: { retried: true } }), { status: 200 });
+    };
+    const { service, dispatched } = makeService({ fetchImpl: fakeFetch });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', JSON.stringify({
+        type: 'event',
+        sequence: 11,
+        delivery: { deliveryId: 'bad-json', eventType: 'issues', installationToken: 't' },
+    }));
+    await flush();
+    await flush();
+
+    // Malformed body must not be dispatched and must not be ACKed.
+    assert.equal(dispatched.length, 0);
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0);
+
+    // A redelivery is reprocessed (the id was released on failure).
+    socket.emit('message', JSON.stringify({
+        type: 'event',
+        sequence: 12,
+        delivery: { deliveryId: 'bad-json', eventType: 'issues', installationToken: 't' },
+    }));
+    await flush();
+    await flush();
+    assert.equal(dispatched.length, 1);
+    assert.deepEqual(dispatched[0].payload, { retried: true });
+
+    await service.stop();
+});
+
+test('a throwing socket.send during ACK does not crash; the delivery is re-ACKed on redelivery', async () => {
+    const { service, dispatched } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    // Make the ACK send throw on the first delivery. The service must swallow it
+    // (the delivery stays accepted in memory) rather than crashing the handler.
+    const realSend = socket.send.bind(socket);
+    socket.send = () => {
+        throw new Error('socket send boom');
+    };
+
+    socket.emit('message', eventFrame({ sequence: 1, deliveryId: 'send-fail', eventType: 'issues', rawPayload: { n: 1 } }));
+    await flush();
+
+    assert.equal(dispatched.length, 1, 'delivery is still processed even though the ACK send failed');
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0, 'no ACK was captured (send threw)');
+
+    // Restore send; a redelivery of the accepted id re-ACKs without reprocessing.
+    socket.send = realSend;
+    socket.emit('message', eventFrame({ sequence: 2, deliveryId: 'send-fail', eventType: 'issues', rawPayload: { n: 1 } }));
+    await flush();
+
+    assert.equal(dispatched.length, 1, 'accepted delivery must not be reprocessed');
+    assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
+        { type: 'ack', sequence: 2, deliveryId: 'send-fail' },
+    ]);
+
+    await service.stop();
+});
+
+test('stop() drains in-flight work and lets its ACK reach the relay before closing the socket', async () => {
+    let resolveDispatch: () => void = () => {};
+    const dispatchGate = new Promise<void>((r) => {
+        resolveDispatch = r;
+    });
+    const { service } = makeService({
+        dispatch: async () => {
+            await dispatchGate;
+        },
+    });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', eventFrame({ sequence: 4, deliveryId: 'drain-1', eventType: 'issues', rawPayload: {} }));
+    await flush();
+    // Dispatch is gated: no ACK yet, socket still open.
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0);
+
+    const stopPromise = service.stop();
+    await flush();
+    // stop() is blocked draining the in-flight delivery; the socket is not closed yet.
+    assert.equal(socket.closed, false, 'socket must stay open until in-flight work drains');
+
+    resolveDispatch();
+    await stopPromise;
+
+    // The ACK was sent over the still-open socket, then the socket was closed.
+    assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
+        { type: 'ack', sequence: 4, deliveryId: 'drain-1' },
+    ]);
+    assert.equal(socket.closed, true);
+});
+
 test('does not ACK when the webhook handler throws', async () => {
     const { service } = makeService({
         dispatch: async () => {

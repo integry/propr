@@ -47,10 +47,9 @@ import {
     DeliveryTracker,
     WS_OPEN,
     buildConnectUrl,
-    extractPulledPayload,
     isSupportedEventType,
+    pullDeliveryPayload,
     rawDataToString,
-    toHttpOrigin,
     type FetchLike,
     type MinimalWebSocket,
     type RawData,
@@ -117,6 +116,13 @@ export class RoutingWebSocketIntakeService {
     private pingTimer: NodeJS.Timeout | null = null;
     private currentReconnectDelayMs: number;
     private stopped = false;
+
+    /**
+     * Event-frame handling in progress. Tracked so {@link stop} can drain accepted
+     * work (and let its ACK reach the relay) before the socket is closed, rather
+     * than cutting it off mid-flight and relying on relay redelivery.
+     */
+    private readonly inFlightWork = new Set<Promise<void>>();
 
     /** Tracks in-flight vs. accepted deliveries to keep ACKing safe under redelivery. */
     private readonly deliveries: DeliveryTracker;
@@ -261,7 +267,7 @@ export class RoutingWebSocketIntakeService {
                 // advancement — so out-of-order ACKs are acceptable. In-flight
                 // duplicate suppression (see handleEventFrame) prevents a redelivery
                 // from being processed twice while the first attempt is running.
-                await this.handleEventFrame(frame);
+                await this.trackWork(this.handleEventFrame(frame));
                 return;
             case 'token':
                 this.handleTokenFrame(frame);
@@ -277,6 +283,16 @@ export class RoutingWebSocketIntakeService {
                 return;
             default:
                 logger.debug({ type: frame.type }, 'Ignoring routing frame with unknown type');
+        }
+    }
+
+    /** Register an event-handling promise so {@link stop} can drain it. */
+    private async trackWork(work: Promise<void>): Promise<void> {
+        this.inFlightWork.add(work);
+        try {
+            await work;
+        } finally {
+            this.inFlightWork.delete(work);
         }
     }
 
@@ -374,7 +390,13 @@ export class RoutingWebSocketIntakeService {
         }
 
         // Mark accepted and ACK only after local acceptance, so the relay never
-        // advances past an event the webhook handler has not processed.
+        // advances past an event the webhook handler has not processed. This is
+        // deliberately at-least-once: if sendAck() cannot reach the relay (socket
+        // closed, send throws), the delivery stays accepted in memory and is
+        // re-ACKed on the next redelivery to THIS instance — but if the process
+        // exits first, acceptance is lost and the relay redelivers, so the webhook
+        // handler must tolerate a duplicate. Draining in stop() narrows, but does
+        // not eliminate, that window (accepted ids are not persisted across restart).
         this.deliveries.accept(deliveryId);
         this.sendAck(sequence, deliveryId);
     }
@@ -391,7 +413,7 @@ export class RoutingWebSocketIntakeService {
         return this.pullPayload(delivery, log);
     }
 
-    /** Pull a delivery payload via `GET ${origin}/v1/delivery/:deliveryId`. */
+    /** Resolve credentials/transport and pull a delivery payload over HTTP. */
     private async pullPayload(delivery: RoutingDelivery, log: ReturnType<typeof logger.withCorrelation>): Promise<unknown> {
         const deliveryId = delivery.deliveryId as string;
         const token = this.resolveInstallationToken(delivery);
@@ -404,38 +426,14 @@ export class RoutingWebSocketIntakeService {
             throw new Error('No fetch implementation available to pull delivery payload');
         }
 
-        const url = `${toHttpOrigin(this.routingUrl)}/v1/delivery/${encodeURIComponent(deliveryId)}`;
-        log.debug({ deliveryId, url }, 'Pulling routing delivery payload');
-
-        // Bound the pull with an AbortController whose timer is always cleared, so
-        // a slow relay cannot wedge the connection and no timer is left dangling.
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.pullTimeoutMs);
-        let response: Response;
-        try {
-            response = await fetchImpl(url, {
-                method: 'GET',
-                headers: {
-                    authorization: `Bearer ${token}`,
-                    accept: 'application/json',
-                },
-                signal: controller.signal,
-            });
-        } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') {
-                throw new Error(`Delivery pull for ${deliveryId} timed out after ${this.pullTimeoutMs}ms`);
-            }
-            throw err;
-        } finally {
-            clearTimeout(timer);
-        }
-
-        if (!response.ok) {
-            throw new Error(`Delivery pull for ${deliveryId} failed with HTTP ${response.status}`);
-        }
-
-        const body = (await response.json()) as unknown;
-        return extractPulledPayload(body);
+        return pullDeliveryPayload({
+            routingUrl: this.routingUrl,
+            deliveryId,
+            token,
+            fetchImpl,
+            pullTimeoutMs: this.pullTimeoutMs,
+            log,
+        });
     }
 
     /** Resolve the credential for a payload pull: frame token, else cached token. */
@@ -512,6 +510,15 @@ export class RoutingWebSocketIntakeService {
             this.reconnectTimer = null;
         }
         this.stopPing();
+
+        // Drain in-flight event handling BEFORE closing the socket so a delivery
+        // that finishes during shutdown can still send its ACK over the open
+        // connection, instead of completing against a null socket and forcing the
+        // relay to redeliver (and risk duplicate processing) after restart.
+        if (this.inFlightWork.size > 0) {
+            logger.info({ inFlight: this.inFlightWork.size }, 'Draining in-flight routing deliveries before shutdown');
+            await Promise.allSettled([...this.inFlightWork]);
+        }
 
         if (this.socket) {
             try {
