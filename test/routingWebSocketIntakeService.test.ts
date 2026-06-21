@@ -129,11 +129,16 @@ test('connects to the /v1/connect path with a Bearer relay token', async () => {
 });
 
 test('processes an event frame with inline payload and ACKs only after processing', async () => {
-    const order: string[] = [];
+    // Hold dispatch open with a deferred promise so we can assert the ACK is
+    // withheld while processing is still pending, then released once it resolves.
+    let resolveDispatch: () => void = () => {};
+    const dispatchGate = new Promise<void>((r) => {
+        resolveDispatch = r;
+    });
     const { service, dispatched } = makeService({
         dispatch: async (payload: unknown, eventType: string) => {
-            order.push(`dispatch:${eventType}`);
             dispatched.push({ payload, eventType, correlationId: 'x' } as never);
+            await dispatchGate;
         },
     });
     await service.start();
@@ -144,13 +149,85 @@ test('processes an event frame with inline payload and ACKs only after processin
     socket.emit('message', eventFrame({ sequence: 5, deliveryId: 'd1', eventType: 'issues', rawPayload: payload }));
     await flush();
 
+    // Dispatch has started but not completed: no ACK must have been sent yet.
     assert.equal(dispatched.length, 1);
     assert.equal(dispatched[0].eventType, 'issues');
     assert.deepEqual(dispatched[0].payload, payload);
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0, 'must not ACK while dispatch pending');
+
+    // Let dispatch finish — now the ACK is emitted.
+    resolveDispatch();
+    await flush();
 
     const frames = socket.sentFrames();
     assert.equal(frames.length, 1);
     assert.deepEqual(frames[0], { type: 'ack', sequence: 5, deliveryId: 'd1' });
+
+    await service.stop();
+});
+
+test('in-flight duplicate is not ACKed until the original processing succeeds', async () => {
+    // Gate the first dispatch so a duplicate arrives while it is still in flight.
+    let resolveDispatch: () => void = () => {};
+    const dispatchGate = new Promise<void>((r) => {
+        resolveDispatch = r;
+    });
+    let calls = 0;
+    const { service, dispatched } = makeService({
+        dispatch: async (payload: unknown, eventType: string) => {
+            calls += 1;
+            dispatched.push({ payload, eventType, correlationId: 'x' } as never);
+            await dispatchGate;
+        },
+    });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    const frame = eventFrame({ sequence: 1, deliveryId: 'inflight', eventType: 'issues', rawPayload: { n: 1 } });
+    socket.emit('message', frame);
+    await flush();
+    // Duplicate arrives while the first attempt is still pending.
+    socket.emit('message', JSON.stringify({ ...JSON.parse(frame), sequence: 2 }));
+    await flush();
+
+    // The duplicate was dropped (not reprocessed) and NOT ACKed — the original
+    // attempt has not yet succeeded.
+    assert.equal(calls, 1, 'in-flight duplicate must not be reprocessed');
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0, 'in-flight duplicate must not be ACKed');
+
+    resolveDispatch();
+    await flush();
+
+    // Only the original ACKs, once, after it succeeds.
+    const acks = socket.sentFrames().filter((f) => f.type === 'ack');
+    assert.deepEqual(acks, [{ type: 'ack', sequence: 1, deliveryId: 'inflight' }]);
+
+    await service.stop();
+});
+
+test('start() rejects a routing URL that carries a path', async () => {
+    const withPath = new RoutingWebSocketIntakeService({
+        routingUrl: 'wss://routing.example/v1',
+        webSocketFactory: FakeWebSocket as unknown as new (address: string) => MinimalWebSocket,
+    });
+    await assert.rejects(() => withPath.start(), /origin without a path/);
+});
+
+test('discards an event frame with no numeric sequence (no ACK)', async () => {
+    const { service, dispatched } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', JSON.stringify({
+        type: 'event',
+        delivery: { deliveryId: 'no-seq', eventType: 'issues', payload: { rawPayload: { n: 1 } } },
+    }));
+    await flush();
+
+    assert.equal(dispatched.length, 0);
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0);
 
     await service.stop();
 });

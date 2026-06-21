@@ -40,9 +40,11 @@ import { generateCorrelationId } from '../utils/logger.js';
 import { processWebhookEvent, type WebhookEventType } from '../webhook/webhookHandler.js';
 import {
     ALLOWED_ROUTING_PROTOCOLS,
-    BoundedDeliverySet,
+    BoundedTokenCache,
     DEFAULT_MAX_DEDUPE_ENTRIES,
+    DEFAULT_MAX_TOKEN_ENTRIES,
     DEFAULT_PULL_TIMEOUT_MS,
+    DeliveryTracker,
     WS_OPEN,
     buildConnectUrl,
     extractPulledPayload,
@@ -61,9 +63,11 @@ export type { FetchLike, MinimalWebSocket, RawData, WebSocketCtor } from './rout
 
 export interface RoutingWebSocketIntakeServiceOptions {
     /**
-     * Routing relay origin. Defaults to `process.env.PROPR_ROUTING_URL`. The
-     * service appends `/v1/connect` and dials it as a `ws://`/`wss://` URL, and
-     * derives the HTTP origin (for payload pulls) from the same value.
+     * Routing relay origin (scheme + host, no path). Defaults to
+     * `process.env.PROPR_ROUTING_URL`. The service owns the paths it appends:
+     * it dials `${origin}/v1/connect` as a `ws://`/`wss://` URL and derives the
+     * HTTP origin (for payload pulls at `/v1/delivery/:id`) from the same value.
+     * A configured path/query/hash is rejected at {@link start}.
      */
     routingUrl?: string;
     /**
@@ -84,6 +88,8 @@ export interface RoutingWebSocketIntakeServiceOptions {
     pingIntervalMs?: number;
     /** Maximum number of delivery ids retained for deduplication. */
     maxDedupeEntries?: number;
+    /** Maximum number of installation tokens cached from `token` frames. */
+    maxTokenEntries?: number;
     /** Timeout for pulling a delivery payload over HTTP, in ms. */
     pullTimeoutMs?: number;
     /**
@@ -112,10 +118,10 @@ export class RoutingWebSocketIntakeService {
     private currentReconnectDelayMs: number;
     private stopped = false;
 
-    /** Delivery ids that have been accepted locally — duplicates are dropped. */
-    private readonly seenDeliveries: BoundedDeliverySet;
+    /** Tracks in-flight vs. accepted deliveries to keep ACKing safe under redelivery. */
+    private readonly deliveries: DeliveryTracker;
     /** Installation access tokens pushed via `token` frames, keyed by installation. */
-    private readonly installationTokens = new Map<string, string>();
+    private readonly installationTokens: BoundedTokenCache;
 
     constructor(options: RoutingWebSocketIntakeServiceOptions = {}) {
         this.routingUrl = (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? '').trim();
@@ -128,7 +134,8 @@ export class RoutingWebSocketIntakeService {
         this.webSocketFactory = options.webSocketFactory;
         this.fetchImpl = options.fetchImpl;
         this.currentReconnectDelayMs = this.initialReconnectDelayMs;
-        this.seenDeliveries = new BoundedDeliverySet(options.maxDedupeEntries ?? DEFAULT_MAX_DEDUPE_ENTRIES);
+        this.deliveries = new DeliveryTracker(options.maxDedupeEntries ?? DEFAULT_MAX_DEDUPE_ENTRIES);
+        this.installationTokens = new BoundedTokenCache(options.maxTokenEntries ?? DEFAULT_MAX_TOKEN_ENTRIES);
     }
 
     /**
@@ -158,6 +165,15 @@ export class RoutingWebSocketIntakeService {
             throw new Error(
                 `RoutingWebSocketIntakeService routing URL must use ws://, wss://, http://, or https:// ` +
                     `(got "${parsedUrl.protocol}//"). Check PROPR_ROUTING_URL.`,
+            );
+        }
+        // The routing URL is an ORIGIN only — the service owns the `/v1/...` paths
+        // it appends (connect + payload pull). Reject a configured path/query/hash
+        // so e.g. `wss://relay/v1` cannot become `/v1/v1/connect`.
+        if (parsedUrl.pathname.replace(/\/+$/, '') !== '' || parsedUrl.search || parsedUrl.hash) {
+            throw new Error(
+                `RoutingWebSocketIntakeService routing URL must be an origin without a path ` +
+                    `(got "${this.routingUrl}"). Set PROPR_ROUTING_URL to e.g. wss://routing.example.`,
             );
         }
 
@@ -239,6 +255,12 @@ export class RoutingWebSocketIntakeService {
 
         switch (frame.type) {
             case 'event':
+                // Event frames are processed concurrently (a slow payload pull for
+                // one delivery must not block others). Ordering is safe because the
+                // relay matches each ACK by its `deliveryId`, not by strict sequence
+                // advancement — so out-of-order ACKs are acceptable. In-flight
+                // duplicate suppression (see handleEventFrame) prevents a redelivery
+                // from being processed twice while the first attempt is running.
                 await this.handleEventFrame(frame);
                 return;
             case 'token':
@@ -282,38 +304,56 @@ export class RoutingWebSocketIntakeService {
             return;
         }
 
+        // The ACK must echo the relay's sequence; without a numeric one we cannot
+        // produce a valid ACK, so discard rather than emit a malformed sequence-less
+        // ACK. The relay can redeliver with a proper sequence.
+        if (typeof sequence !== 'number') {
+            log.warn({ deliveryId, sequence }, 'Discarding event frame with no numeric sequence');
+            return;
+        }
+
         const rawEventType = (delivery.eventType ?? delivery.event ?? '').trim();
         if (!rawEventType) {
             log.warn({ deliveryId, sequence }, 'Discarding event frame with no event type');
             // ACK so the relay does not redeliver an event we can never handle.
+            this.deliveries.accept(deliveryId);
             this.sendAck(sequence, deliveryId);
             return;
         }
 
-        // Duplicate suppression: a delivery we have already accepted is ACKed again
-        // (the relay may resend if a prior ACK was lost) but never reprocessed.
-        if (this.seenDeliveries.has(deliveryId)) {
-            log.debug({ deliveryId, sequence }, 'Ignoring duplicate routing delivery');
+        // Already durably accepted: re-ACK (a prior ACK may have been lost) but
+        // never reprocess.
+        if (this.deliveries.isAccepted(deliveryId)) {
+            log.debug({ deliveryId, sequence }, 'Re-ACKing already-accepted routing delivery');
             this.sendAck(sequence, deliveryId);
+            return;
+        }
+
+        // A redelivery that arrives while the first attempt is still in flight is
+        // dropped WITHOUT an ACK: the first attempt may still fail, and ACKing now
+        // would let the relay advance past an event we have not yet accepted. The
+        // in-flight attempt sends the ACK if and when it succeeds.
+        if (this.deliveries.isInFlight(deliveryId)) {
+            log.debug({ deliveryId, sequence }, 'Dropping in-flight duplicate routing delivery (no ACK)');
             return;
         }
 
         if (!isSupportedEventType(rawEventType)) {
             log.debug({ eventType: rawEventType, deliveryId, sequence }, 'Ignoring unsupported routing event type');
-            this.seenDeliveries.add(deliveryId);
+            this.deliveries.accept(deliveryId);
             this.sendAck(sequence, deliveryId);
             return;
         }
 
         // Reserve the delivery id before processing so a concurrent redelivery is
         // not processed twice. Released on failure so a later redelivery retries.
-        this.seenDeliveries.add(deliveryId);
+        this.deliveries.begin(deliveryId);
 
         let payload: unknown;
         try {
             payload = await this.resolvePayload(delivery, log);
         } catch (error) {
-            this.seenDeliveries.delete(deliveryId);
+            this.deliveries.fail(deliveryId);
             log.error(
                 { error: (error as Error).message, deliveryId, sequence, eventType: rawEventType },
                 'Failed to fetch routing delivery payload; will not ACK (relay may redeliver)',
@@ -325,7 +365,7 @@ export class RoutingWebSocketIntakeService {
             log.debug({ eventType: rawEventType, deliveryId, sequence }, 'Dispatching routing event');
             await this.dispatch(payload, rawEventType, correlationId);
         } catch (error) {
-            this.seenDeliveries.delete(deliveryId);
+            this.deliveries.fail(deliveryId);
             log.error(
                 { error: (error as Error).message, eventType: rawEventType, deliveryId, sequence },
                 'Failed to process routing event; will not ACK (relay may redeliver)',
@@ -333,8 +373,9 @@ export class RoutingWebSocketIntakeService {
             return;
         }
 
-        // ACK only after local acceptance, so the relay never advances past an
-        // event the webhook handler has not processed.
+        // Mark accepted and ACK only after local acceptance, so the relay never
+        // advances past an event the webhook handler has not processed.
+        this.deliveries.accept(deliveryId);
         this.sendAck(sequence, deliveryId);
     }
 
@@ -407,7 +448,7 @@ export class RoutingWebSocketIntakeService {
     }
 
     /** Send an ACK frame to the relay for an accepted delivery. */
-    private sendAck(sequence: number | undefined, deliveryId: string): void {
+    private sendAck(sequence: number, deliveryId: string): void {
         this.send({ type: 'ack', sequence, deliveryId });
     }
 

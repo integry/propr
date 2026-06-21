@@ -44,6 +44,9 @@ export const ALLOWED_ROUTING_PROTOCOLS = ['ws:', 'wss:', 'http:', 'https:'];
 /** Default ceiling for the delivery-id dedupe set. */
 export const DEFAULT_MAX_DEDUPE_ENTRIES = 10_000;
 
+/** Default ceiling for the cached installation-token map. */
+export const DEFAULT_MAX_TOKEN_ENTRIES = 5_000;
+
 /** Default timeout for pulling a delivery payload over HTTP. */
 export const DEFAULT_PULL_TIMEOUT_MS = 15_000;
 
@@ -86,6 +89,72 @@ export class BoundedDeliverySet {
 
     get size(): number {
         return this.ids.size;
+    }
+}
+
+/**
+ * Tracks delivery ids across their lifecycle to make ACKing safe under
+ * redelivery. A delivery is "in flight" while its payload is being resolved and
+ * dispatched, and "accepted" once dispatch has succeeded. The two states are
+ * deliberately separate: a redelivery that arrives while the first attempt is
+ * still in flight must NOT be ACKed (the first attempt may yet fail), whereas a
+ * redelivery of an already-accepted delivery is safely re-ACKed without
+ * reprocessing. The accepted set is bounded so memory cannot grow without limit.
+ */
+export class DeliveryTracker {
+    private readonly inFlight = new Set<string>();
+    private readonly accepted: BoundedDeliverySet;
+
+    constructor(maxAcceptedEntries: number) {
+        this.accepted = new BoundedDeliverySet(maxAcceptedEntries);
+    }
+
+    isAccepted(id: string): boolean {
+        return this.accepted.has(id);
+    }
+
+    isInFlight(id: string): boolean {
+        return this.inFlight.has(id);
+    }
+
+    /** Mark a delivery as being processed. */
+    begin(id: string): void {
+        this.inFlight.add(id);
+    }
+
+    /** Mark a delivery as durably accepted (and no longer in flight). */
+    accept(id: string): void {
+        this.inFlight.delete(id);
+        this.accepted.add(id);
+    }
+
+    /** Release a failed delivery so a later redelivery is retried. */
+    fail(id: string): void {
+        this.inFlight.delete(id);
+    }
+}
+
+/**
+ * Bounded, insertion-ordered map of installation id -> access token. Re-setting a
+ * key refreshes its recency; once the cap is reached the oldest entry is evicted,
+ * so a long-running multi-tenant daemon cannot accumulate stale tokens forever.
+ */
+export class BoundedTokenCache {
+    private readonly tokens = new Map<string, string>();
+    constructor(private readonly maxEntries: number) {}
+
+    set(key: string, value: string): void {
+        this.tokens.delete(key);
+        this.tokens.set(key, value);
+        while (this.tokens.size > this.maxEntries) {
+            const oldest = this.tokens.keys().next().value as string | undefined;
+            if (oldest === undefined) break;
+            this.tokens.delete(oldest);
+        }
+    }
+
+    get(key: string): string | undefined {
+        return this.tokens.get(key);
     }
 }
 
