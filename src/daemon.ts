@@ -248,6 +248,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
     let intervalId: NodeJS.Timeout | null = null;
     let routingService: RoutingWebSocketIntakeService | null = null;
+    let routingStatusInterval: NodeJS.Timeout | null = null;
 
     const commentConfig = getCommentConfig();
     const primaryProcessingLabels = getPrimaryProcessingLabels();
@@ -329,6 +330,26 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
             routingService = new RoutingWebSocketIntakeService();
             await routingService.start();
+
+            // Publish the routing connection's runtime state to Redis so the API
+            // status route (a separate process) and `propr check` can report
+            // connectivity, last delivery id, and last ACK for the default intake
+            // path. The key carries a TTL so it disappears if the daemon dies.
+            const publishRoutingStatus = async (): Promise<void> => {
+                if (!routingService) return;
+                try {
+                    await heartbeatRedis.set(
+                        'system:status:routing',
+                        JSON.stringify(routingService.getStatus()),
+                        'EX',
+                        90,
+                    );
+                } catch (error) {
+                    logger.error({ error: (error as Error).message }, 'Failed to publish routing status');
+                }
+            };
+            await publishRoutingStatus();
+            routingStatusInterval = setInterval(() => { void publishRoutingStatus(); }, 30000);
             break;
         }
     }
@@ -399,7 +420,17 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
-        if (routingService) await routingService.stop();
+        if (routingStatusInterval) clearInterval(routingStatusInterval);
+        if (routingService) {
+            await routingService.stop();
+            // Clear the published state promptly so status consumers see the
+            // routing path is down instead of waiting for the TTL to lapse.
+            try {
+                await heartbeatRedis.del('system:status:routing');
+            } catch (error) {
+                logger.error({ error: (error as Error).message }, 'Failed to clear routing status on shutdown');
+            }
+        }
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();

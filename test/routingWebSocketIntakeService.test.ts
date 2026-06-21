@@ -787,3 +787,57 @@ test('stop() closes the socket and prevents reconnects', async () => {
     await new Promise((r) => setImmediate(r));
     assert.equal(FakeWebSocket.instances.length, 1);
 });
+
+test('getStatus() reports connectivity, last delivery id, and last ACK', async () => {
+    // A fixed clock so the reported last-ACK timestamp is deterministic.
+    const fixedNow = Date.parse('2026-06-21T03:00:00.000Z');
+    const { service } = makeService({ now: () => fixedNow });
+
+    // Before connecting: disconnected, no deliveries, routing URL surfaced.
+    let status = service.getStatus();
+    assert.equal(status.connected, false);
+    assert.equal(status.routingUrl, 'wss://routing.example');
+    assert.equal(status.lastDeliveryId, null);
+    assert.equal(status.lastAckAt, null);
+
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    status = service.getStatus();
+    assert.equal(status.connected, true, 'connected after open');
+
+    // Process and ACK an event — last delivery id and last ACK are recorded.
+    socket.emit('message', eventFrame({ sequence: 1, deliveryId: 'd-status', eventType: 'issues', rawPayload: { n: 1 } }));
+    await flush();
+
+    status = service.getStatus();
+    assert.equal(status.lastDeliveryId, 'd-status');
+    assert.equal(status.lastAckAt, new Date(fixedNow).toISOString());
+
+    // After the socket closes, connectivity flips back to disconnected but the
+    // last-delivery diagnostics are retained.
+    socket.emit('close', 1006, Buffer.from(''));
+    status = service.getStatus();
+    assert.equal(status.connected, false, 'disconnected after close');
+    assert.equal(status.lastDeliveryId, 'd-status');
+
+    await service.stop();
+});
+
+test('getStatus() does not record an ACK time when the socket cannot send', async () => {
+    const fixedNow = Date.parse('2026-06-21T03:00:00.000Z');
+    const { service } = makeService({ now: () => fixedNow });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    // Never emit 'open'; the socket is not the OPEN state for sending here.
+    socket.readyState = 0; // CONNECTING — send() refuses, so no ACK is recorded.
+
+    socket.emit('message', eventFrame({ sequence: 1, deliveryId: 'd-noack', eventType: 'issues', rawPayload: { n: 1 } }));
+    await flush();
+
+    const status = service.getStatus();
+    assert.equal(status.lastAckAt, null, 'no ACK time when the ACK could not be sent');
+
+    await service.stop();
+});

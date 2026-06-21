@@ -53,7 +53,9 @@ function createJsonResponse(): { response: ExpressResponse; status: () => number
 function createRedisClient() {
   return {
     ping: async () => 'PONG',
-    get: async () => Date.now().toString(),
+    // The daemon heartbeat key returns a timestamp; the routing key is absent by
+    // default so tests that don't publish routing state see it omitted.
+    get: async (key: string) => (key === 'system:status:routing' ? null : Date.now().toString()),
     sCard: async () => 1,
   };
 }
@@ -213,6 +215,63 @@ test('/api/status caches agent health checks briefly', async () => {
 
   assert.equal(healthChecks, 1);
   assert.deepEqual(first.body().agents, second.body().agents);
+});
+
+test('/api/status reports resolved auth mode and event intake mode', async () => {
+  const body = await readStatus();
+
+  // configureStatusEnv() clears all GitHub auth config, so the auth mode
+  // resolves to 'none' and the intake mode defaults to routing_websocket.
+  assert.equal(body.githubAuthMode, 'none');
+  assert.equal(body.githubEventIntake, 'routing_websocket');
+});
+
+test('/api/status includes routing state published by the daemon', async () => {
+  const routingState = {
+    connected: true,
+    routingUrl: 'wss://routing.example',
+    lastDeliveryId: 'd-1',
+    lastAckAt: '2026-06-21T03:00:00.000Z',
+  };
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) =>
+      key === 'system:status:routing' ? JSON.stringify(routingState) : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  assert.deepEqual(body.routing, routingState);
+});
+
+test('/api/status omits routing state when none is published', async () => {
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) => (key === 'system:status:routing' ? null : Date.now().toString()),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  assert.equal('routing' in body, false);
+});
+
+test('/api/status reports demo auth mode in demo mode', async () => {
+  process.env.NODE_ENV = 'production';
+  process.env.PROPR_DEMO_MODE = 'true';
+  const { response, body } = createJsonResponse();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    loadAgents: async () => [],
+    agentRegistry: createRegistry(),
+    getIndexingQueue: async () => createIndexingQueue(),
+  });
+
+  await routes.getStatus({} as Request, response);
+
+  assert.equal(body().githubAuthMode, 'demo');
+  assert.equal(body().githubEventIntake, 'routing_websocket');
 });
 
 test('/api/status maps indexing queue states', async () => {

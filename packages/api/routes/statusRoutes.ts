@@ -2,6 +2,11 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
 import {
+  resolveGithubAuthMode,
+  resolveGithubEventIntakeMode,
+  type GithubEventIntakeMode
+} from '@propr/shared';
+import {
   AgentRegistry,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
@@ -63,6 +68,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
           worker: 'running',
           workerCount: 3,
           githubAuth: 'connected',
+          githubAuthMode: 'demo',
+          githubEventIntake: resolveIntakeMode(),
           claudeAuth: 'connected',
           indexing: 'idle',
           warnings: [],
@@ -109,6 +116,20 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
                                  process.env.GH_INSTALLATION_ID;
       status.githubAuth = githubAppConfigured ? 'connected' : 'disconnected';
 
+      // Auth mode (how ProPR authenticates to GitHub) and event intake mode (how
+      // GitHub events arrive) are independent — surface both so operators can tell
+      // a relay-auth + routing-websocket deployment apart from an app + webhook one.
+      status.githubAuthMode = resolveAuthMode();
+      status.githubEventIntake = resolveIntakeMode();
+
+      // Routing WebSocket runtime state, published to Redis by the daemon when the
+      // default routing_websocket intake path is active. Included only when present
+      // so non-routing deployments don't carry an empty field.
+      const routing = await getRoutingState(redisClient);
+      if (routing) {
+        status.routing = routing;
+      }
+
       const agents = await getCachedAgentStatuses();
       status.agents = agents;
       status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
@@ -138,6 +159,42 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       expiresAt: currentTime + agentStatusCacheTtlMs
     };
     return statuses;
+  }
+}
+
+function resolveAuthMode(): string {
+  const { mode } = resolveGithubAuthMode({
+    demoMode: isDemoMode(),
+    ghAuthMode: process.env.GH_AUTH_MODE,
+    relayUrl: process.env.PROPR_GH_RELAY_URL,
+    relayToken: process.env.PROPR_GH_RELAY_TOKEN,
+    appId: process.env.GH_APP_ID,
+    privateKeyPath: process.env.GH_PRIVATE_KEY_PATH,
+    installationId: process.env.GH_INSTALLATION_ID
+  });
+  return mode;
+}
+
+function resolveIntakeMode(): GithubEventIntakeMode | 'unknown' {
+  // A misconfigured GITHUB_EVENT_INTAKE_MODE throws here; the status route must
+  // still answer, so report it as 'unknown' rather than failing the whole call.
+  try {
+    return resolveGithubEventIntakeMode({
+      eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+      enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS
+    }).mode;
+  } catch {
+    return 'unknown';
+  }
+}
+
+async function getRoutingState(redisClient: RedisClientType): Promise<Record<string, unknown> | undefined> {
+  try {
+    const raw = await redisClient.get('system:status:routing');
+    if (!raw) return undefined;
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return undefined;
   }
 }
 

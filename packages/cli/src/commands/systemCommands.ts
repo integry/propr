@@ -56,7 +56,13 @@ function displaySystemStatus(status: SystemStatus): void {
     "Worker",
     "Workers Active",
     "GitHub Auth",
+    "GitHub Auth Mode",
+    "GitHub Event Intake",
     "Claude Auth",
+    "Routing URL",
+    "Routing WebSocket",
+    "Last Delivery ID",
+    "Last ACK",
     "Timestamp",
   ];
   const maxLabelWidth = Math.max(...labels.map((l) => l.length));
@@ -83,9 +89,37 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log(
     `${"GitHub Auth".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.githubAuth)}`
   );
+  if (status.githubAuthMode) {
+    console.log(
+      `${"GitHub Auth Mode".padEnd(maxLabelWidth)}  ${status.githubAuthMode}`
+    );
+  }
+  if (status.githubEventIntake) {
+    console.log(
+      `${"GitHub Event Intake".padEnd(maxLabelWidth)}  ${status.githubEventIntake}`
+    );
+  }
   console.log(
     `${"Claude Auth".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.claudeAuth)}`
   );
+
+  // Routing WebSocket diagnostics for default (routing_websocket) deployments.
+  if (status.routing) {
+    const routing = status.routing;
+    console.log("");
+    console.log(
+      `${"Routing URL".padEnd(maxLabelWidth)}  ${routing.routingUrl || "(not set)"}`
+    );
+    console.log(
+      `${"Routing WebSocket".padEnd(maxLabelWidth)}  ${formatStatusIndicator(routing.connected ? "connected" : "disconnected")}`
+    );
+    console.log(
+      `${"Last Delivery ID".padEnd(maxLabelWidth)}  ${routing.lastDeliveryId ?? "(none yet)"}`
+    );
+    console.log(
+      `${"Last ACK".padEnd(maxLabelWidth)}  ${routing.lastAckAt ? new Date(routing.lastAckAt).toLocaleString() : "(none yet)"}`
+    );
+  }
   console.log("");
   console.log(
     `${"Timestamp".padEnd(maxLabelWidth)}  ${new Date(status.timestamp).toLocaleString()}`
