@@ -4,7 +4,13 @@ import { createAppAuth } from '@octokit/auth-app';
 import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
-import { parseTruthyEnvValue, resolveGithubAuthMode, validateRelayUrl } from '@propr/shared';
+import {
+    parseTruthyEnvValue,
+    resolveGithubAuthMode,
+    resolveGithubEventIntakeMode,
+    validateIntakeModePrerequisites,
+    validateRelayUrl,
+} from '@propr/shared';
 import type { GithubAuthMode } from '@propr/shared';
 import { createRelayAuth } from './relayAuth.js';
 
@@ -98,6 +104,46 @@ if (authMode === 'relay') {
     console.error('  - PROPR_DEMO_MODE=true (no GitHub access).');
     process.exit(1);
 }
+
+// Mode-specific GitHub intake prerequisites. Auth resolution above proves the
+// stack can talk to GitHub; this proves the *resolved intake mode*
+// (routing_websocket, polling, or direct_webhook) has the extra config it needs
+// — a routing URL, a webhook secret, etc. — so the daemon/worker/api never boot
+// half-configured. It uses the same shared helper `propr check` reports against,
+// so the CLI preview and the boot path can never drift.
+function validateIntakeModePrerequisitesAtBoot(): void {
+    // An unconfigured stack ('none') is already handled above (production exits,
+    // tests stay quiet); intake prerequisites only add signal once auth is usable.
+    if (authMode === 'none') {
+        return;
+    }
+
+    let intakeMode;
+    try {
+        const resolved = resolveGithubEventIntakeMode({
+            eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+            enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
+        });
+        intakeMode = resolved.mode;
+        for (const warning of resolved.warnings) console.warn(`WARNING: ${warning}`);
+    } catch (error) {
+        fatalConfigError(`ERROR: ${(error as Error).message}`);
+        return;
+    }
+
+    const { errors, warnings } = validateIntakeModePrerequisites({
+        intakeMode,
+        authMode,
+        routingUrl: process.env.PROPR_ROUTING_URL,
+        relayUrl,
+        relayToken,
+        webhookSecret: process.env.GH_WEBHOOK_SECRET,
+    });
+    for (const warning of warnings) console.warn(`WARNING: ${warning}`);
+    for (const error of errors) fatalConfigError(`ERROR: ${error}`);
+}
+
+validateIntakeModePrerequisitesAtBoot();
 
 export async function getGitHubInstallationToken(): Promise<string> {
     if (!appOctokit) {

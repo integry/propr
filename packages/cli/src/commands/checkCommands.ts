@@ -13,7 +13,12 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
-import { resolveGithubAuthMode, validateRelayUrl } from "@propr/shared";
+import {
+  resolveGithubAuthMode,
+  resolveGithubEventIntakeMode,
+  validateIntakeModePrerequisites,
+  validateRelayUrl,
+} from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
@@ -370,6 +375,10 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
   for (const r of checkGithubAuth(fileEnv, cfg)) emit(r);
 
+  // 7b. Mode-specific GitHub intake prerequisites (the resolved intake mode
+  // needs the right credentials before the daemon/API can serve it).
+  for (const r of checkGithubIntakeMode(fileEnv)) emit(r);
+
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
   const whitelistEntries = (whitelistRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -578,6 +587,64 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
       group: "GitHub",
       fix: "Prefer HOST_GH_PRIVATE_KEY (bind-mounts the key), or ensure this path resolves inside the container (e.g. under data/).",
     });
+  }
+
+  return out;
+}
+
+/**
+ * Validate the prerequisites for the resolved GitHub event intake mode.
+ * Reuses the shared validateIntakeModePrerequisites helper so `propr check`
+ * and the backend boot path agree on what each mode requires.
+ */
+function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
+  const val = (k: string): string | undefined => process.env[k] ?? env[k];
+  const out: CheckResult[] = [];
+
+  const { mode: authMode } = resolveGithubAuthMode({
+    demoMode: isTruthy(val("PROPR_DEMO_MODE")),
+    ghAuthMode: val("GH_AUTH_MODE"),
+    relayUrl: val(RELAY_URL_KEY),
+    relayToken: val(RELAY_TOKEN_KEY),
+    appId: val("GH_APP_ID"),
+    privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+    installationId: val("GH_INSTALLATION_ID"),
+  });
+
+  let intakeMode;
+  try {
+    ({ mode: intakeMode } = resolveGithubEventIntakeMode({
+      eventIntakeMode: val("GITHUB_EVENT_INTAKE_MODE"),
+      enableGithubWebhooks: val("ENABLE_GITHUB_WEBHOOKS"),
+    }));
+  } catch (error) {
+    out.push({
+      name: "GitHub intake mode",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+      group: "GitHub",
+      fix: 'Set GITHUB_EVENT_INTAKE_MODE to "routing_websocket", "polling", or "direct_webhook".',
+    });
+    return out;
+  }
+
+  const { valid, errors, warnings } = validateIntakeModePrerequisites({
+    intakeMode,
+    authMode,
+    routingUrl: val("PROPR_ROUTING_URL"),
+    relayUrl: val(RELAY_URL_KEY),
+    relayToken: val(RELAY_TOKEN_KEY),
+    webhookSecret: val("GH_WEBHOOK_SECRET"),
+  });
+
+  for (const warning of warnings) {
+    out.push({ name: "GitHub intake mode", status: "warn", detail: warning, group: "GitHub" });
+  }
+  for (const error of errors) {
+    out.push({ name: "GitHub intake mode", status: "fail", detail: error, group: "GitHub" });
+  }
+  if (valid) {
+    out.push({ name: "GitHub intake mode", status: "ok", detail: intakeMode, group: "GitHub" });
   }
 
   return out;
