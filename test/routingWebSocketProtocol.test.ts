@@ -1,16 +1,18 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '@propr/core';
+// These are internal wire-protocol primitives, deliberately not exported from the
+// package root, so the test imports them directly from the source module.
 import {
     BoundedDeliverySet,
     BoundedTokenCache,
     buildConnectUrl,
-    closeConnection,
     extractPulledPayload,
     parseTokenExpiry,
     resolveInstallationToken,
     toHttpOrigin,
     validateRoutingUrl,
-} from '@propr/core';
+} from '../packages/core/src/intake/routingWebSocketProtocol.js';
 
 // Importing @propr/core eagerly opens the shared DB connection pool; close it so
 // the test process can exit cleanly instead of hanging on the open pool.

@@ -298,7 +298,18 @@ export class RoutingWebSocketIntakeService {
             logger.warn('Discarding token frame missing installationId or token');
             return;
         }
+        // A token frame that carries an expiry we cannot parse is treated as
+        // corrupt and dropped: caching it as non-expiring would let a stale
+        // credential live forever and cause repeated pull failures, so we wait for
+        // a well-formed refresh instead of trusting an unbounded token.
         const expiresAt = parseTokenExpiry(frame.expiresAt);
+        if (frame.expiresAt !== undefined && expiresAt === undefined) {
+            logger.warn(
+                { installationId, expiresAt: frame.expiresAt },
+                'Discarding token frame with unparseable expiry',
+            );
+            return;
+        }
         this.installationTokens.set(String(installationId), token, expiresAt);
         logger.debug({ installationId, expiresAt }, 'Cached installation token from routing relay');
     }

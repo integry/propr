@@ -1,6 +1,12 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert';
-import { RoutingWebSocketIntakeService, closeConnection, type MinimalWebSocket, type RawData } from '@propr/core';
+import {
+    RoutingWebSocketIntakeService,
+    closeConnection,
+    type MinimalWebSocket,
+    type RawData,
+    type RoutingWebSocketIntakeServiceOptions,
+} from '@propr/core';
 
 // Importing @propr/core eagerly opens the shared DB connection pool; close it so
 // the test process can exit cleanly instead of hanging on the open pool.
@@ -62,7 +68,7 @@ class FakeWebSocket implements MinimalWebSocket {
 
 const flush = () => new Promise((r) => setImmediate(r));
 
-function makeService(overrides: Record<string, unknown> = {}) {
+function makeService(overrides: Partial<RoutingWebSocketIntakeServiceOptions> = {}) {
     FakeWebSocket.instances = [];
     const dispatched: { payload: unknown; eventType: string; correlationId: string }[] = [];
     const service = new RoutingWebSocketIntakeService({
@@ -103,6 +109,23 @@ test('start() rejects when no routing URL is configured', async () => {
     }
 });
 
+test('start() rejects when no relay token is configured', async () => {
+    FakeWebSocket.instances = [];
+    const prev = process.env.PROPR_GH_RELAY_TOKEN;
+    delete process.env.PROPR_GH_RELAY_TOKEN;
+    try {
+        const service = new RoutingWebSocketIntakeService({
+            routingUrl: 'wss://routing.example',
+            webSocketFactory: FakeWebSocket as unknown as new (address: string) => MinimalWebSocket,
+        });
+        await assert.rejects(() => service.start(), /relay token/);
+        // The failure must be fast, before any socket is dialed.
+        assert.equal(FakeWebSocket.instances.length, 0, 'no connection may be attempted without a relay token');
+    } finally {
+        if (prev !== undefined) process.env.PROPR_GH_RELAY_TOKEN = prev;
+    }
+});
+
 test('start() rejects unsupported schemes and unparseable URLs', async () => {
     const bad = new RoutingWebSocketIntakeService({
         routingUrl: 'ftp://routing.example',
@@ -136,8 +159,8 @@ test('processes an event frame with inline payload and ACKs only after processin
         resolveDispatch = r;
     });
     const { service, dispatched } = makeService({
-        dispatch: async (payload: unknown, eventType: string) => {
-            dispatched.push({ payload, eventType, correlationId: 'x' } as never);
+        dispatch: async (payload, eventType) => {
+            dispatched.push({ payload, eventType, correlationId: 'x' });
             await dispatchGate;
         },
     });
@@ -174,9 +197,9 @@ test('in-flight duplicate is not ACKed until the original processing succeeds', 
     });
     let calls = 0;
     const { service, dispatched } = makeService({
-        dispatch: async (payload: unknown, eventType: string) => {
+        dispatch: async (payload, eventType) => {
             calls += 1;
-            dispatched.push({ payload, eventType, correlationId: 'x' } as never);
+            dispatched.push({ payload, eventType, correlationId: 'x' });
             await dispatchGate;
         },
     });
@@ -355,6 +378,40 @@ test('an expired cached installation token is not used for a payload pull', asyn
     assert.equal(fetchCalls, 0, 'no pull may be attempted without a valid token');
     assert.equal(dispatched.length, 0);
     assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0, 'no ACK without a valid token');
+
+    await service.stop();
+});
+
+test('a token frame with an unparseable expiry is not cached (avoids a forever-stale token)', async () => {
+    let fetchCalls = 0;
+    const fakeFetch = async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ rawPayload: { ok: true } }), { status: 200 });
+    };
+    const { service, dispatched } = makeService({ fetchImpl: fakeFetch });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    // expiresAt is present but unparseable: caching it as non-expiring would leave a
+    // stale credential forever, so the frame must be dropped (treated as a miss).
+    socket.emit('message', JSON.stringify({
+        type: 'token',
+        installationId: 9,
+        token: 'corrupt',
+        expiresAt: 'not-a-date',
+    }));
+    socket.emit('message', JSON.stringify({
+        type: 'event',
+        sequence: 1,
+        delivery: { deliveryId: 'corrupt-1', eventType: 'issues', installationId: 9 },
+    }));
+    await flush();
+    await flush();
+
+    assert.equal(fetchCalls, 0, 'a token with a corrupt expiry must not be used for a pull');
+    assert.equal(dispatched.length, 0);
+    assert.equal(socket.sentFrames().filter((f) => f.type === 'ack').length, 0, 'no ACK without a usable token');
 
     await service.stop();
 });

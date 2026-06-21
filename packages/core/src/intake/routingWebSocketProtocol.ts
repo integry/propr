@@ -205,8 +205,11 @@ export class BoundedTokenCache {
 
 /**
  * Normalize a relay-supplied token expiry into epoch ms. Accepts an epoch-ms
- * number or an ISO-8601 string; returns `undefined` for anything unparseable so
- * a bad expiry degrades to "non-expiring" rather than instantly evicting the token.
+ * number or an ISO-8601 string; returns `undefined` when no expiry was supplied
+ * OR the supplied value is unparseable. Callers that received a value should treat
+ * an `undefined` result as "corrupt expiry" (see {@link RoutingWebSocketIntakeService}'s
+ * token handler, which drops such a frame rather than caching a token forever),
+ * while an absent value legitimately means "non-expiring".
  */
 export function parseTokenExpiry(expiresAt: number | string | undefined): number | undefined {
     if (typeof expiresAt === 'number') return Number.isFinite(expiresAt) ? expiresAt : undefined;
