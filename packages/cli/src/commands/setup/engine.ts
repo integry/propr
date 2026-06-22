@@ -34,11 +34,17 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parseTruthyEnvValue, type GithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
+import {
+  resolveGithubEventIntakeMode,
+  validateIntakeModePrerequisites,
+  type GithubAuthMode,
+  type GithubAuthModeResult,
+} from "@propr/shared";
 import type { ConfigManager } from "../../config/index.js";
 import {
   buildIntakeEnvVars,
   defaultIntakeChoice,
+  intakeModeLabel,
   saveWhitelist,
   type GithubIntakeDecision,
   type GithubIntakeMode,
@@ -151,16 +157,16 @@ export interface SetupPrompts {
   /** Configure GitHub auth. Default: keep whatever `.env` already has. */
   configureGithubAuth?(ctx: { current: GithubAuthModeResult }): Promise<GithubAuthDecision>;
   /**
-   * Choose how the backend ingests GitHub events (App/relay, polling, or
+   * Choose how the backend ingests GitHub events (routing WebSocket, polling, or
    * direct webhooks). `defaultMode` is the choice to pre-select: the auth-derived
    * recommendation on a fresh install, but `"keep"` when `.env` already carries
    * an intake decision so a blank Enter never rewrites a working config.
-   * `webhooksEnabled` reflects the current `.env`. Default: keep.
+   * `currentMode` is the intake mode `.env` resolves to today. Default: keep.
    */
   configureIntake?(ctx: {
     authMode: GithubAuthMode;
     defaultMode: GithubIntakeMode | "keep";
-    webhooksEnabled: boolean;
+    currentMode: GithubIntakeMode;
   }): Promise<GithubIntakeDecision>;
   /** Confirm starting the stack. Default: start it. */
   confirmStartStack?(ctx: { rootDir: string; alreadyRunning: boolean }): Promise<boolean>;
@@ -621,53 +627,84 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   }
 
   // 5b. GitHub event intake — how the backend learns about GitHub events
-  //     (App/relay, polling, or direct webhooks). Written before startup because
-  //     the API/daemon read ENABLE_GITHUB_WEBHOOKS / GH_WEBHOOK_SECRET at boot.
-  //     Demo mode has no GitHub access, so there is nothing to ingest.
+  //     (routing WebSocket, polling, or direct webhooks). Written before startup
+  //     because the API/daemon resolve GITHUB_EVENT_INTAKE_MODE at boot. Demo
+  //     mode has no GitHub access, so there is nothing to ingest.
   begin("intake");
   try {
     if (resolvedAuth.mode === "demo") {
       settle("intake", { status: "skipped", detail: "demo mode — no GitHub events to ingest" });
     } else {
       const envNow = actions.readEnvVars(rootDir);
-      const webhooksEnabled = parseTruthyEnvValue(envNow.ENABLE_GITHUB_WEBHOOKS);
-      // When `.env` already records an intake decision, default the prompt to
-      // "keep" so a blank Enter on a re-run can't silently flip a working config
-      // (e.g. disable existing direct webhooks). Only a fresh install falls back
-      // to the auth-derived recommendation.
-      const intakeConfigured = envNow.ENABLE_GITHUB_WEBHOOKS !== undefined;
+      // Resolve the mode the backend would pick from today's `.env` (unset
+      // defaults to routing_websocket, the hosted relay path) so the prompt and
+      // any "kept current" message reflect what actually runs.
+      const { mode: currentMode } = resolveGithubEventIntakeMode({
+        eventIntakeMode: envNow.GITHUB_EVENT_INTAKE_MODE,
+        enableGithubWebhooks: envNow.ENABLE_GITHUB_WEBHOOKS,
+      });
+      // When `.env` already records an explicit intake decision, default the
+      // prompt to "keep" so a blank Enter on a re-run can't silently flip a
+      // working config (e.g. disable existing direct webhooks). Only a fresh
+      // install (no GITHUB_EVENT_INTAKE_MODE yet) falls back to the auth-derived
+      // recommendation.
+      const intakeConfigured = envNow.GITHUB_EVENT_INTAKE_MODE !== undefined;
       const defaultMode = defaultIntakeChoice(resolvedAuth.mode, { intakeConfigured });
       let decision: GithubIntakeDecision | undefined;
       if (prompts.configureIntake) {
-        decision = await prompts.configureIntake({ authMode: resolvedAuth.mode, defaultMode, webhooksEnabled });
+        decision = await prompts.configureIntake({ authMode: resolvedAuth.mode, defaultMode, currentMode });
       }
+      // The mode that will be in effect after this step — the explicit pick, or
+      // the current `.env` value when the user keeps it. `effectiveEnv` mirrors
+      // what `.env` holds *after* any write so the prerequisite check below sees
+      // the freshly written secret/mode, not the pre-write snapshot.
+      let effectiveMode = currentMode;
+      let effectiveEnv = envNow;
+      let detail: string;
       if (decision && !decision.keep && decision.mode) {
         // buildIntakeEnvVars rejects an empty webhook secret — caught below and
         // surfaced as a warning rather than writing a config the API won't boot.
         const vars = buildIntakeEnvVars(decision.mode, { webhookSecret: decision.webhookSecret });
         actions.applyEnvSelection(rootDir, vars, { overwrite: true });
-        const label =
-          decision.mode === "webhooks"
-            ? "direct webhooks (signing secret recorded)"
-            : decision.mode === "polling"
-              ? "polling (webhooks disabled)"
-              : "ProPR App / shared relay (webhooks disabled)";
-        settle("intake", { status: "done", detail: `intake: ${label}` });
+        effectiveMode = decision.mode;
+        effectiveEnv = { ...envNow, ...vars };
+        detail = `intake: ${intakeModeLabel(decision.mode)}`;
+      } else {
+        detail = `intake: kept current (${intakeModeLabel(currentMode)})`;
+      }
+      // Validate the resolved mode against the shared prerequisite rules so a
+      // silently-broken intake config (most commonly routing_websocket without
+      // relay auth + a relay token) surfaces here instead of as a backend boot
+      // failure after `propr start`.
+      const prereq = validateIntakeModePrerequisites({
+        intakeMode: effectiveMode,
+        authMode: resolvedAuth.mode,
+        routingUrl: effectiveEnv.PROPR_ROUTING_URL,
+        relayUrl: effectiveEnv.PROPR_GH_RELAY_URL,
+        relayToken: effectiveEnv.PROPR_GH_RELAY_TOKEN,
+        webhookSecret: effectiveEnv.GH_WEBHOOK_SECRET,
+      });
+      if (prereq.valid) {
+        settle("intake", { status: "done", detail });
       } else {
         settle("intake", {
-          status: "done",
-          detail: `intake: kept current (${webhooksEnabled ? "direct webhooks" : "polling / relay"})`,
+          status: "warning",
+          detail: `${detail} — ${prereq.errors.join("; ")}`,
+          nextAction:
+            effectiveMode === "routing_websocket"
+              ? "Enroll with the hosted relay (`propr relay enroll`) so routing_websocket has relay auth + a relay token, or choose polling."
+              : "Resolve the missing intake prerequisites in .env, then re-run setup.",
         });
       }
     }
   } catch (error) {
-    // An IntakeConfigError (e.g. webhooks chosen with no secret) is non-blocking:
-    // leave intake as-is and tell the user how to finish it.
+    // An IntakeConfigError (e.g. direct webhooks chosen with no secret) is
+    // non-blocking: leave intake as-is and tell the user how to finish it.
     settle("intake", {
       status: "warning",
       detail: `could not configure GitHub intake: ${(error as Error).message}`,
       nextAction:
-        "Set ENABLE_GITHUB_WEBHOOKS (and GH_WEBHOOK_SECRET for webhooks) in .env, then re-run setup.",
+        "Set GITHUB_EVENT_INTAKE_MODE (and GH_WEBHOOK_SECRET for direct_webhook) in .env, then re-run setup.",
     });
   }
 

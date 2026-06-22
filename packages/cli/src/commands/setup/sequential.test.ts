@@ -94,8 +94,8 @@ test("select: chained relay inputs are collected and the token is masked", async
   const io = scriptedIo(["3", "https://relay.example", "secret-token"]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
   assert.equal(decision.mode, "relay");
-  assert.equal(decision.vars?.RELAY_URL, "https://relay.example");
-  assert.equal(decision.vars?.RELAY_TOKEN, "secret-token");
+  assert.equal(decision.vars?.PROPR_GH_RELAY_URL, "https://relay.example");
+  assert.equal(decision.vars?.PROPR_GH_RELAY_TOKEN, "secret-token");
   assert.equal(io.masked.length, 1, "exactly the token prompt is masked");
 });
 
@@ -142,27 +142,27 @@ test('whitelist: "none" clears the list, blank re-affirms the current value', as
 });
 
 test("intake: blank picks the recommended default mode", async () => {
-  // Options are app, polling, webhooks, keep — defaultMode "app" is option 1, so
-  // a blank answer selects it.
+  // Options are routing_websocket, polling, direct_webhook, keep — defaultMode
+  // "routing_websocket" is option 1, so a blank answer selects it.
   const io = scriptedIo([""]);
   const decision = await buildSequentialPrompts(io).configureIntake!({
     authMode: "relay",
-    defaultMode: "app",
-    webhooksEnabled: false,
+    defaultMode: "routing_websocket",
+    currentMode: "routing_websocket",
   });
-  assert.deepEqual(decision, { mode: "app" });
+  assert.deepEqual(decision, { mode: "routing_websocket" });
   assert.match(io.lines.join("\n"), /docs\.propr\.dev/, "docs link is surfaced in the detail text");
 });
 
-test("intake: choosing webhooks requires a non-empty secret, re-asking on blank", async () => {
-  // Choose option 3 (webhooks), enter a blank secret (rejected), then a real one.
+test("intake: choosing direct webhooks requires a non-empty secret, re-asking on blank", async () => {
+  // Choose option 3 (direct_webhook), enter a blank secret (rejected), then a real one.
   const io = scriptedIo(["3", "", "hook-secret"]);
   const decision = await buildSequentialPrompts(io).configureIntake!({
     authMode: "app",
-    defaultMode: "app",
-    webhooksEnabled: false,
+    defaultMode: "polling",
+    currentMode: "polling",
   });
-  assert.deepEqual(decision, { mode: "webhooks", webhookSecret: "hook-secret" });
+  assert.deepEqual(decision, { mode: "direct_webhook", webhookSecret: "hook-secret" });
   assert.equal(io.masked.length, 2, "the secret prompt is masked, and was asked twice");
   assert.match(io.lines.join("\n"), /webhook secret is required/i);
 });
@@ -173,19 +173,19 @@ test("intake: keep leaves the current configuration untouched", async () => {
   const decision = await buildSequentialPrompts(io).configureIntake!({
     authMode: "none",
     defaultMode: "polling",
-    webhooksEnabled: true,
+    currentMode: "direct_webhook",
   });
   assert.deepEqual(decision, { keep: true });
 });
 
 test("intake: a defaultMode of keep makes a blank answer keep the current config", async () => {
   // On a re-run the engine passes defaultMode "keep" when .env already records an
-  // intake decision, so a blank Enter must not rewrite a working webhook config.
+  // intake decision, so a blank Enter must not rewrite a working config.
   const io = scriptedIo([""]);
   const decision = await buildSequentialPrompts(io).configureIntake!({
     authMode: "app",
     defaultMode: "keep",
-    webhooksEnabled: true,
+    currentMode: "direct_webhook",
   });
   assert.deepEqual(decision, { keep: true });
 });

@@ -132,8 +132,8 @@ test("state helpers read and edit a real .env without Docker", () => {
   assert.equal(hasEnvValue(root, "GH_APP_ID"), false);
 
   // applyEnvSelection writes the file; readEnvVars reads it back.
-  const result = applyEnvSelection(root, { GH_APP_ID: "123", RELAY_URL: "https://relay" });
-  assert.deepEqual(result.written.sort(), ["GH_APP_ID", "RELAY_URL"]);
+  const result = applyEnvSelection(root, { GH_APP_ID: "123", PROPR_GH_RELAY_URL: "https://relay" });
+  assert.deepEqual(result.written.sort(), ["GH_APP_ID", "PROPR_GH_RELAY_URL"]);
   assert.deepEqual(result.skipped, []);
   assert.equal(readEnvVars(root).GH_APP_ID, "123");
   assert.equal(hasEnvValue(root, "GH_APP_ID"), true);
@@ -154,7 +154,7 @@ test("inspectStackInit reports initialized only once .env and all sub-dirs exist
 // 2. Intake mode .env writes (real file).
 // ---------------------------------------------------------------------------
 
-test("selecting polling intake writes ENABLE_GITHUB_WEBHOOKS=false to the real .env", async () => {
+test("selecting polling intake writes GITHUB_EVENT_INTAKE_MODE=polling to the real .env", async () => {
   const root = makeRoot();
   seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
 
@@ -164,22 +164,23 @@ test("selecting polling intake writes ENABLE_GITHUB_WEBHOOKS=false to the real .
     actions: diskActions(),
   });
 
+  // App auth qualifies for polling, so the step completes cleanly.
   assert.equal(statusOf(result.state, "intake"), "done");
-  assert.equal(readEnvVars(root).ENABLE_GITHUB_WEBHOOKS, "false", "polling disables direct webhooks on disk");
+  assert.equal(readEnvVars(root).GITHUB_EVENT_INTAKE_MODE, "polling", "polling is selected on disk");
 });
 
-test("selecting webhooks intake records the enable flag and signing secret on disk", async () => {
+test("selecting direct-webhook intake records the mode and signing secret on disk", async () => {
   const root = makeRoot();
   seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
 
   await runSetup({
     root,
-    prompts: { configureIntake: async () => ({ mode: "webhooks", webhookSecret: "s3cret" }) },
+    prompts: { configureIntake: async () => ({ mode: "direct_webhook", webhookSecret: "s3cret" }) },
     actions: diskActions(),
   });
 
   const env = readEnvVars(root);
-  assert.equal(env.ENABLE_GITHUB_WEBHOOKS, "true");
+  assert.equal(env.GITHUB_EVENT_INTAKE_MODE, "direct_webhook");
   assert.equal(env.GH_WEBHOOK_SECRET, "s3cret");
 });
 
@@ -189,15 +190,50 @@ test("an empty webhook secret is rejected and writes nothing to .env", async () 
 
   const result = await runSetup({
     root,
-    prompts: { configureIntake: async () => ({ mode: "webhooks", webhookSecret: "   " }) },
+    prompts: { configureIntake: async () => ({ mode: "direct_webhook", webhookSecret: "   " }) },
     actions: diskActions(),
   });
 
   assert.equal(statusOf(result.state, "intake"), "warning", "an empty secret is rejected, not written");
   const env = readEnvVars(root);
-  assert.equal(env.ENABLE_GITHUB_WEBHOOKS, undefined);
+  assert.equal(env.GITHUB_EVENT_INTAKE_MODE, undefined);
   assert.equal(env.GH_WEBHOOK_SECRET, undefined);
   assert.equal(result.completed, true, "a rejected secret is non-blocking");
+});
+
+test("routing_websocket selected with relay auth + a relay token is wired correctly on disk", async () => {
+  const root = makeRoot();
+  // A relay-enrolled stack: relay auth mode and a relay token (URLs default to
+  // the hosted relay). This is the prerequisite set routing_websocket needs.
+  seedInitializedStack(root, "GH_AUTH_MODE=relay\nPROPR_GH_RELAY_TOKEN=relay-token\n");
+
+  const result = await runSetup({
+    root,
+    prompts: { configureIntake: async () => ({ mode: "routing_websocket" }) },
+    actions: diskActions(),
+  });
+
+  assert.equal(statusOf(result.state, "intake"), "done", "relay auth + token satisfies routing prerequisites");
+  assert.equal(readEnvVars(root).GITHUB_EVENT_INTAKE_MODE, "routing_websocket");
+});
+
+test("routing_websocket selected without relay auth warns about the missing relay prerequisites", async () => {
+  const root = makeRoot();
+  // App auth can't use the hosted routing path — it needs relay auth + a token.
+  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+
+  const result = await runSetup({
+    root,
+    prompts: { configureIntake: async () => ({ mode: "routing_websocket" }) },
+    actions: diskActions(),
+  });
+
+  // The mode is still written (the user explicitly chose it), but the gap is
+  // surfaced here rather than as a backend boot failure.
+  assert.equal(statusOf(result.state, "intake"), "warning");
+  assert.equal(readEnvVars(root).GITHUB_EVENT_INTAKE_MODE, "routing_websocket");
+  assert.match(getStep(result.state, "intake")?.nextAction ?? "", /relay enroll|polling/);
+  assert.equal(result.completed, true, "the prerequisite warning is non-blocking");
 });
 
 // ---------------------------------------------------------------------------
@@ -212,7 +248,7 @@ test("re-running setup on an initialized stack skips scaffolding and preserves t
     "GH_PRIVATE_KEY_PATH=/keys/app.pem",
     "GH_INSTALLATION_ID=42",
     "GITHUB_USER_WHITELIST=alice,bob",
-    "ENABLE_GITHUB_WEBHOOKS=true",
+    "GITHUB_EVENT_INTAKE_MODE=direct_webhook",
     "GH_WEBHOOK_SECRET=keepme",
     "",
   ].join("\n");
@@ -240,7 +276,7 @@ test("re-running setup on an initialized stack skips scaffolding and preserves t
   assert.equal(env.GH_PRIVATE_KEY_PATH, "/keys/app.pem");
   assert.equal(env.GH_INSTALLATION_ID, "42");
   assert.equal(env.GITHUB_USER_WHITELIST, "alice,bob");
-  assert.equal(env.ENABLE_GITHUB_WEBHOOKS, "true", "an existing webhook config is not flipped off");
+  assert.equal(env.GITHUB_EVENT_INTAKE_MODE, "direct_webhook", "an existing intake mode is not changed");
   assert.equal(env.GH_WEBHOOK_SECRET, "keepme");
   assert.equal(result.completed, true);
 });
@@ -249,7 +285,7 @@ test("a blank-Enter re-run keeps an existing direct-webhook intake config (defau
   const root = makeRoot();
   seedInitializedStack(
     root,
-    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nENABLE_GITHUB_WEBHOOKS=true\nGH_WEBHOOK_SECRET=keepme\n",
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_EVENT_INTAKE_MODE=direct_webhook\nGH_WEBHOOK_SECRET=keepme\n",
   );
 
   let seenDefault: string | undefined;
@@ -267,7 +303,7 @@ test("a blank-Enter re-run keeps an existing direct-webhook intake config (defau
 
   assert.equal(seenDefault, "keep", "an existing intake config pre-selects keep, not the auth recommendation");
   const env = readEnvVars(root);
-  assert.equal(env.ENABLE_GITHUB_WEBHOOKS, "true", "keeping must not rewrite the working webhook config");
+  assert.equal(env.GITHUB_EVENT_INTAKE_MODE, "direct_webhook", "keeping must not rewrite the working intake config");
   assert.equal(env.GH_WEBHOOK_SECRET, "keepme");
 });
 
@@ -319,20 +355,20 @@ test("fallback prompts honour blank-Enter safe defaults", async () => {
   const intake = await buildSequentialPrompts(scriptedIo([""])).configureIntake!({
     authMode: "app",
     defaultMode: "keep",
-    webhooksEnabled: true,
+    currentMode: "direct_webhook",
   });
   assert.deepEqual(intake, { keep: true });
 });
 
 test("fallback webhook prompt re-asks until a non-empty secret is entered", async () => {
-  // Option 3 = webhooks, then a blank (rejected) secret, then a real one.
+  // Option 3 = direct_webhook, then a blank (rejected) secret, then a real one.
   const io = scriptedIo(["3", "", "hook-secret"]);
   const decision = await buildSequentialPrompts(io).configureIntake!({
     authMode: "app",
-    defaultMode: "app",
-    webhooksEnabled: false,
+    defaultMode: "polling",
+    currentMode: "polling",
   });
-  assert.deepEqual(decision, { mode: "webhooks", webhookSecret: "hook-secret" });
+  assert.deepEqual(decision, { mode: "direct_webhook", webhookSecret: "hook-secret" });
   assert.match(io.lines.join("\n"), /webhook secret is required/i);
 });
 
@@ -352,7 +388,7 @@ test("runSequentialSetup drives the engine through scripted answers and writes .
   assert.equal(result.completed, true);
   assert.equal(statusOf(result.state, "init-stack"), "skipped");
   // The scripted polling choice landed in the real .env.
-  assert.equal(readEnvVars(root).ENABLE_GITHUB_WEBHOOKS, "false");
+  assert.equal(readEnvVars(root).GITHUB_EVENT_INTAKE_MODE, "polling");
   // The whitelist the user typed was mirrored to .env (backend is "down" here).
   assert.equal(readEnvVars(root).GITHUB_USER_WHITELIST, "carol,dave");
   assert.match(io.lines.join("\n"), /Setup complete/);

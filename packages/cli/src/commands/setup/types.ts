@@ -118,7 +118,7 @@ export const SETUP_STEP_DEFINITIONS: ReadonlyArray<
   {
     id: "intake",
     title: "GitHub intake",
-    description: "Choose how the backend ingests GitHub events (App/relay, polling, or webhooks).",
+    description: "Choose how the backend ingests GitHub events (routing WebSocket, polling, or direct webhooks).",
     optional: false,
   },
   {

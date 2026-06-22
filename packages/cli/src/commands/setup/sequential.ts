@@ -307,7 +307,10 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       if (choice === "relay") {
         const relayUrl = await promptInput(io, paint, { title: "Relay URL", defaultValue: "" });
         const relayToken = await promptInput(io, paint, { title: "Relay token", defaultValue: "", mask: true });
-        return { mode: "relay", vars: { GH_AUTH_MODE: "relay", RELAY_URL: relayUrl, RELAY_TOKEN: relayToken } };
+        return {
+          mode: "relay",
+          vars: { GH_AUTH_MODE: "relay", PROPR_GH_RELAY_URL: relayUrl, PROPR_GH_RELAY_TOKEN: relayToken },
+        };
       }
       const appId = await promptInput(io, paint, { title: "GitHub App ID", defaultValue: "" });
       const privateKeyPath = await promptInput(io, paint, { title: "Path to the App private key (.pem)", defaultValue: "" });
@@ -318,12 +321,12 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       };
     },
 
-    async configureIntake({ defaultMode, webhooksEnabled }): Promise<GithubIntakeDecision> {
+    async configureIntake({ defaultMode, currentMode }): Promise<GithubIntakeDecision> {
       const options = [
-        { label: "ProPR App / shared relay (recommended)", value: "app" },
+        { label: "Routing WebSocket — hosted ProPR relay (recommended)", value: "routing_websocket" },
         { label: "Polling (no inbound webhooks)", value: "polling" },
-        { label: "Direct webhooks (requires a signing secret)", value: "webhooks" },
-        { label: "Keep current", value: "keep", hint: webhooksEnabled ? "webhooks on" : "webhooks off" },
+        { label: "Direct webhooks (own GitHub App + a signing secret)", value: "direct_webhook" },
+        { label: "Keep current", value: "keep", hint: currentMode },
       ];
       const defaultIndex = Math.max(0, options.findIndex((o) => o.value === defaultMode));
       const choice = await promptSelect(io, paint, {
@@ -333,9 +336,9 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         defaultIndex,
       });
       if (choice === "keep") return { keep: true };
-      if (choice === "webhooks") {
-        // The API refuses to boot with webhooks on but no secret — keep asking
-        // until a non-empty secret is entered.
+      if (choice === "direct_webhook") {
+        // The API refuses to boot in direct_webhook mode with no secret — keep
+        // asking until a non-empty secret is entered.
         let secret = "";
         while (secret === "") {
           secret = (
@@ -347,7 +350,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
           ).trim();
           if (secret === "") io.print(paint("  A webhook secret is required.", ANSI.yellow));
         }
-        return { mode: "webhooks", webhookSecret: secret };
+        return { mode: "direct_webhook", webhookSecret: secret };
       }
       return { mode: choice as GithubIntakeMode };
     },

@@ -246,63 +246,97 @@ test("an already-running stack is reused, not restarted", async () => {
   assert.equal(statusOf(result.state, "start-stack"), "done");
 });
 
-test("selecting polling disables webhooks in .env", async () => {
-  let webhookVars: Record<string, string> | undefined;
+test("selecting polling selects the mode via GITHUB_EVENT_INTAKE_MODE", async () => {
+  let intakeVars: Record<string, string> | undefined;
   const result = await runSetup({
     root: "/stack",
     prompts: { configureIntake: async () => ({ mode: "polling" }) },
     actions: mockActions({
       applyEnvSelection: (_root, vars) => {
-        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookVars = vars;
+        if ("GITHUB_EVENT_INTAKE_MODE" in vars) intakeVars = vars;
         return { written: Object.keys(vars), skipped: [] };
       },
     }),
   });
 
+  // App auth qualifies for polling, so the step completes cleanly.
   assert.equal(statusOf(result.state, "intake"), "done");
-  assert.deepEqual(webhookVars, { ENABLE_GITHUB_WEBHOOKS: "false" });
+  assert.deepEqual(intakeVars, { GITHUB_EVENT_INTAKE_MODE: "polling" });
 });
 
-test("selecting webhooks writes the enable flag and the signing secret", async () => {
-  let webhookVars: Record<string, string> | undefined;
+test("selecting direct webhooks selects the mode and writes the signing secret", async () => {
+  let intakeVars: Record<string, string> | undefined;
   const result = await runSetup({
     root: "/stack",
-    prompts: { configureIntake: async () => ({ mode: "webhooks", webhookSecret: "s3cret" }) },
+    prompts: { configureIntake: async () => ({ mode: "direct_webhook", webhookSecret: "s3cret" }) },
     actions: mockActions({
       applyEnvSelection: (_root, vars) => {
-        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookVars = vars;
+        if ("GITHUB_EVENT_INTAKE_MODE" in vars) intakeVars = vars;
         return { written: Object.keys(vars), skipped: [] };
       },
     }),
   });
 
+  // App auth + a freshly written secret satisfies the direct_webhook prerequisites.
   assert.equal(statusOf(result.state, "intake"), "done");
-  assert.deepEqual(webhookVars, { ENABLE_GITHUB_WEBHOOKS: "true", GH_WEBHOOK_SECRET: "s3cret" });
+  assert.deepEqual(intakeVars, { GITHUB_EVENT_INTAKE_MODE: "direct_webhook", GH_WEBHOOK_SECRET: "s3cret" });
 });
 
 test("an empty webhook secret is rejected without writing intake .env", async () => {
-  let webhookWritten = false;
+  let intakeWritten = false;
   const result = await runSetup({
     root: "/stack",
-    prompts: { configureIntake: async () => ({ mode: "webhooks", webhookSecret: "   " }) },
+    prompts: { configureIntake: async () => ({ mode: "direct_webhook", webhookSecret: "   " }) },
     actions: mockActions({
       applyEnvSelection: (_root, vars) => {
-        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookWritten = true;
+        if ("GITHUB_EVENT_INTAKE_MODE" in vars) intakeWritten = true;
         return { written: [], skipped: [] };
       },
     }),
   });
 
   assert.equal(statusOf(result.state, "intake"), "warning", "an empty secret must be rejected, not written");
-  assert.equal(webhookWritten, false);
+  assert.equal(intakeWritten, false);
   assert.equal(result.completed, true, "a rejected secret is non-blocking");
 });
 
+test("routing_websocket without relay auth warns with a prerequisite hint", async () => {
+  // The relay routing default only works with relay auth + a relay token. App
+  // auth selecting it must surface the gap here, not at backend boot.
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureIntake: async () => ({ mode: "routing_websocket" }) },
+    actions: mockActions({
+      detectGithubAuthMode: () => APP_AUTH,
+      readEnvVars: () => ({}),
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "intake"), "warning");
+  assert.match(getStep(result.state, "intake")?.detail ?? "", /relay/i);
+  assert.match(getStep(result.state, "intake")?.nextAction ?? "", /relay enroll|polling/);
+});
+
+test("routing_websocket with relay auth + a relay token is wired correctly", async () => {
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureIntake: async () => ({ mode: "routing_websocket" }) },
+    actions: mockActions({
+      detectGithubAuthMode: () => ({ mode: "relay", warnings: [] }),
+      // A relay-enrolled stack: token present, URLs default to the hosted relay.
+      readEnvVars: () => ({ PROPR_GH_RELAY_TOKEN: "relay-token" }),
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "intake"), "done");
+  assert.match(getStep(result.state, "intake")?.detail ?? "", /routing WebSocket/);
+});
+
 test("an existing intake config defaults the prompt to keep, not the auth recommendation", async () => {
-  // App auth would otherwise recommend "app" (webhooks off); because .env
-  // already records ENABLE_GITHUB_WEBHOOKS, the prompt must default to "keep".
+  // App auth would otherwise recommend "polling"; because .env already records
+  // GITHUB_EVENT_INTAKE_MODE, the prompt must default to "keep".
   let seenDefault: string | undefined;
-  let webhookWritten = false;
+  let intakeWritten = false;
   const result = await runSetup({
     root: "/stack",
     prompts: {
@@ -313,16 +347,20 @@ test("an existing intake config defaults the prompt to keep, not the auth recomm
     },
     actions: mockActions({
       detectGithubAuthMode: () => APP_AUTH,
-      readEnvVars: () => ({ ENABLE_GITHUB_WEBHOOKS: "true", GITHUB_USER_WHITELIST: "alice" }),
+      readEnvVars: () => ({
+        GITHUB_EVENT_INTAKE_MODE: "direct_webhook",
+        GH_WEBHOOK_SECRET: "s3cret",
+        GITHUB_USER_WHITELIST: "alice",
+      }),
       applyEnvSelection: (_root, vars) => {
-        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookWritten = true;
+        if ("GITHUB_EVENT_INTAKE_MODE" in vars) intakeWritten = true;
         return { written: Object.keys(vars), skipped: [] };
       },
     }),
   });
 
-  assert.equal(seenDefault, "keep", "an existing webhook config pre-selects keep");
-  assert.equal(webhookWritten, false, "keeping must not rewrite the intake .env keys");
+  assert.equal(seenDefault, "keep", "an existing intake config pre-selects keep");
+  assert.equal(intakeWritten, false, "keeping must not rewrite the intake .env keys");
   assert.equal(statusOf(result.state, "intake"), "done");
   assert.match(getStep(result.state, "intake")?.detail ?? "", /direct webhooks/);
 });
@@ -343,7 +381,7 @@ test("a fresh install (no intake key) defaults the prompt to the auth recommenda
     }),
   });
 
-  assert.equal(seenDefault, "app", "no intake key yet → auth-derived recommendation");
+  assert.equal(seenDefault, "polling", "no intake key yet → auth-derived recommendation (app → polling)");
 });
 
 test("duplicate whitelist entries are de-duped before saving", async () => {

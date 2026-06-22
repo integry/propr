@@ -144,15 +144,15 @@ test("buildSetupPrompts maps intake selection and chains a masked webhook secret
       seen.push(event.prompt);
       const prompt = event.prompt;
       queueMicrotask(() => {
-        if (prompt.kind === "select") bridge.resolve(prompt.id, "webhooks");
+        if (prompt.kind === "select") bridge.resolve(prompt.id, "direct_webhook");
         else if (prompt.kind === "input") bridge.resolve(prompt.id, "hook-secret");
       });
     }
   });
   const hooks = buildSetupPrompts(bridge);
-  const decision = await hooks.configureIntake!({ authMode: "app", defaultMode: "app", webhooksEnabled: false });
+  const decision = await hooks.configureIntake!({ authMode: "app", defaultMode: "polling", currentMode: "polling" });
 
-  assert.deepEqual(decision, { mode: "webhooks", webhookSecret: "hook-secret" });
+  assert.deepEqual(decision, { mode: "direct_webhook", webhookSecret: "hook-secret" });
   assert.equal(seen[0].kind, "select", "the intake mode is a single-choice prompt");
   const secretPrompt = seen.find((p) => p.kind === "input");
   assert.equal(secretPrompt?.kind === "input" && secretPrompt.mask, true, "the secret input is masked");
@@ -162,7 +162,7 @@ test("buildSetupPrompts keeps the current intake when 'keep' is chosen", async (
   const bridge = new SetupBridge();
   const prompts = capture(bridge);
   const hooks = buildSetupPrompts(bridge);
-  const decision = hooks.configureIntake!({ authMode: "none", defaultMode: "polling", webhooksEnabled: true });
+  const decision = hooks.configureIntake!({ authMode: "none", defaultMode: "polling", currentMode: "direct_webhook" });
   assert.equal(prompts[0].kind, "select");
   bridge.resolve(prompts[0].id, "keep");
   assert.deepEqual(await decision, { keep: true });

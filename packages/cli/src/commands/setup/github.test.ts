@@ -14,44 +14,59 @@ import {
   saveWhitelist,
 } from "./github.js";
 
-test("polling and the App/relay path both disable inbound webhooks", () => {
-  assert.deepEqual(buildIntakeEnvVars("polling"), { ENABLE_GITHUB_WEBHOOKS: "false" });
-  assert.deepEqual(buildIntakeEnvVars("app"), { ENABLE_GITHUB_WEBHOOKS: "false" });
+test("routing and polling select the mode via GITHUB_EVENT_INTAKE_MODE", () => {
+  assert.deepEqual(buildIntakeEnvVars("polling"), { GITHUB_EVENT_INTAKE_MODE: "polling" });
+  assert.deepEqual(buildIntakeEnvVars("routing_websocket"), {
+    GITHUB_EVENT_INTAKE_MODE: "routing_websocket",
+  });
 });
 
-test("webhooks enables the listener and records the trimmed secret", () => {
-  assert.deepEqual(buildIntakeEnvVars("webhooks", { webhookSecret: "  s3cret  " }), {
-    ENABLE_GITHUB_WEBHOOKS: "true",
+test("direct_webhook selects the mode and records the trimmed secret", () => {
+  assert.deepEqual(buildIntakeEnvVars("direct_webhook", { webhookSecret: "  s3cret  " }), {
+    GITHUB_EVENT_INTAKE_MODE: "direct_webhook",
     GH_WEBHOOK_SECRET: "s3cret",
   });
 });
 
+test("the deprecated ENABLE_GITHUB_WEBHOOKS boolean is never written", () => {
+  // It no longer selects the intake mode (see resolveGithubEventIntakeMode), so
+  // setup must not write it for any mode.
+  for (const mode of ["routing_websocket", "polling"] as const) {
+    assert.ok(!("ENABLE_GITHUB_WEBHOOKS" in buildIntakeEnvVars(mode)));
+  }
+  assert.ok(
+    !("ENABLE_GITHUB_WEBHOOKS" in buildIntakeEnvVars("direct_webhook", { webhookSecret: "x" }))
+  );
+});
+
 test("an empty or whitespace webhook secret is rejected", () => {
-  assert.throws(() => buildIntakeEnvVars("webhooks"), IntakeConfigError);
-  assert.throws(() => buildIntakeEnvVars("webhooks", { webhookSecret: "" }), IntakeConfigError);
-  assert.throws(() => buildIntakeEnvVars("webhooks", { webhookSecret: "   " }), IntakeConfigError);
+  assert.throws(() => buildIntakeEnvVars("direct_webhook"), IntakeConfigError);
+  assert.throws(() => buildIntakeEnvVars("direct_webhook", { webhookSecret: "" }), IntakeConfigError);
+  assert.throws(() => buildIntakeEnvVars("direct_webhook", { webhookSecret: "   " }), IntakeConfigError);
 });
 
-test("the App/relay path is the default when an App or relay is configured", () => {
-  assert.equal(defaultIntakeMode("app"), "app");
-  assert.equal(defaultIntakeMode("relay"), "app");
+test("routing_websocket is the default only when relay auth is configured", () => {
+  assert.equal(defaultIntakeMode("relay"), "routing_websocket");
 });
 
-test("polling is the default otherwise", () => {
+test("polling is the default for every other auth mode", () => {
+  // routing_websocket needs the hosted relay (relay auth), so own-App / none /
+  // demo all fall back to polling, which works with any usable GitHub auth.
+  assert.equal(defaultIntakeMode("app"), "polling");
   assert.equal(defaultIntakeMode("none"), "polling");
   assert.equal(defaultIntakeMode("demo"), "polling");
 });
 
 test("a fresh install pre-selects the auth-derived intake recommendation", () => {
-  assert.equal(defaultIntakeChoice("app", { intakeConfigured: false }), "app");
-  assert.equal(defaultIntakeChoice("relay", { intakeConfigured: false }), "app");
+  assert.equal(defaultIntakeChoice("relay", { intakeConfigured: false }), "routing_websocket");
+  assert.equal(defaultIntakeChoice("app", { intakeConfigured: false }), "polling");
   assert.equal(defaultIntakeChoice("none", { intakeConfigured: false }), "polling");
 });
 
 test("an existing intake config pre-selects keep, so a blank Enter never rewrites it", () => {
-  // Even when the auth-derived recommendation differs (app), an install that
-  // already chose webhooks must default to "keep".
-  assert.equal(defaultIntakeChoice("app", { intakeConfigured: true }), "keep");
+  // Even when the auth-derived recommendation differs, an install that already
+  // chose a mode must default to "keep".
+  assert.equal(defaultIntakeChoice("relay", { intakeConfigured: true }), "keep");
   assert.equal(defaultIntakeChoice("none", { intakeConfigured: true }), "keep");
 });
 

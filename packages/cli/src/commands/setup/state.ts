@@ -202,8 +202,8 @@ export function detectGithubAuthMode(rootDir: string): GithubAuthModeResult {
   return resolveGithubAuthMode({
     demoMode: truthy.test(env.PROPR_DEMO_MODE ?? ""),
     ghAuthMode: env.GH_AUTH_MODE,
-    relayUrl: env.RELAY_URL,
-    relayToken: env.RELAY_TOKEN,
+    relayUrl: env.PROPR_GH_RELAY_URL,
+    relayToken: env.PROPR_GH_RELAY_TOKEN,
     appId: env.GH_APP_ID,
     privateKeyPath: env.GH_PRIVATE_KEY_PATH,
     installationId: env.GH_INSTALLATION_ID,

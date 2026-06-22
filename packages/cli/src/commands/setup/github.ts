@@ -5,18 +5,22 @@
  * the engine so the decision logic lives in one tested place and both renderers
  * (Ink + readline) share it:
  *
- *   - **Intake mode** — how the backend learns about GitHub events. Three paths,
- *     each a single `.env` edit:
- *       app      — the shared ProPR App / relay delivers events; no inbound
- *                  webhook listener runs locally (the default where a relay/App
- *                  is already configured).
- *       polling  — the daemon polls GitHub on an interval; webhooks disabled.
- *       webhooks — GitHub posts directly to the local API; requires a signing
- *                  secret so forged payloads are rejected.
+ *   - **Intake mode** — how the backend learns about GitHub events, selected by
+ *     the `GITHUB_EVENT_INTAKE_MODE` `.env` key (the legacy `ENABLE_GITHUB_WEBHOOKS`
+ *     boolean is deprecated and no longer selects the mode). Three paths:
+ *       routing_websocket — events stream over the hosted ProPR routing
+ *                           WebSocket; no inbound webhook listener and no own
+ *                           GitHub App required. The default, and only usable
+ *                           with relay auth (PROPR_GH_RELAY_TOKEN).
+ *       polling           — the daemon polls the GitHub API on an interval; works
+ *                           with any usable GitHub auth and needs no inbound URL.
+ *       direct_webhook    — GitHub posts directly to the local API; requires an
+ *                           own GitHub App plus a signing secret so forged
+ *                           payloads are rejected.
  *     {@link buildIntakeEnvVars} turns a chosen mode into the exact `.env` keys
- *     (`ENABLE_GITHUB_WEBHOOKS`, and `GH_WEBHOOK_SECRET` for webhooks), refusing
- *     to produce a webhook config without a secret — the API would otherwise
- *     refuse to boot.
+ *     (`GITHUB_EVENT_INTAKE_MODE`, and `GH_WEBHOOK_SECRET` for direct webhooks),
+ *     refusing to produce a direct_webhook config without a secret — the API
+ *     would otherwise refuse to boot.
  *
  *   - **User whitelist** — which GitHub users may trigger ProPR. Saved through
  *     the settings API when the backend is running (a partial update that never
@@ -29,10 +33,17 @@
  * binds them to the real API/`.env` and tests drive the whole thing in memory.
  */
 
-import type { GithubAuthMode } from "@propr/shared";
+import type { GithubAuthMode, GithubEventIntakeMode } from "@propr/shared";
 
-/** How the backend ingests GitHub events. */
-export type GithubIntakeMode = "app" | "polling" | "webhooks";
+/**
+ * How the backend ingests GitHub events. Aliased to the shared
+ * {@link GithubEventIntakeMode} so the wizard and the backend boot path can't
+ * drift on the values the `GITHUB_EVENT_INTAKE_MODE` `.env` key accepts:
+ *   routing_websocket — events stream over the ProPR routing WebSocket (default)
+ *   polling           — the daemon polls the GitHub API; no inbound exposure
+ *   direct_webhook    — GitHub posts to a local /webhook endpoint (needs a secret)
+ */
+export type GithubIntakeMode = GithubEventIntakeMode;
 
 /** Documentation surfaced in the intake prompt's detail text. */
 export const INTAKE_DOCS_URL = "https://docs.propr.dev/docs/architecture/daemon";
@@ -49,7 +60,7 @@ export interface GithubIntakeDecision {
   keep?: boolean;
   /** The intake mode the user picked. */
   mode?: GithubIntakeMode;
-  /** Signing secret, required (and only used) when `mode === "webhooks"`. */
+  /** Signing secret, required (and only used) when `mode === "direct_webhook"`. */
   webhookSecret?: string;
 }
 
@@ -62,26 +73,28 @@ export class IntakeConfigError extends Error {
 }
 
 /**
- * The intake mode to pre-select for a given GitHub auth mode. A shared App or
- * relay already brings event delivery with it, so the App/relay path is the
- * default there; everything else falls back to polling, which works without any
- * inbound network exposure.
+ * The intake mode to pre-select for a given GitHub auth mode. The hosted routing
+ * WebSocket is the product default, but it only works with relay auth (it needs
+ * a relay token and the shared ProPR App), so it's recommended only when relay
+ * auth is configured. Every other auth mode falls back to polling, which works
+ * with any usable GitHub auth and needs no inbound network exposure — and unlike
+ * direct webhooks requires no public URL or own GitHub App.
  */
 export function defaultIntakeMode(authMode: GithubAuthMode): GithubIntakeMode {
-  return authMode === "app" || authMode === "relay" ? "app" : "polling";
+  return authMode === "relay" ? "routing_websocket" : "polling";
 }
 
 /**
  * The intake choice the prompt should pre-select.
  *
  * On a re-run where `.env` already carries an intake decision
- * (`ENABLE_GITHUB_WEBHOOKS` is set), the safe default is `"keep"`: a blank Enter
+ * (`GITHUB_EVENT_INTAKE_MODE` is set), the safe default is `"keep"`: a blank Enter
  * must never silently rewrite a working config — e.g. an existing
- * `ENABLE_GITHUB_WEBHOOKS=true` install must not flip to `false` just because the
- * auth-derived recommendation happens to be `app`. This upholds the setup
- * engine's re-run safety model (keep existing config unless the user explicitly
- * changes it). Only on a fresh install, with no intake config yet, do we fall
- * back to the auth-derived recommendation from {@link defaultIntakeMode}.
+ * `direct_webhook` install must not flip to `routing_websocket` just because the
+ * auth-derived recommendation differs. This upholds the setup engine's re-run
+ * safety model (keep existing config unless the user explicitly changes it). Only
+ * on a fresh install, with no intake config yet, do we fall back to the
+ * auth-derived recommendation from {@link defaultIntakeMode}.
  */
 export function defaultIntakeChoice(
   authMode: GithubAuthMode,
@@ -92,35 +105,51 @@ export function defaultIntakeChoice(
 
 /**
  * Translate a chosen {@link GithubIntakeMode} into the `.env` keys it implies.
+ * The mode is selected by `GITHUB_EVENT_INTAKE_MODE`, the value the backend boot
+ * path resolves (see resolveGithubEventIntakeMode); the deprecated
+ * `ENABLE_GITHUB_WEBHOOKS` boolean is intentionally never written here.
  *
- *   - `app` / `polling` disable the local webhook listener
- *     (`ENABLE_GITHUB_WEBHOOKS=false`) — events arrive via the relay or polling.
+ *   - `routing_websocket` / `polling` set `GITHUB_EVENT_INTAKE_MODE` to the mode
+ *     and nothing else — routing events arrive over the relay WebSocket and
+ *     polling pulls them from the API, neither needing a local webhook listener.
  *     A previously recorded `GH_WEBHOOK_SECRET` is intentionally *not* cleared:
- *     `applyEnvSelection`/`upsertEnvVars` only set keys, never remove them, and a
- *     blank value is ignored rather than blanking an existing one. The leftover
- *     secret is inert while webhooks are disabled (the API never reads it), but
- *     callers wanting a pristine `.env` must remove the key by hand.
- *   - `webhooks` enables it and records the signing secret. An empty/whitespace
- *     secret is rejected with {@link IntakeConfigError}: the API refuses to boot
- *     with webhooks on but no secret, so writing it would only break startup.
+ *     `applyEnvSelection`/`upsertEnvVars` only set keys, never remove them. The
+ *     leftover secret is inert while not in direct_webhook mode (the API never
+ *     reads it), but callers wanting a pristine `.env` must remove it by hand.
+ *   - `direct_webhook` records the signing secret alongside the mode. An
+ *     empty/whitespace secret is rejected with {@link IntakeConfigError}: the API
+ *     refuses to boot in direct_webhook mode with no secret, so writing it would
+ *     only break startup.
  */
 export function buildIntakeEnvVars(
   mode: GithubIntakeMode,
   opts: { webhookSecret?: string } = {}
 ): Record<string, string> {
   switch (mode) {
-    case "app":
+    case "routing_websocket":
     case "polling":
-      return { ENABLE_GITHUB_WEBHOOKS: "false" };
-    case "webhooks": {
+      return { GITHUB_EVENT_INTAKE_MODE: mode };
+    case "direct_webhook": {
       const secret = (opts.webhookSecret ?? "").trim();
       if (!secret) {
         throw new IntakeConfigError(
           "A webhook secret is required for direct webhooks — the API refuses to start without one."
         );
       }
-      return { ENABLE_GITHUB_WEBHOOKS: "true", GH_WEBHOOK_SECRET: secret };
+      return { GITHUB_EVENT_INTAKE_MODE: "direct_webhook", GH_WEBHOOK_SECRET: secret };
     }
+  }
+}
+
+/** A short, human-readable label for an intake mode, shared by both renderers. */
+export function intakeModeLabel(mode: GithubIntakeMode): string {
+  switch (mode) {
+    case "routing_websocket":
+      return "ProPR routing WebSocket (hosted relay)";
+    case "polling":
+      return "polling (no inbound webhooks)";
+    case "direct_webhook":
+      return "direct webhooks (signing secret recorded)";
   }
 }
 
