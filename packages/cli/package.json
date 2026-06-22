@@ -18,7 +18,7 @@
     "build": "tsc && node scripts/copy-assets.mjs",
     "prepack": "npm run build",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@propr/shared": "^0.8.3",
