@@ -230,6 +230,12 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
+    // Agent enablement / image-login actions — inert so the scripted run never
+    // reaches the backend, Docker, or an extra login prompt.
+    listAgents: async () => [],
+    addAgent: async () => undefined,
+    loginableAgents: async () => [],
+    loginAgent: async () => ({ available: false, success: false }),
     ...overrides,
   };
 }

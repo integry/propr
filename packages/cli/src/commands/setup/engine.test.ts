@@ -51,6 +51,12 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
+    // Agent enablement / image-login actions — inert by default so no test
+    // touches the backend or Docker unless it overrides them.
+    listAgents: async () => [],
+    addAgent: async () => undefined,
+    loginableAgents: async () => [],
+    loginAgent: async () => ({ available: false, success: false }),
     ...overrides,
   };
 }
@@ -261,6 +267,6 @@ test("prompts drive a full unattended run to completion", async () => {
   // Every step settled exactly once, in order.
   assert.deepEqual(
     seen.map((s) => s.split(":")[0]),
-    ["check", "init-stack", "pull-images", "configure-agents", "github-auth", "start-stack", "whitelist", "repo", "launch-ui"]
+    ["check", "init-stack", "pull-images", "configure-agents", "github-auth", "start-stack", "enable-agents", "whitelist", "repo", "launch-ui"]
   );
 });

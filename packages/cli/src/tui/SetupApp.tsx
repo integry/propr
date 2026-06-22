@@ -276,6 +276,15 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       });
     },
 
+    async confirmAgentLogin({ candidates }): Promise<string[]> {
+      return bridge.multiSelect({
+        title: "Authenticate agents through their images?",
+        detail: "Log in inside each agent's Docker image; credentials are written to the mounted host directory. Leave empty to skip.",
+        options: candidates.map((type) => ({ label: type, value: type })),
+        defaultSelected: [],
+      });
+    },
+
     async configureWhitelist({ current, demoMode }): Promise<string[] | null> {
       if (demoMode) return null;
       const entered = await bridge.input({

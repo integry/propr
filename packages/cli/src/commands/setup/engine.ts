@@ -39,6 +39,11 @@ import type { ConfigManager } from "../../config/index.js";
 import type { ChecksOutcome, RunChecksOptions } from "../checkCommands.js";
 import type { InitStackOptions, InitStackResult } from "../initStack.js";
 import {
+  createDefaultAgentSetupActions,
+  runAgentSetup,
+  type AgentSetupActions,
+} from "./agents.js";
+import {
   applyEnvSelection,
   createSetupState,
   detectGithubAuthMode,
@@ -140,6 +145,12 @@ export interface SetupPrompts {
   configureGithubAuth?(ctx: { current: GithubAuthModeResult }): Promise<GithubAuthDecision>;
   /** Confirm starting the stack. Default: start it. */
   confirmStartStack?(ctx: { rootDir: string; alreadyRunning: boolean }): Promise<boolean>;
+  /**
+   * Choose which of the selected agents to authenticate through their image
+   * (only agents with an image-login plan are offered). Returns the subset to
+   * log in. Default: authenticate none.
+   */
+  confirmAgentLogin?(ctx: { candidates: string[]; rootDir: string }): Promise<string[]>;
   /** Provide the user whitelist. Return null to keep the current value. Default: keep. */
   configureWhitelist?(ctx: { current: string[]; demoMode: boolean }): Promise<string[] | null>;
   /** Optionally add a first repository. Return null to skip. Default: skip. */
@@ -206,7 +217,7 @@ export interface BackendHealth {
  * to the real orchestrator/commands (see {@link createDefaultActions}); tests
  * override any subset.
  */
-export interface SetupActions {
+export interface SetupActions extends AgentSetupActions {
   runChecks(options: RunChecksOptions): Promise<ChecksOutcome>;
   inspectStackInit(rootDir: string): StackInitState;
   scaffoldStack(options: InitStackOptions): Promise<InitStackResult>;
@@ -261,6 +272,8 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
   };
 
   return {
+    // Agent enablement + image-login actions, bound to the local stack.
+    ...createDefaultAgentSetupActions(configManager),
     async runChecks(options) {
       const { runChecks } = await import("../checkCommands.js");
       return runChecks(options);
@@ -615,7 +628,54 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     return finish();
   }
 
-  // 7. Whitelist — restrict who can trigger ProPR. Written non-destructively.
+  // 7. Enable agents in the running backend — add the selected agents that are
+  //    missing (existing ones are never disabled or deleted) and, on
+  //    confirmation, authenticate the ones that support an image login. This
+  //    runs after startup because it talks to the live backend API. Any problem
+  //    is a non-blocking warning: agents can always be configured later.
+  begin("enable-agents");
+  try {
+    const outcome = await runAgentSetup({
+      rootDir,
+      selectedAgents,
+      actions,
+      confirmLogin: prompts.confirmAgentLogin,
+      onLog: log,
+    });
+    if (selectedAgents.length === 0) {
+      settle("enable-agents", {
+        status: "skipped",
+        detail: "no agents selected",
+        nextAction: "Enable agents later in the UI or with `propr agent add`.",
+      });
+    } else {
+      const parts: string[] = [];
+      if (outcome.added.length > 0) parts.push(`enabled ${outcome.added.join(", ")}`);
+      if (outcome.alreadyConfigured.length > 0) parts.push(`${outcome.alreadyConfigured.length} already configured`);
+      if (outcome.authenticated.length > 0) parts.push(`authenticated ${outcome.authenticated.join(", ")}`);
+      if (outcome.authFailed.length > 0) parts.push(`${outcome.authFailed.length} login(s) did not complete`);
+      const detail = parts.length > 0 ? parts.join("; ") : "no changes needed";
+      if (outcome.errors.length > 0 || outcome.authFailed.length > 0) {
+        settle("enable-agents", {
+          status: "warning",
+          detail: outcome.errors.length > 0 ? `${detail}; ${outcome.errors.join("; ")}` : detail,
+          nextAction: "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
+        });
+      } else {
+        settle("enable-agents", { status: "done", detail });
+      }
+    }
+  } catch (error) {
+    // runAgentSetup is built not to throw for expected conditions; anything that
+    // escapes is treated as a non-blocking warning so it can't abort setup.
+    settle("enable-agents", {
+      status: "warning",
+      detail: `could not configure agents: ${(error as Error).message}`,
+      nextAction: "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
+    });
+  }
+
+  // 8. Whitelist — restrict who can trigger ProPR. Written non-destructively.
   begin("whitelist");
   try {
     const envNow = actions.readEnvVars(rootDir);
@@ -647,7 +707,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     return finish();
   }
 
-  // 8. Repository (optional) — adding a repo must never fail the whole run.
+  // 9. Repository (optional) — adding a repo must never fail the whole run.
   begin("repo");
   try {
     // The prompt itself is part of this optional step — a renderer that throws
@@ -675,7 +735,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     });
   }
 
-  // 9. UI (optional) — surface the URL; opening it is the renderer's job.
+  // 10. UI (optional) — surface the URL; opening it is the renderer's job.
   begin("launch-ui");
   let uiUrl = "";
   try {
