@@ -4,9 +4,12 @@
  * Pure, side-effect-free domain logic for `propr setup`: resolving the stack
  * root, inspecting how far scaffolding has progressed, safely editing `.env`,
  * and advancing the per-step model in ./types.ts. None of these import Ink or
- * readline, and none start Docker on their own — the only orchestrator-backed
- * helper ({@link isStackRunning}) loads the orchestrator lazily, so the module
- * is safe to import (and unit-test) without a running daemon or a TTY.
+ * readline, and none start Docker on their own. The stack-root resolver reuses
+ * the orchestrator module's pure {@link resolveStackRoot} — path math over node
+ * builtins only, so importing it does not load the Docker-backed orchestrator
+ * core. That core (orchestrator.mjs) is loaded lazily by the one helper that
+ * needs it ({@link isStackRunning}), so this module stays safe to import (and
+ * unit-test) without a running daemon or a TTY.
  *
  * Editing `.env` reuses {@link upsertEnvVars}, which only touches the keys it is
  * given and preserves every other line. The two writers below keep the flow
@@ -15,7 +18,7 @@
  * choices.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { scaffoldStack, type InitStackOptions, type InitStackResult } from "../initStack.js";
@@ -40,16 +43,37 @@ export function resolveSetupRoot(configManager: ConfigManager | undefined, flagR
   return resolveStackRoot(configManager, flagRoot);
 }
 
+/** True when `path` is an existing regular file (false for dirs / missing). */
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** True when `path` is an existing directory (false for files / missing). */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Filesystem-only snapshot of scaffolding progress for `rootDir`. Used to keep
- * the init step idempotent: a fully-initialized root needs no re-scaffold.
+ * the init step idempotent: a fully-initialized root needs no re-scaffold. The
+ * checks are type-aware — a regular file named `data`/`logs`/`repos` (or a
+ * directory named `.env`) does not count, so an invalid root is not mistaken
+ * for an initialized one.
  */
 export function getStackState(rootDir: string): StackState {
   const envPath = join(rootDir, ".env");
-  const envExists = existsSync(envPath);
-  const dataDirExists = existsSync(join(rootDir, "data"));
-  const logsDirExists = existsSync(join(rootDir, "logs"));
-  const reposDirExists = existsSync(join(rootDir, "repos"));
+  const envExists = isFile(envPath);
+  const dataDirExists = isDirectory(join(rootDir, "data"));
+  const logsDirExists = isDirectory(join(rootDir, "logs"));
+  const reposDirExists = isDirectory(join(rootDir, "repos"));
   return {
     rootDir,
     envPath,
@@ -144,21 +168,26 @@ export interface EnvWriteResult {
   skipped: string[];
 }
 
-function isEmpty(value: string | undefined): value is undefined | "" {
-  return value === undefined || value === "";
+/**
+ * A value is "real" only when it is defined and not blank — whitespace-only
+ * input (e.g. a prompt answered with spaces) counts as empty so it never gets
+ * written as a value, bypassing placeholder/default handling.
+ */
+function hasValue(value: string | undefined): value is string {
+  return value !== undefined && value.trim() !== "";
 }
 
 /**
- * Write explicit user selections to `.env`. Empty/undefined values are skipped
- * (so an un-answered prompt never blanks an existing value); everything else is
- * upserted via {@link upsertEnvVars}, replacing any current value. Use this when
- * the user has deliberately chosen a value for a step.
+ * Write explicit user selections to `.env`. Empty/blank/undefined values are
+ * skipped (so an un-answered prompt never blanks an existing value); everything
+ * else is upserted via {@link upsertEnvVars}, replacing any current value. Use
+ * this when the user has deliberately chosen a value for a step.
  */
 export function writeEnvSelection(envPath: string, selections: Record<string, string | undefined>): EnvWriteResult {
   const result: EnvWriteResult = { written: [], preserved: [], skipped: [] };
   const vars: Record<string, string> = {};
   for (const [key, value] of Object.entries(selections)) {
-    if (isEmpty(value)) {
+    if (!hasValue(value)) {
       result.skipped.push(key);
       continue;
     }
@@ -180,7 +209,7 @@ export function seedEnvDefaults(envPath: string, defaults: Record<string, string
   const result: EnvWriteResult = { written: [], preserved: [], skipped: [] };
   const vars: Record<string, string> = {};
   for (const [key, value] of Object.entries(defaults)) {
-    if (isEmpty(value)) {
+    if (!hasValue(value)) {
       result.skipped.push(key);
       continue;
     }
@@ -221,13 +250,28 @@ export function updateStep(
 ): SetupState {
   return {
     ...state,
-    steps: state.steps.map((step) => (step.id === id ? { ...step, status, ...patch } : step)),
+    steps: state.steps.map((step) => {
+      if (step.id !== id) return step;
+      const next: SetupStepState = { ...step, status, ...patch };
+      // A step that leaves the "error" state should not keep showing its old
+      // failure message (e.g. error → done after a retry). Clear it unless the
+      // caller explicitly set a new one in the patch.
+      if (status !== "error" && !("error" in patch)) delete next.error;
+      return next;
+    }),
   };
 }
 
-/** The next step that still needs attention (pending or active), or undefined. */
+/**
+ * The next step that still needs attention, or undefined. A step is actionable
+ * when it is pending, currently active, or errored — an `error` step is
+ * surfaced ahead of later pending steps because it needs the user to act before
+ * the flow can move on.
+ */
 export function nextActionableStep(state: SetupState): SetupStepState | undefined {
-  return state.steps.find((step) => step.status === "pending" || step.status === "active");
+  return state.steps.find(
+    (step) => step.status === "pending" || step.status === "active" || step.status === "error"
+  );
 }
 
 /** Count steps by status — used by both renderers for a one-line summary. */
@@ -237,7 +281,18 @@ export function summarizeSetup(state: SetupState): Record<SetupStepStatus, numbe
   return counts;
 }
 
-/** True once no step is pending/active/error — i.e. setup has settled. */
+/** Ids of the steps that may be skipped without leaving the stack unusable. */
+const OPTIONAL_STEP_IDS = new Set<SetupStepId>(
+  SETUP_STEPS.filter((def) => def.optional).map((def) => def.id)
+);
+
+/**
+ * True once setup has settled: every step is either done, or skipped *and*
+ * optional. A skipped required step is not "complete" — skipping it leaves the
+ * stack unusable, so the flow still has work to do.
+ */
 export function isSetupComplete(state: SetupState): boolean {
-  return state.steps.every((step) => step.status === "done" || step.status === "skipped");
+  return state.steps.every(
+    (step) => step.status === "done" || (step.status === "skipped" && OPTIONAL_STEP_IDS.has(step.id))
+  );
 }
