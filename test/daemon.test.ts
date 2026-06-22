@@ -1,79 +1,94 @@
-import { test, mock, after } from 'node:test';
+import { test, mock, before } from 'node:test';
 import assert from 'node:assert';
-import { fetchIssuesForRepo } from '@propr/core';
-import { pollForIssues } from '../src/polling/issuePolling.js';
+import { fetchIssuesForRepo, loadPrimaryProcessingLabelsFromConfig } from '@propr/core';
 
-// Mock environment variables for testing
-process.env.GITHUB_REPOS_TO_MONITOR = 'test-owner/test-repo';
-process.env.AI_PRIMARY_TAG = 'AI';
-process.env.AI_EXCLUDE_TAGS_PROCESSING = 'AI-processing';
-process.env.AI_DONE_TAG = 'AI-done';
-process.env.MODEL_LABEL_PATTERN = '^llm-claude-(.+)$';
-process.env.DEFAULT_CLAUDE_MODEL = 'claude-3-5-sonnet-20240620';
+// fetchIssuesForRepo pulls open issues from the GitHub REST API by primary
+// processing label (via octokit.paginate), drops pull requests and any issue
+// carrying a `<label>-processing` / `<label>-done` exclusion label, and maps the
+// survivors to DetectedIssue records tagged `source: 'polling'`.
+//
+// These tests drive that path with a mocked octokit — no network, no DB. The
+// primary processing labels come from PRIMARY_PROCESSING_LABELS, loaded into the
+// core config module via loadPrimaryProcessingLabelsFromConfig() in `before`.
 
-interface MockOctokit {
-    request?: ReturnType<typeof mock.fn>;
+process.env.PRIMARY_PROCESSING_LABELS = 'AI';
+process.env.GITHUB_USER_WHITELIST = '';
+delete process.env.CONFIG_REPO;
+
+const CORRELATION_ID = 'test-correlation-id';
+
+interface MockIssue {
+    id: number;
+    number: number;
+    title: string;
+    html_url: string;
+    labels: { name: string }[];
+    created_at: string;
+    updated_at: string;
+    user?: { login: string };
+    pull_request?: unknown;
 }
 
+type PaginateFn = (endpoint: string, options: Record<string, unknown>) => Promise<unknown>;
+
+/** Build a minimal octokit whose only used method is `paginate`. */
+function makeOctokit(paginate: PaginateFn) {
+    return { paginate: mock.fn(paginate) } as never;
+}
+
+before(async () => {
+    // Populate the core config module's primaryProcessingLabels from the env var
+    // set above; without this the label loop is empty and nothing is fetched.
+    await loadPrimaryProcessingLabelsFromConfig();
+});
+
 test('fetchIssuesForRepo handles invalid repository format', async () => {
-    const mockOctokit: MockOctokit = {};
-    const invalidRepo = 'invalid-format';
-    
-    const issues = await fetchIssuesForRepo(mockOctokit, invalidRepo);
+    const octokit = makeOctokit(async () => []);
+    const issues = await fetchIssuesForRepo(octokit, 'invalid-format', CORRELATION_ID);
     assert.deepStrictEqual(issues, []);
 });
 
-test('fetchIssuesForRepo constructs correct search query', async () => {
-    let capturedQuery = '';
-    const mockOctokit = {
-        request: mock.fn(async (_endpoint: string, options: { q: string }) => {
-            capturedQuery = options.q;
-            return {
-                data: {
-                    total_count: 0,
-                    items: []
-                }
-            };
-        })
-    };
+test('fetchIssuesForRepo queries the issues API by primary label with exclusions', async () => {
+    let capturedEndpoint = '';
+    let capturedOptions: Record<string, unknown> = {};
+    const octokit = makeOctokit(async (endpoint, options) => {
+        capturedEndpoint = endpoint;
+        capturedOptions = options;
+        return [];
+    });
 
-    await fetchIssuesForRepo(mockOctokit, 'owner/repo');
-    
-    assert.strictEqual(mockOctokit.request.mock.calls.length, 1);
-    assert.strictEqual(mockOctokit.request.mock.calls[0].arguments[0], 'GET /search/issues');
-    assert.ok(capturedQuery.includes('repo:owner/repo'));
-    assert.ok(capturedQuery.includes('is:issue'));
-    assert.ok(capturedQuery.includes('is:open'));
-    assert.ok(capturedQuery.includes('label:"AI"'));
-    assert.ok(capturedQuery.includes('-label:"AI-processing"'));
-    assert.ok(capturedQuery.includes('-label:"AI-done"'));
+    await fetchIssuesForRepo(octokit, 'owner/repo', CORRELATION_ID);
+
+    // One primary label ('AI') → exactly one paginated query.
+    const paginate = (octokit as unknown as { paginate: ReturnType<typeof mock.fn> }).paginate;
+    assert.strictEqual(paginate.mock.calls.length, 1);
+    assert.strictEqual(capturedEndpoint, 'GET /repos/{owner}/{repo}/issues');
+    assert.deepStrictEqual(capturedOptions, {
+        owner: 'owner',
+        repo: 'repo',
+        state: 'open',
+        labels: 'AI',
+        per_page: 100,
+        sort: 'created',
+        direction: 'desc',
+    });
 });
 
-test('fetchIssuesForRepo transforms issues correctly', async () => {
-    const mockIssue = {
+test('fetchIssuesForRepo maps issues to DetectedIssue records', async () => {
+    const mockIssue: MockIssue = {
         id: 123,
         number: 1,
         title: 'Test Issue',
         html_url: 'https://github.com/owner/repo/issues/1',
-        labels: [
-            { name: 'AI' },
-            { name: 'bug' }
-        ],
+        labels: [{ name: 'AI' }, { name: 'bug' }],
         created_at: '2024-01-01T00:00:00Z',
-        updated_at: '2024-01-02T00:00:00Z'
+        updated_at: '2024-01-02T00:00:00Z',
+        user: { login: 'octocat' },
     };
+    const octokit = makeOctokit(async () => [mockIssue]);
 
-    const mockOctokit = {
-        request: mock.fn(async () => ({
-            data: {
-                total_count: 1,
-                items: [mockIssue]
-            }
-        }))
-    };
+    const issues = await fetchIssuesForRepo(octokit, 'owner/repo', CORRELATION_ID);
 
-    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
-    
     assert.strictEqual(issues.length, 1);
     assert.deepStrictEqual(issues[0], {
         id: 123,
@@ -83,167 +98,52 @@ test('fetchIssuesForRepo transforms issues correctly', async () => {
         repoOwner: 'owner',
         repoName: 'repo',
         labels: ['AI', 'bug'],
-        targetModels: ['sonnet'],
         createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-02T00:00:00Z'
+        updatedAt: '2024-01-02T00:00:00Z',
+        // No whitelist configured → triggeredBy is the issue author.
+        triggeredBy: 'octocat',
+        source: 'polling',
     });
 });
 
-test('fetchIssuesForRepo handles API errors gracefully', async () => {
-    const mockOctokit = {
-        request: mock.fn(async () => {
-            const error = new Error('API Error') as Error & { status: number };
-            error.status = 500;
-            throw error;
-        })
+test('fetchIssuesForRepo excludes pull requests and -processing/-done labels', async () => {
+    const base = {
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-02T00:00:00Z',
+        user: { login: 'octocat' },
     };
+    const items: MockIssue[] = [
+        // A pull request surfaced by the issues endpoint — must be dropped.
+        { ...base, id: 1, number: 1, title: 'PR', html_url: 'u/1', labels: [{ name: 'AI' }], pull_request: {} },
+        // Already being processed — excluded by the AI-processing label.
+        { ...base, id: 2, number: 2, title: 'In progress', html_url: 'u/2', labels: [{ name: 'AI' }, { name: 'AI-processing' }] },
+        // Already done — excluded by the AI-done label.
+        { ...base, id: 3, number: 3, title: 'Done', html_url: 'u/3', labels: [{ name: 'AI' }, { name: 'AI-done' }] },
+        // The only one that should be returned.
+        { ...base, id: 4, number: 4, title: 'Fresh', html_url: 'u/4', labels: [{ name: 'AI' }] },
+    ];
+    const octokit = makeOctokit(async () => items);
 
-    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
+    const issues = await fetchIssuesForRepo(octokit, 'owner/repo', CORRELATION_ID);
+
+    assert.strictEqual(issues.length, 1);
+    assert.strictEqual(issues[0].number, 4);
+    assert.strictEqual(issues[0].title, 'Fresh');
+});
+
+test('fetchIssuesForRepo returns [] gracefully on API error', async () => {
+    // A 404 is not in the retryable set, so this fails fast (no backoff delay)
+    // and exercises the catch → return [] path.
+    const octokit = makeOctokit(async () => {
+        const error = new Error('Not Found') as Error & { status: number };
+        error.status = 404;
+        throw error;
+    });
+
+    const issues = await fetchIssuesForRepo(octokit, 'owner/repo', CORRELATION_ID);
     assert.deepStrictEqual(issues, []);
 });
 
-test('fetchIssuesForRepo handles rate limit errors', async () => {
-    const mockOctokit = {
-        request: mock.fn(async () => {
-            const error = new Error('API rate limit exceeded') as Error & { status: number };
-            error.status = 403;
-            throw error;
-        })
-    };
-
-    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
-    assert.deepStrictEqual(issues, []);
-});
-
-test('pollForIssues returns detected issues', async () => {
-    // Override environment for this test
-    const originalRepos = process.env.GITHUB_REPOS_TO_MONITOR;
-    process.env.GITHUB_REPOS_TO_MONITOR = 'owner1/repo1';
-
-    // This test validates that pollForIssues can run without authentication
-    // In a real scenario, it would use the authenticated client
-    const { pollForIssues: testPollForIssues } = await import('../src/polling/issuePolling.js');
-    
-    // Since we don't have real GitHub credentials in test, this will fail auth
-    // but that's expected and handled gracefully
-    const issues = await testPollForIssues();
-
-    // Without auth, it should return undefined or empty array (no issues)
-    assert.ok(issues === undefined || (Array.isArray(issues) && issues.length === 0));
-
-    // Restore original environment
-    process.env.GITHUB_REPOS_TO_MONITOR = originalRepos;
-});
-
-test('fetchIssuesForRepo identifies model labels correctly', async () => {
-    const mockIssue = {
-        id: 124,
-        number: 2,
-        title: 'Test Issue with Model Labels',
-        html_url: 'https://github.com/owner/repo/issues/2',
-        labels: [
-            { name: 'AI' },
-            { name: 'llm-claude-3-opus-20240229' },
-            { name: 'llm-claude-3-5-sonnet-20240620' },
-            { name: 'enhancement' }
-        ],
-        created_at: '2024-01-01T00:00:00Z',
-        updated_at: '2024-01-02T00:00:00Z'
-    };
-
-    const mockOctokit = {
-        request: mock.fn(async () => ({
-            data: {
-                total_count: 1,
-                items: [mockIssue]
-            }
-        }))
-    };
-
-    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
-    
-    assert.strictEqual(issues.length, 1);
-    assert.deepStrictEqual(issues[0].targetModels, [
-        '3-opus-20240229',
-        '3-5-sonnet-20240620'
-    ]);
-    assert.deepStrictEqual(issues[0].labels, [
-        'AI',
-        'llm-claude-3-opus-20240229',
-        'llm-claude-3-5-sonnet-20240620',
-        'enhancement'
-    ]);
-});
-
-test('fetchIssuesForRepo handles single model label', async () => {
-    const mockIssue = {
-        id: 125,
-        number: 3,
-        title: 'Test Issue with Single Model',
-        html_url: 'https://github.com/owner/repo/issues/3',
-        labels: [
-            { name: 'AI' },
-            { name: 'llm-claude-3-opus-20240229' },
-            { name: 'bug' }
-        ],
-        created_at: '2024-01-01T00:00:00Z',
-        updated_at: '2024-01-02T00:00:00Z'
-    };
-
-    const mockOctokit = {
-        request: mock.fn(async () => ({
-            data: {
-                total_count: 1,
-                items: [mockIssue]
-            }
-        }))
-    };
-
-    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
-    
-    assert.strictEqual(issues.length, 1);
-    assert.deepStrictEqual(issues[0].targetModels, ['3-opus-20240229']);
-});
-
-test('fetchIssuesForRepo ignores non-matching model labels', async () => {
-    const mockIssue = {
-        id: 126,
-        number: 4,
-        title: 'Test Issue with Non-Model Labels',
-        html_url: 'https://github.com/owner/repo/issues/4',
-        labels: [
-            { name: 'AI' },
-            { name: 'gpt-4' }, // Should not match pattern
-            { name: 'openai-claude' }, // Should not match pattern
-            { name: 'llm-other-model' }, // Should not match claude pattern
-            { name: 'documentation' }
-        ],
-        created_at: '2024-01-01T00:00:00Z',
-        updated_at: '2024-01-02T00:00:00Z'
-    };
-
-    const mockOctokit = {
-        request: mock.fn(async () => ({
-            data: {
-                total_count: 1,
-                items: [mockIssue]
-            }
-        }))
-    };
-
-    const issues = await fetchIssuesForRepo(mockOctokit, 'owner/repo');
-    
-    assert.strictEqual(issues.length, 1);
-    // Should fall back to default model since no matching labels
-    assert.deepStrictEqual(issues[0].targetModels, ['sonnet']);
-});
-
-test('daemon exports required functions', () => {
+test('fetchIssuesForRepo is exported from @propr/core', () => {
     assert.strictEqual(typeof fetchIssuesForRepo, 'function');
-    assert.strictEqual(typeof pollForIssues, 'function');
-});
-
-// Force exit due to module-level initialization in @propr/core
-after(() => {
-    process.exit(0);
 });

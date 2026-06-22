@@ -42,6 +42,24 @@ export interface SystemStatus {
   githubAuth: string;
 
   /**
+   * Resolved GitHub auth mode — how ProPR authenticates to GitHub
+   * ('demo' | 'relay' | 'app' | 'none').
+   */
+  githubAuthMode?: string;
+
+  /**
+   * Resolved GitHub event intake mode — how GitHub events arrive
+   * ('routing_websocket' | 'polling' | 'direct_webhook' | 'unknown').
+   */
+  githubEventIntake?: string;
+
+  /**
+   * Routing WebSocket runtime state, present when the routing_websocket intake
+   * path is active and the daemon has published its connection state.
+   */
+  routing?: RoutingState;
+
+  /**
    * Claude authentication status ('connected' | 'disconnected').
    */
   claudeAuth: string;
@@ -50,6 +68,20 @@ export interface SystemStatus {
    * Timestamp of the status check.
    */
   timestamp: string;
+}
+
+/**
+ * Runtime state of the routing WebSocket intake connection (default deployments).
+ */
+export interface RoutingState {
+  /** Whether the routing WebSocket is currently connected to the relay. */
+  connected: boolean;
+  /** The routing relay origin the daemon dials (PROPR_ROUTING_URL). */
+  routingUrl: string;
+  /** Delivery id of the most recently ACKed GitHub event, or null if none yet. */
+  lastDeliveryId: string | null;
+  /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null. */
+  lastAckAt: string | null;
 }
 
 /**

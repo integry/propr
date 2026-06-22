@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
-import { parseTruthyEnvValue } from '@propr/shared';
+import { parseTruthyEnvValue, resolveGithubEventIntakeMode } from '@propr/shared';
 import {
     getAuthenticatedOctokit,
     generateCorrelationId,
@@ -13,6 +13,8 @@ import {
     getDefaultModel,
     db,
     initializeWebhookHandler,
+    validateGithubIntakePrerequisites,
+    RoutingWebSocketIntakeService,
     handleCommentDeleted,
     handleCommentEdited,
     processCommentEvent,
@@ -46,6 +48,9 @@ import type { DetectedIssue } from './daemon/issueDetection.js';
 import { startLoop, clearState } from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
+import { parseArgs } from './daemon/cliArgs.js';
+import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
+import { startEventIntake } from './daemon/eventIntakeStartup.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -69,7 +74,6 @@ const MODEL_LABEL_PATTERN = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
 const GITHUB_USER_BLACKLIST = (process.env.GITHUB_USER_BLACKLIST || '').split(',').filter(u => u);
 const PR_FOLLOWUP_TRIGGER_KEYWORDS = (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS !== undefined ? process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS : '').split(',').filter(k => k.trim()).map(k => k.trim());
-const ENABLE_WEBHOOKS = parseTruthyEnvValue(process.env.ENABLE_GITHUB_WEBHOOKS);
 const ENABLE_PR_COMMENT_POLLING = process.env.ENABLE_PR_COMMENT_POLLING === undefined
     ? true
     : parseTruthyEnvValue(process.env.ENABLE_PR_COMMENT_POLLING);
@@ -238,6 +242,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const draftContextSweepInterval = await scheduleDraftContextSweep();
 
     let intervalId: NodeJS.Timeout | null = null;
+    let routingService: RoutingWebSocketIntakeService | null = null;
+    let routingStatusPublisher: RoutingStatusPublisher | null = null;
 
     const commentConfig = getCommentConfig();
     const primaryProcessingLabels = getPrimaryProcessingLabels();
@@ -247,50 +253,81 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // Define safePoll function for polling mode (used for both regular polling and on-demand config updates)
     const safePoll = withErrorHandling(pollForIssues, 'daemon polling');
 
-    if (ENABLE_WEBHOOKS) {
-        logger.info({
-            repositories: repos,
-            webhookEnabled: true,
-            webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
-            primaryProcessingLabels: primaryProcessingLabels,
-            modelLabelPattern: MODEL_LABEL_PATTERN,
-            defaultModelName: DEFAULT_MODEL_NAME,
-            botUsername: GITHUB_BOT_USERNAME || 'not configured',
-            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
-            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
-            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
-            resetPerformed: !!options.reset
-        }, 'GitHub Issue Detection Daemon starting in webhook mode...');
+    // Resolve how GitHub events are delivered. The new default is `routing_websocket`,
+    // with explicit `polling` and `direct_webhook` opt-ins. The legacy boolean
+    // ENABLE_GITHUB_WEBHOOKS is deprecated and no longer selects the mode — the
+    // resolver surfaces a deprecation warning when it is still set (logged below).
+    //
+    // Resolved inside startDaemon (not at module load) so an invalid
+    // GITHUB_EVENT_INTAKE_MODE throws here and is reported through the daemon's
+    // structured logger via startDaemon(...).catch(...), instead of crashing during
+    // module initialization before any logging is wired up.
+    const eventIntakeModeResult = resolveGithubEventIntakeMode({
+        eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+        enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
+    });
+    const EVENT_INTAKE_MODE = eventIntakeModeResult.mode;
 
-        if (!process.env.GH_WEBHOOK_SECRET) {
-            logger.warn('GH_WEBHOOK_SECRET is not set! Webhook signature verification will be skipped.');
-        }
+    // Surface resolver warnings on startup (e.g. a still-present, deprecated
+    // ENABLE_GITHUB_WEBHOOKS that no longer affects mode selection).
+    for (const warning of eventIntakeModeResult.warnings) {
+        logger.warn({ eventIntakeMode: EVENT_INTAKE_MODE }, warning);
+    }
 
+    // The daemon owns the GitHub intake surface, so it is the process that
+    // validates mode-specific prerequisites at boot (relay credentials for
+    // routing_websocket, a webhook secret for direct_webhook, usable auth for
+    // polling). Doing it here — rather than as a side effect of importing GitHub
+    // auth — keeps workers and other core consumers from failing startup over
+    // intake settings they do not own.
+    //
+    // Pass the already-resolved mode so the prerequisites check does not resolve a
+    // second time and re-log the same resolver deprecation warnings already emitted
+    // above (e.g. for a still-present ENABLE_GITHUB_WEBHOOKS).
+    validateGithubIntakePrerequisites(EVENT_INTAKE_MODE);
+
+    const baseStartupLog = {
+        repositories: repos,
+        primaryProcessingLabels: primaryProcessingLabels,
+        modelLabelPattern: MODEL_LABEL_PATTERN,
+        defaultModelName: DEFAULT_MODEL_NAME,
+        botUsername: GITHUB_BOT_USERNAME || 'not configured',
+        userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
+        userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
+        prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
+        resetPerformed: !!options.reset
+    };
+
+    // Initialize the shared webhook handler — registers the processors that turn
+    // GitHub events into ProPR work. Used by both routing_websocket (events arrive
+    // over the routing relay) and direct_webhook (events arrive at the local
+    // webhook endpoint); only the event source differs.
+    const initSharedWebhookHandler = async (): Promise<void> => {
         await initializeWebhookHandler({
             issueProcessor: (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
             commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
             commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
         });
-        logger.info('Webhook handler initialized. Webhooks will be received by dashboard API service.');
-    } else {
-        logger.info({
-            repositories: repos,
-            pollingInterval: POLLING_INTERVAL_MS,
-            primaryProcessingLabels: primaryProcessingLabels,
-            modelLabelPattern: MODEL_LABEL_PATTERN,
-            defaultModelName: DEFAULT_MODEL_NAME,
-            botUsername: GITHUB_BOT_USERNAME || 'not configured',
-            userWhitelist: GITHUB_USER_WHITELIST.length > 0 ? GITHUB_USER_WHITELIST : '',
-            userBlacklist: GITHUB_USER_BLACKLIST.length > 0 ? GITHUB_USER_BLACKLIST : 'no users blocked',
-            prFollowupTriggerKeywords: PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? PR_FOLLOWUP_TRIGGER_KEYWORDS : 'any comment triggers',
-            resetPerformed: !!options.reset
-        }, 'GitHub Issue Detection Daemon starting in polling mode...');
+    };
 
-        safePoll();
-
-        intervalId = setInterval(safePoll, POLLING_INTERVAL_MS);
-    }
+    // Start only the components for the resolved intake mode. The mode-selection
+    // logic is extracted into startEventIntake so it can be unit-tested with injected
+    // dependencies, without standing up real Redis/GitHub/WebSocket connections.
+    const intakeStartup = await startEventIntake(EVENT_INTAKE_MODE, {
+        safePoll,
+        pollingIntervalMs: POLLING_INTERVAL_MS,
+        initWebhookHandler: initSharedWebhookHandler,
+        createRoutingService: () => new RoutingWebSocketIntakeService(),
+        startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
+        logger,
+        startupLogContext: baseStartupLog,
+        webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
+        routingUrl: process.env.PROPR_ROUTING_URL,
+    });
+    intervalId = intakeStartup.intervalId;
+    routingService = intakeStartup.routingService;
+    routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
     const configReloadInterval = setInterval(reloadConfigs, 5 * 60 * 1000);
 
@@ -334,7 +371,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
                 // 3. If repos changed and we are in polling mode, trigger immediate poll
                 // This ensures new repos are picked up right away
-                if (event.subtype === 'repos_update' && !ENABLE_WEBHOOKS && intervalId) {
+                if (event.subtype === 'repos_update' && EVENT_INTAKE_MODE === 'polling' && intervalId) {
                     logger.info('Repository configuration changed, triggering immediate poll...');
 
                     // Reset the interval to avoid double-polling immediately
@@ -352,31 +389,29 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         }
     });
 
-    process.on('SIGINT', async () => {
-        logger.info('Received SIGINT, shutting down gracefully...');
+    const shutdown = async (signal: string): Promise<void> => {
+        logger.info(`Received ${signal}, shutting down gracefully...`);
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
+        // Stop the routing service first so it can drain in-flight deliveries and
+        // send their ACKs while the connection is still up, THEN stop the publisher
+        // (which clears the published routing state). Clearing first would report the
+        // routing path as down in Redis while it is still actively draining.
+        if (routingService) {
+            await routingService.stop();
+        }
+        if (routingStatusPublisher) await routingStatusPublisher.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
         await shutdownQueue();
         process.exit(0);
-    });
+    };
 
-    process.on('SIGTERM', async () => {
-        logger.info('Received SIGTERM, shutting down gracefully...');
-        if (intervalId) clearInterval(intervalId);
-        clearInterval(configReloadInterval);
-        clearInterval(heartbeatInterval);
-        clearInterval(draftContextSweepInterval);
-        await subscriberRedis.quit();
-        await heartbeatRedis.quit();
-        await redisClient.quit();
-        await shutdownQueue();
-        process.exit(0);
-    });
+    process.on('SIGINT', () => { void shutdown('SIGINT'); });
+    process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 }
 
 const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
@@ -398,56 +433,6 @@ export {
     handleCommentDeletedWrapper as handleCommentDeleted,
     handleCommentEditedWrapper as handleCommentEdited
 };
-
-interface ParsedArgs {
-    reset?: boolean;
-}
-
-function parseArgs(): ParsedArgs {
-    const args = process.argv.slice(2);
-    const options: ParsedArgs = {};
-
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-
-        if (arg === '--reset' || arg === '-r') {
-            options.reset = true;
-        } else if (arg === '--help' || arg === '-h') {
-            console.log(`
-GitHub Issue Detection Daemon
-
-Usage: node src/daemon.js [options]
-
-Options:
-  --reset, -r    Clear all queue data and remove processing labels from issues
-  --help, -h     Show this help message
-
-Environment Variables:
-  GITHUB_REPOS_TO_MONITOR    Comma-separated list of repositories to monitor
-  POLLING_INTERVAL_MS        Polling interval in milliseconds (default: 60000)
-  AI_PRIMARY_TAG             Primary tag to look for (default: AI)
-  MODEL_LABEL_PATTERN        Regex pattern for model labels (default: ^llm-(.+)$)
-  DEFAULT_CLAUDE_MODEL       Default model when no model labels found
-  GITHUB_BOT_USERNAME        Bot username to exclude from PR comment monitoring
-  GITHUB_USER_WHITELIST      Comma-separated list of allowed users for PR comments
-  GITHUB_USER_BLACKLIST      Comma-separated list of excluded users for PR comments
-  PR_FOLLOWUP_TRIGGER_KEYWORDS  Comma-separated list of trigger keywords
-
-Examples:
-  node src/daemon.js                Start the daemon normally
-  node src/daemon.js --reset        Reset all queues and issue labels, then start
-  npm run daemon:dev -- --reset     Reset using npm script
-            `);
-            process.exit(0);
-        } else {
-            console.error(`Unknown argument: ${arg}`);
-            console.error('Use --help for usage information');
-            process.exit(1);
-        }
-    }
-
-    return options;
-}
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArgs();
