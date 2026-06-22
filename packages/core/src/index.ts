@@ -25,7 +25,7 @@ export { createLogFiles, generateCompletionComment, redactSecrets } from './util
 export { formatSubscriptionUsage } from './utils/github/formatSubscriptionUsage.js';
 export type { SubscriptionUsageRecord, SubscriptionUsageMetrics } from './utils/github/formatSubscriptionUsage.js';
 
-export { getGitHubInstallationToken, getAuthenticatedOctokit } from './auth/githubAuth.js';
+export { getGitHubInstallationToken, getAuthenticatedOctokit, validateGithubIntakePrerequisites } from './auth/githubAuth.js';
 export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
 export { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS } from './auth/systemTaskAuth.js';
 
@@ -122,6 +122,12 @@ export type { CheckRunsStatus, ActivePRWork, ActivePRTask, ActivePRQueuedJob } f
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
+export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
+export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike } from './intake/RoutingWebSocketIntakeService.js';
+// The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
+// DeliveryTracker, URL/payload/token helpers) are internal to the intake service
+// and are intentionally NOT part of the package's public API. Tests import them
+// directly from ./intake/routingWebSocketProtocol.js.
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent, setUltrafixDeps } from './webhook/commentEventHandler.js';
 export { triggerNextPendingIssue } from './webhook/planIssueTrigger.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType, UltrafixDeps } from './webhook/commentEventHandler.js';

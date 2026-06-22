@@ -65,6 +65,18 @@ export {
 // Export relay URL validation
 export { validateRelayUrl } from './validateRelayUrl.js';
 
+// Export the hosted propr-routing service default URLs (one source of truth for
+// the webhook.propr.dev host shared by the CLI, the daemon dialer, and the
+// boot/check prerequisite validators)
+export {
+  DEFAULT_PROPR_ROUTING_URL,
+  DEFAULT_PROPR_GH_RELAY_URL,
+} from './proprServiceUrls.js';
+
+// Export routing URL validation (shared by intake prerequisites and the daemon
+// routing service so the boot/CLI checks and the dialer agree on one policy)
+export { validateRoutingUrl } from './validateRoutingUrl.js';
+
 // Export GitHub auth mode inference (shared by backend boot and `propr check`)
 export {
   type GithubAuthMode,
@@ -72,6 +84,29 @@ export {
   type GithubAuthModeResult,
   resolveGithubAuthMode,
 } from './githubAuthMode.js';
+
+// Export GitHub event intake mode resolution (auth mode and event delivery
+// mode evolve independently; replaces the legacy ENABLE_GITHUB_WEBHOOKS boolean)
+export {
+  type GithubEventIntakeMode,
+  type GithubEventIntakeModeEnv,
+  type GithubEventIntakeModeResult,
+  GITHUB_EVENT_INTAKE_MODES,
+  DEFAULT_GITHUB_EVENT_INTAKE_MODE,
+  resolveGithubEventIntakeMode,
+} from './githubEventIntakeMode.js';
+
+// Export mode-specific GitHub intake prerequisite validation (shared by backend
+// boot and `propr check` so the two agree on what each intake mode requires)
+export {
+  type IntakeModePrerequisitesEnv,
+  type IntakeModePrerequisitesResult,
+  validateIntakeModePrerequisites,
+} from './intakeModePrerequisites.js';
+
+// Export shared Redis status keys (one source of truth for cross-process status
+// keys so the daemon publisher, API status route, and CLI cannot drift)
+export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
 
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';
 

@@ -2,6 +2,12 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
 import {
+  resolveGithubAuthMode,
+  resolveGithubEventIntakeMode,
+  ROUTING_STATUS_REDIS_KEY,
+  type GithubEventIntakeMode
+} from '@propr/shared';
+import {
   AgentRegistry,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
@@ -63,6 +69,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
           worker: 'running',
           workerCount: 3,
           githubAuth: 'connected',
+          githubAuthMode: 'demo',
+          githubEventIntake: resolveIntakeMode(),
           claudeAuth: 'connected',
           indexing: 'idle',
           warnings: [],
@@ -104,10 +112,27 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         status.redis = 'disconnected';
       }
 
-      const githubAppConfigured = process.env.GH_APP_ID &&
-                                 process.env.GH_PRIVATE_KEY_PATH &&
-                                 process.env.GH_INSTALLATION_ID;
-      status.githubAuth = githubAppConfigured ? 'connected' : 'disconnected';
+      // Auth mode (how ProPR authenticates to GitHub) and event intake mode (how
+      // GitHub events arrive) are independent — surface both so operators can tell
+      // a relay-auth + routing-websocket deployment apart from an app + webhook one.
+      const authMode = resolveAuthMode();
+      status.githubAuthMode = authMode;
+      // The coarse githubAuth health is derived from the resolved auth mode rather
+      // than GH_APP_* alone, so a valid relay-auth deployment reports 'connected'
+      // instead of a misleading 'disconnected'. Only 'none' (nothing configured)
+      // and 'unknown' (resolver error) report as disconnected.
+      status.githubAuth = (authMode === 'app' || authMode === 'relay' || authMode === 'demo')
+        ? 'connected'
+        : 'disconnected';
+      status.githubEventIntake = resolveIntakeMode();
+
+      // Routing WebSocket runtime state, published to Redis by the daemon when the
+      // default routing_websocket intake path is active. Included only when present
+      // so non-routing deployments don't carry an empty field.
+      const routing = await getRoutingState(redisClient);
+      if (routing) {
+        status.routing = routing;
+      }
 
       const agents = await getCachedAgentStatuses();
       status.agents = agents;
@@ -139,6 +164,79 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     };
     return statuses;
   }
+}
+
+function resolveAuthMode(): string {
+  // A misconfigured GH_AUTH_MODE must not break the diagnostic endpoint; report
+  // 'unknown' rather than letting a resolver error turn /api/status into a 500.
+  try {
+    const { mode } = resolveGithubAuthMode({
+      demoMode: isDemoMode(),
+      ghAuthMode: process.env.GH_AUTH_MODE,
+      relayUrl: process.env.PROPR_GH_RELAY_URL,
+      relayToken: process.env.PROPR_GH_RELAY_TOKEN,
+      appId: process.env.GH_APP_ID,
+      privateKeyPath: process.env.GH_PRIVATE_KEY_PATH,
+      installationId: process.env.GH_INSTALLATION_ID
+    });
+    return mode;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function resolveIntakeMode(): GithubEventIntakeMode | 'unknown' {
+  // A misconfigured GITHUB_EVENT_INTAKE_MODE throws here; the status route must
+  // still answer, so report it as 'unknown' rather than failing the whole call.
+  try {
+    return resolveGithubEventIntakeMode({
+      eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+      enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS
+    }).mode;
+  } catch {
+    return 'unknown';
+  }
+}
+
+interface RoutingState {
+  connected: boolean;
+  routingUrl: string;
+  lastDeliveryId: string | null;
+  lastAckAt: string | null;
+}
+
+async function getRoutingState(redisClient: RedisClientType): Promise<RoutingState | undefined> {
+  try {
+    const raw = await redisClient.get(ROUTING_STATUS_REDIS_KEY);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    // A stale or malformed Redis value should not produce confusing CLI output;
+    // only expose routing state that matches the expected shape.
+    return isRoutingState(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isRoutingState(value: unknown): value is RoutingState {
+  if (typeof value !== 'object' || value === null) return false;
+  const state = value as Record<string, unknown>;
+  return typeof state.connected === 'boolean'
+    && typeof state.routingUrl === 'string'
+    && (typeof state.lastDeliveryId === 'string' || state.lastDeliveryId === null)
+    && isNullableTimestamp(state.lastAckAt);
+}
+
+// lastAckAt is an ISO-8601 string when present (the routing service produces it
+// via Date#toISOString). Validate against an actual ISO-8601 shape rather than the
+// permissive Date.parse() — which would accept loose inputs like "2026" or
+// "Jan 1 2026" — so the API contract stays tight and a corrupt Redis value never
+// reaches consumers as a non-ISO date.
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+function isNullableTimestamp(value: unknown): boolean {
+  if (value === null) return true;
+  if (typeof value !== 'string') return false;
+  return ISO_8601_RE.test(value) && !Number.isNaN(Date.parse(value));
 }
 
 async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRuntimeState): Promise<Array<{ type: string; message: string }>> {

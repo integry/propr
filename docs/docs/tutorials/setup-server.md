@@ -18,7 +18,7 @@ The Docker image flow is the same as [Local Setup](./setup-local.md). The differ
 - Set public URLs in `.env`.
 - Put ProPR behind a reverse proxy or ingress.
 - Configure TLS at the proxy layer.
-- Optionally switch issue intake from polling to GitHub webhooks.
+- Optionally switch to an advanced intake mode (polling, or your own GitHub App webhook); the default hosted-App WebSocket routing needs no inbound endpoint.
 - Restrict access to the Docker socket and credential directories.
 - Back up data, logs, repositories, Redis, and SQLite state.
 
@@ -32,7 +32,7 @@ sudo chown -R "$USER" /srv/propr
 cd /srv/propr
 ```
 
-Place the GitHub App private key there and restrict it:
+If you run your own GitHub App (the advanced auth path — the default hosted ProPR App needs no key), place its private key there and restrict it:
 
 ```bash
 chmod 600 your-app-private-key.pem
@@ -49,18 +49,26 @@ GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
 
 The GitHub OAuth App callback URL must match.
 
-## Configure GitHub Webhooks (Optional)
+## GitHub Event Intake
 
-By default ProPR polls GitHub for labeled issues every 60 seconds (`POLLING_INTERVAL_MS`, milliseconds). On a server with a public endpoint, webhooks deliver events immediately instead.
+By default ProPR receives GitHub events through the hosted ProPR GitHub App over WebSocket routing (`GITHUB_EVENT_INTAKE_MODE=routing_websocket`). Events stream to ProPR over an **outbound** WebSocket, so a server needs **no inbound public URL** for intake, no GitHub App of its own, and no webhook secret — and delivery is near-immediate (low latency). `propr relay enroll` provisions the shared-App install and the routing/relay credentials. This is the recommended path for almost every server. Note that `GH_WEBHOOK_SECRET` is **not** used in routing mode — it applies only to the own-App webhook option below.
 
-Add to `.env`:
+Two advanced intake modes are available when you have a specific reason to use them:
+
+### Advanced: Polling
+
+Set `GITHUB_EVENT_INTAKE_MODE=polling` to have ProPR pull labeled issues from the GitHub API on a fixed interval (`POLLING_INTERVAL_MS`, milliseconds; default `60000`). Polling needs no inbound endpoint either, but it adds latency (up to one interval) and consumes the installation's API budget continuously — see [Deployment](../operations/deployment.md#issue-intake-modes).
+
+### Advanced: Your Own GitHub App Webhook
+
+If you run your own GitHub App and want GitHub to deliver events directly to a public endpoint, set:
 
 ```bash
-ENABLE_GITHUB_WEBHOOKS=true
+GITHUB_EVENT_INTAKE_MODE=direct_webhook
 GH_WEBHOOK_SECRET=generate-a-strong-webhook-secret
 ```
 
-`GH_WEBHOOK_SECRET` is mandatory when webhooks are enabled: the API refuses to start if `ENABLE_GITHUB_WEBHOOKS=true` is set without a secret, because unsigned webhook traffic would be rejected anyway.
+`GH_WEBHOOK_SECRET` is mandatory **for this mode only**: the API refuses to start in `direct_webhook` mode without a secret, because unsigned webhook traffic would be rejected anyway. (It is ignored by the default routing mode.)
 
 The webhook endpoint is `POST /webhook` on the API service (port `4000`). Route it through your reverse proxy, for example with nginx. Use an exact-match `location = /webhook` so the proxy does not also forward prefix siblings such as `/webhookadmin` or `/webhook-test` to the API:
 
@@ -71,8 +79,6 @@ location = /webhook {
 ```
 
 In your GitHub App settings, set the webhook URL to `https://propr.example.com/webhook` and the webhook secret to the same `GH_WEBHOOK_SECRET` value.
-
-If you cannot expose a public endpoint, the optional hosted GitHub App at propr.dev can handle webhook routing and event replays for your installation instead.
 
 ## Start The Stack
 
@@ -92,16 +98,17 @@ To control each step yourself (useful for scripted provisioning and CI), run the
 ```bash
 sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/propr
 propr init stack               # scaffold .env + data/ logs/ repos/
-# configure GitHub auth in .env: own App (GH_APP_ID, GH_INSTALLATION_ID,
-# HOST_GH_PRIVATE_KEY) or a shared App via `propr relay enroll`
+# configure GitHub auth in .env: shared App via `propr relay enroll` (default),
+# or your own App (GH_APP_ID, GH_INSTALLATION_ID, HOST_GH_PRIVATE_KEY)
 propr check
 propr start --no-tui
 ```
 
-Configure GitHub auth in `.env` before `propr check` — either your own App
-(`GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`) or a shared App via
-`propr relay enroll`. See [GitHub Authentication](../operations/github-auth.md)
-for the full walkthrough.
+Configure GitHub auth in `.env` before `propr check` — by default the shared,
+hosted App via `propr relay enroll` (no private key), or your own App
+(`GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`) as an advanced
+option. See [GitHub Authentication](../operations/github-auth.md) for the full
+walkthrough.
 
 `propr status`, `propr stop`, and `propr start --restart` manage the running stack. Prefer a container-only host? Use the launcher below instead.
 

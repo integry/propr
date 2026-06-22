@@ -16,7 +16,7 @@ propr setup                # guided, re-runnable bootstrap
 
 ## Prerequisites For Every Path
 
-- GitHub backend access: your own GitHub App installed on the target repositories — permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), optionally Actions (Read-only) — or a vendor-provided shared App via the token relay (`propr relay enroll`); see [GitHub Authentication](../operations/github-auth.md)
+- GitHub backend access: by default the shared, hosted ProPR GitHub App via the token relay (`propr relay enroll`) — no GitHub App of your own and no private key to manage. As an advanced option you can register your own GitHub App on the target repositories (permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), optionally Actions (Read-only)). See [GitHub Authentication](../operations/github-auth.md)
 - Credentials for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe), authenticated on the host before starting ProPR
 - Docker with access to the Docker socket
 - Disk space for data, logs, and repository workspaces
@@ -31,7 +31,7 @@ Use this when you want to run ProPR on your Linux laptop or workstation.
 
 [Local Setup](./setup-local.md)
 
-You will install the CLI and run `propr setup`, which scaffolds the runtime directory, configures GitHub access, and starts the stack (the individual `propr init stack` / `propr check` / `propr start` commands and the launcher container remain as manual alternatives). The Web UI is at `http://localhost:5173`, the API on port `4000`. Issue intake uses polling by default.
+You will install the CLI and run `propr setup`, which scaffolds the runtime directory, configures GitHub access, and starts the stack (the individual `propr init stack` / `propr check` / `propr start` commands and the launcher container remain as manual alternatives). The Web UI is at `http://localhost:5173`, the API on port `4000`. Issue intake uses the hosted ProPR GitHub App over WebSocket routing by default — no inbound public URL required.
 
 ## Server Setup
 
@@ -39,7 +39,7 @@ Use this when ProPR should run on a shared machine or production host.
 
 [Server Setup](./setup-server.md)
 
-The flow is the same as local setup — `propr setup` is still the recommended bootstrap — but you use stable server paths, public URLs, TLS through a reverse proxy, and stricter credential access. Server setup also covers GitHub webhook intake as an alternative to polling.
+The flow is the same as local setup — `propr setup` is still the recommended bootstrap — but you use stable server paths, public URLs, TLS through a reverse proxy, and stricter credential access. Server setup also covers the advanced intake options — polling, or your own GitHub App webhook — for installs that need them.
 
 ## Secure VPS Deployment
 

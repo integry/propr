@@ -17,7 +17,7 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "test:unit": "npx tsx --test test/minimal.test.ts test/modelName.test.ts",
+    "test:unit": "NODE_ENV=test npx tsx --test test/minimal.test.ts test/modelName.test.ts test/daemonEventIntake.test.ts test/githubEventIntakeMode.test.ts test/intakeModePrerequisites.test.ts test/validateRoutingUrl.test.ts test/routingWebSocketProtocol.test.ts test/routingWebSocketIntakeService.test.ts test/routingStatusPublisher.test.ts packages/api/test/statusRoutes.test.ts",
     "test:e2e": "npx tsx --test test/e2e.test.ts",
     "test:docker": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test test/*.test.ts",
     "test:docker:single": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test",

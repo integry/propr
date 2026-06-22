@@ -6,6 +6,18 @@ bot identity. There are three ways to configure how the backend obtains a GitHub
 **installation access token**. The mode is inferred from your environment
 (precedence: demo → relay → app), or set explicitly with `GH_AUTH_MODE`.
 
+> **Auth mode and event intake mode are configured separately.** `GH_AUTH_MODE`
+> controls only how the backend *authenticates* to GitHub (how it obtains an
+> installation token). How ProPR *receives* GitHub events — routing WebSocket,
+> polling, or a direct webhook — is configured by `GITHUB_EVENT_INTAKE_MODE`
+> (default `routing_websocket`). They are set independently, but not every
+> combination is valid: the routing WebSocket shares the vendor's relay
+> infrastructure, so `routing_websocket` intake **requires relay auth mode**.
+> Polling works with either relay or App auth, and `direct_webhook` requires App
+> auth. See [Issue Intake Modes](./deployment.md#issue-intake-modes) for event
+> delivery, and note that `GH_WEBHOOK_SECRET` belongs to the intake configuration
+> (it applies only to `direct_webhook`), not to auth mode.
+
 ## Modes
 
 ### App mode (own GitHub App)
@@ -31,10 +43,10 @@ private key. Instead the stack fetches short-lived installation tokens from a
 vendor-run **relay**, authenticated by a durable per-installation credential.
 
 ```bash
-GH_AUTH_MODE=relay                             # optional but recommended; relay is also inferred from URL+token
-PROPR_GH_RELAY_URL=https://relay.propr.dev/v1  # https required (http only for localhost), include version prefix
-PROPR_GH_RELAY_TOKEN=your_relay_token          # durable credential issued for your installation
-GH_INSTALLATION_ID=987654                      # optional; which installation
+GH_AUTH_MODE=relay                                # optional but recommended; relay is also inferred from URL+token
+PROPR_GH_RELAY_URL=https://webhook.propr.dev/v1   # optional; defaults to the hosted relay. https required (http only for localhost), include version prefix
+PROPR_GH_RELAY_TOKEN=your_relay_token             # durable credential issued for your installation
+GH_INSTALLATION_ID=987654                         # optional; which installation
 ```
 
 No private key is required. The relay token is issued during enrollment (you log
@@ -62,7 +74,7 @@ workers do not operate.
 The relay is a vendor-run service that holds the shared App's private key. A
 self-hosted (own) relay must implement this contract:
 
-- **Request:** `POST <PROPR_GH_RELAY_URL>/installation-token` (PROPR_GH_RELAY_URL includes the version prefix, e.g. `https://relay.propr.dev/v1`)
+- **Request:** `POST <PROPR_GH_RELAY_URL>/installation-token` (PROPR_GH_RELAY_URL includes the version prefix, e.g. `https://webhook.propr.dev/v1`)
   - Header: `Authorization: Bearer <PROPR_GH_RELAY_TOKEN>`
   - Body: `{ "installation_id": "<id>" }` (optional; the relay may infer the
     installation from the credential)

@@ -13,8 +13,15 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
-import { resolveGithubAuthMode, validateRelayUrl } from "@propr/shared";
+import {
+  DEFAULT_PROPR_GH_RELAY_URL,
+  resolveGithubAuthMode,
+  resolveGithubEventIntakeMode,
+  validateIntakeModePrerequisites,
+  validateRelayUrl,
+} from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
+import { createApiClient, getSystemStatus } from "../api/index.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
@@ -370,6 +377,15 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
   for (const r of checkGithubAuth(fileEnv, cfg)) emit(r);
 
+  // 7b. Mode-specific GitHub intake prerequisites (the resolved intake mode
+  // needs the right credentials before the daemon/API can serve it).
+  for (const r of checkGithubIntakeMode(fileEnv)) emit(r);
+
+  // 7c. Routing intake diagnostics: routing URL plus live WebSocket state, last
+  // delivery id, and last ACK (when the backend is reachable) for the default
+  // routing_websocket path.
+  for (const r of await checkRoutingDiagnostics(fileEnv)) emit(r);
+
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
   const whitelistEntries = (whitelistRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -469,7 +485,10 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
-  const relayUrl = val(RELAY_URL_KEY);
+  // PROPR_GH_RELAY_URL defaults to the hosted relay when unset, matching the
+  // backend (githubAuth) and the docs/.env: a token-only stack still infers relay
+  // mode here, so `propr check` cannot drift from boot behavior.
+  const relayUrl = val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
   const relayToken = val(RELAY_TOKEN_KEY);
   const { mode, warnings } = resolveGithubAuthMode({
     demoMode: isTruthy(val("PROPR_DEMO_MODE")),
@@ -501,7 +520,9 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   }
 
   if (mode === "relay") {
-    const urlError = relayUrl ? validateRelayUrl(relayUrl) : `${RELAY_URL_KEY} must be set for relay mode`;
+    // relayUrl is always populated (defaulted to the hosted relay above); this only
+    // catches an explicitly-set but malformed PROPR_GH_RELAY_URL.
+    const urlError = validateRelayUrl(relayUrl);
     out.push(
       urlError
         ? { name: "GitHub auth mode", status: "fail", detail: urlError, group: "GitHub", fix: "Use an https:// relay URL (http only for localhost)." }
@@ -581,6 +602,200 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   }
 
   return out;
+}
+
+/**
+ * Validate the prerequisites for the resolved GitHub event intake mode.
+ * Reuses the shared validateIntakeModePrerequisites helper so `propr check`
+ * and the backend boot path agree on what each mode requires.
+ */
+function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
+  const val = (k: string): string | undefined => process.env[k] ?? env[k];
+  const out: CheckResult[] = [];
+
+  // `propr check` is a diagnostic command: a bad value for one variable must
+  // surface as a structured failure, never abort the whole run. Both resolvers
+  // are therefore guarded — resolveGithubAuthMode is side-effect free today, but
+  // guarding it keeps the check resilient if its contract ever changes.
+  // Default the relay URL (token-only stacks rely on the hosted default) so the
+  // resolved auth mode matches the backend; see checkGithubAuth above.
+  const relayUrl = val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
+
+  let authMode;
+  try {
+    ({ mode: authMode } = resolveGithubAuthMode({
+      demoMode: isTruthy(val("PROPR_DEMO_MODE")),
+      ghAuthMode: val("GH_AUTH_MODE"),
+      relayUrl,
+      relayToken: val(RELAY_TOKEN_KEY),
+      appId: val("GH_APP_ID"),
+      privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
+      installationId: val("GH_INSTALLATION_ID"),
+    }));
+  } catch (error) {
+    out.push({
+      name: "GitHub intake mode",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+      group: "GitHub",
+      fix: 'Set GH_AUTH_MODE to "app", "relay", or "demo" (or leave it unset to auto-detect).',
+    });
+    return out;
+  }
+
+  let intakeMode;
+  // Surface the resolver's own warnings (e.g. the ENABLE_GITHUB_WEBHOOKS
+  // deprecation notice the daemon/API log at boot) so `propr check` does not
+  // silently drop the migration feedback the backend would emit.
+  let resolverWarnings: string[] = [];
+  try {
+    ({ mode: intakeMode, warnings: resolverWarnings } = resolveGithubEventIntakeMode({
+      eventIntakeMode: val("GITHUB_EVENT_INTAKE_MODE"),
+      enableGithubWebhooks: val("ENABLE_GITHUB_WEBHOOKS"),
+    }));
+  } catch (error) {
+    out.push({
+      name: "GitHub intake mode",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+      group: "GitHub",
+      fix: 'Set GITHUB_EVENT_INTAKE_MODE to "routing_websocket", "polling", or "direct_webhook".',
+    });
+    return out;
+  }
+
+  for (const warning of resolverWarnings) {
+    out.push({ name: "GitHub intake mode", status: "warn", detail: warning, group: "GitHub" });
+  }
+
+  const { valid, errors, warnings } = validateIntakeModePrerequisites({
+    intakeMode,
+    authMode,
+    routingUrl: val("PROPR_ROUTING_URL"),
+    relayUrl,
+    relayToken: val(RELAY_TOKEN_KEY),
+    webhookSecret: val("GH_WEBHOOK_SECRET"),
+  });
+
+  for (const warning of warnings) {
+    out.push({ name: "GitHub intake mode", status: "warn", detail: warning, group: "GitHub" });
+  }
+  for (const error of errors) {
+    out.push({ name: "GitHub intake mode", status: "fail", detail: error, group: "GitHub" });
+  }
+  if (valid) {
+    out.push({ name: "GitHub intake mode", status: "ok", detail: intakeMode, group: "GitHub" });
+  }
+
+  return out;
+}
+
+/**
+ * Surface the routing intake configuration and, when the backend is reachable,
+ * its live connection state. routing_websocket is the default intake mode, so
+ * `propr check` reports the routing URL plus the daemon's WebSocket connectivity,
+ * last delivery id, and last ACK to make a default deployment diagnosable.
+ *
+ * The live state is best-effort: it comes from GET /api/status (published there
+ * by the daemon), so a host check run before the stack is up simply omits it
+ * rather than failing.
+ */
+async function checkRoutingDiagnostics(env: Record<string, string>): Promise<CheckResult[]> {
+  const val = (k: string): string | undefined => process.env[k] ?? env[k];
+  const out: CheckResult[] = [];
+
+  let intakeMode;
+  try {
+    ({ mode: intakeMode } = resolveGithubEventIntakeMode({
+      eventIntakeMode: val("GITHUB_EVENT_INTAKE_MODE"),
+      enableGithubWebhooks: val("ENABLE_GITHUB_WEBHOOKS"),
+    }));
+  } catch {
+    // An invalid mode is already reported by checkGithubIntakeMode; nothing to add.
+    return out;
+  }
+
+  // Routing diagnostics only apply to the routing_websocket intake path.
+  if (intakeMode !== "routing_websocket") return out;
+
+  // Config-level routing URL (offline-safe). A missing/invalid URL is already
+  // reported as a failure by the mode prerequisites check, so only show it here
+  // when it is present to avoid duplicating that failure.
+  const routingUrl = val("PROPR_ROUTING_URL");
+  if (routingUrl && routingUrl.trim() !== "") {
+    out.push({ name: "Routing URL", status: "ok", detail: routingUrl, group: "GitHub" });
+  }
+
+  // Live routing state from the running backend (best-effort, short timeout).
+  // A stopped local backend rejects immediately (ECONNREFUSED); the timeout only
+  // bounds the wait when the configured API URL is reachable but slow, so keep it
+  // tight to avoid a noticeable stall during offline/pre-start checks.
+  try {
+    const client = await createApiClient({ defaultTimeout: 1000 });
+    const status = await getSystemStatus(client);
+    const routing = status.routing;
+    if (routing) {
+      out.push(
+        routing.connected
+          ? { name: "Routing WebSocket", status: "ok", detail: "connected to relay", group: "GitHub" }
+          : {
+              name: "Routing WebSocket",
+              status: "warn",
+              detail: "disconnected — daemon is not connected to the routing relay",
+              group: "GitHub",
+              fix: "Check the daemon logs and that PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN are valid.",
+            }
+      );
+      out.push({
+        name: "Last delivery ID",
+        status: "ok",
+        detail: routing.lastDeliveryId ?? "no deliveries received yet",
+        group: "GitHub",
+      });
+      out.push({
+        name: "Last ACK",
+        status: "ok",
+        detail: formatRoutingTimestamp(routing.lastAckAt),
+        group: "GitHub",
+      });
+    } else {
+      // The backend answered but published no routing state. In routing_websocket
+      // mode that is the *default intake path*, so its absence is not benign: the
+      // daemon's routing publisher is not running (or the daemon is down), which
+      // means events are not being received and the path is not diagnosable. Warn
+      // rather than stay silent so a half-up routing deployment is visible.
+      out.push({
+        name: "Routing WebSocket",
+        status: "warn",
+        detail: "backend reachable but no routing state published — the daemon routing intake/publisher may not be running",
+        group: "GitHub",
+        fix: "Ensure the daemon is running in routing_websocket mode and check its logs and PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN.",
+      });
+    }
+  } catch {
+    // Backend not reachable (stack down or not logged in): live routing state is
+    // unavailable. This is the normal case for a pre-start / fresh-install check, so
+    // surface it as informational ("ok") rather than a warning — a valid offline
+    // setup should not light up a yellow routing warning just because the stack is
+    // not running yet. Live WebSocket state appears once the stack is up.
+    out.push({
+      name: "Routing WebSocket",
+      status: "ok",
+      detail: "live state unavailable — start the stack to read routing WebSocket state",
+      group: "GitHub",
+    });
+  }
+
+  return out;
+}
+
+// `lastAckAt` comes from a live Redis value the daemon publishes; a stale or
+// malformed entry must not surface as "Invalid Date" in operator output. Parse it
+// and fall back to the raw string when it is not a usable timestamp.
+function formatRoutingTimestamp(value: string | null): string {
+  if (!value) return "no ACK sent yet";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
 function safeRead(path: string): string {

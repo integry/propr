@@ -56,7 +56,13 @@ function displaySystemStatus(status: SystemStatus): void {
     "Worker",
     "Workers Active",
     "GitHub Auth",
+    "GitHub Auth Mode",
+    "GitHub Event Intake",
     "Claude Auth",
+    "Routing URL",
+    "Routing WebSocket",
+    "Last Delivery ID",
+    "Last ACK",
     "Timestamp",
   ];
   const maxLabelWidth = Math.max(...labels.map((l) => l.length));
@@ -83,9 +89,46 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log(
     `${"GitHub Auth".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.githubAuth)}`
   );
+  if (status.githubAuthMode) {
+    console.log(
+      `${"GitHub Auth Mode".padEnd(maxLabelWidth)}  ${status.githubAuthMode}`
+    );
+  }
+  if (status.githubEventIntake) {
+    console.log(
+      `${"GitHub Event Intake".padEnd(maxLabelWidth)}  ${status.githubEventIntake}`
+    );
+  }
   console.log(
     `${"Claude Auth".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.claudeAuth)}`
   );
+
+  // Routing WebSocket diagnostics for default (routing_websocket) deployments.
+  const routingIntakeActive = status.githubEventIntake === "routing_websocket";
+  if (status.routing) {
+    const routing = status.routing;
+    console.log("");
+    console.log(
+      `${"Routing URL".padEnd(maxLabelWidth)}  ${routing.routingUrl || "(not set)"}`
+    );
+    console.log(
+      `${"Routing WebSocket".padEnd(maxLabelWidth)}  ${formatStatusIndicator(routing.connected ? "connected" : "disconnected")}`
+    );
+    console.log(
+      `${"Last Delivery ID".padEnd(maxLabelWidth)}  ${routing.lastDeliveryId ?? "(none yet)"}`
+    );
+    console.log(
+      `${"Last ACK".padEnd(maxLabelWidth)}  ${routing.lastAckAt ? new Date(routing.lastAckAt).toLocaleString() : "(none yet)"}`
+    );
+  } else if (routingIntakeActive) {
+    // routing_websocket is the active intake mode but the daemon published no
+    // routing state — the default event path is not diagnosable (publisher down
+    // or daemon not running). Surface it explicitly rather than rendering nothing.
+    console.log("");
+    console.log(
+      `${"Routing WebSocket".padEnd(maxLabelWidth)}  ${formatStatusIndicator("unknown")} (no routing state published)`
+    );
+  }
   console.log("");
   console.log(
     `${"Timestamp".padEnd(maxLabelWidth)}  ${new Date(status.timestamp).toLocaleString()}`
@@ -93,12 +136,23 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log("");
   console.log("=".repeat(50));
 
+  // Routing health counts against overall health whenever routing_websocket is the
+  // active intake path: a published-but-disconnected state is unhealthy, and so is
+  // a *missing* state (the daemon publisher is not running), since both mean the
+  // default event path is not delivering. When routing is not the active mode, an
+  // absent routing record is expected and does not affect health.
+  const routingStateMissing = routingIntakeActive && !status.routing;
+  const routingHealthy = status.routing
+    ? status.routing.connected === true
+    : !routingIntakeActive;
+
   const allHealthy =
     status.api === "healthy" &&
     status.redis === "connected" &&
     status.daemon === "running" &&
     status.worker === "running" &&
-    status.githubAuth === "connected";
+    status.githubAuth === "connected" &&
+    routingHealthy;
 
   console.log("");
   if (allHealthy) {
@@ -116,10 +170,19 @@ function displaySystemStatus(status: SystemStatus): void {
       console.log("  - No workers active. Check worker processes.");
     }
     if (status.githubAuth !== "connected") {
-      console.log("  - GitHub auth not configured. Check GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID.");
+      // githubAuth is derived from the resolved auth mode, so a relay deployment
+      // only lands here when nothing valid is configured — mention both paths.
+      console.log(
+        `  - GitHub auth not configured (mode: ${status.githubAuthMode ?? "unknown"}). Set GH_APP_ID, GH_PRIVATE_KEY_PATH, and GH_INSTALLATION_ID for app auth, or PROPR_GH_RELAY_URL and PROPR_GH_RELAY_TOKEN for relay auth.`
+      );
     }
     if (status.claudeAuth !== "connected") {
       console.log("  - Claude auth status unknown or no recent activity.");
+    }
+    if (routingStateMissing) {
+      console.log("  - Routing WebSocket state unavailable. routing_websocket is the active intake mode but the daemon published no routing state; ensure the daemon is running and check its logs.");
+    } else if (!routingHealthy) {
+      console.log("  - Routing WebSocket disconnected. The daemon is not connected to the routing relay; check PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN and the daemon logs.");
     }
   }
 }

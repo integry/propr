@@ -28,11 +28,26 @@ type StatusAgentRegistry = {
   createAgentFromConfig(config: AgentConfig): Agent;
 };
 
-const originalDemoMode = process.env.PROPR_DEMO_MODE;
-const originalNodeEnv = process.env.NODE_ENV;
-const originalGhAppId = process.env.GH_APP_ID;
-const originalGhPrivateKeyPath = process.env.GH_PRIVATE_KEY_PATH;
-const originalGhInstallationId = process.env.GH_INSTALLATION_ID;
+// Env vars that influence the resolved auth mode, intake mode, and legacy
+// githubAuth health. They are snapshotted before each test and restored after so
+// a developer shell or CI runner with any of them set can't make the assertions
+// nondeterministic.
+const MANAGED_ENV_VARS = [
+  'NODE_ENV',
+  'PROPR_DEMO_MODE',
+  'GH_APP_ID',
+  'GH_PRIVATE_KEY_PATH',
+  'GH_INSTALLATION_ID',
+  'GH_AUTH_MODE',
+  'PROPR_GH_RELAY_URL',
+  'PROPR_GH_RELAY_TOKEN',
+  'GITHUB_EVENT_INTAKE_MODE',
+  'ENABLE_GITHUB_WEBHOOKS',
+] as const;
+
+const originalEnv: Record<string, string | undefined> = Object.fromEntries(
+  MANAGED_ENV_VARS.map((key) => [key, process.env[key]]),
+);
 
 function createJsonResponse(): { response: ExpressResponse; status: () => number; body: () => Record<string, unknown> } {
   let statusCode = 200;
@@ -53,7 +68,9 @@ function createJsonResponse(): { response: ExpressResponse; status: () => number
 function createRedisClient() {
   return {
     ping: async () => 'PONG',
-    get: async () => Date.now().toString(),
+    // The daemon heartbeat key returns a timestamp; the routing key is absent by
+    // default so tests that don't publish routing state see it omitted.
+    get: async (key: string) => (key === 'system:status:routing' ? null : Date.now().toString()),
     sCard: async () => 1,
   };
 }
@@ -101,11 +118,11 @@ function createRegistry(agents: Agent[] = []): StatusAgentRegistry {
 }
 
 function configureStatusEnv(): void {
+  // Clear every managed var first so inherited values can't leak into a test,
+  // then set only the baseline the default-case assertions expect.
+  for (const key of MANAGED_ENV_VARS) delete process.env[key];
   process.env.NODE_ENV = 'test';
   process.env.PROPR_DEMO_MODE = 'false';
-  delete process.env.GH_APP_ID;
-  delete process.env.GH_PRIVATE_KEY_PATH;
-  delete process.env.GH_INSTALLATION_ID;
 }
 
 async function createRoutes(deps: StatusRoutesDeps) {
@@ -113,8 +130,11 @@ async function createRoutes(deps: StatusRoutesDeps) {
   return createStatusRoutes(deps);
 }
 
-async function readStatus(overrides: Partial<StatusRoutesDeps> = {}) {
+async function readStatus(overrides: Partial<StatusRoutesDeps> = {}, configureEnv?: () => void) {
   configureStatusEnv();
+  // Optional per-test env tweaks applied on top of the cleared baseline (e.g. to
+  // exercise relay-auth resolution) before the route reads process.env.
+  configureEnv?.();
   const { response, status, body } = createJsonResponse();
   const routes = await createRoutes({
     redisClient: createRedisClient() as never,
@@ -131,16 +151,11 @@ async function readStatus(overrides: Partial<StatusRoutesDeps> = {}) {
 }
 
 afterEach(() => {
-  if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
-  else process.env.NODE_ENV = originalNodeEnv;
-  if (originalDemoMode === undefined) delete process.env.PROPR_DEMO_MODE;
-  else process.env.PROPR_DEMO_MODE = originalDemoMode;
-  if (originalGhAppId === undefined) delete process.env.GH_APP_ID;
-  else process.env.GH_APP_ID = originalGhAppId;
-  if (originalGhPrivateKeyPath === undefined) delete process.env.GH_PRIVATE_KEY_PATH;
-  else process.env.GH_PRIVATE_KEY_PATH = originalGhPrivateKeyPath;
-  if (originalGhInstallationId === undefined) delete process.env.GH_INSTALLATION_ID;
-  else process.env.GH_INSTALLATION_ID = originalGhInstallationId;
+  for (const key of MANAGED_ENV_VARS) {
+    const value = originalEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 after(async () => {
@@ -170,6 +185,7 @@ test('/api/status returns default Claude fallback when no agents are configured'
 });
 
 test('/api/status includes warnings field in demo mode', async () => {
+  configureStatusEnv();
   process.env.NODE_ENV = 'production';
   process.env.PROPR_DEMO_MODE = 'true';
   const { response, body } = createJsonResponse();
@@ -213,6 +229,120 @@ test('/api/status caches agent health checks briefly', async () => {
 
   assert.equal(healthChecks, 1);
   assert.deepEqual(first.body().agents, second.body().agents);
+});
+
+test('/api/status reports resolved auth mode and event intake mode', async () => {
+  const body = await readStatus();
+
+  // configureStatusEnv() clears all GitHub auth config, so the auth mode
+  // resolves to 'none' and the intake mode defaults to routing_websocket.
+  assert.equal(body.githubAuthMode, 'none');
+  assert.equal(body.githubEventIntake, 'routing_websocket');
+});
+
+test('/api/status includes routing state published by the daemon', async () => {
+  const routingState = {
+    connected: true,
+    routingUrl: 'wss://routing.example',
+    lastDeliveryId: 'd-1',
+    lastAckAt: '2026-06-21T03:00:00.000Z',
+  };
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) =>
+      key === 'system:status:routing' ? JSON.stringify(routingState) : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  assert.deepEqual(body.routing, routingState);
+});
+
+test('/api/status reports connected githubAuth for relay-auth deployments', async () => {
+  const body = await readStatus({}, () => {
+    process.env.PROPR_GH_RELAY_URL = 'https://relay.example';
+    process.env.PROPR_GH_RELAY_TOKEN = 'relay-token';
+  });
+
+  assert.equal(body.githubAuthMode, 'relay');
+  assert.equal(body.githubAuth, 'connected');
+});
+
+test('/api/status reports unknown auth mode and disconnected health when the resolver is bypassed', async () => {
+  // 'none' (nothing configured) is the disconnected case the legacy field must
+  // still report so misconfiguration surfaces rather than masquerading as healthy.
+  const body = await readStatus();
+
+  assert.equal(body.githubAuthMode, 'none');
+  assert.equal(body.githubAuth, 'disconnected');
+});
+
+test('/api/status omits malformed routing state', async () => {
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) =>
+      key === 'system:status:routing'
+        ? JSON.stringify({ connected: 'yes', routingUrl: 42 })
+        : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  assert.equal('routing' in body, false);
+});
+
+test('/api/status omits routing state with a malformed lastAckAt timestamp', async () => {
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) =>
+      key === 'system:status:routing'
+        ? JSON.stringify({
+            connected: true,
+            routingUrl: 'wss://routing.example',
+            lastDeliveryId: 'd-1',
+            lastAckAt: 'not-a-timestamp',
+          })
+        : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  // An unparseable ACK timestamp is rejected at the API boundary rather than
+  // surfaced to consumers as a bogus date.
+  assert.equal('routing' in body, false);
+});
+
+test('/api/status omits routing state when none is published', async () => {
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) => (key === 'system:status:routing' ? null : Date.now().toString()),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  assert.equal('routing' in body, false);
+});
+
+test('/api/status reports demo auth mode in demo mode', async () => {
+  configureStatusEnv();
+  process.env.NODE_ENV = 'production';
+  process.env.PROPR_DEMO_MODE = 'true';
+  const { response, body } = createJsonResponse();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    loadAgents: async () => [],
+    agentRegistry: createRegistry(),
+    getIndexingQueue: async () => createIndexingQueue(),
+  });
+
+  await routes.getStatus({} as Request, response);
+
+  assert.equal(body().githubAuthMode, 'demo');
+  assert.equal(body().githubEventIntake, 'routing_websocket');
 });
 
 test('/api/status maps indexing queue states', async () => {
