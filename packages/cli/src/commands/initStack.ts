@@ -14,7 +14,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createConfigManager } from "../config/index.js";
 
-interface DetectedCred {
+export interface DetectedCred {
   envKey: string;
   path: string;
 }
