@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import 'dotenv/config';
 import {
+    DEFAULT_PROPR_GH_RELAY_URL,
     parseTruthyEnvValue,
     resolveGithubAuthMode,
     resolveGithubEventIntakeMode,
@@ -26,7 +27,16 @@ const demoMode = parseTruthyEnvValue(process.env.PROPR_DEMO_MODE);
 
 // The mode inference lives in @propr/shared (resolveGithubAuthMode) so the CLI's
 // `propr check` reports exactly what the backend will do at boot.
-const relayUrl = process.env.PROPR_GH_RELAY_URL;
+//
+// PROPR_GH_RELAY_URL defaults to the hosted relay (webhook.propr.dev) — the same
+// default the docs/.env and intake-prerequisite validator advertise — so a stack
+// that only sets PROPR_GH_RELAY_TOKEN still infers relay mode and mints tokens
+// against the hosted relay. Without this default, a token-only setup would pass
+// intake validation but fail auth-mode inference here (which requires a relay URL
+// to infer relay mode), so the advertised "URL is optional" setup would break.
+// Defaulting the URL (not the token) keeps the inference safe: a relay token is
+// still required, so the default URL alone never shadows a valid GitHub App config.
+const relayUrl = process.env.PROPR_GH_RELAY_URL?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
 const relayToken = process.env.PROPR_GH_RELAY_TOKEN;
 
 function resolveAuthMode(): GithubAuthMode {
@@ -57,7 +67,9 @@ function fatalConfigError(message: string): void {
 }
 
 if (authMode === 'relay') {
-    const urlError = relayUrl ? validateRelayUrl(relayUrl) : 'PROPR_GH_RELAY_URL must be set for relay mode.';
+    // relayUrl is always populated (defaulted to the hosted relay above), so this
+    // only guards against an explicitly-set but malformed PROPR_GH_RELAY_URL.
+    const urlError = validateRelayUrl(relayUrl);
     if (urlError) {
         fatalConfigError(`ERROR: ${urlError}`);
     } else if (!relayToken) {

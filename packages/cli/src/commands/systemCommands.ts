@@ -104,6 +104,7 @@ function displaySystemStatus(status: SystemStatus): void {
   );
 
   // Routing WebSocket diagnostics for default (routing_websocket) deployments.
+  const routingIntakeActive = status.githubEventIntake === "routing_websocket";
   if (status.routing) {
     const routing = status.routing;
     console.log("");
@@ -119,6 +120,14 @@ function displaySystemStatus(status: SystemStatus): void {
     console.log(
       `${"Last ACK".padEnd(maxLabelWidth)}  ${routing.lastAckAt ? new Date(routing.lastAckAt).toLocaleString() : "(none yet)"}`
     );
+  } else if (routingIntakeActive) {
+    // routing_websocket is the active intake mode but the daemon published no
+    // routing state — the default event path is not diagnosable (publisher down
+    // or daemon not running). Surface it explicitly rather than rendering nothing.
+    console.log("");
+    console.log(
+      `${"Routing WebSocket".padEnd(maxLabelWidth)}  ${formatStatusIndicator("unknown")} (no routing state published)`
+    );
   }
   console.log("");
   console.log(
@@ -127,9 +136,15 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log("");
   console.log("=".repeat(50));
 
-  // When routing state is published, an unhealthy routing WebSocket means the
-  // default intake path is down, so it must count against overall health.
-  const routingHealthy = !status.routing || status.routing.connected === true;
+  // Routing health counts against overall health whenever routing_websocket is the
+  // active intake path: a published-but-disconnected state is unhealthy, and so is
+  // a *missing* state (the daemon publisher is not running), since both mean the
+  // default event path is not delivering. When routing is not the active mode, an
+  // absent routing record is expected and does not affect health.
+  const routingStateMissing = routingIntakeActive && !status.routing;
+  const routingHealthy = status.routing
+    ? status.routing.connected === true
+    : !routingIntakeActive;
 
   const allHealthy =
     status.api === "healthy" &&
@@ -164,7 +179,9 @@ function displaySystemStatus(status: SystemStatus): void {
     if (status.claudeAuth !== "connected") {
       console.log("  - Claude auth status unknown or no recent activity.");
     }
-    if (!routingHealthy) {
+    if (routingStateMissing) {
+      console.log("  - Routing WebSocket state unavailable. routing_websocket is the active intake mode but the daemon published no routing state; ensure the daemon is running and check its logs.");
+    } else if (!routingHealthy) {
       console.log("  - Routing WebSocket disconnected. The daemon is not connected to the routing relay; check PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN and the daemon logs.");
     }
   }

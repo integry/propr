@@ -7,7 +7,7 @@ import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
-import { resolveGithubEventIntakeMode } from '@propr/shared';
+import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import {
   createStatusRoutes,
@@ -332,8 +332,33 @@ function setupWebhookRoute(): void {
     console.log(`[webhook] Webhook endpoint disabled (GITHUB_EVENT_INTAKE_MODE is "${intakeMode}", not "direct_webhook")`);
     return;
   }
-  if (!process.env.GH_WEBHOOK_SECRET) {
-    throw new Error('[webhook] GITHUB_EVENT_INTAKE_MODE is "direct_webhook" but GH_WEBHOOK_SECRET is not set. Refusing to start — all webhook traffic would be rejected. Set GH_WEBHOOK_SECRET in the environment.');
+
+  // Validate the FULL direct_webhook prerequisites before exposing POST /webhook,
+  // not just GH_WEBHOOK_SECRET. Direct webhook requires an own GitHub App (app auth
+  // mode) to process deliveries — the API must not start with a registered webhook
+  // endpoint in a partially-valid setup (e.g. relay auth + a secret), which would
+  // accept signed deliveries it cannot service. We reuse the same shared validator
+  // the daemon boot path and `propr check` use, so all three agree on what
+  // direct_webhook needs.
+  const { mode: authMode } = resolveGithubAuthMode({
+    demoMode: false, // demo mode short-circuits above; here we are always non-demo.
+    ghAuthMode: process.env.GH_AUTH_MODE,
+    relayUrl: process.env.PROPR_GH_RELAY_URL,
+    relayToken: process.env.PROPR_GH_RELAY_TOKEN,
+    appId: process.env.GH_APP_ID,
+    privateKeyPath: process.env.GH_PRIVATE_KEY_PATH,
+    installationId: process.env.GH_INSTALLATION_ID,
+  });
+  const { errors } = validateIntakeModePrerequisites({
+    intakeMode,
+    authMode,
+    routingUrl: process.env.PROPR_ROUTING_URL,
+    relayUrl: process.env.PROPR_GH_RELAY_URL,
+    relayToken: process.env.PROPR_GH_RELAY_TOKEN,
+    webhookSecret: process.env.GH_WEBHOOK_SECRET,
+  });
+  if (errors.length > 0) {
+    throw new Error(`[webhook] GITHUB_EVENT_INTAKE_MODE is "direct_webhook" but its prerequisites are not met. Refusing to start:\n  - ${errors.join('\n  - ')}`);
   }
   // The processor below (processWebhookEvent) is backed by the handler registered
   // via initializeWebhookHandler in start(), in this same API process — so a
@@ -389,14 +414,27 @@ async function start(): Promise<void> {
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
       console.log('[WebSocket] Queue features initialized for real-time updates');
       await initializeUltrafix(getIoRedisClient());
-      // Register the webhook processors in THIS (API) process. In direct_webhook
-      // mode the API process owns POST /webhook and dispatches deliveries via
-      // processWebhookEvent, so the processors that back it must be initialized here
-      // — process-local registration in the daemon does not configure the API. We
-      // initialize unconditionally (not only in direct_webhook mode) so a mode
-      // change does not require an API restart and the handler is always ready
-      // before the route can receive a request (this runs before httpServer.listen).
-      try { await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper }); console.log('[webhook] Webhook handler initialized'); } catch (error) { console.error('[webhook] Failed to initialize webhook handler:', (error as Error).message); }
+      // Register the webhook processors in THIS (API) process ONLY when the API
+      // actually serves webhooks — i.e. direct_webhook mode, where this process
+      // owns POST /webhook and dispatches deliveries via processWebhookEvent. In
+      // routing/polling modes the daemon owns event intake and the API never
+      // processes deliveries, so initializing the handler here is unnecessary work
+      // with possible side effects. A mode change already requires a process
+      // restart, so there is nothing to gain from initializing it unconditionally.
+      //
+      // In direct_webhook mode the initialization is REQUIRED, not best-effort: a
+      // registered /webhook endpoint with no backing handler would accept signed
+      // deliveries and fail every one at runtime. Let a failure here propagate to
+      // start()'s catch (which exits non-zero) so the operator sees the problem at
+      // startup instead of as silent per-delivery failures.
+      const { mode: apiIntakeMode } = resolveGithubEventIntakeMode({
+        eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
+        enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
+      });
+      if (apiIntakeMode === 'direct_webhook') {
+        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper });
+        console.log('[webhook] Webhook handler initialized');
+      }
       setInterval(async () => {
         try {
           await checkAndExecuteDelayedReindex(redisClient as RedisClientType);

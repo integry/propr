@@ -153,6 +153,8 @@ export class RoutingWebSocketIntakeService {
     private pingTimer: NodeJS.Timeout | null = null;
     private currentReconnectDelayMs: number;
     private stopped = false;
+    /** Guards {@link start} so a second call cannot open a parallel socket. */
+    private started = false;
 
     /**
      * Runtime state exposed via {@link getStatus} so `propr check` and the API
@@ -211,29 +213,47 @@ export class RoutingWebSocketIntakeService {
      * the connection (including reconnects) in the background until {@link stop}.
      */
     async start(): Promise<void> {
-        if (!this.routingUrl) {
-            throw new Error(
-                'RoutingWebSocketIntakeService requires a routing URL. Set PROPR_ROUTING_URL or pass options.routingUrl.',
-            );
+        // Idempotent: a second start() (without an intervening stop()) must not open
+        // a parallel socket, which would double-process events and leak the first
+        // connection. Guard before any async work so concurrent callers also collapse
+        // to a single connection.
+        if (this.started) {
+            logger.warn('RoutingWebSocketIntakeService.start() called while already started; ignoring');
+            return;
         }
+        this.started = true;
 
-        // Fail fast on a malformed/wrong-scheme/path-bearing URL rather than letting
-        // `ws` reject it at connect time and reconnecting against it forever.
-        validateRoutingUrl(this.routingUrl);
+        try {
+            if (!this.routingUrl) {
+                throw new Error(
+                    'RoutingWebSocketIntakeService requires a routing URL. Set PROPR_ROUTING_URL or pass options.routingUrl.',
+                );
+            }
 
-        // The relay rejects an unauthenticated upgrade; surface a clear failure here
-        // (boot prerequisites also require PROPR_GH_RELAY_TOKEN, but this guards
-        // direct construction and future call sites) instead of looping on 401s.
-        if (!this.relayToken) {
-            throw new Error(
-                'RoutingWebSocketIntakeService requires a relay token. Set PROPR_GH_RELAY_TOKEN or pass options.relayToken.',
-            );
+            // Fail fast on a malformed/wrong-scheme/path-bearing URL rather than letting
+            // `ws` reject it at connect time and reconnecting against it forever.
+            validateRoutingUrl(this.routingUrl);
+
+            // The relay rejects an unauthenticated upgrade; surface a clear failure here
+            // (boot prerequisites also require PROPR_GH_RELAY_TOKEN, but this guards
+            // direct construction and future call sites) instead of looping on 401s.
+            if (!this.relayToken) {
+                throw new Error(
+                    'RoutingWebSocketIntakeService requires a relay token. Set PROPR_GH_RELAY_TOKEN or pass options.relayToken.',
+                );
+            }
+
+            const WebSocketImpl = await loadWebSocketCtor(this.webSocketFactory);
+
+            this.stopped = false;
+            this.connect(WebSocketImpl);
+        } catch (error) {
+            // Startup failed before a connection was established (bad config, ws import
+            // failure). Clear the guard so a corrected retry is possible instead of the
+            // service being permanently wedged in a half-started state.
+            this.started = false;
+            throw error;
         }
-
-        const WebSocketImpl = await loadWebSocketCtor(this.webSocketFactory);
-
-        this.stopped = false;
-        this.connect(WebSocketImpl);
     }
 
     private connect(WebSocketImpl: WebSocketCtor): void {
@@ -399,9 +419,12 @@ export class RoutingWebSocketIntakeService {
         }
 
         // Already durably accepted: re-ACK (a prior ACK may have been lost) but
-        // never reprocess.
+        // never reprocess. Refresh the id's dedupe recency so a delivery the relay
+        // keeps redelivering does not age out of the bounded accepted set and get
+        // reprocessed as if it were new under heavy traffic.
         if (this.deliveries.isAccepted(deliveryId)) {
             log.debug({ deliveryId, sequence }, 'Re-ACKing already-accepted routing delivery');
+            this.deliveries.touch(deliveryId);
             this.sendAck(sequence, deliveryId, socket);
             return;
         }
@@ -591,6 +614,8 @@ export class RoutingWebSocketIntakeService {
     async stop(): Promise<void> {
         this.stopped = true;
         this.connected = false;
+        // Clear the start guard so a deliberate stop()/start() cycle can reconnect.
+        this.started = false;
 
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);

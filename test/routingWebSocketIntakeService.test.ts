@@ -260,6 +260,49 @@ test('discards an event frame with no numeric sequence (no ACK)', async () => {
     await service.stop();
 });
 
+test('start() is idempotent: a second call does not open a parallel socket', async () => {
+    const { service } = makeService();
+    await service.start();
+    await service.start();
+    assert.equal(FakeWebSocket.instances.length, 1, 'a repeated start() must not open another socket');
+    await service.stop();
+});
+
+test('a redelivered accepted delivery is re-ACKed and refreshes its dedupe recency', async () => {
+    // maxDedupeEntries=2: with three distinct deliveries the oldest is evicted.
+    // Re-ACKing the oldest before the third arrives must refresh its recency so a
+    // different id is evicted instead — otherwise the redelivered id would age out
+    // and be reprocessed as if new.
+    const { service, dispatched } = makeService({ maxDedupeEntries: 2 });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    const send = (sequence: number, deliveryId: string) =>
+        socket.emit('message', eventFrame({ sequence, deliveryId, eventType: 'issues', rawPayload: { n: sequence } }));
+
+    send(1, 'a');
+    await flush();
+    send(2, 'b');
+    await flush();
+    // Redeliver 'a' (already accepted): re-ACKed, not reprocessed, recency refreshed.
+    send(3, 'a');
+    await flush();
+    // 'c' pushes the set past its cap of 2; 'b' (now the least-recently-seen) evicts.
+    send(4, 'c');
+    await flush();
+
+    assert.equal(dispatched.length, 3, "only 'a', 'b', and 'c' are processed once each");
+
+    // 'a' was refreshed, so a later redelivery is still recognized (re-ACKed, not
+    // reprocessed) — proving its recency was refreshed rather than evicted.
+    send(5, 'a');
+    await flush();
+    assert.equal(dispatched.length, 3, "redelivered 'a' must not be reprocessed after the refresh");
+
+    await service.stop();
+});
+
 test('deduplicates by deliveryId: a duplicate is ACKed but not reprocessed', async () => {
     const { service, dispatched } = makeService();
     await service.start();

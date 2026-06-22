@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
 import {
+  DEFAULT_PROPR_GH_RELAY_URL,
   resolveGithubAuthMode,
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
@@ -484,7 +485,10 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
-  const relayUrl = val(RELAY_URL_KEY);
+  // PROPR_GH_RELAY_URL defaults to the hosted relay when unset, matching the
+  // backend (githubAuth) and the docs/.env: a token-only stack still infers relay
+  // mode here, so `propr check` cannot drift from boot behavior.
+  const relayUrl = val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
   const relayToken = val(RELAY_TOKEN_KEY);
   const { mode, warnings } = resolveGithubAuthMode({
     demoMode: isTruthy(val("PROPR_DEMO_MODE")),
@@ -516,7 +520,9 @@ function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): 
   }
 
   if (mode === "relay") {
-    const urlError = relayUrl ? validateRelayUrl(relayUrl) : `${RELAY_URL_KEY} must be set for relay mode`;
+    // relayUrl is always populated (defaulted to the hosted relay above); this only
+    // catches an explicitly-set but malformed PROPR_GH_RELAY_URL.
+    const urlError = validateRelayUrl(relayUrl);
     out.push(
       urlError
         ? { name: "GitHub auth mode", status: "fail", detail: urlError, group: "GitHub", fix: "Use an https:// relay URL (http only for localhost)." }
@@ -611,12 +617,16 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
   // surface as a structured failure, never abort the whole run. Both resolvers
   // are therefore guarded — resolveGithubAuthMode is side-effect free today, but
   // guarding it keeps the check resilient if its contract ever changes.
+  // Default the relay URL (token-only stacks rely on the hosted default) so the
+  // resolved auth mode matches the backend; see checkGithubAuth above.
+  const relayUrl = val(RELAY_URL_KEY)?.trim() || DEFAULT_PROPR_GH_RELAY_URL;
+
   let authMode;
   try {
     ({ mode: authMode } = resolveGithubAuthMode({
       demoMode: isTruthy(val("PROPR_DEMO_MODE")),
       ghAuthMode: val("GH_AUTH_MODE"),
-      relayUrl: val(RELAY_URL_KEY),
+      relayUrl,
       relayToken: val(RELAY_TOKEN_KEY),
       appId: val("GH_APP_ID"),
       privateKeyPath: val("GH_PRIVATE_KEY_PATH"),
@@ -634,8 +644,12 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
   }
 
   let intakeMode;
+  // Surface the resolver's own warnings (e.g. the ENABLE_GITHUB_WEBHOOKS
+  // deprecation notice the daemon/API log at boot) so `propr check` does not
+  // silently drop the migration feedback the backend would emit.
+  let resolverWarnings: string[] = [];
   try {
-    ({ mode: intakeMode } = resolveGithubEventIntakeMode({
+    ({ mode: intakeMode, warnings: resolverWarnings } = resolveGithubEventIntakeMode({
       eventIntakeMode: val("GITHUB_EVENT_INTAKE_MODE"),
       enableGithubWebhooks: val("ENABLE_GITHUB_WEBHOOKS"),
     }));
@@ -650,11 +664,15 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
     return out;
   }
 
+  for (const warning of resolverWarnings) {
+    out.push({ name: "GitHub intake mode", status: "warn", detail: warning, group: "GitHub" });
+  }
+
   const { valid, errors, warnings } = validateIntakeModePrerequisites({
     intakeMode,
     authMode,
     routingUrl: val("PROPR_ROUTING_URL"),
-    relayUrl: val(RELAY_URL_KEY),
+    relayUrl,
     relayToken: val(RELAY_TOKEN_KEY),
     webhookSecret: val("GH_WEBHOOK_SECRET"),
   });
@@ -739,6 +757,19 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
         status: "ok",
         detail: formatRoutingTimestamp(routing.lastAckAt),
         group: "GitHub",
+      });
+    } else {
+      // The backend answered but published no routing state. In routing_websocket
+      // mode that is the *default intake path*, so its absence is not benign: the
+      // daemon's routing publisher is not running (or the daemon is down), which
+      // means events are not being received and the path is not diagnosable. Warn
+      // rather than stay silent so a half-up routing deployment is visible.
+      out.push({
+        name: "Routing WebSocket",
+        status: "warn",
+        detail: "backend reachable but no routing state published — the daemon routing intake/publisher may not be running",
+        group: "GitHub",
+        fix: "Ensure the daemon is running in routing_websocket mode and check its logs and PROPR_ROUTING_URL / PROPR_GH_RELAY_TOKEN.",
       });
     }
   } catch {

@@ -227,13 +227,16 @@ function isRoutingState(value: unknown): value is RoutingState {
     && isNullableTimestamp(state.lastAckAt);
 }
 
-// lastAckAt is an ISO-8601 string when present. Reject a malformed timestamp at
-// the API boundary (rather than passing any string through) so the contract stays
-// tight and a corrupt Redis value never reaches consumers as a bogus date.
+// lastAckAt is an ISO-8601 string when present (the routing service produces it
+// via Date#toISOString). Validate against an actual ISO-8601 shape rather than the
+// permissive Date.parse() — which would accept loose inputs like "2026" or
+// "Jan 1 2026" — so the API contract stays tight and a corrupt Redis value never
+// reaches consumers as a non-ISO date.
+const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 function isNullableTimestamp(value: unknown): boolean {
   if (value === null) return true;
   if (typeof value !== 'string') return false;
-  return !Number.isNaN(Date.parse(value));
+  return ISO_8601_RE.test(value) && !Number.isNaN(Date.parse(value));
 }
 
 async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRuntimeState): Promise<Array<{ type: string; message: string }>> {

@@ -140,6 +140,17 @@ export class DeliveryTracker {
         this.accepted.add(id);
     }
 
+    /**
+     * Refresh an already-accepted delivery's recency without changing state. Used
+     * when a duplicate of an accepted delivery is re-ACKed: re-adding moves it to
+     * the most-recently-seen position (BoundedDeliverySet refreshes on add) so a
+     * frequently-redelivered id is not evicted under heavy traffic and then
+     * reprocessed as if it were new. A no-op for unknown ids.
+     */
+    touch(id: string): void {
+        if (this.accepted.has(id)) this.accepted.add(id);
+    }
+
     /** Release a failed delivery so a later redelivery is retried. */
     fail(id: string): void {
         this.inFlight.delete(id);
@@ -314,7 +325,17 @@ export async function loadWebSocketCtor(factory?: WebSocketCtor): Promise<WebSoc
     if (factory) return factory;
     const wsSpecifier = 'ws';
     const wsModule = (await import(wsSpecifier)) as { default?: WebSocketCtor } & Record<string, unknown>;
-    return (wsModule.default ?? (wsModule as unknown)) as WebSocketCtor;
+    const ctor = (wsModule.default ?? (wsModule as unknown)) as WebSocketCtor;
+    // The `ws` module is imported untyped (no @types/ws), so a changed export shape
+    // would otherwise surface as a cryptic "not a constructor" at the first connect.
+    // Verify the resolved value is callable as a constructor here and fail with an
+    // actionable message instead.
+    if (typeof ctor !== 'function') {
+        throw new Error(
+            'The "ws" package did not export a WebSocket constructor. Ensure a compatible version of "ws" is installed.',
+        );
+    }
+    return ctor;
 }
 
 /**
