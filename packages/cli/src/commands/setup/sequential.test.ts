@@ -131,6 +131,22 @@ test("whitelist: demo mode skips the prompt, otherwise parses a comma list", asy
   assert.deepEqual(await buildSequentialPrompts(io).configureWhitelist!({ current: ["x"], demoMode: false }), ["alice", "bob", "carol"]);
 });
 
+test('whitelist: "none" clears the list, blank re-affirms the current value', async () => {
+  const cleared = await buildSequentialPrompts(scriptedIo(["none"])).configureWhitelist!({ current: ["alice"], demoMode: false });
+  assert.deepEqual(cleared, [], '"none" empties the whitelist');
+
+  // Blank falls back to the shown default (the current value), so the list is
+  // preserved verbatim rather than cleared.
+  const kept = await buildSequentialPrompts(scriptedIo([""])).configureWhitelist!({ current: ["alice"], demoMode: false });
+  assert.deepEqual(kept, ["alice"], "blank keeps the current value");
+});
+
+test("selectAgents: an empty option list returns [] without prompting", async () => {
+  const io = scriptedIo([]); // no answers — must not pose a prompt
+  assert.deepEqual(await buildSequentialPrompts(io).selectAgents!({ available: [], detected: [] }), []);
+  assert.equal(io.questions.length, 0, "no prompt when there is nothing to choose");
+});
+
 test("addRepository: declining returns null, accepting collects owner/repo", async () => {
   assert.equal(await buildSequentialPrompts(scriptedIo(["n"])).addRepository!({ rootDir: "/s" }), null);
 

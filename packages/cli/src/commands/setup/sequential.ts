@@ -176,6 +176,11 @@ async function promptSelect(
   paint: Paint,
   req: { title: string; detail?: string; options: Option[]; defaultIndex?: number }
 ): Promise<string> {
+  // A single-choice prompt with no options is a caller bug; fail loudly with a
+  // clear message rather than crash on an out-of-range default index below.
+  if (req.options.length === 0) {
+    throw new Error(`Cannot prompt "${req.title}": no options were provided.`);
+  }
   printHeading(io, paint, req.title, req.detail);
   const defaultIndex = Math.min(Math.max(req.defaultIndex ?? 0, 0), req.options.length - 1);
   req.options.forEach((option, index) => {
@@ -198,6 +203,12 @@ async function promptMultiSelect(
   req: { title: string; detail?: string; options: Option[]; defaultSelected?: string[] }
 ): Promise<string[]> {
   printHeading(io, paint, req.title, req.detail);
+  // Nothing to choose from: note it and return an empty set rather than pose a
+  // prompt whose only valid answer is "blank" with an "between 1 and 0" error.
+  if (req.options.length === 0) {
+    io.print(paint("  (no options available)", ANSI.dim));
+    return [];
+  }
   const defaults = new Set(req.defaultSelected ?? []);
   req.options.forEach((option, index) => {
     const checked = defaults.has(option.value) ? "[x]" : "[ ]";
@@ -315,11 +326,14 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       if (demoMode) return null;
       const entered = await promptInput(io, paint, {
         title: "Allowed GitHub usernames",
-        detail: "Comma-separated; only these users can trigger ProPR. Blank keeps the current value.",
+        detail: 'Comma-separated; only these users can trigger ProPR. Blank keeps the current value, "none" clears it.',
         defaultValue: current.join(", "),
       });
       const trimmed = entered.trim();
       if (trimmed === "") return null;
+      // An explicit "none" empties the whitelist — a discoverable affordance that
+      // mirrors agent selection, instead of needing a bare comma to clear it.
+      if (trimmed.toLowerCase() === "none") return [];
       return trimmed
         .split(",")
         .map((entry) => entry.trim())
