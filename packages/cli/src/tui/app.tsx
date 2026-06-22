@@ -8,10 +8,12 @@ import { render } from "ink";
 import { StartApp } from "./StartApp.js";
 import { CheckApp, CheckHub, type RemediationMenuItem } from "./CheckApp.js";
 import { AgentTableApp, AgentTableHub } from "./AgentTableApp.js";
+import { SetupApp, SetupBridge, buildSetupPrompts } from "./SetupApp.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { ConfigManager } from "../config/index.js";
 import { runChecks, type ChecksOutcome, type RunChecksOptions } from "../commands/checkCommands.js";
 import { validateAgents, agentTypesFor, type AgentValidationRow } from "../commands/agentValidation.js";
+import { runSetup, type RunSetupOptions, type SetupReporter, type SetupRunResult } from "../commands/setup/engine.js";
 
 export interface DashboardProps {
   orch: OrchestratorModule;
@@ -99,4 +101,37 @@ export async function renderAgentValidation(
 
   await instance.waitUntilExit();
   return rows;
+}
+
+/**
+ * Run `propr setup` interactively. The setup engine is UI-agnostic: it streams
+ * state through a reporter and collects decisions through prompt hooks. Here we
+ * bridge both to an Ink view ({@link SetupApp}) — the step list updates live as
+ * the engine emits state, and the engine's prompt hooks render confirm / input /
+ * single-choice / multi-choice prompts the user drives with the keyboard.
+ *
+ * Resolves with the final {@link SetupRunResult} once the engine finishes (and
+ * the view has painted its last frame). On Ctrl-C the view cancels any in-flight
+ * prompt — which unwinds the engine so `runSetup` still resolves — and exits the
+ * Ink session, so nothing is left running. Callers should use
+ * `result.completed` to decide what to print afterwards.
+ */
+export async function renderSetupWizard(
+  options: Omit<RunSetupOptions, "prompts" | "reporter"> = {}
+): Promise<SetupRunResult> {
+  const bridge = new SetupBridge();
+  const instance = render(<SetupApp bridge={bridge} />, { exitOnCtrlC: false });
+
+  const reporter: SetupReporter = {
+    onState: (state) => bridge.emitState(state),
+    onLog: (line) => bridge.emitLog(line),
+  };
+
+  // runSetup never throws for cancellation: a cancelled prompt rejects, the
+  // engine catches it, settles the step, and returns its (incomplete) state.
+  const result = await runSetup({ ...options, prompts: buildSetupPrompts(bridge), reporter });
+
+  bridge.finish(result.state);
+  await instance.waitUntilExit();
+  return result;
 }
