@@ -324,7 +324,9 @@ export class RoutingWebSocketIntakeService {
                 );
                 return;
             case 'ping':
-                this.send({ type: 'pong' }, socket);
+                // Echo the relay's nonce; the relay requires a non-empty nonce on
+                // pong frames and rejects a nonce-less reply as a malformed frame.
+                this.send({ type: 'pong', nonce: frame.nonce }, socket);
                 return;
             default:
                 logger.debug({ type: frame.type }, 'Ignoring routing frame with unknown type');
@@ -344,7 +346,9 @@ export class RoutingWebSocketIntakeService {
     /** Cache an installation access token pushed by the relay. */
     private handleTokenFrame(frame: RoutingFrame): void {
         const installationId = frame.installationId;
-        const token = frame.token;
+        // The relay names this field `installationToken`; `token` is accepted as a
+        // legacy alias so either shape populates the cache.
+        const token = frame.installationToken ?? frame.token;
         if (installationId === undefined || !token) {
             logger.warn('Discarding token frame missing installationId or token');
             return;

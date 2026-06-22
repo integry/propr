@@ -244,6 +244,9 @@ export interface RoutingFrame {
     delivery?: RoutingDelivery;
     /** Present on `token` frames. */
     installationId?: number | string;
+    /** Installation access token on `token` frames (the relay's field name). */
+    installationToken?: string;
+    /** Legacy alias for `installationToken` on `token` frames. */
     token?: string;
     /** Optional token expiry on `token` frames (epoch ms or ISO-8601 string). */
     expiresAt?: number | string;
@@ -251,6 +254,8 @@ export interface RoutingFrame {
     message?: string;
     code?: string;
     deliveryId?: string;
+    /** Present on `ping` frames; echoed back in the `pong` reply. */
+    nonce?: string;
 }
 
 export function isSupportedEventType(value: string): value is WebhookEventType {

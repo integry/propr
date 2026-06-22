@@ -416,7 +416,8 @@ test('uses an installation token from a token frame when the event omits one', a
     const socket = FakeWebSocket.instances[0];
     socket.emit('open');
 
-    socket.emit('message', JSON.stringify({ type: 'token', installationId: 42, token: 'cached-token' }));
+    // Uses the relay's real field name `installationToken` (not the legacy `token` alias).
+    socket.emit('message', JSON.stringify({ type: 'token', installationId: 42, installationToken: 'cached-token' }));
     socket.emit('message', JSON.stringify({
         type: 'event',
         sequence: 3,
@@ -677,10 +678,11 @@ test('answers a ping frame with a pong frame', async () => {
     const socket = FakeWebSocket.instances[0];
     socket.emit('open');
 
-    socket.emit('message', JSON.stringify({ type: 'ping' }));
+    socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'ping-nonce-1' }));
     await flush();
 
-    assert.deepEqual(socket.sentFrames(), [{ type: 'pong' }]);
+    // The pong must echo the relay's nonce (the relay rejects a nonce-less pong).
+    assert.deepEqual(socket.sentFrames(), [{ type: 'pong', nonce: 'ping-nonce-1' }]);
 
     await service.stop();
 });
