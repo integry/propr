@@ -18,6 +18,7 @@ import {
   createRemoteStatusCommand,
   createQueueCommand,
   createInitCommand,
+  createSetupCommand,
   createCheckCommand,
   createImagesCommand,
   createStartCommand,
@@ -330,6 +331,7 @@ program.addCommand(createRelayCommand());
 
 // Setup + backend client command groups
 program.addCommand(createInitCommand());
+program.addCommand(createSetupCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());
