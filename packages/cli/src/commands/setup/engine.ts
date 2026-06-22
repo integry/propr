@@ -38,7 +38,7 @@ import { parseTruthyEnvValue, type GithubAuthMode, type GithubAuthModeResult } f
 import type { ConfigManager } from "../../config/index.js";
 import {
   buildIntakeEnvVars,
-  defaultIntakeMode,
+  defaultIntakeChoice,
   saveWhitelist,
   type GithubIntakeDecision,
   type GithubIntakeMode,
@@ -152,12 +152,14 @@ export interface SetupPrompts {
   configureGithubAuth?(ctx: { current: GithubAuthModeResult }): Promise<GithubAuthDecision>;
   /**
    * Choose how the backend ingests GitHub events (App/relay, polling, or
-   * direct webhooks). `defaultMode` is the recommended choice for the resolved
-   * auth mode; `webhooksEnabled` reflects the current `.env`. Default: keep.
+   * direct webhooks). `defaultMode` is the choice to pre-select: the auth-derived
+   * recommendation on a fresh install, but `"keep"` when `.env` already carries
+   * an intake decision so a blank Enter never rewrites a working config.
+   * `webhooksEnabled` reflects the current `.env`. Default: keep.
    */
   configureIntake?(ctx: {
     authMode: GithubAuthMode;
-    defaultMode: GithubIntakeMode;
+    defaultMode: GithubIntakeMode | "keep";
     webhooksEnabled: boolean;
   }): Promise<GithubIntakeDecision>;
   /** Confirm starting the stack. Default: start it. */
@@ -629,10 +631,15 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     } else {
       const envNow = actions.readEnvVars(rootDir);
       const webhooksEnabled = parseTruthyEnvValue(envNow.ENABLE_GITHUB_WEBHOOKS);
-      const fallback = defaultIntakeMode(resolvedAuth.mode);
+      // When `.env` already records an intake decision, default the prompt to
+      // "keep" so a blank Enter on a re-run can't silently flip a working config
+      // (e.g. disable existing direct webhooks). Only a fresh install falls back
+      // to the auth-derived recommendation.
+      const intakeConfigured = envNow.ENABLE_GITHUB_WEBHOOKS !== undefined;
+      const defaultMode = defaultIntakeChoice(resolvedAuth.mode, { intakeConfigured });
       let decision: GithubIntakeDecision | undefined;
       if (prompts.configureIntake) {
-        decision = await prompts.configureIntake({ authMode: resolvedAuth.mode, defaultMode: fallback, webhooksEnabled });
+        decision = await prompts.configureIntake({ authMode: resolvedAuth.mode, defaultMode, webhooksEnabled });
       }
       if (decision && !decision.keep && decision.mode) {
         // buildIntakeEnvVars rejects an empty webhook secret — caught below and
@@ -759,7 +766,10 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     let whitelist: string[] | null = null;
     if (prompts.configureWhitelist) whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
     if (whitelist !== null) {
-      const cleaned = whitelist.map((s) => s.trim()).filter(Boolean);
+      // Trim, drop blanks, and de-dupe (first occurrence wins) so the value
+      // matches saveWhitelist's "cleaned, de-duped usernames" contract — a
+      // duplicate entry would otherwise inflate the saved count and settings.
+      const cleaned = [...new Set(whitelist.map((s) => s.trim()).filter(Boolean))];
       // Prefer the settings API when the backend is up so the change applies
       // immediately (and never overwrites unrelated settings); always mirror into
       // .env so it survives a restart. Falls back to .env if the API is down.

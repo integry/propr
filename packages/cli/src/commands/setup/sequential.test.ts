@@ -178,6 +178,18 @@ test("intake: keep leaves the current configuration untouched", async () => {
   assert.deepEqual(decision, { keep: true });
 });
 
+test("intake: a defaultMode of keep makes a blank answer keep the current config", async () => {
+  // On a re-run the engine passes defaultMode "keep" when .env already records an
+  // intake decision, so a blank Enter must not rewrite a working webhook config.
+  const io = scriptedIo([""]);
+  const decision = await buildSequentialPrompts(io).configureIntake!({
+    authMode: "app",
+    defaultMode: "keep",
+    webhooksEnabled: true,
+  });
+  assert.deepEqual(decision, { keep: true });
+});
+
 test("selectAgents: an empty option list returns [] without prompting", async () => {
   const io = scriptedIo([]); // no answers — must not pose a prompt
   assert.deepEqual(await buildSequentialPrompts(io).selectAgents!({ available: [], detected: [] }), []);

@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildIntakeEnvVars,
+  defaultIntakeChoice,
   defaultIntakeMode,
   IntakeConfigError,
   saveWhitelist,
@@ -39,6 +40,19 @@ test("the App/relay path is the default when an App or relay is configured", () 
 test("polling is the default otherwise", () => {
   assert.equal(defaultIntakeMode("none"), "polling");
   assert.equal(defaultIntakeMode("demo"), "polling");
+});
+
+test("a fresh install pre-selects the auth-derived intake recommendation", () => {
+  assert.equal(defaultIntakeChoice("app", { intakeConfigured: false }), "app");
+  assert.equal(defaultIntakeChoice("relay", { intakeConfigured: false }), "app");
+  assert.equal(defaultIntakeChoice("none", { intakeConfigured: false }), "polling");
+});
+
+test("an existing intake config pre-selects keep, so a blank Enter never rewrites it", () => {
+  // Even when the auth-derived recommendation differs (app), an install that
+  // already chose webhooks must default to "keep".
+  assert.equal(defaultIntakeChoice("app", { intakeConfigured: true }), "keep");
+  assert.equal(defaultIntakeChoice("none", { intakeConfigured: true }), "keep");
 });
 
 test("a running backend saves through settings and mirrors into .env", async () => {

@@ -72,10 +72,34 @@ export function defaultIntakeMode(authMode: GithubAuthMode): GithubIntakeMode {
 }
 
 /**
+ * The intake choice the prompt should pre-select.
+ *
+ * On a re-run where `.env` already carries an intake decision
+ * (`ENABLE_GITHUB_WEBHOOKS` is set), the safe default is `"keep"`: a blank Enter
+ * must never silently rewrite a working config — e.g. an existing
+ * `ENABLE_GITHUB_WEBHOOKS=true` install must not flip to `false` just because the
+ * auth-derived recommendation happens to be `app`. This upholds the setup
+ * engine's re-run safety model (keep existing config unless the user explicitly
+ * changes it). Only on a fresh install, with no intake config yet, do we fall
+ * back to the auth-derived recommendation from {@link defaultIntakeMode}.
+ */
+export function defaultIntakeChoice(
+  authMode: GithubAuthMode,
+  opts: { intakeConfigured: boolean }
+): GithubIntakeMode | "keep" {
+  return opts.intakeConfigured ? "keep" : defaultIntakeMode(authMode);
+}
+
+/**
  * Translate a chosen {@link GithubIntakeMode} into the `.env` keys it implies.
  *
  *   - `app` / `polling` disable the local webhook listener
  *     (`ENABLE_GITHUB_WEBHOOKS=false`) — events arrive via the relay or polling.
+ *     A previously recorded `GH_WEBHOOK_SECRET` is intentionally *not* cleared:
+ *     `applyEnvSelection`/`upsertEnvVars` only set keys, never remove them, and a
+ *     blank value is ignored rather than blanking an existing one. The leftover
+ *     secret is inert while webhooks are disabled (the API never reads it), but
+ *     callers wanting a pristine `.env` must remove the key by hand.
  *   - `webhooks` enables it and records the signing secret. An empty/whitespace
  *     secret is rejected with {@link IntakeConfigError}: the API refuses to boot
  *     with webhooks on but no secret, so writing it would only break startup.

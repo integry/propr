@@ -298,6 +298,71 @@ test("an empty webhook secret is rejected without writing intake .env", async ()
   assert.equal(result.completed, true, "a rejected secret is non-blocking");
 });
 
+test("an existing intake config defaults the prompt to keep, not the auth recommendation", async () => {
+  // App auth would otherwise recommend "app" (webhooks off); because .env
+  // already records ENABLE_GITHUB_WEBHOOKS, the prompt must default to "keep".
+  let seenDefault: string | undefined;
+  let webhookWritten = false;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: {
+      configureIntake: async ({ defaultMode }) => {
+        seenDefault = defaultMode;
+        return { keep: true };
+      },
+    },
+    actions: mockActions({
+      detectGithubAuthMode: () => APP_AUTH,
+      readEnvVars: () => ({ ENABLE_GITHUB_WEBHOOKS: "true", GITHUB_USER_WHITELIST: "alice" }),
+      applyEnvSelection: (_root, vars) => {
+        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookWritten = true;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(seenDefault, "keep", "an existing webhook config pre-selects keep");
+  assert.equal(webhookWritten, false, "keeping must not rewrite the intake .env keys");
+  assert.equal(statusOf(result.state, "intake"), "done");
+  assert.match(getStep(result.state, "intake")?.detail ?? "", /direct webhooks/);
+});
+
+test("a fresh install (no intake key) defaults the prompt to the auth recommendation", async () => {
+  let seenDefault: string | undefined;
+  await runSetup({
+    root: "/stack",
+    prompts: {
+      configureIntake: async ({ defaultMode }) => {
+        seenDefault = defaultMode;
+        return { keep: true };
+      },
+    },
+    actions: mockActions({
+      detectGithubAuthMode: () => APP_AUTH,
+      readEnvVars: () => ({}),
+    }),
+  });
+
+  assert.equal(seenDefault, "app", "no intake key yet → auth-derived recommendation");
+});
+
+test("duplicate whitelist entries are de-duped before saving", async () => {
+  let settingsUsers: string[] | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureWhitelist: async () => ["alice", " alice ", "bob", "alice"] },
+    actions: mockActions({
+      isStackRunning: async () => true,
+      saveWhitelistSetting: async (_root, users) => {
+        settingsUsers = users;
+      },
+    }),
+  });
+
+  assert.deepEqual(settingsUsers, ["alice", "bob"], "trimmed and de-duped, first occurrence wins");
+  assert.match(getStep(result.state, "whitelist")?.detail ?? "", /2 user\(s\)/);
+});
+
 test("demo mode skips GitHub intake", async () => {
   const result = await runSetup({
     root: "/stack",
