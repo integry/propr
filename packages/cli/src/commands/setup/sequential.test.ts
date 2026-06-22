@@ -141,6 +141,43 @@ test('whitelist: "none" clears the list, blank re-affirms the current value', as
   assert.deepEqual(kept, ["alice"], "blank keeps the current value");
 });
 
+test("intake: blank picks the recommended default mode", async () => {
+  // Options are app, polling, webhooks, keep — defaultMode "app" is option 1, so
+  // a blank answer selects it.
+  const io = scriptedIo([""]);
+  const decision = await buildSequentialPrompts(io).configureIntake!({
+    authMode: "relay",
+    defaultMode: "app",
+    webhooksEnabled: false,
+  });
+  assert.deepEqual(decision, { mode: "app" });
+  assert.match(io.lines.join("\n"), /docs\.propr\.dev/, "docs link is surfaced in the detail text");
+});
+
+test("intake: choosing webhooks requires a non-empty secret, re-asking on blank", async () => {
+  // Choose option 3 (webhooks), enter a blank secret (rejected), then a real one.
+  const io = scriptedIo(["3", "", "hook-secret"]);
+  const decision = await buildSequentialPrompts(io).configureIntake!({
+    authMode: "app",
+    defaultMode: "app",
+    webhooksEnabled: false,
+  });
+  assert.deepEqual(decision, { mode: "webhooks", webhookSecret: "hook-secret" });
+  assert.equal(io.masked.length, 2, "the secret prompt is masked, and was asked twice");
+  assert.match(io.lines.join("\n"), /webhook secret is required/i);
+});
+
+test("intake: keep leaves the current configuration untouched", async () => {
+  // Option 4 is "keep".
+  const io = scriptedIo(["4"]);
+  const decision = await buildSequentialPrompts(io).configureIntake!({
+    authMode: "none",
+    defaultMode: "polling",
+    webhooksEnabled: true,
+  });
+  assert.deepEqual(decision, { keep: true });
+});
+
 test("selectAgents: an empty option list returns [] without prompting", async () => {
   const io = scriptedIo([]); // no answers — must not pose a prompt
   assert.deepEqual(await buildSequentialPrompts(io).selectAgents!({ available: [], detected: [] }), []);
@@ -230,6 +267,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
+    saveWhitelistSetting: async () => undefined,
     // Agent enablement / image-login actions — inert so the scripted run never
     // reaches the backend, Docker, or an extra login prompt.
     listAgents: async () => [],
@@ -248,9 +286,9 @@ test("runSequentialSetup drives the engine end to end through scripted answers",
   // Answers, in prompt order for an already-initialized stack:
   //   resolveStackRoot (blank → keep /stack), re-scaffold? (n),
   //   selectAgents (blank → detected), githubAuth (blank → keep),
-  //   confirmStartStack (blank → yes), whitelist (blank → keep current),
-  //   addRepository (n), launchUi (n).
-  const io = scriptedIo(["", "n", "", "", "", "", "n", "n"]);
+  //   configureIntake (blank → recommended default), confirmStartStack (blank → yes),
+  //   whitelist (blank → keep current), addRepository (n), launchUi (n).
+  const io = scriptedIo(["", "n", "", "", "", "", "", "n", "n"]);
 
   const result = await runSequentialSetup({
     io,

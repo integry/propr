@@ -19,6 +19,7 @@ export type SetupStepId =
   | "pull-images"
   | "configure-agents"
   | "github-auth"
+  | "intake"
   | "start-stack"
   | "enable-agents"
   | "whitelist"
@@ -115,6 +116,12 @@ export const SETUP_STEP_DEFINITIONS: ReadonlyArray<
     optional: false,
   },
   {
+    id: "intake",
+    title: "GitHub intake",
+    description: "Choose how the backend ingests GitHub events (App/relay, polling, or webhooks).",
+    optional: false,
+  },
+  {
     id: "start-stack",
     title: "Start stack",
     description: "Launch the local control-plane services.",
@@ -129,7 +136,7 @@ export const SETUP_STEP_DEFINITIONS: ReadonlyArray<
   {
     id: "whitelist",
     title: "Whitelist setup",
-    description: "Authorize the repositories ProPR is allowed to act on.",
+    description: "Restrict which GitHub users may trigger ProPR.",
     optional: false,
   },
   {

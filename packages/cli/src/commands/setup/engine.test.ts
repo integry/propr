@@ -51,6 +51,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
+    saveWhitelistSetting: async () => undefined,
     // Agent enablement / image-login actions — inert by default so no test
     // touches the backend or Docker unless it overrides them.
     listAgents: async () => [],
@@ -245,6 +246,113 @@ test("an already-running stack is reused, not restarted", async () => {
   assert.equal(statusOf(result.state, "start-stack"), "done");
 });
 
+test("selecting polling disables webhooks in .env", async () => {
+  let webhookVars: Record<string, string> | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureIntake: async () => ({ mode: "polling" }) },
+    actions: mockActions({
+      applyEnvSelection: (_root, vars) => {
+        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "intake"), "done");
+  assert.deepEqual(webhookVars, { ENABLE_GITHUB_WEBHOOKS: "false" });
+});
+
+test("selecting webhooks writes the enable flag and the signing secret", async () => {
+  let webhookVars: Record<string, string> | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureIntake: async () => ({ mode: "webhooks", webhookSecret: "s3cret" }) },
+    actions: mockActions({
+      applyEnvSelection: (_root, vars) => {
+        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "intake"), "done");
+  assert.deepEqual(webhookVars, { ENABLE_GITHUB_WEBHOOKS: "true", GH_WEBHOOK_SECRET: "s3cret" });
+});
+
+test("an empty webhook secret is rejected without writing intake .env", async () => {
+  let webhookWritten = false;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureIntake: async () => ({ mode: "webhooks", webhookSecret: "   " }) },
+    actions: mockActions({
+      applyEnvSelection: (_root, vars) => {
+        if ("ENABLE_GITHUB_WEBHOOKS" in vars) webhookWritten = true;
+        return { written: [], skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "intake"), "warning", "an empty secret must be rejected, not written");
+  assert.equal(webhookWritten, false);
+  assert.equal(result.completed, true, "a rejected secret is non-blocking");
+});
+
+test("demo mode skips GitHub intake", async () => {
+  const result = await runSetup({
+    root: "/stack",
+    actions: mockActions({ detectGithubAuthMode: () => ({ mode: "demo", warnings: [] }) }),
+  });
+  assert.equal(statusOf(result.state, "intake"), "skipped");
+});
+
+test("whitelist is saved through the settings API when the backend is running", async () => {
+  let settingsUsers: string[] | undefined;
+  let mirroredEnv: string | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureWhitelist: async () => ["carol", "dave"] },
+    actions: mockActions({
+      isStackRunning: async () => true,
+      saveWhitelistSetting: async (_root, users) => {
+        settingsUsers = users;
+      },
+      applyEnvSelection: (_root, vars) => {
+        if ("GITHUB_USER_WHITELIST" in vars) mirroredEnv = vars.GITHUB_USER_WHITELIST;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "whitelist"), "done");
+  assert.deepEqual(settingsUsers, ["carol", "dave"], "saved through the settings API");
+  assert.equal(mirroredEnv, "carol,dave", "also mirrored into .env for durability");
+  assert.match(getStep(result.state, "whitelist")?.detail ?? "", /settings API/);
+});
+
+test("whitelist falls back to .env when the backend is not running", async () => {
+  let settingsCalled = false;
+  let envWhitelist: string | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureWhitelist: async () => ["erin"] },
+    actions: mockActions({
+      isStackRunning: async () => false,
+      saveWhitelistSetting: async () => {
+        settingsCalled = true;
+      },
+      applyEnvSelection: (_root, vars) => {
+        if ("GITHUB_USER_WHITELIST" in vars) envWhitelist = vars.GITHUB_USER_WHITELIST;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(settingsCalled, false, "the settings API is not used when the backend is down");
+  assert.equal(envWhitelist, "erin");
+  assert.equal(statusOf(result.state, "whitelist"), "done");
+});
+
 test("prompts drive a full unattended run to completion", async () => {
   const seen: string[] = [];
   const prompts: SetupPrompts = {
@@ -267,6 +375,6 @@ test("prompts drive a full unattended run to completion", async () => {
   // Every step settled exactly once, in order.
   assert.deepEqual(
     seen.map((s) => s.split(":")[0]),
-    ["check", "init-stack", "pull-images", "configure-agents", "github-auth", "start-stack", "enable-agents", "whitelist", "repo", "launch-ui"]
+    ["check", "init-stack", "pull-images", "configure-agents", "github-auth", "intake", "start-stack", "enable-agents", "whitelist", "repo", "launch-ui"]
   );
 });

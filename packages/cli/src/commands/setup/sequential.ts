@@ -24,6 +24,12 @@
 import { createInterface } from "node:readline/promises";
 import type { GithubAuthMode } from "@propr/shared";
 import {
+  INTAKE_DOCS_URL,
+  WEBHOOK_DOCS_URL,
+  type GithubIntakeDecision,
+  type GithubIntakeMode,
+} from "./github.js";
+import {
   runSetup,
   type GithubAuthDecision,
   type RepoSelection,
@@ -310,6 +316,40 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         mode: "app" satisfies GithubAuthMode,
         vars: { GH_AUTH_MODE: "app", GH_APP_ID: appId, GH_PRIVATE_KEY_PATH: privateKeyPath, GH_INSTALLATION_ID: installationId },
       };
+    },
+
+    async configureIntake({ defaultMode, webhooksEnabled }): Promise<GithubIntakeDecision> {
+      const options = [
+        { label: "ProPR App / shared relay (recommended)", value: "app" },
+        { label: "Polling (no inbound webhooks)", value: "polling" },
+        { label: "Direct webhooks (requires a signing secret)", value: "webhooks" },
+        { label: "Keep current", value: "keep", hint: webhooksEnabled ? "webhooks on" : "webhooks off" },
+      ];
+      const defaultIndex = Math.max(0, options.findIndex((o) => o.value === defaultMode));
+      const choice = await promptSelect(io, paint, {
+        title: "GitHub event intake",
+        detail: `How the backend receives GitHub events. Docs: ${INTAKE_DOCS_URL}`,
+        options,
+        defaultIndex,
+      });
+      if (choice === "keep") return { keep: true };
+      if (choice === "webhooks") {
+        // The API refuses to boot with webhooks on but no secret — keep asking
+        // until a non-empty secret is entered.
+        let secret = "";
+        while (secret === "") {
+          secret = (
+            await promptInput(io, paint, {
+              title: "Webhook signing secret",
+              detail: `Verifies GitHub webhook signatures; forged payloads are rejected. Docs: ${WEBHOOK_DOCS_URL}`,
+              mask: true,
+            })
+          ).trim();
+          if (secret === "") io.print(paint("  A webhook secret is required.", ANSI.yellow));
+        }
+        return { mode: "webhooks", webhookSecret: secret };
+      }
+      return { mode: choice as GithubIntakeMode };
     },
 
     async confirmStartStack({ rootDir, alreadyRunning }): Promise<boolean> {
