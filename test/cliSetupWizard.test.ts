@@ -30,6 +30,7 @@ import {
 } from "../packages/cli/src/commands/setup/sequential.js";
 import {
   applyEnvSelection,
+  clearEnvKeys,
   detectGithubAuthMode,
   getStep,
   hasEnvValue,
@@ -96,6 +97,7 @@ function diskActions(overrides: Partial<SetupActions> = {}): SetupActions {
     inspectStackInit,
     readEnvVars,
     applyEnvSelection,
+    clearEnvKeys,
     detectGithubAuthMode,
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
@@ -107,6 +109,7 @@ function diskActions(overrides: Partial<SetupActions> = {}): SetupActions {
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
+    openUrl: async () => undefined,
     saveWhitelistSetting: async () => undefined,
     listAgents: async () => [],
     addAgent: async () => undefined,
@@ -455,4 +458,132 @@ test("no selected agents means no agent images are pulled", async () => {
   assert.deepEqual(pulledAgentTypes, [], "no agents selected → no agent images requested");
   assert.equal(statusOf(result.state, "configure-agents"), "skipped");
   assert.equal(statusOf(result.state, "enable-agents"), "skipped");
+});
+
+// ---------------------------------------------------------------------------
+// 6. Correctness fixes from review: clearing config, demo switch, decline,
+//    legacy intake, and actually opening the UI.
+// ---------------------------------------------------------------------------
+
+test("clearing the whitelist removes GITHUB_USER_WHITELIST from .env (not blanked)", async () => {
+  const root = makeRoot();
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_USER_WHITELIST=alice,bob\n",
+  );
+
+  const result = await runSetup({
+    root,
+    // An empty selection (the renderer's "none") must clear the whitelist.
+    prompts: { configureWhitelist: async () => [] },
+    actions: diskActions(),
+  });
+
+  assert.equal(
+    readEnvVars(root).GITHUB_USER_WHITELIST,
+    undefined,
+    "the stale whitelist key is removed so it cannot come back on restart",
+  );
+  assert.match(getStep(result.state, "whitelist")?.detail ?? "", /cleared/);
+});
+
+test("switching from demo to app turns PROPR_DEMO_MODE off on disk", async () => {
+  const root = makeRoot();
+  seedInitializedStack(root, "PROPR_DEMO_MODE=true\nGH_AUTH_MODE=demo\n");
+
+  await runSetup({
+    root,
+    prompts: {
+      // Mirror what the renderers now hand back when leaving demo mode.
+      configureGithubAuth: async () => ({
+        mode: "app",
+        vars: {
+          PROPR_DEMO_MODE: "false",
+          GH_AUTH_MODE: "app",
+          GH_APP_ID: "1",
+          GH_PRIVATE_KEY_PATH: "/k.pem",
+          GH_INSTALLATION_ID: "2",
+        },
+      }),
+    },
+    actions: diskActions(),
+  });
+
+  const env = readEnvVars(root);
+  assert.equal(env.PROPR_DEMO_MODE, "false", "demo mode is explicitly disabled");
+  assert.equal(detectGithubAuthMode(root).mode, "app", "auth no longer resolves as demo");
+});
+
+test("both renderers turn demo off when selecting a real auth mode", async () => {
+  // App (option 2) → appId, key path, installation id.
+  const app = await buildSequentialPrompts(scriptedIo(["2", "123", "/k.pem", "42"])).configureGithubAuth!({
+    current: { mode: "demo", warnings: [] },
+  });
+  assert.equal(app.vars?.PROPR_DEMO_MODE, "false");
+  assert.equal(app.vars?.GH_AUTH_MODE, "app");
+
+  // Relay (option 3) → url, token.
+  const relay = await buildSequentialPrompts(scriptedIo(["3", "https://relay", "tok"])).configureGithubAuth!({
+    current: { mode: "demo", warnings: [] },
+  });
+  assert.equal(relay.vars?.PROPR_DEMO_MODE, "false");
+  assert.equal(relay.vars?.GH_AUTH_MODE, "relay");
+});
+
+test("declining to start the stack reports setup as incomplete", async () => {
+  const root = makeRoot();
+  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+
+  const result = await runSetup({
+    root,
+    prompts: { confirmStartStack: async () => false },
+    actions: diskActions(),
+  });
+
+  assert.equal(statusOf(result.state, "start-stack"), "skipped");
+  assert.equal(result.completed, false, "a declined start must not exit 0 / report success");
+});
+
+test("a legacy ENABLE_GITHUB_WEBHOOKS .env pre-selects keep for intake", async () => {
+  const root = makeRoot();
+  // No GITHUB_EVENT_INTAKE_MODE, only the deprecated boolean — but it still
+  // resolves to a real mode, so a blank Enter must keep it.
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nENABLE_GITHUB_WEBHOOKS=true\n",
+  );
+
+  let seenDefault: string | undefined;
+  await runSetup({
+    root,
+    prompts: {
+      configureIntake: async ({ defaultMode }) => {
+        seenDefault = defaultMode;
+        return { keep: true };
+      },
+    },
+    actions: diskActions(),
+  });
+
+  assert.equal(seenDefault, "keep", "a legacy webhooks flag counts as configured → keep, not a rewrite");
+});
+
+test("confirming the UI launch actually opens the resolved URL", async () => {
+  const root = makeRoot();
+  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+
+  let opened: string | undefined;
+  const result = await runSetup({
+    root,
+    prompts: { launchUi: async () => true },
+    actions: diskActions({
+      openUrl: async (url) => {
+        opened = url;
+      },
+    }),
+  });
+
+  assert.equal(opened, "http://localhost:3000", "the engine opens the UI rather than only reporting it");
+  assert.equal(statusOf(result.state, "launch-ui"), "done");
+  assert.match(getStep(result.state, "launch-ui")?.detail ?? "", /opened/);
 });

@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
 import type { ConfigManager } from "../../config/index.js";
-import { upsertEnvVars } from "../../utils/envFile.js";
+import { clearEnvKeys as clearEnvFileKeys, upsertEnvVars } from "../../utils/envFile.js";
 import {
   SETUP_STEP_DEFINITIONS,
   type SetupState,
@@ -189,6 +189,20 @@ export function applyEnvSelection(
     upsertEnvVars(envPathFor(rootDir), toWrite);
   }
   return { written, skipped };
+}
+
+/**
+ * Remove `keys` from the stack's `.env` entirely.
+ *
+ * {@link applyEnvSelection} can only set keys (and deliberately ignores blank
+ * values so it never clobbers a value the user set), so it cannot *clear* a key:
+ * writing `KEY=` would leave an empty assignment that reads back as a set-but-
+ * empty value. Setup steps that must genuinely drop a stale key — clearing the
+ * user whitelist back to "none", removing a key when switching modes — call this
+ * instead. A missing `.env` or absent keys are no-ops.
+ */
+export function clearEnvKeys(rootDir: string, keys: string[]): void {
+  clearEnvFileKeys(envPathFor(rootDir), keys);
 }
 
 /**

@@ -272,6 +272,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     },
     readEnvVars: () => ({ GITHUB_USER_WHITELIST: "alice,bob" }),
     applyEnvSelection: () => ({ written: [], skipped: [] }),
+    clearEnvKeys: () => undefined,
     detectGithubAuthMode: () => ({ mode: "app", warnings: [] }),
     pullImages: async () => ({ pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] }),
     isStackRunning: async () => false,
@@ -279,6 +280,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     checkBackendHealth: async () => ({ healthy: true, detail: "API healthy" }),
     addRepository: async () => undefined,
     resolveUiUrl: async () => "http://localhost:3000",
+    openUrl: async () => undefined,
     saveWhitelistSetting: async () => undefined,
     // Agent enablement / image-login actions — inert so the scripted run never
     // reaches the backend, Docker, or an extra login prompt.

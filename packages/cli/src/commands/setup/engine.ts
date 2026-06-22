@@ -58,6 +58,7 @@ import {
 } from "./agents.js";
 import {
   applyEnvSelection,
+  clearEnvKeys,
   createSetupState,
   detectGithubAuthMode,
   getStep,
@@ -180,7 +181,11 @@ export interface SetupPrompts {
   configureWhitelist?(ctx: { current: string[]; demoMode: boolean }): Promise<string[] | null>;
   /** Optionally add a first repository. Return null to skip. Default: skip. */
   addRepository?(ctx: { rootDir: string }): Promise<RepoSelection | null>;
-  /** Open the UI. Default: just report the URL. */
+  /**
+   * Ask whether to open the UI in a browser. Returning `true` makes the engine
+   * launch it (via {@link SetupActions.openUrl}); the renderer only collects the
+   * yes/no. Default: don't open, just report the URL.
+   */
   launchUi?(ctx: { url: string }): Promise<boolean>;
 }
 
@@ -248,6 +253,8 @@ export interface SetupActions extends AgentSetupActions {
   scaffoldStack(options: InitStackOptions): Promise<InitStackResult>;
   readEnvVars(rootDir: string): Record<string, string>;
   applyEnvSelection(rootDir: string, vars: Record<string, string>, opts?: { overwrite?: boolean }): EnvSelectionResult;
+  /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
+  clearEnvKeys(rootDir: string, keys: string[]): void;
   detectGithubAuthMode(rootDir: string): GithubAuthModeResult;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
   isStackRunning(rootDir: string): Promise<boolean>;
@@ -255,6 +262,8 @@ export interface SetupActions extends AgentSetupActions {
   checkBackendHealth(params: BackendHealthParams): Promise<BackendHealth>;
   addRepository(selection: RepoSelection, rootDir: string): Promise<void>;
   resolveUiUrl(rootDir: string): Promise<string>;
+  /** Open `url` in the host's default browser (best-effort; may reject). */
+  openUrl(url: string): Promise<void>;
   /**
    * Save the user whitelist through the running backend's settings API. A
    * partial update — only the whitelist key is sent, so unrelated settings are
@@ -316,6 +325,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     },
     readEnvVars,
     applyEnvSelection,
+    clearEnvKeys,
     detectGithubAuthMode,
     async pullImages({ rootDir, agentTypes, onLog }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
@@ -392,6 +402,24 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const { cfg } = await getHostConfig({ configManager, root: rootDir });
       return `http://localhost:${cfg.uiPort}`;
     },
+    async openUrl(url) {
+      // Open in the host's default browser with the platform launcher. Detached
+      // and unref'd so the wizard isn't held open by the child, with stdio
+      // ignored so the launcher can't scribble over the TUI.
+      const { spawn } = await import("node:child_process");
+      const platform = process.platform;
+      const command = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
+      const args = platform === "win32" ? ["/c", "start", "", url] : [url];
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(command, args, { stdio: "ignore", detached: true });
+        child.once("error", reject);
+        // The launcher returns immediately; once it has spawned we're done.
+        child.once("spawn", () => {
+          child.unref();
+          resolve();
+        });
+      });
+    },
     async saveWhitelistSetting(rootDir, users) {
       const { updateSetting } = await import("../../api/settings.js");
       // Point the client at this stack's API port rather than the saved remote.
@@ -418,6 +446,13 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   let checks: ChecksOutcome | undefined;
   /** Agents chosen at the pull step, reused when recording credentials. */
   let selectedAgents: string[] = [];
+  /**
+   * Set when the user declines to start the stack. Starting and validating the
+   * backend is the central goal of setup, so a declined start must not report
+   * overall success (and exit 0) even though every *step* reached a terminal
+   * status — the work the user came to do did not happen.
+   */
+  let startDeclined = false;
 
   const emit = (): void => reporter.onState?.(state);
   const stepOf = (id: SetupStepId): SetupStep => getStep(state, id)!;
@@ -432,7 +467,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     reporter.onStepSettled?.(stepOf(id));
   };
   const log = (line: string): void => reporter.onLog?.(line);
-  const finish = (): SetupRunResult => ({ rootDir, state, checks, completed: isSetupComplete(state) });
+  const finish = (): SetupRunResult => ({
+    rootDir,
+    state,
+    checks,
+    // Declining to start the stack leaves the backend down, so the run is not
+    // complete even when every step is in a terminal, non-failed status.
+    completed: isSetupComplete(state) && !startDeclined,
+  });
 
   emit();
 
@@ -492,6 +534,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       // No `force`: scaffoldStack creates a fresh `.env` only when absent and
       // otherwise leaves the existing one in place.
       const result = await actions.scaffoldStack({ root: rootDir });
+      // Adopt the absolute root scaffoldStack actually resolved. A root typed at
+      // the prompt may be relative or have a trailing slash; without this every
+      // later step (env writes, health probe, UI URL) would key off the raw
+      // string while the scaffold landed at the resolved path.
+      if (result.rootDir && result.rootDir !== rootDir) {
+        rootDir = result.rootDir;
+        state = { ...state, rootDir };
+      }
       const created = [...result.dirsCreated];
       settle("init-stack", {
         status: "done",
@@ -643,12 +693,15 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         eventIntakeMode: envNow.GITHUB_EVENT_INTAKE_MODE,
         enableGithubWebhooks: envNow.ENABLE_GITHUB_WEBHOOKS,
       });
-      // When `.env` already records an explicit intake decision, default the
-      // prompt to "keep" so a blank Enter on a re-run can't silently flip a
-      // working config (e.g. disable existing direct webhooks). Only a fresh
-      // install (no GITHUB_EVENT_INTAKE_MODE yet) falls back to the auth-derived
-      // recommendation.
-      const intakeConfigured = envNow.GITHUB_EVENT_INTAKE_MODE !== undefined;
+      // When `.env` already records an intake decision, default the prompt to
+      // "keep" so a blank Enter on a re-run can't silently flip a working config
+      // (e.g. disable existing direct webhooks). This also covers older `.env`
+      // files that only carry the legacy `ENABLE_GITHUB_WEBHOOKS` boolean: it
+      // still resolves to a real `currentMode`, so a blank Enter must keep that
+      // rather than rewrite it to the auth-derived recommendation. Only a truly
+      // fresh install (neither key set) falls back to the recommendation.
+      const intakeConfigured =
+        envNow.GITHUB_EVENT_INTAKE_MODE !== undefined || envNow.ENABLE_GITHUB_WEBHOOKS !== undefined;
       const defaultMode = defaultIntakeChoice(resolvedAuth.mode, { intakeConfigured });
       let decision: GithubIntakeDecision | undefined;
       if (prompts.configureIntake) {
@@ -715,10 +768,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     const alreadyRunning = await actions.isStackRunning(rootDir);
     const startConfirmed = prompts.confirmStartStack ? await prompts.confirmStartStack({ rootDir, alreadyRunning }) : true;
     if (!startConfirmed) {
+      // A declined start is recorded as skipped for the step list, but it keeps
+      // setup from reporting success (see `startDeclined`): the backend never
+      // came up, so the wizard's primary goal is unmet.
+      startDeclined = true;
       settle("start-stack", {
         status: "skipped",
-        detail: "stack not started (skipped)",
-        nextAction: "Start it later with `propr start`.",
+        detail: "stack not started — setup is incomplete until the backend is running",
+        nextAction: "Start it later with `propr start`, or re-run `propr setup` and confirm startup.",
       });
     } else {
       if (alreadyRunning) {
@@ -815,8 +872,18 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         users: cleaned,
         backendRunning,
         saveViaSettings: (users) => actions.saveWhitelistSetting(rootDir, users),
-        saveViaEnv: (users) =>
-          actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: users.join(",") }, { overwrite: true }),
+        saveViaEnv: (users) => {
+          // A non-empty list is written; clearing to "none" must *remove* the key
+          // rather than blank it. applyEnvSelection ignores blank values (so it
+          // never clobbers a value), which means `GITHUB_USER_WHITELIST=""` would
+          // be skipped and the old list would survive on the next restart — so we
+          // delete the key outright instead.
+          if (users.length > 0) {
+            actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: users.join(",") }, { overwrite: true });
+          } else {
+            actions.clearEnvKeys(rootDir, ["GITHUB_USER_WHITELIST"]);
+          }
+        },
       });
       const where = saved.target === "settings" ? "via settings API" : "in .env";
       const summary = cleaned.length > 0 ? `${cleaned.length} user(s) allowed (${where})` : `whitelist cleared (${where})`;
@@ -877,7 +944,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     });
   }
 
-  // 10. UI (optional) — surface the URL; opening it is the renderer's job.
+  // 10. UI (optional) — surface the URL and, when the user confirms, actually
+  //     open it in their default browser.
   begin("launch-ui");
   let uiUrl = "";
   try {
@@ -886,14 +954,32 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     /* non-fatal: just omit the URL */
   }
   let opened = false;
+  let openFailed = false;
   try {
-    opened = prompts.launchUi ? await prompts.launchUi({ url: uiUrl }) : false;
+    // The prompt only asks *whether* to open; the engine performs the open so
+    // both renderers behave identically and neither has to import a launcher.
+    const wantsOpen = uiUrl && prompts.launchUi ? await prompts.launchUi({ url: uiUrl }) : false;
+    if (wantsOpen) {
+      try {
+        await actions.openUrl(uiUrl);
+        opened = true;
+      } catch {
+        // Headless host, no launcher, etc. — fall back to just printing the URL.
+        openFailed = true;
+      }
+    }
   } catch {
     /* opening the UI is best-effort; a failed launch prompt must not fail setup */
   }
   settle("launch-ui", {
     status: opened ? "done" : "skipped",
-    detail: uiUrl ? `UI available at ${uiUrl}` : "UI URL unavailable",
+    detail: uiUrl
+      ? openFailed
+        ? `UI available at ${uiUrl} (could not open a browser automatically)`
+        : opened
+          ? `opened ${uiUrl}`
+          : `UI available at ${uiUrl}`
+      : "UI URL unavailable",
   });
 
   return finish();

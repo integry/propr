@@ -258,12 +258,16 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       if (choice === "demo") {
         return { mode: "demo", vars: { PROPR_DEMO_MODE: "true", GH_AUTH_MODE: "demo" } };
       }
+      // Switching to a real auth mode must explicitly turn demo mode off:
+      // detectGithubAuthMode reads PROPR_DEMO_MODE, so a leftover
+      // PROPR_DEMO_MODE=true would keep resolving as demo and ignore the App/relay
+      // config the user just entered.
       if (choice === "relay") {
         const relayUrl = await bridge.input({ title: "Relay URL", defaultValue: "" });
         const relayToken = await bridge.input({ title: "Relay token", defaultValue: "", mask: true });
         return {
           mode: "relay",
-          vars: { GH_AUTH_MODE: "relay", PROPR_GH_RELAY_URL: relayUrl, PROPR_GH_RELAY_TOKEN: relayToken },
+          vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "relay", PROPR_GH_RELAY_URL: relayUrl, PROPR_GH_RELAY_TOKEN: relayToken },
         };
       }
       const appId = await bridge.input({ title: "GitHub App ID", defaultValue: "" });
@@ -271,7 +275,7 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       const installationId = await bridge.input({ title: "Installation ID", defaultValue: "" });
       return {
         mode: "app" satisfies GithubAuthMode,
-        vars: { GH_AUTH_MODE: "app", GH_APP_ID: appId, GH_PRIVATE_KEY_PATH: privateKeyPath, GH_INSTALLATION_ID: installationId },
+        vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "app", GH_APP_ID: appId, GH_PRIVATE_KEY_PATH: privateKeyPath, GH_INSTALLATION_ID: installationId },
       };
     },
 
@@ -331,11 +335,14 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       if (demoMode) return null;
       const entered = await bridge.input({
         title: "Allowed GitHub usernames",
-        detail: "Comma-separated; only these users can trigger ProPR. Blank keeps the current value.",
+        detail: 'Comma-separated; only these users can trigger ProPR. Blank keeps the current value, "none" clears it.',
         defaultValue: current.join(", "),
       });
       const trimmed = entered.trim();
       if (trimmed === "") return null;
+      // An explicit "none" empties the whitelist, mirroring the sequential
+      // renderer — without this it would be parsed as a literal username "none".
+      if (trimmed.toLowerCase() === "none") return [];
       return trimmed
         .split(",")
         .map((entry) => entry.trim())
