@@ -34,8 +34,15 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { GithubAuthMode, GithubAuthModeResult } from "@propr/shared";
+import { parseTruthyEnvValue, type GithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import type { ConfigManager } from "../../config/index.js";
+import {
+  buildIntakeEnvVars,
+  defaultIntakeChoice,
+  saveWhitelist,
+  type GithubIntakeDecision,
+  type GithubIntakeMode,
+} from "./github.js";
 import type { ChecksOutcome, RunChecksOptions } from "../checkCommands.js";
 import type { InitStackOptions, InitStackResult } from "../initStack.js";
 import {
@@ -143,6 +150,18 @@ export interface SetupPrompts {
   selectAgents?(ctx: { available: string[]; detected: string[] }): Promise<string[]>;
   /** Configure GitHub auth. Default: keep whatever `.env` already has. */
   configureGithubAuth?(ctx: { current: GithubAuthModeResult }): Promise<GithubAuthDecision>;
+  /**
+   * Choose how the backend ingests GitHub events (App/relay, polling, or
+   * direct webhooks). `defaultMode` is the choice to pre-select: the auth-derived
+   * recommendation on a fresh install, but `"keep"` when `.env` already carries
+   * an intake decision so a blank Enter never rewrites a working config.
+   * `webhooksEnabled` reflects the current `.env`. Default: keep.
+   */
+  configureIntake?(ctx: {
+    authMode: GithubAuthMode;
+    defaultMode: GithubIntakeMode | "keep";
+    webhooksEnabled: boolean;
+  }): Promise<GithubIntakeDecision>;
   /** Confirm starting the stack. Default: start it. */
   confirmStartStack?(ctx: { rootDir: string; alreadyRunning: boolean }): Promise<boolean>;
   /**
@@ -230,6 +249,12 @@ export interface SetupActions extends AgentSetupActions {
   checkBackendHealth(params: BackendHealthParams): Promise<BackendHealth>;
   addRepository(selection: RepoSelection, rootDir: string): Promise<void>;
   resolveUiUrl(rootDir: string): Promise<string>;
+  /**
+   * Save the user whitelist through the running backend's settings API. A
+   * partial update — only the whitelist key is sent, so unrelated settings are
+   * left intact.
+   */
+  saveWhitelistSetting(rootDir: string, users: string[]): Promise<void>;
 }
 
 /** Options for {@link runSetup}. */
@@ -360,6 +385,12 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { cfg } = await getHostConfig({ configManager, root: rootDir });
       return `http://localhost:${cfg.uiPort}`;
+    },
+    async saveWhitelistSetting(rootDir, users) {
+      const { updateSetting } = await import("../../api/settings.js");
+      // Point the client at this stack's API port rather than the saved remote.
+      const client = await localApiClient(rootDir);
+      await updateSetting("github_user_whitelist", users, client);
     },
   };
 }
@@ -589,6 +620,57 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     settle("github-auth", { status: "done", detail: `auth mode: ${resolvedAuth.mode}` });
   }
 
+  // 5b. GitHub event intake — how the backend learns about GitHub events
+  //     (App/relay, polling, or direct webhooks). Written before startup because
+  //     the API/daemon read ENABLE_GITHUB_WEBHOOKS / GH_WEBHOOK_SECRET at boot.
+  //     Demo mode has no GitHub access, so there is nothing to ingest.
+  begin("intake");
+  try {
+    if (resolvedAuth.mode === "demo") {
+      settle("intake", { status: "skipped", detail: "demo mode — no GitHub events to ingest" });
+    } else {
+      const envNow = actions.readEnvVars(rootDir);
+      const webhooksEnabled = parseTruthyEnvValue(envNow.ENABLE_GITHUB_WEBHOOKS);
+      // When `.env` already records an intake decision, default the prompt to
+      // "keep" so a blank Enter on a re-run can't silently flip a working config
+      // (e.g. disable existing direct webhooks). Only a fresh install falls back
+      // to the auth-derived recommendation.
+      const intakeConfigured = envNow.ENABLE_GITHUB_WEBHOOKS !== undefined;
+      const defaultMode = defaultIntakeChoice(resolvedAuth.mode, { intakeConfigured });
+      let decision: GithubIntakeDecision | undefined;
+      if (prompts.configureIntake) {
+        decision = await prompts.configureIntake({ authMode: resolvedAuth.mode, defaultMode, webhooksEnabled });
+      }
+      if (decision && !decision.keep && decision.mode) {
+        // buildIntakeEnvVars rejects an empty webhook secret — caught below and
+        // surfaced as a warning rather than writing a config the API won't boot.
+        const vars = buildIntakeEnvVars(decision.mode, { webhookSecret: decision.webhookSecret });
+        actions.applyEnvSelection(rootDir, vars, { overwrite: true });
+        const label =
+          decision.mode === "webhooks"
+            ? "direct webhooks (signing secret recorded)"
+            : decision.mode === "polling"
+              ? "polling (webhooks disabled)"
+              : "ProPR App / shared relay (webhooks disabled)";
+        settle("intake", { status: "done", detail: `intake: ${label}` });
+      } else {
+        settle("intake", {
+          status: "done",
+          detail: `intake: kept current (${webhooksEnabled ? "direct webhooks" : "polling / relay"})`,
+        });
+      }
+    }
+  } catch (error) {
+    // An IntakeConfigError (e.g. webhooks chosen with no secret) is non-blocking:
+    // leave intake as-is and tell the user how to finish it.
+    settle("intake", {
+      status: "warning",
+      detail: `could not configure GitHub intake: ${(error as Error).message}`,
+      nextAction:
+        "Set ENABLE_GITHUB_WEBHOOKS (and GH_WEBHOOK_SECRET for webhooks) in .env, then re-run setup.",
+    });
+  }
+
   // 6. Start the stack and validate backend health. A running stack is reused,
   //    not recreated, so user data and live work are untouched.
   begin("start-stack");
@@ -683,10 +765,33 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     const demoMode = resolvedAuth.mode === "demo";
     let whitelist: string[] | null = null;
     if (prompts.configureWhitelist) whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
-    if (whitelist && whitelist.length > 0) {
-      const cleaned = whitelist.map((s) => s.trim()).filter(Boolean);
-      actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: cleaned.join(",") }, { overwrite: true });
-      settle("whitelist", { status: "done", detail: `${cleaned.length} user(s) allowed` });
+    if (whitelist !== null) {
+      // Trim, drop blanks, and de-dupe (first occurrence wins) so the value
+      // matches saveWhitelist's "cleaned, de-duped usernames" contract — a
+      // duplicate entry would otherwise inflate the saved count and settings.
+      const cleaned = [...new Set(whitelist.map((s) => s.trim()).filter(Boolean))];
+      // Prefer the settings API when the backend is up so the change applies
+      // immediately (and never overwrites unrelated settings); always mirror into
+      // .env so it survives a restart. Falls back to .env if the API is down.
+      const backendRunning = await actions.isStackRunning(rootDir);
+      const saved = await saveWhitelist({
+        users: cleaned,
+        backendRunning,
+        saveViaSettings: (users) => actions.saveWhitelistSetting(rootDir, users),
+        saveViaEnv: (users) =>
+          actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: users.join(",") }, { overwrite: true }),
+      });
+      const where = saved.target === "settings" ? "via settings API" : "in .env";
+      const summary = cleaned.length > 0 ? `${cleaned.length} user(s) allowed (${where})` : `whitelist cleared (${where})`;
+      if (saved.error) {
+        settle("whitelist", {
+          status: "warning",
+          detail: `${summary}; settings update failed: ${saved.error}`,
+          nextAction: "The whitelist is in .env; it will apply when the backend restarts.",
+        });
+      } else {
+        settle("whitelist", { status: "done", detail: summary });
+      }
     } else if (currentWhitelist.length > 0) {
       settle("whitelist", { status: "done", detail: `${currentWhitelist.length} user(s) already allowed` });
     } else if (demoMode) {
