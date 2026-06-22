@@ -24,6 +24,8 @@ export interface SetupCommandOptions {
   root?: string;
   /** Commander sets this to false for `--no-tui`. */
   tui?: boolean;
+  /** Commander sets this for `--skip-remote-image-check`. */
+  skipRemoteImageCheck?: boolean;
 }
 
 /**
@@ -44,11 +46,20 @@ export function createSetupCommand(): Command {
     .description("Guided one-time setup for the local ProPR stack")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--no-tui", "Skip the full-screen wizard; prompt line-by-line instead")
+    .option(
+      "--skip-remote-image-check",
+      "Skip the slow registry round-trip when checking that stack images exist"
+    )
     .addHelpText("after", `
 Examples:
   $ propr setup
   $ propr setup --no-tui
   $ propr setup --root ~/propr
+  $ propr setup --skip-remote-image-check
+
+Setup is safe to re-run at any time: it re-discovers your environment and skips
+steps that are already satisfied, so running it again only fills in what is
+missing — it never undoes existing configuration.
 
 The full-screen wizard runs in an interactive terminal. Over SSH, in shells
 without raw-mode support, or with --no-tui, setup falls back to line-by-line
@@ -59,16 +70,25 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
     .action(async (options: SetupCommandOptions) => {
       try {
         const configManager = await createConfigManager();
+        const { skipRemoteImageCheck } = options;
         const useInk = options.tui !== false && canRenderInkSetup();
 
         if (useInk) {
           // Loaded dynamically so the sequential path never pulls in ink/react.
           const { renderSetupWizard } = await import("../tui/app.js");
-          const result = await renderSetupWizard({ configManager, root: options.root });
+          const result = await renderSetupWizard({
+            configManager,
+            root: options.root,
+            skipRemoteImageCheck,
+          });
           process.exit(result.completed ? 0 : 1);
         }
 
-        const result = await runSequentialSetup({ configManager, root: options.root });
+        const result = await runSequentialSetup({
+          configManager,
+          root: options.root,
+          skipRemoteImageCheck,
+        });
         process.exit(result.completed ? 0 : 1);
       } catch (error) {
         if (error instanceof SequentialSetupUnavailableError) {
