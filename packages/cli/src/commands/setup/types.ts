@@ -20,6 +20,7 @@ export type SetupStepId =
   | "configure-agents"
   | "github-auth"
   | "start-stack"
+  | "enable-agents"
   | "whitelist"
   | "repo"
   | "launch-ui";
@@ -117,6 +118,12 @@ export const SETUP_STEP_DEFINITIONS: ReadonlyArray<
     id: "start-stack",
     title: "Start stack",
     description: "Launch the local control-plane services.",
+    optional: false,
+  },
+  {
+    id: "enable-agents",
+    title: "Enable agents",
+    description: "Enable the selected agents in the backend and authenticate through their images.",
     optional: false,
   },
   {

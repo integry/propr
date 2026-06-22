@@ -322,6 +322,15 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       });
     },
 
+    async confirmAgentLogin({ candidates }): Promise<string[]> {
+      return promptMultiSelect(io, paint, {
+        title: "Authenticate agents through their images?",
+        detail: 'Log in inside each agent\'s Docker image; credentials are written to the mounted host directory. Blank or "none" skips.',
+        options: candidates.map((type) => ({ label: type, value: type })),
+        defaultSelected: [],
+      });
+    },
+
     async configureWhitelist({ current, demoMode }): Promise<string[] | null> {
       if (demoMode) return null;
       const entered = await promptInput(io, paint, {
