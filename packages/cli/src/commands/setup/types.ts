@@ -69,8 +69,12 @@ export interface SetupState {
   steps: SetupStep[];
 }
 
-/** Patch applied to a step when transitioning its state. */
-export type SetupStepPatch = Partial<Omit<SetupStep, "id">>;
+/**
+ * Patch applied to a step when transitioning its state. Limited to runtime
+ * presentation fields — the static flow definition (title, description,
+ * optional) is canonical and cannot be altered through a patch.
+ */
+export type SetupStepPatch = Partial<Pick<SetupStep, "status" | "detail" | "nextAction">>;
 
 /**
  * Canonical, ordered step definitions. All start `pending`; renderers and the

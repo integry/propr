@@ -14,7 +14,7 @@
  * and env — it does not start Docker.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
@@ -28,8 +28,12 @@ import {
   type SetupStepPatch,
 } from "./types.js";
 
-/** Sub-directories scaffoldStack creates under the stack root. */
-const STACK_SUBDIRS = ["data", "logs", "repos"] as const;
+/**
+ * Sub-directories scaffoldStack creates under the stack root. Exported so the
+ * setup driver and tests can create/check the same scaffold shape without
+ * duplicating these names.
+ */
+export const STACK_SUBDIRS = ["data", "logs", "repos"] as const;
 
 /** True only when `path` exists and is a directory. Missing paths read false. */
 function isDirectory(path: string): boolean {
@@ -115,7 +119,10 @@ export function isStackInitialized(rootDir: string): boolean {
  */
 export function readEnvVars(rootDir: string): Record<string, string> {
   const envPath = envPathFor(rootDir);
-  if (!existsSync(envPath)) return {};
+  // Treat anything that is not a regular file (absent, a directory, a broken
+  // symlink) as "no vars", matching inspectStackInit's `isFile` guard, so a
+  // malformed stack surfaces as not-initialized instead of crashing the read.
+  if (!isFile(envPath)) return {};
   const vars: Record<string, string> = {};
   for (const line of readFileSync(envPath, "utf-8").split(/\r?\n/)) {
     const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
@@ -244,11 +251,13 @@ export function updateStep(
  * retried — `undefined` is returned. Failed *optional* steps don't block.
  */
 export function nextPendingStep(state: SetupState): SetupStep | undefined {
-  for (const step of state.steps) {
-    if (step.status === "pending") return step;
-    if (!step.optional && step.status === "failed") return undefined;
+  // Scan for a blocking failure first so the "a failed required step blocks
+  // everything after it" contract holds even if state was patched out of
+  // order (e.g. a later step failed before an earlier one finished).
+  if (state.steps.some((step) => !step.optional && step.status === "failed")) {
+    return undefined;
   }
-  return undefined;
+  return state.steps.find((step) => step.status === "pending");
 }
 
 /**
