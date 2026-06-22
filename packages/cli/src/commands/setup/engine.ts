@@ -98,7 +98,14 @@ function detectInstalledAgents(catalog: AgentDescriptor[]): string[] {
 export interface RootDecision {
   /** Stack root to use (absolute). May differ from the resolved default. */
   rootDir: string;
-  /** Scaffold `.env`/data/logs/repos here. Only honored when safe to do so. */
+  /**
+   * Ensure this root is scaffolded, creating any *missing* `.env`/data/logs/repos
+   * pieces. Non-destructive: scaffolding runs without `force`, so an existing
+   * `.env` is always preserved — this fills in what is absent, it never resets a
+   * working install. (A root with a missing `.env` or sub-directory is scaffolded
+   * regardless of this flag; the flag only forces a scaffold pass on a root that
+   * already looks complete.)
+   */
   reinitialize: boolean;
 }
 
@@ -165,7 +172,6 @@ export interface PullImagesParams {
   rootDir: string;
   /** Agent types whose images should be pulled (in addition to core images). */
   agentTypes: string[];
-  skipRemoteImageCheck?: boolean;
   onLog?: (line: string) => void;
 }
 
@@ -424,10 +430,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       userChoseReinit = decision.reinitialize;
     }
 
-    // Scaffold when `.env` is missing, or when the user explicitly chose to
-    // (re)initialize a root. scaffoldStack runs without `force`, so an existing
+    // Scaffold whenever the stack is incomplete — `.env` missing *or* a required
+    // sub-directory (data/logs/repos) absent — or when the user explicitly chose
+    // to (re)initialize a root. Keying off `initialized` (not just `envExists`)
+    // means a half-scaffolded root with a stray `.env` but no `data/` still gets
+    // its directories created, instead of being silently treated as ready and
+    // failing later at startup. scaffoldStack runs without `force`, so an existing
     // `.env` is always preserved — re-running setup never clobbers it.
-    const reinitialize = !init.envExists || userChoseReinit;
+    const reinitialize = !init.initialized || userChoseReinit;
     if (reinitialize) {
       // No `force`: scaffoldStack creates a fresh `.env` only when absent and
       // otherwise leaves the existing one in place.
@@ -455,11 +465,18 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   //    the user selects (defaulting to the ones detected on this host).
   begin("pull-images");
   const detected = detectInstalledAgents(catalog);
-  selectedAgents = prompts.selectAgents
-    ? await prompts.selectAgents({ available: catalog.map((a) => a.type), detected })
-    : detected;
   try {
-    const pull = await actions.pullImages({ rootDir, agentTypes: selectedAgents, skipRemoteImageCheck, onLog: log });
+    const requested = prompts.selectAgents
+      ? await prompts.selectAgents({ available: catalog.map((a) => a.type), detected })
+      : detected;
+    // Guard the engine boundary: a renderer may hand back unknown or duplicate
+    // agent names. Keep only types we know about, de-duped (first occurrence
+    // wins), so unknown names never reach pullImages() and a duplicate can't
+    // double-apply credentials in the configure-agents step below.
+    const known = new Set(catalog.map((a) => a.type));
+    selectedAgents = [...new Set(requested)].filter((type) => known.has(type));
+
+    const pull = await actions.pullImages({ rootDir, agentTypes: selectedAgents, onLog: log });
     if (pull.failedCore.length > 0) {
       settle("pull-images", {
         status: "failed",
@@ -490,44 +507,70 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   // 4. Configure agents — record detected host credential dirs for the selected
   //    agents, non-destructively (never blanks an existing value).
   begin("configure-agents");
-  if (selectedAgents.length === 0) {
-    settle("configure-agents", {
-      status: "skipped",
-      detail: "no agents selected",
-      nextAction: "Log in with an agent CLI on this host, then re-run setup to record its credentials.",
-    });
-  } else {
-    const vars: Record<string, string> = {};
-    for (const type of selectedAgents) {
-      const desc = catalog.find((a) => a.type === type);
-      if (!desc) continue;
-      for (const cred of desc.credentials) {
-        if (existsSync(cred.defaultDir)) vars[cred.envKey] = cred.defaultDir;
+  try {
+    if (selectedAgents.length === 0) {
+      settle("configure-agents", {
+        status: "skipped",
+        detail: "no agents selected",
+        nextAction: "Log in with an agent CLI on this host, then re-run setup to record its credentials.",
+      });
+    } else {
+      const vars: Record<string, string> = {};
+      for (const type of selectedAgents) {
+        const desc = catalog.find((a) => a.type === type);
+        if (!desc) continue;
+        for (const cred of desc.credentials) {
+          if (existsSync(cred.defaultDir)) vars[cred.envKey] = cred.defaultDir;
+        }
       }
+      const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
+      const detailParts: string[] = [];
+      detailParts.push(applied.written.length > 0 ? `recorded ${applied.written.length} credential dir(s)` : "no new credentials to record");
+      if (applied.skipped.length > 0) detailParts.push(`${applied.skipped.length} already set`);
+      settle("configure-agents", { status: "done", detail: detailParts.join("; ") });
     }
-    const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
-    const detailParts: string[] = [];
-    detailParts.push(applied.written.length > 0 ? `recorded ${applied.written.length} credential dir(s)` : "no new credentials to record");
-    if (applied.skipped.length > 0) detailParts.push(`${applied.skipped.length} already set`);
-    settle("configure-agents", { status: "done", detail: detailParts.join("; ") });
+  } catch (error) {
+    settle("configure-agents", {
+      status: "failed",
+      detail: `could not record agent credentials: ${(error as Error).message}`,
+      nextAction: "Check write permissions on .env, then re-run setup.",
+    });
+    return finish();
   }
 
   // 5. GitHub authentication — keep what works; only write the keys the user
   //    explicitly chose. An unresolved mode is a warning, not a hard stop: the
   //    health probe after startup is the authoritative signal.
   begin("github-auth");
-  const currentAuth = actions.detectGithubAuthMode(rootDir);
-  let authDecision: GithubAuthDecision | undefined;
-  if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth });
-  if (authDecision?.vars && Object.keys(authDecision.vars).length > 0) {
-    actions.applyEnvSelection(rootDir, authDecision.vars, { overwrite: true });
+  let resolvedAuth: GithubAuthModeResult;
+  try {
+    const currentAuth = actions.detectGithubAuthMode(rootDir);
+    let authDecision: GithubAuthDecision | undefined;
+    if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth });
+    if (authDecision?.vars && Object.keys(authDecision.vars).length > 0) {
+      actions.applyEnvSelection(rootDir, authDecision.vars, { overwrite: true });
+    }
+    resolvedAuth = actions.detectGithubAuthMode(rootDir);
+  } catch (error) {
+    settle("github-auth", {
+      status: "failed",
+      detail: `could not configure GitHub auth: ${(error as Error).message}`,
+      nextAction: "Check .env access and your GitHub auth settings, then re-run setup.",
+    });
+    return finish();
   }
-  const resolvedAuth = actions.detectGithubAuthMode(rootDir);
   if (resolvedAuth.mode === "none") {
     settle("github-auth", {
       status: "warning",
       detail: "no GitHub auth configured",
       nextAction: "Set a GitHub App, a token relay, or demo mode in .env (the backend will not boot otherwise).",
+    });
+  } else if (resolvedAuth.warnings.length > 0) {
+    // The mode resolves, but the shared detector flagged a partial/ambiguous
+    // configuration — surface it so the user can fix it before it bites later.
+    settle("github-auth", {
+      status: "warning",
+      detail: `auth mode: ${resolvedAuth.mode} — ${resolvedAuth.warnings.join("; ")}`,
     });
   } else {
     settle("github-auth", { status: "done", detail: `auth mode: ${resolvedAuth.mode}` });
@@ -536,82 +579,100 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   // 6. Start the stack and validate backend health. A running stack is reused,
   //    not recreated, so user data and live work are untouched.
   begin("start-stack");
-  const alreadyRunning = await actions.isStackRunning(rootDir);
-  const startConfirmed = prompts.confirmStartStack ? await prompts.confirmStartStack({ rootDir, alreadyRunning }) : true;
-  if (!startConfirmed) {
-    settle("start-stack", {
-      status: "skipped",
-      detail: "stack not started (skipped)",
-      nextAction: "Start it later with `propr start`.",
-    });
-  } else {
-    try {
+  try {
+    const alreadyRunning = await actions.isStackRunning(rootDir);
+    const startConfirmed = prompts.confirmStartStack ? await prompts.confirmStartStack({ rootDir, alreadyRunning }) : true;
+    if (!startConfirmed) {
+      settle("start-stack", {
+        status: "skipped",
+        detail: "stack not started (skipped)",
+        nextAction: "Start it later with `propr start`.",
+      });
+    } else {
       if (alreadyRunning) {
         log("stack already running — leaving it intact");
       } else {
         await actions.startStack({ rootDir, onLog: log });
       }
-    } catch (error) {
-      settle("start-stack", {
-        status: "failed",
-        detail: `could not start the stack: ${(error as Error).message}`,
-        nextAction: "Run `propr start` to see the full startup output.",
-      });
-      return finish();
+      const health = await actions.checkBackendHealth({ rootDir });
+      settle(
+        "start-stack",
+        health.healthy
+          ? { status: "done", detail: alreadyRunning ? `stack already running — ${health.detail}` : health.detail }
+          : {
+              status: "warning",
+              detail: health.detail,
+              nextAction: "Give the services a moment, then run `propr status` / `propr remote-status` to inspect them.",
+            }
+      );
     }
-    const health = await actions.checkBackendHealth({ rootDir });
-    settle(
-      "start-stack",
-      health.healthy
-        ? { status: "done", detail: alreadyRunning ? `stack already running — ${health.detail}` : health.detail }
-        : {
-            status: "warning",
-            detail: health.detail,
-            nextAction: "Give the services a moment, then run `propr status` / `propr remote-status` to inspect them.",
-          }
-    );
+  } catch (error) {
+    settle("start-stack", {
+      status: "failed",
+      detail: `could not start the stack: ${(error as Error).message}`,
+      nextAction: "Run `propr start` to see the full startup output.",
+    });
+    return finish();
   }
 
   // 7. Whitelist — restrict who can trigger ProPR. Written non-destructively.
   begin("whitelist");
-  const envNow = actions.readEnvVars(rootDir);
-  const currentWhitelist = (envNow.GITHUB_USER_WHITELIST ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  const demoMode = resolvedAuth.mode === "demo";
-  let whitelist: string[] | null = null;
-  if (prompts.configureWhitelist) whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
-  if (whitelist && whitelist.length > 0) {
-    const cleaned = whitelist.map((s) => s.trim()).filter(Boolean);
-    actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: cleaned.join(",") }, { overwrite: true });
-    settle("whitelist", { status: "done", detail: `${cleaned.length} user(s) allowed` });
-  } else if (currentWhitelist.length > 0) {
-    settle("whitelist", { status: "done", detail: `${currentWhitelist.length} user(s) already allowed` });
-  } else if (demoMode) {
-    settle("whitelist", { status: "skipped", detail: "demo mode — whitelist not required" });
-  } else {
+  try {
+    const envNow = actions.readEnvVars(rootDir);
+    const currentWhitelist = (envNow.GITHUB_USER_WHITELIST ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const demoMode = resolvedAuth.mode === "demo";
+    let whitelist: string[] | null = null;
+    if (prompts.configureWhitelist) whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
+    if (whitelist && whitelist.length > 0) {
+      const cleaned = whitelist.map((s) => s.trim()).filter(Boolean);
+      actions.applyEnvSelection(rootDir, { GITHUB_USER_WHITELIST: cleaned.join(",") }, { overwrite: true });
+      settle("whitelist", { status: "done", detail: `${cleaned.length} user(s) allowed` });
+    } else if (currentWhitelist.length > 0) {
+      settle("whitelist", { status: "done", detail: `${currentWhitelist.length} user(s) already allowed` });
+    } else if (demoMode) {
+      settle("whitelist", { status: "skipped", detail: "demo mode — whitelist not required" });
+    } else {
+      settle("whitelist", {
+        status: "warning",
+        detail: "no whitelist configured — any authenticated GitHub user could trigger processing",
+        nextAction: "Set GITHUB_USER_WHITELIST in .env to a comma-separated list of allowed usernames.",
+      });
+    }
+  } catch (error) {
     settle("whitelist", {
-      status: "warning",
-      detail: "no whitelist configured — any authenticated GitHub user could trigger processing",
-      nextAction: "Set GITHUB_USER_WHITELIST in .env to a comma-separated list of allowed usernames.",
+      status: "failed",
+      detail: `could not configure the whitelist: ${(error as Error).message}`,
+      nextAction: "Check .env access, then re-run setup.",
     });
+    return finish();
   }
 
   // 8. Repository (optional) — adding a repo must never fail the whole run.
   begin("repo");
-  let repoSelection: RepoSelection | null = null;
-  if (prompts.addRepository) repoSelection = await prompts.addRepository({ rootDir });
-  if (!repoSelection) {
-    settle("repo", { status: "skipped", detail: "no repository added" });
-  } else {
-    try {
-      await actions.addRepository(repoSelection, rootDir);
-      settle("repo", { status: "done", detail: `monitoring ${repoSelection.fullName}` });
-    } catch (error) {
-      settle("repo", {
-        status: "warning",
-        detail: `could not add ${repoSelection.fullName}: ${(error as Error).message}`,
-        nextAction: "Add it later with `propr repo add <owner/repo>`.",
-      });
+  try {
+    // The prompt itself is part of this optional step — a renderer that throws
+    // while collecting the repo must degrade to a warning, not abort the run.
+    const repoSelection = prompts.addRepository ? await prompts.addRepository({ rootDir }) : null;
+    if (!repoSelection) {
+      settle("repo", { status: "skipped", detail: "no repository added" });
+    } else {
+      try {
+        await actions.addRepository(repoSelection, rootDir);
+        settle("repo", { status: "done", detail: `monitoring ${repoSelection.fullName}` });
+      } catch (error) {
+        settle("repo", {
+          status: "warning",
+          detail: `could not add ${repoSelection.fullName}: ${(error as Error).message}`,
+          nextAction: "Add it later with `propr repo add <owner/repo>`.",
+        });
+      }
     }
+  } catch (error) {
+    settle("repo", {
+      status: "warning",
+      detail: `could not collect a repository to add: ${(error as Error).message}`,
+      nextAction: "Add it later with `propr repo add <owner/repo>`.",
+    });
   }
 
   // 9. UI (optional) — surface the URL; opening it is the renderer's job.
@@ -622,7 +683,12 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   } catch {
     /* non-fatal: just omit the URL */
   }
-  const opened = prompts.launchUi ? await prompts.launchUi({ url: uiUrl }) : false;
+  let opened = false;
+  try {
+    opened = prompts.launchUi ? await prompts.launchUi({ url: uiUrl }) : false;
+  } catch {
+    /* opening the UI is best-effort; a failed launch prompt must not fail setup */
+  }
   settle("launch-ui", {
     status: opened ? "done" : "skipped",
     detail: uiUrl ? `UI available at ${uiUrl}` : "UI URL unavailable",
@@ -635,9 +701,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
  * Detect an environment problem that blocks the entire flow: Docker missing or
  * its daemon unreachable. Other failures (e.g. GitHub auth) are addressed by
  * later steps and must not abort setup here.
+ *
+ * Keyed off the structured `Docker` check group rather than exact check names,
+ * so re-wording a check in checkCommands.ts can't silently let setup continue
+ * past a missing/unreachable engine. Within that group only the engine checks
+ * ("Docker installed", "Docker daemon") ever report `fail`; the socket check is
+ * informational and tops out at `warn`, so a `fail` here always means Docker
+ * itself cannot run the stack.
  */
 function blockingDockerFailure(outcome: ChecksOutcome): string | undefined {
-  const failed = (name: string): string | undefined =>
-    outcome.results.find((r) => r.name === name && r.status === "fail")?.detail;
-  return failed("Docker installed") ?? failed("Docker daemon");
+  return outcome.results.find((r) => r.group === "Docker" && r.status === "fail")?.detail;
 }

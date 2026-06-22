@@ -76,6 +76,68 @@ test("re-running on an initialized stack leaves it intact and completes", async 
   assert.equal(result.completed, true);
 });
 
+test("an incomplete stack root (missing dirs) is re-scaffolded even when .env exists", async () => {
+  let scaffolded = false;
+  const result = await runSetup({
+    root: "/stack",
+    actions: mockActions({
+      // .env present but a required sub-directory is missing → not initialized.
+      inspectStackInit: (rootDir) => ({
+        rootDir,
+        envExists: true,
+        dirs: { data: true, logs: true, repos: false },
+        initialized: false,
+      }),
+      scaffoldStack: async ({ root }) => {
+        scaffolded = true;
+        return { rootDir: root ?? "/stack", envCreated: false, envSkipped: true, envBackedUp: false, dirsCreated: ["repos"], detected: [], credentialsAppended: false, pendingCredentials: [] };
+      },
+    }),
+  });
+
+  assert.equal(scaffolded, true, "missing dirs must trigger scaffoldStack even with an existing .env");
+  assert.equal(statusOf(result.state, "init-stack"), "done");
+  assert.equal(result.completed, true);
+});
+
+test("unknown and duplicate agent selections are filtered to known types", async () => {
+  let pulledAgentTypes: string[] | undefined;
+  const prompts: SetupPrompts = {
+    selectAgents: async () => ["claude", "claude", "bogus", "codex"],
+  };
+  await runSetup({
+    root: "/stack",
+    prompts,
+    actions: mockActions({
+      pullImages: async ({ agentTypes }) => {
+        pulledAgentTypes = agentTypes;
+        return { pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] };
+      },
+    }),
+  });
+
+  assert.deepEqual(pulledAgentTypes, ["claude", "codex"], "duplicates de-duped and unknown names dropped");
+});
+
+test("a thrown setup action becomes a step failure, not an escaped exception", async () => {
+  // checkBackendHealth throwing must be reported as a start-stack failure in the
+  // returned state — runSetup must not reject for an expected action error.
+  const result = await runSetup({
+    root: "/stack",
+    actions: mockActions({
+      checkBackendHealth: async () => {
+        throw new Error("socket hang up");
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "start-stack"), "failed");
+  assert.match(getStep(result.state, "start-stack")?.detail ?? "", /socket hang up/);
+  assert.equal(result.completed, false);
+  // The flow stops at the failed required step; later steps stay pending.
+  assert.equal(statusOf(result.state, "whitelist"), "pending");
+});
+
 test("pulls only core images plus the selected agents", async () => {
   let pulledAgentTypes: string[] | undefined;
   const prompts: SetupPrompts = {

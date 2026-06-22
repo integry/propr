@@ -1,0 +1,13 @@
+{
+  // Type-checks the whole source tree *including* `*.test.ts`, which the build
+  // tsconfig excludes from declaration/emit. `npm run typecheck` runs this so
+  // test type errors are caught alongside the package build, not only when the
+  // tests happen to run under tsx.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false
+  },
+  "include": ["src/**/*"],
+  "exclude": []
+}
