@@ -82,28 +82,43 @@ test("input: blank keeps the current root, a value replaces it", async () => {
 test("select: numeric choice maps to the option value, blank to the default", async () => {
   const current: GithubAuthModeResult = { mode: "app", warnings: [] };
 
+  // With an existing config, "Keep current configuration" leads and is the
+  // blank-Enter default.
   const keep = await buildSequentialPrompts(scriptedIo([""])).configureGithubAuth!({ current });
   assert.deepEqual(keep, { keep: true }, "blank → default → keep current auth");
 
-  const demo = await buildSequentialPrompts(scriptedIo(["4"])).configureGithubAuth!({ current });
-  assert.equal(demo.mode, "demo");
-  assert.equal(demo.vars?.GH_AUTH_MODE, "demo");
+  // Options are keep(1), Token relay(2), Custom GitHub App(3); option 3 selects
+  // the custom-app branch and collects its three inputs.
+  const app = await buildSequentialPrompts(scriptedIo(["3", "123", "/key.pem", "456"])).configureGithubAuth!({ current });
+  assert.equal(app.mode, "app");
+  assert.equal(app.vars?.GH_AUTH_MODE, "app");
+  assert.equal(app.vars?.GH_APP_ID, "123");
 });
 
-test("select: chained relay inputs are collected and the token is masked", async () => {
-  const io = scriptedIo(["3", "https://relay.example", "secret-token"]);
+test("select: Demo mode is no longer offered as an auth choice", async () => {
+  const io = scriptedIo([""]);
+  await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "app", warnings: [] } });
+  assert.doesNotMatch(io.lines.join("\n"), /demo/i, "the demo option is removed from the auth prompt");
+});
+
+test("select: on a fresh install Token relay leads and no keep option is shown", async () => {
+  // current.mode "none" → nothing to keep, so options are Token relay(1), Custom
+  // GitHub App(2); option 1 is the relay branch.
+  const io = scriptedIo(["1", "https://relay.example", "secret-token"]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
   assert.equal(decision.mode, "relay");
   assert.equal(decision.vars?.PROPR_GH_RELAY_URL, "https://relay.example");
   assert.equal(decision.vars?.PROPR_GH_RELAY_TOKEN, "secret-token");
   assert.equal(io.masked.length, 1, "exactly the token prompt is masked");
+  assert.doesNotMatch(io.lines.join("\n"), /keep current/i, "no keep option without an existing config");
 });
 
 test("select: an out-of-range number re-prompts until valid", async () => {
-  // Two invalid choices, then option 2 (GitHub App), then its three inputs.
+  // current.mode "none" → options Token relay(1), Custom GitHub App(2). Two
+  // invalid choices, then option 2 (the custom App), then its three inputs.
   const io = scriptedIo(["9", "0", "2", "123", "/key.pem", "456"]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
-  assert.equal(decision.mode, "app", "option 2 is the GitHub App branch");
+  assert.equal(decision.mode, "app", "option 2 is the custom GitHub App branch");
   assert.equal(decision.vars?.GH_APP_ID, "123");
   // The two invalid choices were re-prompted before the valid one was accepted.
   assert.ok(io.questions.length >= 6);
@@ -165,6 +180,21 @@ test("intake: choosing direct webhooks requires a non-empty secret, re-asking on
   assert.deepEqual(decision, { mode: "direct_webhook", webhookSecret: "hook-secret" });
   assert.equal(io.masked.length, 2, "the secret prompt is masked, and was asked twice");
   assert.match(io.lines.join("\n"), /webhook secret is required/i);
+});
+
+test("intake: an option invalid for the auth mode is inactive and cannot be chosen", async () => {
+  // With relay auth, direct webhooks (option 3) are unavailable. Choosing it is
+  // rejected, then polling (option 2) is accepted.
+  const io = scriptedIo(["3", "2"]);
+  const decision = await buildSequentialPrompts(io).configureIntake!({
+    authMode: "relay",
+    defaultMode: "routing_websocket",
+    currentMode: "routing_websocket",
+  });
+  assert.deepEqual(decision, { mode: "polling" });
+  const out = io.lines.join("\n");
+  assert.match(out, /unavailable/i, "the disabled option is labelled unavailable");
+  assert.match(out, /not recommended for production/i, "polling carries its production caveat");
 });
 
 test("intake: keep leaves the current configuration untouched", async () => {

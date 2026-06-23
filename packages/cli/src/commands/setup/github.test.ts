@@ -6,10 +6,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { validateIntakeModePrerequisites } from "@propr/shared";
 import {
   buildIntakeEnvVars,
   defaultIntakeChoice,
   defaultIntakeMode,
+  intakeModeOptions,
   IntakeConfigError,
   saveWhitelist,
 } from "./github.js";
@@ -61,6 +63,55 @@ test("a fresh install pre-selects the auth-derived intake recommendation", () =>
   assert.equal(defaultIntakeChoice("relay", { intakeConfigured: false }), "routing_websocket");
   assert.equal(defaultIntakeChoice("app", { intakeConfigured: false }), "polling");
   assert.equal(defaultIntakeChoice("none", { intakeConfigured: false }), "polling");
+});
+
+test("relay auth: routing + polling are available, direct webhooks are not", () => {
+  const byMode = new Map(intakeModeOptions("relay").map((o) => [o.mode, o]));
+  assert.equal(byMode.get("routing_websocket")?.available, true);
+  assert.equal(byMode.get("polling")?.available, true);
+  // Direct webhooks need an own GitHub App, so they're closed under the relay.
+  assert.equal(byMode.get("direct_webhook")?.available, false);
+  assert.match(byMode.get("direct_webhook")?.note ?? "", /custom GitHub App/i);
+});
+
+test("custom-app auth: polling + direct webhooks are available, the routing relay is not", () => {
+  const byMode = new Map(intakeModeOptions("app").map((o) => [o.mode, o]));
+  // The routing WebSocket needs the ProPR token relay, unavailable to an own App.
+  assert.equal(byMode.get("routing_websocket")?.available, false);
+  assert.match(byMode.get("routing_websocket")?.note ?? "", /token relay/i);
+  assert.equal(byMode.get("polling")?.available, true);
+  assert.equal(byMode.get("direct_webhook")?.available, true);
+});
+
+test("polling always carries a not-recommended-for-production caveat", () => {
+  for (const authMode of ["relay", "app"] as const) {
+    const polling = intakeModeOptions(authMode).find((o) => o.mode === "polling");
+    assert.equal(polling?.available, true);
+    assert.match(polling?.note ?? "", /not recommended for production/i);
+    assert.match(polling?.note ?? "", /rate limits/i);
+  }
+});
+
+test("intakeModeOptions agrees with the shared prerequisite rules", () => {
+  // Cross-check availability against validateIntakeModePrerequisites so the
+  // prompt and the backend boot-time check can never drift.
+  for (const authMode of ["relay", "app", "none"] as const) {
+    for (const opt of intakeModeOptions(authMode)) {
+      const prereq = validateIntakeModePrerequisites({
+        intakeMode: opt.mode,
+        authMode,
+        // Provide the secrets each mode needs so a missing-secret error doesn't
+        // masquerade as a mode/auth mismatch — we only compare the auth gating.
+        relayToken: "tok",
+        webhookSecret: "sec",
+      });
+      assert.equal(
+        opt.available,
+        prereq.valid,
+        `${authMode} → ${opt.mode}: availability must match the prerequisite check`
+      );
+    }
+  }
 });
 
 test("an existing intake config pre-selects keep, so a blank Enter never rewrites it", () => {

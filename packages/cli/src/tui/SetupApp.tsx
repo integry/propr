@@ -32,6 +32,7 @@ import type {
 import {
   INTAKE_DOCS_URL,
   WEBHOOK_DOCS_URL,
+  intakeModeOptions,
   type GithubIntakeDecision,
   type GithubIntakeMode,
 } from "../commands/setup/github.js";
@@ -54,6 +55,12 @@ export interface SetupPromptOption {
   value: string;
   /** Short suffix shown dimmed after the label (e.g. "detected"). */
   hint?: string;
+  /**
+   * When true the option is rendered inactive, skipped by keyboard navigation,
+   * and cannot be chosen — used for intake modes the current GitHub auth mode
+   * can't support. The `hint` carries the reason.
+   */
+  disabled?: boolean;
 }
 
 interface BasePrompt {
@@ -243,21 +250,23 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
     },
 
     async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
+      // Token relay (the hosted ProPR GitHub App) leads as the recommended path.
+      // "Keep current configuration" is offered only when there is an existing
+      // config to keep — on a fresh install there is nothing to preserve, so the
+      // relay option is the first (and default) choice.
+      const options: SetupPromptOption[] = [];
+      if (current.mode !== "none") {
+        options.push({ label: "Keep current configuration", value: "keep", hint: current.mode });
+      }
+      options.push({ label: "Token relay (use the ProPR GitHub App)", value: "relay" });
+      options.push({ label: "Custom GitHub App (set up your own GitHub App)", value: "app" });
       const choice = await bridge.select({
         title: "GitHub authentication",
         detail: `Currently detected: ${current.mode}.`,
-        options: [
-          { label: `Keep current configuration`, value: "keep", hint: current.mode },
-          { label: "GitHub App (mint tokens locally)", value: "app" },
-          { label: "Token relay (shared app)", value: "relay" },
-          { label: "Demo mode (no GitHub access)", value: "demo" },
-        ],
+        options,
         defaultIndex: 0,
       });
       if (choice === "keep") return { keep: true };
-      if (choice === "demo") {
-        return { mode: "demo", vars: { PROPR_DEMO_MODE: "true", GH_AUTH_MODE: "demo" } };
-      }
       // Switching to a real auth mode must explicitly turn demo mode off:
       // detectGithubAuthMode reads PROPR_DEMO_MODE, so a leftover
       // PROPR_DEMO_MODE=true would keep resolving as demo and ignore the App/relay
@@ -279,14 +288,27 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       };
     },
 
-    async configureIntake({ defaultMode, currentMode }): Promise<GithubIntakeDecision> {
-      const options = [
-        { label: "Routing WebSocket — hosted ProPR relay (recommended)", value: "routing_websocket" },
-        { label: "Polling (no inbound webhooks)", value: "polling" },
-        { label: "Direct webhooks (own GitHub App + a signing secret)", value: "direct_webhook" },
-        { label: "Keep current", value: "keep", hint: currentMode },
-      ];
-      const defaultIndex = Math.max(0, options.findIndex((o) => o.value === defaultMode));
+    async configureIntake({ authMode, defaultMode, currentMode }): Promise<GithubIntakeDecision> {
+      // Only some intake modes are valid for the chosen auth mode (e.g. direct
+      // webhooks need an own GitHub App, the routing WebSocket needs the ProPR
+      // relay). Show every mode, but mark the unsupported ones inactive with the
+      // reason so the user understands why a path is closed.
+      const baseLabel: Record<GithubIntakeMode, string> = {
+        routing_websocket: "Routing WebSocket — hosted ProPR relay (recommended)",
+        polling: "Polling (no inbound webhooks)",
+        direct_webhook: "Direct webhooks (own GitHub App + a signing secret)",
+      };
+      const options: SetupPromptOption[] = intakeModeOptions(authMode).map((opt) => ({
+        label: baseLabel[opt.mode],
+        value: opt.mode,
+        hint: opt.note,
+        disabled: !opt.available,
+      }));
+      options.push({ label: "Keep current", value: "keep", hint: currentMode });
+      let defaultIndex = Math.max(0, options.findIndex((o) => o.value === defaultMode));
+      // If the recommended default isn't valid for this auth mode, fall back to
+      // the first selectable option rather than pre-selecting a disabled one.
+      if (options[defaultIndex]?.disabled) defaultIndex = options.findIndex((o) => !o.disabled);
       const choice = await bridge.select({
         title: "GitHub event intake",
         detail: `How the backend receives GitHub events. Docs: ${INTAKE_DOCS_URL}`,
@@ -511,11 +533,13 @@ function PromptView(props: PromptViewProps): React.ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {prompt.options.map((option, index) => {
             const active = index === props.highlighted;
+            const disabled = option.disabled ?? false;
             return (
               <Box key={option.value}>
-                <Text color={active ? "cyan" : undefined} bold={active}>
+                <Text color={active ? "cyan" : undefined} bold={active} dimColor={disabled && !active}>
                   {active ? "❯ " : "  "}
                   {option.label}
+                  {disabled ? " — unavailable" : ""}
                 </Text>
                 {option.hint ? <Text dimColor> ({option.hint})</Text> : null}
               </Box>
@@ -610,7 +634,13 @@ export function SetupApp({ bridge, onCancel }: SetupAppProps): React.ReactElemen
     } else if (prompt.kind === "confirm") {
       setHighlighted(prompt.defaultValue ? 0 : 1);
     } else if (prompt.kind === "select") {
-      setHighlighted(Math.min(Math.max(prompt.defaultIndex, 0), prompt.options.length - 1));
+      let idx = Math.min(Math.max(prompt.defaultIndex, 0), prompt.options.length - 1);
+      // Never start the highlight on a disabled option.
+      if (prompt.options[idx]?.disabled) {
+        const firstEnabled = prompt.options.findIndex((o) => !o.disabled);
+        if (firstEnabled !== -1) idx = firstEnabled;
+      }
+      setHighlighted(idx);
     } else {
       setHighlighted(0);
       setSelected(new Set(prompt.defaultSelected));
@@ -671,9 +701,20 @@ export function SetupApp({ bridge, onCancel }: SetupAppProps): React.ReactElemen
 
     if (prompt.kind === "select") {
       const count = prompt.options.length;
-      if (key.upArrow) setHighlighted((h) => (h - 1 + count) % count);
-      else if (key.downArrow) setHighlighted((h) => (h + 1) % count);
-      else if (key.return) bridge.resolve(prompt.id, prompt.options[highlighted].value);
+      // Step over disabled options so the highlight only ever rests on a choice
+      // the user can actually pick.
+      const step = (from: number, dir: number): number => {
+        for (let k = 1; k <= count; k++) {
+          const i = (from + dir * k + count * k) % count;
+          if (!prompt.options[i].disabled) return i;
+        }
+        return from;
+      };
+      if (key.upArrow) setHighlighted((h) => step(h, -1));
+      else if (key.downArrow) setHighlighted((h) => step(h, 1));
+      else if (key.return && !prompt.options[highlighted].disabled) {
+        bridge.resolve(prompt.id, prompt.options[highlighted].value);
+      }
       return;
     }
 

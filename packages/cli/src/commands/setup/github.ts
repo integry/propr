@@ -153,6 +153,64 @@ export function intakeModeLabel(mode: GithubIntakeMode): string {
   }
 }
 
+/**
+ * One intake mode's availability under a given GitHub auth mode, for the intake
+ * prompt. Each renderer maps this onto a selectable (or inactive) option.
+ */
+export interface IntakeModeOption {
+  /** The intake mode this entry describes. */
+  mode: GithubIntakeMode;
+  /** False when the chosen auth mode cannot support this intake path. */
+  available: boolean;
+  /**
+   * A short note for the renderer to surface next to the option: when
+   * `available` is false this is *why* the path is closed; when true it is an
+   * optional caveat (e.g. polling's production-suitability warning).
+   */
+  note?: string;
+}
+
+/**
+ * The intake modes to show for a given GitHub auth mode, in display order, each
+ * flagged available or not. Unavailable modes are intentionally still returned
+ * so the prompt can show them inactive with the reason — a new user sees the
+ * full set and learns why a path is closed rather than wondering where it went.
+ *
+ * The availability rules mirror {@link validateIntakeModePrerequisites} so the
+ * prompt and the backend boot-time check can never disagree:
+ *   - routing_websocket needs the ProPR token relay; a custom GitHub App can't use it.
+ *   - direct_webhook needs your own GitHub App; the ProPR relay can't deliver to it.
+ *   - polling works with either usable auth, but is not recommended for production.
+ */
+export function intakeModeOptions(authMode: GithubAuthMode): IntakeModeOption[] {
+  const relay = authMode === "relay";
+  const app = authMode === "app";
+  return [
+    {
+      mode: "routing_websocket",
+      available: relay,
+      note: relay
+        ? undefined
+        : "needs the ProPR GitHub App (token relay); not available with a custom GitHub App",
+    },
+    {
+      mode: "polling",
+      available: relay || app,
+      note:
+        relay || app
+          ? "not recommended for production: subject to GitHub API rate limits and delayed event detection (depends on the polling interval and the number of repos/PRs/issues)"
+          : "needs usable GitHub auth — configure the token relay or a custom GitHub App first",
+    },
+    {
+      mode: "direct_webhook",
+      available: app,
+      note: app
+        ? undefined
+        : "needs your own custom GitHub App; not available with the ProPR token relay",
+    },
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Whitelist persistence.
 // ---------------------------------------------------------------------------

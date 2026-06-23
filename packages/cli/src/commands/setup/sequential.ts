@@ -26,6 +26,7 @@ import type { GithubAuthMode } from "@propr/shared";
 import {
   INTAKE_DOCS_URL,
   WEBHOOK_DOCS_URL,
+  intakeModeOptions,
   type GithubIntakeDecision,
   type GithubIntakeMode,
 } from "./github.js";
@@ -136,6 +137,12 @@ interface Option {
   value: string;
   /** Short dimmed suffix shown after the label (e.g. "detected"). */
   hint?: string;
+  /**
+   * When true the option is shown inactive and cannot be chosen — used for
+   * intake modes that the current GitHub auth mode can't support. The `hint`
+   * carries the reason it is unavailable.
+   */
+  disabled?: boolean;
 }
 
 /** Print a prompt's heading: a blank line, the title, then an optional detail. */
@@ -187,18 +194,34 @@ async function promptSelect(
   if (req.options.length === 0) {
     throw new Error(`Cannot prompt "${req.title}": no options were provided.`);
   }
+  // Likewise, a prompt whose every option is disabled has no valid answer.
+  const firstEnabled = req.options.findIndex((o) => !o.disabled);
+  if (firstEnabled === -1) {
+    throw new Error(`Cannot prompt "${req.title}": every option is unavailable.`);
+  }
   printHeading(io, paint, req.title, req.detail);
-  const defaultIndex = Math.min(Math.max(req.defaultIndex ?? 0, 0), req.options.length - 1);
+  // Never pre-select a disabled option: a blank Enter must land on something the
+  // user can actually pick.
+  let defaultIndex = Math.min(Math.max(req.defaultIndex ?? 0, 0), req.options.length - 1);
+  if (req.options[defaultIndex].disabled) defaultIndex = firstEnabled;
   req.options.forEach((option, index) => {
     const marker = index === defaultIndex ? paint("›", ANSI.cyan) : " ";
     const hint = option.hint ? paint(` (${option.hint})`, ANSI.dim) : "";
-    io.print(`  ${marker} ${index + 1}) ${option.label}${hint}`);
+    const label = option.disabled ? paint(`${option.label} — unavailable`, ANSI.dim) : option.label;
+    io.print(`  ${marker} ${index + 1}) ${label}${hint}`);
   });
   for (;;) {
     const answer = (await io.ask(`  ${paint("❯", ANSI.cyan)} choose 1-${req.options.length} (blank → ${defaultIndex + 1}) `)).trim();
     if (answer === "") return req.options[defaultIndex].value;
     const n = Number(answer);
-    if (Number.isInteger(n) && n >= 1 && n <= req.options.length) return req.options[n - 1].value;
+    if (Number.isInteger(n) && n >= 1 && n <= req.options.length) {
+      const picked = req.options[n - 1];
+      if (picked.disabled) {
+        io.print(paint(`  Option ${n} is unavailable: ${picked.hint ?? "not valid for the current GitHub auth mode"}.`, ANSI.yellow));
+        continue;
+      }
+      return picked.value;
+    }
     io.print(paint(`  Enter a number between 1 and ${req.options.length}.`, ANSI.yellow));
   }
 }
@@ -289,21 +312,23 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
     },
 
     async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
+      // Token relay (the hosted ProPR GitHub App) leads as the recommended path.
+      // "Keep current configuration" is offered only when there is an existing
+      // config to keep — on a fresh install there is nothing to preserve, so the
+      // relay option is the first (and default) choice.
+      const options: Option[] = [];
+      if (current.mode !== "none") {
+        options.push({ label: "Keep current configuration", value: "keep", hint: current.mode });
+      }
+      options.push({ label: "Token relay (use the ProPR GitHub App)", value: "relay" });
+      options.push({ label: "Custom GitHub App (set up your own GitHub App)", value: "app" });
       const choice = await promptSelect(io, paint, {
         title: "GitHub authentication",
         detail: `Currently detected: ${current.mode}.`,
-        options: [
-          { label: "Keep current configuration", value: "keep", hint: current.mode },
-          { label: "GitHub App (mint tokens locally)", value: "app" },
-          { label: "Token relay (shared app)", value: "relay" },
-          { label: "Demo mode (no GitHub access)", value: "demo" },
-        ],
+        options,
         defaultIndex: 0,
       });
       if (choice === "keep") return { keep: true };
-      if (choice === "demo") {
-        return { mode: "demo", vars: { PROPR_DEMO_MODE: "true", GH_AUTH_MODE: "demo" } };
-      }
       // Switching to a real auth mode must explicitly turn demo mode off:
       // detectGithubAuthMode reads PROPR_DEMO_MODE, so a leftover
       // PROPR_DEMO_MODE=true would keep resolving as demo and ignore the App/relay
@@ -325,14 +350,27 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       };
     },
 
-    async configureIntake({ defaultMode, currentMode }): Promise<GithubIntakeDecision> {
-      const options = [
-        { label: "Routing WebSocket — hosted ProPR relay (recommended)", value: "routing_websocket" },
-        { label: "Polling (no inbound webhooks)", value: "polling" },
-        { label: "Direct webhooks (own GitHub App + a signing secret)", value: "direct_webhook" },
-        { label: "Keep current", value: "keep", hint: currentMode },
-      ];
-      const defaultIndex = Math.max(0, options.findIndex((o) => o.value === defaultMode));
+    async configureIntake({ authMode, defaultMode, currentMode }): Promise<GithubIntakeDecision> {
+      // Only some intake modes are valid for the chosen auth mode (e.g. direct
+      // webhooks need an own GitHub App, the routing WebSocket needs the ProPR
+      // relay). Show every mode, but mark the unsupported ones inactive with the
+      // reason so the user understands why a path is closed.
+      const baseLabel: Record<GithubIntakeMode, string> = {
+        routing_websocket: "Routing WebSocket — hosted ProPR relay (recommended)",
+        polling: "Polling (no inbound webhooks)",
+        direct_webhook: "Direct webhooks (own GitHub App + a signing secret)",
+      };
+      const options: Option[] = intakeModeOptions(authMode).map((opt) => ({
+        label: baseLabel[opt.mode],
+        value: opt.mode,
+        hint: opt.note,
+        disabled: !opt.available,
+      }));
+      options.push({ label: "Keep current", value: "keep", hint: currentMode });
+      let defaultIndex = Math.max(0, options.findIndex((o) => o.value === defaultMode));
+      // If the recommended default isn't valid for this auth mode, fall back to
+      // the first selectable option rather than pre-selecting a disabled one.
+      if (options[defaultIndex]?.disabled) defaultIndex = options.findIndex((o) => !o.disabled);
       const choice = await promptSelect(io, paint, {
         title: "GitHub event intake",
         detail: `How the backend receives GitHub events. Docs: ${INTAKE_DOCS_URL}`,
