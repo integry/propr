@@ -88,7 +88,9 @@ export async function discoverInstallationId(client: RelayClientOptions): Promis
 
   if (installations.length === 1) {
     const only = installations[0];
-    console.log(
+    // To stderr, not stdout: `relay list --json` must emit only the JSON body,
+    // so this informational notice must stay out of the data stream.
+    console.error(
       `Using installation ${only.installation_id} (${only.account_login}) — the only one available to you.`
     );
     return String(only.installation_id);

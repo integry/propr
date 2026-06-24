@@ -25,11 +25,11 @@ interface FetchCall {
 }
 
 const realFetch = globalThis.fetch;
-const realLog = console.log;
+const realError = console.error;
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  console.log = realLog;
+  console.error = realError;
 });
 
 // Stub globalThis.fetch with a single /auth/me JSON response and record the call.
@@ -50,10 +50,11 @@ function stubAuthMe(
   return { calls };
 }
 
-// Capture console.log lines so the auto-select notice can be asserted on.
-function captureLog(): string[] {
+// Capture console.error lines so the auto-select notice can be asserted on.
+// The notice goes to stderr (not stdout) to keep `relay list --json` clean.
+function captureErr(): string[] {
   const lines: string[] = [];
-  console.log = (...args: unknown[]) => {
+  console.error = (...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   };
   return lines;
@@ -65,20 +66,20 @@ function installation(id: number, login: string, type = "User") {
 
 test("auto-selects the sole installation and reports which one", async () => {
   stubAuthMe({ installations: [installation(42, "octo-org", "Organization")] });
-  const logs = captureLog();
+  const notices = captureErr();
 
   const id = await discoverInstallationId(CLIENT);
 
   assert.equal(id, "42");
   assert.ok(
-    logs.some((l) => l.includes("42") && l.includes("octo-org")),
-    `expected an auto-select notice mentioning the installation, got: ${JSON.stringify(logs)}`
+    notices.some((l) => l.includes("42") && l.includes("octo-org")),
+    `expected an auto-select notice mentioning the installation, got: ${JSON.stringify(notices)}`
   );
 });
 
 test("queries GET /auth/me with the GitHub bearer token", async () => {
   const { calls } = stubAuthMe({ installations: [installation(7, "solo")] });
-  captureLog();
+  captureErr();
 
   await discoverInstallationId(CLIENT);
 
