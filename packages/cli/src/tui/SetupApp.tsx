@@ -22,7 +22,8 @@
 
 import React, { useEffect, useReducer, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import type { GithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthMode } from "@propr/shared";
+import type { AuthorizedInstallation } from "../api/relay.js";
 import type {
   SetupPrompts,
   GithubAuthDecision,
@@ -272,12 +273,16 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       // PROPR_DEMO_MODE=true would keep resolving as demo and ignore the App/relay
       // config the user just entered.
       if (choice === "relay") {
-        const relayUrl = await bridge.input({ title: "Relay URL", defaultValue: "" });
-        const relayToken = await bridge.input({ title: "Relay token", defaultValue: "", mask: true });
-        return {
-          mode: "relay",
-          vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "relay", PROPR_GH_RELAY_URL: relayUrl, PROPR_GH_RELAY_TOKEN: relayToken },
-        };
+        // No manual URL/token entry: the engine enrolls with the hosted relay
+        // using the stored `propr login` token, discovers the installation, and
+        // mints the token. Only the relay base URL is asked, prefilled with the
+        // hosted default (Enter accepts it; override for a self-hosted relay).
+        const relayUrl = await bridge.input({
+          title: "Relay URL",
+          detail: "Press Enter for the hosted ProPR relay; override only for a self-hosted relay.",
+          defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
+        });
+        return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
       }
       const appId = await bridge.input({ title: "GitHub App ID", defaultValue: "" });
       const privateKeyPath = await bridge.input({ title: "Path to the App private key (.pem)", defaultValue: "" });
@@ -286,6 +291,24 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
         mode: "app" satisfies GithubAuthMode,
         vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "app", GH_APP_ID: appId, GH_PRIVATE_KEY_PATH: privateKeyPath, GH_INSTALLATION_ID: installationId },
       };
+    },
+
+    // Note: confirmGithubLogin is intentionally not implemented here. The
+    // interactive `gh auth login` would have to take over the terminal mid-render,
+    // which the full-screen Ink wizard can't do cleanly — so relay enrollment
+    // without a stored token surfaces "run `propr login`" guidance instead
+    // (see enrollRelayForSetup in engine.ts).
+    async selectInstallation({ installations }): Promise<string> {
+      return bridge.select({
+        title: "Choose a GitHub App installation",
+        detail: "Your account can access more than one; the relay token is minted for the one you pick.",
+        options: installations.map((i: AuthorizedInstallation) => ({
+          label: `${i.account_login} (${i.account_type})`,
+          value: String(i.installation_id),
+          hint: String(i.installation_id),
+        })),
+        defaultIndex: 0,
+      });
     },
 
     async configureIntake({ authMode, defaultMode, currentMode }): Promise<GithubIntakeDecision> {

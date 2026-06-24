@@ -32,15 +32,17 @@
  */
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
+  DEFAULT_PROPR_GH_RELAY_URL,
   type GithubAuthMode,
   type GithubAuthModeResult,
 } from "@propr/shared";
 import type { ConfigManager } from "../../config/index.js";
+import type { AuthorizedInstallation, RelayClientOptions } from "../../api/relay.js";
 import {
   buildIntakeEnvVars,
   defaultIntakeChoice,
@@ -136,6 +138,14 @@ export interface GithubAuthDecision {
   mode?: GithubAuthMode;
   /** Env values to write (non-destructively, overwriting only these keys). */
   vars?: Record<string, string>;
+  /**
+   * Relay path: the user chose token relay and wants the engine to enroll on
+   * their behalf (discover the installation, mint the token, write the relay
+   * env vars) using the stored `propr login` token. `relayUrl` is the relay base
+   * URL to enroll against — the hosted default unless overridden. Mutually
+   * exclusive with `vars`.
+   */
+  enrollRelay?: { relayUrl: string };
 }
 
 /** A repository to start monitoring. */
@@ -157,6 +167,20 @@ export interface SetupPrompts {
   selectAgents?(ctx: { available: string[]; detected: string[] }): Promise<string[]>;
   /** Configure GitHub auth. Default: keep whatever `.env` already has. */
   configureGithubAuth?(ctx: { current: GithubAuthModeResult }): Promise<GithubAuthDecision>;
+  /**
+   * Choose which installation to enroll when the relay reports more than one the
+   * user can access. Only consulted for the ambiguous (>1) case; a single
+   * installation is auto-selected and zero is an error. Default (no hook): the
+   * first installation.
+   */
+  selectInstallation?(ctx: { installations: AuthorizedInstallation[] }): Promise<string>;
+  /**
+   * Ask whether to run the interactive `propr login` (gh CLI) now, when relay
+   * enrollment needs a GitHub token and none is stored. `reason` explains why.
+   * Only the sequential wizard implements this; absence means "don't auto-login"
+   * (the Ink wizard instead surfaces guidance to run `propr login`).
+   */
+  confirmGithubLogin?(ctx: { reason: string }): Promise<boolean>;
   /**
    * Choose how the backend ingests GitHub events (routing WebSocket, polling, or
    * direct webhooks). `defaultMode` is the choice to pre-select: the auth-derived
@@ -270,6 +294,29 @@ export interface SetupActions extends AgentSetupActions {
    * left intact.
    */
   saveWhitelistSetting(rootDir: string, users: string[]): Promise<void>;
+  /** True when a GitHub token is stored (the relay enrollment path needs it). */
+  hasGithubToken(): boolean;
+  /**
+   * List the relay installations the stored GitHub identity can access (drives
+   * auto-select / the picker during relay enrollment). Throws if not logged in.
+   */
+  fetchRelayInstallations(params: {
+    relayUrl?: string;
+  }): Promise<{ username: string; installations: AuthorizedInstallation[] }>;
+  /**
+   * Mint a relay token for `installationId`, returning the token and the relay
+   * URL it was minted against (the hosted default unless `relayUrl` overrides).
+   */
+  enrollRelay(params: {
+    relayUrl?: string;
+    installationId: string;
+    label?: string;
+  }): Promise<{ relayUrl: string; token: string }>;
+  /**
+   * Authenticate with GitHub via the interactive `gh` CLI and store the token.
+   * Returns true on success. (Used by the sequential wizard only.)
+   */
+  loginWithGithub(params?: { onLog?: (line: string) => void }): Promise<boolean>;
 }
 
 /** Options for {@link runSetup}. */
@@ -426,7 +473,41 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const client = await localApiClient(rootDir);
       await updateSetting("github_user_whitelist", users, client);
     },
+    hasGithubToken() {
+      return Boolean(configManager?.getGithubToken());
+    },
+    async fetchRelayInstallations({ relayUrl }) {
+      const { fetchAuthenticatedUser } = await import("../../api/relay.js");
+      const me = await fetchAuthenticatedUser(relayClient(relayUrl));
+      return { username: me.username, installations: me.installations };
+    },
+    async enrollRelay({ relayUrl, installationId, label }) {
+      const { enrollRelayToken } = await import("../../api/relay.js");
+      const client = relayClient(relayUrl);
+      // Default the token label to the hostname, mirroring `propr relay enroll`.
+      const result = await enrollRelayToken(client, { installationId, label: label ?? hostname() });
+      return { relayUrl: client.baseUrl, token: result.token };
+    },
+    async loginWithGithub({ onLog } = {}) {
+      if (!configManager) return false;
+      const { loginWithGithubCli } = await import("../../auth/githubLogin.js");
+      const result = await loginWithGithubCli(configManager, { interactive: true, onLog });
+      if (!result.ok) onLog?.(result.message);
+      return result.ok;
+    },
   };
+
+  /**
+   * Build a relay client bound to the stored GitHub token. The hosted relay is
+   * the default base URL; an explicit `relayUrl` (self-hosted) overrides it.
+   */
+  function relayClient(relayUrl?: string): RelayClientOptions {
+    const githubToken = configManager?.getGithubToken();
+    if (!githubToken) {
+      throw new Error("Not logged in to GitHub. Run `propr login` first.");
+    }
+    return { baseUrl: relayUrl ?? DEFAULT_PROPR_GH_RELAY_URL, githubToken };
+  }
 }
 
 /**
@@ -475,6 +556,83 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     // complete even when every step is in a terminal, non-failed status.
     completed: isSetupComplete(state) && !startDeclined,
   });
+
+  /**
+   * Relay enrollment for the auth step. Ensures a GitHub token (offering the
+   * interactive login when a `confirmGithubLogin` hook is present), discovers the
+   * installation (auto-select one, pick among many, error on none), mints the
+   * relay token, and writes the relay env vars. Returns a success `detail` or a
+   * soft `note` (rendered as a warning). It never throws for expected problems,
+   * so a relay hiccup degrades to a warning instead of aborting the whole setup.
+   */
+  const enrollRelayForSetup = async (
+    relayUrl: string
+  ): Promise<{ detail?: string; note?: { detail: string; nextAction?: string } }> => {
+    // 1. A stored GitHub token is required. Offer interactive login when the
+    //    renderer supports it (sequential wizard); the Ink wizard has no hook and
+    //    falls through to the "not logged in" guidance below.
+    if (!actions.hasGithubToken()) {
+      const reason = "Relay enrollment needs a GitHub token.";
+      if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
+        await actions.loginWithGithub({ onLog: log });
+      }
+      if (!actions.hasGithubToken()) {
+        return {
+          note: {
+            detail: "relay not enrolled — not logged in to GitHub",
+            nextAction: "Run `propr login`, then re-run `propr setup` and choose Token relay.",
+          },
+        };
+      }
+    }
+
+    try {
+      // 2. Discover installations: auto-select the only one, pick among many,
+      //    error when there are none.
+      const { installations } = await actions.fetchRelayInstallations({ relayUrl });
+      if (installations.length === 0) {
+        return {
+          note: {
+            detail: "relay not enrolled — no GitHub App installation available",
+            nextAction: "Install the shared ProPR GitHub App for your account, then re-run setup.",
+          },
+        };
+      }
+      let installationId: string;
+      if (installations.length === 1) {
+        installationId = String(installations[0].installation_id);
+        log(`relay: using installation ${installationId} (${installations[0].account_login})`);
+      } else if (prompts.selectInstallation) {
+        installationId = await prompts.selectInstallation({ installations });
+      } else {
+        installationId = String(installations[0].installation_id);
+      }
+
+      // 3. Mint the relay token and write the relay env vars (overwriting only
+      //    these keys). PROPR_DEMO_MODE=false ensures the new relay config isn't
+      //    shadowed by a leftover demo flag (see detectGithubAuthMode).
+      const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
+      actions.applyEnvSelection(
+        rootDir,
+        {
+          PROPR_DEMO_MODE: "false",
+          GH_AUTH_MODE: "relay",
+          PROPR_GH_RELAY_URL: resolvedRelayUrl,
+          PROPR_GH_RELAY_TOKEN: token,
+          GH_INSTALLATION_ID: installationId,
+        },
+        { overwrite: true }
+      );
+      return { detail: `auth mode: relay (installation ${installationId})` };
+    } catch (error) {
+      return {
+        note: {
+          detail: `relay enrollment failed — ${(error as Error).message}`,
+          nextAction: "Confirm the shared GitHub App is installed and you own the installation, then re-run setup.",
+        },
+      };
+    }
+  };
 
   emit();
 
@@ -643,11 +801,21 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   //    health probe after startup is the authoritative signal.
   begin("github-auth");
   let resolvedAuth: GithubAuthModeResult;
+  // Set by the relay path: a soft `relayNote` drives a warning settle (and skips
+  // partial writes); `relayDoneDetail` carries the success line. Both stay unset
+  // for the keep / custom-App / no-prompt paths, which fall back to the
+  // mode-derived settle below.
+  let relayNote: { detail: string; nextAction?: string } | undefined;
+  let relayDoneDetail: string | undefined;
   try {
     const currentAuth = actions.detectGithubAuthMode(rootDir);
     let authDecision: GithubAuthDecision | undefined;
     if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth });
-    if (authDecision?.vars && Object.keys(authDecision.vars).length > 0) {
+    if (authDecision?.enrollRelay) {
+      const outcome = await enrollRelayForSetup(authDecision.enrollRelay.relayUrl);
+      relayNote = outcome.note;
+      relayDoneDetail = outcome.detail;
+    } else if (authDecision?.vars && Object.keys(authDecision.vars).length > 0) {
       actions.applyEnvSelection(rootDir, authDecision.vars, { overwrite: true });
     }
     resolvedAuth = actions.detectGithubAuthMode(rootDir);
@@ -659,7 +827,11 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     });
     return finish();
   }
-  if (resolvedAuth.mode === "none") {
+  if (relayNote) {
+    settle("github-auth", { status: "warning", detail: relayNote.detail, nextAction: relayNote.nextAction });
+  } else if (relayDoneDetail) {
+    settle("github-auth", { status: "done", detail: relayDoneDetail });
+  } else if (resolvedAuth.mode === "none") {
     settle("github-auth", {
       status: "warning",
       detail: "no GitHub auth configured",

@@ -103,14 +103,24 @@ test("select: Demo mode is no longer offered as an auth choice", async () => {
 
 test("select: on a fresh install Token relay leads and no keep option is shown", async () => {
   // current.mode "none" → nothing to keep, so options are Token relay(1), Custom
-  // GitHub App(2); option 1 is the relay branch.
-  const io = scriptedIo(["1", "https://relay.example", "secret-token"]);
+  // GitHub App(2); option 1 is the relay branch. The relay branch now asks only
+  // for the relay URL (default hosted) and signals enrollment — no token entry;
+  // the engine mints the token from the stored login.
+  const io = scriptedIo(["1", "https://relay.example"]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
   assert.equal(decision.mode, "relay");
-  assert.equal(decision.vars?.PROPR_GH_RELAY_URL, "https://relay.example");
-  assert.equal(decision.vars?.PROPR_GH_RELAY_TOKEN, "secret-token");
-  assert.equal(io.masked.length, 1, "exactly the token prompt is masked");
+  assert.equal(decision.enrollRelay?.relayUrl, "https://relay.example");
+  assert.equal(decision.vars, undefined, "relay path no longer writes vars directly");
+  assert.equal(io.masked.length, 0, "no secret is prompted in the relay path");
   assert.doesNotMatch(io.lines.join("\n"), /keep current/i, "no keep option without an existing config");
+});
+
+test("select: Token relay accepts the hosted relay default on a blank URL", async () => {
+  // Blank URL → the hosted ProPR relay default is used.
+  const io = scriptedIo(["1", ""]);
+  const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
+  assert.equal(decision.mode, "relay");
+  assert.match(decision.enrollRelay?.relayUrl ?? "", /^https?:\/\//, "falls back to the hosted relay URL");
 });
 
 test("select: an out-of-range number re-prompts until valid", async () => {
@@ -312,6 +322,11 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     resolveUiUrl: async () => "http://localhost:3000",
     openUrl: async () => undefined,
     saveWhitelistSetting: async () => undefined,
+    // Relay enrollment / login actions — inert by default.
+    hasGithubToken: () => true,
+    fetchRelayInstallations: async () => ({ username: "octocat", installations: [] }),
+    enrollRelay: async () => ({ relayUrl: "https://relay/v1", token: "prt_test" }),
+    loginWithGithub: async () => true,
     // Agent enablement / image-login actions — inert so the scripted run never
     // reaches the backend, Docker, or an extra login prompt.
     listAgents: async () => [],

@@ -231,59 +231,18 @@ Examples:
         return;
       }
 
-      // Interactive flow via gh CLI
-      const { execSync, spawnSync } = await import("child_process");
-
-      // Check if gh is installed
-      try {
-        execSync("gh --version", { stdio: "ignore" });
-      } catch {
-        console.error("Error: GitHub CLI (gh) is not installed.");
-        console.log("");
-        console.log("Install it from: https://cli.github.com");
-        console.log("");
-        console.log("Or provide a token directly:");
-        console.log("  $ propr login <token>");
-        process.exit(1);
-      }
-
-      // Try to get an existing token
-      try {
-        const existingToken = execSync("gh auth token", { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-        if (existingToken) {
-          await configManager.setGithubToken(existingToken);
-          console.log("Authenticated using existing gh CLI session.");
-          console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
-          return;
-        }
-      } catch {
-        // Not logged in yet — proceed to interactive login
-      }
-
-      // Launch interactive gh auth login
-      console.log("No existing gh session found. Starting interactive login...");
-      console.log("");
-
-      const result = spawnSync("gh", ["auth", "login", "-s", "repo,read:org"], {
-        stdio: "inherit",
+      // Interactive flow via the gh CLI (shared with `propr setup`).
+      const { loginWithGithubCli } = await import("./auth/githubLogin.js");
+      const result = await loginWithGithubCli(configManager, {
+        interactive: true,
+        onLog: (line) => console.log(line),
       });
-
-      if (result.status !== 0) {
-        console.error("Error: GitHub login failed or was cancelled.");
+      if (!result.ok) {
+        console.error(`Error: ${result.message}`);
         process.exit(1);
       }
-
-      // Grab the token after successful login
-      const ghToken = execSync("gh auth token", { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-
-      if (!ghToken) {
-        console.error("Error: Could not retrieve token after login.");
-        process.exit(1);
-      }
-
-      await configManager.setGithubToken(ghToken);
       console.log("");
-      console.log("Authentication successful!");
+      console.log(result.message);
       console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
     } catch (error) {
       console.error(`Error during login: ${(error as Error).message}`);

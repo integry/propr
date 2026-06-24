@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runSetup, type SetupActions, type SetupPrompts } from "./engine.js";
 import type { ChecksOutcome } from "../checkCommands.js";
+import type { AuthorizedInstallation } from "../../api/relay.js";
 import type { GithubAuthModeResult } from "@propr/shared";
 import { getStep } from "./state.js";
 import type { SetupState } from "./types.js";
@@ -54,6 +55,11 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     resolveUiUrl: async () => "http://localhost:3000",
     openUrl: async () => undefined,
     saveWhitelistSetting: async () => undefined,
+    // Relay enrollment / login actions — inert by default; relay tests override.
+    hasGithubToken: () => true,
+    fetchRelayInstallations: async () => ({ username: "octocat", installations: [] }),
+    enrollRelay: async () => ({ relayUrl: "https://relay/v1", token: "prt_test" }),
+    loginWithGithub: async () => true,
     // Agent enablement / image-login actions — inert by default so no test
     // touches the backend or Docker unless it overrides them.
     listAgents: async () => [],
@@ -219,6 +225,139 @@ test("missing GitHub auth surfaces a warning but does not abort", async () => {
   });
   assert.equal(statusOf(result.state, "github-auth"), "warning");
   // The flow still reaches the end.
+  assert.notEqual(statusOf(result.state, "start-stack"), "pending");
+});
+
+// --- relay enrollment in the auth step --------------------------------------
+
+function inst(id: number, login: string, type = "User"): AuthorizedInstallation {
+  return { installation_id: id, account_login: login, account_type: type };
+}
+
+/** Prompt that drives the relay enrollment path against the given URL. */
+const relayPrompts = (extra: Partial<SetupPrompts> = {}): SetupPrompts => ({
+  configureGithubAuth: async () => ({ mode: "relay", enrollRelay: { relayUrl: "https://relay/v1" } }),
+  ...extra,
+});
+
+test("relay enrollment auto-selects a single installation and writes the relay vars", async () => {
+  let relayVars: Record<string, string> | undefined;
+  let enrolledId: string | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org", "Organization")] }),
+      enrollRelay: async ({ installationId }) => {
+        enrolledId = installationId;
+        return { relayUrl: "https://relay/v1", token: "prt_minted" };
+      },
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(enrolledId, "42", "the sole installation is enrolled without prompting");
+  assert.deepEqual(relayVars, {
+    PROPR_DEMO_MODE: "false",
+    GH_AUTH_MODE: "relay",
+    PROPR_GH_RELAY_URL: "https://relay/v1",
+    PROPR_GH_RELAY_TOKEN: "prt_minted",
+    GH_INSTALLATION_ID: "42",
+  });
+});
+
+test("relay enrollment asks the user to pick among multiple installations", async () => {
+  let offered: AuthorizedInstallation[] | undefined;
+  let enrolledId: string | undefined;
+  await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({
+      selectInstallation: async ({ installations }) => {
+        offered = installations;
+        return "200";
+      },
+    }),
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({
+        username: "octocat",
+        installations: [inst(100, "acme", "Organization"), inst(200, "widgets")],
+      }),
+      enrollRelay: async ({ installationId }) => {
+        enrolledId = installationId;
+        return { relayUrl: "https://relay/v1", token: "prt_x" };
+      },
+    }),
+  });
+  assert.equal(offered?.length, 2);
+  assert.equal(enrolledId, "200", "the picked installation is the one enrolled");
+});
+
+test("relay enrollment offers an interactive login when no token, then enrolls", async () => {
+  let loginCalled = false;
+  let tokenPresent = false;
+  let enrolled = false;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({ confirmGithubLogin: async () => true }),
+    actions: mockActions({
+      hasGithubToken: () => tokenPresent,
+      loginWithGithub: async () => {
+        loginCalled = true;
+        tokenPresent = true;
+        return true;
+      },
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => {
+        enrolled = true;
+        return { relayUrl: "https://relay/v1", token: "prt_z" };
+      },
+    }),
+  });
+  assert.equal(loginCalled, true, "the login hook was honoured");
+  assert.equal(enrolled, true, "enrollment proceeded once the token was present");
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+});
+
+test("relay enrollment without a token (and no login hook) warns and writes nothing", async () => {
+  let relayWritten = false;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      hasGithubToken: () => false,
+      detectGithubAuthMode: () => NO_AUTH,
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "relay") relayWritten = true;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+  assert.equal(statusOf(result.state, "github-auth"), "warning");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /not logged in/);
+  assert.equal(relayWritten, false, "no partial relay config is written without a token");
+  // The run is not aborted by the warning.
+  assert.notEqual(statusOf(result.state, "start-stack"), "pending");
+});
+
+test("a relay enrollment failure is a warning and the run still proceeds", async () => {
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => {
+        throw new Error("HTTP 403 forbidden");
+      },
+    }),
+  });
+  assert.equal(statusOf(result.state, "github-auth"), "warning");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /relay enrollment failed/);
   assert.notEqual(statusOf(result.state, "start-stack"), "pending");
 });
 

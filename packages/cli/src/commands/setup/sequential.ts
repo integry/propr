@@ -22,7 +22,8 @@
  */
 
 import { createInterface } from "node:readline/promises";
-import type { GithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthMode } from "@propr/shared";
+import type { AuthorizedInstallation } from "../../api/relay.js";
 import {
   INTAKE_DOCS_URL,
   WEBHOOK_DOCS_URL,
@@ -334,12 +335,16 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       // PROPR_DEMO_MODE=true would keep resolving as demo and ignore the App/relay
       // config the user just entered.
       if (choice === "relay") {
-        const relayUrl = await promptInput(io, paint, { title: "Relay URL", defaultValue: "" });
-        const relayToken = await promptInput(io, paint, { title: "Relay token", defaultValue: "", mask: true });
-        return {
-          mode: "relay",
-          vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "relay", PROPR_GH_RELAY_URL: relayUrl, PROPR_GH_RELAY_TOKEN: relayToken },
-        };
+        // No manual URL/token entry: the engine enrolls with the hosted relay
+        // using the stored `propr login` token, discovers the installation, and
+        // mints the token. Only the relay base URL is asked, prefilled with the
+        // hosted default (Enter accepts it; override for a self-hosted relay).
+        const relayUrl = await promptInput(io, paint, {
+          title: "Relay URL",
+          detail: "Press Enter for the hosted ProPR relay; override only for a self-hosted relay.",
+          defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
+        });
+        return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
       }
       const appId = await promptInput(io, paint, { title: "GitHub App ID", defaultValue: "" });
       const privateKeyPath = await promptInput(io, paint, { title: "Path to the App private key (.pem)", defaultValue: "" });
@@ -348,6 +353,28 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         mode: "app" satisfies GithubAuthMode,
         vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "app", GH_APP_ID: appId, GH_PRIVATE_KEY_PATH: privateKeyPath, GH_INSTALLATION_ID: installationId },
       };
+    },
+
+    async confirmGithubLogin({ reason }): Promise<boolean> {
+      return promptConfirm(io, paint, {
+        title: "Log in to GitHub now?",
+        detail: `${reason} Runs \`gh auth login\` (the GitHub CLI).`,
+        defaultValue: true,
+      });
+    },
+
+    async selectInstallation({ installations }): Promise<string> {
+      const choice = await promptSelect(io, paint, {
+        title: "Choose a GitHub App installation",
+        detail: "Your account can access more than one; the relay token is minted for the one you pick.",
+        options: installations.map((i: AuthorizedInstallation) => ({
+          label: `${i.account_login} (${i.account_type})`,
+          value: String(i.installation_id),
+          hint: String(i.installation_id),
+        })),
+        defaultIndex: 0,
+      });
+      return choice;
     },
 
     async configureIntake({ authMode, defaultMode, currentMode }): Promise<GithubIntakeDecision> {
