@@ -35,6 +35,18 @@ export interface RelayTokenSummary {
   revoked: boolean;
 }
 
+export interface AuthorizedInstallation {
+  installation_id: number;
+  account_login: string;
+  account_type: string;
+}
+
+export interface AuthenticatedUser {
+  username: string;
+  avatar_url: string | null;
+  installations: AuthorizedInstallation[];
+}
+
 function baseUrl(options: RelayClientOptions): string {
   return options.baseUrl.replace(/\/+$/, "");
 }
@@ -96,6 +108,19 @@ async function relayRequest<T>(
   } catch {
     throw new Error("The relay returned a malformed JSON response.");
   }
+}
+
+/**
+ * Identity probe: returns the GitHub user and the installations they may access
+ * (the same `/v1/auth/me` route the dashboard boots from). Used by `propr relay`
+ * to discover an installation id when none was passed explicitly. Note these are
+ * access-scoped (ownership or team membership); minting a relay token is stricter
+ * (owner-only), so a discovered installation may still 403 on enroll.
+ */
+export function fetchAuthenticatedUser(
+  options: RelayClientOptions
+): Promise<AuthenticatedUser> {
+  return relayRequest<AuthenticatedUser>(options, "/auth/me", "GET");
 }
 
 export function enrollRelayToken(
