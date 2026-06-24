@@ -89,7 +89,7 @@ sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/
 propr setup --root /srv/propr  # guided, re-runnable bootstrap
 ```
 
-Over SSH, run `propr setup --no-tui` if your terminal lacks raw-mode support; setup then prompts line-by-line. Setup is **safe to re-run** — it skips already-satisfied steps and never overwrites `.env` or deletes data — so you can re-run it after editing public URLs or switching intake mode.
+Over SSH, run `propr setup --no-tui` if your terminal lacks raw-mode support; setup then prompts line-by-line. Choosing **Token relay** at the auth step enrolls the shared App automatically (logging you in if needed, then writing the relay/routing credentials to `.env`), so no separate `propr relay enroll` is needed. Setup is **safe to re-run** — it skips already-satisfied steps and never overwrites `.env` or deletes data — so you can re-run it after editing public URLs or switching intake mode.
 
 ### Manual / Advanced Flow
 

@@ -250,8 +250,8 @@ function Quickstart() {
               directory, verifies the host, and starts the prebuilt images on a
               Docker-capable Linux host. Configure{' '}
               <Link to="/docs/operations/github-auth">GitHub access</Link> (your own
-              GitHub App, or a shared App via <code>propr relay enroll</code>) and
-              authenticate at least one agent CLI on the host.
+              GitHub App, or a shared App that <code>propr setup</code> enrolls for
+              you) and authenticate at least one agent CLI on the host.
             </p>
             <p>
               Full walkthroughs: <Link to="/docs/tutorials/setup-local">local</Link>,{' '}

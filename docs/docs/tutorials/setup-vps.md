@@ -315,14 +315,17 @@ Choose one auth mode (full detail in [GitHub Authentication](../operations/githu
   relay variable is ever left in the environment. See
   [GitHub Authentication](../operations/github-auth.md) for the mode precedence.
 
-- **Shared App via relay** — no private key on the server. Enrollment opens the
-  GitHub OAuth flow to prove your identity, then writes a relay token to `.env`;
-  it contacts the vendor relay directly, so no prior `propr remote`/`propr login`
-  state is required:
+- **Shared App via relay** — no private key on the server. The easiest path is
+  to pick **Token relay** in `propr setup`, which enrolls and writes the
+  relay/routing credentials to `.env` for you. To enroll standalone, run
+  `propr relay enroll` from the stack directory — it discovers your installation
+  from your `propr login` identity (pass `--installation <id>` to choose among
+  several) and writes a relay token to `.env`:
 
   ```bash
   cd /srv/propr         # run from the stack directory so the token lands in its .env
-  propr relay enroll     # OAuth login, then writes a relay token to .env
+  propr login            # store a GitHub token (skips if you already have one)
+  propr relay enroll     # discovers the installation, then writes a relay token to .env
   ```
 
 ## 8. Bind Service Ports To Localhost
