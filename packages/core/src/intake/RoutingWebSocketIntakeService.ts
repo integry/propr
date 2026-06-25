@@ -66,6 +66,19 @@ import {
 
 export type { FetchLike, MinimalWebSocket, RawData, WebSocketCtor } from './routingWebSocketProtocol.js';
 
+const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
+
+function parsePositiveIntegerEnv(name: string): number | undefined {
+    const value = process.env[name];
+    if (!value) return undefined;
+    const trimmed = value.trim();
+    // Require a whole-string positive integer so values like `50abc` or `1.5`
+    // are rejected rather than silently coerced to `50`/`1`.
+    if (!/^\d+$/.test(trimmed)) return undefined;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export interface RoutingWebSocketIntakeServiceOptions {
     /**
      * Routing relay origin (scheme + host, no path). Defaults to
@@ -90,7 +103,11 @@ export interface RoutingWebSocketIntakeServiceOptions {
     reconnectDelayMs?: number;
     /** Maximum reconnect backoff delay in ms. */
     maxReconnectDelayMs?: number;
-    /** Keepalive ping interval in ms. */
+    /**
+     * Keepalive ping interval in ms. Defaults to PROPR_ROUTING_WS_PING_INTERVAL_MS,
+     * then 5 minutes. The relay also sends application-level pings, so this client
+     * ping is only a low-frequency transport liveness check.
+     */
     pingIntervalMs?: number;
     /** Maximum number of delivery ids retained for deduplication. */
     maxDedupeEntries?: number;
@@ -196,7 +213,8 @@ export class RoutingWebSocketIntakeService {
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
-        this.pingIntervalMs = options.pingIntervalMs ?? 30_000;
+        this.pingIntervalMs =
+            options.pingIntervalMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;
