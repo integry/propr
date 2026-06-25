@@ -320,6 +320,43 @@ test('validateEnv accepts a tunnel enabled with a token', () => {
   assert.deepEqual(validateEnv(cfg).errors, []);
 });
 
+test('validateEnv rejects a malformed explicit PROPR_UI_PUBLIC_API_URL', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_UI_PUBLIC_API_URL: 'not a url',
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  }, { manifestPath });
+
+  assert.match(validateEnv(cfg).errors.join('\n'), /PROPR_UI_PUBLIC_API_URL/);
+});
+
+test('validateEnv accepts a derived public URL from the instance id', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  }, { manifestPath });
+
+  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
+  assert.deepEqual(validateEnv(cfg).errors, []);
+});
+
 test('launcher config does not stat host bind paths inside the launcher container', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFileLocal = join(rootDir, '.env');

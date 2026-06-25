@@ -40,6 +40,17 @@ async function toggleTunnel(stateArg: string, root?: string): Promise<void> {
       );
       process.exit(1);
     }
+    // The tunnel only routes to the core API (api:4000). Starting it while the
+    // core stack is down leaves a healthy-looking cloudflared sidecar pointing at
+    // an unavailable backend, so warn the operator (don't fail — they may be
+    // about to `propr start`).
+    if (!orch.isStackRunning(cfg)) {
+      console.warn(
+        "Warning: the core stack does not appear to be running, so the tunnel\n" +
+          "  will point at an unavailable API. Run 'propr start' to bring the\n" +
+          "  core services up."
+      );
+    }
     console.log("Starting tunnel…");
     orch.ensureNetwork(cfg, (l: string) => console.log(l));
     orch.startService(cfg, "tunnel", { onLog: (l) => console.log(l) });
@@ -66,7 +77,10 @@ export function createTunnelCommand(): Command {
     .addHelpText("after", `
 Starting the tunnel requires a configured token. Set these in your stack .env:
   PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start)
-  PROPR_UI_PUBLIC_API_URL  Public API URL advertised through the tunnel (optional)
+  PROPR_INSTANCE_ID        Instance id; derives the public URL
+                           https://<id>.proxy.propr.dev when no explicit one is set
+  PROPR_UI_PUBLIC_API_URL  Explicit public API URL advertised through the tunnel
+                           (optional; overrides the id-derived URL)
 
 Examples:
   $ propr tunnel on

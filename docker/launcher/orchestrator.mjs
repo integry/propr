@@ -1322,6 +1322,18 @@ export function validateEnv(cfg) {
         errors.push('The UI tunnel is enabled (via PROPR_UI_TUNNEL_ENABLED=true or `propr tunnel on`) but PROPR_UI_TUNNEL_TOKEN is not set. Set PROPR_UI_TUNNEL_TOKEN to your Cloudflare Tunnel token, or disable the tunnel with `propr tunnel off` (or by unsetting PROPR_UI_TUNNEL_ENABLED).');
     }
 
+    // A derived public URL is always well-formed, so a malformed value here can
+    // only come from an explicit PROPR_UI_PUBLIC_API_URL. Catch it early — an
+    // invalid URL is advertised to the API/worker and later probed by
+    // `getTunnelStatus()` via fetch(), where it would otherwise throw or misbehave.
+    if (cfg.uiPublicApiUrl) {
+        let parsed;
+        try { parsed = new URL(cfg.uiPublicApiUrl); } catch { /* invalid below */ }
+        if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. Use a full URL such as https://abc123.proxy.propr.dev.`);
+        }
+    }
+
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);
     if (hasOpenCodeConfig && !cfg.hostOpencodeDataDir) {
         warnings.push(

@@ -83,7 +83,7 @@ In production, the UI and API can be deployed behind the same domain or differen
 
 Important integration points:
 
-- Build or configure the frontend with the correct `VITE_API_BASE_URL` so browser requests reach the dashboard API (the published UI image is built with its configured API base URL)
+- Point the frontend at the correct API origin so browser requests reach the dashboard API. Prefer runtime config (`PROPR_UI_PUBLIC_API_URL` → `window.__PROPR_CONFIG__.apiBaseUrl`), which lets one published image serve any backend; build-time `VITE_API_BASE_URL` is a fallback for single-target builds. See [Hosted UI And Runtime Config](#hosted-ui-and-runtime-config) below
 - Configure `GH_OAUTH_CALLBACK_URL` to match the public API origin
 - Allow credentials and cookies to flow correctly if the UI and API are on different origins (`FRONTEND_URL` drives the API's CORS configuration)
 - Route `/api/*`, `/webhook`, and `/socket.io/` traffic to the dashboard API if you serve everything behind one reverse proxy, and enable WebSocket upgrades for `/socket.io/`
