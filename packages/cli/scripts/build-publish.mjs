@@ -27,7 +27,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -69,12 +69,22 @@ const stripMaps = (dir) => {
 stripMaps(join(stageDir, "dist"));
 
 // 5. Rewrite the `@propr/shared` import specifier to the vendored relative path.
-//    Both importing files live in dist/commands/, so the path is identical.
-for (const file of ["checkCommands.js", "relayCommands.js"]) {
-  const path = join(stageDir, "dist", "commands", file);
-  const src = readFileSync(path, "utf8");
-  writeFileSync(path, src.replaceAll('"@propr/shared"', '"../vendor/shared/index.js"'));
-}
+const rewriteSharedImports = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      rewriteSharedImports(full);
+    } else if (entry.name.endsWith(".js")) {
+      const src = readFileSync(full, "utf8");
+      if (src.includes('"@propr/shared"')) {
+        let sharedPath = relative(dirname(full), join(vendorDir, "index.js")).split(sep).join("/");
+        if (!sharedPath.startsWith(".")) sharedPath = `./${sharedPath}`;
+        writeFileSync(full, src.replaceAll('"@propr/shared"', `"${sharedPath}"`));
+      }
+    }
+  }
+};
+rewriteSharedImports(join(stageDir, "dist"));
 
 // 6. Write the unscoped package.json (no scoped deps, no build scripts).
 const cliPkg = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8"));

@@ -167,8 +167,8 @@ propr/
 Docker image releases run via the **Docker Images** GitHub Actions workflow. Bump the version, then tag the merged commit (the workflow verifies the tag matches `package.json`):
 
 ```bash
-git tag v0.8.3
-git push origin v0.8.3
+git tag v0.8.4
+git push origin v0.8.4
 ```
 
 The `propr-cli` npm package is published separately with `npm run cli:publish` (build + publish the standalone, unscoped package).

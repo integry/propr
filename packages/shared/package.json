@@ -1,6 +1,6 @@
 {
   "name": "@propr/shared",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Shared constants and type definitions for ProPR",
   "type": "module",
   "main": "dist/index.js",

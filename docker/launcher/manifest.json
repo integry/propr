@@ -1,16 +1,16 @@
 {
-  "version": "0.8.3",
-  "git_sha": "9719113f",
+  "version": "0.8.4",
+  "git_sha": "b31f23cb",
   "registry": "propr",
   "images": {
-    "app": "propr/app:0.8.3",
-    "ui": "propr/ui:0.8.3",
-    "docs": "propr/docs:0.8.3",
-    "agent-claude": "propr/agent-claude:0.8.3",
-    "agent-codex": "propr/agent-codex:0.8.3",
-    "agent-antigravity": "propr/agent-antigravity:0.8.3",
-    "agent-opencode": "propr/agent-opencode:0.8.3",
-    "agent-vibe": "propr/agent-vibe:0.8.3",
+    "app": "propr/app:0.8.4",
+    "ui": "propr/ui:0.8.4",
+    "docs": "propr/docs:0.8.4",
+    "agent-claude": "propr/agent-claude:0.8.4",
+    "agent-codex": "propr/agent-codex:0.8.4",
+    "agent-antigravity": "propr/agent-antigravity:0.8.4",
+    "agent-opencode": "propr/agent-opencode:0.8.4",
+    "agent-vibe": "propr/agent-vibe:0.8.4",
     "redis": "redis:7-alpine"
   }
 }
