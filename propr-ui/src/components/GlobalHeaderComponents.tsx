@@ -290,7 +290,7 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
   };
   const getOverallHealthColor = (): string => {
     if (systemHealth.isHealthy) return 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]';
-    const coreStatuses = [systemHealth.daemon, systemHealth.workers, systemHealth.redis, systemHealth.githubAuth, systemHealth.indexing];
+    const coreStatuses = [systemHealth.daemon, systemHealth.workers, systemHealth.redis, systemHealth.githubAuth, systemHealth.indexing, systemHealth.githubEventIntakeStatus];
     const agentStatuses = systemHealth.agents.map(agent => agent.status);
     const criticalDown = [...coreStatuses, ...agentStatuses].some(s => ['stopped', 'disconnected', 'failed', 'unavailable'].includes(s?.toLowerCase() || ''));
     return criticalDown ? 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]' : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.6)]';
@@ -307,6 +307,15 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
       <span className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
       <span>{label}:</span>
       <span className="ml-auto font-medium">{status || 'Unknown'}</span>
+    </div>
+  );
+  // The intake method is a name rather than a status, so its indicator dot is
+  // colored by the separate intake status while the row still shows the method.
+  const renderIntakeMethodRow = (label: string, method: string, status: string) => (
+    <div className="flex items-center gap-2 text-sm text-gray-700">
+      <span className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
+      <span>{label}:</span>
+      <span className="ml-auto font-medium">{method || 'Unknown'}</span>
     </div>
   );
   const renderAgentStatusRow = (agent: HeaderStats['systemHealth']['agents'][number]) => (
@@ -352,6 +361,8 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
             {renderStatusRow('Workers', systemHealth.workers)}
             {renderStatusRow('Redis', systemHealth.redis)}
             {renderStatusRow('GitHub', systemHealth.githubAuth)}
+            {renderIntakeMethodRow('GitHub Intake', systemHealth.githubEventIntake, systemHealth.githubEventIntakeStatus)}
+            {renderStatusRow('Intake Status', systemHealth.githubEventIntakeStatus)}
             {renderStatusRow('Indexing', systemHealth.indexing)}
             {hasAgents && (
               <div className="pt-2 mt-2 border-t border-slate-100 space-y-2">

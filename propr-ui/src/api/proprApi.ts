@@ -109,6 +109,26 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
         return 'Unavailable';
     }
   };
+  // Human-readable label for the configured intake path. An unknown or absent
+  // mode (older backends) falls back to 'Unknown' so the UI never shows a raw key.
+  const intakeLabels: Record<string, string> = {
+    routing_websocket: 'Routing WebSocket',
+    polling: 'Polling',
+    direct_webhook: 'Direct Webhook',
+  };
+  const mapIntakeLabel = (mode?: string) => (mode && intakeLabels[mode]) || 'Unknown';
+  const mapIntakeStatus = (status?: string) => {
+    switch (status) {
+      case 'connected':
+        return 'Connected';
+      case 'active':
+        return 'Active';
+      case 'disconnected':
+        return 'Disconnected';
+      default:
+        return 'Unknown';
+    }
+  };
   const agents = (data.agents || []).map(agent => ({
     ...agent,
     status: mapAgentStatus(agent.status),
@@ -120,6 +140,8 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
     githubAuth: mapAuthStatus(data.githubAuth),
     claudeAuth: mapAuthStatus(data.claudeAuth),
     indexing: mapIndexingStatus(data.indexing),
+    githubEventIntake: mapIntakeLabel(data.githubEventIntake),
+    githubEventIntakeStatus: mapIntakeStatus(data.githubEventIntakeStatus),
     agents,
     warnings: data.warnings || [],
   };

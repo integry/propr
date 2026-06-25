@@ -12,6 +12,12 @@ export interface SystemStatus {
   githubAuth: string;
   claudeAuth: string;
   indexing: string;
+  // Human-readable name of the configured GitHub event intake path
+  // (e.g. "Routing WebSocket", "Polling", "Direct Webhook").
+  githubEventIntake: string;
+  // UI status string for the active intake path (e.g. "Connected", "Active",
+  // "Disconnected", "Unknown").
+  githubEventIntakeStatus: string;
   agents: SystemAgentStatus[];
   warnings?: SystemWarning[];
 }
@@ -28,6 +34,10 @@ export interface StatusResponse {
   githubAuth: string;
   claudeAuth: string;
   indexing?: string;
+  // Raw intake mode/status from the backend. Optional so responses from older
+  // backends that predate these fields still map cleanly.
+  githubEventIntake?: string;
+  githubEventIntakeStatus?: string;
   agents?: SystemAgentStatus[];
   warnings?: SystemWarning[];
 }

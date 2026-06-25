@@ -11,6 +11,8 @@ function makeSystemHealth(overrides: Partial<HeaderStats['systemHealth']> = {}):
     githubAuth: 'Authenticated',
     claudeAuth: 'Failed',
     indexing: 'Idle',
+    githubEventIntake: 'Routing WebSocket',
+    githubEventIntakeStatus: 'Connected',
     agents: [
       { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' },
       { id: 'antigravity-1', type: 'antigravity', alias: 'antigravity-prod', status: 'Failed' },
@@ -32,13 +34,16 @@ describe('SystemHealth dropdown', () => {
     expect(screen.getByText('Workers:')).toBeInTheDocument();
     expect(screen.getByText('Redis:')).toBeInTheDocument();
     expect(screen.getByText('GitHub:')).toBeInTheDocument();
+    expect(screen.getByText('GitHub Intake:')).toBeInTheDocument();
+    expect(screen.getByText('Routing WebSocket')).toBeInTheDocument();
+    expect(screen.getByText('Intake Status:')).toBeInTheDocument();
     expect(screen.getByText('Indexing:')).toBeInTheDocument();
     expect(screen.getByText('Codex:')).toBeInTheDocument();
     expect(screen.getByText('Antigravity:')).toBeInTheDocument();
     expect(screen.queryByText('Codex (codex-prod):')).not.toBeInTheDocument();
     expect(screen.queryByText('Antigravity (antigravity-prod):')).not.toBeInTheDocument();
     expect(screen.queryByText('Claude:')).not.toBeInTheDocument();
-    expect(container.querySelectorAll('span.rounded-full')).toHaveLength(6);
+    expect(container.querySelectorAll('span.rounded-full')).toHaveLength(8);
   });
 
   it('includes agent aliases when multiple instances of a type are shown', () => {
@@ -62,6 +67,20 @@ describe('SystemHealth dropdown', () => {
 
     const indicator = container.querySelector('button[aria-label="System Status"] span.bg-red-500');
 
+    expect(indicator).toBeInTheDocument();
+  });
+
+  it('marks the overall indicator red when the GitHub intake path is disconnected', () => {
+    const { container } = render(<SystemHealth systemHealth={makeSystemHealth({
+      agents: [{ id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' }],
+      githubEventIntakeStatus: 'Disconnected',
+    })} />);
+
+    fireEvent.mouseEnter(screen.getByLabelText('System Status'));
+
+    expect(screen.getByText('Intake Status:')).toBeInTheDocument();
+    expect(screen.getByText('Disconnected')).toBeInTheDocument();
+    const indicator = container.querySelector('button[aria-label="System Status"] span.bg-red-500');
     expect(indicator).toBeInTheDocument();
   });
 });

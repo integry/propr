@@ -39,6 +39,8 @@ describe('useHeaderStats system health', () => {
       githubAuth: 'Authenticated',
       claudeAuth: 'Failed',
       indexing: 'Idle',
+      githubEventIntake: 'Routing WebSocket',
+      githubEventIntakeStatus: 'Connected',
       agents: [],
     });
 
@@ -48,5 +50,52 @@ describe('useHeaderStats system health', () => {
 
     expect(result.current.systemHealth.isHealthy).toBe(true);
     expect(result.current.systemHealth.agents).toEqual([]);
+  });
+
+  it('surfaces the intake method and status and flags a disconnected intake as unhealthy', async () => {
+    vi.mocked(getQueueStats).mockResolvedValue({ active: 0, waiting: 0, completed: 0, failed: 0, delayed: 0, paused: 0 });
+    vi.mocked(getDrafts).mockResolvedValue({ drafts: [] } as never);
+    vi.mocked(getTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(getSystemStatus).mockResolvedValue({
+      daemon: 'Running',
+      workers: [{ id: 1, status: 'active' }],
+      redis: 'Connected',
+      githubAuth: 'Authenticated',
+      claudeAuth: 'Failed',
+      indexing: 'Idle',
+      githubEventIntake: 'Routing WebSocket',
+      githubEventIntakeStatus: 'Disconnected',
+      agents: [],
+    });
+
+    const { result } = renderHook(() => useHeaderStats());
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.systemHealth.githubEventIntake).toBe('Routing WebSocket');
+    expect(result.current.systemHealth.githubEventIntakeStatus).toBe('Disconnected');
+    expect(result.current.systemHealth.isHealthy).toBe(false);
+  });
+
+  it('treats a missing intake status as neutral for backward compatibility', async () => {
+    vi.mocked(getQueueStats).mockResolvedValue({ active: 0, waiting: 0, completed: 0, failed: 0, delayed: 0, paused: 0 });
+    vi.mocked(getDrafts).mockResolvedValue({ drafts: [] } as never);
+    vi.mocked(getTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(getSystemStatus).mockResolvedValue({
+      daemon: 'Running',
+      workers: [{ id: 1, status: 'active' }],
+      redis: 'Connected',
+      githubAuth: 'Authenticated',
+      claudeAuth: 'Failed',
+      indexing: 'Idle',
+      agents: [],
+    } as never);
+
+    const { result } = renderHook(() => useHeaderStats());
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.systemHealth.githubEventIntakeStatus).toBe('Unknown');
+    expect(result.current.systemHealth.isHealthy).toBe(true);
   });
 });

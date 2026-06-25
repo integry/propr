@@ -238,6 +238,76 @@ test('/api/status reports resolved auth mode and event intake mode', async () =>
   // resolves to 'none' and the intake mode defaults to routing_websocket.
   assert.equal(body.githubAuthMode, 'none');
   assert.equal(body.githubEventIntake, 'routing_websocket');
+  // With no routing state published, the default routing_websocket path is
+  // reported as disconnected so a missing relay surfaces as unhealthy.
+  assert.equal(body.githubEventIntakeStatus, 'disconnected');
+});
+
+test('/api/status reports connected intake status when routing state is live', async () => {
+  const routingState = {
+    connected: true,
+    routingUrl: 'wss://routing.example',
+    lastDeliveryId: 'd-1',
+    lastAckAt: '2026-06-21T03:00:00.000Z',
+  };
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) =>
+      key === 'system:status:routing' ? JSON.stringify(routingState) : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  assert.equal(body.githubEventIntake, 'routing_websocket');
+  assert.equal(body.githubEventIntakeStatus, 'connected');
+});
+
+test('/api/status reports disconnected intake status when routing state is down', async () => {
+  const routingState = {
+    connected: false,
+    routingUrl: 'wss://routing.example',
+    lastDeliveryId: null,
+    lastAckAt: null,
+  };
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) =>
+      key === 'system:status:routing' ? JSON.stringify(routingState) : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+
+  assert.equal(body.githubEventIntakeStatus, 'disconnected');
+});
+
+test('/api/status reports active intake status for polling when the daemon is running', async () => {
+  const body = await readStatus({}, () => {
+    process.env.GITHUB_EVENT_INTAKE_MODE = 'polling';
+  });
+
+  assert.equal(body.githubEventIntake, 'polling');
+  // The daemon heartbeat is fresh in the test redis stub, so the daemon-driven
+  // polling path is active.
+  assert.equal(body.githubEventIntakeStatus, 'active');
+});
+
+test('/api/status reports disconnected intake status for polling when the daemon is stopped', async () => {
+  const redisClient = {
+    ping: async () => 'PONG',
+    // A stale daemon heartbeat (epoch 0) marks the daemon stopped, so the
+    // daemon-driven polling path is reported disconnected.
+    get: async (key: string) => (key === 'system:status:routing' ? null : '0'),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never }, () => {
+    process.env.GITHUB_EVENT_INTAKE_MODE = 'direct_webhook';
+  });
+
+  assert.equal(body.githubEventIntake, 'direct_webhook');
+  assert.equal(body.githubEventIntakeStatus, 'disconnected');
 });
 
 test('/api/status includes routing state published by the daemon', async () => {
@@ -343,6 +413,7 @@ test('/api/status reports demo auth mode in demo mode', async () => {
 
   assert.equal(body().githubAuthMode, 'demo');
   assert.equal(body().githubEventIntake, 'routing_websocket');
+  assert.equal(body().githubEventIntakeStatus, 'connected');
 });
 
 test('/api/status maps indexing queue states', async () => {

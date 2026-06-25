@@ -71,6 +71,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
           githubAuth: 'connected',
           githubAuthMode: 'demo',
           githubEventIntake: resolveIntakeMode(),
+          githubEventIntakeStatus: 'connected',
           claudeAuth: 'connected',
           indexing: 'idle',
           warnings: [],
@@ -124,7 +125,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       status.githubAuth = (authMode === 'app' || authMode === 'relay' || authMode === 'demo')
         ? 'connected'
         : 'disconnected';
-      status.githubEventIntake = resolveIntakeMode();
+      const intakeMode = resolveIntakeMode();
+      status.githubEventIntake = intakeMode;
 
       // Routing WebSocket runtime state, published to Redis by the daemon when the
       // default routing_websocket intake path is active. Included only when present
@@ -133,6 +135,11 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       if (routing) {
         status.routing = routing;
       }
+
+      // The intake status is a stable, mode-aware health signal for the active
+      // GitHub event delivery path so operators can tell a healthy intake from a
+      // stalled one independent of the intake method name.
+      status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
 
       const agents = await getCachedAgentStatuses();
       status.agents = agents;
@@ -195,6 +202,31 @@ function resolveIntakeMode(): GithubEventIntakeMode | 'unknown' {
     }).mode;
   } catch {
     return 'unknown';
+  }
+}
+
+// Maps the resolved intake mode and the runtime signals it depends on into a
+// single health value. The three intake paths are healthy in different ways:
+//   routing_websocket — healthy only when the daemon has published a live,
+//                       connected routing state; missing or disconnected state
+//                       is unhealthy so a stalled relay surfaces immediately.
+//   polling / direct_webhook — driven by the daemon process, so they are active
+//                       while the daemon heartbeat is fresh and disconnected
+//                       once it goes stale.
+// An unknown/misconfigured mode reports 'unknown' rather than guessing a health.
+function resolveIntakeStatus(
+  mode: GithubEventIntakeMode | 'unknown',
+  routing: RoutingState | undefined,
+  daemonStatus: unknown
+): ServiceStatus {
+  switch (mode) {
+    case 'routing_websocket':
+      return routing?.connected ? 'connected' : 'disconnected';
+    case 'polling':
+    case 'direct_webhook':
+      return daemonStatus === 'running' ? 'active' : 'disconnected';
+    default:
+      return 'unknown';
   }
 }
 
