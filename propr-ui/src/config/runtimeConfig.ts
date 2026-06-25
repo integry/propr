@@ -26,6 +26,23 @@ declare global {
 const runtimeConfig: ProprRuntimeConfig =
   (typeof window !== 'undefined' && window.__PROPR_CONFIG__) || {};
 
+// On a hosted (non-localhost) origin the bundle expects `config.js` to have run
+// first and populated window.__PROPR_CONFIG__. If it is missing, the app falls
+// back to same-origin API calls — which is wrong for the hosted UI (it must
+// target a per-instance proxy) and produces confusing failures. Surface a one-
+// time warning to aid debugging; local development (no config.js) is exempt.
+if (typeof window !== 'undefined' && !window.__PROPR_CONFIG__) {
+  const { hostname } = window.location;
+  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+  if (!isLocalhost) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
+        'Falling back to same-origin API calls, which will not reach the per-instance proxy.'
+    );
+  }
+}
+
 /**
  * Resolve the base URL used for both REST API calls and the Socket.IO
  * connection so they always target the same origin. Returns an empty string

@@ -184,14 +184,24 @@ test('worker API_PUBLIC_URL aligns with the proxy URL in tunnel mode', () => {
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
 
-test('only the tunnel sidecar receives PROPR_UI_TUNNEL_TOKEN', () => {
+test('only the tunnel sidecar receives the token, via cloudflared TUNNEL_TOKEN', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',
     PROPR_INSTANCE_ID: 'abc123',
   }, { manifestPath });
-  const { args } = buildServiceSpec(cfg, 'tunnel');
+  const spec = buildServiceSpec(cfg, 'tunnel');
 
-  assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), ['secret-token']);
+  // cloudflared reads its token from TUNNEL_TOKEN, not PROPR_UI_TUNNEL_TOKEN.
+  assert.deepEqual(envValues(spec.args, 'TUNNEL_TOKEN'), ['secret-token']);
+  assert.deepEqual(envValues(spec.args, 'PROPR_UI_TUNNEL_TOKEN'), []);
+  // The token must not appear in the container argv (visible via docker inspect).
+  assert.ok(!spec.command.includes('--token'));
+  assert.ok(!spec.command.includes('secret-token'));
+});
+
+test('buildServiceSpec throws for a tunnel without a token', () => {
+  const cfg = resolveConfig({ PROPR_UI_TUNNEL_ENABLED: 'true' }, { manifestPath });
+  assert.throws(() => buildServiceSpec(cfg, 'tunnel'), /PROPR_UI_TUNNEL_TOKEN is not set/);
 });
 
 test('PROPR_UI_TUNNEL_TOKEN alone enables the tunnel', () => {
@@ -355,6 +365,43 @@ test('validateEnv accepts a derived public URL from the instance id', () => {
 
   assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
   assert.deepEqual(validateEnv(cfg).errors, []);
+});
+
+test('validateEnv warns when the tunnel is enabled but no public URL is derivable', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const base = {
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  };
+
+  // Missing instance id and no explicit URL.
+  const missing = resolveConfig(base, { manifestPath });
+  assert.deepEqual(validateEnv(missing).errors, []);
+  assert.match(validateEnv(missing).warnings.join('\n'), /neither PROPR_INSTANCE_ID nor PROPR_UI_PUBLIC_API_URL/);
+
+  // Invalid (non-DNS-label) instance id and no explicit URL.
+  const invalid = resolveConfig({ ...base, PROPR_INSTANCE_ID: 'not a label' }, { manifestPath });
+  assert.equal(invalid.uiPublicApiUrl, undefined);
+  assert.match(validateEnv(invalid).warnings.join('\n'), /not a valid DNS label/);
+
+  // An explicit public URL silences the warning even with an invalid id.
+  const explicit = resolveConfig(
+    { ...base, PROPR_INSTANCE_ID: 'not a label', PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com' },
+    { manifestPath },
+  );
+  assert.deepEqual(validateEnv(explicit).warnings.filter((w) => /proxy URL/.test(w)), []);
+});
+
+test('derived proxy URL lowercases a mixed-case instance id', () => {
+  const cfg = resolveConfig({ PROPR_UI_TUNNEL_TOKEN: 'secret-token', PROPR_INSTANCE_ID: 'AbC123' }, { manifestPath });
+  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
 });
 
 test('launcher config does not stat host bind paths inside the launcher container', () => {

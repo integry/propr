@@ -68,10 +68,11 @@ export function isValidProprInstanceId(instanceId: string | undefined | null): b
  * for instance id `abc123`. Returns `undefined` for a missing/blank id — or an
  * id that is not a valid DNS label (see {@link isValidProprInstanceId}) — so
  * callers can fall back to an explicit URL or a local-development default
- * rather than emitting a malformed hostname.
+ * rather than emitting a malformed hostname. The id is lowercased so a
+ * mixed-case instance id yields a canonical hostname (DNS is case-insensitive).
  */
 export function proprInstanceProxyUrl(instanceId: string | undefined | null): string | undefined {
   const id = (instanceId ?? '').trim();
   if (!isValidProprInstanceId(id)) return undefined;
-  return `https://${id}.${PROPR_UI_PROXY_SUFFIX}`;
+  return `https://${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
 }

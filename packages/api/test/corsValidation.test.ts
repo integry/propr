@@ -51,6 +51,15 @@ test('CORS allows COOKIE_DOMAIN subdomains for preview environments', () => {
   assert.equal(isAllowed(validate, 'https://other.example.org'), false);
 });
 
+test('CORS rejects insecure (http) COOKIE_DOMAIN origins', () => {
+  // Cookie-domain sessions ride secure cookies, so an http:// look-alike on the
+  // same domain must not be trusted even though the hostname matches.
+  const validate = createCorsOriginValidator('https://app.example.com', '.example.com');
+
+  assert.equal(isAllowed(validate, 'http://pr-1.example.com'), false);
+  assert.equal(isAllowed(validate, 'http://example.com'), false);
+});
+
 test('CORS validator factory throws on an invalid FRONTEND_URL', () => {
   assert.throws(() => createCorsOriginValidator('not-a-url', undefined));
 });

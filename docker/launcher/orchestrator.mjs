@@ -48,11 +48,12 @@ export function isValidProprInstanceId(instanceId) {
 
 // Derive the per-instance public API/UI URL (https://<instanceId>.proxy.propr.dev)
 // from an instance id; returns undefined for a missing/blank or invalid id (so a
-// malformed hostname is never emitted). Mirrors proprInstanceProxyUrl() in
-// packages/shared/src/proprServiceUrls.ts.
+// malformed hostname is never emitted). The id is lowercased so a mixed-case
+// PROPR_INSTANCE_ID yields a canonical hostname (DNS is case-insensitive).
+// Mirrors proprInstanceProxyUrl() in packages/shared/src/proprServiceUrls.ts.
 export function proprInstanceProxyUrl(instanceId) {
     const id = (instanceId ?? '').trim();
-    return isValidProprInstanceId(id) ? `https://${id}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
+    return isValidProprInstanceId(id) ? `https://${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
 }
 
 // Broad truthy parse for env flags, mirroring parseTruthyEnvValue() in
@@ -823,15 +824,24 @@ export function buildServiceSpec(cfg, service) {
         case 'docs':
             return { image: cfg.images.docs, args: ['-p', `${cfg.docsPort}:3000`] };
         case 'tunnel':
+            // The tunnel sidecar cannot authenticate without a token. Callers via
+            // the CLI validate this up front (validateEnv / `propr tunnel on`), but
+            // make the invariant local so a direct buildServiceSpec/startService
+            // call fails clearly instead of emitting a malformed `docker run`.
+            if (!cfg.uiTunnelToken) {
+                throw new Error('cannot build the tunnel service spec: PROPR_UI_TUNNEL_TOKEN is not set (the cloudflared sidecar needs a token to authenticate).');
+            }
             // Optional Cloudflare Tunnel sidecar running the official cloudflared
             // image (its entrypoint is `cloudflared`). It dials out to Cloudflare's
-            // edge, so no local ports are published. The token is injected only
-            // here — no other container receives PROPR_UI_TUNNEL_TOKEN — and is
-            // also passed on the run command so cloudflared authenticates the run.
+            // edge, so no local ports are published. cloudflared reads its token
+            // from the TUNNEL_TOKEN env var, so we pass it that way and omit the
+            // command-line `--token`: the literal token then stays out of the
+            // container's argv (which is visible via `docker inspect`/`ps`). The
+            // token is injected only here — no other container receives it.
             return {
                 image: cfg.cloudflaredImage,
-                args: ['-e', `PROPR_UI_TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
-                command: ['tunnel', '--no-autoupdate', 'run', '--token', cfg.uiTunnelToken],
+                args: ['-e', `TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
+                command: ['tunnel', '--no-autoupdate', 'run'],
             };
         default:
             throw new Error(`unknown service: ${service}`);
@@ -1156,6 +1166,18 @@ export function getServiceState(cfg, service) {
 // a 2xx response, false on any non-2xx / network error / timeout. Never throws:
 // tunnel reachability is a diagnostic, not a gate, so a slow or down proxy must
 // not fail `propr status`.
+// True for a well-formed http(s) URL. Used to skip probing/advertising a
+// malformed PROPR_UI_PUBLIC_API_URL (validateEnv flags it, but a programmatic
+// caller may have skipped validation).
+function isValidHttpUrl(value) {
+    try {
+        const { protocol } = new URL(value);
+        return protocol === 'http:' || protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
 async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
     const base = publicApiUrl.replace(/\/+$/, '');
     const controller = new AbortController();
@@ -1188,9 +1210,10 @@ export async function getTunnelStatus(cfg, stackStatus) {
     const tunnel = status.services.find((s) => s.service === 'tunnel');
     const publicApiUrl = cfg.uiPublicApiUrl ?? null;
     // Only spend up to ~3s on the external probe when the tunnel is actually
-    // enabled — a configured instance id with the tunnel off should not make
-    // `propr status` wait on an irrelevant cross-internet check.
-    const reachable = (cfg.uiTunnelEnabled && publicApiUrl)
+    // enabled and the public URL is a well-formed http(s) URL — a configured
+    // instance id with the tunnel off should not make `propr status` wait on an
+    // irrelevant cross-internet check, and a malformed URL has nothing to probe.
+    const reachable = (cfg.uiTunnelEnabled && publicApiUrl && isValidHttpUrl(publicApiUrl))
         ? await probeTunnelReachable(publicApiUrl)
         : null;
     return {
@@ -1320,6 +1343,20 @@ export function validateEnv(cfg) {
     // persisted `propr tunnel on` override.
     if (cfg.uiTunnelEnabled && !cfg.uiTunnelToken) {
         errors.push('The UI tunnel is enabled (via PROPR_UI_TUNNEL_ENABLED=true or `propr tunnel on`) but PROPR_UI_TUNNEL_TOKEN is not set. Set PROPR_UI_TUNNEL_TOKEN to your Cloudflare Tunnel token, or disable the tunnel with `propr tunnel off` (or by unsetting PROPR_UI_TUNNEL_ENABLED).');
+    }
+
+    // Tunnel enabled but no public URL is known (cfg.uiPublicApiUrl is the
+    // explicit PROPR_UI_PUBLIC_API_URL or the id-derived one, so this only trips
+    // when neither yields a value — a missing or non-DNS-label instance id with no
+    // explicit override). The config is then inconsistent (frontendUrl=
+    // https://app.propr.dev but apiPublicUrl falls back to localhost), so warn
+    // rather than silently dropping the id.
+    if (cfg.uiTunnelEnabled && !cfg.uiPublicApiUrl) {
+        warnings.push(
+            cfg.proprInstanceId
+                ? `PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label, so no https://<id>.proxy.propr.dev URL can be derived. The API will advertise its localhost URL while the frontend points at the hosted UI. Set a valid instance id (1–63 letters/digits/hyphens, no leading/trailing hyphen) or an explicit PROPR_UI_PUBLIC_API_URL.`
+                : 'The UI tunnel is enabled but neither PROPR_INSTANCE_ID nor PROPR_UI_PUBLIC_API_URL is set, so no public proxy URL can be derived. The API will advertise its localhost URL. Set PROPR_INSTANCE_ID (preferred) or an explicit PROPR_UI_PUBLIC_API_URL.'
+        );
     }
 
     // A derived public URL is always well-formed, so a malformed value here can

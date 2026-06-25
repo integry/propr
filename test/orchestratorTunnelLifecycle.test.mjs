@@ -56,7 +56,10 @@ describe('tunnel sidecar launch spec (no Docker)', () => {
     const spec = buildServiceSpec(cfg, 'tunnel');
 
     assert.equal(spec.image, cfg.cloudflaredImage);
-    assert.deepEqual(spec.command, ['tunnel', '--no-autoupdate', 'run', '--token', 'secret-token']);
+    // The token is supplied via the TUNNEL_TOKEN env var (which cloudflared
+    // reads), so it stays out of the command-line argv.
+    assert.deepEqual(spec.command, ['tunnel', '--no-autoupdate', 'run']);
+    assert.ok(spec.args.includes('TUNNEL_TOKEN=secret-token'));
   });
 
   test('honors an overridden cloudflared image for the sidecar', () => {

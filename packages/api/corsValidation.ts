@@ -25,8 +25,14 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
     }
     try {
       const url = new URL(origin);
-      // Allow the base domain and any subdomain
-      if (baseDomain && (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain))) {
+      // Allow the base domain and any subdomain. Cookie-domain sessions are
+      // secure cookies, so require https here (except localhost, handled below)
+      // to avoid trusting an http:// look-alike on the same domain.
+      if (
+        baseDomain &&
+        url.protocol === 'https:' &&
+        (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain))
+      ) {
         callback(null, true);
       } else if (url.origin === frontendOrigin) {
         callback(null, true);
