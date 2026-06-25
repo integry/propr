@@ -26,3 +26,35 @@ export const DEFAULT_PROPR_ROUTING_URL = 'wss://webhook.propr.dev';
  * directly to this value.
  */
 export const DEFAULT_PROPR_GH_RELAY_URL = 'https://webhook.propr.dev/v1';
+
+/**
+ * Origin of the hosted Propr UI (https://app.propr.dev). This is where the
+ * managed control plane is served from; a local stack exposes its own UI on a
+ * tunnel under {@link PROPR_UI_PROXY_SUFFIX} so the hosted UI can reach it.
+ */
+export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
+
+/**
+ * DNS suffix for per-instance UI/API tunnel hostnames. Each local stack with an
+ * instance id is reachable at `https://<instanceId>.proxy.propr.dev`, so the
+ * hosted UI at {@link DEFAULT_PROPR_UI_ORIGIN} can discover and address it.
+ */
+export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
+
+/**
+ * Default Cloudflare Tunnel image used to expose the local stack's UI/API to
+ * the hosted control plane when a UI tunnel is enabled.
+ */
+export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+
+/**
+ * Derive the public API/UI URL for a local stack from its instance id, using
+ * the shared {@link PROPR_UI_PROXY_SUFFIX}. Returns `https://abc123.proxy.propr.dev`
+ * for instance id `abc123`. Returns `undefined` for a missing/blank id so
+ * callers can fall back to an explicit URL or a local-development default.
+ */
+export function proprInstanceProxyUrl(instanceId: string | undefined | null): string | undefined {
+  const id = (instanceId ?? '').trim();
+  if (!id) return undefined;
+  return `https://${id}.${PROPR_UI_PROXY_SUFFIX}`;
+}
