@@ -227,7 +227,9 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // plane (https://app.propr.dev) via a Cloudflare Tunnel. A token alone is
     // enough to enable it; PROPR_UI_TUNNEL_ENABLED=true also turns it on.
     const uiTunnelToken = get('PROPR_UI_TUNNEL_TOKEN') || undefined;
-    const uiTunnelEnabled = Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED'));
+    // A persisted CLI toggle (`propr tunnel on|off`) wins over the env-derived
+    // default so `propr start` honors the user's last explicit choice.
+    const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED')));
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a

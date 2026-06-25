@@ -166,6 +166,10 @@ export class ConfigManager {
       sanitized.docsEnabled = data.docsEnabled;
     }
 
+    if (typeof data.tunnelEnabled === "boolean") {
+      sanitized.tunnelEnabled = data.tunnelEnabled;
+    }
+
     return sanitized;
   }
 
@@ -321,6 +325,27 @@ export class ConfigManager {
    */
   async setDocsEnabled(enabled: boolean): Promise<void> {
     await this.set("docsEnabled", enabled);
+  }
+
+  /**
+   * Gets the desired Cloudflare Tunnel service state, or undefined when unset.
+   *
+   * Unlike the UI/docs toggles, the tunnel has no fixed CLI-side default: an
+   * unset value means "defer to the launcher's env-derived default" (a
+   * configured PROPR_UI_TUNNEL_TOKEN or PROPR_UI_TUNNEL_ENABLED=true). Callers
+   * forward this value as an explicit override only when the user has toggled
+   * it, so it must preserve the unset (undefined) state rather than collapsing
+   * it to false.
+   */
+  getTunnelEnabled(): boolean | undefined {
+    return this.get("tunnelEnabled");
+  }
+
+  /**
+   * Sets the desired Cloudflare Tunnel service state.
+   */
+  async setTunnelEnabled(enabled: boolean): Promise<void> {
+    await this.set("tunnelEnabled", enabled);
   }
 
   /**

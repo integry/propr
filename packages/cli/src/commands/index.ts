@@ -22,5 +22,6 @@ export { createImagesCommand } from "./imageCommands.js";
 export { createStartCommand } from "./startCommand.js";
 export { createStackStatusCommand, createStopCommand } from "./stackCommands.js";
 export { createUiCommand, createDocsCommand } from "./uiDocsCommands.js";
+export { createTunnelCommand } from "./tunnelCommand.js";
 export { createTankCommand } from "./tankCommands.js";
 export { createRelayCommand } from "./relayCommands.js";

@@ -222,6 +222,26 @@ test('PROPR_UI_TUNNEL_ENABLED stays disabled for non-truthy values', () => {
   }
 });
 
+test('a persisted uiTunnelEnabled override wins over the env-derived default', () => {
+  // `propr tunnel off` persists tunnelEnabled=false; getHostConfig forwards it
+  // as a uiTunnelEnabled override that must win even when a token is present.
+  const off = resolveConfig(
+    { PROPR_UI_TUNNEL_TOKEN: 'secret-token' },
+    { manifestPath, uiTunnelEnabled: false }
+  );
+  assert.equal(off.uiTunnelEnabled, false);
+  assert.equal(off.uiTunnelToken, 'secret-token');
+
+  // `propr tunnel on` persists tunnelEnabled=true; the override enables it.
+  const on = resolveConfig({}, { manifestPath, uiTunnelEnabled: true });
+  assert.equal(on.uiTunnelEnabled, true);
+});
+
+test('an absent uiTunnelEnabled override falls back to the env-derived default', () => {
+  const cfg = resolveConfig({ PROPR_UI_TUNNEL_TOKEN: 'secret-token' }, { manifestPath });
+  assert.equal(cfg.uiTunnelEnabled, true);
+});
+
 test('PROPR_INSTANCE_ID derives the proxy public API URL when none is explicit', () => {
   const cfg = resolveConfig({ PROPR_INSTANCE_ID: 'abc123' }, { manifestPath });
 

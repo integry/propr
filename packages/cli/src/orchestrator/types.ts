@@ -155,11 +155,11 @@ export interface OrchestratorModule {
   stopService(cfg: OrchestratorConfig, service: string, opts?: { remove?: boolean; onLog?: (line: string) => void }): void;
   startStack(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; onLog?: (line: string) => void }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void }
   ): StackStatus;
   startStackAsync(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; onLog?: (line: string) => void }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void }
   ): Promise<StackStatus>;
   stopStack(
     cfg: OrchestratorConfig,
