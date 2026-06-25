@@ -36,6 +36,11 @@ export interface OrchestratorConfig {
   readonly hostGhPrivateKey?: string;
   readonly mistralApiKey?: string;
   readonly vibeConfigPath?: string;
+  readonly uiTunnelEnabled: boolean;
+  readonly uiTunnelToken?: string;
+  readonly proprInstanceId?: string;
+  readonly uiPublicApiUrl?: string;
+  readonly cloudflaredImage: string;
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
   readonly images: Record<string, string>;
   readonly manifestPath: string;

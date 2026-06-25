@@ -24,6 +24,13 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Mirror of the shared UI tunnel constants in
+// packages/shared/src/proprServiceUrls.ts. The orchestrator core is pure Node
+// stdlib (no transpile / npm install in the launcher image), so it cannot import
+// the TypeScript module — keep these values in sync with that source of truth.
+const PROPR_UI_PROXY_SUFFIX = '.proxy.propr.dev';
+const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+
 // True only for an existing regular file (guards against a path that exists but
 // is a directory, which would make readFileSync throw EISDIR).
 function isReadableFile(path) {
@@ -185,6 +192,24 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // read it without the user having to stage it under data/.
     const hostGhPrivateKey = get('HOST_GH_PRIVATE_KEY');
 
+    // UI tunnel / hosted proxy settings. The hosted UI at app.propr.dev reaches
+    // a local stack through a Cloudflare tunnel; these expose the knobs the
+    // launcher needs to stand it up.
+    const uiTunnelToken = get('PROPR_UI_TUNNEL_TOKEN');
+    // A token alone is enough to enable the tunnel; PROPR_UI_TUNNEL_ENABLED=true
+    // also enables it (e.g. when the token is supplied out of band).
+    const uiTunnelEnabled = (uiTunnelToken !== undefined && uiTunnelToken !== '')
+        || get('PROPR_UI_TUNNEL_ENABLED') === 'true';
+    const proprInstanceId = get('PROPR_INSTANCE_ID');
+    const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || DEFAULT_CLOUDFLARED_IMAGE;
+
+    // Externally reachable API origin used by the hosted UI. Prefer an explicit
+    // PROPR_UI_PUBLIC_API_URL; otherwise derive it from the instance id via the
+    // hosted proxy suffix (abc123 -> https://abc123.proxy.propr.dev). Left
+    // undefined for a purely local stack with neither set.
+    const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL')
+        || (proprInstanceId ? `https://${proprInstanceId}${PROPR_UI_PROXY_SUFFIX}` : undefined);
+
     const manifestPath = overrides.manifestPath ?? resolve(__dirname, 'manifest.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
@@ -206,6 +231,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
         mistralApiKey,
         vibeConfigPath: get('VIBE_CONFIG_PATH'),
+        uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
         manifest, images: manifest.images, manifestPath,
     });
 }
