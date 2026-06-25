@@ -85,6 +85,55 @@ test('empty explicit overrides win over env and defaults', () => {
   assert.equal(cfg.docsPort, '');
 });
 
+test('UI tunnel defaults: disabled, no public API url, default cloudflared image', () => {
+  const cfg = resolveConfig({}, { manifestPath });
+
+  assert.equal(cfg.uiTunnelEnabled, false);
+  assert.equal(cfg.uiTunnelToken, undefined);
+  assert.equal(cfg.proprInstanceId, undefined);
+  assert.equal(cfg.uiPublicApiUrl, undefined);
+  assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:latest');
+  // local-dev defaults stay intact
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  assert.equal(cfg.frontendUrl, 'http://localhost:5173');
+});
+
+test('PROPR_UI_TUNNEL_TOKEN alone enables the tunnel', () => {
+  const cfg = resolveConfig({ PROPR_UI_TUNNEL_TOKEN: 'tok-123' }, { manifestPath });
+
+  assert.equal(cfg.uiTunnelEnabled, true);
+  assert.equal(cfg.uiTunnelToken, 'tok-123');
+});
+
+test('PROPR_UI_TUNNEL_ENABLED=true enables the tunnel without a token', () => {
+  const cfg = resolveConfig({ PROPR_UI_TUNNEL_ENABLED: 'true' }, { manifestPath });
+
+  assert.equal(cfg.uiTunnelEnabled, true);
+  assert.equal(cfg.uiTunnelToken, undefined);
+});
+
+test('PROPR_INSTANCE_ID derives the proxy public API url when none is explicit', () => {
+  const cfg = resolveConfig({ PROPR_INSTANCE_ID: 'abc123' }, { manifestPath });
+
+  assert.equal(cfg.proprInstanceId, 'abc123');
+  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
+});
+
+test('explicit PROPR_UI_PUBLIC_API_URL wins over the instance-id derivation', () => {
+  const cfg = resolveConfig({
+    PROPR_INSTANCE_ID: 'abc123',
+    PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com',
+  }, { manifestPath });
+
+  assert.equal(cfg.uiPublicApiUrl, 'https://custom.example.com');
+});
+
+test('PROPR_CLOUDFLARED_IMAGE overrides the default cloudflared image', () => {
+  const cfg = resolveConfig({ PROPR_CLOUDFLARED_IMAGE: 'cloudflare/cloudflared:2024.1.0' }, { manifestPath });
+
+  assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:2024.1.0');
+});
+
 test('launcher config does not stat host bind paths inside the launcher container', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFileLocal = join(rootDir, '.env');

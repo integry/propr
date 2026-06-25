@@ -26,3 +26,25 @@ export const DEFAULT_PROPR_ROUTING_URL = 'wss://webhook.propr.dev';
  * directly to this value.
  */
 export const DEFAULT_PROPR_GH_RELAY_URL = 'https://webhook.propr.dev/v1';
+
+/**
+ * Origin of the hosted ProPR dashboard (https://app.propr.dev). The single
+ * source of truth for where the hosted UI lives, so the launcher and UI agree
+ * on the public app origin without hard-coding it in multiple places.
+ */
+export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
+
+/**
+ * DNS suffix for per-instance UI tunnel/proxy hostnames. A local stack exposed
+ * through the hosted proxy is reachable at `https://<instance-id>.proxy.propr.dev`,
+ * so a PROPR_INSTANCE_ID of `abc123` resolves to `https://abc123.proxy.propr.dev`.
+ * The leading dot makes `${instanceId}${PROPR_UI_PROXY_SUFFIX}` a valid hostname.
+ */
+export const PROPR_UI_PROXY_SUFFIX = '.proxy.propr.dev';
+
+/**
+ * Default Cloudflare Tunnel (cloudflared) image used to expose the local UI
+ * through the hosted proxy when the UI tunnel is enabled. Overridable via
+ * PROPR_CLOUDFLARED_IMAGE for pinned/air-gapped deployments.
+ */
+export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
