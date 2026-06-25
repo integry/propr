@@ -48,13 +48,27 @@ export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
 export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
 
 /**
+ * Whether an instance id is usable as a single DNS label in the per-instance
+ * proxy hostname (`<id>.proxy.propr.dev`). Enforces the standard label rules:
+ * 1–63 characters, ASCII letters/digits/hyphens only, and no leading or
+ * trailing hyphen. This rejects spaces, slashes, dots, underscores, and other
+ * characters that would produce an invalid or ambiguous hostname.
+ */
+export function isValidProprInstanceId(instanceId: string | undefined | null): boolean {
+  const id = (instanceId ?? '').trim();
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
+}
+
+/**
  * Derive the public API/UI URL for a local stack from its instance id, using
  * the shared {@link PROPR_UI_PROXY_SUFFIX}. Returns `https://abc123.proxy.propr.dev`
- * for instance id `abc123`. Returns `undefined` for a missing/blank id so
- * callers can fall back to an explicit URL or a local-development default.
+ * for instance id `abc123`. Returns `undefined` for a missing/blank id — or an
+ * id that is not a valid DNS label (see {@link isValidProprInstanceId}) — so
+ * callers can fall back to an explicit URL or a local-development default
+ * rather than emitting a malformed hostname.
  */
 export function proprInstanceProxyUrl(instanceId: string | undefined | null): string | undefined {
   const id = (instanceId ?? '').trim();
-  if (!id) return undefined;
+  if (!isValidProprInstanceId(id)) return undefined;
   return `https://${id}.${PROPR_UI_PROXY_SUFFIX}`;
 }

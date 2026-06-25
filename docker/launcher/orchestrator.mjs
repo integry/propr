@@ -28,16 +28,34 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // packages/shared/src/proprServiceUrls.ts (PROPR_UI_PROXY_SUFFIX,
 // DEFAULT_CLOUDFLARED_IMAGE) — kept as plain literals here because this module
 // is dependency-free .mjs (Node stdlib only) and cannot import the TS package.
-// Change one, change the other.
-const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
-const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+// Change one, change the other; test/orchestratorProprUrlsDrift.test.ts guards
+// against the two copies diverging.
+export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
+export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+
+// Whether an instance id is a valid single DNS label for the proxy hostname
+// (<id>.proxy.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
+// leading/trailing hyphen. Mirrors isValidProprInstanceId() in the shared pkg.
+export function isValidProprInstanceId(instanceId) {
+    const id = (instanceId ?? '').trim();
+    return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
+}
 
 // Derive the per-instance public API/UI URL (https://<instanceId>.proxy.propr.dev)
-// from an instance id; returns undefined for a missing/blank id. Mirrors
-// proprInstanceProxyUrl() in packages/shared/src/proprServiceUrls.ts.
-function proprInstanceProxyUrl(instanceId) {
+// from an instance id; returns undefined for a missing/blank or invalid id (so a
+// malformed hostname is never emitted). Mirrors proprInstanceProxyUrl() in
+// packages/shared/src/proprServiceUrls.ts.
+export function proprInstanceProxyUrl(instanceId) {
     const id = (instanceId ?? '').trim();
-    return id ? `https://${id}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
+    return isValidProprInstanceId(id) ? `https://${id}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
+}
+
+// Broad truthy parse for env flags, mirroring parseTruthyEnvValue() in
+// packages/shared/src/demoMode.ts so `1`/`TRUE`/whitespace are accepted like
+// elsewhere in the repo (kept local because this module imports no TS package).
+function parseTruthyEnvValue(value) {
+    const normalized = value?.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1';
 }
 
 // True only for an existing regular file (guards against a path that exists but
@@ -205,7 +223,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // plane (https://app.propr.dev) via a Cloudflare Tunnel. A token alone is
     // enough to enable it; PROPR_UI_TUNNEL_ENABLED=true also turns it on.
     const uiTunnelToken = get('PROPR_UI_TUNNEL_TOKEN') || undefined;
-    const uiTunnelEnabled = Boolean(uiTunnelToken) || get('PROPR_UI_TUNNEL_ENABLED') === 'true';
+    const uiTunnelEnabled = Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED'));
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
