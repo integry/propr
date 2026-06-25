@@ -6,7 +6,7 @@
  * (environment checks, stack scaffolding, image pulls, agent + GitHub
  * configuration, stack startup, whitelist + repo setup, and UI launch).
  *
- * (CI touch: no-op comment to retrigger the pipeline.)
+ * (CI touch: no-op comment to retrigger the pipeline — 2026-06-25.)
  *
  * These types are intentionally free of any rendering concern so the same
  * step/status model can drive an Ink TUI and a plain readline fallback. They
