@@ -31,7 +31,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // import the TS package. Change one, change the other;
 // test/orchestratorProprUrlsDrift.test.ts guards against the copies diverging.
 export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
-export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+// Fallback used only when the manifest has no `cloudflared` entry. Pin it to the
+// same tag the manifest ships (docker/launcher/manifest.json) so the effective
+// default is identical whether it comes from the manifest or this fallback —
+// operator docs can then describe a single, pinned default.
+export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
 
 // Whether an instance id is a valid single DNS label for the proxy hostname
@@ -1128,7 +1132,11 @@ export function parseStackStatus(cfg, stdout) {
         };
     });
 
-    const anyRunning = services.some((s) => s.running);
+    // The stack is "running" only when a core service is up. A lone optional
+    // sidecar (e.g. an orphaned propr-tunnel left over after the core stack
+    // stopped) must not mask the unusable state — otherwise `propr status`
+    // would skip "Stack is not running" while the API is actually down.
+    const anyRunning = services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
     return { stack: cfg.stack, network: cfg.network, running: anyRunning, services };
 }
 
@@ -1179,7 +1187,12 @@ export async function getTunnelStatus(cfg, stackStatus) {
     const status = stackStatus ?? await getStackStatusAsync(cfg);
     const tunnel = status.services.find((s) => s.service === 'tunnel');
     const publicApiUrl = cfg.uiPublicApiUrl ?? null;
-    const reachable = publicApiUrl ? await probeTunnelReachable(publicApiUrl) : null;
+    // Only spend up to ~3s on the external probe when the tunnel is actually
+    // enabled — a configured instance id with the tunnel off should not make
+    // `propr status` wait on an irrelevant cross-internet check.
+    const reachable = (cfg.uiTunnelEnabled && publicApiUrl)
+        ? await probeTunnelReachable(publicApiUrl)
+        : null;
     return {
         enabled: Boolean(cfg.uiTunnelEnabled),
         configured: Boolean(cfg.uiTunnelToken),
@@ -1303,9 +1316,10 @@ export function validateEnv(cfg) {
 
     // The tunnel sidecar cannot authenticate without a token. uiTunnelEnabled is
     // true whenever a token is present, so this only trips when the tunnel was
-    // turned on via PROPR_UI_TUNNEL_ENABLED=true without PROPR_UI_TUNNEL_TOKEN.
+    // turned on without a token — either via PROPR_UI_TUNNEL_ENABLED=true or a
+    // persisted `propr tunnel on` override.
     if (cfg.uiTunnelEnabled && !cfg.uiTunnelToken) {
-        errors.push('The UI tunnel is enabled (PROPR_UI_TUNNEL_ENABLED=true) but PROPR_UI_TUNNEL_TOKEN is not set. Set PROPR_UI_TUNNEL_TOKEN to your Cloudflare Tunnel token, or unset PROPR_UI_TUNNEL_ENABLED to disable the tunnel.');
+        errors.push('The UI tunnel is enabled (via PROPR_UI_TUNNEL_ENABLED=true or `propr tunnel on`) but PROPR_UI_TUNNEL_TOKEN is not set. Set PROPR_UI_TUNNEL_TOKEN to your Cloudflare Tunnel token, or disable the tunnel with `propr tunnel off` (or by unsetting PROPR_UI_TUNNEL_ENABLED).');
     }
 
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);

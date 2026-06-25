@@ -137,8 +137,15 @@ describe('parseStackStatus recognizes propr-tunnel rows', () => {
     assert.equal(mismatched.services.find((s) => s.service === 'tunnel').exists, false);
   });
 
-  test('a running tunnel alone marks the whole stack as running', () => {
+  test('a running tunnel alone does NOT mark the whole stack as running', () => {
+    // An orphaned tunnel sidecar (core services down) must not hide the
+    // unusable state — `propr status` should still report the stack as down.
     const stdout = psRow({ name: 'propr-tunnel', state: 'running', status: 'Up 1 minute' });
+    assert.equal(parseStackStatus(cfg, stdout).running, false);
+  });
+
+  test('a running core service marks the whole stack as running', () => {
+    const stdout = psRow({ name: 'propr-api', state: 'running', status: 'Up 1 minute' });
     assert.equal(parseStackStatus(cfg, stdout).running, true);
   });
 });

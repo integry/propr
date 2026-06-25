@@ -272,7 +272,7 @@ Set these in the stack `.env`. Replace `abc123` with your instance id (a valid D
 PROPR_UI_TUNNEL_TOKEN=your_cloudflare_tunnel_token   # Cloudflare Tunnel token; required to start. Setting it makes the tunnel start on the next `propr start`
 PROPR_INSTANCE_ID=abc123                             # this stack's instance id; valid DNS label (letters, digits, hyphens; 1-63 chars). Derives https://abc123.proxy.propr.dev
 PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev   # explicit public API URL the hosted UI talks to (overrides the derived one)
-PROPR_CLOUDFLARED_IMAGE=cloudflare/cloudflared:latest    # cloudflared image (default shown)
+PROPR_CLOUDFLARED_IMAGE=cloudflare/cloudflared:2024.12.2 # cloudflared image; overrides the manifest-pinned default shown
 
 # Browser vs API origins (see Architecture above). In tunnel mode FRONTEND_URL
 # and API_PUBLIC_URL are DERIVED automatically — set them only to override.
@@ -288,10 +288,11 @@ API_PUBLIC_URL=https://abc123.proxy.propr.dev
 # OAuth App.
 GH_OAUTH_CALLBACK_URL=https://abc123.proxy.propr.dev/api/auth/github/callback
 
-# COOKIE_DOMAIN: leave UNSET for v1. The session cookie is host-only on the
-# proxy host — correct because app.propr.dev and <id>.proxy.propr.dev share the
-# propr.dev registrable domain (same-site).
-COOKIE_DOMAIN=
+# COOKIE_DOMAIN: leave UNSET for v1 (keep the line commented out — an empty
+# `COOKIE_DOMAIN=` is not guaranteed to be treated as absent). The session
+# cookie is then host-only on the proxy host — correct because app.propr.dev and
+# <id>.proxy.propr.dev share the propr.dev registrable domain (same-site).
+# COOKIE_DOMAIN=
 ```
 
 `PROPR_INSTANCE_ID` derives the public URL `https://<id>.proxy.propr.dev` automatically, so `PROPR_UI_PUBLIC_API_URL` is only needed to override it. The browser origin and the API host are **different** hosts, so set them accordingly:

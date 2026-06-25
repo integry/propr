@@ -91,7 +91,7 @@ Starting the tunnel always requires a configured token. Set these in your stack 
 | `PROPR_UI_TUNNEL_ENABLED` | Explicitly enable the tunnel (`true`/`1`). A **token is still required** — `propr check` fails if this is set without `PROPR_UI_TUNNEL_TOKEN`. Redundant when a token is set, since a token alone already enables the tunnel |
 | `PROPR_INSTANCE_ID` | This stack's instance id; must be a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://<id>.proxy.propr.dev` when no explicit URL is set |
 | `PROPR_UI_PUBLIC_API_URL` | Explicit public API URL the hosted UI talks to, overriding the derived one |
-| `PROPR_CLOUDFLARED_IMAGE` | cloudflared image (default `cloudflare/cloudflared:latest`) |
+| `PROPR_CLOUDFLARED_IMAGE` | cloudflared image. Overrides the version pinned in the stack manifest (currently `cloudflare/cloudflared:2024.12.2`) |
 
 **Enablement, step by step.** With no token and no flag the tunnel is off. Setting `PROPR_UI_TUNNEL_TOKEN` enables it by default, so the next `propr start` (or a restart) starts the sidecar — you do not have to run `propr tunnel on` first. Running `propr tunnel on|off` records an explicit choice in the CLI config that **overrides** the token-derived default and is honored by later `propr start`/restarts; `propr tunnel on` also starts the sidecar immediately on an already-running stack without waiting for a restart, and `propr tunnel off` stops it even while a token remains set.
 

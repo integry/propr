@@ -43,9 +43,12 @@ export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
 
 /**
  * Default Cloudflare Tunnel image used to expose the local stack's UI/API to
- * the hosted control plane when a UI tunnel is enabled.
+ * the hosted control plane when a UI tunnel is enabled. This is only a fallback:
+ * the launcher prefers the `cloudflared` entry pinned in the stack manifest
+ * (docker/launcher/manifest.json). Keep this tag in sync with that manifest pin
+ * so the effective default is the same regardless of which source supplies it.
  */
-export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 
 /**
  * Whether an instance id is usable as a single DNS label in the per-instance

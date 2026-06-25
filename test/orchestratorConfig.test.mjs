@@ -275,9 +275,9 @@ test('PROPR_CLOUDFLARED_IMAGE overrides the manifest cloudflared image', () => {
 test('cloudflared image is pinned from the manifest by default', () => {
   const cfg = resolveConfig({}, { manifestPath });
 
-  // The manifest entry must win over DEFAULT_CLOUDFLARED_IMAGE (":latest").
+  // The resolved image comes from the manifest's pinned `cloudflared` entry.
   assert.equal(cfg.cloudflaredImage, cfg.images.cloudflared);
-  assert.notEqual(cfg.cloudflaredImage, 'cloudflare/cloudflared:latest');
+  assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:2024.12.2');
 });
 
 test('tunnel is part of the optional service registry', () => {
