@@ -71,7 +71,11 @@ const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
 function parsePositiveIntegerEnv(name: string): number | undefined {
     const value = process.env[name];
     if (!value) return undefined;
-    const parsed = Number.parseInt(value, 10);
+    const trimmed = value.trim();
+    // Require a whole-string positive integer so values like `50abc` or `1.5`
+    // are rejected rather than silently coerced to `50`/`1`.
+    if (!/^\d+$/.test(trimmed)) return undefined;
+    const parsed = Number.parseInt(trimmed, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
