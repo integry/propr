@@ -5,7 +5,19 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { resolveConfig, resolveHostConfig, validateEnv, SERVICES, TOGGLE_SERVICES } from '../docker/launcher/orchestrator.mjs';
+import { resolveConfig, resolveHostConfig, validateEnv, buildServiceSpec, SERVICES, TOGGLE_SERVICES } from '../docker/launcher/orchestrator.mjs';
+
+// Collect the values of `-e NAME=value` pairs for a given env var name from a
+// service spec's docker run args.
+function envValues(args, name) {
+  const values = [];
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === '-e' && args[i + 1].startsWith(`${name}=`)) {
+      values.push(args[i + 1].slice(name.length + 1));
+    }
+  }
+  return values;
+}
 
 const manifestPath = fileURLToPath(new URL('../docker/launcher/manifest.json', import.meta.url));
 
@@ -97,6 +109,89 @@ test('UI tunnel is disabled by default with local-development URL defaults intac
   assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
   assert.equal(cfg.frontendUrl, 'http://localhost:5173');
   assert.equal(cfg.cookieDomain, undefined);
+});
+
+test('enabling the tunnel points API_PUBLIC_URL at the proxy URL and FRONTEND_URL at the hosted UI origin', () => {
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+  }, { manifestPath });
+
+  assert.equal(cfg.uiTunnelEnabled, true);
+  assert.equal(cfg.apiPublicUrl, 'https://abc123.proxy.propr.dev');
+  assert.equal(cfg.frontendUrl, 'https://app.propr.dev');
+});
+
+test('explicit API_PUBLIC_URL / FRONTEND_URL still win over tunnel-derived values', () => {
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+    API_PUBLIC_URL: 'https://api.example.com',
+    FRONTEND_URL: 'https://ui.example.com',
+  }, { manifestPath });
+
+  assert.equal(cfg.apiPublicUrl, 'https://api.example.com');
+  assert.equal(cfg.frontendUrl, 'https://ui.example.com');
+});
+
+test('tunnel enabled without a derivable public URL keeps the localhost API default', () => {
+  // Enabled via the flag but no instance id / explicit URL ⇒ no proxy URL to
+  // advertise, so the localhost default stands rather than a malformed value.
+  const cfg = resolveConfig({ PROPR_UI_TUNNEL_ENABLED: 'true', API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
+
+  assert.equal(cfg.uiTunnelEnabled, true);
+  assert.equal(cfg.uiPublicApiUrl, undefined);
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  // The frontend still resolves to the hosted UI origin in tunnel mode.
+  assert.equal(cfg.frontendUrl, 'https://app.propr.dev');
+});
+
+test('api container propagates the tunnel PROPR_UI_* env without the tunnel token', () => {
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'api');
+
+  assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['https://abc123.proxy.propr.dev']);
+  assert.deepEqual(envValues(args, 'FRONTEND_URL'), ['https://app.propr.dev']);
+  assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['true']);
+  assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), ['abc123']);
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
+  // The tunnel token must never reach the API container.
+  assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
+});
+
+test('api container reports the tunnel disabled and omits optional PROPR_* vars in local development', () => {
+  const cfg = resolveConfig({ API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'api');
+
+  assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['false']);
+  assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), []);
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), []);
+  assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['http://localhost:4000']);
+});
+
+test('worker API_PUBLIC_URL aligns with the proxy URL in tunnel mode', () => {
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'worker');
+
+  assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['https://abc123.proxy.propr.dev']);
+  // The worker never receives the tunnel token either.
+  assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
+});
+
+test('only the tunnel sidecar receives PROPR_UI_TUNNEL_TOKEN', () => {
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'tunnel');
+
+  assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), ['secret-token']);
 });
 
 test('PROPR_UI_TUNNEL_TOKEN alone enables the tunnel', () => {

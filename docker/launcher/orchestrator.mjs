@@ -26,12 +26,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Hosted UI tunnel naming. These mirror the shared TypeScript constants in
 // packages/shared/src/proprServiceUrls.ts (PROPR_UI_PROXY_SUFFIX,
-// DEFAULT_CLOUDFLARED_IMAGE) — kept as plain literals here because this module
-// is dependency-free .mjs (Node stdlib only) and cannot import the TS package.
-// Change one, change the other; test/orchestratorProprUrlsDrift.test.ts guards
-// against the two copies diverging.
+// DEFAULT_CLOUDFLARED_IMAGE, DEFAULT_PROPR_UI_ORIGIN) — kept as plain literals
+// here because this module is dependency-free .mjs (Node stdlib only) and cannot
+// import the TS package. Change one, change the other;
+// test/orchestratorProprUrlsDrift.test.ts guards against the copies diverging.
 export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
 export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
 
 // Whether an instance id is a valid single DNS label for the proxy hostname
 // (<id>.proxy.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
@@ -249,9 +250,14 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
         uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
-        // misc -e overrides the launcher computed from ports/env
-        apiPublicUrl: get('API_PUBLIC_URL') || `http://localhost:${apiPort}`,
-        frontendUrl: get('FRONTEND_URL') || `http://localhost:${uiPort}`,
+        // misc -e overrides the launcher computed from ports/env. When the UI
+        // tunnel is enabled the API/worker must advertise the public proxy URL
+        // (OAuth/session redirects, attachment links, browser-visible API refs)
+        // and the frontend must point at the hosted UI origin. An explicit
+        // API_PUBLIC_URL / FRONTEND_URL still wins; otherwise tunnel mode derives
+        // them, falling back to the localhost defaults for local development.
+        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl) || `http://localhost:${apiPort}`,
+        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiPort}`,
         ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || `http://localhost:${apiPort}/api/auth/github/callback`,
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
@@ -338,6 +344,18 @@ function vibePromptCacheArgs(cfg) {
         '-e', `HOST_VIBE_PROMPT_CACHE_DIR=${cfg.hostVibePromptCacheDir}`,
         '-e', 'VIBE_PROMPT_CACHE_HOST_MOUNTED=1',
     ];
+}
+
+// Tunnel-related env propagated into the API container for status/debugging and
+// future Connect support. PROPR_UI_TUNNEL_TOKEN is deliberately NOT among these
+// — only the cloudflared sidecar receives the token. The instance id and public
+// API URL are injected only when set, so local-development containers (no tunnel)
+// stay free of empty PROPR_* vars while still always reporting the enabled flag.
+function tunnelApiEnvArgs(cfg) {
+    const args = ['-e', `PROPR_UI_TUNNEL_ENABLED=${cfg.uiTunnelEnabled ? 'true' : 'false'}`];
+    if (cfg.proprInstanceId) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId}`);
+    if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
+    return args;
 }
 
 // Validates host bind-mount paths for Linux deployments. ':' rejection prevents
@@ -739,7 +757,7 @@ function appSpec(cfg, command, extraArgs = []) {
 }
 
 // Returns { image, args, command? } for a canonical service name.
-function buildServiceSpec(cfg, service) {
+export function buildServiceSpec(cfg, service) {
     switch (service) {
         case 'redis': {
             const args = ['-v', `${cfg.stack}-redis-data:/data`];
@@ -792,6 +810,7 @@ function buildServiceSpec(cfg, service) {
                 '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
                 '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
+                ...tunnelApiEnvArgs(cfg),
             ]);
         case 'ui':
             return { image: cfg.images.ui, args: ['-p', `${cfg.uiPort}:5173`] };
