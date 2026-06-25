@@ -3,7 +3,7 @@
  * `propr start` TUI's non-TTY fallback.
  */
 
-import type { StackStatus, ServiceState } from "./types.js";
+import type { StackStatus, ServiceState, TunnelStatus } from "./types.js";
 
 export function stateGlyph(s: ServiceState): string {
   if (!s.exists) return "·";
@@ -30,5 +30,24 @@ export function renderStatusTable(status: StackStatus): string {
   for (const s of status.services) {
     lines.push(formatServiceRow(s, nameWidth));
   }
+  return lines.join("\n");
+}
+
+/** A yes/no/unknown glyph+label for a tri-state tunnel field. */
+function tunnelFlag(value: boolean | null): string {
+  if (value === null) return "· unknown";
+  return value ? "● yes" : "○ no";
+}
+
+/** Tunnel diagnostics section as a string (see TunnelStatus). */
+export function renderTunnelSection(t: TunnelStatus): string {
+  const lines: string[] = [];
+  lines.push("Tunnel");
+  lines.push("─".repeat(60));
+  lines.push(`  enabled       ${tunnelFlag(t.enabled)}`);
+  lines.push(`  configured    ${tunnelFlag(t.configured)}`);
+  lines.push(`  running       ${tunnelFlag(t.running)}`);
+  lines.push(`  public URL    ${t.publicApiUrl ?? "—"}`);
+  lines.push(`  reachable     ${tunnelFlag(t.reachable)}`);
   return lines.join("\n");
 }

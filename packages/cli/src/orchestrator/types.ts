@@ -65,6 +65,20 @@ export interface StackStatus {
   services: ServiceState[];
 }
 
+/** Hosted UI tunnel diagnostics surfaced by `propr status`. */
+export interface TunnelStatus {
+  /** Tunnel turned on by resolved config (token present or explicit flag). */
+  enabled: boolean;
+  /** A tunnel token is present. */
+  configured: boolean;
+  /** The cloudflared sidecar container is running. */
+  running: boolean;
+  /** Expected public proxy URL, or null when it cannot be derived. */
+  publicApiUrl: string | null;
+  /** Best-effort <publicApiUrl>/health probe; null when there is no URL to probe. */
+  reachable: boolean | null;
+}
+
 /** Result of validating host paths / vibe settings. */
 export interface ValidationResult {
   ok: boolean;
@@ -154,6 +168,7 @@ export interface OrchestratorModule {
 
   getStackStatus(cfg: OrchestratorConfig): StackStatus;
   getStackStatusAsync(cfg: OrchestratorConfig): Promise<StackStatus>;
+  getTunnelStatus(cfg: OrchestratorConfig, stackStatus?: StackStatus): Promise<TunnelStatus>;
   getServiceState(cfg: OrchestratorConfig, service: string): ServiceState | undefined;
   getServiceLogs(
     cfg: OrchestratorConfig,
