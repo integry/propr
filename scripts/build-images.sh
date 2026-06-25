@@ -209,7 +209,8 @@ write_manifest() {
     "agent-antigravity": "$runtime_ns/${runtime_prefix}agent-antigravity:$VERSION",
     "agent-opencode": "$runtime_ns/${runtime_prefix}agent-opencode:$VERSION",
     "agent-vibe": "$runtime_ns/${runtime_prefix}agent-vibe:$VERSION",
-    "redis": "redis:7-alpine"
+    "redis": "redis:7-alpine",
+    "cloudflared": "cloudflare/cloudflared:2024.12.2"
   }
 }
 EOF
