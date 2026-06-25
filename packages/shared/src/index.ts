@@ -71,6 +71,11 @@ export { validateRelayUrl } from './validateRelayUrl.js';
 export {
   DEFAULT_PROPR_ROUTING_URL,
   DEFAULT_PROPR_GH_RELAY_URL,
+  DEFAULT_PROPR_UI_ORIGIN,
+  PROPR_UI_PROXY_SUFFIX,
+  DEFAULT_CLOUDFLARED_IMAGE,
+  proprInstanceProxyUrl,
+  isValidProprInstanceId,
 } from './proprServiceUrls.js';
 
 // Export routing URL validation (shared by intake prerequisites and the daemon
