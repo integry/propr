@@ -65,7 +65,7 @@
   "license": "ISC",
   "description": "Automated GitHub Issue Processor with AI-powered solution generation and unified Plan Studio workflow.",
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.170",
+    "@anthropic-ai/claude-code": "^2.1.191",
     "@anthropic-ai/sdk": "^0.71.2",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",

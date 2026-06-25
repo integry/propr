@@ -23,8 +23,8 @@ describe('agent version management', () => {
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
         assert.strictEqual(AGENT_CLI_PACKAGES.opencode, 'opencode-ai');
         assert.deepStrictEqual(AGENT_CLI_TAGS.opencode, ['latest', 'beta', 'dev']);
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.16.2');
-        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.16.2');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.17.10');
+        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.17.10');
         assert.strictEqual(AGENT_IMAGE_NAMES.opencode, 'propr/agent-opencode');
         assert.strictEqual(DEFAULT_AGENT_DOCKER_IMAGES.opencode, 'propr/agent-opencode:latest');
         assert.strictEqual(VERSIONED_AGENT_IMAGE_NAMES.opencode, 'propr-opencode');
@@ -53,27 +53,33 @@ describe('agent version management', () => {
 
     test('generates OpenCode-specific image tags', () => {
         assert.strictEqual(
-            generateImageTag('opencode', '1.16.2', 'abc123'),
-            'propr-opencode:1.16.2-abc123'
+            generateImageTag('opencode', '1.17.10', 'abc123'),
+            'propr-opencode:1.17.10-abc123'
         );
     });
 
-    test('keeps the OpenCode Dockerfile CLI fallback aligned with core metadata', () => {
-        const dockerfile = fs.readFileSync('Dockerfile.opencode', 'utf8');
-        assert.match(dockerfile, new RegExp(`^ARG CLI_VERSION=${AGENT_DEFAULT_VERSIONS.opencode}$`, 'm'));
+    test('keeps agent image build fallbacks aligned with core metadata', () => {
+        const opencodeDockerfile = fs.readFileSync('Dockerfile.opencode', 'utf8');
+        const vibeDockerfile = fs.readFileSync('Dockerfile.vibe', 'utf8');
+        const buildScript = fs.readFileSync('scripts/build-images.sh', 'utf8');
+
+        assert.match(opencodeDockerfile, new RegExp(`^ARG CLI_VERSION=${AGENT_DEFAULT_VERSIONS.opencode}$`, 'm'));
+        assert.match(vibeDockerfile, new RegExp(`^ARG CLI_VERSION=${AGENT_DEFAULT_VERSIONS.vibe}$`, 'm'));
+        assert.match(buildScript, new RegExp(`^CLAUDE_CLI_VERSION="\\$\\{CLAUDE_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.claude}\\}"$`, 'm'));
+        assert.match(buildScript, new RegExp(`^CODEX_CLI_VERSION="\\$\\{CODEX_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.codex}\\}"$`, 'm'));
     });
 
     test('returns OpenCode package tags and default version metadata', async () => {
         globalThis.fetch = (async () => new Response(JSON.stringify({
             name: 'opencode-ai',
-            'dist-tags': { latest: '1.16.2', beta: '1.17.0-beta.1', dev: '1.17.0-dev.1' },
+            'dist-tags': { latest: '1.17.10', beta: '1.18.0-beta.1', dev: '1.18.0-dev.1' },
             versions: {
-                '1.16.2': { name: 'opencode-ai', version: '1.16.2' },
-                '1.16.1': { name: 'opencode-ai', version: '1.16.1' }
+                '1.17.10': { name: 'opencode-ai', version: '1.17.10' },
+                '1.17.9': { name: 'opencode-ai', version: '1.17.9' }
             },
             time: {
-                '1.16.2': '2026-06-05T00:00:00.000Z',
-                '1.16.1': '2026-06-04T00:00:00.000Z'
+                '1.17.10': '2026-06-25T00:00:00.000Z',
+                '1.17.9': '2026-06-24T00:00:00.000Z'
             }
         }), {
             status: 200,
@@ -84,11 +90,11 @@ describe('agent version management', () => {
 
         assert.strictEqual(metadata.agentType, 'opencode');
         assert.strictEqual(metadata.packageName, 'opencode-ai');
-        assert.strictEqual(metadata.defaultVersion, '1.16.2');
+        assert.strictEqual(metadata.defaultVersion, '1.17.10');
         assert.deepStrictEqual(metadata.availableTags, [
-            { tag: 'latest', version: '1.16.2' },
-            { tag: 'beta', version: '1.17.0-beta.1' },
-            { tag: 'dev', version: '1.17.0-dev.1' }
+            { tag: 'latest', version: '1.17.10' },
+            { tag: 'beta', version: '1.18.0-beta.1' },
+            { tag: 'dev', version: '1.18.0-dev.1' }
         ]);
     });
 });

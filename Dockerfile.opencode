@@ -7,7 +7,7 @@ FROM ${BASE_IMAGE}
 
 # Keep this default aligned with AGENT_DEFAULT_VERSIONS.opencode for
 # reproducible direct builds. scripts/build-images.sh may override it.
-ARG CLI_VERSION=1.16.2
+ARG CLI_VERSION=1.17.10
 
 USER root
 # su-exec is used by scripts/opencode-entrypoint.sh when Docker starts the

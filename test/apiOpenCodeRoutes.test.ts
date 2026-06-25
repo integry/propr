@@ -45,7 +45,7 @@ describe('OpenCode API routes', () => {
             const [agent] = params.processedAgents ?? [];
             assert.equal(agent?.type, 'opencode');
             assert.equal(agent?.cliVersionType, 'default');
-            assert.equal(agent?.cliVersionResolved, '1.16.2');
+            assert.equal(agent?.cliVersionResolved, '1.17.10');
             return { status: 200, body: { success: true, agents: params.processedAgents } };
         });
         const routes = createAgentsRoutes({
@@ -122,9 +122,9 @@ describe('OpenCode API routes', () => {
             getAvailableVersions: async agentType => ({
                 agentType,
                 packageName: 'opencode-ai',
-                defaultVersion: '1.16.2',
-                availableTags: [{ tag: 'latest', version: '1.16.2' }],
-                recentVersions: [{ version: '1.16.2', publishedAt: '2026-06-05T00:00:00.000Z' }]
+                defaultVersion: '1.17.10',
+                availableTags: [{ tag: 'latest', version: '1.17.10' }],
+                recentVersions: [{ version: '1.17.10', publishedAt: '2026-06-25T00:00:00.000Z' }]
             })
         });
         const res = createMockResponse();
@@ -135,9 +135,9 @@ describe('OpenCode API routes', () => {
         assert.deepEqual(res.body, {
             agentType: 'opencode',
             packageName: 'opencode-ai',
-            defaultVersion: '1.16.2',
-            availableTags: [{ tag: 'latest', version: '1.16.2' }],
-            recentVersions: [{ version: '1.16.2', publishedAt: '2026-06-05T00:00:00.000Z' }]
+            defaultVersion: '1.17.10',
+            availableTags: [{ tag: 'latest', version: '1.17.10' }],
+            recentVersions: [{ version: '1.17.10', publishedAt: '2026-06-25T00:00:00.000Z' }]
         });
     });
 
@@ -145,7 +145,7 @@ describe('OpenCode API routes', () => {
         const routes = createAgentVersionRoutes({
             listAgentImages: async agentType => {
                 assert.equal(agentType, 'opencode');
-                return ['1.16.2-abc123'];
+                return ['1.17.10-abc123'];
             }
         });
         const res = createMockResponse();
@@ -156,8 +156,8 @@ describe('OpenCode API routes', () => {
         assert.deepEqual(res.body, {
             agentType: 'opencode',
             images: [{
-                tag: '1.16.2-abc123',
-                fullName: 'propr-opencode:1.16.2-abc123'
+                tag: '1.17.10-abc123',
+                fullName: 'propr-opencode:1.17.10-abc123'
             }]
         });
     });
