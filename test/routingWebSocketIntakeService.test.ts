@@ -1,4 +1,4 @@
-import { after, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import assert from 'node:assert';
 import {
     RoutingWebSocketIntakeService,
@@ -154,6 +154,54 @@ test('connects to the /v1/connect path with a Bearer relay token', async () => {
     assert.deepEqual(socket.options?.headers, { Authorization: 'Bearer relay-secret' });
 
     await service.stop();
+});
+
+test('uses a low-frequency default WebSocket transport ping', async () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    const prev = process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+    delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+    try {
+        const { service } = makeService();
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        mock.timers.tick(299_999);
+        assert.equal(socket.pings, 0, 'default ping must not fire before 5 minutes');
+
+        mock.timers.tick(1);
+        assert.equal(socket.pings, 1, 'default ping fires at 5 minutes');
+
+        await service.stop();
+    } finally {
+        mock.timers.reset();
+        if (prev === undefined) delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+        else process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = prev;
+    }
+});
+
+test('allows the routing WebSocket transport ping interval to be overridden by env', async () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    const prev = process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+    process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = '50';
+    try {
+        const { service } = makeService();
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        mock.timers.tick(49);
+        assert.equal(socket.pings, 0);
+
+        mock.timers.tick(1);
+        assert.equal(socket.pings, 1);
+
+        await service.stop();
+    } finally {
+        mock.timers.reset();
+        if (prev === undefined) delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+        else process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = prev;
+    }
 });
 
 test('processes an event frame with inline payload and ACKs only after processing', async () => {
