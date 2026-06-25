@@ -112,6 +112,7 @@ export interface OrchestratorModule {
   inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean }): Promise<ImageFreshnessResult>;
   tagAgentLatest(key: string, imageTag: string): void;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
+  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void): Promise<void>;
   ensureServiceImage(
     cfg: OrchestratorConfig,
     service: string,
@@ -128,19 +129,26 @@ export interface OrchestratorModule {
   readonly TOGGLE_SERVICES: readonly string[];
 
   isStackRunning(cfg: OrchestratorConfig): boolean;
+  isStackRunningAsync(cfg: OrchestratorConfig): Promise<boolean>;
 
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
+  startServiceAsync(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): Promise<ServiceState | undefined>;
   stopService(cfg: OrchestratorConfig, service: string, opts?: { remove?: boolean; onLog?: (line: string) => void }): void;
   startStack(
     cfg: OrchestratorConfig,
     opts?: { ui?: boolean; docs?: boolean; onLog?: (line: string) => void }
   ): StackStatus;
+  startStackAsync(
+    cfg: OrchestratorConfig,
+    opts?: { ui?: boolean; docs?: boolean; onLog?: (line: string) => void }
+  ): Promise<StackStatus>;
   stopStack(
     cfg: OrchestratorConfig,
     opts?: { remove?: boolean; removeNetwork?: boolean; onLog?: (line: string) => void }
   ): { failed: string[] };
 
   getStackStatus(cfg: OrchestratorConfig): StackStatus;
+  getStackStatusAsync(cfg: OrchestratorConfig): Promise<StackStatus>;
   getServiceState(cfg: OrchestratorConfig, service: string): ServiceState | undefined;
   getServiceLogs(
     cfg: OrchestratorConfig,
@@ -150,4 +158,5 @@ export interface OrchestratorModule {
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
   docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
+  dockerAsync(args: string[], opts?: { timeout?: number }): Promise<DockerCommandResult>;
 }

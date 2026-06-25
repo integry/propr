@@ -388,7 +388,9 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         if (isAgent && !selected.has(key.slice("agent-".length))) continue;
 
         onLog?.(`pulling ${tag}…`);
-        const pulled = orch.docker(["pull", tag], { capture: true });
+        // Async exec keeps the event loop free so the wizard's Ink spinner keeps
+        // animating while the (often slow) pull runs, instead of freezing.
+        const pulled = await orch.dockerAsync(["pull", tag]);
         if (pulled.status === 0) {
           try {
             orch.tagAgentLatest(key, tag);
@@ -405,13 +407,16 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     async isStackRunning(rootDir) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
-      return orch.isStackRunning(cfg);
+      return orch.isStackRunningAsync(cfg);
     },
     async startStack({ rootDir, ui, docs, onLog }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
-      orch.ensureNetwork(cfg, onLog);
-      orch.startStack(cfg, {
+      // Use the async start path: `propr setup` drives this from behind a live
+      // Ink TUI, so the blocking synchronous startStack would freeze the spinner
+      // and swallow keystrokes for the seconds-to-minutes a cold start takes.
+      await orch.ensureNetworkAsync(cfg, onLog);
+      await orch.startStackAsync(cfg, {
         ui: ui ?? configManager?.getUiEnabled() ?? true,
         docs: docs ?? cfg.docsEnabled,
         onLog,
