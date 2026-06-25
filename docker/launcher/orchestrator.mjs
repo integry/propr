@@ -1106,7 +1106,7 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 // ---------------------------------------------------------------------------
 
 /** Parse the `docker ps` table into per-service stack status (shared by sync/async). */
-function parseStackStatus(cfg, stdout) {
+export function parseStackStatus(cfg, stdout) {
     const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
     const byName = new Map();
     for (const line of stdout.split('\n').filter(Boolean)) {
