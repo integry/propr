@@ -275,6 +275,14 @@ export interface SetupActions extends AgentSetupActions {
   runChecks(options: RunChecksOptions): Promise<ChecksOutcome>;
   inspectStackInit(rootDir: string): StackInitState;
   scaffoldStack(options: InitStackOptions): Promise<InitStackResult>;
+  /**
+   * Persist the resolved stack root to the CLI config so later `propr start` /
+   * `propr status` invoked without `--root` target this stack. `scaffoldStack`
+   * already records it whenever it runs; this exists for the reuse path (an
+   * already-initialized root that setup leaves untouched), which would otherwise
+   * leave config pointing at a stale root or the cwd. A no-op without a config.
+   */
+  persistStackRoot(rootDir: string): Promise<void>;
   readEnvVars(rootDir: string): Record<string, string>;
   applyEnvSelection(rootDir: string, vars: Record<string, string>, opts?: { overwrite?: boolean }): EnvSelectionResult;
   /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
@@ -369,6 +377,12 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     async scaffoldStack(options) {
       const { scaffoldStack } = await import("../initStack.js");
       return scaffoldStack(options);
+    },
+    async persistStackRoot(rootDir) {
+      // Mirror scaffoldStack's `configManager.setStackRoot` so the reuse path
+      // records the root too. Best-effort: without a config there is nowhere to
+      // persist it (tests run this way), so it is simply a no-op.
+      await configManager?.setStackRoot(rootDir);
     },
     readEnvVars,
     applyEnvSelection,
@@ -722,6 +736,10 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           : `stack root ready at ${rootDir} (existing .env kept)`,
       });
     } else {
+      // Reuse path: scaffolding is skipped, so nothing has recorded this root in
+      // config. Persist it now so a later `propr start` / `propr status` without
+      // --root targets this stack rather than an old saved root or the cwd.
+      await actions.persistStackRoot(rootDir);
       settle("init-stack", { status: "skipped", detail: `using existing stack at ${rootDir} (.env preserved)` });
     }
   } catch (error) {
@@ -996,6 +1014,16 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   //    runs after startup because it talks to the live backend API. Any problem
   //    is a non-blocking warning: agents can always be configured later.
   begin("enable-agents");
+  // This step talks to the live backend API, so it only makes sense once the
+  // stack is up. When the user declined to start it, skip rather than fire
+  // doomed API calls that would surface as confusing warnings.
+  if (startDeclined) {
+    settle("enable-agents", {
+      status: "skipped",
+      detail: "stack not started — agents are enabled through the running backend",
+      nextAction: "Start the stack (`propr start`), then re-run `propr setup` to enable and authenticate the selected agents.",
+    });
+  } else {
   try {
     const outcome = await runAgentSetup({
       rootDir,
@@ -1035,6 +1063,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       detail: `could not configure agents: ${(error as Error).message}`,
       nextAction: "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
     });
+  }
   }
 
   // 8. Whitelist — restrict who can trigger ProPR. Written non-destructively.
@@ -1104,6 +1133,16 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
 
   // 9. Repository (optional) — adding a repo must never fail the whole run.
   begin("repo");
+  // Adding a repo goes through the running backend's API, so skip it (without
+  // even prompting) when the user declined to start the stack — there is nothing
+  // to add it to yet.
+  if (startDeclined) {
+    settle("repo", {
+      status: "skipped",
+      detail: "stack not started — a repository is connected through the running backend",
+      nextAction: "Start the stack (`propr start`), then add one with `propr repo add <owner/repo>`.",
+    });
+  } else {
   try {
     // The prompt itself is part of this optional step — a renderer that throws
     // while collecting the repo must degrade to a warning, not abort the run.
@@ -1128,6 +1167,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       detail: `could not collect a repository to add: ${(error as Error).message}`,
       nextAction: "Add it later with `propr repo add <owner/repo>`.",
     });
+  }
   }
 
   // 10. UI (optional) — surface the URL and, when the user confirms, actually

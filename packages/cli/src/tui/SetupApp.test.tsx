@@ -132,7 +132,7 @@ test("buildSetupPrompts collects GitHub App vars across chained inputs", async (
   assert.equal(decision.mode, "app");
   assert.equal(decision.vars?.GH_AUTH_MODE, "app");
   assert.ok(decision.vars?.GH_APP_ID);
-  assert.ok(decision.vars?.GH_PRIVATE_KEY_PATH);
+  assert.ok(decision.vars?.HOST_GH_PRIVATE_KEY);
   assert.ok(decision.vars?.GH_INSTALLATION_ID);
 });
 

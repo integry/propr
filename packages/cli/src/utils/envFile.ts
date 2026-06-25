@@ -73,10 +73,11 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
 /**
  * Remove the given keys from a .env file entirely.
  *
- * Deletes the first uncommented `KEY=` assignment for each key (mirroring
- * {@link upsertEnvVars}'s single-assignment model); every other line — comments,
- * blanks, and unrelated keys — is preserved verbatim. A missing file, an empty
- * key list, and keys that aren't present are all no-ops.
+ * Deletes every uncommented `KEY=` assignment for each key — so a key that was
+ * accidentally assigned more than once is fully cleared, not just thinned to its
+ * last duplicate; every other line — comments, blanks, and unrelated keys — is
+ * preserved verbatim. A missing file, an empty key list, and keys that aren't
+ * present are all no-ops.
  *
  * This exists because {@link upsertEnvVars} can only *set* a value: writing a
  * blank (e.g. `GITHUB_USER_WHITELIST=`) still leaves the key in the file, where

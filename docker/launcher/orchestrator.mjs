@@ -94,6 +94,14 @@ function unescapeDoubleQuotedEnv(value) {
     });
 }
 
+// Wrap a value in single quotes for safe copy-paste into a POSIX shell, so a
+// path containing spaces or shell metacharacters in a suggested recovery command
+// stays a single literal argument. Embedded single quotes are closed, escaped,
+// and reopened ('\'').
+function shellQuote(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 // Reads a single value from an env file. Re-reads the file per call (matches the
 // original launcher behavior; call sites are few and startup-only).
 function envFileValueFrom(envFileLocal, name) {
@@ -1126,7 +1134,7 @@ export function validateEnv(cfg) {
                 let creatable = false;
                 try { accessSync(parent, fsConstants.W_OK); creatable = true; } catch { /* parent not writable */ }
                 if (!creatable) {
-                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist and ${parent} is not writable. Create it manually: mkdir -p ${cfg.hostVibePromptCacheDir}`);
+                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist and ${parent} is not writable. Create it manually: mkdir -p ${shellQuote(cfg.hostVibePromptCacheDir)}`);
                 }
             } else {
                 try {
@@ -1135,7 +1143,7 @@ export function validateEnv(cfg) {
                     // Usually means a previous run let Docker auto-create the dir
                     // as root on first bind-mount. Reclaim ownership or remove it
                     // (it is a regenerable cache) so the user can write to it again.
-                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) is not writable. It is likely owned by root from a previous run; reclaim it with \`sudo chown -R $(id -u):$(id -g) ${cfg.hostVibePromptCacheDir}\` or remove it (it is a regenerable cache) with \`sudo rm -rf ${cfg.hostVibePromptCacheDir}\`.`);
+                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) is not writable. It is likely owned by root from a previous run; reclaim it with \`sudo chown -R $(id -u):$(id -g) ${shellQuote(cfg.hostVibePromptCacheDir)}\` or remove it (it is a regenerable cache) with \`sudo rm -rf ${shellQuote(cfg.hostVibePromptCacheDir)}\`.`);
                 }
             }
         }

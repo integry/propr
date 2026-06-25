@@ -285,11 +285,14 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
       }
       const appId = await bridge.input({ title: "GitHub App ID", defaultValue: "" });
-      const privateKeyPath = await bridge.input({ title: "Path to the App private key (.pem)", defaultValue: "" });
+      // The CLI stack bind-mounts the key from the host via HOST_GH_PRIVATE_KEY
+      // (NOT the in-container GH_PRIVATE_KEY_PATH, which is the launcher path) —
+      // so `propr start` can find it. Ask for the host path and write that key.
+      const privateKeyPath = await bridge.input({ title: "Host path to the App private key (.pem)", defaultValue: "" });
       const installationId = await bridge.input({ title: "Installation ID", defaultValue: "" });
       return {
         mode: "app" satisfies GithubAuthMode,
-        vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "app", GH_APP_ID: appId, GH_PRIVATE_KEY_PATH: privateKeyPath, GH_INSTALLATION_ID: installationId },
+        vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "app", GH_APP_ID: appId, HOST_GH_PRIVATE_KEY: privateKeyPath, GH_INSTALLATION_ID: installationId },
       };
     },
 
@@ -743,6 +746,14 @@ export function SetupApp({ bridge, onCancel }: SetupAppProps): React.ReactElemen
 
     // multi
     const count = prompt.options.length;
+    // With no options there is nothing to highlight or toggle — mirror the
+    // sequential wizard, which skips the prompt entirely and yields []. Only Enter
+    // is meaningful (it resolves to the empty set); arrow/space are ignored so we
+    // never index an empty array or compute a NaN highlight (`h % 0`).
+    if (count === 0) {
+      if (key.return) bridge.resolve(prompt.id, []);
+      return;
+    }
     if (key.upArrow) setHighlighted((h) => (h - 1 + count) % count);
     else if (key.downArrow) setHighlighted((h) => (h + 1) % count);
     else if (input === " ") {

@@ -347,11 +347,14 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
       }
       const appId = await promptInput(io, paint, { title: "GitHub App ID", defaultValue: "" });
-      const privateKeyPath = await promptInput(io, paint, { title: "Path to the App private key (.pem)", defaultValue: "" });
+      // The CLI stack bind-mounts the key from the host via HOST_GH_PRIVATE_KEY
+      // (NOT the in-container GH_PRIVATE_KEY_PATH, which is the launcher path) —
+      // so `propr start` can find it. Ask for the host path and write that key.
+      const privateKeyPath = await promptInput(io, paint, { title: "Host path to the App private key (.pem)", defaultValue: "" });
       const installationId = await promptInput(io, paint, { title: "Installation ID", defaultValue: "" });
       return {
         mode: "app" satisfies GithubAuthMode,
-        vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "app", GH_APP_ID: appId, GH_PRIVATE_KEY_PATH: privateKeyPath, GH_INSTALLATION_ID: installationId },
+        vars: { PROPR_DEMO_MODE: "false", GH_AUTH_MODE: "app", GH_APP_ID: appId, HOST_GH_PRIVATE_KEY: privateKeyPath, GH_INSTALLATION_ID: installationId },
       };
     },
 

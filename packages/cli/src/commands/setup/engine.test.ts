@@ -43,6 +43,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },
+    persistStackRoot: async () => undefined,
     readEnvVars: () => ({ GITHUB_USER_WHITELIST: "alice,bob" }),
     applyEnvSelection: () => ({ written: [], skipped: [] }),
     clearEnvKeys: () => undefined,

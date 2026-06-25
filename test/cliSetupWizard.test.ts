@@ -102,6 +102,7 @@ function diskActions(overrides: Partial<SetupActions> = {}): SetupActions {
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },
+    persistStackRoot: async () => undefined,
     // Docker / network / backend — inert stubs.
     pullImages: async () => ({ pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] }),
     isStackRunning: async () => false,
@@ -515,19 +516,23 @@ test("switching from demo to app turns PROPR_DEMO_MODE off on disk", async () =>
 });
 
 test("both renderers turn demo off when selecting a real auth mode", async () => {
-  // App (option 2) → appId, key path, installation id.
-  const app = await buildSequentialPrompts(scriptedIo(["2", "123", "/k.pem", "42"])).configureGithubAuth!({
+  // With an existing (demo) config the options are: 1) keep, 2) token relay,
+  // 3) custom GitHub App.
+  // Custom GitHub App (option 3) → appId, host key path, installation id.
+  const app = await buildSequentialPrompts(scriptedIo(["3", "123", "/k.pem", "42"])).configureGithubAuth!({
     current: { mode: "demo", warnings: [] },
   });
   assert.equal(app.vars?.PROPR_DEMO_MODE, "false");
   assert.equal(app.vars?.GH_AUTH_MODE, "app");
 
-  // Relay (option 3) → url, token.
-  const relay = await buildSequentialPrompts(scriptedIo(["3", "https://relay", "tok"])).configureGithubAuth!({
+  // Token relay (option 2) → relay URL. The relay path hands the engine an
+  // `enrollRelay` request (the engine mints the token and writes the relay env,
+  // including PROPR_DEMO_MODE=false), so the decision carries no `vars`.
+  const relay = await buildSequentialPrompts(scriptedIo(["2", "https://relay"])).configureGithubAuth!({
     current: { mode: "demo", warnings: [] },
   });
-  assert.equal(relay.vars?.PROPR_DEMO_MODE, "false");
-  assert.equal(relay.vars?.GH_AUTH_MODE, "relay");
+  assert.equal(relay.mode, "relay");
+  assert.equal(relay.enrollRelay?.relayUrl, "https://relay");
 });
 
 test("declining to start the stack reports setup as incomplete", async () => {
@@ -542,6 +547,60 @@ test("declining to start the stack reports setup as incomplete", async () => {
 
   assert.equal(statusOf(result.state, "start-stack"), "skipped");
   assert.equal(result.completed, false, "a declined start must not exit 0 / report success");
+});
+
+test("reusing an already-initialized root persists it to config", async () => {
+  const root = makeRoot();
+  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+
+  let persisted: string | undefined;
+  const result = await runSetup({
+    root,
+    actions: {
+      ...diskActions(),
+      persistStackRoot: async (rootDir) => {
+        persisted = rootDir;
+      },
+    },
+  });
+
+  // The reuse path skips scaffolding (which would otherwise record the root), so
+  // the engine must persist it itself for later `propr start` without --root.
+  assert.equal(statusOf(result.state, "init-stack"), "skipped");
+  assert.equal(persisted, root, "the resolved root is saved to config on the reuse path");
+});
+
+test("declining to start the stack skips the backend-dependent follow-up steps", async () => {
+  const root = makeRoot();
+  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+
+  let addRepoCalled = false;
+  let enableAgentsTouchedBackend = false;
+  const result = await runSetup({
+    root,
+    prompts: {
+      confirmStartStack: async () => false,
+      // Both would normally drive backend-dependent work; with the stack
+      // declined they must not even be consulted.
+      selectAgents: async () => ["claude"],
+      addRepository: async () => ({ fullName: "octo/repo" }),
+    },
+    actions: {
+      ...diskActions(),
+      addRepository: async () => {
+        addRepoCalled = true;
+      },
+      listAgents: async () => {
+        enableAgentsTouchedBackend = true;
+        return [];
+      },
+    },
+  });
+
+  assert.equal(statusOf(result.state, "enable-agents"), "skipped", "agent enablement is a backend step");
+  assert.equal(statusOf(result.state, "repo"), "skipped", "adding a repo is a backend step");
+  assert.equal(addRepoCalled, false, "the repo API must not be called when the stack is not started");
+  assert.equal(enableAgentsTouchedBackend, false, "the agents API must not be called when the stack is not started");
 });
 
 test("a legacy ENABLE_GITHUB_WEBHOOKS .env pre-selects keep for intake", async () => {

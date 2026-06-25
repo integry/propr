@@ -219,7 +219,11 @@ export function detectGithubAuthMode(rootDir: string): GithubAuthModeResult {
     relayUrl: env.PROPR_GH_RELAY_URL,
     relayToken: env.PROPR_GH_RELAY_TOKEN,
     appId: env.GH_APP_ID,
-    privateKeyPath: env.GH_PRIVATE_KEY_PATH,
+    // The CLI stack records the App key as HOST_GH_PRIVATE_KEY (the orchestrator
+    // bind-mounts it and sets the in-container GH_PRIVATE_KEY_PATH to that path),
+    // so accept either when inferring app mode — otherwise a stack configured by
+    // `propr setup` would resolve as "none" despite being fully set up.
+    privateKeyPath: env.GH_PRIVATE_KEY_PATH ?? env.HOST_GH_PRIVATE_KEY,
     installationId: env.GH_INSTALLATION_ID,
   });
 }
