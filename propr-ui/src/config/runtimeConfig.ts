@@ -35,7 +35,6 @@ if (typeof window !== 'undefined' && !window.__PROPR_CONFIG__) {
   const { hostname } = window.location;
   const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
   if (!isLocalhost) {
-    // eslint-disable-next-line no-console
     console.warn(
       '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
         'Falling back to same-origin API calls, which will not reach the per-instance proxy.'
