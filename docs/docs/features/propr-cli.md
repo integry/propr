@@ -29,6 +29,8 @@ propr status             # local stack status (--json for scripts)
 propr ui                 # open the Web UI (http://localhost:5173)
 propr docs               # open the bundled docs site
 propr stop               # stop the stack (--keep to stop without removing containers)
+propr tunnel on          # expose the stack to the hosted UI through a Cloudflare Tunnel
+propr tunnel off         # stop the tunnel (token and env values are kept)
 ```
 
 `propr setup` is the recommended way to bring up a local stack — see the [Local Setup](../tutorials/setup-local.md) and [Server Setup](../tutorials/setup-server.md) tutorials. The `init stack` / `check` / `start` commands below are the individual steps it orchestrates, available for scripting, CI, and troubleshooting.
@@ -71,6 +73,33 @@ propr relay revoke <id>  # revoke a token
 ```
 
 `propr relay enroll` discovers the installation automatically from your `propr login` identity when you have exactly one; pass `--installation <id>` to choose among several, or `--url <url>` to target a self-hosted relay.
+
+## Hosted UI Tunnel
+
+The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its own UI/API to the hosted control plane through a **Cloudflare Tunnel** — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
+
+```bash
+propr tunnel on          # start the cloudflared sidecar
+propr tunnel off         # stop it — the token and env values are left untouched
+```
+
+Starting the tunnel requires a configured token. Set these in your stack `.env` first:
+
+| Variable | Description |
+|---|---|
+| `PROPR_UI_TUNNEL_TOKEN` | Cloudflare Tunnel token. Required to start; setting it alone enables the tunnel |
+| `PROPR_UI_TUNNEL_ENABLED` | Set to `true`/`1` to enable the tunnel without a token (advanced) |
+| `PROPR_INSTANCE_ID` | This stack's instance id; must be a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://<id>.proxy.propr.dev` when no explicit URL is set |
+| `PROPR_UI_PUBLIC_API_URL` | Explicit public API/UI URL, overriding the derived one |
+| `PROPR_CLOUDFLARED_IMAGE` | cloudflared image (default `cloudflare/cloudflared:latest`) |
+
+`propr tunnel on` fails clearly if no token is configured rather than launching a broken container. `propr tunnel off` only removes the tunnel container — it never touches the token or any other env value, so a later `propr tunnel on` works without rework. The desired state is persisted in the CLI config, so `propr start` and restarts honor your last toggle.
+
+Each enabled stack is reachable at a per-instance hostname `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, which is how the hosted UI discovers and addresses it. See [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and the architecture, including how `.proxy.propr.dev` differs from the central ProPR APIs.
+
+:::note[Manual for v1]
+In v1 the tunnel is wired up by hand: you provision the Cloudflare Tunnel token and instance id and set them in `.env` yourself. Automated provisioning and selecting among multiple instances from the hosted UI are planned for later work.
+:::
 
 ## Connect and Authenticate
 

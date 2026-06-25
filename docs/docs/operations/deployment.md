@@ -243,6 +243,56 @@ Terminate TLS at your reverse proxy or ingress, then:
 
 If the UI and API are served from different origins, the API's CORS configuration uses `FRONTEND_URL` and browser requests send session cookies cross-origin — keep both URLs consistent with the actual public origins.
 
+## Hosted UI Tunnel
+
+Instead of (or in addition to) your own reverse proxy, a local stack can publish itself to the **hosted ProPR UI** at `https://app.propr.dev` so you can drive a locally-running stack from the managed control plane in your browser — no public domain of your own and no inbound proxy to operate.
+
+This works through an optional **Cloudflare Tunnel**: a managed sidecar running the official `cloudflare/cloudflared` image, started and stopped with [`propr tunnel on|off`](../features/propr-cli.md#hosted-ui-tunnel) (or persisted via `.env` so `propr start` brings it up). It is **off by default** and does not affect a normal localhost or reverse-proxy deployment.
+
+### Architecture
+
+- `https://app.propr.dev` — the **hosted UI**: a single static bundle that serves every connected stack. Because one bundle serves many stacks, the API base URL is not baked in at build time; the browser reads it at runtime from `window.__PROPR_CONFIG__` (rewritten from `PROPR_UI_PUBLIC_API_URL` at container start).
+- `https://<PROPR_INSTANCE_ID>.proxy.propr.dev` — the **per-instance proxy host** for one stack. Each enabled stack is published under this per-instance hostname through its Cloudflare Tunnel, and the hosted UI discovers and reaches your stack through that single shared `.proxy.propr.dev` suffix. The browser origin, OAuth callback, and CORS origin therefore all agree on one canonical HTTPS host without you owning or registering a domain.
+- `http://api:4000` — **internal only**. The API stays an internal Docker service reachable inside the stack network as `http://api:4000` (published on the host as port 4000). The tunnel exposes the stack to `app.propr.dev`; it does not change how services talk to each other internally.
+
+**`.proxy.propr.dev` is not `api.propr.dev`.** The per-instance `<id>.proxy.propr.dev` host is the public front door to *your own local stack* through the tunnel. The central ProPR services live on different hosts — the hosted UI at `app.propr.dev`, and the routing / GitHub-token relay at `webhook.propr.dev` (see [GitHub Authentication](./github-auth.md)). Those are vendor-run APIs shared by all installs; `.proxy.propr.dev` addresses only your stack.
+
+The browser uses the **same API base** for both REST calls and the Socket.IO connection, so they always target one origin — the per-instance proxy host when the tunnel is on, or same-origin localhost otherwise. The reverse-proxy rule still applies: `/api/*`, `/webhook`, and `/socket.io/` are all served by the API on port 4000, and WebSocket upgrades must be allowed on `/socket.io/`.
+
+### Configuration (v1)
+
+Set these in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label):
+
+```bash
+# --- Hosted UI tunnel (v1, optional) ---
+PROPR_UI_TUNNEL_TOKEN=your_cloudflare_tunnel_token   # Cloudflare Tunnel token; setting it alone enables the tunnel
+PROPR_UI_TUNNEL_ENABLED=true                         # enable the tunnel without a token (advanced)
+PROPR_INSTANCE_ID=abc123                             # this stack's instance id; valid DNS label (letters, digits, hyphens; 1-63 chars)
+PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev   # explicit public API/UI URL (overrides the derived one)
+PROPR_CLOUDFLARED_IMAGE=cloudflare/cloudflared:latest    # cloudflared image (default shown)
+
+# When the tunnel is ON, point auth redirects and CORS at the public proxy host.
+# Leave these at their localhost defaults when the tunnel is OFF.
+FRONTEND_URL=https://abc123.proxy.propr.dev
+API_PUBLIC_URL=https://abc123.proxy.propr.dev
+
+# COOKIE_DOMAIN: leave UNSET for v1. Proxy sessions live on a single
+# <id>.proxy.propr.dev host, so a host-only session cookie is correct.
+COOKIE_DOMAIN=
+```
+
+`PROPR_INSTANCE_ID` derives the public URL `https://<id>.proxy.propr.dev` automatically, so `PROPR_UI_PUBLIC_API_URL` is only needed to override it. With the tunnel enabled, set `FRONTEND_URL` and `API_PUBLIC_URL` to that same proxy host so OAuth redirects and CORS match the origin the browser actually sees. Leave `COOKIE_DOMAIN` unset: proxy sessions live on a single `<id>.proxy.propr.dev` host, so a host-only cookie is correct, and scoping it across the shared `.proxy.propr.dev` suffix is not supported for v1.
+
+Then start the sidecar:
+
+```bash
+propr tunnel on
+```
+
+:::note[Manual for v1]
+v1 is intentionally manual: you provision the Cloudflare Tunnel token and the instance id and set them in `.env` yourself. **Automated provisioning** of the tunnel and instance id, and **selecting among multiple instances** from the hosted UI, are planned for later work.
+:::
+
 ## After Startup
 
 1. Open the Web UI.

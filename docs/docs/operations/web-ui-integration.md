@@ -90,6 +90,12 @@ Important integration points:
 
 If you build your own frontend around ProPR, treat the dashboard API as the system contract and reuse the existing route structure instead of re-implementing worker or daemon logic in the browser.
 
+## Hosted UI And Runtime Config
+
+The hosted ProPR UI at `https://app.propr.dev` is one static bundle that serves many local stacks, so its API base URL cannot be baked in at build time. Instead the browser reads it at runtime from `window.__PROPR_CONFIG__`, which the UI container rewrites at start from `PROPR_UI_PUBLIC_API_URL`. The resolution order is: runtime config (`window.__PROPR_CONFIG__.apiBaseUrl`) → build-time `VITE_API_BASE_URL` → empty string (same-origin, local dev through the Vite proxy). **REST and Socket.IO use this same resolved base**, so both always target one origin.
+
+When a local stack opts in to the hosted UI, it publishes itself through an optional Cloudflare Tunnel and is addressed at a per-instance `https://<PROPR_INSTANCE_ID>.proxy.propr.dev` host — distinct from the vendor-run hosts (`app.propr.dev` for the UI, `webhook.propr.dev` for routing/relay). The API itself remains an internal Docker service on `http://api:4000`. See [Production Deployment → Hosted UI Tunnel](./deployment.md#hosted-ui-tunnel) for the full architecture and config block.
+
 ## Extending The Integration
 
 When adding new UI features:
