@@ -60,6 +60,9 @@ interface SystemHealth {
   githubAuth: string;
   claudeAuth: string;
   indexing: string;
+  // Human-readable name and UI status of the active GitHub event intake path.
+  githubEventIntake: string;
+  githubEventIntakeStatus: string;
   agents: SystemAgentStatus[];
   isHealthy: boolean;
 }
@@ -168,6 +171,8 @@ export function useHeaderStats(): HeaderStats {
     githubAuth: 'Unknown',
     claudeAuth: 'Unknown',
     indexing: 'Unknown',
+    githubEventIntake: 'Unknown',
+    githubEventIntakeStatus: 'Unknown',
     agents: [],
     isHealthy: false,
   });
@@ -444,6 +449,10 @@ export function useHeaderStats(): HeaderStats {
       // 4. Process system health
       const workersStatus = statusResponse.workers.length > 0 ? 'Running' : 'Stopped';
       const agentsHealthy = statusResponse.agents.every(agent => agent.status === 'Ready');
+      // 'Unknown' is treated as neutral so older backends that don't report intake
+      // status (and resolver-error/unknown modes) don't flip the header unhealthy,
+      // while an explicit 'Disconnected' from a stalled intake path does.
+      const intakeStatus = statusResponse.githubEventIntakeStatus || 'Unknown';
       const health: SystemHealth = {
         daemon: statusResponse.daemon,
         workers: workersStatus,
@@ -451,6 +460,8 @@ export function useHeaderStats(): HeaderStats {
         githubAuth: statusResponse.githubAuth,
         claudeAuth: statusResponse.claudeAuth,
         indexing: statusResponse.indexing,
+        githubEventIntake: statusResponse.githubEventIntake || 'Unknown',
+        githubEventIntakeStatus: intakeStatus,
         agents: statusResponse.agents,
         isHealthy:
           statusResponse.daemon === 'Running' &&
@@ -458,6 +469,7 @@ export function useHeaderStats(): HeaderStats {
           statusResponse.redis === 'Connected' &&
           statusResponse.githubAuth === 'Authenticated' &&
           ['Idle', 'Active', 'Queued', 'Connected'].includes(statusResponse.indexing) &&
+          ['Connected', 'Active', 'Unknown'].includes(intakeStatus) &&
           agentsHealthy,
       };
       setSystemHealth(health);
