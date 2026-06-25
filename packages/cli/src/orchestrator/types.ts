@@ -168,6 +168,8 @@ export interface OrchestratorModule {
 
   getStackStatus(cfg: OrchestratorConfig): StackStatus;
   getStackStatusAsync(cfg: OrchestratorConfig): Promise<StackStatus>;
+  /** Pure parse of `docker ps` tab-separated output into per-service state. */
+  parseStackStatus(cfg: OrchestratorConfig, stdout: string): StackStatus;
   getTunnelStatus(cfg: OrchestratorConfig, stackStatus?: StackStatus): Promise<TunnelStatus>;
   getServiceState(cfg: OrchestratorConfig, service: string): ServiceState | undefined;
   getServiceLogs(
