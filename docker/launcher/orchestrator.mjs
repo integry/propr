@@ -219,20 +219,23 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // read it without the user having to stage it under data/.
     const hostGhPrivateKey = get('HOST_GH_PRIVATE_KEY');
 
+    const manifestPath = overrides.manifestPath ?? resolve(__dirname, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+
     // Hosted UI tunnel: expose this local stack's UI/API to the hosted control
     // plane (https://app.propr.dev) via a Cloudflare Tunnel. A token alone is
     // enough to enable it; PROPR_UI_TUNNEL_ENABLED=true also turns it on.
     const uiTunnelToken = get('PROPR_UI_TUNNEL_TOKEN') || undefined;
     const uiTunnelEnabled = Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED'));
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
-    const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || DEFAULT_CLOUDFLARED_IMAGE;
+    // Cloudflared image for the optional tunnel sidecar: an explicit env override
+    // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
+    // final fallback for manifests without a cloudflared entry.
+    const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
     // Falls back to undefined for local development (no instance id), where
     // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below.
     const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId);
-
-    const manifestPath = overrides.manifestPath ?? resolve(__dirname, 'manifest.json');
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost,
@@ -703,13 +706,14 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 // ---------------------------------------------------------------------------
 
 export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api'];
-export const TOGGLE_SERVICES = ['ui', 'docs'];
+export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
 
 function imageTagForService(cfg, service) {
     if (service === 'redis') return cfg.images.redis;
     if (service === 'ui') return cfg.images.ui;
     if (service === 'docs') return cfg.images.docs;
+    if (service === 'tunnel') return cfg.cloudflaredImage;
     // daemon/worker/analysis-worker/indexing-worker/api all run the app image
     return cfg.images.app;
 }
@@ -793,6 +797,17 @@ function buildServiceSpec(cfg, service) {
             return { image: cfg.images.ui, args: ['-p', `${cfg.uiPort}:5173`] };
         case 'docs':
             return { image: cfg.images.docs, args: ['-p', `${cfg.docsPort}:3000`] };
+        case 'tunnel':
+            // Optional Cloudflare Tunnel sidecar running the official cloudflared
+            // image (its entrypoint is `cloudflared`). It dials out to Cloudflare's
+            // edge, so no local ports are published. The token is injected only
+            // here — no other container receives PROPR_UI_TUNNEL_TOKEN — and is
+            // also passed on the run command so cloudflared authenticates the run.
+            return {
+                image: cfg.cloudflaredImage,
+                args: ['-e', `PROPR_UI_TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
+                command: ['tunnel', '--no-autoupdate', 'run', '--token', cfg.uiTunnelToken],
+            };
         default:
             throw new Error(`unknown service: ${service}`);
     }
@@ -846,8 +861,8 @@ export function isStackRunning(cfg) {
  * services started so far are stopped (best effort) before the error is
  * rethrown, so a failed startup doesn't leave a half-running stack behind.
  */
-export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
-    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
+export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog } = {}) {
+    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
     const started = [];
     const freshnessCache = new Map();
     try {
@@ -984,8 +999,8 @@ async function stopServiceAsync(cfg, service, { remove = true, onLog } = {}) {
  * without blocking the event loop, rolling back already-started services on a
  * mid-startup failure (best effort) before rethrowing.
  */
-export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
-    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
+export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog } = {}) {
+    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
     const started = [];
     const freshnessCache = new Map();
     try {
@@ -1220,6 +1235,13 @@ export function validateEnv(cfg) {
         }
     }
 
+    // The tunnel sidecar cannot authenticate without a token. uiTunnelEnabled is
+    // true whenever a token is present, so this only trips when the tunnel was
+    // turned on via PROPR_UI_TUNNEL_ENABLED=true without PROPR_UI_TUNNEL_TOKEN.
+    if (cfg.uiTunnelEnabled && !cfg.uiTunnelToken) {
+        errors.push('The UI tunnel is enabled (PROPR_UI_TUNNEL_ENABLED=true) but PROPR_UI_TUNNEL_TOKEN is not set. Set PROPR_UI_TUNNEL_TOKEN to your Cloudflare Tunnel token, or unset PROPR_UI_TUNNEL_ENABLED to disable the tunnel.');
+    }
+
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);
     if (hasOpenCodeConfig && !cfg.hostOpencodeDataDir) {
         warnings.push(
@@ -1245,6 +1267,7 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
 
     for (const [key, tag] of Object.entries(cfg.images)) {
         if (key === 'docs' && !cfg.docsEnabled) continue;
+        if (key === 'cloudflared' && !cfg.uiTunnelEnabled) continue;
 
         if (key.startsWith('agent-') && skipAgentPull) {
             if (imagePresentLocally(tag)) {

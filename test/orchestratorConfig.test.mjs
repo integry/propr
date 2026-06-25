@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { resolveConfig, resolveHostConfig, validateEnv } from '../docker/launcher/orchestrator.mjs';
+import { resolveConfig, resolveHostConfig, validateEnv, SERVICES, TOGGLE_SERVICES } from '../docker/launcher/orchestrator.mjs';
 
 const manifestPath = fileURLToPath(new URL('../docker/launcher/manifest.json', import.meta.url));
 
@@ -92,7 +92,7 @@ test('UI tunnel is disabled by default with local-development URL defaults intac
   assert.equal(cfg.uiTunnelToken, undefined);
   assert.equal(cfg.proprInstanceId, undefined);
   assert.equal(cfg.uiPublicApiUrl, undefined);
-  assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:latest');
+  assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:2024.12.2');
   // Local-development defaults must stay untouched and COOKIE_DOMAIN unset.
   assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
   assert.equal(cfg.frontendUrl, 'http://localhost:5173');
@@ -151,10 +151,58 @@ test('PROPR_UI_PUBLIC_API_URL overrides the instance-id-derived URL', () => {
   assert.equal(cfg.uiPublicApiUrl, 'https://custom.example.com');
 });
 
-test('PROPR_CLOUDFLARED_IMAGE overrides the default cloudflared image', () => {
+test('PROPR_CLOUDFLARED_IMAGE overrides the manifest cloudflared image', () => {
   const cfg = resolveConfig({ PROPR_CLOUDFLARED_IMAGE: 'cloudflare/cloudflared:2024.1.0' }, { manifestPath });
 
   assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:2024.1.0');
+});
+
+test('cloudflared image is pinned from the manifest by default', () => {
+  const cfg = resolveConfig({}, { manifestPath });
+
+  // The manifest entry must win over DEFAULT_CLOUDFLARED_IMAGE (":latest").
+  assert.equal(cfg.cloudflaredImage, cfg.images.cloudflared);
+  assert.notEqual(cfg.cloudflaredImage, 'cloudflare/cloudflared:latest');
+});
+
+test('tunnel is part of the optional service registry', () => {
+  assert.ok(TOGGLE_SERVICES.includes('tunnel'));
+  assert.ok(SERVICES.includes('tunnel'));
+});
+
+test('validateEnv rejects a tunnel enabled without a token', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_ENABLED: 'true',
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  }, { manifestPath });
+
+  assert.equal(cfg.uiTunnelEnabled, true);
+  assert.match(validateEnv(cfg).errors.join('\n'), /PROPR_UI_TUNNEL_TOKEN/);
+});
+
+test('validateEnv accepts a tunnel enabled with a token', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  }, { manifestPath });
+
+  assert.deepEqual(validateEnv(cfg).errors, []);
 });
 
 test('launcher config does not stat host bind paths inside the launcher container', () => {

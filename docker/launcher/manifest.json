@@ -11,6 +11,7 @@
     "agent-antigravity": "propr/agent-antigravity:0.8.4",
     "agent-opencode": "propr/agent-opencode:0.8.4",
     "agent-vibe": "propr/agent-vibe:0.8.4",
-    "redis": "redis:7-alpine"
+    "redis": "redis:7-alpine",
+    "cloudflared": "cloudflare/cloudflared:2024.12.2"
   }
 }
