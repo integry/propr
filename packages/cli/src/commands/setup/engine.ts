@@ -412,6 +412,15 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     async startStack({ rootDir, ui, docs, onLog }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+      // Pre-create the host Vibe prompt-cache dir owned by this user so Docker
+      // does not auto-create it as root on first bind-mount — a root-owned dir
+      // would fail the writability check and block future `propr start` runs.
+      try {
+        const { ensureVibePromptCacheDir } = await import("../initStack.js");
+        ensureVibePromptCacheDir(cfg.hostVibePromptCacheDir);
+      } catch {
+        /* best-effort: startup validation will surface an actionable error */
+      }
       // Use the async start path: `propr setup` drives this from behind a live
       // Ink TUI, so the blocking synchronous startStack would freeze the spinner
       // and swallow keystrokes for the seconds-to-minutes a cold start takes.

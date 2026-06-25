@@ -1132,7 +1132,10 @@ export function validateEnv(cfg) {
                 try {
                     accessSync(cfg.hostVibePromptCacheDir, fsConstants.W_OK);
                 } catch {
-                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) is not writable.`);
+                    // Usually means a previous run let Docker auto-create the dir
+                    // as root on first bind-mount. Reclaim ownership or remove it
+                    // (it is a regenerable cache) so the user can write to it again.
+                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) is not writable. It is likely owned by root from a previous run; reclaim it with \`sudo chown -R $(id -u):$(id -g) ${cfg.hostVibePromptCacheDir}\` or remove it (it is a regenerable cache) with \`sudo rm -rf ${cfg.hostVibePromptCacheDir}\`.`);
                 }
             }
         }

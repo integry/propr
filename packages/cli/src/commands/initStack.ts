@@ -26,6 +26,28 @@ function defaultVibePromptCacheDir(): string {
   return `/tmp/propr-vibe-prompts-${process.getuid?.() ?? "user"}`;
 }
 
+/**
+ * Pre-create the host Vibe prompt-cache directory owned by the invoking user.
+ *
+ * Spawned Vibe agent containers bind-mount this path. If it does not exist when
+ * Docker first mounts it, the daemon auto-creates it as root, leaving a
+ * root-owned directory the user can no longer write to — which then trips
+ * `validateEnv`'s writability check and blocks `propr start` on every
+ * subsequent run. Creating it here (owned by the user, 0700) avoids that.
+ *
+ * Returns the directory if it was created, otherwise `undefined`. Safe to call
+ * repeatedly: an existing directory (regardless of owner) is left untouched.
+ */
+export function ensureVibePromptCacheDir(cacheDir: string | undefined): string | undefined {
+  if (!cacheDir) return undefined;
+  // Skip container-only / Docker-special paths (a ':' would be a volume spec).
+  if (!isAbsolute(cacheDir) || cacheDir.includes(":")) return undefined;
+  if (existsSync(cacheDir)) return undefined;
+  mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  try { chmodSync(cacheDir, 0o700); } catch { /* best-effort: keep prompt material private */ }
+  return cacheDir;
+}
+
 /** Resolve the bundled .env.example, falling back to a repo checkout. */
 function resolveEnvExample(): string | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -163,11 +185,8 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
     const match = envContent.match(/^\s*(?:export\s+)?HOST_VIBE_PROMPT_CACHE_DIR\s*=\s*(.+)\s*$/m);
     const configured = match?.[1]?.trim().replace(/^["']|["']$/g, "");
     const cacheDir = configured || defaultVibePromptCacheDir();
-    if (isAbsolute(cacheDir) && !cacheDir.includes(":") && !existsSync(cacheDir)) {
-      mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
-      try { chmodSync(cacheDir, 0o700); } catch { /* best-effort: keep prompt material private */ }
-      result.dirsCreated.push(cacheDir);
-    }
+    const created = ensureVibePromptCacheDir(cacheDir);
+    if (created) result.dirsCreated.push(created);
   }
 
   // 4. Persist the stack root so other commands can find it.
