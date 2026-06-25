@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   PROPR_UI_PROXY_SUFFIX as SHARED_PROXY_SUFFIX,
   DEFAULT_CLOUDFLARED_IMAGE as SHARED_CLOUDFLARED_IMAGE,
+  DEFAULT_PROPR_UI_ORIGIN as SHARED_PROPR_UI_ORIGIN,
   proprInstanceProxyUrl as sharedProxyUrl,
   isValidProprInstanceId as sharedIsValidId,
 } from '@propr/shared';
@@ -15,6 +16,7 @@ import {
 import {
   PROPR_UI_PROXY_SUFFIX as LAUNCHER_PROXY_SUFFIX,
   DEFAULT_CLOUDFLARED_IMAGE as LAUNCHER_CLOUDFLARED_IMAGE,
+  DEFAULT_PROPR_UI_ORIGIN as LAUNCHER_PROPR_UI_ORIGIN,
   proprInstanceProxyUrl as launcherProxyUrl,
   isValidProprInstanceId as launcherIsValidId,
 } from '../docker/launcher/orchestrator.mjs';
@@ -23,6 +25,7 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
   test('mirrored literals match the shared constants', () => {
     assert.equal(LAUNCHER_PROXY_SUFFIX, SHARED_PROXY_SUFFIX);
     assert.equal(LAUNCHER_CLOUDFLARED_IMAGE, SHARED_CLOUDFLARED_IMAGE);
+    assert.equal(LAUNCHER_PROPR_UI_ORIGIN, SHARED_PROPR_UI_ORIGIN);
   });
 
   test('proprInstanceProxyUrl agrees for valid, blank, and invalid ids', () => {
