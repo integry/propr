@@ -30,14 +30,14 @@ Install the app on every repository ProPR should process, and note the App ID an
 
 ## Set Up And Start With The CLI (Recommended)
 
-The ProPR CLI doubles as the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack:
+The ProPR CLI is the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack. The quickest way to get everything running is the guided `propr setup` wizard:
 
 ```bash
 npm install -g propr-cli      # Node.js 22+ — prefix sudo if your global npm needs it
 which propr && propr --version # confirm the CLI is on PATH (catches root/user prefix mismatches)
 
 mkdir propr-deploy && cd propr-deploy
-propr init stack               # creates .env + data/ logs/ repos/, detects agent credentials
+propr setup                    # guided wizard: scaffold, verify, configure GitHub + intake, start
 ```
 
 :::tip[Global install permissions]
@@ -48,6 +48,18 @@ install must be updated with `sudo`, and a user-prefix install (e.g. `nvm`, or a
 custom `npm config set prefix`) needs no `sudo`. Mixing the two can update a
 different copy of the CLI or leave root-owned files in a user-owned prefix.
 :::
+
+`propr setup` walks through every step interactively: it scaffolds `.env` + `data/ logs/ repos/`, detects host agent credentials, pulls images, helps you choose a [GitHub auth mode](../operations/github-auth.md) and issue intake (WebSocket routing, polling, or webhooks), starts the stack, configures the user whitelist, and can add a first repository and open the Web UI. When you pick **Token relay** at the auth step, it enrolls the shared App for you — logging you in if needed, discovering your installation, minting the relay token, and writing the relay/routing credentials to `.env` — so no separate `propr relay enroll` is required. It is **safe to re-run at any time** — it re-discovers your environment, skips steps that are already satisfied, never overwrites `.env` wholesale, and never deletes data, so you can re-run it to resume an interrupted install or fill in missing settings.
+
+Over SSH or in terminals without raw-mode support, add `--no-tui` for line-by-line prompts. When stdin is not a terminal at all (piped or CI), setup cannot prompt — use the manual flow below instead.
+
+### Manual / Advanced Flow
+
+If you prefer to control each step yourself (for scripting, CI, or troubleshooting), run the underlying commands that `propr setup` orchestrates. Start by scaffolding the runtime directory:
+
+```bash
+propr init stack               # creates .env + data/ logs/ repos/, detects agent credentials
+```
 
 `propr init stack` writes `.env` from the bundled template and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`). The template defaults to the hosted ProPR GitHub App over WebSocket routing (`GITHUB_EVENT_INTAKE_MODE=routing_websocket`), so the normal path is to enroll in the shared App. Then configure GitHub access:
 

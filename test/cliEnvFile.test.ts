@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { upsertEnvVars } from "../packages/cli/src/utils/envFile.js";
+import { clearEnvKeys, upsertEnvVars } from "../packages/cli/src/utils/envFile.js";
 
 test("upsertEnvVars writes Docker env-file values without shell-style quotes", () => {
   const dir = mkdtempSync(join(tmpdir(), "propr-env-"));
@@ -61,4 +61,31 @@ test("upsertEnvVars tightens existing file permissions before writing", { skip: 
 
   assert.equal(readFileSync(envPath, "utf-8"), "PROPR_GH_RELAY_TOKEN=rly_new\n");
   assert.equal(statSync(envPath).mode & 0o777, 0o600);
+});
+
+test("clearEnvKeys removes the given keys and preserves unrelated lines", () => {
+  const dir = mkdtempSync(join(tmpdir(), "propr-env-"));
+  const envPath = join(dir, ".env");
+  writeFileSync(
+    envPath,
+    "# header\nGH_AUTH_MODE=app\nexport GITHUB_USER_WHITELIST=alice,bob\nGH_APP_ID=1\n",
+    "utf-8",
+  );
+
+  clearEnvKeys(envPath, ["GITHUB_USER_WHITELIST"]);
+
+  // The targeted key (export-prefixed) is gone; everything else is untouched.
+  assert.equal(readFileSync(envPath, "utf-8"), "# header\nGH_AUTH_MODE=app\nGH_APP_ID=1\n");
+});
+
+test("clearEnvKeys is a no-op for absent keys and a missing file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "propr-env-"));
+  const envPath = join(dir, ".env");
+  writeFileSync(envPath, "GH_AUTH_MODE=app\n", "utf-8");
+
+  clearEnvKeys(envPath, ["NOT_PRESENT"]);
+  assert.equal(readFileSync(envPath, "utf-8"), "GH_AUTH_MODE=app\n", "an absent key leaves the file untouched");
+
+  // A missing file must not throw.
+  clearEnvKeys(join(dir, "nope.env"), ["ANY"]);
 });

@@ -94,6 +94,14 @@ function unescapeDoubleQuotedEnv(value) {
     });
 }
 
+// Wrap a value in single quotes for safe copy-paste into a POSIX shell, so a
+// path containing spaces or shell metacharacters in a suggested recovery command
+// stays a single literal argument. Embedded single quotes are closed, escaped,
+// and reopened ('\'').
+function shellQuote(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 // Reads a single value from an env file. Re-reads the file per call (matches the
 // original launcher behavior; call sites are few and startup-only).
 function envFileValueFrom(envFileLocal, name) {
@@ -812,6 +820,161 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {
     return getStackStatus(cfg);
 }
 
+// ---------------------------------------------------------------------------
+// async start path
+//
+// The synchronous startStack/startService/ensureNetwork above drive `propr
+// start`, where all the work finishes before any live UI is rendered. The
+// interactive `propr setup` wizard is different: an Ink TUI is on screen while
+// the stack comes up, so a blocking spawnSync would freeze the spinner and
+// swallow keystrokes for the many seconds a cold start can take. These async
+// mirrors do the identical work through dockerAsync(), keeping the event loop
+// free so the wizard keeps animating and streaming progress. Their logic is
+// intentionally kept in lockstep with the synchronous versions above — change
+// one, change the other.
+// ---------------------------------------------------------------------------
+
+async function containerExistsAsync(cfg, name) {
+    const res = await dockerAsync(['ps', '-a', '--filter', `name=^${name}$`, '--format', '{{.Names}}']);
+    return res.stdout.trim() === name;
+}
+
+async function removeIfExistsAsync(cfg, name, onLog) {
+    if (await containerExistsAsync(cfg, name)) {
+        onLog?.(`  · removing stale ${name}`);
+        await dockerAsync(['rm', '-f', name]);
+    }
+}
+
+async function dockerRunDetachedAsync(cfg, name, service, args) {
+    const full = [
+        'run', '-d', '--init', '--name', name,
+        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--label', `propr.stack=${cfg.stack}`,
+        '--label', `propr.service=${service}`,
+        ...args,
+    ];
+    const res = await dockerAsync(full);
+    if (res.status !== 0) {
+        throw new Error(`Failed to start ${name}: ${res.stderr}`);
+    }
+}
+
+/** Async mirror of ensureNetwork. */
+export async function ensureNetworkAsync(cfg, onLog) {
+    const res = await dockerAsync(['network', 'inspect', cfg.network]);
+    if (res.status !== 0) {
+        onLog?.(`creating network ${cfg.network}`);
+        await dockerAsync(['network', 'create', cfg.network]);
+    }
+}
+
+/** Async, memoized image-freshness lookup mirroring cachedImageFreshness. */
+async function cachedImageFreshnessAsync(cache, tag, opts) {
+    if (!cache) return inspectImageFreshnessAsync(tag, opts);
+    const key = `${opts.skipRemoteCheck ? 'skip' : 'remote'}\0${tag}`;
+    if (!cache.has(key)) cache.set(key, await inspectImageFreshnessAsync(tag, opts));
+    return cache.get(key);
+}
+
+/** Async mirror of ensureServiceImage — pulls a missing/stale image, awaited. */
+async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache } = {}) {
+    const tag = imageTagForService(cfg, service);
+    if (!tag) return;
+    const skipFreshness = skipRemoteImageCheck() || !isProprPublishedImage(cfg, tag);
+    const freshness = await cachedImageFreshnessAsync(freshnessCache, tag, { skipRemoteCheck: skipFreshness });
+    if (freshness.status === 'current') return;
+    if (freshness.status === 'unknown') {
+        if (freshness.skipped) return;
+        if (freshness.localOnly) {
+            onLog?.(`  · ${tag} (local-only, pulling)`);
+        } else {
+            onLog?.(`  · ${tag} (local, freshness not verified: ${freshness.error})`);
+            return;
+        }
+    } else {
+        onLog?.(`  · pulling ${tag}`);
+    }
+    const res = await dockerAsync(['pull', tag]);
+    if (res.status !== 0) {
+        throw new Error(`Failed to pull ${tag}: ${(res.stderr || '').trim()}`);
+    }
+}
+
+/** Async mirror of startService. */
+export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
+    const name = `${cfg.stack}-${service}`;
+    if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache });
+    const spec = buildServiceSpec(cfg, service);
+    await removeIfExistsAsync(cfg, name, onLog);
+    const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
+    await dockerRunDetachedAsync(cfg, name, service, runArgs);
+    onLog?.(`  [ok] started ${name}`);
+    return getServiceStateAsync(cfg, service);
+}
+
+/** Async mirror of stopService (used by startStackAsync's rollback). */
+async function stopServiceAsync(cfg, service, { remove = true, onLog } = {}) {
+    const name = `${cfg.stack}-${service}`;
+    if (!(await containerExistsAsync(cfg, name))) return;
+    const stopped = await dockerAsync(['stop', '-t', '10', name]);
+    if (stopped.status !== 0) {
+        throw new Error(`Failed to stop ${name}: ${(stopped.stderr || '').trim()}`);
+    }
+    if (remove) {
+        const removed = await dockerAsync(['rm', name]);
+        if (removed.status !== 0) {
+            throw new Error(`Stopped ${name} but failed to remove it: ${(removed.stderr || '').trim()}`);
+        }
+    }
+    onLog?.(`  [ok] stopped ${name}`);
+}
+
+/**
+ * Async mirror of startStack — starts the full stack in dependency order
+ * without blocking the event loop, rolling back already-started services on a
+ * mid-startup failure (best effort) before rethrowing.
+ */
+export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
+    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
+    const started = [];
+    const freshnessCache = new Map();
+    try {
+        for (const service of toStart) {
+            await startServiceAsync(cfg, service, { onLog, freshnessCache });
+            started.push(service);
+        }
+    } catch (err) {
+        onLog?.(`  ! startup failed (${err.message}) — rolling back already-started services`);
+        for (const service of started.reverse()) {
+            try {
+                await stopServiceAsync(cfg, service, { onLog });
+            } catch (stopErr) {
+                onLog?.(`  ! rollback: ${stopErr.message}`);
+            }
+        }
+        throw err;
+    }
+    return getStackStatusAsync(cfg);
+}
+
+/** Async mirror of getStackStatus. */
+export async function getStackStatusAsync(cfg) {
+    const res = await dockerAsync(STACK_STATUS_PS_ARGS);
+    return parseStackStatus(cfg, res.stdout);
+}
+
+/** Async mirror of getServiceState. */
+async function getServiceStateAsync(cfg, service) {
+    return (await getStackStatusAsync(cfg)).services.find((s) => s.service === service);
+}
+
+/** Async mirror of isStackRunning. */
+export async function isStackRunningAsync(cfg) {
+    const status = await getStackStatusAsync(cfg);
+    return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
+}
+
 /**
  * Stop every container belonging to this stack, discovered by the stack label.
  * Returns `{ failed }` listing containers that could not be stopped/removed so
@@ -857,16 +1020,11 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 // status
 // ---------------------------------------------------------------------------
 
-/** Per-service state for the whole stack, discovered by canonical container name. */
-export function getStackStatus(cfg) {
+/** Parse the `docker ps` table into per-service stack status (shared by sync/async). */
+function parseStackStatus(cfg, stdout) {
     const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
-    const res = docker([
-        'ps', '-a',
-        '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}',
-    ], { capture: true });
-
     const byName = new Map();
-    for (const line of res.stdout.split('\n').filter(Boolean)) {
+    for (const line of stdout.split('\n').filter(Boolean)) {
         const [name, state, status, ports] = line.split('\t');
         if (expectedNames.has(name)) byName.set(name, { state, status, ports: ports || '' });
     }
@@ -887,6 +1045,14 @@ export function getStackStatus(cfg) {
 
     const anyRunning = services.some((s) => s.running);
     return { stack: cfg.stack, network: cfg.network, running: anyRunning, services };
+}
+
+const STACK_STATUS_PS_ARGS = ['ps', '-a', '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'];
+
+/** Per-service state for the whole stack, discovered by canonical container name. */
+export function getStackStatus(cfg) {
+    const res = docker(STACK_STATUS_PS_ARGS, { capture: true });
+    return parseStackStatus(cfg, res.stdout);
 }
 
 export function getServiceState(cfg, service) {
@@ -968,13 +1134,16 @@ export function validateEnv(cfg) {
                 let creatable = false;
                 try { accessSync(parent, fsConstants.W_OK); creatable = true; } catch { /* parent not writable */ }
                 if (!creatable) {
-                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist and ${parent} is not writable. Create it manually: mkdir -p ${cfg.hostVibePromptCacheDir}`);
+                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) does not exist and ${parent} is not writable. Create it manually: mkdir -p ${shellQuote(cfg.hostVibePromptCacheDir)}`);
                 }
             } else {
                 try {
                     accessSync(cfg.hostVibePromptCacheDir, fsConstants.W_OK);
                 } catch {
-                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) is not writable.`);
+                    // Usually means a previous run let Docker auto-create the dir
+                    // as root on first bind-mount. Reclaim ownership or remove it
+                    // (it is a regenerable cache) so the user can write to it again.
+                    errors.push(`HOST_VIBE_PROMPT_CACHE_DIR (${cfg.hostVibePromptCacheDir}) is not writable. It is likely owned by root from a previous run; reclaim it with \`sudo chown -R $(id -u):$(id -g) ${shellQuote(cfg.hostVibePromptCacheDir)}\` or remove it (it is a regenerable cache) with \`sudo rm -rf ${shellQuote(cfg.hostVibePromptCacheDir)}\`.`);
                 }
             }
         }

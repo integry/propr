@@ -21,6 +21,7 @@ The host CLI requires **Node.js 22 or newer** (the Docker launcher image is sepa
 Bring up a complete ProPR stack from the terminal:
 
 ```bash
+propr setup              # guided one-time bootstrap: scaffold, verify, configure, start (re-runnable)
 propr init stack         # scaffold .env + data/ logs/ repos/, detect agent credentials
 propr check              # verify Docker, images, agents, and GitHub auth mode (--verify smoke-tests agents)
 propr start              # pull images and start the stack with a live dashboard
@@ -29,6 +30,22 @@ propr ui                 # open the Web UI (http://localhost:5173)
 propr docs               # open the bundled docs site
 propr stop               # stop the stack (--keep to stop without removing containers)
 ```
+
+`propr setup` is the recommended way to bring up a local stack — see the [Local Setup](../tutorials/setup-local.md) and [Server Setup](../tutorials/setup-server.md) tutorials. The `init stack` / `check` / `start` commands below are the individual steps it orchestrates, available for scripting, CI, and troubleshooting.
+
+### `propr setup`
+
+A guided, interactive wizard that performs a complete one-time bootstrap of the local stack. In one pass it runs environment checks, scaffolds the stack root, pulls images, records detected agent credentials, helps you choose a [GitHub auth mode](../operations/github-auth.md) and issue intake (App/relay events, polling, or direct webhooks), starts the services, configures the GitHub user whitelist, and optionally adds a first repository and opens the Web UI.
+
+Setup is **safe to re-run at any time**: it re-discovers your environment and skips steps that are already satisfied, so running it again only fills in what is missing. It never overwrites `.env` wholesale (edits are applied per key and never blank an existing value), reuses a running stack instead of recreating it, and never deletes data.
+
+| Option | Description |
+|--------|-------------|
+| `--root <dir>` | Stack root directory where `.env`, `data/`, `logs/`, and `repos/` live (default: current directory) |
+| `--no-tui` | Skip the full-screen wizard and prompt line-by-line instead (use over SSH or in shells without raw-mode support) |
+| `--skip-remote-image-check` | Skip the slow registry round-trip that checks whether stack images already exist |
+
+The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
 
 - `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
 - `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
@@ -41,16 +58,19 @@ Running bare `propr` performs the same environment checks as `propr check` (incl
 
 ## GitHub Relay (shared-app auth)
 
-If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay (see [GitHub Authentication](../operations/github-auth.md)):
+If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay (see [GitHub Authentication](../operations/github-auth.md)).
 
-Run these from the initialized stack directory (the one holding `.env`), so
-`propr relay enroll` writes the token to the right `.env`:
+**The easiest path is `propr setup`:** choose **Token relay** at the GitHub-authentication step and it enrolls for you — it reuses your `propr login` token, discovers your installation (auto-selecting when there is exactly one, prompting when there are several), mints the relay token, and writes `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, and `GH_INSTALLATION_ID` to the stack `.env`. If you are not logged in yet, the line-by-line wizard offers to run `propr login` first. No separate enroll step is needed.
+
+To manage relay tokens directly — or to enroll outside the wizard — use `propr relay`. Run these from the initialized stack directory (the one holding `.env`), so the token is written to the right `.env`:
 
 ```bash
 propr relay enroll       # mint a relay token and save it to the stack .env
 propr relay list         # list relay tokens for the installation
 propr relay revoke <id>  # revoke a token
 ```
+
+`propr relay enroll` discovers the installation automatically from your `propr login` identity when you have exactly one; pass `--installation <id>` to choose among several, or `--url <url>` to target a self-hosted relay.
 
 ## Connect and Authenticate
 

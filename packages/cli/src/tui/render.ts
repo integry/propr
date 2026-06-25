@@ -9,6 +9,7 @@
 import type { ConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import { renderStatusTable } from "../orchestrator/format.js";
+import { ensureVibePromptCacheDir } from "../commands/initStack.js";
 import { createInterface } from "node:readline/promises";
 
 export interface StartOptions {
@@ -35,6 +36,16 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
   if (!orch.dockerAvailable()) {
     console.error("Error: cannot reach the Docker daemon. Run 'propr check' for diagnostics.");
     process.exit(1);
+  }
+
+  // Pre-create the host Vibe prompt-cache dir owned by this user before Docker
+  // can auto-create it as root on first bind-mount. Without this, a stack that
+  // has run once leaves a root-owned cache dir that trips the writability check
+  // below and blocks every subsequent `propr start`.
+  try {
+    ensureVibePromptCacheDir(cfg.hostVibePromptCacheDir);
+  } catch {
+    /* best-effort: validateEnv will surface an actionable error if needed */
   }
 
   const validation = orch.validateEnv(cfg);

@@ -4,11 +4,19 @@ sidebar_position: 1
 
 # Setup
 
-Most people should run ProPR from the prebuilt Docker images, started either by the ProPR CLI (`propr init stack` + `propr start`, recommended; Node.js 22+) or by the `propr/launcher:latest` container (no Node.js needed). You only need source setup if you are changing ProPR itself.
+Most people should run ProPR from the prebuilt Docker images, started by the ProPR CLI (Node.js 22+). The fastest path is the guided `propr setup` wizard, which scaffolds the runtime directory, verifies the host, configures GitHub access and issue intake, and starts the stack in one pass. The underlying steps (`propr init stack`, `propr check`, `propr start`) remain available for scripting and advanced control, as does the `propr/launcher:latest` container (no Node.js needed). You only need source setup if you are changing ProPR itself.
+
+```bash
+npm install -g propr-cli   # Node.js 22+
+mkdir propr-deploy && cd propr-deploy
+propr setup                # guided, re-runnable bootstrap
+```
+
+`propr setup` is safe to re-run at any time — it re-discovers your environment, skips steps that are already satisfied, and never overwrites existing configuration or data, so you can use it to resume an interrupted install or fill in missing settings later.
 
 ## Prerequisites For Every Path
 
-- GitHub backend access: by default the shared, hosted ProPR GitHub App via the token relay (`propr relay enroll`) — no GitHub App of your own and no private key to manage. As an advanced option you can register your own GitHub App on the target repositories (permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), optionally Actions (Read-only)). See [GitHub Authentication](../operations/github-auth.md)
+- GitHub backend access: by default the shared, hosted ProPR GitHub App via the token relay, which `propr setup` enrolls for you when you pick **Token relay** (or run `propr relay enroll` standalone) — no GitHub App of your own and no private key to manage. As an advanced option you can register your own GitHub App on the target repositories (permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), optionally Actions (Read-only)). See [GitHub Authentication](../operations/github-auth.md)
 - Credentials for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe), authenticated on the host before starting ProPR
 - Docker with access to the Docker socket
 - Disk space for data, logs, and repository workspaces
@@ -23,7 +31,7 @@ Use this when you want to run ProPR on your Linux laptop or workstation.
 
 [Local Setup](./setup-local.md)
 
-You will install the CLI, scaffold a runtime directory with `propr init stack`, configure GitHub access, and start the stack with `propr start` (the launcher container remains as a no-Node.js alternative). The Web UI is at `http://localhost:5173`, the API on port `4000`. Issue intake uses the hosted ProPR GitHub App over WebSocket routing by default — no inbound public URL required.
+You will install the CLI and run `propr setup`, which scaffolds the runtime directory, configures GitHub access, and starts the stack (the individual `propr init stack` / `propr check` / `propr start` commands and the launcher container remain as manual alternatives). The Web UI is at `http://localhost:5173`, the API on port `4000`. Issue intake uses the hosted ProPR GitHub App over WebSocket routing by default — no inbound public URL required.
 
 ## Server Setup
 
@@ -31,7 +39,7 @@ Use this when ProPR should run on a shared machine or production host.
 
 [Server Setup](./setup-server.md)
 
-The flow is the same as local setup, but you use stable server paths, public URLs, TLS through a reverse proxy, and stricter credential access. Server setup also covers the advanced intake options — polling, or your own GitHub App webhook — for installs that need them.
+The flow is the same as local setup — `propr setup` is still the recommended bootstrap — but you use stable server paths, public URLs, TLS through a reverse proxy, and stricter credential access. Server setup also covers the advanced intake options — polling, or your own GitHub App webhook — for installs that need them.
 
 ## Secure VPS Deployment
 
@@ -61,4 +69,4 @@ Once ProPR is running, configure it through either control surface — the Web U
 4. Review labels and PR behavior.
 5. Run a small test issue or Planner Studio draft (or `propr plan create "..." --wait`).
 
-For day-to-day use, see [Daily Use](./usage.md).
+For day-to-day use, see [Daily Use](./usage.md). Before exposing ProPR beyond your own machine, harden the host and deployment: see [Secure VPS Deployment](./setup-vps.md) and [Advanced VPS Hardening](./setup-vps-hardening.md).

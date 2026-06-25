@@ -5,178 +5,229 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  applyEnvSelection,
   createSetupState,
-  getEnvValue,
-  getStackState,
-  isPlaceholderEnvValue,
+  hasEnvValue,
+  inspectStackInit,
   isSetupComplete,
   isStackInitialized,
-  nextActionableStep,
-  readEnvValues,
-  seedEnvDefaults,
-  summarizeSetup,
+  nextPendingStep,
+  readEnvVars,
   updateStep,
-  writeEnvSelection,
+  STACK_SUBDIRS,
 } from "../packages/cli/src/commands/setup/state.js";
-import { SETUP_STEPS } from "../packages/cli/src/commands/setup/types.js";
+import type { SetupState } from "../packages/cli/src/commands/setup/types.js";
 
-function tempDir(): string {
+function makeRoot(): string {
   return mkdtempSync(join(tmpdir(), "propr-setup-"));
 }
 
-test("getStackState reports an uninitialized root and isStackInitialized agrees", () => {
-  const dir = tempDir();
-  const state = getStackState(dir);
-  assert.equal(state.envExists, false);
-  assert.equal(state.initialized, false);
-  assert.equal(isStackInitialized(dir), false);
+function writeEnv(rootDir: string, contents: string): void {
+  writeFileSync(join(rootDir, ".env"), contents, "utf-8");
+}
+
+test("readEnvVars returns {} when .env is absent", () => {
+  assert.deepEqual(readEnvVars(makeRoot()), {});
 });
 
-test("getStackState reports a fully scaffolded root as initialized", () => {
-  const dir = tempDir();
-  writeFileSync(join(dir, ".env"), "FOO=bar\n", "utf-8");
-  mkdirSync(join(dir, "data"));
-  mkdirSync(join(dir, "logs"));
-  mkdirSync(join(dir, "repos"));
-  assert.equal(getStackState(dir).initialized, true);
-  assert.equal(isStackInitialized(dir), true);
+test("readEnvVars returns {} when .env is a directory instead of a file", () => {
+  const root = makeRoot();
+  mkdirSync(join(root, ".env"));
+  // Must not throw — a non-regular-file .env reads as "no vars", matching
+  // inspectStackInit's isFile guard.
+  assert.deepEqual(readEnvVars(root), {});
 });
 
-test("getStackState ignores files masquerading as the stack directories", () => {
-  const dir = tempDir();
-  writeFileSync(join(dir, ".env"), "FOO=bar\n", "utf-8");
-  // Regular files named like the expected directories must not count.
-  writeFileSync(join(dir, "data"), "", "utf-8");
-  writeFileSync(join(dir, "logs"), "", "utf-8");
-  writeFileSync(join(dir, "repos"), "", "utf-8");
-  const state = getStackState(dir);
-  assert.equal(state.dataDirExists, false);
-  assert.equal(state.logsDirExists, false);
-  assert.equal(state.reposDirExists, false);
-  assert.equal(state.initialized, false);
-  assert.equal(isStackInitialized(dir), false);
-});
+test("readEnvVars parses plain, exported, quoted, and commented assignments", () => {
+  const root = makeRoot();
+  writeEnv(
+    root,
+    [
+      "# a comment line",
+      "",
+      "PLAIN=value",
+      "export EXPORTED=exported-value",
+      'DOUBLE="quoted value"',
+      "SINGLE='single quoted'",
+      "SPACED  =  spaced-value",
+      "WITH_COMMENT=bare # trailing comment",
+      'QUOTED_HASH="keep # this"',
+      "not a valid line",
+    ].join("\n"),
+  );
 
-test("readEnvValues parses assignments and ignores comments/blanks", () => {
-  const dir = tempDir();
-  const envPath = join(dir, ".env");
-  writeFileSync(envPath, "# comment\n\nexport GH_APP_ID=123\nGITHUB_USER_WHITELIST=alice,bob\n", "utf-8");
-  assert.deepEqual(readEnvValues(envPath), { GH_APP_ID: "123", GITHUB_USER_WHITELIST: "alice,bob" });
-  assert.equal(getEnvValue(envPath, "GH_APP_ID"), "123");
-  assert.equal(getEnvValue(envPath, "MISSING"), undefined);
-});
-
-test("readEnvValues returns {} when the file is absent", () => {
-  assert.deepEqual(readEnvValues(join(tempDir(), ".env")), {});
-});
-
-test("isPlaceholderEnvValue flags empty and .env.example placeholders", () => {
-  assert.equal(isPlaceholderEnvValue(undefined), true);
-  assert.equal(isPlaceholderEnvValue(""), true);
-  assert.equal(isPlaceholderEnvValue("your_app_id"), true);
-  assert.equal(isPlaceholderEnvValue("/path/to/key.pem"), true);
-  assert.equal(isPlaceholderEnvValue("changeme"), true);
-  assert.equal(isPlaceholderEnvValue("12345"), false);
-});
-
-test("writeEnvSelection writes explicit values and skips empty ones", () => {
-  const dir = tempDir();
-  const envPath = join(dir, ".env");
-  writeFileSync(envPath, "GH_APP_ID=old\nKEEP=me\n", "utf-8");
-
-  const result = writeEnvSelection(envPath, {
-    GH_APP_ID: "new",
-    GH_INSTALLATION_ID: undefined,
-    EMPTY: "",
-    BLANK: "   ", // whitespace-only must be treated as empty
+  assert.deepEqual(readEnvVars(root), {
+    PLAIN: "value",
+    EXPORTED: "exported-value",
+    DOUBLE: "quoted value",
+    SINGLE: "single quoted",
+    SPACED: "spaced-value",
+    WITH_COMMENT: "bare",
+    QUOTED_HASH: "keep # this",
   });
-
-  assert.deepEqual(result.written, ["GH_APP_ID"]);
-  assert.deepEqual(result.skipped.sort(), ["BLANK", "EMPTY", "GH_INSTALLATION_ID"]);
-  const values = readEnvValues(envPath);
-  assert.equal(values.GH_APP_ID, "new"); // explicit selection overwrites
-  assert.equal(values.KEEP, "me"); // unrelated line preserved
 });
 
-test("seedEnvDefaults only fills missing or placeholder values", () => {
-  const dir = tempDir();
-  const envPath = join(dir, ".env");
-  writeFileSync(envPath, "HOST_CLAUDE_DIR=/real/claude\nGH_APP_ID=your_app_id\n", "utf-8");
-
-  const result = seedEnvDefaults(envPath, {
-    HOST_CLAUDE_DIR: "/detected/claude", // real value -> preserved
-    GH_APP_ID: "555", // placeholder -> written
-    HOST_CODEX_DIR: "/detected/codex", // missing -> written
-  });
-
-  assert.deepEqual(result.preserved, ["HOST_CLAUDE_DIR"]);
-  assert.deepEqual(result.written.sort(), ["GH_APP_ID", "HOST_CODEX_DIR"]);
-  const values = readEnvValues(envPath);
-  assert.equal(values.HOST_CLAUDE_DIR, "/real/claude");
-  assert.equal(values.GH_APP_ID, "555");
-  assert.equal(values.HOST_CODEX_DIR, "/detected/codex");
+test("hasEnvValue is true only for present non-blank keys", () => {
+  const root = makeRoot();
+  writeEnv(root, "SET=value\nEMPTY=\nBLANK=   \n");
+  assert.equal(hasEnvValue(root, "SET"), true);
+  assert.equal(hasEnvValue(root, "EMPTY"), false);
+  assert.equal(hasEnvValue(root, "BLANK"), false);
+  assert.equal(hasEnvValue(root, "MISSING"), false);
 });
 
-test("step model advances and summarizes for renderers", () => {
+test("applyEnvSelection writes only absent keys by default and reports skips", () => {
+  const root = makeRoot();
+  writeEnv(root, "EXISTING=old\n");
+
+  const result = applyEnvSelection(root, { EXISTING: "new", FRESH: "added" });
+
+  assert.deepEqual(result.written, ["FRESH"]);
+  assert.deepEqual(result.skipped, ["EXISTING"]);
+  const vars = readEnvVars(root);
+  assert.equal(vars.EXISTING, "old");
+  assert.equal(vars.FRESH, "added");
+});
+
+test("applyEnvSelection overwrites existing values when overwrite is set", () => {
+  const root = makeRoot();
+  writeEnv(root, "EXISTING=old\n");
+
+  const result = applyEnvSelection(root, { EXISTING: "new" }, { overwrite: true });
+
+  assert.deepEqual(result.written, ["EXISTING"]);
+  assert.deepEqual(result.skipped, []);
+  assert.equal(readEnvVars(root).EXISTING, "new");
+});
+
+test("applyEnvSelection treats a blank existing value as overwritable", () => {
+  const root = makeRoot();
+  writeEnv(root, "EMPTY=\n");
+
+  const result = applyEnvSelection(root, { EMPTY: "filled" });
+
+  assert.deepEqual(result.written, ["EMPTY"]);
+  assert.equal(readEnvVars(root).EMPTY, "filled");
+});
+
+test("applyEnvSelection ignores blank selections so it never clobbers a value", () => {
+  const root = makeRoot();
+  writeEnv(root, "KEEP=value\n");
+
+  const result = applyEnvSelection(root, { KEEP: "   ", OTHER: "" }, { overwrite: true });
+
+  assert.deepEqual(result.written, []);
+  assert.deepEqual(result.skipped, []);
+  assert.equal(readEnvVars(root).KEEP, "value");
+});
+
+test("inspectStackInit requires .env as a file and every subdir as a directory", () => {
+  const root = makeRoot();
+  assert.equal(inspectStackInit(root).initialized, false);
+
+  writeEnv(root, "X=1\n");
+  for (const sub of STACK_SUBDIRS) mkdirSync(join(root, sub));
+
+  const state = inspectStackInit(root);
+  assert.equal(state.envExists, true);
+  assert.equal(state.initialized, true);
+  assert.equal(isStackInitialized(root), true);
+});
+
+test("inspectStackInit rejects a file standing in for an expected directory", () => {
+  const root = makeRoot();
+  writeEnv(root, "X=1\n");
+  // One expected subdir slot is a regular file instead of a directory.
+  writeFileSync(join(root, STACK_SUBDIRS[0]), "not a dir", "utf-8");
+  for (const sub of STACK_SUBDIRS.slice(1)) mkdirSync(join(root, sub));
+
+  const state = inspectStackInit(root);
+  assert.equal(state.dirs[STACK_SUBDIRS[0]], false);
+  assert.equal(state.initialized, false);
+});
+
+test("createSetupState starts every step pending", () => {
+  const state = createSetupState("/tmp/root");
+  assert.equal(state.rootDir, "/tmp/root");
+  assert.ok(state.steps.length > 0);
+  assert.ok(state.steps.every((step) => step.status === "pending"));
+});
+
+test("updateStep is immutable and patches by id", () => {
+  const state = createSetupState("/tmp/root");
+  const next = updateStep(state, "check", { status: "done", detail: "ok" });
+
+  assert.notEqual(next, state);
+  assert.equal(state.steps[0].status, "pending"); // original untouched
+  const checkStep = next.steps.find((s) => s.id === "check");
+  assert.equal(checkStep?.status, "done");
+  assert.equal(checkStep?.detail, "ok");
+});
+
+test("updateStep returns the same reference for an unknown id", () => {
+  const state = createSetupState("/tmp/root");
+  // @ts-expect-error — exercising the unknown-id guard at runtime.
+  const next = updateStep(state, "does-not-exist", { status: "done" });
+  assert.equal(next, state);
+});
+
+test("nextPendingStep returns the first pending step", () => {
+  const state = createSetupState("/tmp/root");
+  const done = updateStep(state, state.steps[0].id, { status: "done" });
+  assert.equal(nextPendingStep(done)?.id, state.steps[1].id);
+});
+
+test("nextPendingStep returns undefined when all steps are terminal", () => {
   let state = createSetupState("/tmp/root");
-  assert.equal(state.steps.length, SETUP_STEPS.length);
-  assert.equal(nextActionableStep(state)?.id, SETUP_STEPS[0].id);
+  for (const step of state.steps) state = updateStep(state, step.id, { status: "done" });
+  assert.equal(nextPendingStep(state), undefined);
+});
 
-  state = updateStep(state, "checks", "done", { detail: "all green" });
-  const checks = state.steps.find((s) => s.id === "checks");
-  assert.equal(checks?.status, "done");
-  assert.equal(checks?.detail, "all green");
-  assert.equal(nextActionableStep(state)?.id, SETUP_STEPS[1].id);
+test("nextPendingStep blocks on a failed required step even when patched out of order", () => {
+  const state = createSetupState("/tmp/root");
+  // Fail a required step that comes *after* still-pending earlier steps.
+  const laterRequired = state.steps.find((s) => !s.optional && s.id !== state.steps[0].id);
+  assert.ok(laterRequired);
+  const blocked = updateStep(state, laterRequired.id, { status: "failed" });
+  assert.equal(nextPendingStep(blocked), undefined);
+});
 
-  assert.equal(summarizeSetup(state).done, 1);
+test("nextPendingStep is not blocked by a failed optional step", () => {
+  const state = createSetupState("/tmp/root");
+  const optional = state.steps.find((s) => s.optional);
+  assert.ok(optional);
+  const withFailedOptional = updateStep(state, optional.id, { status: "failed" });
+  assert.equal(nextPendingStep(withFailedOptional)?.id, state.steps[0].id);
+});
+
+test("isSetupComplete requires every required step terminal and non-failed", () => {
+  let state: SetupState = createSetupState("/tmp/root");
   assert.equal(isSetupComplete(state), false);
 
-  // Drive every remaining step to a settled status.
-  for (const def of SETUP_STEPS) {
-    state = updateStep(state, def.id, def.optional ? "skipped" : "done");
+  for (const step of state.steps) {
+    if (step.optional) continue; // leave optional steps pending
+    state = updateStep(state, step.id, { status: "done" });
   }
+  // Optional steps still pending must not block completion.
   assert.equal(isSetupComplete(state), true);
-  assert.equal(nextActionableStep(state), undefined);
 });
 
-test("nextActionableStep surfaces an errored step ahead of later pending steps", () => {
-  let state = createSetupState("/tmp/root");
-  // Mark the first step done and the second errored; later steps stay pending.
-  state = updateStep(state, SETUP_STEPS[0].id, "done");
-  state = updateStep(state, SETUP_STEPS[1].id, "error", { error: "boom" });
-  assert.equal(nextActionableStep(state)?.id, SETUP_STEPS[1].id);
+test("isSetupComplete treats skipped and warning required steps as complete", () => {
+  let state: SetupState = createSetupState("/tmp/root");
+  const required = state.steps.filter((s) => !s.optional);
+  state = updateStep(state, required[0].id, { status: "skipped" });
+  state = updateStep(state, required[1].id, { status: "warning" });
+  for (const step of required.slice(2)) state = updateStep(state, step.id, { status: "done" });
+  assert.equal(isSetupComplete(state), true);
 });
 
-test("updateStep clears a stale error when a step recovers", () => {
-  let state = createSetupState("/tmp/root");
-  state = updateStep(state, "checks", "error", { error: "boom", detail: "failed" });
-  assert.equal(state.steps.find((s) => s.id === "checks")?.error, "boom");
-
-  state = updateStep(state, "checks", "done", { detail: "all green" });
-  const checks = state.steps.find((s) => s.id === "checks");
-  assert.equal(checks?.error, undefined); // stale error dropped
-  assert.equal(checks?.detail, "all green");
-
-  // An explicit error in the patch is still honored.
-  state = updateStep(state, "checks", "error", { error: "again" });
-  assert.equal(state.steps.find((s) => s.id === "checks")?.error, "again");
-});
-
-test("isSetupComplete rejects a skipped required step", () => {
-  let state = createSetupState("/tmp/root");
-  const required = SETUP_STEPS.find((def) => !def.optional);
-  const optional = SETUP_STEPS.find((def) => def.optional);
-  assert.ok(required && optional, "fixture expects both required and optional steps");
-
-  for (const def of SETUP_STEPS) {
-    state = updateStep(state, def.id, "done");
+test("isSetupComplete is false while any required step has failed", () => {
+  let state: SetupState = createSetupState("/tmp/root");
+  for (const step of state.steps) {
+    if (!step.optional) state = updateStep(state, step.id, { status: "done" });
   }
-  // Skipping a required step must leave setup incomplete...
-  state = updateStep(state, required.id, "skipped");
+  const required = state.steps.find((s) => !s.optional);
+  assert.ok(required);
+  state = updateStep(state, required.id, { status: "failed" });
   assert.equal(isSetupComplete(state), false);
-
-  // ...while skipping an optional step is fine.
-  state = updateStep(state, required.id, "done");
-  state = updateStep(state, optional.id, "skipped");
-  assert.equal(isSetupComplete(state), true);
 });

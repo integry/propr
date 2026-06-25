@@ -12,10 +12,14 @@ import styles from './index.module.css';
 const QUICKSTART_SNIPPET = `npm install -g @propr/cli   # Node.js 22+; prefix with sudo only if your global npm prefix requires it
 
 mkdir propr && cd propr
-propr init stack    # scaffold .env + data/ logs/ repos/, detect agent credentials
-propr check         # verify Docker, images, agents, and GitHub auth
-propr start         # pull images and start the stack with a live dashboard
-propr ui            # open the Web UI`;
+propr setup         # interactive wizard: checks, scaffold, images, GitHub auth, start
+                    # safe to re-run; it skips anything already configured
+
+# Prefer to drive each step yourself? The manual flow still works:
+#   propr init stack   # scaffold .env + data/ logs/ repos/, detect agent credentials
+#   propr check        # verify Docker, images, agents, and GitHub auth
+#   propr start        # pull images and start the stack with a live dashboard
+#   propr ui           # open the Web UI`;
 
 type IconName =
   | 'rocket'
@@ -250,8 +254,8 @@ function Quickstart() {
               directory, verifies the host, and starts the prebuilt images on a
               Docker-capable Linux host. Configure{' '}
               <Link to="/docs/operations/github-auth">GitHub access</Link> (your own
-              GitHub App, or a shared App via <code>propr relay enroll</code>) and
-              authenticate at least one agent CLI on the host.
+              GitHub App, or a shared App that <code>propr setup</code> enrolls for
+              you) and authenticate at least one agent CLI on the host.
             </p>
             <p>
               Full walkthroughs: <Link to="/docs/tutorials/setup-local">local</Link>,{' '}

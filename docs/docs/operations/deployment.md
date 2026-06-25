@@ -121,7 +121,7 @@ Intake runs in exactly **one** of three modes, selected by `GITHUB_EVENT_INTAKE_
 | GitHub API usage | low — event-driven | higher — periodic, scales with repos and open PRs | low — event-driven |
 | Main caveat | none for typical installs | consumes the API budget continuously (see below) | must expose an endpoint; blocked by SSO/Access gates unless `/webhook` is exempted |
 
-Most installs should stay on `routing_websocket`: it needs no inbound public URL, no GitHub App of your own, and no private key, and it delivers events with the lowest latency. Run `propr relay enroll` to provision the shared-App install and routing/relay credentials. In every mode, deterministic job IDs and a state-label check prevent the same issue from being processed twice when it is seen more than once (see [Daemon](../architecture/daemon.md)).
+Most installs should stay on `routing_websocket`: it needs no inbound public URL, no GitHub App of your own, and no private key, and it delivers events with the lowest latency. Pick **Token relay** in `propr setup` (or run `propr relay enroll` standalone) to provision the shared-App install and routing/relay credentials. In every mode, deterministic job IDs and a state-label check prevent the same issue from being processed twice when it is seen more than once (see [Daemon](../architecture/daemon.md)).
 
 **Polling** (`GITHUB_EVENT_INTAKE_MODE=polling`) suits installs that prefer to pull rather than maintain a streaming connection; it needs no inbound endpoint but adds latency and consumes the API budget continuously. The interval is `POLLING_INTERVAL_MS` (default `60000`).
 

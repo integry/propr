@@ -55,6 +55,12 @@ installed the shared app). Tokens are cached in memory and refreshed shortly
 before they expire — every other GitHub call and `git push` goes **directly** to
 GitHub, so the relay is only contacted ~hourly to mint a fresh token.
 
+The simplest way to set all four values above is to pick **Token relay** in
+`propr setup`: it enrolls with your `propr login` identity, auto-discovers the
+installation, mints the token, and writes the keys to `.env` for you. You can
+also enroll standalone with `propr relay enroll` (see
+[ProPR CLI](../features/propr-cli.md#github-relay-shared-app-auth)).
+
 > Per-user access: a single stack can be shared by multiple whitelisted GitHub
 > users. Each user's access is gated at request time by their own OAuth login and
 > the ProPR whitelist; execution runs under the single stack-wide installation

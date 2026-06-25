@@ -9,6 +9,9 @@
 import { validateRoutingUrl as validateRoutingUrlPolicy } from '@propr/shared';
 
 import { SUPPORTED_WEBHOOK_EVENTS, type WebhookEventType } from '../webhook/webhookHandler.js';
+import { parseWebhookPayload } from './webhookPayload.js';
+
+export { parseWebhookPayload } from './webhookPayload.js';
 
 /** Raw frame payload types `ws` can surface on a 'message' event. */
 export type RawData = string | Buffer | ArrayBuffer | Buffer[];
@@ -475,7 +478,7 @@ export async function resolveDeliveryPayload(opts: ResolveDeliveryPayloadOptions
     const { delivery, routingUrl, tokens, fetchImpl, pullTimeoutMs, log } = opts;
     const inline = delivery.payload?.rawPayload;
     if (inline !== undefined && inline !== null) {
-        return inline;
+        return parseWebhookPayload(inline);
     }
 
     const deliveryId = delivery.deliveryId as string;
@@ -489,5 +492,6 @@ export async function resolveDeliveryPayload(opts: ResolveDeliveryPayloadOptions
         throw new Error('No fetch implementation available to pull delivery payload');
     }
 
-    return pullDeliveryPayload({ routingUrl, deliveryId, token, fetchImpl: fetcher, pullTimeoutMs, log });
+    const pulled = await pullDeliveryPayload({ routingUrl, deliveryId, token, fetchImpl: fetcher, pullTimeoutMs, log });
+    return parseWebhookPayload(pulled);
 }

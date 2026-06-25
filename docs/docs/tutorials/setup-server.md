@@ -82,7 +82,18 @@ In your GitHub App settings, set the webhook URL to `https://propr.example.com/w
 
 ## Start The Stack
 
-On the server, the CLI control plane is the simplest path (Node.js 22+):
+On the server, the CLI control plane is the simplest path (Node.js 22+). The guided `propr setup` wizard is the recommended bootstrap — it scaffolds the runtime directory, helps you pick a [GitHub auth mode](../operations/github-auth.md) and issue intake (including the polling-vs-webhook choice covered above), and starts the stack:
+
+```bash
+sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/propr
+propr setup --root /srv/propr  # guided, re-runnable bootstrap
+```
+
+Over SSH, run `propr setup --no-tui` if your terminal lacks raw-mode support; setup then prompts line-by-line. Choosing **Token relay** at the auth step enrolls the shared App automatically (logging you in if needed, then writing the relay/routing credentials to `.env`), so no separate `propr relay enroll` is needed. Setup is **safe to re-run** — it skips already-satisfied steps and never overwrites `.env` or deletes data — so you can re-run it after editing public URLs or switching intake mode.
+
+### Manual / Advanced Flow
+
+To control each step yourself (useful for scripted provisioning and CI), run the underlying commands directly:
 
 ```bash
 sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/propr
@@ -151,4 +162,4 @@ propr remote-status
 
 CLI authentication uses GitHub Bearer tokens and is enabled by default (`ENABLE_BEARER_AUTH=true`).
 
-For ongoing server care, see [Maintenance And Troubleshooting](../operations/maintenance.md).
+Before opening the server to traffic, harden the host and deployment: [Secure VPS Deployment](./setup-vps.md) covers OS hardening, the host firewall, localhost port binding, and TLS, and [Advanced VPS Hardening](./setup-vps-hardening.md) removes public inbound traffic entirely with a Cloudflare Tunnel and an SSO gate. For ongoing server care, see [Maintenance And Troubleshooting](../operations/maintenance.md).

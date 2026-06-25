@@ -1,58 +1,41 @@
 /**
- * Setup wizard state helpers.
+ * Setup wizard domain helpers.
  *
- * Pure, side-effect-free domain logic for `propr setup`: resolving the stack
- * root, inspecting how far scaffolding has progressed, safely editing `.env`,
- * and advancing the per-step model in ./types.ts. None of these import Ink or
- * readline, and none start Docker on their own. The stack-root resolver reuses
- * the orchestrator module's pure {@link resolveStackRoot} — path math over node
- * builtins only, so importing it does not load the Docker-backed orchestrator
- * core. That core (orchestrator.mjs) is loaded lazily by the one helper that
- * needs it ({@link isStackRunning}), so this module stays safe to import (and
- * unit-test) without a running daemon or a TTY.
+ * Pure, side-effect-light helpers that the `propr setup` driver and both
+ * renderers (Ink TUI and readline fallback) build on:
+ *   - resolving the stack root (reusing the orchestrator's precedence rules),
+ *   - inspecting whether the stack is already initialized,
+ *   - reading and *safely* editing .env (non-destructive by default),
+ *   - constructing and transitioning the {@link SetupState} step model.
  *
- * Editing `.env` reuses {@link upsertEnvVars}, which only touches the keys it is
- * given and preserves every other line. The two writers below keep the flow
- * non-destructive by default: {@link seedEnvDefaults} only fills missing or
- * placeholder values, while {@link writeEnvSelection} writes explicit user
- * choices.
+ * Nothing here loads the orchestrator's Docker core or renders UI, so the
+ * module can be imported and unit-tested without Docker, Ink, or readline.
+ * `resolveStackRoot` lives in ../../orchestrator/index.js but only reads config
+ * and env — it does not start Docker.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-
-import { scaffoldStack, type InitStackOptions, type InitStackResult } from "../initStack.js";
+import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
 import type { ConfigManager } from "../../config/index.js";
-import { upsertEnvVars } from "../../utils/envFile.js";
+import { clearEnvKeys as clearEnvFileKeys, upsertEnvVars } from "../../utils/envFile.js";
 import {
-  SETUP_STEPS,
+  SETUP_STEP_DEFINITIONS,
   type SetupState,
+  type SetupStep,
   type SetupStepId,
-  type SetupStepState,
-  type SetupStepStatus,
-  type StackState,
+  type SetupStepPatch,
 } from "./types.js";
 
 /**
- * Resolve the stack root for the wizard. Thin wrapper over the shared
- * {@link resolveStackRoot} so the command, TUI and fallback renderer all agree
- * on precedence: explicit flag → PROPR_ROOT → saved config → cwd.
+ * Sub-directories scaffoldStack creates under the stack root. Exported so the
+ * setup driver and tests can create/check the same scaffold shape without
+ * duplicating these names.
  */
-export function resolveSetupRoot(configManager: ConfigManager | undefined, flagRoot?: string): string {
-  return resolveStackRoot(configManager, flagRoot);
-}
+export const STACK_SUBDIRS = ["data", "logs", "repos"] as const;
 
-/** True when `path` is an existing regular file (false for dirs / missing). */
-function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/** True when `path` is an existing directory (false for files / missing). */
+/** True only when `path` exists and is a directory. Missing paths read false. */
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
@@ -61,238 +44,248 @@ function isDirectory(path: string): boolean {
   }
 }
 
-/**
- * Filesystem-only snapshot of scaffolding progress for `rootDir`. Used to keep
- * the init step idempotent: a fully-initialized root needs no re-scaffold. The
- * checks are type-aware — a regular file named `data`/`logs`/`repos` (or a
- * directory named `.env`) does not count, so an invalid root is not mistaken
- * for an initialized one.
- */
-export function getStackState(rootDir: string): StackState {
-  const envPath = join(rootDir, ".env");
-  const envExists = isFile(envPath);
-  const dataDirExists = isDirectory(join(rootDir, "data"));
-  const logsDirExists = isDirectory(join(rootDir, "logs"));
-  const reposDirExists = isDirectory(join(rootDir, "repos"));
-  return {
-    rootDir,
-    envPath,
-    envExists,
-    dataDirExists,
-    logsDirExists,
-    reposDirExists,
-    initialized: envExists && dataDirExists && logsDirExists && reposDirExists,
-  };
-}
-
-/** Whether `rootDir` is already scaffolded (.env + data/, logs/, repos/). */
-export function isStackInitialized(rootDir: string): boolean {
-  return getStackState(rootDir).initialized;
-}
-
-export interface InitializeStackOutcome {
-  result: InitStackResult;
-  state: StackState;
-}
-
-/**
- * Idempotently scaffold the stack root. Delegates to {@link scaffoldStack},
- * which skips an existing `.env` unless `force` is set and only creates the
- * directories that are missing, then returns the refreshed {@link StackState}.
- */
-export async function initializeStack(options: InitStackOptions = {}): Promise<InitializeStackOutcome> {
-  const result = await scaffoldStack(options);
-  return { result, state: getStackState(result.rootDir) };
-}
-
-/**
- * Whether the control-plane services are already up. This is the only helper
- * that needs the orchestrator, so it is loaded lazily here — importing this
- * module does not touch Docker. Returns false if Docker is unreachable.
- */
-export async function isStackRunning(rootDir: string, configManager?: ConfigManager): Promise<boolean> {
-  const { getHostConfig } = await import("../../orchestrator/index.js");
-  const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
-  if (!orch.dockerAvailable()) return false;
-  return orch.isStackRunning(cfg);
-}
-
-// --- .env reading -----------------------------------------------------------
-
-const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/;
-
-/**
- * Read raw KEY=VALUE pairs from a `.env`, ignoring comments and blank lines.
- * Values are returned literally (no quote stripping), matching Docker
- * --env-file semantics and {@link upsertEnvVars}. Returns {} if the file is
- * absent so callers can treat "missing" and "empty" the same way.
- */
-export function readEnvValues(envPath: string): Record<string, string> {
-  if (!existsSync(envPath)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(envPath, "utf-8").split(/\r?\n/)) {
-    const match = line.match(ENV_LINE);
-    // First assignment wins, mirroring how dotenv/Docker read a file top-down.
-    if (match && !(match[1] in out)) out[match[1]] = match[2];
+/** True only when `path` exists and is a regular file. Missing paths read false. */
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
   }
-  return out;
 }
 
-/** Read a single `.env` value, or undefined when the key is unset. */
-export function getEnvValue(envPath: string, key: string): string | undefined {
-  return readEnvValues(envPath)[key];
+/** True when a value is missing or contains only whitespace. */
+function isBlank(value: string | undefined): boolean {
+  return value === undefined || value.trim() === "";
 }
 
-// Matches the unedited .env.example placeholders (your_app_id, path/to/..., x's,
-// changeme, example.com). Kept in sync with checkCommands.ts `isPlaceholder` so
-// the wizard and the checker agree on what counts as "not yet configured".
-const PLACEHOLDER = /^your_|^\.?\/path\/to|^changeme$|^x{4,}$|^example\.com$/i;
-
-/** True when a value is empty or one of the .env.example placeholders. */
-export function isPlaceholderEnvValue(value: string | undefined): boolean {
-  if (value === undefined) return true;
-  const trimmed = value.trim();
-  if (trimmed === "") return true;
-  return PLACEHOLDER.test(trimmed);
+/**
+ * Resolve the stack root for setup, reusing the orchestrator's precedence:
+ * explicit flag → PROPR_ROOT env → saved config stackRoot → cwd. Does not load
+ * Docker.
+ */
+export function resolveSetupRoot(
+  configManager: ConfigManager | undefined,
+  flagRoot?: string
+): string {
+  return resolveStackRoot(configManager, flagRoot);
 }
 
-// --- .env writing -----------------------------------------------------------
+/** Absolute path to the .env file for a given stack root. */
+export function envPathFor(rootDir: string): string {
+  return join(rootDir, ".env");
+}
 
-/** Outcome of a `.env` write, so renderers can report what changed. */
-export interface EnvWriteResult {
-  /** Keys whose value was written. */
+/** Snapshot of which scaffolded pieces of a stack root already exist. */
+export interface StackInitState {
+  rootDir: string;
+  envExists: boolean;
+  /** Per-subdir existence (data/, logs/, repos/). */
+  dirs: Record<(typeof STACK_SUBDIRS)[number], boolean>;
+  /** True when .env and all expected sub-directories are present. */
+  initialized: boolean;
+}
+
+/**
+ * Inspect whether the stack at `rootDir` looks initialized. Read-only — never
+ * creates anything — so callers can decide whether to skip or re-run
+ * scaffolding. A plain file standing in for an expected directory (or vice
+ * versa) counts as *not* initialized, matching what the runtime requires.
+ */
+export function inspectStackInit(rootDir: string): StackInitState {
+  const envExists = isFile(envPathFor(rootDir));
+  const dirs = {} as StackInitState["dirs"];
+  for (const sub of STACK_SUBDIRS) {
+    dirs[sub] = isDirectory(join(rootDir, sub));
+  }
+  const initialized = envExists && STACK_SUBDIRS.every((sub) => dirs[sub]);
+  return { rootDir, envExists, dirs, initialized };
+}
+
+/** Convenience predicate over {@link inspectStackInit}. */
+export function isStackInitialized(rootDir: string): boolean {
+  return inspectStackInit(rootDir).initialized;
+}
+
+/**
+ * Parse the .env at `rootDir` into a flat map. Returns `{}` when the file is
+ * absent. Mirrors the assignment shape the rest of the stack relies on:
+ * `KEY=value`, optionally `export `-prefixed, ignoring blanks and comments.
+ * For unquoted values a trailing ` # comment` is stripped, matching the
+ * orchestrator's env-file reader (and the round-trip that {@link upsertEnvVars}
+ * guards against); surrounding quotes on quoted values are stripped and their
+ * contents kept verbatim. This is intentionally a lightweight reader, not a
+ * full dotenv implementation — it does not handle escaped quotes or multiline
+ * values.
+ */
+export function readEnvVars(rootDir: string): Record<string, string> {
+  const envPath = envPathFor(rootDir);
+  // Treat anything that is not a regular file (absent, a directory, a broken
+  // symlink) as "no vars", matching inspectStackInit's `isFile` guard, so a
+  // malformed stack surfaces as not-initialized instead of crashing the read.
+  if (!isFile(envPath)) return {};
+  const vars: Record<string, string> = {};
+  for (const line of readFileSync(envPath, "utf-8").split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    const trimmed = rawValue.trim();
+    const quoted = trimmed.match(/^(["'])(.*)\1$/);
+    // Quoted values keep their contents verbatim; unquoted values drop a
+    // trailing inline comment so reads agree with what upsertEnvVars allows.
+    vars[key] = quoted ? quoted[2] : trimmed.replace(/\s+#.*$/, "");
+  }
+  return vars;
+}
+
+/** True when `key` is present in .env with a non-blank value. */
+export function hasEnvValue(rootDir: string, key: string): boolean {
+  return !isBlank(readEnvVars(rootDir)[key]);
+}
+
+/** Outcome of a {@link applyEnvSelection} call. */
+export interface EnvSelectionResult {
+  /** Keys actually written to .env this call. */
   written: string[];
-  /** Keys left untouched because a real value already existed. */
-  preserved: string[];
-  /** Keys ignored because the requested value was empty/undefined. */
+  /** Keys left untouched because a value already existed (non-overwrite mode). */
   skipped: string[];
 }
 
 /**
- * A value is "real" only when it is defined and not blank — whitespace-only
- * input (e.g. a prompt answered with spaces) counts as empty so it never gets
- * written as a value, bypassing placeholder/default handling.
+ * Safely edit .env for a setup step.
+ *
+ * Non-destructive by default: a key is only written when it is currently
+ * absent/empty, so re-running `propr setup` never clobbers values the user
+ * already set. Pass `{ overwrite: true }` for steps where the user explicitly
+ * selected a new value and intends to replace whatever is there.
+ *
+ * Blank selections (empty or whitespace-only) are ignored entirely — a step
+ * that has nothing to write must not blank out an existing value. Writes go
+ * through
+ * {@link upsertEnvVars}, which preserves unrelated lines and tightens the
+ * file's permissions.
  */
-function hasValue(value: string | undefined): value is string {
-  return value !== undefined && value.trim() !== "";
-}
+export function applyEnvSelection(
+  rootDir: string,
+  vars: Record<string, string>,
+  opts: { overwrite?: boolean } = {}
+): EnvSelectionResult {
+  const existing = readEnvVars(rootDir);
+  const toWrite: Record<string, string> = {};
+  const written: string[] = [];
+  const skipped: string[] = [];
 
-/**
- * Write explicit user selections to `.env`. Empty/blank/undefined values are
- * skipped (so an un-answered prompt never blanks an existing value); everything
- * else is upserted via {@link upsertEnvVars}, replacing any current value. Use
- * this when the user has deliberately chosen a value for a step.
- */
-export function writeEnvSelection(envPath: string, selections: Record<string, string | undefined>): EnvWriteResult {
-  const result: EnvWriteResult = { written: [], preserved: [], skipped: [] };
-  const vars: Record<string, string> = {};
-  for (const [key, value] of Object.entries(selections)) {
-    if (!hasValue(value)) {
-      result.skipped.push(key);
+  for (const [key, value] of Object.entries(vars)) {
+    if (isBlank(value)) continue; // never blank out an existing value
+    const alreadySet = !isBlank(existing[key]);
+    if (alreadySet && !opts.overwrite) {
+      skipped.push(key);
       continue;
     }
-    vars[key] = value;
-    result.written.push(key);
+    toWrite[key] = value;
+    written.push(key);
   }
-  if (result.written.length > 0) upsertEnvVars(envPath, vars);
-  return result;
-}
 
-/**
- * Non-destructively seed default/detected values: a key is written only when it
- * is currently missing or still a placeholder, so existing user-set values are
- * always preserved. Use this for detected agent dirs and other suggestions the
- * wizard offers without an explicit choice.
- */
-export function seedEnvDefaults(envPath: string, defaults: Record<string, string | undefined>): EnvWriteResult {
-  const existing = readEnvValues(envPath);
-  const result: EnvWriteResult = { written: [], preserved: [], skipped: [] };
-  const vars: Record<string, string> = {};
-  for (const [key, value] of Object.entries(defaults)) {
-    if (!hasValue(value)) {
-      result.skipped.push(key);
-      continue;
-    }
-    if (!isPlaceholderEnvValue(existing[key])) {
-      result.preserved.push(key);
-      continue;
-    }
-    vars[key] = value;
-    result.written.push(key);
+  if (written.length > 0) {
+    upsertEnvVars(envPathFor(rootDir), toWrite);
   }
-  if (result.written.length > 0) upsertEnvVars(envPath, vars);
-  return result;
+  return { written, skipped };
 }
 
-// --- step model -------------------------------------------------------------
+/**
+ * Remove `keys` from the stack's `.env` entirely.
+ *
+ * {@link applyEnvSelection} can only set keys (and deliberately ignores blank
+ * values so it never clobbers a value the user set), so it cannot *clear* a key:
+ * writing `KEY=` would leave an empty assignment that reads back as a set-but-
+ * empty value. Setup steps that must genuinely drop a stale key — clearing the
+ * user whitelist back to "none", removing a key when switching modes — call this
+ * instead. A missing `.env` or absent keys are no-ops.
+ */
+export function clearEnvKeys(rootDir: string, keys: string[]): void {
+  clearEnvFileKeys(envPathFor(rootDir), keys);
+}
 
 /**
- * Build the initial wizard model for `rootDir` with every step pending.
- * Renderers start from this and advance it as steps run.
+ * Infer the current GitHub auth mode from the stack's .env, so the github-auth
+ * step can show what is already configured (and skip prompting when valid).
+ * Reuses the shared resolver the backend uses, so the two can't drift.
  */
+export function detectGithubAuthMode(rootDir: string): GithubAuthModeResult {
+  const env = readEnvVars(rootDir);
+  const truthy = /^(1|true|yes|on)$/i;
+  return resolveGithubAuthMode({
+    demoMode: truthy.test(env.PROPR_DEMO_MODE ?? ""),
+    ghAuthMode: env.GH_AUTH_MODE,
+    relayUrl: env.PROPR_GH_RELAY_URL,
+    relayToken: env.PROPR_GH_RELAY_TOKEN,
+    appId: env.GH_APP_ID,
+    // The CLI stack records the App key as HOST_GH_PRIVATE_KEY (the orchestrator
+    // bind-mounts it and sets the in-container GH_PRIVATE_KEY_PATH to that path),
+    // so accept either when inferring app mode — otherwise a stack configured by
+    // `propr setup` would resolve as "none" despite being fully set up.
+    privateKeyPath: env.GH_PRIVATE_KEY_PATH ?? env.HOST_GH_PRIVATE_KEY,
+    installationId: env.GH_INSTALLATION_ID,
+  });
+}
+
+/** Build the initial, all-`pending` setup state for a resolved stack root. */
 export function createSetupState(rootDir: string): SetupState {
   return {
     rootDir,
-    steps: SETUP_STEPS.map((def) => ({ id: def.id, status: "pending" as SetupStepStatus })),
+    steps: SETUP_STEP_DEFINITIONS.map((def) => ({ ...def, status: "pending" })),
   };
 }
 
+/** Look up a step by id. */
+export function getStep(state: SetupState, id: SetupStepId): SetupStep | undefined {
+  return state.steps.find((step) => step.id === id);
+}
+
 /**
- * Return a new {@link SetupState} with one step updated. Immutable so the Ink
- * renderer can diff cheaply; the fallback renderer can ignore the return value
- * structure and just re-read it.
+ * Return a new state with `id`'s step patched. Immutable so renderers can diff
+ * by reference; unknown ids return the state unchanged.
  */
 export function updateStep(
   state: SetupState,
   id: SetupStepId,
-  status: SetupStepStatus,
-  patch: Partial<Omit<SetupStepState, "id" | "status">> = {}
+  patch: SetupStepPatch
 ): SetupState {
-  return {
-    ...state,
-    steps: state.steps.map((step) => {
-      if (step.id !== id) return step;
-      const next: SetupStepState = { ...step, status, ...patch };
-      // A step that leaves the "error" state should not keep showing its old
-      // failure message (e.g. error → done after a retry). Clear it unless the
-      // caller explicitly set a new one in the patch.
-      if (status !== "error" && !("error" in patch)) delete next.error;
-      return next;
-    }),
-  };
+  let changed = false;
+  const steps = state.steps.map((step) => {
+    if (step.id !== id) return step;
+    changed = true;
+    return { ...step, ...patch };
+  });
+  return changed ? { ...state, steps } : state;
 }
 
 /**
- * The next step that still needs attention, or undefined. A step is actionable
- * when it is pending, currently active, or errored — an `error` step is
- * surfaced ahead of later pending steps because it needs the user to act before
- * the flow can move on.
+ * The next step the wizard should act on: the first one still `pending`. Used
+ * by the sequential renderer to drive the flow and by the TUI to highlight the
+ * current step.
+ *
+ * A failed required step blocks everything after it (see the `failed` status in
+ * ./types.ts), so once one is encountered there is no next step until it is
+ * retried — `undefined` is returned. Failed *optional* steps don't block.
  */
-export function nextActionableStep(state: SetupState): SetupStepState | undefined {
-  return state.steps.find(
-    (step) => step.status === "pending" || step.status === "active" || step.status === "error"
-  );
+export function nextPendingStep(state: SetupState): SetupStep | undefined {
+  // Scan for a blocking failure first so the "a failed required step blocks
+  // everything after it" contract holds even if state was patched out of
+  // order (e.g. a later step failed before an earlier one finished).
+  if (state.steps.some((step) => !step.optional && step.status === "failed")) {
+    return undefined;
+  }
+  return state.steps.find((step) => step.status === "pending");
 }
-
-/** Count steps by status — used by both renderers for a one-line summary. */
-export function summarizeSetup(state: SetupState): Record<SetupStepStatus, number> {
-  const counts: Record<SetupStepStatus, number> = { pending: 0, active: 0, done: 0, skipped: 0, error: 0 };
-  for (const step of state.steps) counts[step.status] += 1;
-  return counts;
-}
-
-/** Ids of the steps that may be skipped without leaving the stack unusable. */
-const OPTIONAL_STEP_IDS = new Set<SetupStepId>(
-  SETUP_STEPS.filter((def) => def.optional).map((def) => def.id)
-);
 
 /**
- * True once setup has settled: every step is either done, or skipped *and*
- * optional. A skipped required step is not "complete" — skipping it leaves the
- * stack unusable, so the flow still has work to do.
+ * True once every required step has reached a terminal, non-failed state.
+ * Optional steps never block completion; a single failed required step does.
  */
 export function isSetupComplete(state: SetupState): boolean {
-  return state.steps.every(
-    (step) => step.status === "done" || (step.status === "skipped" && OPTIONAL_STEP_IDS.has(step.id))
-  );
+  return state.steps.every((step) => {
+    if (step.status === "failed") return false;
+    if (step.optional) return true;
+    return step.status === "done" || step.status === "skipped" || step.status === "warning";
+  });
 }

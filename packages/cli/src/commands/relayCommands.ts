@@ -17,6 +17,7 @@ import { loadOrchestrator, resolveStackRoot } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import {
   enrollRelayToken,
+  fetchAuthenticatedUser,
   listRelayTokens,
   revokeRelayToken,
   RelayClientOptions,
@@ -55,24 +56,58 @@ async function resolveContext(options: {
     throw new Error(urlError);
   }
 
-  const installationId =
-    options.installation ?? process.env.GH_INSTALLATION_ID ?? fileEnv.GH_INSTALLATION_ID;
-  if (!installationId) {
-    throw new Error("No installation id. Pass --installation <id> or set GH_INSTALLATION_ID in .env.");
-  }
-
   const githubToken = configManager.getGithubToken();
   if (!githubToken) {
     throw new Error("Not logged in to GitHub. Run `propr login` first.");
   }
+
+  const client: RelayClientOptions = { baseUrl: relayBaseUrl, githubToken };
+
+  // Explicit flag / env / .env win; otherwise ask the relay which installations
+  // this GitHub identity can access and auto-select when there's exactly one.
+  const installationId =
+    options.installation ??
+    process.env.GH_INSTALLATION_ID ??
+    fileEnv.GH_INSTALLATION_ID ??
+    (await discoverInstallationId(client));
 
   return {
     rootDir,
     envPath,
     relayBaseUrl,
     installationId,
-    client: { baseUrl: relayBaseUrl, githubToken },
+    client,
   };
+}
+
+// Discovery fallback when no installation id was supplied: query the relay for
+// the installations this GitHub identity can access. Auto-select the only one;
+// otherwise fail with an actionable message (zero installs vs. ambiguous choice).
+export async function discoverInstallationId(client: RelayClientOptions): Promise<string> {
+  const { installations } = await fetchAuthenticatedUser(client);
+
+  if (installations.length === 1) {
+    const only = installations[0];
+    // To stderr, not stdout: `relay list --json` must emit only the JSON body,
+    // so this informational notice must stay out of the data stream.
+    console.error(
+      `Using installation ${only.installation_id} (${only.account_login}) — the only one available to you.`
+    );
+    return String(only.installation_id);
+  }
+
+  if (installations.length === 0) {
+    throw new Error(
+      "No GitHub App installation is available for your account. Install the shared ProPR GitHub App, then retry — or pass --installation <id>."
+    );
+  }
+
+  const options = installations
+    .map((i) => `  ${i.installation_id}  ${i.account_login} (${i.account_type})`)
+    .join("\n");
+  throw new Error(
+    `Multiple installations are available; pass --installation <id> to choose one:\n${options}`
+  );
 }
 
 export function createRelayCommand(): Command {
@@ -84,6 +119,9 @@ holding the App's private key. Enroll once; the token is saved to your .env.
 
 The relay URL defaults to the hosted service (${DEFAULT_PROPR_GH_RELAY_URL});
 pass --url only when running a self-hosted relay.
+
+The installation id is discovered automatically when you have exactly one;
+pass --installation <id> to disambiguate or override it.
 
 Examples:
   $ propr relay enroll
