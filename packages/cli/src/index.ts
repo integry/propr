@@ -26,6 +26,7 @@ import {
   createStopCommand,
   createUiCommand,
   createDocsCommand,
+  createTunnelCommand,
   createTankCommand,
   createRelayCommand,
   runChecks,
@@ -132,7 +133,7 @@ Examples:
   $ propr remote-status
 
 Command Groups:
-  Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tank
+  Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank
   GitHub Relay:   relay [enroll|list|revoke]
   Configuration:  remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
@@ -285,6 +286,7 @@ program.addCommand(createStackStatusCommand());
 program.addCommand(createStopCommand());
 program.addCommand(createUiCommand());
 program.addCommand(createDocsCommand());
+program.addCommand(createTunnelCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
 

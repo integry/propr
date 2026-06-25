@@ -82,9 +82,13 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
 
   const ui = configManager.getUiEnabled();
   const docs = cfg.docsEnabled;
+  // cfg.uiTunnelEnabled already reflects a persisted `propr tunnel on|off`
+  // toggle (forwarded as an override in getHostConfig), falling back to the
+  // env-derived default when the toggle has never been set.
+  const tunnel = cfg.uiTunnelEnabled;
 
   orch.ensureNetwork(cfg, (l) => console.log(l));
-  const status = orch.startStack(cfg, { ui, docs, onLog: (l) => console.log(l) });
+  const status = orch.startStack(cfg, { ui, docs, tunnel, onLog: (l) => console.log(l) });
 
   const interactive = options.tui !== false && Boolean(process.stdout.isTTY);
 

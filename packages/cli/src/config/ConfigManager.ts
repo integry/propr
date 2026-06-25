@@ -324,6 +324,21 @@ export class ConfigManager {
   }
 
   /**
+   * Gets the desired Cloudflare Tunnel service state. Defaults to false when
+   * unset (the tunnel is opt-in).
+   */
+  getTunnelEnabled(): boolean {
+    return this.get("tunnelEnabled") ?? false;
+  }
+
+  /**
+   * Sets the desired Cloudflare Tunnel service state.
+   */
+  async setTunnelEnabled(enabled: boolean): Promise<void> {
+    await this.set("tunnelEnabled", enabled);
+  }
+
+  /**
    * Gets all configuration values.
    *
    * @returns A copy of the current configuration.
