@@ -211,6 +211,12 @@ propr remote-status              # verify daemon, workers, Redis, GitHub auth
 
 From here, `propr plan create "..." --wait` and `propr issue implement <draft-id>/1 --wait` run the same plan-to-PR flow as the Web UI.
 
+## Optional: Drive This Stack From The Hosted UI
+
+By default a local stack is reached at `http://localhost:5173`. If you would rather use the hosted ProPR UI at `https://app.propr.dev` to drive your local stack, enable the optional **hosted UI tunnel** — a managed Cloudflare Tunnel sidecar (the official `cloudflare/cloudflared` image) that publishes this stack to the hosted control plane. It is off by default, so plain localhost use is unaffected.
+
+In brief: set `PROPR_UI_TUNNEL_TOKEN` and `PROPR_INSTANCE_ID` in your stack `.env`, then run `propr tunnel on`; the tunnel publishes your stack's **API** (the API container on port 4000 — `/api/*`, `/socket.io/`, `/webhook`) at `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`. The hosted UI bundle is still served from `app.propr.dev` (not through the tunnel), and the browser is loaded from there; the page then calls your stack's API at the proxy host. `http://api:4000` stays the internal service-to-service address other stack containers use — it is just no longer the only way the API is reachable. See [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel) and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and architecture — including the `FRONTEND_URL` (browser origin) vs `API_PUBLIC_URL` / OAuth-callback (proxy host) distinction. v1 is manual; automated provisioning and multi-instance selection are planned for later.
+
 ## Update ProPR
 
 Service images are pinned to the release version of the control plane that starts them.
