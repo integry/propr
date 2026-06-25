@@ -7,6 +7,7 @@ import { resetConfiguredDemoMode } from '../demoMode.js';
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 const originalFrontendUrl = process.env.FRONTEND_URL;
 const originalCookieDomain = process.env.COOKIE_DOMAIN;
+const originalApiPublicUrl = process.env.API_PUBLIC_URL;
 const originalRedirectAllowedHosts = process.env.AUTH_REDIRECT_ALLOWED_HOSTS;
 
 async function fetchFromApp(app: express.Express, path: string): Promise<globalThis.Response> {
@@ -29,6 +30,8 @@ afterEach(() => {
   else process.env.FRONTEND_URL = originalFrontendUrl;
   if (originalCookieDomain === undefined) delete process.env.COOKIE_DOMAIN;
   else process.env.COOKIE_DOMAIN = originalCookieDomain;
+  if (originalApiPublicUrl === undefined) delete process.env.API_PUBLIC_URL;
+  else process.env.API_PUBLIC_URL = originalApiPublicUrl;
   if (originalRedirectAllowedHosts === undefined) delete process.env.AUTH_REDIRECT_ALLOWED_HOSTS;
   else process.env.AUTH_REDIRECT_ALLOWED_HOSTS = originalRedirectAllowedHosts;
 });
@@ -45,6 +48,25 @@ test('auth redirect allowlist treats FRONTEND_URL as exact host only', async () 
 
   const subdomainResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fpreview.app.example.com%2Fplans');
   assert.equal(subdomainResponse.headers.get('location'), 'https://app.example.com/');
+});
+
+test('proxy mode auth redirect fallback returns the hosted UI origin', async () => {
+  // Hosted UI on app.propr.dev, API on the per-instance proxy host. COOKIE_DOMAIN
+  // stays unset; an unvalidatable redirect_to must fall back to the hosted UI.
+  process.env.PROPR_DEMO_MODE = 'true';
+  process.env.FRONTEND_URL = 'https://app.propr.dev';
+  process.env.API_PUBLIC_URL = 'https://abc123.proxy.propr.dev';
+  delete process.env.COOKIE_DOMAIN;
+  const app = express();
+  setupAuth(app);
+
+  // No redirect_to provided -> fallback to FRONTEND_URL with trailing slash.
+  const fallbackResponse = await fetchFromApp(app, '/api/auth/github');
+  assert.equal(fallbackResponse.headers.get('location'), 'https://app.propr.dev/');
+
+  // The proxy host is not on the redirect allowlist, so it falls back too.
+  const proxyResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fabc123.proxy.propr.dev%2Fplans');
+  assert.equal(proxyResponse.headers.get('location'), 'https://app.propr.dev/');
 });
 
 test('auth redirect allowlist permits subdomains only for explicit wildcard-style hosts', async () => {
