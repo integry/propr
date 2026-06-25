@@ -1123,6 +1123,51 @@ export function getServiceState(cfg, service) {
     return getStackStatus(cfg).services.find((s) => s.service === service);
 }
 
+// Best-effort GET <publicApiUrl>/health behind a hard timeout. Resolves true on
+// a 2xx response, false on any non-2xx / network error / timeout. Never throws:
+// tunnel reachability is a diagnostic, not a gate, so a slow or down proxy must
+// not fail `propr status`.
+async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
+    const base = publicApiUrl.replace(/\/+$/, '');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(`${base}/health`, { signal: controller.signal, redirect: 'follow' });
+        return res.ok;
+    } catch {
+        return false;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * Tunnel diagnostics for `propr status`. The Cloudflare tunnel is a local
+ * managed service, so its health belongs in local status:
+ *   - enabled:      tunnel turned on by resolved config (token present or the
+ *                   explicit PROPR_UI_TUNNEL_ENABLED flag)
+ *   - configured:   a tunnel token is present
+ *   - running:      the cloudflared sidecar container is running
+ *   - publicApiUrl: the expected public proxy URL (null when not derivable)
+ *   - reachable:    best-effort <publicApiUrl>/health probe — true/false when a
+ *                   URL is known, null when there is nothing to probe
+ *
+ * Pass a precomputed stack status to reuse a single `docker ps`.
+ */
+export async function getTunnelStatus(cfg, stackStatus) {
+    const status = stackStatus ?? await getStackStatusAsync(cfg);
+    const tunnel = status.services.find((s) => s.service === 'tunnel');
+    const publicApiUrl = cfg.uiPublicApiUrl ?? null;
+    const reachable = publicApiUrl ? await probeTunnelReachable(publicApiUrl) : null;
+    return {
+        enabled: Boolean(cfg.uiTunnelEnabled),
+        configured: Boolean(cfg.uiTunnelToken),
+        running: Boolean(tunnel && tunnel.running),
+        publicApiUrl,
+        reachable,
+    };
+}
+
 /** Spawn `docker logs` for a service. Returns the ChildProcess. */
 export function getServiceLogs(cfg, service, { follow = false, tail = 'all', stdio = 'inherit' } = {}) {
     const args = ['logs'];
