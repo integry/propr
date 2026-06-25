@@ -76,24 +76,26 @@ propr relay revoke <id>  # revoke a token
 
 ## Hosted UI Tunnel
 
-The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its own UI/API to the hosted control plane through a **Cloudflare Tunnel** — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
+The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its **API** (the API container on port 4000 — `/api/*`, `/socket.io/`, and `/webhook`) to the hosted control plane through a **Cloudflare Tunnel** — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. The UI bundle itself is served by `app.propr.dev`, not through the tunnel; the tunnel only exposes the API the hosted UI calls. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
 
 ```bash
 propr tunnel on          # start the cloudflared sidecar
 propr tunnel off         # stop it — the token and env values are left untouched
 ```
 
-Starting the tunnel requires a configured token. Set these in your stack `.env` first:
+Starting the tunnel always requires a configured token. Set these in your stack `.env` first:
 
 | Variable | Description |
 |---|---|
-| `PROPR_UI_TUNNEL_TOKEN` | Cloudflare Tunnel token. Required to start; setting it alone enables the tunnel |
-| `PROPR_UI_TUNNEL_ENABLED` | Set to `true`/`1` to enable the tunnel without a token (advanced) |
+| `PROPR_UI_TUNNEL_TOKEN` | Cloudflare Tunnel token. **Required to start** the tunnel. Once set, the tunnel is enabled by default, so the next `propr start` brings up the sidecar (unless you have run `propr tunnel off`) |
+| `PROPR_UI_TUNNEL_ENABLED` | Explicitly enable the tunnel (`true`/`1`). A **token is still required** — `propr check` fails if this is set without `PROPR_UI_TUNNEL_TOKEN`. Redundant when a token is set, since a token alone already enables the tunnel |
 | `PROPR_INSTANCE_ID` | This stack's instance id; must be a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://<id>.proxy.propr.dev` when no explicit URL is set |
-| `PROPR_UI_PUBLIC_API_URL` | Explicit public API/UI URL, overriding the derived one |
+| `PROPR_UI_PUBLIC_API_URL` | Explicit public API URL the hosted UI talks to, overriding the derived one |
 | `PROPR_CLOUDFLARED_IMAGE` | cloudflared image (default `cloudflare/cloudflared:latest`) |
 
-`propr tunnel on` fails clearly if no token is configured rather than launching a broken container. `propr tunnel off` only removes the tunnel container — it never touches the token or any other env value, so a later `propr tunnel on` works without rework. The desired state is persisted in the CLI config, so `propr start` and restarts honor your last toggle.
+**Enablement, step by step.** With no token and no flag the tunnel is off. Setting `PROPR_UI_TUNNEL_TOKEN` enables it by default, so the next `propr start` (or a restart) starts the sidecar — you do not have to run `propr tunnel on` first. Running `propr tunnel on|off` records an explicit choice in the CLI config that **overrides** the token-derived default and is honored by later `propr start`/restarts; `propr tunnel on` also starts the sidecar immediately on an already-running stack without waiting for a restart, and `propr tunnel off` stops it even while a token remains set.
+
+`propr tunnel on` fails clearly if no token is configured rather than launching a broken container. `propr tunnel off` only removes the tunnel container — it never touches the token or any other env value, so a later `propr tunnel on` works without rework.
 
 Each enabled stack is reachable at a per-instance hostname `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, which is how the hosted UI discovers and addresses it. See [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and the architecture, including how `.proxy.propr.dev` differs from the central ProPR APIs.
 
