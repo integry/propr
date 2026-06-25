@@ -1,8 +1,9 @@
 // API for fetching system data from backend
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import type { AgentType } from '../config/modelDefinitions';
+import { getApiBaseUrl } from '../config/runtimeConfig';
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+export const API_BASE_URL = getApiBaseUrl();
 
 export interface DemoModeStatus {
   demoMode: boolean;

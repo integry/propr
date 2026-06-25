@@ -3,8 +3,9 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { getCurrentUser } from '../api/proprApi';
+import { getApiBaseUrl } from '../config/runtimeConfig';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE_URL = getApiBaseUrl();
 // For OAuth, use main API to avoid registering multiple callback URLs
 // Falls back to API_BASE_URL for main site
 const OAUTH_API_URL = import.meta.env.VITE_OAUTH_API_URL || API_BASE_URL;
