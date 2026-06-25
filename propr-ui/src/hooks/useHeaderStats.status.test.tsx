@@ -39,7 +39,7 @@ describe('useHeaderStats system health', () => {
       githubAuth: 'Authenticated',
       claudeAuth: 'Failed',
       indexing: 'Idle',
-      githubEventIntake: 'Routing WebSocket',
+      githubEventIntake: 'ProPR Connect',
       githubEventIntakeStatus: 'Connected',
       agents: [],
     });
@@ -63,7 +63,7 @@ describe('useHeaderStats system health', () => {
       githubAuth: 'Authenticated',
       claudeAuth: 'Failed',
       indexing: 'Idle',
-      githubEventIntake: 'Routing WebSocket',
+      githubEventIntake: 'ProPR Connect',
       githubEventIntakeStatus: 'Disconnected',
       agents: [],
     });
@@ -72,7 +72,7 @@ describe('useHeaderStats system health', () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    expect(result.current.systemHealth.githubEventIntake).toBe('Routing WebSocket');
+    expect(result.current.systemHealth.githubEventIntake).toBe('ProPR Connect');
     expect(result.current.systemHealth.githubEventIntakeStatus).toBe('Disconnected');
     expect(result.current.systemHealth.isHealthy).toBe(false);
   });

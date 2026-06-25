@@ -13,7 +13,7 @@ export interface SystemStatus {
   claudeAuth: string;
   indexing: string;
   // Human-readable name of the configured GitHub event intake path
-  // (e.g. "Routing WebSocket", "Polling", "Direct Webhook").
+  // (e.g. "ProPR Connect", "Polling", "Direct Webhook").
   githubEventIntake: string;
   // UI status string for the active intake path (e.g. "Connected", "Active",
   // "Disconnected", "Unknown").

@@ -311,11 +311,25 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
   );
   // The intake method is a name rather than a status, so its indicator dot is
   // colored by the separate intake status while the row still shows the method.
+  // The ProPR Connect intake path links out to its hosted service page.
   const renderIntakeMethodRow = (label: string, method: string, status: string) => (
     <div className="flex items-center gap-2 text-sm text-gray-700">
       <span className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
       <span>{label}:</span>
-      <span className="ml-auto font-medium">{method || 'Unknown'}</span>
+      <span className="ml-auto font-medium">
+        {method === 'ProPR Connect' ? (
+          <a
+            href="https://connect.propr.dev"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 hover:underline"
+          >
+            {method}
+          </a>
+        ) : (
+          method || 'Unknown'
+        )}
+      </span>
     </div>
   );
   const renderAgentStatusRow = (agent: HeaderStats['systemHealth']['agents'][number]) => (

@@ -11,7 +11,7 @@ function makeSystemHealth(overrides: Partial<HeaderStats['systemHealth']> = {}):
     githubAuth: 'Authenticated',
     claudeAuth: 'Failed',
     indexing: 'Idle',
-    githubEventIntake: 'Routing WebSocket',
+    githubEventIntake: 'ProPR Connect',
     githubEventIntakeStatus: 'Connected',
     agents: [
       { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' },
@@ -35,7 +35,7 @@ describe('SystemHealth dropdown', () => {
     expect(screen.getByText('Redis:')).toBeInTheDocument();
     expect(screen.getByText('GitHub:')).toBeInTheDocument();
     expect(screen.getByText('GitHub Intake:')).toBeInTheDocument();
-    expect(screen.getByText('Routing WebSocket')).toBeInTheDocument();
+    expect(screen.getByText('ProPR Connect')).toBeInTheDocument();
     expect(screen.getByText('Intake Status:')).toBeInTheDocument();
     expect(screen.getByText('Indexing:')).toBeInTheDocument();
     expect(screen.getByText('Codex:')).toBeInTheDocument();

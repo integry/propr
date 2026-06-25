@@ -34,7 +34,7 @@ describe('getSystemStatus', () => {
       githubAuth: 'Authenticated',
       claudeAuth: 'Failed',
       indexing: 'Active',
-      githubEventIntake: 'Routing WebSocket',
+      githubEventIntake: 'ProPR Connect',
       githubEventIntakeStatus: 'Connected',
       agents: [
         { id: 'codex-1', type: 'codex', alias: 'codex-prod', status: 'Ready' },
@@ -45,7 +45,7 @@ describe('getSystemStatus', () => {
 
   it('maps each intake mode to a human-readable label and status', async () => {
     const cases: Array<[string, string, string, string]> = [
-      ['routing_websocket', 'connected', 'Routing WebSocket', 'Connected'],
+      ['routing_websocket', 'connected', 'ProPR Connect', 'Connected'],
       ['polling', 'active', 'Polling', 'Active'],
       ['direct_webhook', 'disconnected', 'Direct Webhook', 'Disconnected'],
       ['unknown', 'unknown', 'Unknown', 'Unknown'],

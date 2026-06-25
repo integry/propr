@@ -112,7 +112,7 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
   // Human-readable label for the configured intake path. An unknown or absent
   // mode (older backends) falls back to 'Unknown' so the UI never shows a raw key.
   const intakeLabels: Record<string, string> = {
-    routing_websocket: 'Routing WebSocket',
+    routing_websocket: 'ProPR Connect',
     polling: 'Polling',
     direct_webhook: 'Direct Webhook',
   };
