@@ -76,3 +76,39 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
   if (!isValidProprInstanceId(id)) return undefined;
   return `https://${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
 }
+
+/**
+ * Whether a URL is a hosted per-instance proxy URL (`https://<id>.proxy.propr.dev`).
+ * propr-routing only forwards `/api/*` and `/socket.io/*` on these hosts, so the
+ * tunnel base URL must be one of them. Requires https and a hostname under the
+ * shared {@link PROPR_UI_PROXY_SUFFIX}. Returns false for a malformed URL.
+ */
+export function isProprProxyUrl(url: string | undefined | null): boolean {
+  if (!url) return false;
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === 'https:' && hostname.endsWith(`.${PROPR_UI_PROXY_SUFFIX}`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The concrete endpoints the hosted UI reaches through the tunnel base URL.
+ * propr-routing only allows `/api/*` and `/socket.io/*`, so the base (root) URL
+ * itself intentionally returns 404 — it is NOT a health target. Use `apiStatus`
+ * to probe liveness. The base is normalized (trailing slashes trimmed) so the
+ * derived paths never double up a slash.
+ */
+export function proprTunnelEndpoints(baseUrl: string): {
+  apiStatus: string;
+  socketIo: string;
+  root: string;
+} {
+  const base = baseUrl.replace(/\/+$/, '');
+  return {
+    apiStatus: `${base}/api/status`,
+    socketIo: `${base}/socket.io/`,
+    root: `${base}/`,
+  };
+}

@@ -162,6 +162,25 @@ test('api container propagates the tunnel PROPR_UI_* env without the tunnel toke
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
 
+test('ui container receives the tunnel public API URL (no /api appended) when set', () => {
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'ui');
+
+  // The UI bundle appends /api/... itself, so the container must get the bare
+  // proxy origin — not the origin with /api on the end.
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
+});
+
+test('ui container omits PROPR_UI_PUBLIC_API_URL in local development', () => {
+  const cfg = resolveConfig({ API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'ui');
+
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), []);
+});
+
 test('api container reports the tunnel disabled and omits optional PROPR_* vars in local development', () => {
   const cfg = resolveConfig({ API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
   const { args } = buildServiceSpec(cfg, 'api');
@@ -391,12 +410,44 @@ test('validateEnv warns when the tunnel is enabled but no public URL is derivabl
   assert.equal(invalid.uiPublicApiUrl, undefined);
   assert.match(validateEnv(invalid).warnings.join('\n'), /not a valid DNS label/);
 
-  // An explicit public URL silences the warning even with an invalid id.
+  // An explicit public URL silences the "no public URL derivable" warning even
+  // with an invalid id (uiPublicApiUrl is then defined).
   const explicit = resolveConfig(
     { ...base, PROPR_INSTANCE_ID: 'not a label', PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com' },
     { manifestPath },
   );
-  assert.deepEqual(validateEnv(explicit).warnings.filter((w) => /proxy URL/.test(w)), []);
+  assert.deepEqual(validateEnv(explicit).warnings.filter((w) => /can be derived/.test(w)), []);
+});
+
+test('validateEnv warns when the tunnel public URL is not a hosted proxy URL', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const base = {
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  };
+
+  // A valid http(s) URL that is not under proxy.propr.dev warns (no error) so the
+  // operator knows propr-routing will not forward to it.
+  const offProxy = resolveConfig({ ...base, PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com' }, { manifestPath });
+  assert.deepEqual(validateEnv(offProxy).errors, []);
+  assert.match(validateEnv(offProxy).warnings.join('\n'), /not a hosted proxy URL/);
+
+  // A proper per-instance proxy URL produces no such warning.
+  const onProxy = resolveConfig({ ...base, PROPR_UI_PUBLIC_API_URL: 'https://abc123.proxy.propr.dev' }, { manifestPath });
+  assert.deepEqual(validateEnv(onProxy).warnings.filter((w) => /not a hosted proxy URL/.test(w)), []);
+
+  // The proxy-pattern check only applies in tunnel mode; a non-proxy URL with the
+  // tunnel disabled does not warn.
+  const disabled = resolveConfig({ PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com', PROPR_LAUNCHER_ENV_FILE: envFileLocal, PROPR_ENV_FILE: '/host/propr/.env', PROPR_DATA_DIR: '/host/propr/data', PROPR_LOGS_DIR: '/host/propr/logs', PROPR_REPOS_DIR: '/host/propr/repos' }, { manifestPath });
+  assert.equal(disabled.uiTunnelEnabled, false);
+  assert.deepEqual(validateEnv(disabled).warnings.filter((w) => /not a hosted proxy URL/.test(w)), []);
 });
 
 test('derived proxy URL lowercases a mixed-case instance id', () => {

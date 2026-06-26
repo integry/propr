@@ -76,6 +76,8 @@ export {
   DEFAULT_CLOUDFLARED_IMAGE,
   proprInstanceProxyUrl,
   isValidProprInstanceId,
+  isProprProxyUrl,
+  proprTunnelEndpoints,
 } from './proprServiceUrls.js';
 
 // Export routing URL validation (shared by intake prerequisites and the daemon

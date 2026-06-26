@@ -3,6 +3,7 @@
  * `propr start` TUI's non-TTY fallback.
  */
 
+import { proprTunnelEndpoints } from "@propr/shared";
 import type { StackStatus, ServiceState, TunnelStatus } from "./types.js";
 
 export function stateGlyph(s: ServiceState): string {
@@ -33,6 +34,23 @@ export function renderStatusTable(status: StackStatus): string {
   return lines.join("\n");
 }
 
+/**
+ * A short "where the hosted UI reaches this stack" summary for startup output.
+ * Lists the concrete routed endpoints rather than the base URL, and notes the
+ * root 404, so nothing implies the root URL is an API/health target. Returns an
+ * empty array when there is no public URL to advertise.
+ */
+export function renderTunnelEndpointSummary(publicApiUrl: string | null | undefined): string[] {
+  if (!publicApiUrl) return [];
+  const { apiStatus, socketIo } = proprTunnelEndpoints(publicApiUrl);
+  return [
+    "Tunnel is up — the hosted UI reaches this stack at:",
+    `  API:       ${apiStatus}`,
+    `  Socket.IO: ${socketIo}`,
+    "  Root URL intentionally returns 404.",
+  ];
+}
+
 /** A yes/no/unknown glyph+label for a tri-state tunnel field. */
 function tunnelFlag(value: boolean | null): string {
   if (value === null) return "· unknown";
@@ -47,7 +65,16 @@ export function renderTunnelSection(t: TunnelStatus): string {
   lines.push(`  enabled       ${tunnelFlag(t.enabled)}`);
   lines.push(`  configured    ${tunnelFlag(t.configured)}`);
   lines.push(`  running       ${tunnelFlag(t.running)}`);
-  lines.push(`  public URL    ${t.publicApiUrl ?? "—"}`);
-  lines.push(`  reachable     ${tunnelFlag(t.reachable)}`);
+  if (t.publicApiUrl) {
+    // Show the concrete endpoints propr-routing forwards, not the base URL as if
+    // it were a health target — the root path intentionally 404s through the
+    // tunnel. `reachable` reflects the /api/status probe.
+    const { apiStatus, socketIo } = proprTunnelEndpoints(t.publicApiUrl);
+    lines.push(`  API           ${apiStatus}`);
+    lines.push(`  Socket.IO     ${socketIo}`);
+  } else {
+    lines.push(`  public URL    —`);
+  }
+  lines.push(`  reachable     ${tunnelFlag(t.reachable)}  (probes /api/status)`);
   return lines.join("\n");
 }

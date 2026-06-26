@@ -257,7 +257,7 @@ Two distinct public hosts are in play, and they are **not** the same origin:
 
   How `window.__PROPR_CONFIG__` is populated depends on **who serves the bundle**. When you **self-host** the UI bundle (the `propr/ui` container), its entrypoint rewrites the static `config.js` from `PROPR_UI_PUBLIC_API_URL` at container start, so one container targets one stack. The **vendor-hosted** `app.propr.dev` serves the same bundle to many stacks, so it cannot be rewritten per container — there the per-instance API URL is selected and injected by the hosted control plane. That automated multi-instance selection is **later work**; the `PROPR_UI_PUBLIC_API_URL` / `PROPR_INSTANCE_ID` config here is what publishes a stack at `https://<id>.proxy.propr.dev` so the control plane can address it. If the bundle loads on a non-localhost origin with no runtime config, the UI logs a warning and falls back to same-origin calls (which will not reach the proxy).
 - `https://<PROPR_INSTANCE_ID>.proxy.propr.dev` — the **per-instance proxy host** for one stack, and the host the browser sends **API, Socket.IO, OAuth-callback, and session-cookie** traffic to. Each enabled stack is published under this hostname through its Cloudflare Tunnel, and the hosted UI discovers and reaches your stack through the shared `.proxy.propr.dev` suffix — no domain of your own to own or register. The tunnel fronts the **API** here (the API container on port 4000, serving `/api/*`, `/socket.io/`, and `/webhook`); the UI itself is served by `app.propr.dev`, not through the tunnel.
-- `http://api:4000` — **internal only**. This is the service-to-service address other stack containers use to reach the API inside the Docker network. The tunnel publishes the API publicly at the proxy host; the internal `http://api:4000` name is unchanged and is never what the browser uses.
+- `http://api:4000` — **internal only**. This is the service-to-service address other stack containers use to reach the API inside the Docker network, and it is also **where Cloudflare forwards the tunnel** — the tunnel ingress points at the Docker-internal `http://api:4000`, **not** at host port 4000. Because routing is internal to the Docker network, the published host port is irrelevant to the tunnel and the two cannot conflict; you do not need host port 4000 free for the tunnel to work. The tunnel publishes the API publicly at the proxy host; the internal `http://api:4000` name is unchanged and is never what the browser uses.
 
 So the browser origin (`app.propr.dev`) and the API host (`<id>.proxy.propr.dev`) **differ**. They work together because both sit under the shared `propr.dev` registrable domain, which makes them *same-site* (though cross-origin): the API allows the `app.propr.dev` origin via CORS (`FRONTEND_URL`), the host-only session cookie set on the proxy host is sent with the UI's same-site API calls, and the OAuth callback lands on the proxy host. See [Configuration](#configuration-v1) below for the exact `FRONTEND_URL` / `API_PUBLIC_URL` / `GH_OAUTH_CALLBACK_URL` values.
 
@@ -271,6 +271,7 @@ Set these in the stack `.env`. Replace `abc123` with your instance id (a valid D
 
 ```bash
 # --- Hosted UI tunnel (v1, optional) ---
+# PROPR_UI_TUNNEL_TOKEN is a LIVE Cloudflare credential — do not commit, log, or share it.
 PROPR_UI_TUNNEL_TOKEN=your_cloudflare_tunnel_token   # Cloudflare Tunnel token; required to start. Setting it makes the tunnel start on the next `propr start`
 PROPR_INSTANCE_ID=abc123                             # this stack's instance id; valid DNS label (letters, digits, hyphens; 1-63 chars). Derives https://abc123.proxy.propr.dev
 PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev   # explicit public API URL the hosted UI talks to (overrides the derived one)
@@ -305,11 +306,14 @@ GH_OAUTH_CALLBACK_URL=https://abc123.proxy.propr.dev/api/auth/github/callback
 
 Leave `COOKIE_DOMAIN` unset: the session cookie is host-only on the single `<id>.proxy.propr.dev` host, which is correct because that host and `app.propr.dev` are same-site under `propr.dev`. Scoping the cookie across the shared `.proxy.propr.dev` suffix is not supported for v1.
 
-Then start the sidecar:
+Then start the sidecar and verify it:
 
 ```bash
 propr tunnel on
+propr tunnel verify   # checks the sidecar + public /api/status, /, /socket.io/
 ```
+
+`propr tunnel verify` confirms the cloudflared container is running and that the public proxy answers as expected: `GET <url>/api/status` returns an OK/auth-expected response, `GET <url>/` returns **404** (the root is intentionally not routed), and `GET <url>/socket.io/` is reachable. `propr status` likewise probes `<url>/api/status` for tunnel reachability — the root `/` and the legacy `/health` path are not routed through the tunnel.
 
 **Enablement.** Setting `PROPR_UI_TUNNEL_TOKEN` enables the tunnel by default, so the next `propr start` (or a restart) brings up the sidecar — you do not strictly need `propr tunnel on` first. `propr tunnel on|off` records an explicit choice that **overrides** the token-derived default and is honored by later starts; `propr tunnel on` additionally starts the sidecar immediately on an already-running stack, and `propr tunnel off` stops it while leaving the token in place. `PROPR_UI_TUNNEL_ENABLED=true` is an explicit alternative, but a token is still required — `propr check` fails if the tunnel is enabled without `PROPR_UI_TUNNEL_TOKEN`. See [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel) for the full toggle semantics.
 

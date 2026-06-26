@@ -81,7 +81,10 @@ The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that ca
 ```bash
 propr tunnel on          # start the cloudflared sidecar
 propr tunnel off         # stop it — the token and env values are left untouched
+propr tunnel verify      # check the sidecar + public /api/status, /, /socket.io/
 ```
+
+Cloudflare forwards the tunnel to the **Docker-internal** API service at `http://api:4000` (the address inside the stack's Docker network), **not** to host port 4000. The published host port is therefore irrelevant to tunnel routing, and the two cannot conflict — you do not need to free up host port 4000 for the tunnel to work.
 
 Starting the tunnel always requires a configured token. Set these in your stack `.env` first:
 
@@ -96,6 +99,12 @@ Starting the tunnel always requires a configured token. Set these in your stack 
 **Enablement, step by step.** With no token and no flag the tunnel is off. Setting `PROPR_UI_TUNNEL_TOKEN` enables it by default, so the next `propr start` (or a restart) starts the sidecar — you do not have to run `propr tunnel on` first. Running `propr tunnel on|off` records an explicit choice in the CLI config that **overrides** the token-derived default and is honored by later `propr start`/restarts; `propr tunnel on` also starts the sidecar immediately on an already-running stack without waiting for a restart, and `propr tunnel off` stops it even while a token remains set.
 
 `propr tunnel on` fails clearly if no token is configured rather than launching a broken container. `propr tunnel off` only removes the tunnel container — it never touches the token or any other env value, so a later `propr tunnel on` works without rework.
+
+**Verify the tunnel.** `propr tunnel verify` runs a few quick checks against the public proxy URL: the cloudflared sidecar container is running; `GET <url>/api/status` returns an OK or auth-expected response; `GET <url>/` returns **404** (the root is intentionally not routed); and `GET <url>/socket.io/` is reachable (not blocked at Cloudflare ingress). It exits non-zero if any check fails. Note that `propr status` reports tunnel reachability by probing `<url>/api/status` for the same reason — the root `/` and the old `/health` path are not routed through the tunnel.
+
+:::caution The tunnel token is a live credential
+`PROPR_UI_TUNNEL_TOKEN` is a live Cloudflare Tunnel credential: anyone holding it can route traffic through your tunnel. Keep it in your stack `.env` only — **do not commit it to source control, paste it into logs or issues, or share it.** `propr tunnel on` prints this reminder when it starts the sidecar.
+:::
 
 :::caution Restart the stack after enabling on a running stack
 `propr tunnel on` starts only the cloudflared sidecar; it does **not** restart the already-running API/worker containers. Those keep the `API_PUBLIC_URL` / `FRONTEND_URL` they were started with, so OAuth redirects, cookie security, and attachment links still point at their pre-tunnel (localhost) values until you run `propr start --restart`. Enabling the tunnel via the token before `propr start` avoids this, since the API then comes up with the proxy URLs. The command prints this warning when it detects a running stack.

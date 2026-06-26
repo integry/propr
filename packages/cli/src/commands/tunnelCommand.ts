@@ -17,6 +17,7 @@
  */
 
 import { Command } from "commander";
+import { proprTunnelEndpoints } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import { parseOnOffState, ParseStateError } from "../utils/index.js";
@@ -71,6 +72,13 @@ export async function applyTunnelToggle({
   await configManager.setTunnelEnabled(enable);
   try {
     if (enable) {
+      // PROPR_UI_TUNNEL_TOKEN is a live Cloudflare Tunnel credential: anyone with
+      // it can route traffic through this tunnel. It is read from the stack .env,
+      // so remind the operator not to commit, log, or share that file.
+      warn(
+        "Warning: PROPR_UI_TUNNEL_TOKEN is a live Cloudflare credential. Keep it\n" +
+          "  in your stack .env only — do not commit, log, or share it."
+      );
       // The tunnel only routes to the core API (api:4000). Starting it while the
       // core stack is down leaves a healthy-looking cloudflared sidecar pointing
       // at an unavailable backend, so warn the operator (don't fail — they may be
@@ -97,10 +105,15 @@ export async function applyTunnelToggle({
       log("Starting tunnel…");
       orch.ensureNetwork(cfg, (l: string) => log(l));
       orch.startService(cfg, "tunnel", { onLog: (l) => log(l) });
+      log("tunnel is up.");
       if (cfg.uiPublicApiUrl) {
-        log(`tunnel is up — public API at ${cfg.uiPublicApiUrl}`);
-      } else {
-        log("tunnel is up.");
+        // Show the concrete endpoints propr-routing forwards rather than the base
+        // URL itself: only /api/* and /socket.io/* are routed, so the root URL
+        // intentionally returns 404 (it is not the API health target).
+        const { apiStatus, socketIo } = proprTunnelEndpoints(cfg.uiPublicApiUrl);
+        log(`  API:      ${apiStatus}`);
+        log(`  Realtime: ${socketIo}`);
+        log("  Root URL intentionally returns 404.");
       }
     } else {
       log("Stopping tunnel…");
@@ -112,6 +125,154 @@ export async function applyTunnelToggle({
     // so a failed toggle doesn't leave a stale persisted override behind.
     await configManager.set("tunnelEnabled", previousEnabled);
     throw error;
+  }
+}
+
+/** One verification probe and its outcome. */
+export interface TunnelCheckResult {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** Aggregate result of `propr tunnel verify`. */
+export interface TunnelVerifyResult {
+  ok: boolean;
+  checks: TunnelCheckResult[];
+}
+
+export interface TunnelVerifyDeps {
+  cfg: OrchestratorConfig;
+  orch: Pick<OrchestratorModule, "getServiceState">;
+  /** Injected for tests; defaults to the global fetch. */
+  fetchImpl?: typeof fetch;
+  /** Per-request timeout for the HTTP probes. */
+  timeoutMs?: number;
+}
+
+// GET a URL behind a hard timeout. Resolves the HTTP status, or null on a
+// network error / timeout (so the caller can distinguish "no response at all"
+// from "responded with a status"). Never throws — verify reports, it does not gate.
+async function probeStatus(
+  url: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number
+): Promise<number | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(url, { signal: controller.signal, redirect: "manual" });
+    return res.status;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Core `propr tunnel verify` checks, decoupled from CLI wiring so they can be
+ * unit-tested with an injected fetch/orchestrator. Runs the simple liveness
+ * checks from the spec:
+ *   - the cloudflared sidecar container is running;
+ *   - GET <url>/api/status returns an OK/auth-expected response;
+ *   - GET <url>/ returns 404 (the root is intentionally not routed);
+ *   - GET <url>/socket.io/ is reachable (not blocked by Cloudflare ingress).
+ */
+export async function verifyTunnel({
+  cfg,
+  orch,
+  fetchImpl = fetch,
+  timeoutMs = 5000,
+}: TunnelVerifyDeps): Promise<TunnelVerifyResult> {
+  const checks: TunnelCheckResult[] = [];
+
+  // 1. cloudflared container running.
+  const state = orch.getServiceState(cfg, "tunnel");
+  checks.push({
+    name: "cloudflared container running",
+    ok: Boolean(state?.running),
+    detail: state?.running
+      ? `${state.name} is up`
+      : "the cloudflared sidecar is not running — start it with 'propr tunnel on'",
+  });
+
+  const publicApiUrl = cfg.uiPublicApiUrl;
+  if (!publicApiUrl) {
+    // Without a public URL there is nothing to probe over HTTP. Record the
+    // remaining checks as failed with an actionable detail rather than skipping.
+    const detail =
+      "no public proxy URL is known — set PROPR_INSTANCE_ID or PROPR_UI_PUBLIC_API_URL";
+    checks.push({ name: "GET /api/status", ok: false, detail });
+    checks.push({ name: "GET / returns 404", ok: false, detail });
+    checks.push({ name: "GET /socket.io/ reachable", ok: false, detail });
+    return { ok: false, checks };
+  }
+
+  const { apiStatus, socketIo, root } = proprTunnelEndpoints(publicApiUrl);
+
+  // 2. /api/status returns OK or an auth-expected response.
+  const apiCode = await probeStatus(apiStatus, fetchImpl, timeoutMs);
+  const apiOk = apiCode !== null && (apiCode < 400 || apiCode === 401 || apiCode === 403);
+  checks.push({
+    name: "GET /api/status",
+    ok: apiOk,
+    detail:
+      apiCode === null
+        ? `no response from ${apiStatus} (network error or timeout)`
+        : `${apiStatus} → ${apiCode}${apiCode === 401 || apiCode === 403 ? " (auth-expected)" : ""}`,
+  });
+
+  // 3. Root path intentionally returns 404 (only /api/* and /socket.io/* route).
+  const rootCode = await probeStatus(root, fetchImpl, timeoutMs);
+  checks.push({
+    name: "GET / returns 404",
+    ok: rootCode === 404,
+    detail:
+      rootCode === null
+        ? `no response from ${root} (network error or timeout)`
+        : `${root} → ${rootCode}${rootCode === 404 ? " (expected)" : " (expected 404)"}`,
+  });
+
+  // 4. Socket.IO path reachable — a Socket.IO server answers a bare GET with a
+  // 400 ("Transport unknown"), so any HTTP response other than 404 proves the
+  // path is routed through Cloudflare rather than blocked at ingress.
+  const socketCode = await probeStatus(socketIo, fetchImpl, timeoutMs);
+  const socketOk = socketCode !== null && socketCode !== 404;
+  checks.push({
+    name: "GET /socket.io/ reachable",
+    ok: socketOk,
+    detail:
+      socketCode === null
+        ? `no response from ${socketIo} (network error or timeout)`
+        : socketCode === 404
+          ? `${socketIo} → 404 (path not routed / blocked at ingress)`
+          : `${socketIo} → ${socketCode} (routed)`,
+  });
+
+  return { ok: checks.every((c) => c.ok), checks };
+}
+
+async function runTunnelVerify(root?: string): Promise<void> {
+  const configManager = await createConfigManager();
+  const { orch, cfg } = await getHostConfig({ configManager, root });
+
+  if (!orch.dockerAvailable()) {
+    console.error("Error: cannot reach the Docker daemon. Run 'propr check'.");
+    process.exit(1);
+  }
+
+  console.log("Verifying tunnel…");
+  const { ok, checks } = await verifyTunnel({ cfg, orch });
+  for (const c of checks) {
+    console.log(`  ${c.ok ? "✓" : "✗"} ${c.name} — ${c.detail}`);
+  }
+  console.log("");
+  if (ok) {
+    console.log("Tunnel verification passed.");
+  } else {
+    console.error("Tunnel verification failed.");
+    process.exit(1);
   }
 }
 
@@ -138,30 +299,40 @@ async function toggleTunnel(stateArg: string, root?: string): Promise<void> {
 
 export function createTunnelCommand(): Command {
   return new Command("tunnel")
-    .description("Start or stop the Cloudflare Tunnel service")
-    .argument("<state>", "on or off")
+    .description("Start, stop, or verify the Cloudflare Tunnel service")
+    .argument("<action>", "on, off, or verify")
     .option("--root <dir>", "Stack root directory")
     .addHelpText("after", `
 Starting the tunnel requires a configured token. Set these in your stack .env:
-  PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start)
+  PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start). This is a
+                           live Cloudflare credential — do not commit, log, or share it
   PROPR_INSTANCE_ID        Instance id; derives the public URL
                            https://<id>.proxy.propr.dev when no explicit one is set
   PROPR_UI_PUBLIC_API_URL  Explicit public API URL advertised through the tunnel
                            (optional; overrides the id-derived URL)
 
-Examples:
-  $ propr tunnel on
-  $ propr tunnel off
+Cloudflare forwards the tunnel to the Docker-internal API service at
+http://api:4000 (NOT host port 4000), so the published host port is irrelevant
+to tunnel routing and the two cannot conflict. Only /api/* and /socket.io/* are
+routed; the root URL intentionally returns 404.
+
+  $ propr tunnel on        Start the cloudflared sidecar
+  $ propr tunnel off       Stop the sidecar (token/env values are left untouched)
+  $ propr tunnel verify    Check the sidecar + public /api/status, /, /socket.io/
 `)
-    .action(async (state: string, options: { root?: string }) => {
+    .action(async (action: string, options: { root?: string }) => {
       try {
-        await toggleTunnel(state, options.root);
+        if (action === "verify") {
+          await runTunnelVerify(options.root);
+          return;
+        }
+        await toggleTunnel(action, options.root);
       } catch (error) {
         if (error instanceof ParseStateError) {
-          console.error(`Error: ${error.message}`);
+          console.error(`Error: ${error.message} (expected on, off, or verify)`);
           process.exit(1);
         }
-        console.error(`Error toggling tunnel: ${(error as Error).message}`);
+        console.error(`Error running tunnel command: ${(error as Error).message}`);
         process.exit(1);
       }
     });

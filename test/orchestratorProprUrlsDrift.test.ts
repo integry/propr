@@ -7,6 +7,8 @@ import {
   DEFAULT_PROPR_UI_ORIGIN as SHARED_PROPR_UI_ORIGIN,
   proprInstanceProxyUrl as sharedProxyUrl,
   isValidProprInstanceId as sharedIsValidId,
+  isProprProxyUrl as sharedIsProxyUrl,
+  proprTunnelEndpoints as sharedTunnelEndpoints,
 } from '@propr/shared';
 
 // The orchestrator is dependency-free .mjs and cannot import @propr/shared, so
@@ -19,6 +21,8 @@ import {
   DEFAULT_PROPR_UI_ORIGIN as LAUNCHER_PROPR_UI_ORIGIN,
   proprInstanceProxyUrl as launcherProxyUrl,
   isValidProprInstanceId as launcherIsValidId,
+  isProprProxyUrl as launcherIsProxyUrl,
+  proprTunnelEndpoints as launcherTunnelEndpoints,
 } from '../docker/launcher/orchestrator.mjs';
 
 describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
@@ -46,6 +50,39 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
         launcherIsValidId(id),
         sharedIsValidId(id),
         `validity diverged for ${JSON.stringify(id)}`,
+      );
+    }
+  });
+
+  test('isProprProxyUrl agrees for proxy, non-proxy, and malformed URLs', () => {
+    const cases = [
+      'https://abc123.proxy.propr.dev',
+      'https://abc123.proxy.propr.dev/',
+      'https://app.propr.dev',
+      'http://abc123.proxy.propr.dev',
+      'https://abc123.example.com',
+      'https://proxy.propr.dev',
+      'not a url',
+      '',
+      null,
+      undefined,
+    ];
+    for (const url of cases) {
+      assert.equal(
+        launcherIsProxyUrl(url as string | undefined),
+        sharedIsProxyUrl(url as string | undefined),
+        `isProprProxyUrl diverged for ${JSON.stringify(url)}`,
+      );
+    }
+  });
+
+  test('proprTunnelEndpoints agrees, including trailing-slash normalization', () => {
+    const cases = ['https://abc123.proxy.propr.dev', 'https://abc123.proxy.propr.dev/', 'https://abc123.proxy.propr.dev///'];
+    for (const url of cases) {
+      assert.deepEqual(
+        launcherTunnelEndpoints(url),
+        sharedTunnelEndpoints(url),
+        `proprTunnelEndpoints diverged for ${JSON.stringify(url)}`,
       );
     }
   });

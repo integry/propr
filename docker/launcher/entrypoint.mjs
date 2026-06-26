@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import {
     resolveConfig, validateEnv, ensureNetwork, pullImages,
     startStack, stopStack, getStackStatus, getServiceLogs,
+    proprTunnelEndpoints,
 } from './orchestrator.mjs';
 
 let cfg;
@@ -59,6 +60,16 @@ async function main() {
     console.log('\nstarting containers…');
     startStack(cfg, { ui: true, docs: cfg.docsEnabled, onLog: (l) => console.log(l) });
     stackStarted = true;
+
+    // Surface the concrete routed endpoints (not the base URL as a health
+    // target) when the tunnel is on, so logs show where the hosted UI reaches it.
+    if (cfg.uiTunnelEnabled && cfg.uiPublicApiUrl) {
+        const { apiStatus, socketIo } = proprTunnelEndpoints(cfg.uiPublicApiUrl);
+        console.log('\ntunnel is up — the hosted UI reaches this stack at:');
+        console.log(`  API:       ${apiStatus}`);
+        console.log(`  Socket.IO: ${socketIo}`);
+        console.log('  Root URL intentionally returns 404.');
+    }
 
     console.log('\n[ok] stack up. streaming logs... (Ctrl-C to stop)');
     for (const svc of getStackStatus(cfg).services) {

@@ -75,7 +75,7 @@ export interface TunnelStatus {
   running: boolean;
   /** Expected public proxy URL, or null when it cannot be derived. */
   publicApiUrl: string | null;
-  /** Best-effort <publicApiUrl>/health probe; null when there is no URL to probe. */
+  /** Best-effort <publicApiUrl>/api/status probe; null when there is no URL to probe. */
   reachable: boolean | null;
 }
 

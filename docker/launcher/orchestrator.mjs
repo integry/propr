@@ -56,6 +56,32 @@ export function proprInstanceProxyUrl(instanceId) {
     return isValidProprInstanceId(id) ? `https://${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
 }
 
+// Whether a URL is a hosted per-instance proxy URL (https://<id>.proxy.propr.dev).
+// propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
+// tunnel base URL must be one of them. Mirrors isProprProxyUrl() in the shared pkg.
+export function isProprProxyUrl(url) {
+    if (!url) return false;
+    try {
+        const { protocol, hostname } = new URL(url);
+        return protocol === 'https:' && hostname.endsWith(`.${PROPR_UI_PROXY_SUFFIX}`);
+    } catch {
+        return false;
+    }
+}
+
+// The concrete endpoints the hosted UI reaches through the tunnel base URL.
+// propr-routing only allows /api/* and /socket.io/*, so the base (root) URL
+// itself intentionally returns 404 — it is NOT a health target; probe apiStatus
+// for liveness. Mirrors proprTunnelEndpoints() in packages/shared/src/proprServiceUrls.ts.
+export function proprTunnelEndpoints(baseUrl) {
+    const base = baseUrl.replace(/\/+$/, '');
+    return {
+        apiStatus: `${base}/api/status`,
+        socketIo: `${base}/socket.io/`,
+        root: `${base}/`,
+    };
+}
+
 // Broad truthy parse for env flags, mirroring parseTruthyEnvValue() in
 // packages/shared/src/demoMode.ts so `1`/`TRUE`/whitespace are accepted like
 // elsewhere in the repo (kept local because this module imports no TS package).
@@ -819,8 +845,17 @@ export function buildServiceSpec(cfg, service) {
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
                 ...tunnelApiEnvArgs(cfg),
             ]);
-        case 'ui':
-            return { image: cfg.images.ui, args: ['-p', `${cfg.uiPort}:5173`] };
+        case 'ui': {
+            // The UI image's docker-entrypoint.sh rewrites public/config.js from
+            // PROPR_UI_PUBLIC_API_URL so one prebuilt bundle can point at any
+            // per-instance proxy. Pass the tunnel base URL through unchanged — the
+            // UI appends /api/... to it for REST and uses /socket.io/ for Socket.IO,
+            // so the value must be the bare proxy origin (no /api suffix). Only set
+            // it when known; an unset value keeps the same-origin local default.
+            const uiArgs = ['-p', `${cfg.uiPort}:5173`];
+            if (cfg.uiPublicApiUrl) uiArgs.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
+            return { image: cfg.images.ui, args: uiArgs };
+        }
         case 'docs':
             return { image: cfg.images.docs, args: ['-p', `${cfg.docsPort}:3000`] };
         case 'tunnel':
@@ -1162,8 +1197,12 @@ export function getServiceState(cfg, service) {
     return getStackStatus(cfg).services.find((s) => s.service === service);
 }
 
-// Best-effort GET <publicApiUrl>/health behind a hard timeout. Resolves true on
-// a 2xx response, false on any non-2xx / network error / timeout. Never throws:
+// Best-effort GET <publicApiUrl>/api/status behind a hard timeout. propr-routing
+// only forwards /api/* and /socket.io/* on the proxy host, so the old root
+// /health path is no longer reachable through the tunnel — /api/status is the
+// public liveness endpoint. Resolves true when the API answers: a 2xx (status
+// payload) or an auth-expected 401/403 both prove the proxy reaches the API.
+// Resolves false on any other status / network error / timeout. Never throws:
 // tunnel reachability is a diagnostic, not a gate, so a slow or down proxy must
 // not fail `propr status`.
 // True for a well-formed http(s) URL. Used to skip probing/advertising a
@@ -1179,12 +1218,14 @@ function isValidHttpUrl(value) {
 }
 
 async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
-    const base = publicApiUrl.replace(/\/+$/, '');
+    const { apiStatus } = proprTunnelEndpoints(publicApiUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const res = await fetch(`${base}/health`, { signal: controller.signal, redirect: 'follow' });
-        return res.ok;
+        const res = await fetch(apiStatus, { signal: controller.signal, redirect: 'follow' });
+        // 2xx means the API answered; 401/403 means it answered but wants auth —
+        // either way the tunnel forwarded the request to the API behind it.
+        return res.ok || res.status === 401 || res.status === 403;
     } catch {
         return false;
     } finally {
@@ -1200,8 +1241,8 @@ async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
  *   - configured:   a tunnel token is present
  *   - running:      the cloudflared sidecar container is running
  *   - publicApiUrl: the expected public proxy URL (null when not derivable)
- *   - reachable:    best-effort <publicApiUrl>/health probe — true/false when a
- *                   URL is known, null when there is nothing to probe
+ *   - reachable:    best-effort <publicApiUrl>/api/status probe — true/false when
+ *                   a URL is known, null when there is nothing to probe
  *
  * Pass a precomputed stack status to reuse a single `docker ps`.
  */
@@ -1368,6 +1409,12 @@ export function validateEnv(cfg) {
         try { parsed = new URL(cfg.uiPublicApiUrl); } catch { /* invalid below */ }
         if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
             errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. Use a full URL such as https://abc123.proxy.propr.dev.`);
+        } else if (cfg.uiTunnelEnabled && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
+            // propr-routing only forwards /api/* and /socket.io/* on the hosted
+            // proxy hostnames (https://<id>.proxy.propr.dev). A tunnel public URL
+            // pointing anywhere else means REST and Socket.IO will not be routed,
+            // so warn rather than silently advertising an unroutable base.
+            warnings.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI may be unable to reach this stack. Set PROPR_INSTANCE_ID or a https://<id>.${PROPR_UI_PROXY_SUFFIX} URL.`);
         }
     }
 
