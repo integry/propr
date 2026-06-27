@@ -17,7 +17,7 @@
  */
 
 import { Command } from "commander";
-import { proprTunnelEndpoints } from "@propr/shared";
+import { proprTunnelEndpoints, isProprProxyUrl, PROPR_UI_PROXY_SUFFIX } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import { parseOnOffState, ParseStateError } from "../utils/index.js";
@@ -53,6 +53,29 @@ export class TunnelPublicUrlMissingError extends Error {
         "  your stack .env, then run 'propr tunnel on' again."
     );
     this.name = "TunnelPublicUrlMissingError";
+  }
+}
+
+/**
+ * Thrown by applyTunnelToggle when `tunnel on` is requested with a public proxy
+ * URL that is not a hosted `https://<id>.proxy.propr.dev` URL. propr-routing only
+ * forwards `/api/*` and `/socket.io/*` on those hosts, so an explicit
+ * `PROPR_UI_PUBLIC_API_URL` pointing anywhere else (e.g. https://custom.example.com)
+ * would start a sidecar the hosted UI cannot route to. The launcher's
+ * `validateEnv()` already rejects this for `propr start`/`propr check`; mirroring
+ * it here keeps `propr tunnel on` from persisting and starting an unroutable
+ * configuration that those commands would refuse.
+ */
+export class TunnelPublicUrlInvalidError extends Error {
+  constructor(url: string) {
+    super(
+      `cannot start the tunnel — PROPR_UI_PUBLIC_API_URL ("${url}") is not a\n` +
+        `  hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only\n` +
+        `  routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the\n` +
+        "  hosted UI could not reach this stack. Set PROPR_INSTANCE_ID (preferred) or\n" +
+        `  a https://<id>.${PROPR_UI_PROXY_SUFFIX} URL, then run 'propr tunnel on' again.`
+    );
+    this.name = "TunnelPublicUrlInvalidError";
   }
 }
 
@@ -116,6 +139,16 @@ export async function applyTunnelToggle({
   // before persisting so a refused start leaves no override behind.
   if (enable && !cfg.uiPublicApiUrl) {
     throw new TunnelPublicUrlMissingError();
+  }
+
+  // A derived public URL is always a well-formed proxy URL, but an explicit
+  // PROPR_UI_PUBLIC_API_URL can be anything. propr-routing only forwards /api/*
+  // and /socket.io/* on https://<id>.proxy.propr.dev hosts, so a non-proxy URL
+  // would start a sidecar the hosted UI cannot route to. validateEnv() rejects
+  // this for `propr start`/`propr check`; mirror it here so `propr tunnel on`
+  // doesn't persist/start an unroutable configuration those commands would refuse.
+  if (enable && cfg.uiPublicApiUrl && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
+    throw new TunnelPublicUrlInvalidError(cfg.uiPublicApiUrl);
   }
 
   // The tunnel only routes to the core API (api:4000). Starting it while the core
@@ -375,6 +408,7 @@ async function toggleTunnel(stateArg: string, root?: string, force?: boolean): P
     if (
       error instanceof TunnelTokenMissingError ||
       error instanceof TunnelPublicUrlMissingError ||
+      error instanceof TunnelPublicUrlInvalidError ||
       error instanceof TunnelCoreStackDownError
     ) {
       console.error(`Error: ${error.message}`);

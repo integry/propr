@@ -8,6 +8,9 @@ import {
   DEFAULT_CLOUDFLARED_IMAGE as SHARED_CLOUDFLARED_IMAGE,
   DEFAULT_PROPR_UI_ORIGIN as SHARED_PROPR_UI_ORIGIN,
   PROPR_VERSION,
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
+  PROPR_UI_SUPPORTED_API_COMPATIBILITY,
   proprInstanceProxyUrl as sharedProxyUrl,
   isValidProprInstanceId as sharedIsValidId,
   isProprProxyUrl as sharedIsProxyUrl,
@@ -119,5 +122,23 @@ describe('release metadata stays in sync with the launcher manifest', () => {
 
   test('manifest cloudflared image matches DEFAULT_CLOUDFLARED_IMAGE', () => {
     assert.equal(manifest.images.cloudflared, SHARED_CLOUDFLARED_IMAGE);
+  });
+
+  // PROPR_API_COMPATIBILITY is hand-bumped (it tracks the browser-facing contract,
+  // not the release version), so unlike PROPR_VERSION it has nothing external to
+  // diff against. The whole pre-auth compatibility gate hinges on this single
+  // string, so guard at least its shape here: a stray edit to a non-date value
+  // (empty, a version number, a typo'd format) fails CI instead of silently
+  // shipping a compatibility value the UI can never match.
+  test('PROPR_API_COMPATIBILITY is a YYYY-MM-DD date string', () => {
+    assert.match(PROPR_API_COMPATIBILITY, /^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  // The UI compatibility mirrors the API one and the supported-set must contain
+  // it, or the gate would reject a correctly-matched instance. Pin that invariant
+  // so a future edit that splits these apart fails loudly.
+  test('PROPR_UI_COMPATIBILITY mirrors PROPR_API_COMPATIBILITY and is in the supported set', () => {
+    assert.equal(PROPR_UI_COMPATIBILITY, PROPR_API_COMPATIBILITY);
+    assert.ok(PROPR_UI_SUPPORTED_API_COMPATIBILITY.includes(PROPR_API_COMPATIBILITY));
   });
 });

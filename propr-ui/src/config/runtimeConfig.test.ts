@@ -67,6 +67,12 @@ describe('getApiBaseUrl', () => {
     const getApiBaseUrl = await loadGetApiBaseUrl();
     expect(getApiBaseUrl()).toBe('https://app.propr.dev');
   });
+
+  it('trims whitespace around the build-time env var', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', '  https://app.propr.dev/  ');
+    const getApiBaseUrl = await loadGetApiBaseUrl();
+    expect(getApiBaseUrl()).toBe('https://app.propr.dev');
+  });
 });
 
 describe('runtimeConfigWarning', () => {
@@ -96,6 +102,13 @@ describe('runtimeConfigWarning', () => {
     const runtimeConfigWarning = await loadWarning();
     for (const bad of ['abc123.proxy.propr.dev', '/api', 'ftp://abc.proxy.propr.dev', 'not a url']) {
       expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: bad })).toContain('not a valid http(s) URL');
+    }
+  });
+
+  it('warns on the hosted UI origin when apiBaseUrl is a valid URL but not a ProPR proxy URL', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    for (const notProxy of ['https://custom.example.com', 'http://abc123.proxy.propr.dev', 'https://a.b.proxy.propr.dev']) {
+      expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: notProxy })).toContain('not a hosted ProPR proxy URL');
     }
   });
 

@@ -16,6 +16,7 @@ import {
   verifyTunnel,
   TunnelTokenMissingError,
   TunnelPublicUrlMissingError,
+  TunnelPublicUrlInvalidError,
   TunnelCoreStackDownError,
   type TunnelToggleDeps,
 } from "./tunnelCommand.js";
@@ -140,6 +141,53 @@ test("tunnel on without a public URL is not bypassed by --force", async () => {
       warn: sink,
     }),
     TunnelPublicUrlMissingError
+  );
+
+  assert.deepEqual(sets, []);
+  assert.equal(value(), undefined);
+  assert.deepEqual(calls, []);
+});
+
+test("tunnel on with a non-proxy public URL throws and does not persist or start", async () => {
+  const { orch, calls } = fakeOrch({ stackRunning: true });
+  const { configManager, value, sets } = fakeConfigManager(undefined);
+
+  await assert.rejects(
+    applyTunnelToggle({
+      enable: true,
+      // Explicit PROPR_UI_PUBLIC_API_URL that is a valid URL but not a hosted
+      // proxy URL, so propr-routing would not forward to this stack — the same
+      // configuration validateEnv() rejects for `propr start`.
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://custom.example.com" }),
+      orch,
+      configManager,
+      log: sink,
+      warn: sink,
+    }),
+    TunnelPublicUrlInvalidError
+  );
+
+  // Refused before persisting or touching Docker, like the other start guards.
+  assert.deepEqual(sets, []);
+  assert.equal(value(), undefined);
+  assert.deepEqual(calls, []);
+});
+
+test("tunnel on with a non-proxy public URL is not bypassed by --force", async () => {
+  const { orch, calls } = fakeOrch({ stackRunning: false });
+  const { configManager, value, sets } = fakeConfigManager(undefined);
+
+  await assert.rejects(
+    applyTunnelToggle({
+      enable: true,
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://custom.example.com" }),
+      orch,
+      configManager,
+      force: true,
+      log: sink,
+      warn: sink,
+    }),
+    TunnelPublicUrlInvalidError
   );
 
   assert.deepEqual(sets, []);

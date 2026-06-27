@@ -12,7 +12,7 @@
 //   2. Build-time env (VITE_API_BASE_URL) — static single-target builds.
 //   3. Empty string — same-origin (local dev via the Vite proxy).
 
-import { DEFAULT_PROPR_UI_ORIGIN } from '@propr/shared';
+import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl } from '@propr/shared';
 
 export interface ProprRuntimeConfig {
   /** Base URL for REST and Socket.IO. Empty string means same-origin. */
@@ -34,7 +34,13 @@ const runtimeConfig: ProprRuntimeConfig =
  */
 const HOSTED_UI_HOSTNAME = new URL(DEFAULT_PROPR_UI_ORIGIN).hostname;
 
-/** A local development origin where the UI and API ship together. */
+/**
+ * A local development origin where the UI and API ship together. The hosted-only
+ * behavior keys off {@link isHostedUiOrigin} (a positive match on the hosted
+ * hostname) rather than "not localhost", so this predicate currently has no
+ * production caller — it is retained as the explicit complement of the hosted
+ * check for readability and is exercised directly in the unit tests.
+ */
 export const isLocalhostHostname = (hostname: string): boolean =>
   hostname === 'localhost' || hostname === '127.0.0.1';
 
@@ -107,6 +113,20 @@ export const runtimeConfigWarning = (
       'API calls built from this base will fail.'
     );
   }
+  // Hosted UI tunnel mode is explicitly limited to per-instance proxy hosts:
+  // propr-routing only forwards /api/* and /socket.io/* on
+  // https://<id>.proxy.propr.dev. A well-formed http(s) URL pointing anywhere
+  // else (e.g. https://custom.example.com) parses fine but requests will not be
+  // routed to the local stack, so warn rather than letting it fail silently at
+  // request time. This is a warning, not a hard block — a future hosting setup
+  // could legitimately front a different proxy domain.
+  if (!isProprProxyUrl(apiBaseUrl)) {
+    return (
+      `[propr] window.__PROPR_CONFIG__.apiBaseUrl is not a hosted ProPR proxy URL: "${apiBaseUrl}". ` +
+      'Hosted UI tunnel mode only routes https://<id>.proxy.propr.dev, so API calls built ' +
+      'from this base may not reach the local stack.'
+    );
+  }
   return null;
 };
 
@@ -127,4 +147,4 @@ if (typeof window !== 'undefined') {
  * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
  */
 export const getApiBaseUrl = (): string =>
-  (runtimeConfig.apiBaseUrl?.trim() || import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+  (runtimeConfig.apiBaseUrl?.trim() || import.meta.env.VITE_API_BASE_URL?.trim() || '').replace(/\/+$/, '');
