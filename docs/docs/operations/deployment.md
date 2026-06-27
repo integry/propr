@@ -272,6 +272,15 @@ does not support that local API contract, it stops at a clear version-mismatch
 screen instead of running against incompatible endpoints or Socket.IO events.
 `/api/status` also includes the same metadata for authenticated diagnostics.
 
+Only a **definitive** mismatch (the API reports a contract the UI knows it is too
+old or too new for) hard-blocks. A v1 **rollout exception** applies when the
+metadata is simply *absent* — an older API that predates `/api/compatibility`
+(returns 404) or returns no contract: the UI logs a console warning and continues
+rather than blocking, so an otherwise-working stack that has not been upgraded to
+publish metadata yet is not trapped mid-upgrade. This soft-warning fallback is
+temporary; once publishing the compatibility contract is a baseline expectation,
+missing metadata is intended to become a hard block like any other mismatch.
+
 ### Configuration (v1)
 
 Set these in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label):

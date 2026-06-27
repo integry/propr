@@ -37,6 +37,26 @@ export class TunnelTokenMissingError extends Error {
 }
 
 /**
+ * Thrown by applyTunnelToggle when `tunnel on` is requested but no public proxy
+ * URL can be derived. Hosted UI tunnel mode fundamentally needs an advertised
+ * endpoint (`PROPR_INSTANCE_ID` → https://<id>.proxy.propr.dev, or an explicit
+ * `PROPR_UI_PUBLIC_API_URL`); without one the sidecar would start and the desired
+ * state persist while the hosted UI has no usable endpoint, surfacing only as
+ * later status/verify failures. So we refuse up front instead.
+ */
+export class TunnelPublicUrlMissingError extends Error {
+  constructor() {
+    super(
+      "cannot start the tunnel — no public proxy URL can be derived.\n" +
+        "  The hosted UI reaches this stack at https://<id>.proxy.propr.dev, so set\n" +
+        "  PROPR_INSTANCE_ID (preferred) or an explicit PROPR_UI_PUBLIC_API_URL in\n" +
+        "  your stack .env, then run 'propr tunnel on' again."
+    );
+    this.name = "TunnelPublicUrlMissingError";
+  }
+}
+
+/**
  * Thrown by applyTunnelToggle when `tunnel on` is requested while the core stack
  * is down. Starting cloudflared then yields a healthy-looking sidecar pointing at
  * an unavailable api:4000, so we refuse by default and tell the operator to bring
@@ -87,6 +107,15 @@ export async function applyTunnelToggle({
   // cloudflared cannot authenticate.
   if (enable && !cfg.uiTunnelToken) {
     throw new TunnelTokenMissingError();
+  }
+
+  // It also needs a derivable public proxy URL — the endpoint the hosted UI uses
+  // to reach this stack. Without it the sidecar would run but advertise nothing,
+  // so refuse here (a config completeness requirement, not bypassed by --force)
+  // rather than letting it surface as a later status/verify failure. Checked
+  // before persisting so a refused start leaves no override behind.
+  if (enable && !cfg.uiPublicApiUrl) {
+    throw new TunnelPublicUrlMissingError();
   }
 
   // The tunnel only routes to the core API (api:4000). Starting it while the core
@@ -337,6 +366,7 @@ async function toggleTunnel(stateArg: string, root?: string, force?: boolean): P
   } catch (error) {
     if (
       error instanceof TunnelTokenMissingError ||
+      error instanceof TunnelPublicUrlMissingError ||
       error instanceof TunnelCoreStackDownError
     ) {
       console.error(`Error: ${error.message}`);
@@ -353,13 +383,15 @@ export function createTunnelCommand(): Command {
     .option("--root <dir>", "Stack root directory")
     .option("--force", "Start the tunnel even if the core stack is not running")
     .addHelpText("after", `
-Starting the tunnel requires a configured token. Set these in your stack .env:
+Starting the tunnel requires a token AND a public proxy URL. Set these in your
+stack .env:
   PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start). This is a
                            live Cloudflare credential — do not commit, log, or share it
   PROPR_INSTANCE_ID        Instance id; derives the public URL
-                           https://<id>.proxy.propr.dev when no explicit one is set
+                           https://<id>.proxy.propr.dev (required unless
+                           PROPR_UI_PUBLIC_API_URL is set)
   PROPR_UI_PUBLIC_API_URL  Explicit public API URL advertised through the tunnel
-                           (optional; overrides the id-derived URL)
+                           (overrides the id-derived URL)
 
 Cloudflare forwards the tunnel to the Docker-internal API service at
 http://api:4000 (NOT host port 4000), so the published host port is irrelevant

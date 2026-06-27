@@ -15,6 +15,7 @@ import {
   applyTunnelToggle,
   verifyTunnel,
   TunnelTokenMissingError,
+  TunnelPublicUrlMissingError,
   TunnelCoreStackDownError,
   type TunnelToggleDeps,
 } from "./tunnelCommand.js";
@@ -100,6 +101,52 @@ test("tunnel on without a token throws and does not persist or start", async () 
   assert.deepEqual(calls, []);
 });
 
+test("tunnel on without a derivable public proxy URL throws and does not persist or start", async () => {
+  const { orch, calls } = fakeOrch({ stackRunning: true });
+  const { configManager, value, sets } = fakeConfigManager(undefined);
+
+  await assert.rejects(
+    applyTunnelToggle({
+      enable: true,
+      // Token present but no PROPR_INSTANCE_ID / PROPR_UI_PUBLIC_API_URL, so the
+      // hosted UI would have no endpoint to reach this stack.
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: undefined }),
+      orch,
+      configManager,
+      log: sink,
+      warn: sink,
+    }),
+    TunnelPublicUrlMissingError
+  );
+
+  // Refused before persisting or touching Docker, like the missing-token guard.
+  assert.deepEqual(sets, []);
+  assert.equal(value(), undefined);
+  assert.deepEqual(calls, []);
+});
+
+test("tunnel on without a public URL is not bypassed by --force", async () => {
+  const { orch, calls } = fakeOrch({ stackRunning: false });
+  const { configManager, value, sets } = fakeConfigManager(undefined);
+
+  await assert.rejects(
+    applyTunnelToggle({
+      enable: true,
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: undefined }),
+      orch,
+      configManager,
+      force: true,
+      log: sink,
+      warn: sink,
+    }),
+    TunnelPublicUrlMissingError
+  );
+
+  assert.deepEqual(sets, []);
+  assert.equal(value(), undefined);
+  assert.deepEqual(calls, []);
+});
+
 test("tunnel on persists desired state before starting the sidecar", async () => {
   const { orch, calls } = fakeOrch({ stackRunning: true });
   const { configManager, value } = fakeConfigManager(undefined);
@@ -129,7 +176,11 @@ test("tunnel on starts the sidecar with an enabled config even when the input cf
   // but uiTunnelEnabled=false. The start path must see the just-enabled state.
   await applyTunnelToggle({
     enable: true,
-    cfg: cfgWith({ uiTunnelToken: "secret-token", uiTunnelEnabled: false }),
+    cfg: cfgWith({
+      uiTunnelToken: "secret-token",
+      uiTunnelEnabled: false,
+      uiPublicApiUrl: "https://abc123.proxy.propr.dev",
+    }),
     orch,
     configManager,
     log: sink,
@@ -146,7 +197,7 @@ test("tunnel on rolls the persisted state back when the start fails", async () =
   await assert.rejects(
     applyTunnelToggle({
       enable: true,
-      cfg: cfgWith({ uiTunnelToken: "secret-token" }),
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
       orch,
       configManager,
       log: sink,
@@ -167,7 +218,7 @@ test("tunnel on with the core stack down throws and does not persist or start", 
   await assert.rejects(
     applyTunnelToggle({
       enable: true,
-      cfg: cfgWith({ uiTunnelToken: "secret-token" }),
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
       orch,
       configManager,
       log: sink,
@@ -189,7 +240,7 @@ test("tunnel on --force starts the sidecar even when the core stack is down", as
 
   await applyTunnelToggle({
     enable: true,
-    cfg: cfgWith({ uiTunnelToken: "secret-token" }),
+    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
     orch,
     configManager,
     force: true,
@@ -209,7 +260,7 @@ test("tunnel on warns about stale API env when the stack is already running", as
 
   await applyTunnelToggle({
     enable: true,
-    cfg: cfgWith({ uiTunnelToken: "secret-token" }),
+    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
     orch,
     configManager,
     log: sink,

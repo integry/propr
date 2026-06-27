@@ -225,6 +225,10 @@ const App: React.FC = () => {
         // otherwise-working stack may simply not publish metadata yet, and we
         // don't want to trap mid-upgrade users on a blocking screen. Only a
         // definitive version mismatch (too_old/too_new/unsupported) hard-blocks.
+        // TODO(rollout): this 'missing' soft-warning is a temporary v1 allowance
+        // (see docs/docs/operations/deployment.md). Once publishing the
+        // compatibility contract is a baseline expectation, treat 'missing' as a
+        // hard block like any other mismatch.
         if (result.reason === 'missing') {
           console.warn(`[propr] ${result.message}`);
           setCompatibility({ status: 'ready' });

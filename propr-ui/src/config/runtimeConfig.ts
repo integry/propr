@@ -91,6 +91,12 @@ if (typeof window !== 'undefined') {
  * Resolve the base URL used for both REST API calls and the Socket.IO
  * connection so they always target the same origin. Returns an empty string
  * for same-origin requests.
+ *
+ * Trailing slashes are stripped here, once, so the many callers that build
+ * paths as `${API_BASE_URL}/api/...` never produce a double slash (e.g.
+ * `https://abc.proxy.propr.dev//api/compatibility`). The orchestrator already
+ * normalizes the values it injects, but a hand-served `public/config.js`,
+ * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
  */
 export const getApiBaseUrl = (): string =>
-  runtimeConfig.apiBaseUrl?.trim() || import.meta.env.VITE_API_BASE_URL || '';
+  (runtimeConfig.apiBaseUrl?.trim() || import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');

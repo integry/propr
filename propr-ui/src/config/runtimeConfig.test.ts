@@ -49,6 +49,24 @@ describe('getApiBaseUrl', () => {
     const getApiBaseUrl = await loadGetApiBaseUrl();
     expect(getApiBaseUrl()).toBe('');
   });
+
+  it('strips a trailing slash from the runtime value so paths do not double up', async () => {
+    window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://abc123.proxy.propr.dev/' };
+    const getApiBaseUrl = await loadGetApiBaseUrl();
+    expect(getApiBaseUrl()).toBe('https://abc123.proxy.propr.dev');
+  });
+
+  it('strips multiple trailing slashes', async () => {
+    window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://abc123.proxy.propr.dev///' };
+    const getApiBaseUrl = await loadGetApiBaseUrl();
+    expect(getApiBaseUrl()).toBe('https://abc123.proxy.propr.dev');
+  });
+
+  it('strips a trailing slash from the build-time env var', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'https://app.propr.dev/');
+    const getApiBaseUrl = await loadGetApiBaseUrl();
+    expect(getApiBaseUrl()).toBe('https://app.propr.dev');
+  });
 });
 
 describe('runtimeConfigWarning', () => {
