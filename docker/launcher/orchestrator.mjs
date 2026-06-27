@@ -887,10 +887,19 @@ export function buildServiceSpec(cfg, service) {
             }
             // Optional Cloudflare Tunnel sidecar running the official cloudflared
             // image (its entrypoint is `cloudflared`). It dials out to Cloudflare's
-            // edge, so no local ports are published. cloudflared reads its token
-            // from the TUNNEL_TOKEN env var, so we pass it that way and omit the
-            // command-line `--token`: the literal token then stays out of the
-            // process argv (visible to anyone via host `ps`/`docker top`, and to
+            // edge, so no local ports are published.
+            //
+            // The spec's `tunnel --no-autoupdate run --token $PROPR_UI_TUNNEL_TOKEN`
+            // contract is satisfied via the env var rather than the literal flag:
+            // in cloudflared the `run` command's `--token` flag is bound to the
+            // TUNNEL_TOKEN env var (urfave/cli `EnvVars: ["TUNNEL_TOKEN"]`), so
+            // `tunnel run` reads TUNNEL_TOKEN natively and treats it exactly as if
+            // `--token <value>` had been passed. This binding is present in the
+            // pinned image (cloudflare/cloudflared:2024.12.2, see manifest.json) and
+            // has been stable across cloudflared releases, so the sidecar starts
+            // authenticated without the literal token ever appearing on argv.
+            // We prefer the env var precisely to keep the token off the process argv
+            // (otherwise visible to anyone via host `ps`/`docker top`, and to
             // unprivileged in-container tooling). It is still present in the
             // container's env, so a `docker inspect` by someone with Docker-daemon
             // access can read it — Docker access is already privileged. The token

@@ -1,3 +1,10 @@
+// Public ProPR version surfaced to the hosted UI via `/api/compatibility`. This
+// must track the release version. The shared package is bundled for the browser
+// (no fs/JSON-import of package.json available within rootDir), so it is kept as
+// a constant rather than read from package.json at runtime. A release bump that
+// updates packages/shared/package.json or docker/launcher/manifest.json but
+// forgets this constant is caught by the drift test in
+// test/orchestratorProprUrlsDrift.test.ts, which asserts all three agree.
 export const PROPR_VERSION = '0.8.4';
 
 // Bump this only when the API/UI contract changes in a way the hosted UI must

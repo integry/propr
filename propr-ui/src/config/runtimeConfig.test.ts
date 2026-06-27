@@ -92,6 +92,13 @@ describe('runtimeConfigWarning', () => {
     expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: 'https://abc123.proxy.propr.dev' })).toBeNull();
   });
 
+  it('warns on the hosted UI origin when apiBaseUrl is not a valid http(s) URL', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    for (const bad of ['abc123.proxy.propr.dev', '/api', 'ftp://abc.proxy.propr.dev', 'not a url']) {
+      expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: bad })).toContain('not a valid http(s) URL');
+    }
+  });
+
   it('does not warn on localhost regardless of config', async () => {
     const runtimeConfigWarning = await loadWarning();
     expect(runtimeConfigWarning('localhost', undefined)).toBeNull();
@@ -104,6 +111,27 @@ describe('runtimeConfigWarning', () => {
     const runtimeConfigWarning = await loadWarning();
     expect(runtimeConfigWarning('propr.example.com', undefined)).toBeNull();
     expect(runtimeConfigWarning('propr.example.com', { apiBaseUrl: '' })).toBeNull();
+  });
+});
+
+describe('isValidHttpUrl', () => {
+  const load = async () => (await import('./runtimeConfig')).isValidHttpUrl;
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('accepts absolute http and https URLs', async () => {
+    const isValidHttpUrl = await load();
+    expect(isValidHttpUrl('https://abc123.proxy.propr.dev')).toBe(true);
+    expect(isValidHttpUrl('http://localhost:4000')).toBe(true);
+  });
+
+  it('rejects scheme-less hosts, paths, non-http schemes, and junk', async () => {
+    const isValidHttpUrl = await load();
+    for (const bad of ['abc123.proxy.propr.dev', '/api', 'ftp://host', 'not a url', '']) {
+      expect(isValidHttpUrl(bad)).toBe(false);
+    }
   });
 });
 

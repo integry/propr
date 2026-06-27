@@ -174,7 +174,15 @@ export async function applyTunnelToggle({
       log("Starting tunnel…");
       orch.ensureNetwork(effectiveCfg, (l: string) => log(l));
       orch.startService(effectiveCfg, "tunnel", { onLog: (l) => log(l) });
-      log("tunnel is up.");
+      // Only the cloudflared sidecar was (re)started here. When the core stack was
+      // already running, its API/worker containers keep the pre-tunnel
+      // API_PUBLIC_URL/FRONTEND_URL until restarted, so say so explicitly rather
+      // than a bare "tunnel is up" that reads as fully cut over.
+      if (coreStackDown) {
+        log("tunnel sidecar is up.");
+      } else {
+        log("tunnel sidecar is up — run 'propr start --restart' to apply API_PUBLIC_URL/FRONTEND_URL.");
+      }
       if (effectiveCfg.uiPublicApiUrl) {
         // Show the concrete endpoints propr-routing forwards rather than the base
         // URL itself: only /api/* and /socket.io/* are routed, so the root URL

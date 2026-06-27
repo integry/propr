@@ -51,6 +51,21 @@ export const isHostedUiOrigin = (hostname: string): boolean =>
   hostname === HOSTED_UI_HOSTNAME;
 
 /**
+ * Whether a string is an absolute http(s) URL — used to sanity-check a
+ * runtime-injected API base before it is used to build request URLs. Returns
+ * false for relative paths, scheme-less hosts, and malformed input. Exported for
+ * unit testing.
+ */
+export const isValidHttpUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+/**
  * On the hosted UI origin the bundle expects `config.js` to have run first and
  * populated window.__PROPR_CONFIG__ with a per-instance apiBaseUrl. If it is
  * missing — or loaded but with an empty apiBaseUrl (the more likely
@@ -72,11 +87,24 @@ export const runtimeConfigWarning = (
       'Falling back to same-origin API calls, which will not reach the per-instance proxy.'
     );
   }
-  if (!config.apiBaseUrl?.trim()) {
+  const apiBaseUrl = config.apiBaseUrl?.trim();
+  if (!apiBaseUrl) {
     return (
       '[propr] window.__PROPR_CONFIG__.apiBaseUrl is empty — config.js loaded but ' +
       'PROPR_UI_PUBLIC_API_URL was not set at container start. ' +
       'Falling back to same-origin API calls, which will not reach the per-instance proxy.'
+    );
+  }
+  // The launcher validates PROPR_UI_PUBLIC_API_URL before injecting it, but a
+  // hand-served config.js or vendor-hosted injection can still provide a
+  // malformed value. The base is used as `${apiBaseUrl}/api/...`, so anything
+  // that is not an absolute http(s) URL (a path, a host with no scheme, junk)
+  // produces broken requests — warn so hosted misconfiguration is diagnosable.
+  if (!isValidHttpUrl(apiBaseUrl)) {
+    return (
+      `[propr] window.__PROPR_CONFIG__.apiBaseUrl is not a valid http(s) URL: "${apiBaseUrl}". ` +
+      'Expected an absolute per-instance proxy URL like https://abc123.proxy.propr.dev. ' +
+      'API calls built from this base will fail.'
     );
   }
   return null;

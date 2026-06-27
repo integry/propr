@@ -101,9 +101,20 @@ describe('release metadata stays in sync with the launcher manifest', () => {
   const manifest = JSON.parse(
     readFileSync(fileURLToPath(new URL('../docker/launcher/manifest.json', import.meta.url)), 'utf8'),
   ) as { version: string; images: { cloudflared: string } };
+  const sharedPkg = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../packages/shared/package.json', import.meta.url)), 'utf8'),
+  ) as { version: string };
 
   test('PROPR_VERSION matches manifest.version', () => {
     assert.equal(PROPR_VERSION, manifest.version);
+  });
+
+  // PROPR_VERSION is hand-maintained in proprCompatibility.ts, but the real
+  // release source of truth is the package version. Asserting both ends here
+  // means a release bump that updates package.json (or the manifest) but forgets
+  // the constant fails CI instead of silently shipping a stale public version.
+  test('PROPR_VERSION matches the shared package.json version', () => {
+    assert.equal(PROPR_VERSION, sharedPkg.version);
   });
 
   test('manifest cloudflared image matches DEFAULT_CLOUDFLARED_IMAGE', () => {
