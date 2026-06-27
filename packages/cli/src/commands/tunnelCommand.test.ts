@@ -15,6 +15,7 @@ import {
   applyTunnelToggle,
   verifyTunnel,
   TunnelTokenMissingError,
+  TunnelCoreStackDownError,
   type TunnelToggleDeps,
 } from "./tunnelCommand.js";
 import type { OrchestratorConfig, OrchestratorModule, ServiceState } from "../orchestrator/types.js";
@@ -157,6 +158,48 @@ test("tunnel on rolls the persisted state back when the start fails", async () =
   // Persisted true up front, then reverted to the prior unset value.
   assert.deepEqual(sets, [true, undefined]);
   assert.equal(value(), undefined);
+});
+
+test("tunnel on with the core stack down throws and does not persist or start", async () => {
+  const { orch, calls } = fakeOrch({ stackRunning: false });
+  const { configManager, value, sets } = fakeConfigManager(undefined);
+
+  await assert.rejects(
+    applyTunnelToggle({
+      enable: true,
+      cfg: cfgWith({ uiTunnelToken: "secret-token" }),
+      orch,
+      configManager,
+      log: sink,
+      warn: sink,
+    }),
+    TunnelCoreStackDownError
+  );
+
+  // Refused before persisting or touching Docker, like the missing-token guard.
+  assert.deepEqual(sets, []);
+  assert.equal(value(), undefined);
+  assert.deepEqual(calls, []);
+});
+
+test("tunnel on --force starts the sidecar even when the core stack is down", async () => {
+  const { orch, calls } = fakeOrch({ stackRunning: false });
+  const { configManager, value } = fakeConfigManager(undefined);
+  const warnings: string[] = [];
+
+  await applyTunnelToggle({
+    enable: true,
+    cfg: cfgWith({ uiTunnelToken: "secret-token" }),
+    orch,
+    configManager,
+    force: true,
+    log: sink,
+    warn: (m) => warnings.push(m),
+  });
+
+  assert.equal(value(), true);
+  assert.equal(calls.find((c) => c.fn === "startService")?.service, "tunnel");
+  assert.match(warnings.join("\n"), /--force/);
 });
 
 test("tunnel on warns about stale API env when the stack is already running", async () => {

@@ -58,12 +58,12 @@ describe('runtimeConfigWarning', () => {
     vi.resetModules();
   });
 
-  it('warns on a non-localhost origin when config.js did not load', async () => {
+  it('warns on the hosted UI origin when config.js did not load', async () => {
     const runtimeConfigWarning = await loadWarning();
     expect(runtimeConfigWarning('app.propr.dev', undefined)).toContain('config.js did not load');
   });
 
-  it('warns on a non-localhost origin when apiBaseUrl is empty', async () => {
+  it('warns on the hosted UI origin when apiBaseUrl is empty', async () => {
     const runtimeConfigWarning = await loadWarning();
     expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '' })).toContain('apiBaseUrl is empty');
     expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '   ' })).toContain('apiBaseUrl is empty');
@@ -79,6 +79,14 @@ describe('runtimeConfigWarning', () => {
     expect(runtimeConfigWarning('localhost', undefined)).toBeNull();
     expect(runtimeConfigWarning('127.0.0.1', { apiBaseUrl: '' })).toBeNull();
   });
+
+  it('does not warn on a self-hosted same-origin deployment', async () => {
+    // A self-hosted production UI on its own domain ships the UI and API
+    // together, so an empty apiBaseUrl (same-origin) is correct, not a misconfig.
+    const runtimeConfigWarning = await loadWarning();
+    expect(runtimeConfigWarning('propr.example.com', undefined)).toBeNull();
+    expect(runtimeConfigWarning('propr.example.com', { apiBaseUrl: '' })).toBeNull();
+  });
 });
 
 describe('isLocalhostHostname / isHostedUiOrigin', () => {
@@ -88,15 +96,17 @@ describe('isLocalhostHostname / isHostedUiOrigin', () => {
     vi.resetModules();
   });
 
-  it('treats localhost and 127.0.0.1 as local, everything else as hosted', async () => {
+  it('treats only the hosted UI origin as hosted', async () => {
     const { isLocalhostHostname, isHostedUiOrigin } = await load();
+    expect(isHostedUiOrigin('app.propr.dev')).toBe(true);
+    // localhost, per-instance proxies, and self-hosted domains are NOT the
+    // managed hosted UI origin.
     for (const local of ['localhost', '127.0.0.1']) {
       expect(isLocalhostHostname(local)).toBe(true);
       expect(isHostedUiOrigin(local)).toBe(false);
     }
-    for (const hosted of ['app.propr.dev', 'abc123.proxy.propr.dev', 'example.com']) {
-      expect(isLocalhostHostname(hosted)).toBe(false);
-      expect(isHostedUiOrigin(hosted)).toBe(true);
+    for (const other of ['abc123.proxy.propr.dev', 'propr.example.com', 'example.com']) {
+      expect(isHostedUiOrigin(other)).toBe(false);
     }
   });
 });

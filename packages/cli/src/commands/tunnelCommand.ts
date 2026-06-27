@@ -36,11 +36,33 @@ export class TunnelTokenMissingError extends Error {
   }
 }
 
+/**
+ * Thrown by applyTunnelToggle when `tunnel on` is requested while the core stack
+ * is down. Starting cloudflared then yields a healthy-looking sidecar pointing at
+ * an unavailable api:4000, so we refuse by default and tell the operator to bring
+ * the stack up first (or opt in with --force if that is intentional).
+ */
+export class TunnelCoreStackDownError extends Error {
+  constructor() {
+    super(
+      "cannot start the tunnel — the core stack does not appear to be running.\n" +
+        "  cloudflared would route to an unavailable API (api:4000). Run\n" +
+        "  'propr start' first, or pass --force to start the tunnel anyway."
+    );
+    this.name = "TunnelCoreStackDownError";
+  }
+}
+
 export interface TunnelToggleDeps {
   enable: boolean;
   cfg: OrchestratorConfig;
   orch: Pick<OrchestratorModule, "isStackRunning" | "ensureNetwork" | "startService" | "stopService">;
   configManager: Pick<ConfigManager, "getTunnelEnabled" | "setTunnelEnabled" | "set">;
+  /**
+   * Start the tunnel even when the core stack is down. Without this, enabling the
+   * tunnel while the stack is down throws {@link TunnelCoreStackDownError}.
+   */
+  force?: boolean;
   log?: (message: string) => void;
   warn?: (message: string) => void;
 }
@@ -48,13 +70,16 @@ export interface TunnelToggleDeps {
 /**
  * Core `propr tunnel on|off` behavior, decoupled from CLI wiring (config/orch
  * loading, process.exit) so it can be unit-tested with injected fakes. Throws
- * {@link TunnelTokenMissingError} when enabling without a token.
+ * {@link TunnelTokenMissingError} when enabling without a token, and
+ * {@link TunnelCoreStackDownError} when enabling while the core stack is down
+ * (unless `force` is set).
  */
 export async function applyTunnelToggle({
   enable,
   cfg,
   orch,
   configManager,
+  force = false,
   log = console.log,
   warn = console.warn,
 }: TunnelToggleDeps): Promise<void> {
@@ -62,6 +87,16 @@ export async function applyTunnelToggle({
   // cloudflared cannot authenticate.
   if (enable && !cfg.uiTunnelToken) {
     throw new TunnelTokenMissingError();
+  }
+
+  // The tunnel only routes to the core API (api:4000). Starting it while the core
+  // stack is down leaves a healthy-looking cloudflared sidecar pointing at an
+  // unavailable backend, so refuse unless the operator explicitly opts in with
+  // --force. Checked before persisting (like the token guard) so a refused start
+  // leaves no override behind.
+  const coreStackDown = enable && !orch.isStackRunning(cfg);
+  if (coreStackDown && !force) {
+    throw new TunnelCoreStackDownError();
   }
 
   // Persist the desired state up front (after validation, before Docker) so the
@@ -85,15 +120,14 @@ export async function applyTunnelToggle({
         "Warning: PROPR_UI_TUNNEL_TOKEN is a live Cloudflare credential. Keep it\n" +
           "  in your stack .env only — do not commit, log, or share it."
       );
-      // The tunnel only routes to the core API (api:4000). Starting it while the
-      // core stack is down leaves a healthy-looking cloudflared sidecar pointing
-      // at an unavailable backend, so warn the operator (don't fail — they may be
-      // about to `propr start`).
-      if (!orch.isStackRunning(effectiveCfg)) {
+      // We only reach the start path with the core stack down when --force was
+      // given (otherwise applyTunnelToggle threw above). Remind the operator the
+      // sidecar will point at an unavailable API until they `propr start`.
+      if (coreStackDown) {
         warn(
           "Warning: the core stack does not appear to be running, so the tunnel\n" +
-            "  will point at an unavailable API. Run 'propr start' to bring the\n" +
-            "  core services up."
+            "  will point at an unavailable API. Starting anyway because --force\n" +
+            "  was given; run 'propr start' to bring the core services up."
         );
       } else {
         // The already-running API/worker containers were started with whatever
@@ -288,7 +322,7 @@ async function runTunnelVerify(root?: string): Promise<void> {
   }
 }
 
-async function toggleTunnel(stateArg: string, root?: string): Promise<void> {
+async function toggleTunnel(stateArg: string, root?: string, force?: boolean): Promise<void> {
   const enable = parseOnOffState(stateArg);
   const configManager = await createConfigManager();
   const { orch, cfg } = await getHostConfig({ configManager, root });
@@ -299,9 +333,12 @@ async function toggleTunnel(stateArg: string, root?: string): Promise<void> {
   }
 
   try {
-    await applyTunnelToggle({ enable, cfg, orch, configManager });
+    await applyTunnelToggle({ enable, cfg, orch, configManager, force });
   } catch (error) {
-    if (error instanceof TunnelTokenMissingError) {
+    if (
+      error instanceof TunnelTokenMissingError ||
+      error instanceof TunnelCoreStackDownError
+    ) {
       console.error(`Error: ${error.message}`);
       process.exit(1);
     }
@@ -314,6 +351,7 @@ export function createTunnelCommand(): Command {
     .description("Start, stop, or verify the Cloudflare Tunnel service")
     .argument("<action>", "on, off, or verify")
     .option("--root <dir>", "Stack root directory")
+    .option("--force", "Start the tunnel even if the core stack is not running")
     .addHelpText("after", `
 Starting the tunnel requires a configured token. Set these in your stack .env:
   PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start). This is a
@@ -328,17 +366,18 @@ http://api:4000 (NOT host port 4000), so the published host port is irrelevant
 to tunnel routing and the two cannot conflict. Only /api/* and /socket.io/* are
 routed; the root URL intentionally returns 404.
 
-  $ propr tunnel on        Start the cloudflared sidecar
+  $ propr tunnel on        Start the cloudflared sidecar (requires the core stack
+                           to be running; pass --force to start it regardless)
   $ propr tunnel off       Stop the sidecar (token/env values are left untouched)
   $ propr tunnel verify    Check the sidecar + public /api/status, /, /socket.io/
 `)
-    .action(async (action: string, options: { root?: string }) => {
+    .action(async (action: string, options: { root?: string; force?: boolean }) => {
       try {
         if (action === "verify") {
           await runTunnelVerify(options.root);
           return;
         }
-        await toggleTunnel(action, options.root);
+        await toggleTunnel(action, options.root, options.force);
       } catch (error) {
         if (error instanceof ParseStateError) {
           console.error(`Error: ${error.message} (expected on, off, or verify)`);
