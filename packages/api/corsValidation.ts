@@ -28,6 +28,12 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
       // Allow the base domain and any subdomain. Cookie-domain sessions are
       // secure cookies, so require https here (except localhost, handled below)
       // to avoid trusting an http:// look-alike on the same domain.
+      // NOTE: this https requirement is intentional hardening over the previous
+      // inline validator in server.ts, which allowed http on the cookie-domain
+      // subdomain branch. It also affects the (non-tunnel) PR-preview path: a
+      // preview env that reached the API over http://<sub>.<cookie-domain> is now
+      // rejected by CORS and must use https. Acceptable pre-release, but it is a
+      // behavior change beyond the tunnel feature, so it is flagged here.
       if (
         baseDomain &&
         url.protocol === 'https:' &&

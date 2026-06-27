@@ -298,7 +298,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // and the frontend must point at the hosted UI origin. An explicit
         // API_PUBLIC_URL / FRONTEND_URL still wins; otherwise tunnel mode derives
         // them, falling back to the localhost defaults for local development.
-        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl) || `http://localhost:${apiPort}`,
+        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiPort}`),
         frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiPort}`,
         ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || `http://localhost:${apiPort}/api/auth/github/callback`,
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
@@ -849,7 +849,11 @@ export function buildServiceSpec(cfg, service) {
                 // `http://api:4000` regardless of the stack prefix. Without it the
                 // container is only reachable as `${stack}-api` (e.g. propr-api),
                 // which would force a per-stack tunnel ingress config and break the
-                // documented `http://api:4000` target.
+                // documented `http://api:4000` target. The alias is added
+                // unconditionally (not only in tunnel mode): it is harmless for
+                // tunnel-disabled local dev — each stack has its own network, so the
+                // alias is scoped to that network and never collides — and keeping it
+                // always-on avoids restarting the API just to enable the tunnel later.
                 '--network-alias', 'api',
                 '-p', `${cfg.apiPort}:4000`,
                 '-v', `${cfg.envFileHost}:/usr/src/app/.env:ro`,
@@ -1425,32 +1429,39 @@ export function validateEnv(cfg) {
     // Tunnel enabled but no public URL is known (cfg.uiPublicApiUrl is the
     // explicit PROPR_UI_PUBLIC_API_URL or the id-derived one, so this only trips
     // when neither yields a value — a missing or non-DNS-label instance id with no
-    // explicit override). The config is then inconsistent (frontendUrl=
-    // https://app.propr.dev but apiPublicUrl falls back to localhost), so warn
-    // rather than silently dropping the id.
+    // explicit override). The stack would then be inconsistent: frontendUrl=
+    // https://app.propr.dev but apiPublicUrl falls back to localhost, so cloudflared
+    // starts while the hosted UI has no endpoint to reach. `propr start` enables the
+    // tunnel from PROPR_UI_TUNNEL_TOKEN alone, bypassing the stricter `propr tunnel
+    // on` guard (TunnelPublicUrlMissingError), so this is a hard error here — fail
+    // startup rather than bring up a broken tunnel-mode stack.
     if (cfg.uiTunnelEnabled && !cfg.uiPublicApiUrl) {
-        warnings.push(
+        errors.push(
             cfg.proprInstanceId
-                ? `PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label, so no https://<id>.proxy.propr.dev URL can be derived. The API will advertise its localhost URL while the frontend points at the hosted UI. Set a valid instance id (1–63 letters/digits/hyphens, no leading/trailing hyphen) or an explicit PROPR_UI_PUBLIC_API_URL.`
-                : 'The UI tunnel is enabled but neither PROPR_INSTANCE_ID nor PROPR_UI_PUBLIC_API_URL is set, so no public proxy URL can be derived. The API will advertise its localhost URL. Set PROPR_INSTANCE_ID (preferred) or an explicit PROPR_UI_PUBLIC_API_URL.'
+                ? `PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label, so no https://<id>.proxy.propr.dev URL can be derived. The tunnel would start while the API advertises its localhost URL and the frontend points at the hosted UI, leaving the hosted UI with no endpoint to reach. Set a valid instance id (1–63 letters/digits/hyphens, no leading/trailing hyphen) or an explicit PROPR_UI_PUBLIC_API_URL.`
+                : 'The UI tunnel is enabled but neither PROPR_INSTANCE_ID nor PROPR_UI_PUBLIC_API_URL is set, so no public proxy URL can be derived. The tunnel would start while the API advertises its localhost URL, leaving the hosted UI with no endpoint to reach. Set PROPR_INSTANCE_ID (preferred) or an explicit PROPR_UI_PUBLIC_API_URL.'
         );
     }
 
-    // A derived public URL is always well-formed, so a malformed value here can
-    // only come from an explicit PROPR_UI_PUBLIC_API_URL. Catch it early — an
-    // invalid URL is advertised to the API/worker and later probed by
-    // `getTunnelStatus()` via fetch(), where it would otherwise throw or misbehave.
+    // Validate an explicit PROPR_UI_PUBLIC_API_URL. A derived public URL is always
+    // well-formed, so a bad value here can only come from an explicit override.
+    // When the tunnel is ENABLED the value is advertised to the API/worker, probed
+    // by getTunnelStatus()/verify, and must point at a hosted proxy host because
+    // propr-routing only forwards /api/* and /socket.io/* on
+    // https://<id>.proxy.propr.dev — so a malformed or non-proxy URL would start an
+    // unroutable tunnel stack and is a hard error (matching the routing rule and the
+    // `propr tunnel on` guard). When the tunnel is DISABLED the value is inert —
+    // nothing consumes it — so a leftover/typo'd URL is only a warning and does not
+    // block an unrelated local-dev startup.
     if (cfg.uiPublicApiUrl) {
+        // In tunnel mode a bad URL is fatal; with the tunnel off it is advisory.
+        const badUrlSink = cfg.uiTunnelEnabled ? errors : warnings;
         let parsed;
         try { parsed = new URL(cfg.uiPublicApiUrl); } catch { /* invalid below */ }
         if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
-            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. Use a full URL such as https://abc123.proxy.propr.dev.`);
+            badUrlSink.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. Use a full URL such as https://abc123.proxy.propr.dev.`);
         } else if (cfg.uiTunnelEnabled && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
-            // propr-routing only forwards /api/* and /socket.io/* on the hosted
-            // proxy hostnames (https://<id>.proxy.propr.dev). A tunnel public URL
-            // pointing anywhere else means REST and Socket.IO will not be routed,
-            // so warn rather than silently advertising an unroutable base.
-            warnings.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI may be unable to reach this stack. Set PROPR_INSTANCE_ID or a https://<id>.${PROPR_UI_PROXY_SUFFIX} URL.`);
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a https://<id>.${PROPR_UI_PROXY_SUFFIX} URL.`);
         }
     }
 

@@ -7,6 +7,12 @@ set -eu
 # public/config.js. PROPR_UI_PUBLIC_API_URL is used for both REST and Socket.IO;
 # an empty/unset value keeps same-origin behavior.
 #
+# config.js MUST stay a real file in dist/ so the static server (serve.json)
+# returns it directly and the SPA `"**" -> /index.html` rewrite never catches it
+# — serve-handler serves existing files before applying rewrites. If a future
+# serve.json change ever routes /config.js to index.html, window.__PROPR_CONFIG__
+# would silently never load and the hosted UI would fall back to same-origin.
+#
 # Generate config.js with Node's JSON serializer rather than hand-rolled shell
 # escaping. JSON.stringify safely handles every string hazard (quotes,
 # backslashes, control characters, NUL) for an arbitrary env value. The two
