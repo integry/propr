@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hosted UI tunnel (ProPR Connect)**: optional CLI-managed `cloudflared`
+  sidecar that exposes a local stack to the hosted UI at `app.propr.dev` through
+  a per-instance `https://<id>.proxy.propr.dev` proxy. Includes shared tunnel
+  constants, `propr tunnel on|off|verify`, tunnel diagnostics in `propr status`
+  (and `--json`), runtime-configurable UI API base URL, and `.env.example`
+  guidance. The tunnel only routes `/api/*` and `/socket.io/*`; the proxy root
+  intentionally returns 404. See the hosted UI tunnel docs for setup.
+- **`/api/compatibility` endpoint**: a new, intentionally unauthenticated API
+  route that returns non-sensitive build metadata (`version`,
+  `apiCompatibility`, `uiCompatibility`) so the hosted UI can detect an
+  incompatible local stack before login. It exposes no user or repository data;
+  operators evaluating their unauthenticated API surface should note that the
+  exact release version is now readable pre-auth.
+
 ### Changed
 
 - `propr check --json` remains machine-readable but now reports the additional
@@ -15,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `propr start` now verifies ProPR-published service image freshness and may
   pull a stale local tag before starting; use `PROPR_SKIP_REMOTE_IMAGE_CHECK=1`
   to skip registry probes in offline or latency-sensitive environments.
+- **CORS hardening for cookie-domain subdomains**: when `COOKIE_DOMAIN` is set,
+  a request origin that is a subdomain of the cookie domain must now use
+  `https:` to be allowed (previously `http:` was accepted for that branch). This
+  also affects any non-tunnel preview environment that reached the API over
+  `http://<sub>.<cookie-domain>`; such previews must switch to `https`. Local
+  development and explicit `FRONTEND_URL` origins are unaffected.
 
 ## [0.8.3] - 2026-06-16
 
