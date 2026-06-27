@@ -115,6 +115,18 @@ export {
 // keys so the daemon publisher, API status route, and CLI cannot drift)
 export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
 
+export {
+  PROPR_VERSION,
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
+  PROPR_UI_SUPPORTED_API_COMPATIBILITY,
+  getProprCompatibilityMetadata,
+  evaluateProprApiCompatibility,
+  type ProprCompatibilityMetadata,
+  type ProprApiCompatibilityInput,
+  type ProprApiCompatibilityResult,
+} from './proprCompatibility.js';
+
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';
 
 // Export the default review guidance (the overridable part of the /review prompt)

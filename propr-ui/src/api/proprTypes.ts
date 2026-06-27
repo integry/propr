@@ -28,6 +28,9 @@ export interface SystemWarning {
 }
 
 export interface StatusResponse {
+  version?: string;
+  apiCompatibility?: string;
+  uiCompatibility?: string;
   daemon: string;
   workerCount?: number;
   redis: string;

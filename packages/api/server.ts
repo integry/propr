@@ -214,8 +214,9 @@ async function initRedis(): Promise<void> {
 }
 
 function setupRoutes(): void {
-  app.use('/api', ensureAuthenticated);
   const statusRoutes = createStatusRoutes({ redisClient });
+  app.get('/api/compatibility', statusRoutes.getCompatibility);
+  app.use('/api', ensureAuthenticated);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });

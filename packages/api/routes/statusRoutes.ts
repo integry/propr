@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
 import {
+  getProprCompatibilityMetadata,
   resolveGithubAuthMode,
   resolveGithubEventIntakeMode,
   ROUTING_STATUS_REDIS_KEY,
@@ -58,11 +59,17 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
   } = deps;
   let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
+  function getCompatibility(_req: Request, res: Response): void {
+    res.json(getProprCompatibilityMetadata());
+  }
+
   async function getStatus(req: Request, res: Response): Promise<void> {
     try {
+      const compatibility = getProprCompatibilityMetadata();
       // In demo mode, return all-green status
       if (isDemoMode()) {
         res.json({
+          ...compatibility,
           api: 'healthy',
           redis: 'connected',
           daemon: 'running',
@@ -87,6 +94,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       }
 
       const status: Record<string, unknown> = {
+        ...compatibility,
         api: 'healthy',
         redis: 'unknown',
         daemon: 'unknown',
@@ -156,7 +164,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     }
   }
 
-  return { getStatus };
+  return { getCompatibility, getStatus };
 
   async function getCachedAgentStatuses(): Promise<AgentStatus[]> {
     const currentTime = now();

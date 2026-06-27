@@ -265,6 +265,13 @@ So the browser origin (`app.propr.dev`) and the API host (`<id>.proxy.propr.dev`
 
 The browser uses the **same API base** for both REST calls and the Socket.IO connection, so they always target one origin — the per-instance proxy host when the tunnel is on, or same-origin localhost otherwise. The reverse-proxy rule still applies: `/api/*`, `/webhook`, and `/socket.io/` are all served by the API on port 4000, and WebSocket upgrades must be allowed on `/socket.io/`.
 
+Before the hosted UI starts its normal auth/session checks, it calls the public
+`/api/compatibility` endpoint on the selected API origin. The endpoint returns
+the local stack version plus the API/UI compatibility contract. If the hosted UI
+does not support that local API contract, it stops at a clear version-mismatch
+screen instead of running against incompatible endpoints or Socket.IO events.
+`/api/status` also includes the same metadata for authenticated diagnostics.
+
 ### Configuration (v1)
 
 Set these in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label):

@@ -20,10 +20,29 @@ import { DemoModeProvider } from './contexts/DemoModeProvider'
 import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser } from './api/proprApi'
+import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
+
+type CompatibilityState =
+  | { status: 'checking' }
+  | { status: 'ready' }
+  | { status: 'blocked'; title: string; message: string };
 
 const LoadingSpinner: React.FC = () => (
   <div className="flex h-screen w-full items-center justify-center bg-gray-50">
     <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
+  </div>
+);
+
+const CompatibilityBlocked: React.FC<{ title: string; message: string }> = ({ title, message }) => (
+  <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+    <div className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+      <div className="text-sm font-medium uppercase tracking-wide text-red-600">Hosted UI unavailable</div>
+      <h1 className="mt-2 text-2xl font-semibold text-gray-950">{title}</h1>
+      <p className="mt-3 text-sm leading-6 text-gray-600">{message}</p>
+      <div className="mt-5 rounded-md bg-gray-50 p-3 text-sm text-gray-600">
+        Update or restart the local ProPR stack, then reload this page.
+      </div>
+    </div>
   </div>
 );
 
@@ -172,6 +191,45 @@ const AppContent: React.FC = () => {
 };
 
 const App: React.FC = () => {
+  const [compatibility, setCompatibility] = useState<CompatibilityState>({ status: 'checking' });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    checkProprApiCompatibility()
+      .then((result) => {
+        if (cancelled) return;
+        if (result.compatible) {
+          setCompatibility({ status: 'ready' });
+          return;
+        }
+        setCompatibility({
+          status: 'blocked',
+          title: 'ProPR version mismatch',
+          message: result.message,
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setCompatibility({
+          status: 'blocked',
+          title: 'Cannot check ProPR version',
+          message: error instanceof ProprCompatibilityCheckError || error instanceof Error
+            ? error.message
+            : 'Cannot check the local ProPR API compatibility.',
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (compatibility.status === 'checking') return <LoadingSpinner />;
+  if (compatibility.status === 'blocked') {
+    return <CompatibilityBlocked title={compatibility.title} message={compatibility.message} />;
+  }
+
   return (
     <DemoModeProvider>
       <AppContent />

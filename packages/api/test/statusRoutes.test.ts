@@ -3,6 +3,7 @@ import { after, afterEach, test } from 'node:test';
 import type { Request, Response as ExpressResponse } from 'express';
 import type { Agent, AgentConfig } from '@propr/core';
 import type { RedisClientType } from 'redis';
+import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY, PROPR_VERSION } from '@propr/shared';
 
 type StatusRoutesDeps = {
   redisClient: RedisClientType;
@@ -169,8 +170,28 @@ test('/api/status omits disabled configured agents', async () => {
     loadAgents: async () => [createAgentConfig({ enabled: false })],
   });
 
+  assert.equal(body.version, PROPR_VERSION);
+  assert.equal(body.apiCompatibility, PROPR_API_COMPATIBILITY);
+  assert.equal(body.uiCompatibility, PROPR_UI_COMPATIBILITY);
   assert.deepEqual(body.agents, []);
   assert.equal(body.claudeAuth, 'disconnected');
+});
+
+test('/api/compatibility returns public version contract metadata', async () => {
+  configureStatusEnv();
+  const { response, status, body } = createJsonResponse();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+  });
+
+  routes.getCompatibility({} as Request, response);
+
+  assert.equal(status(), 200);
+  assert.deepEqual(body(), {
+    version: PROPR_VERSION,
+    apiCompatibility: PROPR_API_COMPATIBILITY,
+    uiCompatibility: PROPR_UI_COMPATIBILITY,
+  });
 });
 
 test('/api/status returns default Claude fallback when no agents are configured', async () => {
