@@ -1,10 +1,13 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import {
   PROPR_UI_PROXY_SUFFIX as SHARED_PROXY_SUFFIX,
   DEFAULT_CLOUDFLARED_IMAGE as SHARED_CLOUDFLARED_IMAGE,
   DEFAULT_PROPR_UI_ORIGIN as SHARED_PROPR_UI_ORIGIN,
+  PROPR_VERSION,
   proprInstanceProxyUrl as sharedProxyUrl,
   isValidProprInstanceId as sharedIsValidId,
   isProprProxyUrl as sharedIsProxyUrl,
@@ -62,6 +65,8 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
       'http://abc123.proxy.propr.dev',
       'https://abc123.example.com',
       'https://proxy.propr.dev',
+      'https://foo.bar.proxy.propr.dev',
+      'https://.proxy.propr.dev',
       'not a url',
       '',
       null,
@@ -85,5 +90,23 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
         `proprTunnelEndpoints diverged for ${JSON.stringify(url)}`,
       );
     }
+  });
+});
+
+// The release version and the pinned cloudflared tag are duplicated across the
+// launcher manifest and shared constants. A release bump (or image re-pin) that
+// updates one but not the others would ship inconsistent metadata, so assert the
+// single sources of truth agree with the manifest.
+describe('release metadata stays in sync with the launcher manifest', () => {
+  const manifest = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../docker/launcher/manifest.json', import.meta.url)), 'utf8'),
+  ) as { version: string; images: { cloudflared: string } };
+
+  test('PROPR_VERSION matches manifest.version', () => {
+    assert.equal(PROPR_VERSION, manifest.version);
+  });
+
+  test('manifest cloudflared image matches DEFAULT_CLOUDFLARED_IMAGE', () => {
+    assert.equal(manifest.images.cloudflared, SHARED_CLOUDFLARED_IMAGE);
   });
 });

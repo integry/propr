@@ -42,8 +42,14 @@ Examples:
 
         console.log("");
         console.log(renderStatusTable(status));
-        console.log("");
-        console.log(renderTunnelSection(tunnel));
+        // The tunnel is an optional service most stacks never use. Only show the
+        // human-readable Tunnel section when it is configured or enabled, so the
+        // common case isn't cluttered with an all-"no" block. (The --json output
+        // above always includes the `tunnel` key for scripted consumers.)
+        if (tunnel.configured || tunnel.enabled) {
+          console.log("");
+          console.log(renderTunnelSection(tunnel));
+        }
         console.log("");
         if (!status.running) {
           console.log("Stack is not running. Start it with: propr start");

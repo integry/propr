@@ -203,6 +203,7 @@ const App: React.FC = () => {
           setCompatibility({ status: 'ready' });
           return;
         }
+        // A definitive version mismatch is the only case that hard-blocks the UI.
         setCompatibility({
           status: 'blocked',
           title: 'ProPR version mismatch',
@@ -211,13 +212,17 @@ const App: React.FC = () => {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setCompatibility({
-          status: 'blocked',
-          title: 'Cannot check ProPR version',
-          message: error instanceof ProprCompatibilityCheckError || error instanceof Error
-            ? error.message
-            : 'Cannot check the local ProPR API compatibility.',
-        });
+        // A failed check (network error, API momentarily unreachable at load, an
+        // unexpected HTTP status) is treated as transient: render the app rather
+        // than hard-blocking it, so the normal auth/demo flow and per-component
+        // error handling can surface the problem (and recover once the API is up)
+        // instead of trapping the user on a screen with no retry. Only a confirmed
+        // incompatibility above blocks.
+        const message = error instanceof ProprCompatibilityCheckError || error instanceof Error
+          ? error.message
+          : 'Cannot check the local ProPR API compatibility.';
+        console.warn(`[propr] ProPR compatibility check failed, continuing: ${message}`);
+        setCompatibility({ status: 'ready' });
       });
 
     return () => {

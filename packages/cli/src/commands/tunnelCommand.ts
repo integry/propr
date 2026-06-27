@@ -70,6 +70,12 @@ export async function applyTunnelToggle({
   // fails, so a failed toggle leaves the persisted state unchanged.
   const previousEnabled = configManager.getTunnelEnabled();
   await configManager.setTunnelEnabled(enable);
+  // The `cfg` passed in was resolved before this toggle persisted, so when we are
+  // turning the tunnel ON after a prior `propr tunnel off` it still carries
+  // uiTunnelEnabled=false. Reflect the just-persisted desired state in the config
+  // used for the start path so any tunnel-enabled-conditional behavior (and the
+  // endpoint summary below) sees a consistent, enabled config.
+  const effectiveCfg: OrchestratorConfig = { ...cfg, uiTunnelEnabled: enable };
   try {
     if (enable) {
       // PROPR_UI_TUNNEL_TOKEN is a live Cloudflare Tunnel credential: anyone with
@@ -83,7 +89,7 @@ export async function applyTunnelToggle({
       // core stack is down leaves a healthy-looking cloudflared sidecar pointing
       // at an unavailable backend, so warn the operator (don't fail — they may be
       // about to `propr start`).
-      if (!orch.isStackRunning(cfg)) {
+      if (!orch.isStackRunning(effectiveCfg)) {
         warn(
           "Warning: the core stack does not appear to be running, so the tunnel\n" +
             "  will point at an unavailable API. Run 'propr start' to bring the\n" +
@@ -103,21 +109,21 @@ export async function applyTunnelToggle({
         );
       }
       log("Starting tunnel…");
-      orch.ensureNetwork(cfg, (l: string) => log(l));
-      orch.startService(cfg, "tunnel", { onLog: (l) => log(l) });
+      orch.ensureNetwork(effectiveCfg, (l: string) => log(l));
+      orch.startService(effectiveCfg, "tunnel", { onLog: (l) => log(l) });
       log("tunnel is up.");
-      if (cfg.uiPublicApiUrl) {
+      if (effectiveCfg.uiPublicApiUrl) {
         // Show the concrete endpoints propr-routing forwards rather than the base
         // URL itself: only /api/* and /socket.io/* are routed, so the root URL
         // intentionally returns 404 (it is not the API health target).
-        const { apiStatus, socketIo } = proprTunnelEndpoints(cfg.uiPublicApiUrl);
+        const { apiStatus, socketIo } = proprTunnelEndpoints(effectiveCfg.uiPublicApiUrl);
         log(`  API:      ${apiStatus}`);
         log(`  Realtime: ${socketIo}`);
         log("  Root URL intentionally returns 404.");
       }
     } else {
       log("Stopping tunnel…");
-      orch.stopService(cfg, "tunnel", { remove: true, onLog: (l) => log(l) });
+      orch.stopService(effectiveCfg, "tunnel", { remove: true, onLog: (l) => log(l) });
       log("tunnel stopped. Token and env values are unchanged.");
     }
   } catch (error) {

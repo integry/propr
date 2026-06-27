@@ -23,6 +23,7 @@ interface OrchCall {
   fn: string;
   service?: string;
   remove?: boolean;
+  uiTunnelEnabled?: boolean;
 }
 
 // Minimal orchestrator double recording calls; start/stop can be made to throw.
@@ -36,8 +37,8 @@ function fakeOrch(opts: {
     ensureNetwork: () => {
       calls.push({ fn: "ensureNetwork" });
     },
-    startService: ((_cfg, service) => {
-      calls.push({ fn: "startService", service });
+    startService: ((cfg, service) => {
+      calls.push({ fn: "startService", service, uiTunnelEnabled: cfg.uiTunnelEnabled });
       if (opts.throwOn === "startService") throw new Error("docker start failed");
       return undefined;
     }) as OrchestratorModule["startService"],
@@ -117,6 +118,24 @@ test("tunnel on persists desired state before starting the sidecar", async () =>
     ["ensureNetwork", "startService"]
   );
   assert.equal(calls.find((c) => c.fn === "startService")?.service, "tunnel");
+});
+
+test("tunnel on starts the sidecar with an enabled config even when the input cfg was resolved while disabled", async () => {
+  const { orch, calls } = fakeOrch({ stackRunning: true });
+  const { configManager } = fakeConfigManager(false);
+
+  // cfg mirrors a config resolved after a prior `propr tunnel off`: token present
+  // but uiTunnelEnabled=false. The start path must see the just-enabled state.
+  await applyTunnelToggle({
+    enable: true,
+    cfg: cfgWith({ uiTunnelToken: "secret-token", uiTunnelEnabled: false }),
+    orch,
+    configManager,
+    log: sink,
+    warn: sink,
+  });
+
+  assert.equal(calls.find((c) => c.fn === "startService")?.uiTunnelEnabled, true);
 });
 
 test("tunnel on rolls the persisted state back when the start fails", async () => {

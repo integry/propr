@@ -61,10 +61,11 @@ describe('getTunnelStatus', () => {
   test('an unreachable public URL yields reachable=false, never throws', async () => {
     // Port 1 on loopback refuses immediately, so the best-effort probe resolves
     // false fast instead of waiting out the timeout. The probe only runs when
-    // the tunnel is enabled, so set a token alongside the public URL.
+    // the tunnel is enabled AND the sidecar is running, so set a token alongside
+    // the public URL and report the tunnel container as up.
     const t = await getTunnelStatus(
       cfgFor({ PROPR_UI_TUNNEL_TOKEN: 'tok', PROPR_UI_PUBLIC_API_URL: 'http://127.0.0.1:1' }),
-      stackStatus(),
+      stackStatus({ tunnelRunning: true }),
     );
     assert.equal(t.publicApiUrl, 'http://127.0.0.1:1');
     assert.equal(t.reachable, false);
@@ -76,6 +77,18 @@ describe('getTunnelStatus', () => {
     const t = await getTunnelStatus(cfgFor({ PROPR_INSTANCE_ID: 'abc123' }), stackStatus());
     assert.equal(t.enabled, false);
     assert.equal(t.publicApiUrl, 'https://abc123.proxy.propr.dev');
+    assert.equal(t.reachable, null);
+  });
+
+  test('an enabled-but-stopped tunnel is not probed (reachable stays null)', async () => {
+    // The sidecar that routes the probe is down, so probing could only ever fail
+    // and would add the timeout to every `propr status`. Skip it: reachable=null.
+    const t = await getTunnelStatus(
+      cfgFor({ PROPR_UI_TUNNEL_TOKEN: 'tok', PROPR_UI_PUBLIC_API_URL: 'http://127.0.0.1:1' }),
+      stackStatus({ tunnelRunning: false }),
+    );
+    assert.equal(t.enabled, true);
+    assert.equal(t.running, false);
     assert.equal(t.reachable, null);
   });
 });

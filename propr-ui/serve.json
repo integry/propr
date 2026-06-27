@@ -18,7 +18,7 @@
       ]
     },
     {
-      "source": "config.js",
+      "source": "**/config.js",
       "headers": [
         {
           "key": "Cache-Control",

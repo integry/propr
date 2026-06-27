@@ -36,8 +36,12 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
         callback(null, true);
       } else if (url.origin === frontendOrigin) {
         callback(null, true);
-      } else if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
-        // Allow localhost for development
+      } else if (
+        (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
+        (url.protocol === 'http:' || url.protocol === 'https:')
+      ) {
+        // Allow localhost for development, but only over http/https so an unusual
+        // scheme (e.g. file:, chrome-extension:) on localhost is not trusted.
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));

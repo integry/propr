@@ -50,3 +50,33 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('');
   });
 });
+
+describe('runtimeConfigWarning', () => {
+  const loadWarning = async () => (await import('./runtimeConfig')).runtimeConfigWarning;
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('warns on a non-localhost origin when config.js did not load', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    expect(runtimeConfigWarning('app.propr.dev', undefined)).toContain('config.js did not load');
+  });
+
+  it('warns on a non-localhost origin when apiBaseUrl is empty', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '' })).toContain('apiBaseUrl is empty');
+    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '   ' })).toContain('apiBaseUrl is empty');
+  });
+
+  it('does not warn when apiBaseUrl is configured', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: 'https://abc123.proxy.propr.dev' })).toBeNull();
+  });
+
+  it('does not warn on localhost regardless of config', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    expect(runtimeConfigWarning('localhost', undefined)).toBeNull();
+    expect(runtimeConfigWarning('127.0.0.1', { apiBaseUrl: '' })).toBeNull();
+  });
+});

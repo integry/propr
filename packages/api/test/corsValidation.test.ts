@@ -40,6 +40,16 @@ test('CORS allows localhost for development', () => {
 
   assert.equal(isAllowed(validate, 'http://localhost:5173'), true);
   assert.equal(isAllowed(validate, 'http://127.0.0.1:5173'), true);
+  assert.equal(isAllowed(validate, 'https://localhost:5173'), true);
+});
+
+test('CORS rejects non-http(s) localhost schemes', () => {
+  // Only http/https localhost origins are trusted; an unusual scheme that still
+  // parses with a localhost hostname must not be allowed.
+  const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
+
+  assert.equal(isAllowed(validate, 'chrome-extension://localhost'), false);
+  assert.equal(isAllowed(validate, 'file://localhost'), false);
 });
 
 test('CORS allows COOKIE_DOMAIN subdomains for preview environments', () => {

@@ -60,6 +60,11 @@ export function evaluateProprApiCompatibility(
     return { compatible: true, apiCompatibility, apiVersion };
   }
 
+  // PROPR_UI_SUPPORTED_API_COMPATIBILITY currently holds a single value, so
+  // oldest === newest and only the too_old / too_new branches below can fire (the
+  // final `unsupported` branch is unreachable today). These are forward-looking:
+  // once the UI supports a range with gaps, an in-range-but-unsupported value can
+  // occur and the `unsupported` branch covers it.
   const oldestSupported = PROPR_UI_SUPPORTED_API_COMPATIBILITY[0];
   const newestSupported = PROPR_UI_SUPPORTED_API_COMPATIBILITY[PROPR_UI_SUPPORTED_API_COMPATIBILITY.length - 1];
   if (apiCompatibility < oldestSupported) {

@@ -281,17 +281,20 @@ Set these in the stack `.env`. Replace `abc123` with your instance id (a valid D
 # PROPR_UI_TUNNEL_TOKEN is a LIVE Cloudflare credential — do not commit, log, or share it.
 PROPR_UI_TUNNEL_TOKEN=your_cloudflare_tunnel_token   # Cloudflare Tunnel token; required to start. Setting it makes the tunnel start on the next `propr start`
 PROPR_INSTANCE_ID=abc123                             # this stack's instance id; valid DNS label (letters, digits, hyphens; 1-63 chars). Derives https://abc123.proxy.propr.dev
-PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev   # explicit public API URL the hosted UI talks to (overrides the derived one)
-PROPR_CLOUDFLARED_IMAGE=cloudflare/cloudflared:2024.12.2 # cloudflared image; overrides the manifest-pinned default shown
+
+# Optional overrides — all of these are DERIVED from PROPR_INSTANCE_ID in tunnel
+# mode, so leave them commented out unless you need to override the derived value.
+# PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev   # explicit public API URL the hosted UI talks to (overrides the id-derived one)
+# PROPR_CLOUDFLARED_IMAGE=cloudflare/cloudflared:2024.12.2 # cloudflared image; overrides the manifest-pinned default
 
 # Browser vs API origins (see Architecture above). In tunnel mode FRONTEND_URL
-# and API_PUBLIC_URL are DERIVED automatically — set them only to override.
+# and API_PUBLIC_URL are DERIVED automatically — uncomment to override.
 #   - FRONTEND_URL is the browser origin: the hosted UI at app.propr.dev. It is
 #     the CORS allow-origin and the post-login redirect target.
 #   - API_PUBLIC_URL is the proxy host: where the browser actually reaches the
 #     API, Socket.IO, and the OAuth callback.
-FRONTEND_URL=https://app.propr.dev
-API_PUBLIC_URL=https://abc123.proxy.propr.dev
+# FRONTEND_URL=https://app.propr.dev
+# API_PUBLIC_URL=https://abc123.proxy.propr.dev
 
 # OAuth callback lives on the API (the proxy host), NOT on app.propr.dev. This
 # is NOT derived — set it explicitly, and register this exact URL in your GitHub

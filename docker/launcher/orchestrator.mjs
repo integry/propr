@@ -58,12 +58,17 @@ export function proprInstanceProxyUrl(instanceId) {
 
 // Whether a URL is a hosted per-instance proxy URL (https://<id>.proxy.propr.dev).
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
-// tunnel base URL must be one of them. Mirrors isProprProxyUrl() in the shared pkg.
+// tunnel base URL must be one of them. Requires exactly one valid instance-id
+// label before the suffix (a nested host like foo.bar.proxy.propr.dev is
+// rejected). Mirrors isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
     if (!url) return false;
     try {
         const { protocol, hostname } = new URL(url);
-        return protocol === 'https:' && hostname.endsWith(`.${PROPR_UI_PROXY_SUFFIX}`);
+        if (protocol !== 'https:') return false;
+        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+        if (!hostname.endsWith(suffix)) return false;
+        return isValidProprInstanceId(hostname.slice(0, -suffix.length));
     } catch {
         return false;
     }
@@ -386,7 +391,10 @@ function vibePromptCacheArgs(cfg) {
 // stay free of empty PROPR_* vars while still always reporting the enabled flag.
 function tunnelApiEnvArgs(cfg) {
     const args = ['-e', `PROPR_UI_TUNNEL_ENABLED=${cfg.uiTunnelEnabled ? 'true' : 'false'}`];
-    if (cfg.proprInstanceId) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId}`);
+    // Inject the instance id lowercased so it matches the derived public URL
+    // (proprInstanceProxyUrl lowercases the host), keeping the id and the
+    // PROPR_UI_PUBLIC_API_URL host consistent for any consumer that compares them.
+    if (cfg.proprInstanceId) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId.toLowerCase()}`);
     if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
     return args;
 }
@@ -871,8 +879,11 @@ export function buildServiceSpec(cfg, service) {
             // edge, so no local ports are published. cloudflared reads its token
             // from the TUNNEL_TOKEN env var, so we pass it that way and omit the
             // command-line `--token`: the literal token then stays out of the
-            // container's argv (which is visible via `docker inspect`/`ps`). The
-            // token is injected only here — no other container receives it.
+            // process argv (visible to anyone via host `ps`/`docker top`, and to
+            // unprivileged in-container tooling). It is still present in the
+            // container's env, so a `docker inspect` by someone with Docker-daemon
+            // access can read it — Docker access is already privileged. The token
+            // is injected only here — no other container receives it.
             return {
                 image: cfg.cloudflaredImage,
                 args: ['-e', `TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
@@ -1222,7 +1233,10 @@ async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const res = await fetch(apiStatus, { signal: controller.signal, redirect: 'follow' });
+        // `redirect: 'manual'` so a redirect is treated as the proxy's own
+        // response rather than transparently followed off-host — matching the
+        // probe in `propr tunnel verify` (tunnelCommand.ts) so the two agree.
+        const res = await fetch(apiStatus, { signal: controller.signal, redirect: 'manual' });
         // 2xx means the API answered; 401/403 means it answered but wants auth —
         // either way the tunnel forwarded the request to the API behind it.
         return res.ok || res.status === 401 || res.status === 403;
@@ -1249,18 +1263,20 @@ async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
 export async function getTunnelStatus(cfg, stackStatus) {
     const status = stackStatus ?? await getStackStatusAsync(cfg);
     const tunnel = status.services.find((s) => s.service === 'tunnel');
+    const tunnelRunning = Boolean(tunnel && tunnel.running);
     const publicApiUrl = cfg.uiPublicApiUrl ?? null;
-    // Only spend up to ~3s on the external probe when the tunnel is actually
-    // enabled and the public URL is a well-formed http(s) URL — a configured
-    // instance id with the tunnel off should not make `propr status` wait on an
-    // irrelevant cross-internet check, and a malformed URL has nothing to probe.
-    const reachable = (cfg.uiTunnelEnabled && publicApiUrl && isValidHttpUrl(publicApiUrl))
+    // Only spend up to ~3s on the external probe when the tunnel is enabled, the
+    // cloudflared sidecar is actually running, and the public URL is a well-formed
+    // http(s) URL. Probing a configured-but-stopped tunnel can only ever fail (the
+    // sidecar that routes the request is down), so skipping it avoids adding the
+    // timeout to every `propr status` in the common "enabled but stopped" case.
+    const reachable = (cfg.uiTunnelEnabled && tunnelRunning && publicApiUrl && isValidHttpUrl(publicApiUrl))
         ? await probeTunnelReachable(publicApiUrl)
         : null;
     return {
         enabled: Boolean(cfg.uiTunnelEnabled),
         configured: Boolean(cfg.uiTunnelToken),
-        running: Boolean(tunnel && tunnel.running),
+        running: tunnelRunning,
         publicApiUrl,
         reachable,
     };
@@ -1441,9 +1457,13 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
     onLog('pulling images…');
     const failedAgentImages = [];
 
-    for (const [key, tag] of Object.entries(cfg.images)) {
+    for (const [key, manifestTag] of Object.entries(cfg.images)) {
         if (key === 'docs' && !cfg.docsEnabled) continue;
         if (key === 'cloudflared' && !cfg.uiTunnelEnabled) continue;
+        // The tunnel sidecar actually runs cfg.cloudflaredImage, which honors a
+        // PROPR_CLOUDFLARED_IMAGE override; pre-pull that image rather than the
+        // bare manifest tag so an override isn't pulled twice (here + on demand).
+        const tag = key === 'cloudflared' ? cfg.cloudflaredImage : manifestTag;
 
         if (key.startsWith('agent-') && skipAgentPull) {
             if (imagePresentLocally(tag)) {

@@ -80,14 +80,21 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
 /**
  * Whether a URL is a hosted per-instance proxy URL (`https://<id>.proxy.propr.dev`).
  * propr-routing only forwards `/api/*` and `/socket.io/*` on these hosts, so the
- * tunnel base URL must be one of them. Requires https and a hostname under the
- * shared {@link PROPR_UI_PROXY_SUFFIX}. Returns false for a malformed URL.
+ * tunnel base URL must be one of them. Requires https and *exactly one* valid
+ * instance-id label in front of the shared {@link PROPR_UI_PROXY_SUFFIX} — a
+ * multi-label host like `foo.bar.proxy.propr.dev` is rejected because routing
+ * only addresses a single instance label. Returns false for a malformed URL.
  */
 export function isProprProxyUrl(url: string | undefined | null): boolean {
   if (!url) return false;
   try {
     const { protocol, hostname } = new URL(url);
-    return protocol === 'https:' && hostname.endsWith(`.${PROPR_UI_PROXY_SUFFIX}`);
+    if (protocol !== 'https:') return false;
+    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+    if (!hostname.endsWith(suffix)) return false;
+    // The portion before the suffix must be a single valid DNS label (no dots),
+    // so isValidProprInstanceId rejects nested hosts like `a.b.proxy.propr.dev`.
+    return isValidProprInstanceId(hostname.slice(0, -suffix.length));
   } catch {
     return false;
   }
