@@ -123,6 +123,9 @@ Intake runs in exactly **one** of three modes, selected by `GITHUB_EVENT_INTAKE_
 
 Most installs should stay on `routing_websocket`: it needs no inbound public URL, no GitHub App of your own, and no private key, and it delivers events with the lowest latency. Pick **Token relay** in `propr setup` (or run `propr relay enroll` standalone) to provision the shared-App install and routing/relay credentials. In every mode, deterministic job IDs and a state-label check prevent the same issue from being processed twice when it is seen more than once (see [Daemon](../architecture/daemon.md)).
 
+The hosted bridge behind token relay and routing WebSocket intake is described
+in [ProPR Connect](./propr-connect.md).
+
 **Polling** (`GITHUB_EVENT_INTAKE_MODE=polling`) suits installs that prefer to pull rather than maintain a streaming connection; it needs no inbound endpoint but adds latency and consumes the API budget continuously. The interval is `POLLING_INTERVAL_MS` (default `60000`).
 
 **Direct webhook** (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`) is for running your own GitHub App with GitHub delivering events to a public endpoint:
@@ -248,6 +251,10 @@ If the UI and API are served from different origins, the API's CORS configuratio
 Instead of (or in addition to) your own reverse proxy, a local stack can publish itself to the **hosted ProPR UI** at `https://app.propr.dev` so you can drive a locally-running stack from the managed control plane in your browser — no public domain of your own and no inbound proxy to operate.
 
 This works through an optional **Cloudflare Tunnel**: a managed sidecar running the official `cloudflare/cloudflared` image, started and stopped with [`propr tunnel on|off`](../features/propr-cli.md#hosted-ui-tunnel) (or persisted via `.env` so `propr start` brings it up). It is **off by default** and does not affect a normal localhost or reverse-proxy deployment.
+
+For the higher-level role of the hosted bridge, including the difference between
+`connect.propr.dev`, `webhook.propr.dev`, `app.propr.dev`, and
+`<id>.proxy.propr.dev`, see [ProPR Connect](./propr-connect.md).
 
 ### Architecture
 

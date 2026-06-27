@@ -125,6 +125,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Operations',
       items: [
+        'operations/propr-connect',
         'operations/deployment',
         'operations/github-auth',
         'operations/maintenance',

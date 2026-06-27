@@ -96,6 +96,9 @@ The hosted ProPR UI at `https://app.propr.dev` is one static bundle that serves 
 
 When a local stack opts in to the hosted UI, an optional Cloudflare Tunnel publishes its **API** (the API container on port 4000) at a per-instance `https://<PROPR_INSTANCE_ID>.proxy.propr.dev` host — distinct from the vendor-run hosts (`app.propr.dev` for the UI, `webhook.propr.dev` for routing/relay). The browser is loaded from `app.propr.dev` and calls the API at that proxy host, so the two are different origins: set `FRONTEND_URL` to the hosted UI origin (`https://app.propr.dev`, the CORS allow-origin) and `API_PUBLIC_URL` plus `GH_OAUTH_CALLBACK_URL` to the proxy host. `http://api:4000` remains the internal service-to-service address inside the Docker network. See [Production Deployment → Hosted UI Tunnel](./deployment.md#hosted-ui-tunnel) for the full architecture and config block.
 
+For the broader hosted bridge that owns GitHub event routing, relay tokens, and
+managed tunnel coordination, see [ProPR Connect](./propr-connect.md).
+
 ## Extending The Integration
 
 When adding new UI features:

@@ -60,7 +60,7 @@ Running bare `propr` performs the same environment checks as `propr check` (incl
 
 ## GitHub Relay (shared-app auth)
 
-If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay (see [GitHub Authentication](../operations/github-auth.md)).
+If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge behind the shared App, routing WebSocket, relay tokens, and managed UI tunnels; see [GitHub Authentication](../operations/github-auth.md) for the token configuration details.
 
 **The easiest path is `propr setup`:** choose **Token relay** at the GitHub-authentication step and it enrolls for you — it reuses your `propr login` token, discovers your installation (auto-selecting when there is exactly one, prompting when there are several), mints the relay token, and writes `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, and `GH_INSTALLATION_ID` to the stack `.env`. If you are not logged in yet, the line-by-line wizard offers to run `propr login` first. No separate enroll step is needed.
 
@@ -110,7 +110,7 @@ Starting the tunnel always requires a configured token. Set these in your stack 
 `propr tunnel on` starts only the cloudflared sidecar; it does **not** restart the already-running API/worker containers. Those keep the `API_PUBLIC_URL` / `FRONTEND_URL` they were started with, so OAuth redirects, cookie security, and attachment links still point at their pre-tunnel (localhost) values until you run `propr start --restart`. Enabling the tunnel via the token before `propr start` avoids this, since the API then comes up with the proxy URLs. The command prints this warning when it detects a running stack.
 :::
 
-Each enabled stack is reachable at a per-instance hostname `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, which is how the hosted UI discovers and addresses it. See [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and the architecture, including how `.proxy.propr.dev` differs from the central ProPR APIs.
+Each enabled stack is reachable at a per-instance hostname `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, which is how the hosted UI discovers and addresses it. See [ProPR Connect](../operations/propr-connect.md) for the role of each hosted hostname, and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and the architecture, including how `.proxy.propr.dev` differs from the central ProPR APIs.
 
 :::note[Manual for v1]
 In v1 the tunnel is wired up by hand: you provision the Cloudflare Tunnel token and instance id and set them in `.env` yourself. Automated provisioning and selecting among multiple instances from the hosted UI are planned for later work.
