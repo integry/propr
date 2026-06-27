@@ -241,10 +241,14 @@ export async function verifyTunnel({
   });
 
   // 4. Socket.IO path reachable — a Socket.IO server answers a bare GET with a
-  // 400 ("Transport unknown"), so any HTTP response other than 404 proves the
-  // path is routed through Cloudflare rather than blocked at ingress.
+  // 400 ("Transport unknown"), so a non-404, non-5xx HTTP response proves the
+  // path reaches the Socket.IO server through Cloudflare rather than being
+  // blocked at ingress. A 404 means the path is not routed; a 5xx means the
+  // request reached an edge/proxy that could not reach the backend (e.g. a
+  // Cloudflare 502/503 error page), which is not a usable Socket.IO endpoint —
+  // both are treated as failures rather than false-positive "routed".
   const socketCode = await probeStatus(socketIo, fetchImpl, timeoutMs);
-  const socketOk = socketCode !== null && socketCode !== 404;
+  const socketOk = socketCode !== null && socketCode !== 404 && socketCode < 500;
   checks.push({
     name: "GET /socket.io/ reachable",
     ok: socketOk,
@@ -253,7 +257,9 @@ export async function verifyTunnel({
         ? `no response from ${socketIo} (network error or timeout)`
         : socketCode === 404
           ? `${socketIo} → 404 (path not routed / blocked at ingress)`
-          : `${socketIo} → ${socketCode} (routed)`,
+          : socketCode >= 500
+            ? `${socketIo} → ${socketCode} (proxy/server error, not reaching Socket.IO)`
+            : `${socketIo} → ${socketCode} (routed)`,
   });
 
   return { ok: checks.every((c) => c.ok), checks };

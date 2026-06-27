@@ -162,6 +162,28 @@ test('api container propagates the tunnel PROPR_UI_* env without the tunnel toke
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
 
+test('api container gets a stable `api` network alias for the tunnel ingress target', () => {
+  // cloudflared / the Cloudflare Tunnel ingress config target a fixed
+  // http://api:4000 regardless of the stack prefix, so the API container must
+  // carry an `api` network alias (it would otherwise only resolve as propr-api).
+  const cfg = resolveConfig({ API_PORT: '4000' }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'api');
+  const aliasIdx = args.indexOf('--network-alias');
+  assert.notEqual(aliasIdx, -1, 'expected --network-alias in the api spec');
+  assert.equal(args[aliasIdx + 1], 'api');
+});
+
+test('an explicit PROPR_UI_PUBLIC_API_URL is normalized (trailing slash stripped) once at resolve time', () => {
+  const cfg = resolveConfig({
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_UI_PUBLIC_API_URL: 'https://abc123.proxy.propr.dev/',
+  }, { manifestPath });
+  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
+  // and every consumer sees the canonical (no trailing slash) form.
+  assert.deepEqual(envValues(buildServiceSpec(cfg, 'api').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
+  assert.deepEqual(envValues(buildServiceSpec(cfg, 'ui').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
+});
+
 test('ui container receives the tunnel public API URL (no /api appended) when set', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',
@@ -448,6 +470,41 @@ test('validateEnv warns when the tunnel public URL is not a hosted proxy URL', (
   const disabled = resolveConfig({ PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com', PROPR_LAUNCHER_ENV_FILE: envFileLocal, PROPR_ENV_FILE: '/host/propr/.env', PROPR_DATA_DIR: '/host/propr/data', PROPR_LOGS_DIR: '/host/propr/logs', PROPR_REPOS_DIR: '/host/propr/repos' }, { manifestPath });
   assert.equal(disabled.uiTunnelEnabled, false);
   assert.deepEqual(validateEnv(disabled).warnings.filter((w) => /not a hosted proxy URL/.test(w)), []);
+});
+
+test('validateEnv warns when GH_OAUTH_CALLBACK_URL still points at localhost in tunnel mode', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const base = {
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  };
+
+  // Default callback URL is http://localhost:<port>/... — a common broken-OAuth
+  // setup once the tunnel is on. Warn (not error).
+  const localhostCallback = resolveConfig(base, { manifestPath });
+  assert.deepEqual(validateEnv(localhostCallback).errors, []);
+  assert.match(validateEnv(localhostCallback).warnings.join('\n'), /GH_OAUTH_CALLBACK_URL.*localhost/);
+
+  // An explicit public callback URL silences the warning.
+  const publicCallback = resolveConfig(
+    { ...base, GH_OAUTH_CALLBACK_URL: 'https://abc123.proxy.propr.dev/api/auth/github/callback' },
+    { manifestPath },
+  );
+  assert.deepEqual(validateEnv(publicCallback).warnings.filter((w) => /GH_OAUTH_CALLBACK_URL/.test(w)), []);
+
+  // The warning only applies in tunnel mode; the localhost default is fine when
+  // the tunnel is off.
+  const disabled = resolveConfig({ PROPR_LAUNCHER_ENV_FILE: envFileLocal, PROPR_ENV_FILE: '/host/propr/.env', PROPR_DATA_DIR: '/host/propr/data', PROPR_LOGS_DIR: '/host/propr/logs', PROPR_REPOS_DIR: '/host/propr/repos' }, { manifestPath });
+  assert.equal(disabled.uiTunnelEnabled, false);
+  assert.deepEqual(validateEnv(disabled).warnings.filter((w) => /GH_OAUTH_CALLBACK_URL/.test(w)), []);
 });
 
 test('derived proxy URL lowercases a mixed-case instance id', () => {

@@ -264,6 +264,22 @@ test("verify flags a Socket.IO 404 as blocked at ingress", async () => {
   assert.equal(result.checks.find((c) => c.name === "GET /socket.io/ reachable")?.ok, false);
 });
 
+test("verify flags a Socket.IO 5xx as not reaching the server", async () => {
+  // A proxy/edge error page (e.g. Cloudflare 502/503) is a non-404 response, but
+  // it does not prove Socket.IO is reachable — it must not be a false-positive
+  // "routed".
+  const result = await verifyTunnel({
+    cfg: cfgWith({ uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    orch: verifyOrch(true),
+    fetchImpl: fakeFetch({ "/api/status": 200, "/": 404, "/socket.io/": 502 }),
+  });
+
+  assert.equal(result.ok, false);
+  const socketCheck = result.checks.find((c) => c.name === "GET /socket.io/ reachable");
+  assert.equal(socketCheck?.ok, false);
+  assert.match(socketCheck?.detail ?? "", /proxy\/server error/);
+});
+
 test("tunnel off stops only the tunnel and persists false", async () => {
   const { orch, calls } = fakeOrch();
   const { configManager, value } = fakeConfigManager(true);

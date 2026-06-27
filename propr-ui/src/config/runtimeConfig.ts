@@ -27,6 +27,19 @@ const runtimeConfig: ProprRuntimeConfig =
   (typeof window !== 'undefined' && window.__PROPR_CONFIG__) || {};
 
 /**
+ * A local development / self-hosted origin where the UI and API ship together,
+ * as opposed to the hosted UI bundle serving many per-instance proxies. Used to
+ * scope hosted-only behavior (the runtime-config warning, the compatibility
+ * gate) so local stacks are never penalized. Exported for unit testing.
+ */
+export const isLocalhostHostname = (hostname: string): boolean =>
+  hostname === 'localhost' || hostname === '127.0.0.1';
+
+/** Inverse of {@link isLocalhostHostname}: a hosted (non-localhost) origin. */
+export const isHostedUiOrigin = (hostname: string): boolean =>
+  !isLocalhostHostname(hostname);
+
+/**
  * On a hosted (non-localhost) origin the bundle expects `config.js` to have run
  * first and populated window.__PROPR_CONFIG__ with a per-instance apiBaseUrl. If
  * it is missing — or loaded but with an empty apiBaseUrl (the more likely
@@ -40,8 +53,7 @@ export const runtimeConfigWarning = (
   hostname: string,
   config: ProprRuntimeConfig | undefined
 ): string | null => {
-  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-  if (isLocalhost) return null;
+  if (isLocalhostHostname(hostname)) return null;
   if (!config) {
     return (
       '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +

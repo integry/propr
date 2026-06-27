@@ -80,3 +80,23 @@ describe('runtimeConfigWarning', () => {
     expect(runtimeConfigWarning('127.0.0.1', { apiBaseUrl: '' })).toBeNull();
   });
 });
+
+describe('isLocalhostHostname / isHostedUiOrigin', () => {
+  const load = async () => await import('./runtimeConfig');
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('treats localhost and 127.0.0.1 as local, everything else as hosted', async () => {
+    const { isLocalhostHostname, isHostedUiOrigin } = await load();
+    for (const local of ['localhost', '127.0.0.1']) {
+      expect(isLocalhostHostname(local)).toBe(true);
+      expect(isHostedUiOrigin(local)).toBe(false);
+    }
+    for (const hosted of ['app.propr.dev', 'abc123.proxy.propr.dev', 'example.com']) {
+      expect(isLocalhostHostname(hosted)).toBe(false);
+      expect(isHostedUiOrigin(hosted)).toBe(true);
+    }
+  });
+});

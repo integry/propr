@@ -273,8 +273,12 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
     // Falls back to undefined for local development (no instance id), where
-    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below.
-    const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId);
+    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Trailing
+    // slashes are stripped once here so every consumer (API/worker/UI env, status
+    // output, endpoint rendering) sees one canonical form — the derived URL never
+    // has one, but an explicit PROPR_UI_PUBLIC_API_URL might.
+    const uiPublicApiUrl =
+        (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost,
@@ -840,6 +844,13 @@ export function buildServiceSpec(cfg, service) {
             ]);
         case 'api':
             return appSpec(cfg, ['dist/packages/api/server.js'], [
+                // Stable in-network DNS alias so the cloudflared sidecar (and the
+                // Cloudflare Tunnel ingress config) can target a fixed
+                // `http://api:4000` regardless of the stack prefix. Without it the
+                // container is only reachable as `${stack}-api` (e.g. propr-api),
+                // which would force a per-stack tunnel ingress config and break the
+                // documented `http://api:4000` target.
+                '--network-alias', 'api',
                 '-p', `${cfg.apiPort}:4000`,
                 '-v', `${cfg.envFileHost}:/usr/src/app/.env:ro`,
                 '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
@@ -1432,6 +1443,16 @@ export function validateEnv(cfg) {
             // so warn rather than silently advertising an unroutable base.
             warnings.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI may be unable to reach this stack. Set PROPR_INSTANCE_ID or a https://<id>.${PROPR_UI_PROXY_SUFFIX} URL.`);
         }
+    }
+
+    // GH_OAUTH_CALLBACK_URL is intentionally NOT derived from the tunnel public
+    // URL (the GitHub App's registered callback must match exactly and is operator
+    // -owned). But leaving it at the localhost default while the tunnel is enabled
+    // is a common broken-OAuth setup: GitHub redirects the browser to a localhost
+    // URL the hosted UI cannot reach. Warn so the operator updates it (and the
+    // GitHub App config) to the public proxy callback.
+    if (cfg.uiTunnelEnabled && /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(cfg.ghOauthCallbackUrl)) {
+        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
     }
 
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);

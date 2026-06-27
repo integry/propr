@@ -76,7 +76,7 @@ propr relay revoke <id>  # revoke a token
 
 ## Hosted UI Tunnel
 
-The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its **API** (the API container on port 4000 — `/api/*`, `/socket.io/`, and `/webhook`) to the hosted control plane through a **Cloudflare Tunnel** — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. The UI bundle itself is served by `app.propr.dev`, not through the tunnel; the tunnel only exposes the API the hosted UI calls. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
+The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its **API** (the API container on port 4000) to the hosted control plane through a **Cloudflare Tunnel** — propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host (the root URL returns 404, and `/webhook` is **not** routed through the tunnel) — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. The UI bundle itself is served by `app.propr.dev`, not through the tunnel; the tunnel only exposes the API the hosted UI calls. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
 
 ```bash
 propr tunnel on          # start the cloudflared sidecar

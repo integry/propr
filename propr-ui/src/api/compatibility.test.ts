@@ -59,6 +59,32 @@ describe('checkProprApiCompatibility', () => {
     await expect(checkProprApiCompatibility()).rejects.toThrow('Cannot reach the local ProPR API');
   });
 
+  it('bounds the probe with an abort signal so a slow API cannot trap first render', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        version: PROPR_VERSION,
+        apiCompatibility: PROPR_API_COMPATIBILITY,
+        uiCompatibility: PROPR_API_COMPATIBILITY,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    );
+
+    const checkProprApiCompatibility = await loadCheck();
+    await checkProprApiCompatibility();
+
+    const init = fetchMock.mock.calls[0][1];
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('treats an aborted (timed-out) probe as a transient check error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new DOMException('The operation was aborted.', 'AbortError')
+    );
+
+    const checkProprApiCompatibility = await loadCheck();
+
+    await expect(checkProprApiCompatibility()).rejects.toThrow('Cannot reach the local ProPR API');
+  });
+
   it('uses the runtime API base URL when checking compatibility', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://abc123.proxy.propr.dev' };
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(

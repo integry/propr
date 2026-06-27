@@ -21,6 +21,7 @@ import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
+import { isHostedUiOrigin } from './config/runtimeConfig'
 
 type CompatibilityState =
   | { status: 'checking' }
@@ -42,6 +43,13 @@ const CompatibilityBlocked: React.FC<{ title: string; message: string }> = ({ ti
       <div className="mt-5 rounded-md bg-gray-50 p-3 text-sm text-gray-600">
         Update or restart the local ProPR stack, then reload this page.
       </div>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="mt-5 inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+      >
+        Reload
+      </button>
     </div>
   </div>
 );
@@ -191,9 +199,18 @@ const AppContent: React.FC = () => {
 };
 
 const App: React.FC = () => {
-  const [compatibility, setCompatibility] = useState<CompatibilityState>({ status: 'checking' });
+  // The compatibility gate only applies to the hosted UI — a single static bundle
+  // serving many per-instance proxies, where the UI and API are versioned
+  // independently. On a local/self-hosted origin the UI and API ship together, so
+  // there is nothing to gate: start 'ready' (no spinner flash, no network
+  // round-trip) and keep local development working (issue #1627).
+  const isHosted = isHostedUiOrigin(window.location.hostname);
+  const [compatibility, setCompatibility] = useState<CompatibilityState>(
+    isHosted ? { status: 'checking' } : { status: 'ready' }
+  );
 
   useEffect(() => {
+    if (!isHosted) return;
     let cancelled = false;
 
     checkProprApiCompatibility()
@@ -203,7 +220,16 @@ const App: React.FC = () => {
           setCompatibility({ status: 'ready' });
           return;
         }
-        // A definitive version mismatch is the only case that hard-blocks the UI.
+        // An API that predates the compatibility endpoint (reason 'missing')
+        // is treated as a soft warning, not a hard wall: during rollout an
+        // otherwise-working stack may simply not publish metadata yet, and we
+        // don't want to trap mid-upgrade users on a blocking screen. Only a
+        // definitive version mismatch (too_old/too_new/unsupported) hard-blocks.
+        if (result.reason === 'missing') {
+          console.warn(`[propr] ${result.message}`);
+          setCompatibility({ status: 'ready' });
+          return;
+        }
         setCompatibility({
           status: 'blocked',
           title: 'ProPR version mismatch',
@@ -228,7 +254,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isHosted]);
 
   if (compatibility.status === 'checking') return <LoadingSpinner />;
   if (compatibility.status === 'blocked') {

@@ -215,6 +215,13 @@ async function initRedis(): Promise<void> {
 
 function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({ redisClient });
+  // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
+  // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
+  // version-gate before the user logs in. This is the one deliberate exception to
+  // "everything under /api/* requires auth" — do not move it after the guard, and
+  // keep its handler returning only non-sensitive build metadata (version +
+  // compatibility dates). All other /api routes registered after this line are
+  // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
   app.use('/api', ensureAuthenticated);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
