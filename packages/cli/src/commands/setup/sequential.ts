@@ -33,6 +33,7 @@ import {
 } from "./github.js";
 import {
   runSetup,
+  type GithubAppManifestDecision,
   type GithubAuthDecision,
   type RepoSelection,
   type RootDecision,
@@ -425,6 +426,40 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         return { mode: "direct_webhook", webhookSecret: secret };
       }
       return { mode: choice as GithubIntakeMode };
+    },
+
+    async configureGithubAppManifest({ detectedPublicUrl, filesExist, manifestPath, envPath }): Promise<GithubAppManifestDecision | null> {
+      const generate = await promptConfirm(io, paint, {
+        title: "Generate a GitHub App manifest?",
+        detail: "Writes a ready-to-submit GitHub App manifest + .env snippet for direct webhook mode (same as `propr github-app manifest`).",
+        defaultValue: true,
+      });
+      if (!generate) return null;
+      // Re-run safety: existing manifest files are left as-is unless the user
+      // explicitly confirms a regenerate.
+      let regenerate = false;
+      if (filesExist) {
+        regenerate = await promptConfirm(io, paint, {
+          title: "Manifest files already exist",
+          detail: `Found ${manifestPath} and ${envPath}. Overwrite and regenerate them?`,
+          defaultValue: false,
+        });
+        if (!regenerate) return null;
+      }
+      // Prefer the public URL from .env; ask only when it's absent, and keep
+      // asking until a non-empty value is entered (the generator needs one).
+      let publicUrl = (detectedPublicUrl ?? "").trim();
+      while (publicUrl === "") {
+        publicUrl = (
+          await promptInput(io, paint, {
+            title: "Public ProPR URL",
+            detail: "Where GitHub can reach this install, e.g. https://propr.example.com. Used as the App homepage + webhook base URL.",
+            defaultValue: "",
+          })
+        ).trim();
+        if (publicUrl === "") io.print(paint("  A public URL is required to generate the manifest.", ANSI.yellow));
+      }
+      return { publicUrl, regenerate };
     },
 
     async confirmStartStack({ rootDir, alreadyRunning }): Promise<boolean> {

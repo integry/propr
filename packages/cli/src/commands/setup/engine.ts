@@ -33,7 +33,7 @@
 
 import { existsSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
@@ -72,7 +72,7 @@ import {
   type EnvSelectionResult,
   type StackInitState,
 } from "./state.js";
-import type { SetupState, SetupStep, SetupStepId, SetupStepPatch } from "./types.js";
+import type { SetupState, SetupStep, SetupStepId, SetupStepPatch, SetupStepStatus } from "./types.js";
 
 /**
  * Catalog of supported agents: the image each one needs and the host
@@ -156,6 +156,40 @@ export interface RepoSelection {
 }
 
 /**
+ * Outcome of the GitHub App manifest prompt (offered only on the direct-webhook
+ * + custom-App path). Returning this asks the engine to generate the manifest;
+ * returning null skips it.
+ */
+export interface GithubAppManifestDecision {
+  /** Public base URL GitHub can reach (e.g. https://propr.example.com). */
+  publicUrl: string;
+  /**
+   * Overwrite manifest files that already exist. Only set when the renderer
+   * confirmed a regenerate; otherwise existing files are left untouched.
+   */
+  regenerate?: boolean;
+}
+
+/** Existing-files state for the generated GitHub App manifest output. */
+export interface GithubAppManifestState {
+  /** Absolute path the manifest JSON is written to. */
+  manifestPath: string;
+  /** Absolute path the `.env` snippet is written to. */
+  envPath: string;
+  /** True when either output file already exists in the stack root. */
+  exists: boolean;
+}
+
+/** Result of generating the GitHub App manifest + env snippet on disk. */
+export interface GithubAppManifestResult {
+  manifestPath: string;
+  envPath: string;
+  webhookUrl: string;
+  /** GitHub URL where the user submits the manifest to create the App. */
+  createUrl: string;
+}
+
+/**
  * Hooks a renderer implements to drive user decisions. All optional: a missing
  * hook means "use the safe default" (keep existing config, skip optional work),
  * which is exactly what lets the engine run unattended in tests.
@@ -193,6 +227,24 @@ export interface SetupPrompts {
     defaultMode: GithubIntakeMode | "keep";
     currentMode: GithubIntakeMode;
   }): Promise<GithubIntakeDecision>;
+  /**
+   * Offer to generate a GitHub App manifest + `.env` snippet (the same files as
+   * `propr github-app manifest`). Only invoked when the user has just configured
+   * direct-webhook intake under custom-App auth — the one path that needs an own
+   * GitHub App. `detectedPublicUrl` is the public URL found in `.env`
+   * (`API_PUBLIC_URL` / `FRONTEND_URL`) if any; when absent the renderer must ask
+   * for it. `filesExist` is true when output files are already present, so the
+   * renderer can offer to regenerate (returning `regenerate: true`) instead of
+   * silently overwriting. Return null to skip generation. Default (no hook): skip,
+   * which keeps every existing flow untouched.
+   */
+  configureGithubAppManifest?(ctx: {
+    rootDir: string;
+    detectedPublicUrl?: string;
+    filesExist: boolean;
+    manifestPath: string;
+    envPath: string;
+  }): Promise<GithubAppManifestDecision | null>;
   /** Confirm starting the stack. Default: start it. */
   confirmStartStack?(ctx: { rootDir: string; alreadyRunning: boolean }): Promise<boolean>;
   /**
@@ -288,6 +340,23 @@ export interface SetupActions extends AgentSetupActions {
   /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
   clearEnvKeys(rootDir: string, keys: string[]): void;
   detectGithubAuthMode(rootDir: string): GithubAuthModeResult;
+  /**
+   * Report whether the GitHub App manifest output files already exist in the
+   * stack root, along with their absolute paths. Lets the wizard offer a
+   * regenerate (overwrite) choice instead of failing on existing files.
+   */
+  inspectGithubAppManifest(rootDir: string): GithubAppManifestState;
+  /**
+   * Generate the GitHub App manifest + `.env` snippet into the stack root (the
+   * same files as `propr github-app manifest`). Without `force` it refuses to
+   * overwrite existing files, throwing so the caller can surface a warning rather
+   * than clobber a previously generated manifest.
+   */
+  generateGithubAppManifest(params: {
+    rootDir: string;
+    publicUrl: string;
+    force?: boolean;
+  }): Promise<GithubAppManifestResult>;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
   isStackRunning(rootDir: string): Promise<boolean>;
   startStack(params: StartStackParams): Promise<void>;
@@ -352,6 +421,16 @@ export interface SetupRunResult {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Output filenames written by the GitHub App manifest generator, mirrored from
+ * MANIFEST_FILENAME / ENV_FILENAME in ../githubAppCommands.ts. Duplicated here so
+ * the engine can check for existing files synchronously without statically
+ * importing the command module (and pulling its commander dependency into every
+ * engine import). Kept in sync intentionally.
+ */
+const GITHUB_APP_MANIFEST_FILENAME = "github-app-manifest.json";
+const GITHUB_APP_ENV_FILENAME = "github-app.env";
+
+/**
  * Build the production {@link SetupActions}, lazily importing the heavy
  * orchestrator/command/API modules only when an action actually runs. This
  * keeps `import`ing the engine cheap (and Docker-free) for tests, which replace
@@ -388,6 +467,21 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     applyEnvSelection,
     clearEnvKeys,
     detectGithubAuthMode,
+    inspectGithubAppManifest(rootDir) {
+      const manifestPath = join(rootDir, GITHUB_APP_MANIFEST_FILENAME);
+      const envPath = join(rootDir, GITHUB_APP_ENV_FILENAME);
+      return { manifestPath, envPath, exists: existsSync(manifestPath) || existsSync(envPath) };
+    },
+    async generateGithubAppManifest({ rootDir, publicUrl, force }) {
+      const { generateGithubAppManifest } = await import("../githubAppCommands.js");
+      const result = await generateGithubAppManifest({ root: rootDir, publicUrl, force });
+      return {
+        manifestPath: result.manifestPath,
+        envPath: result.envPath,
+        webhookUrl: result.webhookUrl,
+        createUrl: result.createUrl,
+      };
+    },
     async pullImages({ rootDir, agentTypes, onLog }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
@@ -536,6 +630,95 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     }
     return { baseUrl: relayUrl ?? DEFAULT_PROPR_GH_RELAY_URL, githubToken };
   }
+}
+
+/** Folded-in outcome of the optional GitHub App manifest generation. */
+interface ManifestOutcome {
+  /** Detail fragment to append to the intake step's settle (omitted when nothing happened). */
+  detail?: string;
+  /** Next-step guidance to append to the intake step. */
+  nextAction?: string;
+  /** True when the outcome should downgrade a passing intake step to a warning. */
+  warning: boolean;
+}
+
+/**
+ * Offer GitHub App manifest generation on the direct-webhook + custom-App path.
+ *
+ * Returns an empty outcome for every other mode/auth combination (or when the
+ * renderer supplies no hook), so existing relay and polling flows are untouched.
+ * When offered, it resolves the public URL (preferring `API_PUBLIC_URL` /
+ * `FRONTEND_URL` from `.env`, otherwise asking the renderer), then writes the
+ * same files as `propr github-app manifest`. It never throws for expected
+ * problems: a prompt error skips silently, a generation failure or pre-existing
+ * files become a warning that points at the files rather than aborting setup.
+ */
+async function maybeGenerateAppManifest(params: {
+  effectiveMode: GithubIntakeMode;
+  authMode: GithubAuthMode;
+  effectiveEnv: Record<string, string>;
+  rootDir: string;
+  prompt: SetupPrompts["configureGithubAppManifest"];
+  actions: Pick<SetupActions, "inspectGithubAppManifest" | "generateGithubAppManifest">;
+}): Promise<ManifestOutcome> {
+  const { effectiveMode, authMode, effectiveEnv, rootDir, prompt, actions } = params;
+  if (effectiveMode !== "direct_webhook" || authMode !== "app" || !prompt) {
+    return { warning: false };
+  }
+
+  const state = actions.inspectGithubAppManifest(rootDir);
+  // Prefer a public URL already recorded in `.env`; the renderer asks for one
+  // only when neither key is set.
+  const detectedPublicUrl =
+    (effectiveEnv.API_PUBLIC_URL ?? effectiveEnv.FRONTEND_URL ?? "").trim() || undefined;
+
+  let decision: GithubAppManifestDecision | null = null;
+  try {
+    decision = await prompt({
+      rootDir,
+      detectedPublicUrl,
+      filesExist: state.exists,
+      manifestPath: state.manifestPath,
+      envPath: state.envPath,
+    });
+  } catch {
+    // Collecting the manifest decision is best-effort: a prompt error must not
+    // abort the wizard.
+    return { warning: false };
+  }
+
+  if (decision) {
+    try {
+      const generated = await actions.generateGithubAppManifest({
+        rootDir,
+        publicUrl: decision.publicUrl,
+        force: decision.regenerate,
+      });
+      return {
+        warning: false,
+        detail: `GitHub App manifest written to ${basename(generated.manifestPath)} + ${basename(generated.envPath)}`,
+        nextAction: `Create + install the App (${generated.createUrl}), then set GH_APP_ID, GH_INSTALLATION_ID, and HOST_GH_PRIVATE_KEY in .env.`,
+      };
+    } catch (error) {
+      return {
+        warning: true,
+        detail: `GitHub App manifest not generated — ${(error as Error).message}`,
+        nextAction: `Generate it later with \`propr github-app manifest --public-url <url> --root ${rootDir}\`.`,
+      };
+    }
+  }
+
+  // No decision: when files already exist the user declined to regenerate, so
+  // report where they are rather than overwriting or failing.
+  if (state.exists) {
+    return {
+      warning: true,
+      detail: `GitHub App manifest already exists at ${state.manifestPath} — left as-is`,
+      nextAction:
+        "Fill GH_APP_ID, GH_INSTALLATION_ID, and HOST_GH_PRIVATE_KEY in .env from the created App, or delete the files and re-run setup to regenerate.",
+    };
+  }
+  return { warning: false };
 }
 
 /**
@@ -929,6 +1112,22 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       } else {
         detail = `intake: kept current (${intakeModeLabel(currentMode)})`;
       }
+
+      // Direct webhooks need an own GitHub App. When that is the effective mode
+      // under custom-App auth, offer to generate the GitHub App manifest + env
+      // snippet (the same files as `propr github-app manifest`) so the user can
+      // create/install the App without hand-assembling permissions and events.
+      // The outcome is folded into this step's settle below — it never adds a
+      // step to the flow and never aborts setup.
+      const manifest = await maybeGenerateAppManifest({
+        effectiveMode,
+        authMode: resolvedAuth.mode,
+        effectiveEnv,
+        rootDir,
+        prompt: prompts.configureGithubAppManifest,
+        actions,
+      });
+
       // Validate the resolved mode against the shared prerequisite rules so a
       // silently-broken intake config (most commonly routing_websocket without
       // relay auth + a relay token) surfaces here instead of as a backend boot
@@ -941,18 +1140,32 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         relayToken: effectiveEnv.PROPR_GH_RELAY_TOKEN,
         webhookSecret: effectiveEnv.GH_WEBHOOK_SECRET,
       });
-      if (prereq.valid) {
-        settle("intake", { status: "done", detail });
-      } else {
-        settle("intake", {
-          status: "warning",
-          detail: `${detail} — ${prereq.errors.join("; ")}`,
-          nextAction:
-            effectiveMode === "routing_websocket"
-              ? "Enroll with the hosted relay (`propr relay enroll`) so routing_websocket has relay auth + a relay token, or choose polling."
-              : "Resolve the missing intake prerequisites in .env, then re-run setup.",
-        });
+
+      // Fold the prerequisite check and any manifest outcome into a single settle
+      // so the intake step reflects both. A prerequisite gap or a manifest warning
+      // (files left as-is, or generation failed) downgrades a passing intake to a
+      // warning; a successfully generated manifest stays "done" but carries the
+      // create/install next steps.
+      let status: SetupStepStatus = prereq.valid ? "done" : "warning";
+      let settledDetail = prereq.valid ? detail : `${detail} — ${prereq.errors.join("; ")}`;
+      const nextActions: string[] = [];
+      if (!prereq.valid) {
+        nextActions.push(
+          effectiveMode === "routing_websocket"
+            ? "Enroll with the hosted relay (`propr relay enroll`) so routing_websocket has relay auth + a relay token, or choose polling."
+            : "Resolve the missing intake prerequisites in .env, then re-run setup."
+        );
       }
+      if (manifest.detail) {
+        settledDetail = `${settledDetail}; ${manifest.detail}`;
+        if (manifest.warning && status === "done") status = "warning";
+      }
+      if (manifest.nextAction) nextActions.push(manifest.nextAction);
+      settle("intake", {
+        status,
+        detail: settledDetail,
+        nextAction: nextActions.length > 0 ? nextActions.join(" ") : undefined,
+      });
     }
   } catch (error) {
     // An IntakeConfigError (e.g. direct webhooks chosen with no secret) is
