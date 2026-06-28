@@ -25,3 +25,4 @@ export { createStackStatusCommand, createStopCommand } from "./stackCommands.js"
 export { createUiCommand, createDocsCommand } from "./uiDocsCommands.js";
 export { createTankCommand } from "./tankCommands.js";
 export { createRelayCommand } from "./relayCommands.js";
+export { createTunnelCommand } from "./tunnelCommand.js";

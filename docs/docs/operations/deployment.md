@@ -98,6 +98,31 @@ All `HOST_*_DIR` values and launcher path variables must be absolute host paths.
 
 Manage repositories, labels, branches, and agents in the Web UI after startup.
 
+### Hosted UI Tunnel
+
+For Plus installations using ProPR Connect, Connect can provision a hosted UI
+tunnel. This lets the hosted Connect UI reach the local stack through an
+outbound Cloudflare Tunnel, without opening inbound firewall ports for the API.
+
+Run the command Connect shows from the stack directory:
+
+```bash
+propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev
+propr start --no-tui
+```
+
+`propr tunnel setup` writes these values to `.env`:
+
+```bash
+PROPR_UI_TUNNEL_TOKEN=<token>
+PROPR_UI_TUNNEL_ENABLED=true
+PROPR_INSTANCE_ID=<instance>
+PROPR_UI_PUBLIC_API_URL=https://<instance>.proxy.propr.dev
+```
+
+Manual `.env` editing is only a fallback for hosts without the CLI; restart the
+stack after changing these values.
+
 For Antigravity agents, install the CLI on the host and authenticate before launching the stack:
 
 ```bash

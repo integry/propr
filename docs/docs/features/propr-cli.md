@@ -51,6 +51,7 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 - `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [on|off] [--url <url>]` toggles [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the state to print the current setting).
+- `propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev` saves a ProPR Connect hosted tunnel token and public API URL to the stack `.env`; pass `--start` to start the stack immediately.
 
 :::warning[Breaking changes in the control-plane CLI]
 Running bare `propr` performs the same environment checks as `propr check` (including a Docker probe) and exits nonzero when prerequisites are missing — use `propr --help` for help text. `propr status` now reports the **local Docker stack**; use `propr remote-status` for the backend health/queue JSON that older scripts read from `propr status --json`.
@@ -97,6 +98,16 @@ This writes two files into the current directory (use `--root <path>` to target 
 | `-j, --json` | Machine-readable output. |
 
 The manifest only scaffolds configuration. Direct webhook mode still requires a publicly reachable `POST /webhook` route (served by the API container on port 4000 — proxy it) and installing the created App on your account/org. GitHub assigns the App ID, installation id, and private key only **after** the App exists, so once it does, fill in `GH_APP_ID`, `GH_INSTALLATION_ID`, and `HOST_GH_PRIVATE_KEY` by hand. Run `propr check` in between: when direct webhook mode is selected and those own-App values are still missing, it reports each one and repeats the `propr github-app manifest` next step. See [Server Setup](../tutorials/setup-server.md#advanced-your-own-github-app-webhook) and [Deployment](../operations/deployment.md#issue-intake-modes).
+
+## Hosted UI Tunnel
+
+ProPR Connect can provision a Plus-only hosted tunnel so the Connect UI reaches a local stack without exposing inbound ports. In Connect, provision the tunnel and run the generated command from the initialized stack directory:
+
+```bash
+propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev
+```
+
+The command writes `PROPR_UI_TUNNEL_TOKEN`, `PROPR_UI_TUNNEL_ENABLED`, `PROPR_INSTANCE_ID`, and `PROPR_UI_PUBLIC_API_URL` to `.env`, and enables the tunnel preference for future `propr start` runs. Use `--start` to launch the stack immediately after saving those values. If the CLI is unavailable, copy the same four `.env` values from Connect manually, then restart the stack.
 
 ## Connect and Authenticate
 
