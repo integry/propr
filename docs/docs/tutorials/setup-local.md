@@ -215,7 +215,15 @@ From here, `propr plan create "..." --wait` and `propr issue implement <draft-id
 
 By default a local stack is reached at `http://localhost:5173`. If you would rather use the hosted ProPR UI at `https://app.propr.dev` to drive your local stack, enable the optional **hosted UI tunnel** — a managed Cloudflare Tunnel sidecar (the official `cloudflare/cloudflared` image) that publishes this stack to the hosted control plane. It is off by default, so plain localhost use is unaffected.
 
-In brief: set `PROPR_UI_TUNNEL_TOKEN` and `PROPR_INSTANCE_ID` in your stack `.env`, then run `propr tunnel on`; the tunnel publishes your stack's **API** (the API container on port 4000) at `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, where propr-routing forwards only `/api/*` and `/socket.io/*` (the root URL returns 404, and `/webhook` is **not** routed through the tunnel). The hosted UI bundle is still served from `app.propr.dev` (not through the tunnel), and the browser is loaded from there; the page then calls your stack's API at the proxy host. `http://api:4000` stays the internal service-to-service address other stack containers use — it is just no longer the only way the API is reachable. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge overview, [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel), and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and architecture — including the `FRONTEND_URL` (browser origin) vs `API_PUBLIC_URL` / OAuth-callback (proxy host) distinction. v1 is manual; automated provisioning and multi-instance selection are planned for later.
+In brief: provision a tunnel in ProPR Connect, copy the one-time CLI command it shows, and run it in your stack:
+
+```bash
+propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev
+propr start --restart
+propr tunnel verify
+```
+
+The setup command writes the required tunnel settings to your stack `.env`; the Connect UI also shows the raw `.env` values as a fallback for older CLI versions or manual recovery. The tunnel publishes your stack's **API** (the API container on port 4000) at `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, where propr-routing forwards only `/api/*` and `/socket.io/*` (the root URL returns 404, and `/webhook` is **not** routed through the tunnel). The hosted UI bundle is still served from `app.propr.dev` (not through the tunnel), and the browser is loaded from there; the page then calls your stack's API at the proxy host. `http://api:4000` stays the internal service-to-service address other stack containers use — it is just no longer the only way the API is reachable. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge overview, [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel), and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and architecture — including the `FRONTEND_URL` (browser origin) vs `API_PUBLIC_URL` / OAuth-callback (proxy host) distinction.
 
 ## Update ProPR
 
