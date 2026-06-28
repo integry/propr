@@ -15,6 +15,7 @@ export { createTodoCommand } from "./todoCommands.js";
 export { createRemoteStatusCommand, createQueueCommand } from "./systemCommands.js";
 export { createInitCommand } from "./initCommands.js";
 export { createSetupCommand } from "./setupCommand.js";
+export { createGithubAppCommand } from "./githubAppCommands.js";
 
 // Control-plane commands (local Docker stack)
 export { createCheckCommand, runChecks, printChecks, STACK_CONFIG_CHECK_NAME } from "./checkCommands.js";
