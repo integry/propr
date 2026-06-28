@@ -52,6 +52,31 @@ export const DEFAULT_MAX_TOKEN_ENTRIES = 5_000;
 /** Default timeout for pulling a delivery payload over HTTP. */
 export const DEFAULT_PULL_TIMEOUT_MS = 15_000;
 
+/** Default keepalive ping interval for the routing WebSocket. */
+export const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * Parse an environment variable as a strictly-positive whole integer. Requires a
+ * whole-string match so values like `50abc` or `1.5` are rejected rather than
+ * silently coerced to `50`/`1`; returns `undefined` when unset or invalid.
+ */
+export function parsePositiveIntegerEnv(name: string): number | undefined {
+    const value = process.env[name];
+    if (!value) return undefined;
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return undefined;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * Resolve the keepalive ping interval: an explicit option wins, then
+ * `PROPR_ROUTING_WS_PING_INTERVAL_MS`, then {@link DEFAULT_PING_INTERVAL_MS}.
+ */
+export function resolvePingIntervalMs(option: number | undefined): number {
+    return option ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
+}
+
 /** Normalize any `RawData` frame the `ws` package can emit into a UTF-8 string. */
 export function rawDataToString(data: RawData): string {
     if (typeof data === 'string') return data;

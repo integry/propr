@@ -61,6 +61,7 @@ import {
     parseTokenExpiry,
     rawDataToString,
     resolveDeliveryPayload,
+    resolvePingIntervalMs,
     validateRoutingUrl,
     type FetchLike,
     type MinimalWebSocket,
@@ -70,19 +71,6 @@ import {
 } from './routingWebSocketProtocol.js';
 
 export type { FetchLike, MinimalWebSocket, RawData, WebSocketCtor } from './routingWebSocketProtocol.js';
-
-const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
-
-function parsePositiveIntegerEnv(name: string): number | undefined {
-    const value = process.env[name];
-    if (!value) return undefined;
-    const trimmed = value.trim();
-    // Require a whole-string positive integer so values like `50abc` or `1.5`
-    // are rejected rather than silently coerced to `50`/`1`.
-    if (!/^\d+$/.test(trimmed)) return undefined;
-    const parsed = Number.parseInt(trimmed, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
 
 export interface RoutingWebSocketIntakeServiceOptions {
     /**
@@ -212,14 +200,12 @@ export class RoutingWebSocketIntakeService {
         // Falls back to the hosted routing relay (webhook.propr.dev) so the
         // daemon connects out of the box; an explicit routingUrl or
         // PROPR_ROUTING_URL overrides it for self-hosted relays.
-        this.routingUrl =
-            (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
+        this.routingUrl = (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
         this.relayToken = (options.relayToken ?? process.env.PROPR_GH_RELAY_TOKEN ?? '').trim();
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
-        this.pingIntervalMs =
-            options.pingIntervalMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
+        this.pingIntervalMs = resolvePingIntervalMs(options.pingIntervalMs);
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;

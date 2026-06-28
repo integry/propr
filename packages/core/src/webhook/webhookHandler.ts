@@ -293,6 +293,21 @@ async function handlePlanIssueTracking(
 }
 
 /**
+ * Dispatch to an optional processor: when one is registered the event is handled
+ * and its disposition normalized; when none is registered the event is simply
+ * accepted. Extracted so {@link processStandardWebhookEvent} stays within the
+ * complexity budget while keeping the pull_request/check_run cases uniform.
+ */
+async function dispatchOptionalProcessor<T>(
+    payload: T,
+    processor: ((p: T, correlationId: string) => Promise<void | DeliveryDisposition>) | null,
+    correlationId: string
+): Promise<DeliveryDisposition> {
+    if (processor) return normalizeDisposition(await processor(payload, correlationId));
+    return acceptedDisposition();
+}
+
+/**
  * Processes standard webhook events locally.
  */
 async function processStandardWebhookEvent(
@@ -314,19 +329,13 @@ async function processStandardWebhookEvent(
             if (isIssueCommentEvent(payload)) return await handleIssueCommentEvent(payload, correlationId);
             break;
         case 'pull_request':
-            if (isPullRequestEvent(payload)) {
-                if (processPullRequest) return normalizeDisposition(await processPullRequest(payload, correlationId));
-                return acceptedDisposition();
-            }
+            if (isPullRequestEvent(payload)) return await dispatchOptionalProcessor(payload, processPullRequest, correlationId);
             break;
         case 'pull_request_review_comment':
             if (isPullRequestReviewCommentEvent(payload)) return await handlePullRequestReviewCommentEvent(payload, correlationId);
             break;
         case 'check_run':
-            if (isCheckRunEvent(payload)) {
-                if (processCheckRun) return normalizeDisposition(await processCheckRun(payload, correlationId));
-                return acceptedDisposition();
-            }
+            if (isCheckRunEvent(payload)) return await dispatchOptionalProcessor(payload, processCheckRun, correlationId);
             break;
         case 'push':
             if (isPushEvent(payload)) return acceptedDisposition();
