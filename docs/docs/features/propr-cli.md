@@ -72,6 +72,32 @@ propr relay revoke <id>  # revoke a token
 
 `propr relay enroll` discovers the installation automatically from your `propr login` identity when you have exactly one; pass `--installation <id>` to choose among several, or `--url <url>` to target a self-hosted relay.
 
+## Own GitHub App (direct webhook mode)
+
+The recommended default is the shared, hosted ProPR App over routing WebSocket (relay auth, above) — it needs no GitHub App of your own and no inbound endpoint. If you instead run your **own** GitHub App with `GITHUB_EVENT_INTAKE_MODE=direct_webhook` (GitHub delivers events straight to your public `POST /webhook`), `propr github-app manifest` scaffolds the App so you don't hand-assemble its permissions, webhook events, and secret:
+
+```bash
+propr github-app manifest --public-url https://propr.example.com
+```
+
+This writes two files into the current directory (use `--root <path>` to target another):
+
+- `github-app-manifest.json` — submit it at GitHub's *Register new GitHub App* page. It pre-fills the repository permissions ProPR needs, the subscribed webhook events, your `POST /webhook` delivery URL, and a freshly generated webhook secret.
+- `github-app.env` — a matching `.env` snippet (`GH_AUTH_MODE=app`, `GITHUB_EVENT_INTAKE_MODE=direct_webhook`, and the generated `GH_WEBHOOK_SECRET`). Append it to your stack `.env`.
+
+| Option | Description |
+|--------|-------------|
+| `--public-url <url>` | **Required.** Public base URL GitHub can reach (e.g. `https://propr.example.com`). |
+| `--webhook-url <url>` | Override the delivery URL (default: `<public-url>/webhook`). |
+| `--name <name>` | GitHub App name in the manifest (default: `ProPR`). |
+| `--webhook-secret <secret>` | Use a specific secret instead of a generated one. |
+| `--org <login>` | Scope App creation to an organization instead of your personal account. |
+| `--root <path>` | Directory to write the output files into (default: current directory). |
+| `-f, --force` | Overwrite existing output files. |
+| `-j, --json` | Machine-readable output. |
+
+The manifest only scaffolds configuration. Direct webhook mode still requires a publicly reachable `POST /webhook` route (served by the API container on port 4000 — proxy it) and installing the created App on your account/org. GitHub assigns the App ID, installation id, and private key only **after** the App exists, so once it does, fill in `GH_APP_ID`, `GH_INSTALLATION_ID`, and `GH_PRIVATE_KEY_PATH` by hand. Run `propr check` in between: when direct webhook mode is selected and those own-App values are still missing, it reports each one and repeats the `propr github-app manifest` next step. See [Server Setup](../tutorials/setup-server.md#advanced-your-own-github-app-webhook) and [Deployment](../operations/deployment.md#issue-intake-modes).
+
 ## Connect and Authenticate
 
 ```bash
