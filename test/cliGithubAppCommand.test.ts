@@ -12,6 +12,7 @@ import {
   PROPR_APP_PERMISSIONS,
   PROPR_WEBHOOK_EVENTS,
 } from "../packages/cli/src/commands/githubAppCommands.js";
+import { fileURLToPath } from "node:url";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "propr-cli-ghapp-"));
@@ -179,6 +180,96 @@ describe("generateGithubAppManifest", () => {
         /must use http/
       );
     });
+  });
+
+  test("rejects an invalid webhook URL override", async () => {
+    await withTempDir(async (dir) => {
+      await assert.rejects(
+        generateGithubAppManifest({
+          root: dir,
+          publicUrl: "https://propr.example.com",
+          webhookUrl: "not-a-url",
+        }),
+        /Invalid --webhook-url/
+      );
+      await assert.rejects(
+        generateGithubAppManifest({
+          root: dir,
+          publicUrl: "https://propr.example.com",
+          webhookUrl: "ftp://hooks.example.com",
+        }),
+        /Invalid --webhook-url/
+      );
+    });
+  });
+
+  test("creates the target directory when it does not exist", async () => {
+    await withTempDir(async (dir) => {
+      const nested = path.join(dir, "nested", "out");
+      const result = await generateGithubAppManifest({
+        root: nested,
+        publicUrl: "https://propr.example.com",
+      });
+      assert.ok(fs.existsSync(result.manifestPath));
+      assert.ok(fs.existsSync(result.envPath));
+    });
+  });
+
+  test("scopes the create URL to an organization when --org is set", async () => {
+    await withTempDir(async (dir) => {
+      const result = await generateGithubAppManifest({
+        root: dir,
+        publicUrl: "https://propr.example.com",
+        org: "my-org",
+      });
+      assert.strictEqual(
+        result.createUrl,
+        "https://github.com/organizations/my-org/settings/apps/new"
+      );
+    });
+  });
+
+  test("grants the permissions required by the subscribed events", async () => {
+    await withTempDir(async (dir) => {
+      const result = await generateGithubAppManifest({
+        root: dir,
+        publicUrl: "https://propr.example.com",
+      });
+      const perms = result.manifest.default_permissions;
+      // check_run delivery requires `checks`; status delivery requires `statuses`.
+      assert.strictEqual(perms.checks, "read");
+      assert.strictEqual(perms.statuses, "read");
+    });
+  });
+});
+
+describe("PROPR_WEBHOOK_EVENTS", () => {
+  test("stays in sync with @propr/core SUPPORTED_WEBHOOK_EVENTS", async () => {
+    // Drift guard: the CLI deliberately duplicates the core list (it does not
+    // depend on @propr/core). We parse the core source rather than importing it
+    // — importing @propr/core triggers runtime side effects (GitHub auth /
+    // SQLite bootstrap) that are not appropriate for a unit test. This fails if
+    // the two lists ever diverge.
+    const corePath = fileURLToPath(
+      new URL(
+        "../packages/core/src/webhook/webhookHandler.ts",
+        import.meta.url
+      )
+    );
+    const source = await readFile(corePath, "utf-8");
+    const match = source.match(
+      /SUPPORTED_WEBHOOK_EVENTS\s*=\s*\[([\s\S]*?)\]/
+    );
+    assert.ok(match, "Could not locate SUPPORTED_WEBHOOK_EVENTS in core source");
+    const coreEvents = Array.from(
+      match![1].matchAll(/['"]([^'"]+)['"]/g),
+      (m) => m[1]
+    );
+    assert.ok(coreEvents.length > 0, "Parsed an empty core event list");
+    assert.deepStrictEqual(
+      [...PROPR_WEBHOOK_EVENTS].sort(),
+      [...coreEvents].sort()
+    );
   });
 });
 

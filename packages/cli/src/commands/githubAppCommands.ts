@@ -10,8 +10,7 @@
 import { Command } from "commander";
 import crypto from "crypto";
 import path from "path";
-import { writeFile } from "fs/promises";
-import { existsSync } from "fs";
+import { writeFile, mkdir } from "fs/promises";
 import { printOutput } from "../utils/io.js";
 
 /** Output filenames written by `propr github-app manifest`. */
@@ -29,6 +28,10 @@ export const PROPR_APP_PERMISSIONS: Record<string, string> = {
   pull_requests: "write",
   metadata: "read",
   actions: "read",
+  // Required to receive (and act on) the `check_run` and `status` webhook
+  // events declared below. GitHub ties event delivery to app permissions.
+  checks: "read",
+  statuses: "read",
 };
 
 /**
@@ -71,6 +74,12 @@ export interface GenerateManifestOptions {
   name?: string;
   /** Webhook secret. A cryptographically strong one is generated when omitted. */
   webhookSecret?: string;
+  /**
+   * Organization login to scope App creation to. When set, the returned
+   * create URL points at the org's App-creation page instead of the
+   * personal-account one.
+   */
+  org?: string;
   /** Overwrite existing output files. */
   force?: boolean;
 }
@@ -98,6 +107,27 @@ function normalizeBaseUrl(url: string): string {
 }
 
 /**
+ * Validate that a value is an absolute http(s) URL, returning the trimmed
+ * string. Throws (referencing `flag`) on anything else.
+ */
+function validateHttpUrl(value: string, flag: string): string {
+  const raw = value.trim();
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`Invalid ${flag}: "${raw}" is not a valid URL`);
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Invalid ${flag}: "${raw}" must use http:// or https://`);
+  }
+
+  return raw;
+}
+
+/**
  * Validate and normalize the public base URL. Throws on anything that is not
  * an absolute http(s) URL.
  */
@@ -109,20 +139,36 @@ function resolvePublicUrl(publicUrl: string | undefined): string {
     );
   }
 
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(`Invalid --public-url: "${raw}" is not a valid URL`);
-  }
+  return normalizeBaseUrl(validateHttpUrl(raw, "--public-url"));
+}
 
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error(
-      `Invalid --public-url: "${raw}" must use http:// or https://`
-    );
+/**
+ * Resolve the webhook delivery URL. Defaults to `<publicUrl>/webhook`; a custom
+ * override receives the same absolute http(s) validation as the public URL.
+ */
+function resolveWebhookUrl(
+  webhookUrl: string | undefined,
+  publicUrl: string
+): string {
+  const raw = (webhookUrl ?? "").trim();
+  if (!raw) {
+    return `${publicUrl}/webhook`;
   }
+  return validateHttpUrl(raw, "--webhook-url");
+}
 
-  return normalizeBaseUrl(raw);
+/**
+ * Build the GitHub URL where the user submits the manifest to create the App.
+ * Scopes to an organization when `org` is provided.
+ */
+function buildCreateUrl(org: string | undefined): string {
+  const login = (org ?? "").trim();
+  if (login) {
+    return `https://github.com/organizations/${encodeURIComponent(
+      login
+    )}/settings/apps/new`;
+  }
+  return "https://github.com/settings/apps/new";
 }
 
 /** Build the GitHub App manifest object from resolved settings. */
@@ -182,10 +228,7 @@ export async function generateGithubAppManifest(
 ): Promise<GenerateManifestResult> {
   const directory = options.root ? path.resolve(options.root) : process.cwd();
   const publicUrl = resolvePublicUrl(options.publicUrl);
-
-  const webhookUrl = options.webhookUrl
-    ? options.webhookUrl.trim()
-    : `${publicUrl}/webhook`;
+  const webhookUrl = resolveWebhookUrl(options.webhookUrl, publicUrl);
 
   const name = (options.name ?? "ProPR").trim() || "ProPR";
   const webhookSecret =
@@ -196,22 +239,23 @@ export async function generateGithubAppManifest(
   const manifestPath = path.join(directory, MANIFEST_FILENAME);
   const envPath = path.join(directory, ENV_FILENAME);
 
-  if (!options.force) {
-    const existing = [manifestPath, envPath].filter((p) => existsSync(p));
-    if (existing.length > 0) {
-      throw new Error(
-        `Refusing to overwrite existing file(s): ${existing
-          .map((p) => path.basename(p))
-          .join(", ")}. Re-run with --force to overwrite.`
-      );
-    }
-  }
-
   const manifest = buildManifest({ name, publicUrl, webhookUrl, webhookSecret });
   const envSnippet = buildEnvSnippet({ webhookUrl, webhookSecret });
 
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
-  await writeFile(envPath, envSnippet, "utf-8");
+  // Create the target directory so a missing --root yields output rather than a
+  // raw ENOENT.
+  await mkdir(directory, { recursive: true });
+
+  // Without --force, write exclusively ("wx") so a concurrent process cannot
+  // slip a file in between an existence check and the write (TOCTOU). The flag
+  // is the actual guarantee; we translate the EEXIST into a friendly message.
+  const writeFlag = options.force ? "w" : "wx";
+  await writeManifestFile(
+    manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    writeFlag
+  );
+  await writeManifestFile(envPath, envSnippet, writeFlag);
 
   return {
     directory,
@@ -221,8 +265,28 @@ export async function generateGithubAppManifest(
     webhookUrl,
     webhookSecret,
     manifest,
-    createUrl: "https://github.com/settings/apps/new",
+    createUrl: buildCreateUrl(options.org),
   };
+}
+
+/** Write a file, surfacing a friendly overwrite error when using "wx". */
+async function writeManifestFile(
+  filePath: string,
+  contents: string,
+  flag: "w" | "wx"
+): Promise<void> {
+  try {
+    await writeFile(filePath, contents, { encoding: "utf-8", flag });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(
+        `Refusing to overwrite existing file: ${path.basename(
+          filePath
+        )}. Re-run with --force to overwrite.`
+      );
+    }
+    throw error;
+  }
 }
 
 function displayResult(result: GenerateManifestResult): void {
@@ -231,15 +295,27 @@ function displayResult(result: GenerateManifestResult): void {
   console.log(`  Env file: ${result.envPath}`);
   console.log("");
   console.log(`  Webhook URL: ${result.webhookUrl}`);
-  console.log(`  Webhook secret: ${result.webhookSecret}`);
+  console.log(
+    `  Webhook secret: written to ${path.basename(result.envPath)} (not printed)`
+  );
   console.log("");
   console.log("Next steps:");
   console.log(
-    `  1. Create the App from the manifest at:\n     ${result.createUrl}`
+    `  1. Open GitHub's "Register new GitHub App" page:\n     ${result.createUrl}`
   );
   console.log(
-    "     (paste the manifest JSON, or use GitHub's manifest flow with this file)"
+    `     Then fill in the form using ${path.basename(result.manifestPath)} as a`
   );
+  console.log(
+    "     reference — name, homepage URL, webhook URL + secret, the listed"
+  );
+  console.log(
+    "     repository permissions, and the subscribed events. (The manifest is"
+  );
+  console.log(
+    "     also valid input for GitHub's automated App-manifest flow if you host"
+  );
+  console.log("     one.)");
   console.log(
     `  2. Append ${path.basename(result.envPath)} to your .env and fill in`
   );
@@ -275,6 +351,10 @@ export function createGithubAppCommand(): Command {
       "--webhook-secret <secret>",
       "Webhook secret to use (default: a generated cryptographically strong secret)"
     )
+    .option(
+      "--org <login>",
+      "Scope App creation to an organization (default: personal account)"
+    )
     .option("-f, --force", "Overwrite existing output files")
     .option("-j, --json", "Output result as JSON")
     .addHelpText(
@@ -293,6 +373,7 @@ Writes ${MANIFEST_FILENAME} and ${ENV_FILENAME} into the target directory.
         webhookUrl?: string;
         name?: string;
         webhookSecret?: string;
+        org?: string;
         force?: boolean;
         json?: boolean;
       }) => {
@@ -303,6 +384,7 @@ Writes ${MANIFEST_FILENAME} and ${ENV_FILENAME} into the target directory.
             webhookUrl: options.webhookUrl,
             name: options.name,
             webhookSecret: options.webhookSecret,
+            org: options.org,
             force: options.force,
           });
 
