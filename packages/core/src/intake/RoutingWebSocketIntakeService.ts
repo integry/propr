@@ -96,6 +96,19 @@ export type {
     WebSocketCtor,
 } from './routingWebSocketProtocol.js';
 
+const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
+
+function parsePositiveIntegerEnv(name: string): number | undefined {
+    const value = process.env[name];
+    if (!value) return undefined;
+    const trimmed = value.trim();
+    // Require a whole-string positive integer so values like `50abc` or `1.5`
+    // are rejected rather than silently coerced to `50`/`1`.
+    if (!/^\d+$/.test(trimmed)) return undefined;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
     private readonly relayToken: string;
@@ -157,7 +170,8 @@ export class RoutingWebSocketIntakeService {
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
-        this.pingIntervalMs = options.pingIntervalMs ?? 30_000;
+        this.pingIntervalMs =
+            options.pingIntervalMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;

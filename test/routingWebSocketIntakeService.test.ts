@@ -1,4 +1,4 @@
-import { after, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import assert from 'node:assert';
 import {
     RoutingWebSocketIntakeService,
@@ -154,6 +154,79 @@ test('connects to the /v1/connect path with a Bearer relay token', async () => {
     assert.deepEqual(socket.options?.headers, { Authorization: 'Bearer relay-secret' });
 
     await service.stop();
+});
+
+test('uses a low-frequency default WebSocket transport ping', async () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    const prev = process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+    delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService());
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        mock.timers.tick(299_999);
+        assert.equal(socket.pings, 0, 'default ping must not fire before 5 minutes');
+
+        mock.timers.tick(1);
+        assert.equal(socket.pings, 1, 'default ping fires at 5 minutes');
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+        if (prev === undefined) delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+        else process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = prev;
+    }
+});
+
+test('allows the routing WebSocket transport ping interval to be overridden by env', async () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    const prev = process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+    process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = '50';
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService());
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        mock.timers.tick(49);
+        assert.equal(socket.pings, 0);
+
+        mock.timers.tick(1);
+        assert.equal(socket.pings, 1);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+        if (prev === undefined) delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+        else process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = prev;
+    }
+});
+
+test('falls back to the 5-minute default when the env override is invalid', async () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    const prev = process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+    // Partial/garbage values must be rejected rather than silently coerced.
+    process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = '50abc';
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService());
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        mock.timers.tick(299_999);
+        assert.equal(socket.pings, 0, 'invalid override must not shorten the ping interval');
+
+        mock.timers.tick(1);
+        assert.equal(socket.pings, 1, 'invalid override falls back to the 5-minute default');
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+        if (prev === undefined) delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
+        else process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS = prev;
+    }
 });
 
 test('processes an event frame with inline payload and ACKs only after processing', async () => {
