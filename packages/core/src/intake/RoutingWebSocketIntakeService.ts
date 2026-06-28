@@ -52,7 +52,7 @@
 import { DEFAULT_PROPR_ROUTING_URL } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { generateCorrelationId } from '../utils/logger.js';
-import { processWebhookEvent, type WebhookEventType } from '../webhook/webhookHandler.js';
+import { processWebhookEvent } from '../webhook/webhookHandler.js';
 import {
     ACCEPTED_DISPOSITION,
     BoundedTokenCache,
@@ -76,89 +76,25 @@ import {
     type FetchLike,
     type MinimalWebSocket,
     type RawData,
+    type RoutingEventDispatch,
     type RoutingFrame,
+    type RoutingWebSocketIntakeServiceOptions,
+    type RoutingWebSocketStatus,
     type WebSocketCtor,
 } from './routingWebSocketProtocol.js';
 
-export type { DeliveryAckBilling, DeliveryAckStatus, DeliveryDisposition, FetchLike, MinimalWebSocket, RawData, WebSocketCtor } from './routingWebSocketProtocol.js';
-
-/**
- * Event dispatcher signature. May return a {@link DeliveryDisposition} to report an
- * explicit authoritative status (accepted/blocked/ignored, plus optional reason and
- * billing) the service forwards to the relay in the ACK; returning `void` is a plain
- * `accepted`. A thrown error withholds the ACK so the relay can redeliver.
- */
-export type RoutingEventDispatch = (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
-
-export interface RoutingWebSocketIntakeServiceOptions {
-    /**
-     * Routing relay origin (scheme + host, no path). Defaults to
-     * `process.env.PROPR_ROUTING_URL`, then to the hosted relay
-     * ({@link DEFAULT_PROPR_ROUTING_URL}). The service owns the paths it appends:
-     * it dials `${origin}/v1/connect` as a `ws://`/`wss://` URL and derives the
-     * HTTP origin (for payload pulls at `/v1/delivery/:id`) from the same value.
-     * A configured path/query/hash is rejected at {@link start}.
-     */
-    routingUrl?: string;
-    /**
-     * Relay credential presented on the WebSocket upgrade. Defaults to
-     * `process.env.PROPR_GH_RELAY_TOKEN`.
-     */
-    relayToken?: string;
-    /**
-     * Event dispatcher. Defaults to the shared {@link processWebhookEvent}, which
-     * requires {@link initializeWebhookHandler} to have run first. See
-     * {@link RoutingEventDispatch} for the optional disposition return.
-     */
-    dispatch?: RoutingEventDispatch;
-    /** Initial reconnect delay in ms (doubles up to {@link maxReconnectDelayMs}). */
-    reconnectDelayMs?: number;
-    /** Maximum reconnect backoff delay in ms. */
-    maxReconnectDelayMs?: number;
-    /** Keepalive ping interval in ms. */
-    pingIntervalMs?: number;
-    /** Maximum number of delivery ids retained for deduplication. */
-    maxDedupeEntries?: number;
-    /** Maximum number of installation tokens cached from `token` frames. */
-    maxTokenEntries?: number;
-    /** Timeout for pulling a delivery payload over HTTP, in ms. */
-    pullTimeoutMs?: number;
-    /**
-     * Maximum time {@link stop} waits to drain in-flight event handling before
-     * closing the socket anyway. Bounds shutdown so a wedged `dispatch` (which,
-     * unlike a payload pull, has no timeout of its own) cannot block the daemon's
-     * SIGINT/SIGTERM handler forever.
-     */
-    shutdownDrainTimeoutMs?: number;
-    /**
-     * WebSocket constructor to use. Defaults to a lazy import of the `ws`
-     * package; primarily a seam for tests to inject a fake transport.
-     */
-    webSocketFactory?: WebSocketCtor;
-    /** `fetch` implementation for payload pulls; defaults to the global `fetch`. */
-    fetchImpl?: FetchLike;
-    /**
-     * Clock used to stamp the last-ACK time exposed via {@link RoutingWebSocketIntakeService.getStatus}.
-     * Defaults to `Date.now`; primarily a seam for deterministic tests.
-     */
-    now?: () => number;
-}
-
-/**
- * Runtime snapshot of the routing intake connection, surfaced so operators can
- * diagnose default (routing_websocket) deployments. Published by the daemon to
- * Redis and rendered by the API status route / CLI.
- */
-export interface RoutingWebSocketStatus {
-    /** Whether the routing WebSocket is currently connected to the relay. */
-    connected: boolean;
-    /** The routing relay origin this service dials (PROPR_ROUTING_URL). */
-    routingUrl: string;
-    /** Delivery id of the most recently ACKed GitHub event, or null if none yet. */
-    lastDeliveryId: string | null;
-    /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null if none yet. */
-    lastAckAt: string | null;
-}
+export type {
+    DeliveryAckBilling,
+    DeliveryAckStatus,
+    DeliveryDisposition,
+    FetchLike,
+    MinimalWebSocket,
+    RawData,
+    RoutingEventDispatch,
+    RoutingWebSocketIntakeServiceOptions,
+    RoutingWebSocketStatus,
+    WebSocketCtor,
+} from './routingWebSocketProtocol.js';
 
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
