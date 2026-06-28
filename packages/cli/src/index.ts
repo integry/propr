@@ -19,6 +19,7 @@ import {
   createQueueCommand,
   createInitCommand,
   createSetupCommand,
+  createGithubAppCommand,
   createCheckCommand,
   createImagesCommand,
   createStartCommand,
@@ -134,6 +135,7 @@ Examples:
 Command Groups:
   Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tank
   GitHub Relay:   relay [enroll|list|revoke]
+  GitHub App:     github-app [manifest]
   Configuration:  remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
@@ -291,6 +293,7 @@ program.addCommand(createRelayCommand());
 // Setup + backend client command groups
 program.addCommand(createInitCommand());
 program.addCommand(createSetupCommand());
+program.addCommand(createGithubAppCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());
