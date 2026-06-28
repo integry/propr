@@ -290,7 +290,15 @@ missing metadata is intended to become a hard block like any other mismatch.
 
 ### Configuration (v1)
 
-Set these in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label):
+ProPR Connect shows a one-time connector token and tunnel URL. Use the CLI setup command from Connect to write the stack `.env` values without editing the file by hand:
+
+```bash
+propr tunnel setup --token <connector-token> --url https://abc123.proxy.propr.dev
+propr start --restart
+propr tunnel verify
+```
+
+For older CLI versions or manual recovery, set these in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label):
 
 ```bash
 # --- Hosted UI tunnel (v1, optional) ---

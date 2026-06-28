@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyTunnelToggle,
+  buildTunnelSetupEnv,
   verifyTunnel,
   TunnelTokenMissingError,
   TunnelPublicUrlMissingError,
@@ -80,6 +81,57 @@ function cfgWith(overrides: Partial<OrchestratorConfig>): OrchestratorConfig {
 }
 
 const sink = () => {};
+
+test("tunnel setup builds env from the Connect proxy URL", () => {
+  assert.deepEqual(
+    buildTunnelSetupEnv({
+      token: "secret-token",
+      url: "https://abc123.proxy.propr.dev/",
+    }),
+    {
+      PROPR_UI_TUNNEL_TOKEN: "secret-token",
+      PROPR_INSTANCE_ID: "abc123",
+      PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
+    }
+  );
+});
+
+test("tunnel setup builds env from an instance id", () => {
+  assert.deepEqual(
+    buildTunnelSetupEnv({
+      token: "secret-token",
+      instanceId: "abc123",
+    }),
+    {
+      PROPR_UI_TUNNEL_TOKEN: "secret-token",
+      PROPR_INSTANCE_ID: "abc123",
+      PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
+    }
+  );
+});
+
+test("tunnel setup rejects mismatched URL and instance id", () => {
+  assert.throws(
+    () =>
+      buildTunnelSetupEnv({
+        token: "secret-token",
+        url: "https://abc123.proxy.propr.dev",
+        instanceId: "other",
+      }),
+    /does not match/
+  );
+});
+
+test("tunnel setup rejects a non-Connect proxy URL", () => {
+  assert.throws(
+    () =>
+      buildTunnelSetupEnv({
+        token: "secret-token",
+        url: "https://custom.example.com",
+      }),
+    /hosted proxy URL/
+  );
+});
 
 test("tunnel on without a token throws and does not persist or start", async () => {
   const { orch, calls } = fakeOrch();
@@ -330,7 +382,7 @@ function verifyOrch(running: boolean): Pick<OrchestratorModule, "getServiceState
 
 // Map a base URL's endpoints to canned HTTP statuses for a fake fetch.
 function fakeFetch(byPath: Record<string, number | "error">): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
+  return (async (input: Parameters<typeof fetch>[0]) => {
     const url = String(input);
     const path = new URL(url).pathname;
     const outcome = byPath[path];

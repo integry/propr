@@ -19,6 +19,7 @@ import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
+import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -506,7 +507,11 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     }
 }
 
-export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
+function commentSeatConsumed(commentAuthor: string, userType: string | null | undefined, configuredBotUsernames: Set<string>): boolean {
+    return userType !== 'Bot' && !configuredBotUsernames.has(commentAuthor) && !/\[bot\]$/i.test(commentAuthor);
+}
+
+export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<DeliveryDisposition> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const owner = payload.repository.owner.login;
@@ -514,7 +519,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const repoFullName = `${owner}/${repo}`;
 
     const eventDetails = getCommentEventDetails(payload, eventType, repoFullName, correlatedLogger);
-    if (!eventDetails) return;
+    if (!eventDetails) return { status: 'ignored', reason: 'not_pull_request_comment' };
 
     const { prNumber, comment } = eventDetails;
 
@@ -530,12 +535,12 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         );
 
     const filterResult = filterCommentByAuthor(commentAuthor, comment.user.type ?? null, correlationId);
-    if (filterResult.shouldFilter && !isSystemUltrafixComment) return;
+    if (filterResult.shouldFilter && !isSystemUltrafixComment) return { status: 'ignored', reason: 'filtered_author' };
 
     // Check for ignore keywords
     const ignoreKeywords = await loadFollowupIgnoreKeywords();
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
-    if (ignoreResult.shouldIgnore) return;
+    if (ignoreResult.shouldIgnore) return { status: 'ignored', reason: 'ignore_keyword' };
 
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     if (parsedCommand) {
@@ -546,7 +551,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         const claimed = await claimCommentForProcessing(redisClient, slashCommentTrackingKey);
         if (!claimed) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Slash command comment already processed, skipping redelivery');
-            return;
+            return { status: 'ignored', reason: 'duplicate_delivery' };
         }
         try {
             await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
@@ -554,7 +559,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             await redisClient.del(slashCommentTrackingKey);
             throw error;
         }
-        return;
+        return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
     }
 
     // Fetch PR labels early to check for processing label
@@ -565,7 +570,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const triggerResult = checkCommentTrigger(comment.body, correlationId);
     if (!hasProcessingLabel && !triggerResult.isTriggered) {
         correlatedLogger.debug({ pullRequestNumber: prNumber, commentId: comment.id }, 'PR does not have processing label and comment does not contain trigger keyword, skipping');
-        return;
+        return { status: 'ignored', reason: 'no_comment_trigger' };
     }
 
     if (hasProcessingLabel) {
@@ -574,16 +579,20 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
     const alreadyQueued = await redisClient.get(commentTrackingKey);
-    if (alreadyQueued) { correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, 'PR comment already queued/processed, skipping'); return; }
+    if (alreadyQueued) {
+        correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, 'PR comment already queued/processed, skipping');
+        return { status: 'ignored', reason: 'duplicate_delivery' };
+    }
 
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
         await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config as StoreCommentConfig);
         correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId: comment.id }, 'A job for this PR is already active or waiting, stored comment for batch processing');
-        return;
+        return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
     }
 
     await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId });
+    return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
 }
 
 async function checkExistingJob(prNumber: number, owner: string, repo: string): Promise<boolean> {

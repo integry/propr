@@ -26,6 +26,7 @@ import type {
     PushEvent
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
+import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
@@ -58,8 +59,8 @@ export interface DetectedIssue {
     source?: 'webhook' | 'polling';
 }
 
-export type IssueProcessor = (issue: DetectedIssue, correlationId: string) => Promise<void>;
-export type CommentProcessor = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
+export type IssueProcessor = (issue: DetectedIssue, correlationId: string) => Promise<void | DeliveryDisposition>;
+export type CommentProcessor = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
 export type CommentDeletedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type CommentEditedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type PullRequestProcessor = (payload: PullRequestEvent, correlationId: string) => Promise<void>;
@@ -122,6 +123,10 @@ function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
 
 const isPullRequestUnlabeledEvent = (payload: PullRequestEvent): payload is PullRequestUnlabeledEvent => payload.action === 'unlabeled';
 
+function normalizeProcessorDisposition(disposition: DeliveryDisposition | void): DeliveryDisposition {
+    return disposition ?? { status: 'accepted' };
+}
+
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
 }
@@ -137,7 +142,7 @@ function isStatusEvent(payload: unknown): payload is StatusEventPayload {
 async function handleIssuesEvent(
     payload: IssuesEvent,
     correlationId: string
-): Promise<void> {
+): Promise<DeliveryDisposition> {
     if (!processDetectedIssue) {
         throw new Error('Issue processor not initialized');
     }
@@ -162,8 +167,10 @@ async function handleIssuesEvent(
             source: 'webhook'
         };
 
-        await processDetectedIssue(issue, correlationId);
+        return normalizeProcessorDisposition(await processDetectedIssue(issue, correlationId));
     }
+
+    return { status: 'ignored', reason: 'unsupported_issue_action' };
 }
 
 async function handleUltrafixLabelRemoval(
@@ -200,7 +207,7 @@ async function handleUltrafixLabelRemoval(
 async function handleIssueCommentEvent(
     payload: IssueCommentEvent,
     correlationId: string
-): Promise<void> {
+): Promise<DeliveryDisposition> {
     if (!processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
         throw new Error('Comment handlers not initialized');
     }
@@ -208,29 +215,37 @@ async function handleIssueCommentEvent(
     const hasPullRequest = 'pull_request' in payload.issue && payload.issue.pull_request;
 
     if (isIssueCommentCreatedEvent(payload) && hasPullRequest) {
-        await processCommentEvent(payload, 'issue_comment', correlationId);
+        return normalizeProcessorDisposition(await processCommentEvent(payload, 'issue_comment', correlationId));
     } else if (isIssueCommentDeletedEvent(payload) && hasPullRequest) {
         await handleCommentDeleted(payload, 'issue_comment', correlationId);
+        return { status: 'accepted' };
     } else if (isIssueCommentEditedEvent(payload) && hasPullRequest) {
         await handleCommentEdited(payload, 'issue_comment', correlationId);
+        return { status: 'accepted' };
     }
+
+    return { status: 'ignored', reason: hasPullRequest ? 'unsupported_comment_action' : 'not_pull_request_comment' };
 }
 
 async function handlePullRequestReviewCommentEvent(
     payload: PullRequestReviewCommentEvent,
     correlationId: string
-): Promise<void> {
+): Promise<DeliveryDisposition> {
     if (!processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
         throw new Error('Comment handlers not initialized');
     }
 
     if (isPullRequestReviewCommentCreatedEvent(payload)) {
-        await processCommentEvent(payload, 'pull_request_review_comment', correlationId);
+        return normalizeProcessorDisposition(await processCommentEvent(payload, 'pull_request_review_comment', correlationId));
     } else if (isPullRequestReviewCommentDeletedEvent(payload)) {
         await handleCommentDeleted(payload, 'pull_request_review_comment', correlationId);
+        return { status: 'accepted' };
     } else if (isPullRequestReviewCommentEditedEvent(payload)) {
         await handleCommentEdited(payload, 'pull_request_review_comment', correlationId);
+        return { status: 'accepted' };
     }
+
+    return { status: 'ignored', reason: 'unsupported_review_comment_action' };
 }
 
 /**
@@ -266,7 +281,7 @@ async function processStandardWebhookEvent(
     eventType: WebhookEventType,
     correlationId: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
-): Promise<void> {
+): Promise<DeliveryDisposition> {
     if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
         correlatedLogger.error('Webhook handler not properly initialized');
         throw new Error('Webhook handler not initialized');
@@ -274,30 +289,38 @@ async function processStandardWebhookEvent(
 
     switch (eventType) {
         case 'issues':
-            if (isIssuesEvent(payload)) await handleIssuesEvent(payload, correlationId);
+            if (isIssuesEvent(payload)) return await handleIssuesEvent(payload, correlationId);
             break;
         case 'issue_comment':
-            if (isIssueCommentEvent(payload)) await handleIssueCommentEvent(payload, correlationId);
+            if (isIssueCommentEvent(payload)) return await handleIssueCommentEvent(payload, correlationId);
             break;
         case 'pull_request':
-            if (isPullRequestEvent(payload) && processPullRequest) await processPullRequest(payload, correlationId);
+            if (isPullRequestEvent(payload) && processPullRequest) {
+                await processPullRequest(payload, correlationId);
+                return { status: 'accepted' };
+            }
             break;
         case 'pull_request_review_comment':
-            if (isPullRequestReviewCommentEvent(payload)) await handlePullRequestReviewCommentEvent(payload, correlationId);
+            if (isPullRequestReviewCommentEvent(payload)) return await handlePullRequestReviewCommentEvent(payload, correlationId);
             break;
         case 'check_run':
-            if (isCheckRunEvent(payload) && processCheckRun) await processCheckRun(payload, correlationId);
+            if (isCheckRunEvent(payload) && processCheckRun) {
+                await processCheckRun(payload, correlationId);
+                return { status: 'accepted' };
+            }
             break;
         default:
             correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
     }
+
+    return { status: 'ignored', reason: 'unsupported_event' };
 }
 
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
     correlationId: string,
-): Promise<void> {
+): Promise<DeliveryDisposition> {
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
@@ -343,5 +366,5 @@ export async function processWebhookEvent(
     }
 
     // 8. Standard Local Processing
-    await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
+    return await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
 }

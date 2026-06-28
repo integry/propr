@@ -17,10 +17,12 @@
  */
 
 import { Command } from "commander";
+import { join } from "node:path";
 import { proprTunnelEndpoints, isProprProxyUrl, PROPR_UI_PROXY_SUFFIX } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
-import { getHostConfig } from "../orchestrator/index.js";
+import { getHostConfig, resolveStackRoot } from "../orchestrator/index.js";
 import { parseOnOffState, ParseStateError } from "../utils/index.js";
+import { upsertEnvVars } from "../utils/envFile.js";
 import type { ConfigManager } from "../config/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/types.js";
 
@@ -260,6 +262,62 @@ export interface TunnelVerifyDeps {
   timeoutMs?: number;
 }
 
+export interface TunnelSetupInput {
+  token: string;
+  url?: string;
+  instanceId?: string;
+}
+
+export interface TunnelSetupEnv {
+  PROPR_UI_TUNNEL_TOKEN: string;
+  PROPR_INSTANCE_ID: string;
+  PROPR_UI_PUBLIC_API_URL: string;
+}
+
+function instanceIdFromProxyUrl(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+  return parsed.protocol === "https:" && parsed.hostname.endsWith(suffix)
+    ? parsed.hostname.slice(0, -suffix.length)
+    : undefined;
+}
+
+export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
+  const token = input.token.trim();
+  if (!token) throw new Error("--token is required");
+
+  const explicitUrl = input.url?.trim().replace(/\/+$/, "");
+  const explicitInstanceId = input.instanceId?.trim();
+  if (!explicitUrl && !explicitInstanceId) {
+    throw new Error("provide --url https://<id>.proxy.propr.dev or --instance-id <id>");
+  }
+
+  const publicUrl = explicitUrl ?? `https://${explicitInstanceId}.${PROPR_UI_PROXY_SUFFIX}`;
+  if (!isProprProxyUrl(publicUrl)) {
+    throw new Error(`tunnel URL must be a hosted proxy URL such as https://<id>.${PROPR_UI_PROXY_SUFFIX}`);
+  }
+
+  const derivedInstanceId = instanceIdFromProxyUrl(publicUrl);
+  const instanceId = explicitInstanceId ?? derivedInstanceId;
+  if (!instanceId) {
+    throw new Error(`could not derive an instance id from ${publicUrl}`);
+  }
+  if (derivedInstanceId && explicitInstanceId && derivedInstanceId !== explicitInstanceId) {
+    throw new Error(`--instance-id (${explicitInstanceId}) does not match --url host (${derivedInstanceId})`);
+  }
+
+  return {
+    PROPR_UI_TUNNEL_TOKEN: token,
+    PROPR_INSTANCE_ID: instanceId,
+    PROPR_UI_PUBLIC_API_URL: publicUrl,
+  };
+}
+
 // GET a URL behind a hard timeout. Resolves the HTTP status, or null on a
 // network error / timeout (so the caller can distinguish "no response at all"
 // from "responded with a status"). Never throws — verify reports, it does not gate.
@@ -418,15 +476,66 @@ async function toggleTunnel(stateArg: string, root?: string, force?: boolean): P
   }
 }
 
+async function runTunnelSetup(options: {
+  root?: string;
+  token?: string;
+  url?: string;
+  instanceId?: string;
+  start?: boolean;
+  force?: boolean;
+}): Promise<void> {
+  const configManager = await createConfigManager();
+  const rootDir = resolveStackRoot(configManager, options.root);
+  const envPath = join(rootDir, ".env");
+  const vars = buildTunnelSetupEnv({
+    token: options.token ?? "",
+    url: options.url,
+    instanceId: options.instanceId,
+  });
+
+  upsertEnvVars(envPath, { ...vars });
+  await configManager.set("tunnelEnabled", true);
+
+  console.log("Tunnel configuration saved.");
+  console.log(`  saved to: ${envPath}`);
+  console.log(`  public API: ${vars.PROPR_UI_PUBLIC_API_URL}`);
+  console.log("");
+
+  if (options.start) {
+    const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+    if (!orch.dockerAvailable()) {
+      console.error("Error: cannot reach the Docker daemon. Run 'propr check'.");
+      process.exit(1);
+    }
+    await applyTunnelToggle({ enable: true, cfg, orch, configManager, force: options.force });
+    return;
+  }
+
+  console.log("Next steps:");
+  console.log("  propr start --restart   # apply the hosted UI/API URLs to the stack");
+  console.log("  propr tunnel verify     # confirm the public proxy can reach this stack");
+  console.log("");
+  console.log("Use 'propr tunnel setup --start ...' next time to save config and start the sidecar in one step.");
+}
+
 export function createTunnelCommand(): Command {
   return new Command("tunnel")
-    .description("Start, stop, or verify the Cloudflare Tunnel service")
-    .argument("<action>", "on, off, or verify")
+    .description("Configure, start, stop, or verify the Cloudflare Tunnel service")
+    .argument("<action>", "setup, on, off, or verify")
     .option("--root <dir>", "Stack root directory")
     .option("--force", "Start the tunnel even if the core stack is not running")
+    .option("--token <token>", "Connector token from ProPR Connect (setup only)")
+    .option("--url <url>", "Public proxy URL from ProPR Connect, e.g. https://<id>.proxy.propr.dev (setup only)")
+    .option("--instance-id <id>", "Instance id from ProPR Connect; derives https://<id>.proxy.propr.dev (setup only)")
+    .option("--start", "After setup, start the cloudflared sidecar immediately")
     .addHelpText("after", `
-Starting the tunnel requires a token AND a public proxy URL. Set these in your
-stack .env:
+Setup writes the tunnel settings to your stack .env for you:
+
+  $ propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev
+  $ propr start --restart
+  $ propr tunnel verify
+
+Starting the tunnel requires a token AND a public proxy URL:
   PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start). This is a
                            live Cloudflare credential — do not commit, log, or share it
   PROPR_INSTANCE_ID        Instance id; derives the public URL
@@ -440,13 +549,18 @@ http://api:4000 (NOT host port 4000), so the published host port is irrelevant
 to tunnel routing and the two cannot conflict. Only /api/* and /socket.io/* are
 routed; the root URL intentionally returns 404.
 
+  $ propr tunnel setup     Save the token/proxy URL from ProPR Connect to .env
   $ propr tunnel on        Start the cloudflared sidecar (requires the core stack
                            to be running; pass --force to start it regardless)
   $ propr tunnel off       Stop the sidecar (token/env values are left untouched)
   $ propr tunnel verify    Check the sidecar + public /api/status, /, /socket.io/
 `)
-    .action(async (action: string, options: { root?: string; force?: boolean }) => {
+    .action(async (action: string, options: { root?: string; force?: boolean; token?: string; url?: string; instanceId?: string; start?: boolean }) => {
       try {
+        if (action === "setup") {
+          await runTunnelSetup(options);
+          return;
+        }
         if (action === "verify") {
           await runTunnelVerify(options.root);
           return;
