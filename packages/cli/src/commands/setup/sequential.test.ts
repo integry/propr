@@ -315,6 +315,17 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     applyEnvSelection: () => ({ written: [], skipped: [] }),
     clearEnvKeys: () => undefined,
     detectGithubAuthMode: () => ({ mode: "app", warnings: [] }),
+    inspectGithubAppManifest: (rootDir) => ({
+      manifestPath: `${rootDir}/github-app-manifest.json`,
+      envPath: `${rootDir}/github-app.env`,
+      exists: false,
+    }),
+    generateGithubAppManifest: async ({ rootDir }) => ({
+      manifestPath: `${rootDir}/github-app-manifest.json`,
+      envPath: `${rootDir}/github-app.env`,
+      webhookUrl: "https://propr.example.com/webhook",
+      createUrl: "https://github.com/settings/apps/new",
+    }),
     pullImages: async () => ({ pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] }),
     isStackRunning: async () => false,
     startStack: async () => undefined,
