@@ -52,6 +52,95 @@ export const DEFAULT_MAX_TOKEN_ENTRIES = 5_000;
 /** Default timeout for pulling a delivery payload over HTTP. */
 export const DEFAULT_PULL_TIMEOUT_MS = 15_000;
 
+/**
+ * The authoritative disposition ProPR reports for a routed delivery in its ACK
+ * frame. ProPR — not the relay — owns this decision; the relay forwards every
+ * eligible-looking trigger and records whatever status comes back:
+ *   - `accepted`: ProPR has processed / started work on the delivery. May consume
+ *     a seat (see {@link DeliveryAckBilling}).
+ *   - `blocked`: ProPR would have processed the delivery but policy or capacity
+ *     prevented it (e.g. an org over its seat limit). Terminal; visible to admins.
+ *   - `ignored`: ProPR deliberately took no action (unsupported event, a user not
+ *     allowed to trigger, a passive event). Terminal; consumes no seat.
+ * `blocked` and `ignored` are both terminal — the relay must not redeliver — and
+ * differ only in intent: `blocked` is "wanted to, couldn't", `ignored` is
+ * "nothing to do". A delivery is redelivered ONLY when no ACK is sent at all.
+ */
+export type DeliveryAckStatus = 'accepted' | 'blocked' | 'ignored';
+
+/** The set of valid {@link DeliveryAckStatus} values, for runtime validation. */
+const DELIVERY_ACK_STATUSES: readonly DeliveryAckStatus[] = ['accepted', 'blocked', 'ignored'];
+
+/** Optional billing metadata carried on an ACK frame. */
+export interface DeliveryAckBilling {
+    /** Whether processing this delivery consumed a seat. Only meaningful for `accepted`. */
+    seatConsumed: boolean;
+}
+
+/**
+ * The disposition ProPR attaches to an ACK. Returned by the webhook dispatcher so
+ * the intake service can ACK with an explicit, authoritative status/reason instead
+ * of a bare acknowledgement. A dispatcher that returns nothing is treated as a
+ * plain {@link ACCEPTED_DISPOSITION} (the common case: the event was processed and
+ * no billing/policy signal was produced).
+ */
+export interface DeliveryDisposition {
+    status: DeliveryAckStatus;
+    /**
+     * Machine-readable reason for the status, primarily for `blocked`/`ignored`
+     * (e.g. `user_not_allowed`, `unsupported_event`, `limit_reached`). Surfaced in
+     * the relay's delivery history so admins can see *why* a delivery was not acted
+     * on instead of it merely showing as DELIVERED.
+     */
+    reason?: string;
+    billing?: DeliveryAckBilling;
+}
+
+/** Shared "processed, no billing/policy signal" disposition — the default ACK. */
+export const ACCEPTED_DISPOSITION: DeliveryDisposition = Object.freeze({ status: 'accepted' });
+
+/** Shared disposition for an event ProPR cannot or will not handle. */
+export const IGNORED_UNSUPPORTED_DISPOSITION: DeliveryDisposition = Object.freeze({
+    status: 'ignored',
+    reason: 'unsupported_event',
+});
+
+/**
+ * Coerce an arbitrary dispatcher return value into a {@link DeliveryDisposition}.
+ * A dispatcher may return `undefined`/`void` (the legacy and common shape) — that
+ * maps to {@link ACCEPTED_DISPOSITION}. A returned object is honored only when it
+ * carries a recognized {@link DeliveryAckStatus}; anything else degrades to
+ * `accepted` so a malformed dispatcher return can never silently suppress an ACK.
+ */
+export function normalizeDisposition(outcome: DeliveryDisposition | void | undefined): DeliveryDisposition {
+    if (outcome && typeof outcome === 'object') {
+        const status = (outcome as DeliveryDisposition).status;
+        if (typeof status === 'string' && (DELIVERY_ACK_STATUSES as readonly string[]).includes(status)) {
+            return outcome as DeliveryDisposition;
+        }
+    }
+    return ACCEPTED_DISPOSITION;
+}
+
+/**
+ * Build the backend -> relay ACK frame for an accepted/blocked/ignored delivery.
+ * `status` is always present; `reason` and `billing` are included only when the
+ * disposition carries them, keeping the wire frame minimal. A relay that predates
+ * the explicit-status contract still finds the original `{ type, sequence,
+ * deliveryId }` fields and can ignore the rest, so the change is backward
+ * compatible.
+ */
+export function buildAckFrame(
+    sequence: number,
+    deliveryId: string,
+    disposition: DeliveryDisposition,
+): Record<string, unknown> {
+    const frame: Record<string, unknown> = { type: 'ack', sequence, deliveryId, status: disposition.status };
+    if (disposition.reason !== undefined) frame.reason = disposition.reason;
+    if (disposition.billing !== undefined) frame.billing = disposition.billing;
+    return frame;
+}
+
 /** Normalize any `RawData` frame the `ws` package can emit into a UTF-8 string. */
 export function rawDataToString(data: RawData): string {
     if (typeof data === 'string') return data;
@@ -108,20 +197,69 @@ export class BoundedDeliverySet {
 }
 
 /**
+ * Bounded, insertion-ordered map of id -> value with the same recency/eviction
+ * semantics as {@link BoundedDeliverySet}: re-setting a key refreshes its
+ * recency, and once the cap is reached the oldest entry is evicted. Used to
+ * remember each accepted delivery's {@link DeliveryDisposition} so a redelivery
+ * can be re-ACKed with the SAME status it was first ACKed with, rather than
+ * defaulting every re-ACK to `accepted`.
+ */
+export class BoundedDeliveryMap<V> {
+    private readonly entries = new Map<string, V>();
+    private readonly maxEntries: number;
+
+    /** `maxEntries` is clamped to a minimum of 1 (see {@link BoundedDeliverySet}). */
+    constructor(maxEntries: number) {
+        this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    }
+
+    has(id: string): boolean {
+        return this.entries.has(id);
+    }
+
+    get(id: string): V | undefined {
+        return this.entries.get(id);
+    }
+
+    set(id: string, value: V): void {
+        // Delete-then-set refreshes recency: see BoundedDeliverySet.add.
+        this.entries.delete(id);
+        this.entries.set(id, value);
+        while (this.entries.size > this.maxEntries) {
+            const oldest = this.entries.keys().next().value as string | undefined;
+            if (oldest === undefined) break;
+            this.entries.delete(oldest);
+        }
+    }
+
+    /** Refresh an entry's recency without changing its value; no-op for unknown ids. */
+    touch(id: string): void {
+        const value = this.entries.get(id);
+        if (value !== undefined) this.set(id, value);
+    }
+
+    get size(): number {
+        return this.entries.size;
+    }
+}
+
+/**
  * Tracks delivery ids across their lifecycle to make ACKing safe under
  * redelivery. A delivery is "in flight" while its payload is being resolved and
- * dispatched, and "accepted" once dispatch has succeeded. The two states are
- * deliberately separate: a redelivery that arrives while the first attempt is
- * still in flight must NOT be ACKed (the first attempt may yet fail), whereas a
- * redelivery of an already-accepted delivery is safely re-ACKed without
- * reprocessing. The accepted set is bounded so memory cannot grow without limit.
+ * dispatched, and "accepted" once dispatch has resolved (with whatever
+ * disposition the dispatcher reported — accepted/blocked/ignored). The two
+ * states are deliberately separate: a redelivery that arrives while the first
+ * attempt is still in flight must NOT be ACKed (the first attempt may yet fail),
+ * whereas a redelivery of an already-accepted delivery is safely re-ACKed —
+ * with its original disposition — without reprocessing. The accepted map is
+ * bounded so memory cannot grow without limit.
  */
 export class DeliveryTracker {
     private readonly inFlight = new Set<string>();
-    private readonly accepted: BoundedDeliverySet;
+    private readonly accepted: BoundedDeliveryMap<DeliveryDisposition>;
 
     constructor(maxAcceptedEntries: number) {
-        this.accepted = new BoundedDeliverySet(maxAcceptedEntries);
+        this.accepted = new BoundedDeliveryMap(maxAcceptedEntries);
     }
 
     isAccepted(id: string): boolean {
@@ -132,26 +270,34 @@ export class DeliveryTracker {
         return this.inFlight.has(id);
     }
 
+    /** The disposition a delivery was first ACKed with, or undefined if not accepted. */
+    getDisposition(id: string): DeliveryDisposition | undefined {
+        return this.accepted.get(id);
+    }
+
     /** Mark a delivery as being processed. */
     begin(id: string): void {
         this.inFlight.add(id);
     }
 
-    /** Mark a delivery as durably accepted (and no longer in flight). */
-    accept(id: string): void {
+    /**
+     * Mark a delivery as durably accepted (and no longer in flight), remembering
+     * the disposition it was ACKed with so a later redelivery re-ACKs identically.
+     */
+    accept(id: string, disposition: DeliveryDisposition): void {
         this.inFlight.delete(id);
-        this.accepted.add(id);
+        this.accepted.set(id, disposition);
     }
 
     /**
-     * Refresh an already-accepted delivery's recency without changing state. Used
-     * when a duplicate of an accepted delivery is re-ACKed: re-adding moves it to
-     * the most-recently-seen position (BoundedDeliverySet refreshes on add) so a
-     * frequently-redelivered id is not evicted under heavy traffic and then
-     * reprocessed as if it were new. A no-op for unknown ids.
+     * Refresh an already-accepted delivery's recency without changing its stored
+     * disposition. Used when a duplicate of an accepted delivery is re-ACKed:
+     * re-setting moves it to the most-recently-seen position so a frequently-
+     * redelivered id is not evicted under heavy traffic and then reprocessed as if
+     * it were new. A no-op for unknown ids.
      */
     touch(id: string): void {
-        if (this.accepted.has(id)) this.accepted.add(id);
+        this.accepted.touch(id);
     }
 
     /** Release a failed delivery so a later redelivery is retried. */

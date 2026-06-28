@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Explicit routing delivery acknowledgements**: the routing WebSocket intake
+  service now ACKs each forwarded GitHub delivery with an authoritative
+  `status` (`accepted`, `blocked`, or `ignored`), plus an optional `reason`
+  (e.g. `unsupported_event`, `user_not_allowed`, `limit_reached`) and `billing`
+  metadata. The webhook dispatcher may return a disposition to drive this;
+  returning nothing is treated as a plain `accepted`. The pre-existing
+  `{ type, sequence, deliveryId }` ACK fields are unchanged, so the addition is
+  backward compatible. ProPR remains the only source of truth for repo/user
+  policy; the relay forwards every eligible-looking trigger and records the
+  result. See the ProPR Connect docs for the delivery acknowledgement contract.
 - `propr check --json` remains machine-readable but now reports the additional
   check rows introduced by the grouped check output, including CLI version and
   configured agent validation rows.

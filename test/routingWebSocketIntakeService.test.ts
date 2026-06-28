@@ -189,7 +189,8 @@ test('processes an event frame with inline payload and ACKs only after processin
 
     const frames = socket.sentFrames();
     assert.equal(frames.length, 1);
-    assert.deepEqual(frames[0], { type: 'ack', sequence: 5, deliveryId: 'd1' });
+    // A processed delivery is ACKed with an explicit `accepted` status.
+    assert.deepEqual(frames[0], { type: 'ack', sequence: 5, deliveryId: 'd1', status: 'accepted' });
 
     await service.stop();
 });
@@ -229,7 +230,7 @@ test('in-flight duplicate is not ACKed until the original processing succeeds', 
 
     // Only the original ACKs, once, after it succeeds.
     const acks = socket.sentFrames().filter((f) => f.type === 'ack');
-    assert.deepEqual(acks, [{ type: 'ack', sequence: 1, deliveryId: 'inflight' }]);
+    assert.deepEqual(acks, [{ type: 'ack', sequence: 1, deliveryId: 'inflight', status: 'accepted' }]);
 
     await service.stop();
 });
@@ -336,8 +337,111 @@ test('ignores unsupported event types (but ACKs) and discards malformed frames',
 
     assert.equal(dispatched.length, 0);
     // The unsupported-but-identified delivery is ACKed; the no-event-type one too.
+    // Both are ACKed with an explicit `ignored` status (reason `unsupported_event`)
+    // so the relay records them as ignored rather than plainly delivered.
     const acks = socket.sentFrames().filter((f) => f.type === 'ack');
     assert.deepEqual(acks.map((a) => a.deliveryId).sort(), ['u1', 'u2']);
+    for (const ack of acks) {
+        assert.equal(ack.status, 'ignored');
+        assert.equal(ack.reason, 'unsupported_event');
+    }
+
+    await service.stop();
+});
+
+test('forwards the dispatcher disposition (blocked + reason + billing) in the ACK', async () => {
+    // The dispatcher is authoritative: a `blocked` result (e.g. over a seat limit)
+    // is ACKed verbatim so the relay records BLOCKED with a reason instead of a
+    // plain delivery, and never redelivers (blocked is terminal).
+    const { service } = makeService({
+        dispatch: async () => ({
+            status: 'blocked',
+            reason: 'limit_reached',
+            billing: { seatConsumed: false },
+        }),
+    });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', eventFrame({ sequence: 7, deliveryId: 'blk-1', eventType: 'issues', rawPayload: { n: 1 } }));
+    await flush();
+
+    assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
+        { type: 'ack', sequence: 7, deliveryId: 'blk-1', status: 'blocked', reason: 'limit_reached', billing: { seatConsumed: false } },
+    ]);
+
+    await service.stop();
+});
+
+test('forwards an accepted + seatConsumed disposition in the ACK', async () => {
+    const { service } = makeService({
+        dispatch: async () => ({ status: 'accepted', billing: { seatConsumed: true } }),
+    });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', eventFrame({ sequence: 8, deliveryId: 'seat-1', eventType: 'issues', rawPayload: { n: 1 } }));
+    await flush();
+
+    assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
+        { type: 'ack', sequence: 8, deliveryId: 'seat-1', status: 'accepted', billing: { seatConsumed: true } },
+    ]);
+
+    await service.stop();
+});
+
+test('re-ACKs a redelivery with the original disposition, not a default accepted', async () => {
+    // A delivery the dispatcher ignored (user_not_allowed) must keep reporting
+    // `ignored` when the relay redelivers it — re-ACKing it as `accepted` would
+    // erase the recorded reason in the delivery history.
+    let calls = 0;
+    const { service } = makeService({
+        dispatch: async () => {
+            calls += 1;
+            return { status: 'ignored', reason: 'user_not_allowed', billing: { seatConsumed: false } };
+        },
+    });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    const frame = eventFrame({ sequence: 1, deliveryId: 'ign-1', eventType: 'issues', rawPayload: { n: 1 } });
+    socket.emit('message', frame);
+    await flush();
+    // Redeliver the same id: re-ACKed (not reprocessed) with the SAME disposition.
+    socket.emit('message', frame);
+    await flush();
+
+    assert.equal(calls, 1, 'an already-resolved delivery must not be reprocessed');
+    const acks = socket.sentFrames().filter((f) => f.type === 'ack');
+    assert.equal(acks.length, 2);
+    for (const ack of acks) {
+        assert.equal(ack.status, 'ignored');
+        assert.equal(ack.reason, 'user_not_allowed');
+        assert.deepEqual(ack.billing, { seatConsumed: false });
+    }
+
+    await service.stop();
+});
+
+test('a malformed dispatcher return degrades to a plain accepted ACK', async () => {
+    // A dispatcher that returns a non-disposition object must not suppress the ACK
+    // or send a bogus status; it falls back to `accepted`.
+    const { service } = makeService({
+        dispatch: async () => ({ unexpected: true }) as unknown as void,
+    });
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', eventFrame({ sequence: 3, deliveryId: 'odd-1', eventType: 'issues', rawPayload: { n: 1 } }));
+    await flush();
+
+    assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
+        { type: 'ack', sequence: 3, deliveryId: 'odd-1', status: 'accepted' },
+    ]);
 
     await service.stop();
 });
@@ -443,7 +547,7 @@ test('pulls the payload over HTTP when no inline payload is present', async () =
     assert.equal(authHeader, 'Bearer inst-token-123');
     assert.equal(dispatched.length, 1);
     assert.deepEqual(dispatched[0].payload, { action: 'opened', pulled: true });
-    assert.deepEqual(socket.sentFrames()[0], { type: 'ack', sequence: 9, deliveryId: 'pull-1' });
+    assert.deepEqual(socket.sentFrames()[0], { type: 'ack', sequence: 9, deliveryId: 'pull-1', status: 'accepted' });
 
     await service.stop();
 });
@@ -632,7 +736,7 @@ test('a throwing socket.send during ACK does not crash; the delivery is re-ACKed
 
     assert.equal(dispatched.length, 1, 'accepted delivery must not be reprocessed');
     assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
-        { type: 'ack', sequence: 2, deliveryId: 'send-fail' },
+        { type: 'ack', sequence: 2, deliveryId: 'send-fail', status: 'accepted' },
     ]);
 
     await service.stop();
@@ -667,7 +771,7 @@ test('stop() drains in-flight work and lets its ACK reach the relay before closi
 
     // The ACK was sent over the still-open socket, then the socket was closed.
     assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
-        { type: 'ack', sequence: 4, deliveryId: 'drain-1' },
+        { type: 'ack', sequence: 4, deliveryId: 'drain-1', status: 'accepted' },
     ]);
     assert.equal(socket.closed, true);
 });

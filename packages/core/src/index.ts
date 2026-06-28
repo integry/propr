@@ -123,7 +123,7 @@ export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltra
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
-export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike } from './intake/RoutingWebSocketIntakeService.js';
+export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
 // DeliveryTracker, URL/payload/token helpers) are internal to the intake service
 // and are intentionally NOT part of the package's public API. Tests import them

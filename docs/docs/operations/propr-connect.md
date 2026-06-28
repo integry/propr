@@ -70,6 +70,32 @@ The local ProPR instance does not need to expose an inbound webhook URL.
 
 Use this mode when you want the simplest self-hosted setup: no GitHub App private key of your own, no public webhook endpoint, and low-latency event delivery.
 
+## Delivery Decisions And Acknowledgements
+
+ProPR Connect forwards every eligible-looking GitHub delivery to your local instance and lets your instance make the authoritative decision. ProPR Connect does not consult or expose a user/repository whitelist; your self-hosted ProPR remains the only source of truth for repo and user policy.
+
+When your instance finishes resolving a delivery, it acknowledges it over the routing connection with an explicit status:
+
+- `accepted` — ProPR processed or started work on the delivery. This can consume a seat.
+- `blocked` — ProPR would have processed the delivery but policy or capacity prevented it (for example, an organization over its seat limit). This is terminal and visible to admins.
+- `ignored` — ProPR deliberately took no action (an unsupported event, a passive event, or a user not allowed to trigger). This is terminal and consumes no seat.
+
+The acknowledgement may also carry a machine-readable `reason` (such as `unsupported_event`, `user_not_allowed`, or `limit_reached`) and optional billing metadata:
+
+```json
+{
+  "type": "ack",
+  "deliveryId": "…",
+  "status": "ignored",
+  "reason": "user_not_allowed",
+  "billing": { "seatConsumed": false }
+}
+```
+
+A delivery is redelivered only when no acknowledgement is sent at all (for example, a transient failure while pulling the payload or processing the event). All three statuses are terminal — once acknowledged, ProPR Connect records the result in the delivery history and does not redeliver. This lets admins see, for example, `ignored: user_not_allowed` instead of wondering why a forwarded delivery produced no work.
+
+This contract keeps policy local, adds no preflight latency or new request path, and avoids exposing a queryable whitelist surface.
+
 ## Hosted UI Tunnel Flow
 
 When the hosted UI tunnel is enabled, the browser can use the hosted ProPR UI while the API still runs locally:
