@@ -7,6 +7,7 @@ import path from "path";
 import {
   generateGithubAppManifest,
   generateWebhookSecret,
+  redactSecret,
   MANIFEST_FILENAME,
   ENV_FILENAME,
   PROPR_APP_PERMISSIONS,
@@ -63,6 +64,12 @@ describe("generateGithubAppManifest", () => {
       const env = await readFile(envPath, "utf-8");
       assert.match(env, /GH_AUTH_MODE=app/);
       assert.match(env, /GITHUB_EVENT_INTAKE_MODE=direct_webhook/);
+
+      // The private-key variable must match what the setup stack records and
+      // bind-mounts (HOST_GH_PRIVATE_KEY), not the in-container launcher path
+      // (GH_PRIVATE_KEY_PATH), so following the snippet yields a complete setup.
+      assert.match(env, /HOST_GH_PRIVATE_KEY=/);
+      assert.doesNotMatch(env, /GH_PRIVATE_KEY_PATH/);
 
       // Same webhook secret used in the manifest and the env file
       assert.strictEqual(
@@ -138,6 +145,30 @@ describe("generateGithubAppManifest", () => {
         }),
         /Refusing to overwrite/
       );
+    });
+  });
+
+  test("does not write a partial output when only the env file exists", async () => {
+    await withTempDir(async (dir) => {
+      // Pre-create only the env file. The manifest is absent, so a naive
+      // manifest-first write would create it before failing on the env file,
+      // leaving mixed/partial output. The preflight must refuse before writing.
+      const envPath = path.join(dir, ENV_FILENAME);
+      const manifestPath = path.join(dir, MANIFEST_FILENAME);
+      fs.writeFileSync(envPath, "pre-existing");
+
+      await assert.rejects(
+        generateGithubAppManifest({
+          root: dir,
+          publicUrl: "https://propr.example.com",
+        }),
+        /Refusing to overwrite/
+      );
+
+      // The manifest must not have been written.
+      assert.ok(!fs.existsSync(manifestPath));
+      // The pre-existing env file must be left untouched.
+      assert.strictEqual(await readFile(envPath, "utf-8"), "pre-existing");
     });
   });
 
@@ -239,6 +270,30 @@ describe("generateGithubAppManifest", () => {
       // check_run delivery requires `checks`; status delivery requires `statuses`.
       assert.strictEqual(perms.checks, "read");
       assert.strictEqual(perms.statuses, "read");
+    });
+  });
+});
+
+describe("redactSecret", () => {
+  test("strips the webhook secret from JSON-bound output", async () => {
+    await withTempDir(async (dir) => {
+      const result = await generateGithubAppManifest({
+        root: dir,
+        publicUrl: "https://propr.example.com",
+      });
+      const secret = result.webhookSecret;
+      assert.match(secret, /^[0-9a-f]{64}$/);
+
+      const redacted = redactSecret(result);
+      // The secret must not appear anywhere in the serialized JSON output.
+      const serialized = JSON.stringify(redacted);
+      assert.ok(!serialized.includes(secret), "secret leaked into JSON output");
+      assert.notStrictEqual(redacted.webhookSecret, secret);
+      assert.notStrictEqual(redacted.manifest.hook_attributes.secret, secret);
+
+      // The original result is not mutated (still carries the real secret).
+      assert.strictEqual(result.webhookSecret, secret);
+      assert.strictEqual(result.manifest.hook_attributes.secret, secret);
     });
   });
 });

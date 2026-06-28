@@ -53,6 +53,9 @@ import {
 } from "./github.js";
 import type { ChecksOutcome, RunChecksOptions } from "../checkCommands.js";
 import type { InitStackOptions, InitStackResult } from "../initStack.js";
+// Filenames-only import (no commander), so checking for existing output stays
+// cheap and keeps the heavy command module lazily loaded.
+import { MANIFEST_FILENAME, ENV_FILENAME } from "../githubAppManifestFiles.js";
 import {
   createDefaultAgentSetupActions,
   runAgentSetup,
@@ -176,6 +179,10 @@ export interface GithubAppManifestState {
   manifestPath: string;
   /** Absolute path the `.env` snippet is written to. */
   envPath: string;
+  /** True when the manifest JSON already exists in the stack root. */
+  manifestExists: boolean;
+  /** True when the `.env` snippet already exists in the stack root. */
+  envExists: boolean;
   /** True when either output file already exists in the stack root. */
   exists: boolean;
 }
@@ -420,15 +427,6 @@ export interface SetupRunResult {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Output filenames written by the GitHub App manifest generator, mirrored from
- * MANIFEST_FILENAME / ENV_FILENAME in ../githubAppCommands.ts. Duplicated here so
- * the engine can check for existing files synchronously without statically
- * importing the command module (and pulling its commander dependency into every
- * engine import). Kept in sync intentionally.
- */
-const GITHUB_APP_MANIFEST_FILENAME = "github-app-manifest.json";
-const GITHUB_APP_ENV_FILENAME = "github-app.env";
 
 /**
  * Build the production {@link SetupActions}, lazily importing the heavy
@@ -468,9 +466,17 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     clearEnvKeys,
     detectGithubAuthMode,
     inspectGithubAppManifest(rootDir) {
-      const manifestPath = join(rootDir, GITHUB_APP_MANIFEST_FILENAME);
-      const envPath = join(rootDir, GITHUB_APP_ENV_FILENAME);
-      return { manifestPath, envPath, exists: existsSync(manifestPath) || existsSync(envPath) };
+      const manifestPath = join(rootDir, MANIFEST_FILENAME);
+      const envPath = join(rootDir, ENV_FILENAME);
+      const manifestExists = existsSync(manifestPath);
+      const envExists = existsSync(envPath);
+      return {
+        manifestPath,
+        envPath,
+        manifestExists,
+        envExists,
+        exists: manifestExists || envExists,
+      };
     },
     async generateGithubAppManifest({ rootDir, publicUrl, force }) {
       const { generateGithubAppManifest } = await import("../githubAppCommands.js");
@@ -709,11 +715,18 @@ async function maybeGenerateAppManifest(params: {
   }
 
   // No decision: when files already exist the user declined to regenerate, so
-  // report where they are rather than overwriting or failing.
+  // report where they are rather than overwriting or failing. `exists` is true
+  // if either file is present, so name only the file(s) actually on disk.
   if (state.exists) {
+    const existingPaths = [
+      state.manifestExists ? state.manifestPath : null,
+      state.envExists ? state.envPath : null,
+    ].filter((p): p is string => p !== null);
     return {
       warning: true,
-      detail: `GitHub App manifest already exists at ${state.manifestPath} — left as-is`,
+      detail: `GitHub App manifest already exists at ${existingPaths.join(
+        " + "
+      )} — left as-is`,
       nextAction:
         "Fill GH_APP_ID, GH_INSTALLATION_ID, and HOST_GH_PRIVATE_KEY in .env from the created App, or delete the files and re-run setup to regenerate.",
     };

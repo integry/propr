@@ -39,6 +39,7 @@ import {
   type GithubIntakeMode,
 } from "../commands/setup/github.js";
 import type { SetupState, SetupStep, SetupStepStatus } from "../commands/setup/types.js";
+import { isValidPublicUrl } from "../commands/githubAppManifestFiles.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_LOG_LINES = 8;
@@ -379,14 +380,15 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
         });
         if (!regenerate) return null;
       }
-      // Prefer the public URL from .env; ask only when it's absent, and keep
-      // asking until a non-empty value is entered (the generator needs one).
+      // Prefer the public URL from .env; ask only when it's absent or invalid,
+      // and validate at prompt time (absolute http(s) URL) so the user gets a
+      // tight correction loop instead of an after-the-fact setup warning.
       let publicUrl = (detectedPublicUrl ?? "").trim();
-      while (publicUrl === "") {
+      while (!isValidPublicUrl(publicUrl)) {
         publicUrl = (
           await bridge.input({
             title: "Public ProPR URL",
-            detail: "Where GitHub can reach this install, e.g. https://propr.example.com. Used as the App homepage + webhook base URL.",
+            detail: "Where GitHub can reach this install, e.g. https://propr.example.com. Must be an absolute http(s) URL. Used as the App homepage + webhook base URL.",
             defaultValue: "",
           })
         ).trim();

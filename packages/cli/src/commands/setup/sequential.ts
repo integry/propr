@@ -43,6 +43,7 @@ import {
   type SetupRunResult,
 } from "./engine.js";
 import type { SetupStepStatus } from "./types.js";
+import { isValidPublicUrl } from "../githubAppManifestFiles.js";
 
 // ---------------------------------------------------------------------------
 // I/O seam.
@@ -446,18 +447,24 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
         });
         if (!regenerate) return null;
       }
-      // Prefer the public URL from .env; ask only when it's absent, and keep
-      // asking until a non-empty value is entered (the generator needs one).
+      // Prefer the public URL from .env; ask only when it's absent or invalid,
+      // and validate at prompt time (absolute http(s) URL) so the user gets a
+      // tight correction loop instead of an after-the-fact setup warning.
       let publicUrl = (detectedPublicUrl ?? "").trim();
-      while (publicUrl === "") {
-        publicUrl = (
+      while (!isValidPublicUrl(publicUrl)) {
+        const entered = (
           await promptInput(io, paint, {
             title: "Public ProPR URL",
             detail: "Where GitHub can reach this install, e.g. https://propr.example.com. Used as the App homepage + webhook base URL.",
             defaultValue: "",
           })
         ).trim();
-        if (publicUrl === "") io.print(paint("  A public URL is required to generate the manifest.", ANSI.yellow));
+        if (entered === "") {
+          io.print(paint("  A public URL is required to generate the manifest.", ANSI.yellow));
+        } else if (!isValidPublicUrl(entered)) {
+          io.print(paint("  Enter an absolute http(s) URL, e.g. https://propr.example.com.", ANSI.yellow));
+        }
+        publicUrl = entered;
       }
       return { publicUrl, regenerate };
     },

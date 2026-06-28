@@ -318,6 +318,8 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     inspectGithubAppManifest: (rootDir) => ({
       manifestPath: `${rootDir}/github-app-manifest.json`,
       envPath: `${rootDir}/github-app.env`,
+      manifestExists: false,
+      envExists: false,
       exists: false,
     }),
     generateGithubAppManifest: async ({ rootDir }) => ({

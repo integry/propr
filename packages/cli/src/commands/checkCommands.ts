@@ -486,7 +486,7 @@ const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
 const DIRECT_WEBHOOK_MANIFEST_HINT =
   `Direct webhook mode needs your own GitHub App. Generate a ready-to-fill manifest ` +
   `with \`propr github-app manifest --public-url <url>\` (writes ${MANIFEST_FILENAME} and ` +
-  `${ENV_FILENAME}), then fill in GH_APP_ID / GH_INSTALLATION_ID / GH_PRIVATE_KEY_PATH from ` +
+  `${ENV_FILENAME}), then fill in GH_APP_ID / GH_INSTALLATION_ID / HOST_GH_PRIVATE_KEY from ` +
   `${ENV_FILENAME} after creating and installing the App on GitHub.`;
 
 /**

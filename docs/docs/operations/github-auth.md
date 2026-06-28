@@ -41,7 +41,7 @@ webhook (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`), `propr github-app manifest
 --public-url https://propr.example.com` scaffolds the App — it writes a
 `github-app-manifest.json` to submit to GitHub and a `github-app.env` snippet with
 a generated webhook secret, leaving only `GH_APP_ID`, `GH_INSTALLATION_ID`, and
-`GH_PRIVATE_KEY_PATH` to fill in after GitHub creates the App. See
+`HOST_GH_PRIVATE_KEY` to fill in after GitHub creates the App. See
 [ProPR CLI](../features/propr-cli.md#own-github-app-direct-webhook-mode).
 
 ### Relay mode (shared GitHub App)

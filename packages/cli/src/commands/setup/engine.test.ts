@@ -51,6 +51,8 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     inspectGithubAppManifest: (rootDir) => ({
       manifestPath: `${rootDir}/github-app-manifest.json`,
       envPath: `${rootDir}/github-app.env`,
+      manifestExists: false,
+      envExists: false,
       exists: false,
     }),
     generateGithubAppManifest: async ({ rootDir }) => ({
@@ -454,7 +456,7 @@ test("direct webhooks + custom App auth offers manifest generation and writes it
       readEnvVars: () => ({ API_PUBLIC_URL: "https://propr.example.com" }),
       inspectGithubAppManifest: (rootDir) => {
         inspectCalled = true;
-        return { manifestPath: `${rootDir}/github-app-manifest.json`, envPath: `${rootDir}/github-app.env`, exists: false };
+        return { manifestPath: `${rootDir}/github-app-manifest.json`, envPath: `${rootDir}/github-app.env`, manifestExists: false, envExists: false, exists: false };
       },
       generateGithubAppManifest: async (params) => {
         generateArgs = params;
@@ -509,6 +511,8 @@ test("existing manifest files left as-is warn rather than fail when not regenera
       inspectGithubAppManifest: (rootDir) => ({
         manifestPath: `${rootDir}/github-app-manifest.json`,
         envPath: `${rootDir}/github-app.env`,
+        manifestExists: true,
+        envExists: true,
         exists: true,
       }),
       generateGithubAppManifest: async (params) => {
@@ -527,6 +531,32 @@ test("existing manifest files left as-is warn rather than fail when not regenera
   assert.equal(statusOf(result.state, "intake"), "warning");
   assert.match(getStep(result.state, "intake")?.detail ?? "", /already exists/i);
   assert.equal(result.completed, true, "an existing-manifest warning is non-blocking");
+});
+
+test("existing-files warning names only the file that exists", async () => {
+  // `exists` is true if EITHER output file is present, so the warning must not
+  // blindly report the manifest path when only the env file is on disk.
+  const result = await runSetup({
+    root: "/stack",
+    prompts: {
+      configureIntake: async () => ({ mode: "direct_webhook", webhookSecret: "s3cret" }),
+      configureGithubAppManifest: async () => null,
+    },
+    actions: mockActions({
+      detectGithubAuthMode: () => APP_AUTH,
+      inspectGithubAppManifest: (rootDir) => ({
+        manifestPath: `${rootDir}/github-app-manifest.json`,
+        envPath: `${rootDir}/github-app.env`,
+        manifestExists: false,
+        envExists: true,
+        exists: true,
+      }),
+    }),
+  });
+
+  const detail = getStep(result.state, "intake")?.detail ?? "";
+  assert.match(detail, /github-app\.env/, "names the env file that exists");
+  assert.doesNotMatch(detail, /github-app-manifest\.json/, "does not name the absent manifest");
 });
 
 test("a failed manifest generation degrades to a warning, not a setup failure", async () => {
