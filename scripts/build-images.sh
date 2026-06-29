@@ -33,7 +33,8 @@ GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
 BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
 IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
-IMAGE_LICENSES="${IMAGE_LICENSES:-ISC}"
+PACKAGE_LICENSE="$(node -p "require('./package.json').license || 'Apache-2.0'")"
+IMAGE_LICENSES="${IMAGE_LICENSES:-$PACKAGE_LICENSE}"
 
 resolve_vibe_cli_version() {
   if [[ -x node_modules/.bin/tsx ]]; then
