@@ -1257,6 +1257,18 @@ function isValidHttpUrl(value) {
     }
 }
 
+function isLocalhostHttpUrl(value) {
+    try {
+        const { protocol, hostname } = new URL(value);
+        return (
+            (protocol === 'http:' || protocol === 'https:')
+            && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]')
+        );
+    } catch {
+        return false;
+    }
+}
+
 async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
     const { apiStatus } = proprTunnelEndpoints(publicApiUrl);
     const controller = new AbortController();
@@ -1477,6 +1489,19 @@ export function validateEnv(cfg) {
         } else if (cfg.uiTunnelEnabled && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
             errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a bare https://<id>.${PROPR_UI_PROXY_SUFFIX} origin (no path/query/fragment — the /api and /socket.io paths are appended automatically).`);
         }
+    }
+
+    // Existing local stacks commonly have explicit localhost API/UI URLs in
+    // their .env. Explicit values win during resolution, so without this guard
+    // enabling a tunnel can still launch a stack that advertises localhost to the
+    // API/worker or permits only localhost as the frontend origin. That breaks
+    // hosted app.propr.dev CORS, cookies, and public links even though the
+    // cloudflared sidecar itself starts successfully.
+    if (cfg.uiTunnelEnabled && isLocalhostHttpUrl(cfg.apiPublicUrl)) {
+        errors.push(`API_PUBLIC_URL ("${cfg.apiPublicUrl}") still points at localhost while the UI tunnel is enabled. In tunnel mode the API must advertise the hosted proxy URL (for example https://<id>.${PROPR_UI_PROXY_SUFFIX}) so app.propr.dev can reach this stack. Remove the explicit API_PUBLIC_URL or set it to the hosted proxy URL.`);
+    }
+    if (cfg.uiTunnelEnabled && isLocalhostHttpUrl(cfg.frontendUrl)) {
+        errors.push(`FRONTEND_URL ("${cfg.frontendUrl}") still points at localhost while the UI tunnel is enabled. In tunnel mode FRONTEND_URL must be ${DEFAULT_PROPR_UI_ORIGIN} so CORS and redirects allow the hosted UI. Remove the explicit FRONTEND_URL or set it to ${DEFAULT_PROPR_UI_ORIGIN}.`);
     }
 
     // In tunnel mode GH_OAUTH_CALLBACK_URL is derived from the public proxy URL

@@ -553,6 +553,62 @@ test('validateEnv warns when GH_OAUTH_CALLBACK_URL still points at localhost in 
   assert.deepEqual(validateEnv(disabled).warnings.filter((w) => /GH_OAUTH_CALLBACK_URL/.test(w)), []);
 });
 
+test('validateEnv rejects stale localhost public URLs in tunnel mode', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+
+  const base = {
+    PROPR_UI_TUNNEL_TOKEN: 'secret-token',
+    PROPR_INSTANCE_ID: 'abc123',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  };
+
+  const staleApi = resolveConfig(
+    { ...base, API_PUBLIC_URL: 'http://localhost:4400' },
+    { manifestPath },
+  );
+  assert.match(validateEnv(staleApi).errors.join('\n'), /API_PUBLIC_URL .*localhost/);
+
+  const staleFrontend = resolveConfig(
+    { ...base, FRONTEND_URL: 'http://localhost:5173' },
+    { manifestPath },
+  );
+  assert.match(validateEnv(staleFrontend).errors.join('\n'), /FRONTEND_URL .*localhost/);
+
+  const generatedSetup = resolveConfig(
+    {
+      ...base,
+      API_PUBLIC_URL: 'https://abc123.proxy.propr.dev',
+      FRONTEND_URL: 'https://app.propr.dev',
+      GH_OAUTH_CALLBACK_URL: 'https://abc123.proxy.propr.dev/api/auth/github/callback',
+    },
+    { manifestPath },
+  );
+  assert.deepEqual(validateEnv(generatedSetup).errors.filter((e) => /localhost/.test(e)), []);
+
+  // Localhost API/UI URLs remain valid for normal self-hosted local stacks with
+  // the tunnel disabled.
+  const disabled = resolveConfig(
+    {
+      API_PUBLIC_URL: 'http://localhost:4400',
+      FRONTEND_URL: 'http://localhost:5173',
+      PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+      PROPR_ENV_FILE: '/host/propr/.env',
+      PROPR_DATA_DIR: '/host/propr/data',
+      PROPR_LOGS_DIR: '/host/propr/logs',
+      PROPR_REPOS_DIR: '/host/propr/repos',
+    },
+    { manifestPath },
+  );
+  assert.equal(disabled.uiTunnelEnabled, false);
+  assert.deepEqual(validateEnv(disabled).errors.filter((e) => /localhost/.test(e)), []);
+});
+
 test('derived proxy URL lowercases a mixed-case instance id', () => {
   const cfg = resolveConfig({ PROPR_UI_TUNNEL_TOKEN: 'secret-token', PROPR_INSTANCE_ID: 'AbC123' }, { manifestPath });
   assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
