@@ -86,6 +86,8 @@ This writes two files into the current directory (use `--root <path>` to target 
 - `github-app-manifest.json` — submit it at GitHub's *Register new GitHub App* page. It pre-fills the repository permissions ProPR needs, the subscribed webhook events, your `POST /webhook` delivery URL, and a freshly generated webhook secret.
 - `github-app.env` — a matching `.env` snippet (`GH_AUTH_MODE=app`, `GITHUB_EVENT_INTAKE_MODE=direct_webhook`, and the generated `GH_WEBHOOK_SECRET`). Append it to your stack `.env`.
 
+**`propr setup` offers this for you.** When you choose custom GitHub App auth and `direct_webhook` intake, the wizard prompts to generate the same two files into the stack root — reusing `API_PUBLIC_URL` or `FRONTEND_URL` from `.env` as the public URL, or asking for one when neither is set. To keep setup safe to re-run, it leaves an existing manifest in place unless you confirm a regenerate, and it folds the same create/install and `GH_APP_ID` / `GH_INSTALLATION_ID` / `HOST_GH_PRIVATE_KEY` next steps into the intake step rather than failing the run.
+
 | Option | Description |
 |--------|-------------|
 | `--public-url <url>` | **Required.** Public base URL GitHub can reach (e.g. `https://propr.example.com`). |
