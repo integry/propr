@@ -134,11 +134,9 @@ The hosted relay is the recommended default because it avoids inbound networking
 
 ## Current Limitations
 
-The managed hosted UI flow is still being completed.
+Today, tunnel-based OAuth requires the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://<id>.proxy.propr.dev/api/auth/github/callback`. ProPR Connect shows this callback during tunnel setup, and `propr tunnel setup --token ... --url ... --start` writes it to `GH_OAUTH_CALLBACK_URL`; you still need to register the same URL in the GitHub OAuth App used by that stack. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
 
-Today, direct tunnel-based OAuth may require the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://<id>.proxy.propr.dev/api/auth/github/callback`. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
-
-Tunnel provisioning is also manual in v1: you provide the Cloudflare Tunnel token and instance id in the stack environment. Automated provisioning and multi-instance selection from the hosted UI are planned for later work.
+Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token, and opens `app.propr.dev` with a validated `?tunnel=<id>.proxy.propr.dev` deep link. The raw `.env` values remain available as a fallback for older CLI versions or recovery, but the normal path is to run the generated `propr tunnel setup` command.
 
 ## When To Use It
 
