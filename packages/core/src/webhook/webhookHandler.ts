@@ -295,8 +295,8 @@ async function processStandardWebhookEvent(
             if (isIssueCommentEvent(payload)) return await handleIssueCommentEvent(payload, correlationId);
             break;
         case 'pull_request':
-            if (isPullRequestEvent(payload) && processPullRequest) {
-                await processPullRequest(payload, correlationId);
+            if (isPullRequestEvent(payload)) {
+                if (processPullRequest) await processPullRequest(payload, correlationId);
                 return { status: 'accepted' };
             }
             break;
@@ -304,10 +304,16 @@ async function processStandardWebhookEvent(
             if (isPullRequestReviewCommentEvent(payload)) return await handlePullRequestReviewCommentEvent(payload, correlationId);
             break;
         case 'check_run':
-            if (isCheckRunEvent(payload) && processCheckRun) {
-                await processCheckRun(payload, correlationId);
+            if (isCheckRunEvent(payload)) {
+                if (processCheckRun) await processCheckRun(payload, correlationId);
                 return { status: 'accepted' };
             }
+            break;
+        case 'push':
+            if (isPushEvent(payload)) return { status: 'accepted' };
+            break;
+        case 'status':
+            if (isStatusEvent(payload)) return { status: 'accepted' };
             break;
         default:
             correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');
