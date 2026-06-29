@@ -462,13 +462,15 @@ test('validateEnv rejects a tunnel enabled but with no public URL derivable', ()
   assert.equal(invalid.uiPublicApiUrl, undefined);
   assert.match(validateEnv(invalid).errors.join('\n'), /not a valid DNS label/);
 
-  // A valid explicit proxy URL silences the "no public URL derivable" error even
-  // with an invalid id (uiPublicApiUrl is then defined and routable).
+  // An explicit proxy URL does not make an invalid PROPR_INSTANCE_ID safe to
+  // propagate. Future status/debug consumers may trust the instance id, so it is
+  // rejected consistently when present.
   const explicit = resolveConfig(
     { ...base, PROPR_INSTANCE_ID: 'not a label', PROPR_UI_PUBLIC_API_URL: 'https://custom.proxy.propr.dev' },
     { manifestPath },
   );
-  assert.deepEqual(validateEnv(explicit).errors, []);
+  assert.match(validateEnv(explicit).errors.join('\n'), /PROPR_INSTANCE_ID .*not a valid DNS label/);
+  assert.deepEqual(envValues(buildServiceSpec(explicit, 'api').args, 'PROPR_INSTANCE_ID'), []);
 });
 
 test('validateEnv rejects a tunnel public URL that is not a hosted proxy URL', () => {

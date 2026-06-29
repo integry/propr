@@ -21,6 +21,11 @@ export interface ProprRuntimeConfig {
   apiBaseUrl?: string;
 }
 
+export interface HostedUiConnectionIssue {
+  title: string;
+  message: string;
+}
+
 declare global {
   interface Window {
     __PROPR_CONFIG__?: ProprRuntimeConfig;
@@ -88,6 +93,7 @@ export const hostedTunnelQueryApiBaseUrl = (
 
   try {
     const url = new URL(`https://${raw}`);
+    if (/[^/]/.test(url.pathname) || url.search || url.hash) return null;
     const normalized = `https://${url.hostname}`;
     return isProprProxyUrl(normalized) ? normalized : null;
   } catch {
@@ -140,11 +146,10 @@ export const rememberHostedTunnelApiBaseUrl = (
  * populated window.__PROPR_CONFIG__ with a per-instance apiBaseUrl. If it is
  * missing — or loaded but with an empty apiBaseUrl (the more likely
  * misconfiguration: PROPR_UI_PUBLIC_API_URL was unset at container start) — the
- * app falls back to same-origin API calls, which is wrong for the hosted UI and
- * produces confusing failures. Returns a warning message to surface in that
- * case, or null when nothing looks wrong. Only the hosted UI origin is checked:
- * localhost and self-hosted same-origin deployments are exempt. Exported for
- * unit testing.
+ * hosted app cannot know which per-instance proxy to call. Returns a warning
+ * message to surface in that case, or null when nothing looks wrong. Only the
+ * hosted UI origin is checked: localhost and self-hosted same-origin deployments
+ * are exempt. Exported for unit testing.
  */
 export const runtimeConfigWarning = (
   hostname: string,
@@ -158,7 +163,7 @@ export const runtimeConfigWarning = (
   if (!config) {
     return (
       '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
-      'Falling back to same-origin API calls, which will not reach the per-instance proxy.'
+      'The hosted UI needs a selected tunnel before it can reach a per-instance proxy.'
     );
   }
   const apiBaseUrl = config.apiBaseUrl?.trim();
@@ -166,7 +171,7 @@ export const runtimeConfigWarning = (
     return (
       '[propr] window.__PROPR_CONFIG__.apiBaseUrl is empty — config.js loaded but ' +
       'PROPR_UI_PUBLIC_API_URL was not set at container start. ' +
-      'Falling back to same-origin API calls, which will not reach the per-instance proxy.'
+      'The hosted UI needs a selected tunnel before it can reach a per-instance proxy.'
     );
   }
   // The launcher validates PROPR_UI_PUBLIC_API_URL before injecting it, but a
@@ -194,6 +199,43 @@ export const runtimeConfigWarning = (
       'Hosted UI tunnel mode only routes https://<id>.proxy.propr.dev, so API calls built ' +
       'from this base may not reach the local stack.'
     );
+  }
+  return null;
+};
+
+export const hostedUiConnectionIssue = (
+  hostname: string,
+  config: ProprRuntimeConfig | undefined,
+  search = '',
+  storage?: HostedTunnelStorage
+): HostedUiConnectionIssue | null => {
+  if (!isHostedUiOrigin(hostname)) return null;
+  if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
+  if (readStoredHostedTunnelApiBaseUrl(hostname, storage)) return null;
+
+  const apiBaseUrl = config?.apiBaseUrl?.trim();
+  if (!apiBaseUrl) {
+    return {
+      title: 'Connect a ProPR stack',
+      message:
+        'This hosted UI needs a selected local stack before it can make API calls. Open ProPR Connect and choose a tunnel, or use the hosted UI link shown after tunnel setup.',
+    };
+  }
+  if (!isValidHttpUrl(apiBaseUrl)) {
+    return {
+      title: 'Invalid hosted UI configuration',
+      message:
+        `The configured API URL is not a valid http(s) URL: "${apiBaseUrl}". ` +
+        'Restart the stack after setting a hosted proxy URL such as https://abc123.proxy.propr.dev.',
+    };
+  }
+  if (!isProprProxyUrl(apiBaseUrl)) {
+    return {
+      title: 'Invalid hosted UI tunnel',
+      message:
+        `The configured API URL is not a hosted ProPR proxy URL: "${apiBaseUrl}". ` +
+        'Hosted UI tunnel mode requires a bare https://<id>.proxy.propr.dev URL.',
+    };
   }
   return null;
 };

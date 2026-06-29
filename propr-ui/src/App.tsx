@@ -21,7 +21,7 @@ import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
-import { isHostedUiOrigin } from './config/runtimeConfig'
+import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
 
 type CompatibilityState =
   | { status: 'checking' }
@@ -42,6 +42,26 @@ const CompatibilityBlocked: React.FC<{ title: string; message: string }> = ({ ti
       <p className="mt-3 text-sm leading-6 text-gray-600">{message}</p>
       <div className="mt-5 rounded-md bg-gray-50 p-3 text-sm text-gray-600">
         Update or restart the local ProPR stack, then reload this page.
+      </div>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="mt-5 inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+      >
+        Reload
+      </button>
+    </div>
+  </div>
+);
+
+const HostedConnectionBlocked: React.FC<{ title: string; message: string }> = ({ title, message }) => (
+  <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+    <div className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+      <div className="text-sm font-medium uppercase tracking-wide text-blue-600">Hosted UI</div>
+      <h1 className="mt-2 text-2xl font-semibold text-gray-950">{title}</h1>
+      <p className="mt-3 text-sm leading-6 text-gray-600">{message}</p>
+      <div className="mt-5 rounded-md bg-gray-50 p-3 text-sm text-gray-600">
+        Run <code className="font-mono">propr tunnel setup</code> from ProPR Connect, then open the hosted UI link it prints.
       </div>
       <button
         type="button"
@@ -205,12 +225,17 @@ const App: React.FC = () => {
   // there is nothing to gate: start 'ready' (no spinner flash, no network
   // round-trip) and keep local development working (issue #1627).
   const isHosted = isHostedUiOrigin(window.location.hostname);
+  const connectionIssue = hostedUiConnectionIssue(
+    window.location.hostname,
+    window.__PROPR_CONFIG__,
+    window.location.search
+  );
   const [compatibility, setCompatibility] = useState<CompatibilityState>(
-    isHosted ? { status: 'checking' } : { status: 'ready' }
+    isHosted && !connectionIssue ? { status: 'checking' } : { status: 'ready' }
   );
 
   useEffect(() => {
-    if (!isHosted) return;
+    if (!isHosted || connectionIssue) return;
     let cancelled = false;
 
     checkProprApiCompatibility()
@@ -258,8 +283,11 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isHosted]);
+  }, [isHosted, connectionIssue]);
 
+  if (connectionIssue) {
+    return <HostedConnectionBlocked title={connectionIssue.title} message={connectionIssue.message} />;
+  }
   if (compatibility.status === 'checking') return <LoadingSpinner />;
   if (compatibility.status === 'blocked') {
     return <CompatibilityBlocked title={compatibility.title} message={compatibility.message} />;

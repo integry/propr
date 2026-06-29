@@ -320,6 +320,15 @@ export interface TunnelSetupEnv {
   GH_OAUTH_CALLBACK_URL: string;
 }
 
+export function validateTunnelCommandOptions(
+  action: string,
+  options: { force?: boolean }
+): void {
+  if (action === "setup" && options.force) {
+    throw new Error("--force is only supported with 'propr tunnel on'");
+  }
+}
+
 function instanceIdFromProxyUrl(url: string): string | undefined {
   let parsed: URL;
   try {
@@ -583,7 +592,7 @@ export function createTunnelCommand(): Command {
     .description("Configure, start, stop, or verify the Cloudflare Tunnel service")
     .argument("<action>", "setup, on, off, or verify")
     .option("--root <dir>", "Stack root directory")
-    .option("--force", "Start the tunnel even if the core stack is not running")
+    .option("--force", "With 'on', start the tunnel even if the core stack is not running")
     .option("--token <token>", "Connector token from ProPR Connect (setup only)")
     .option("--url <url>", "Public proxy URL from ProPR Connect, e.g. https://<id>.proxy.propr.dev (setup only)")
     .option("--instance-id <id>", "Instance id from ProPR Connect; derives https://<id>.proxy.propr.dev (setup only)")
@@ -619,6 +628,7 @@ routed; the root URL intentionally returns 404.
 `)
     .action(async (action: string, options: { root?: string; force?: boolean; token?: string; url?: string; instanceId?: string; start?: boolean }) => {
       try {
+        validateTunnelCommandOptions(action, options);
         if (action === "setup") {
           await runTunnelSetup(options);
           return;

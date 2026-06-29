@@ -15,6 +15,7 @@ import {
   applyTunnelToggle,
   buildTunnelSetupEnv,
   startOrRestartTunnelStack,
+  validateTunnelCommandOptions,
   verifyTunnel,
   TunnelTokenMissingError,
   TunnelPublicUrlMissingError,
@@ -153,6 +154,14 @@ test("tunnel setup rejects a proxy URL carrying a path", () => {
       }),
     /hosted proxy URL/
   );
+});
+
+test("tunnel setup rejects --force because it only applies to tunnel on", () => {
+  assert.throws(
+    () => validateTunnelCommandOptions("setup", { force: true }),
+    /--force is only supported/
+  );
+  assert.doesNotThrow(() => validateTunnelCommandOptions("on", { force: true }));
 });
 
 test("tunnel setup canonicalizes a mixed-case instance id", () => {

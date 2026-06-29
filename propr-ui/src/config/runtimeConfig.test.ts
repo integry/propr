@@ -129,6 +129,9 @@ describe('hosted tunnel query API base', () => {
       '?tunnel=https%3A%2F%2Fcustom.example.com',
       '?tunnel=http%3A%2F%2Fabc123.proxy.propr.dev',
       '?tunnel=a.b.proxy.propr.dev',
+      '?tunnel=abc123.proxy.propr.dev%2Fapi',
+      '?tunnel=abc123.proxy.propr.dev%3Ffrom%3Dconnect',
+      '?tunnel=abc123.proxy.propr.dev%23fragment',
       '?tunnel=%2Fapi'
     ]) {
       expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();
@@ -318,6 +321,48 @@ describe('runtimeConfigWarning', () => {
     const runtimeConfigWarning = await loadWarning();
     expect(runtimeConfigWarning('propr.example.com', undefined)).toBeNull();
     expect(runtimeConfigWarning('propr.example.com', { apiBaseUrl: '' })).toBeNull();
+  });
+});
+
+describe('hosted UI connection issue', () => {
+  const loadIssue = async () => (await import('./runtimeConfig')).hostedUiConnectionIssue;
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('blocks direct hosted UI visits without a selected tunnel or runtime API URL', async () => {
+    const hostedUiConnectionIssue = await loadIssue();
+    expect(hostedUiConnectionIssue('app.propr.dev', undefined)?.title).toBe('Connect a ProPR stack');
+    expect(hostedUiConnectionIssue('app.propr.dev', { apiBaseUrl: '' })?.title).toBe('Connect a ProPR stack');
+  });
+
+  it('does not block hosted UI visits with a query or stored tunnel', async () => {
+    const hostedUiConnectionIssue = await loadIssue();
+    const storage = memoryStorage({
+      'propr.hostedTunnelApiBaseUrl': 'https://stored.proxy.propr.dev',
+    });
+
+    expect(
+      hostedUiConnectionIssue('app.propr.dev', undefined, '?tunnel=abc123.proxy.propr.dev')
+    ).toBeNull();
+    expect(hostedUiConnectionIssue('app.propr.dev', undefined, '', storage)).toBeNull();
+  });
+
+  it('blocks invalid hosted runtime API URLs', async () => {
+    const hostedUiConnectionIssue = await loadIssue();
+    expect(hostedUiConnectionIssue('app.propr.dev', { apiBaseUrl: '/api' })?.title).toBe(
+      'Invalid hosted UI configuration'
+    );
+    expect(
+      hostedUiConnectionIssue('app.propr.dev', { apiBaseUrl: 'https://custom.example.com' })?.title
+    ).toBe('Invalid hosted UI tunnel');
+  });
+
+  it('does not block local or self-hosted origins', async () => {
+    const hostedUiConnectionIssue = await loadIssue();
+    expect(hostedUiConnectionIssue('localhost', undefined)).toBeNull();
+    expect(hostedUiConnectionIssue('propr.example.com', { apiBaseUrl: '' })).toBeNull();
   });
 });
 

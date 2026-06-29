@@ -403,7 +403,7 @@ function tunnelApiEnvArgs(cfg) {
     // Inject the instance id lowercased so it matches the derived public URL
     // (proprInstanceProxyUrl lowercases the host), keeping the id and the
     // PROPR_UI_PUBLIC_API_URL host consistent for any consumer that compares them.
-    if (cfg.proprInstanceId) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId.toLowerCase()}`);
+    if (isValidProprInstanceId(cfg.proprInstanceId)) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId.trim().toLowerCase()}`);
     if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
     return args;
 }
@@ -1358,6 +1358,9 @@ export function validateEnv(cfg) {
     }
     if (cfg.envFileLocal && !isReadableFile(cfg.envFileLocal)) {
         errors.push(`cannot read the env file at ${cfg.envFileLocal}`);
+    }
+    if (cfg.proprInstanceId && !isValidProprInstanceId(cfg.proprInstanceId)) {
+        errors.push(`PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label. Use 1–63 letters/digits/hyphens with no leading or trailing hyphen, or unset PROPR_INSTANCE_ID and use a valid PROPR_UI_PUBLIC_API_URL.`);
     }
 
     if (cfg.vibeConfigPath && !cfg.hostVibeDir) {
