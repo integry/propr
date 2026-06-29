@@ -26,7 +26,7 @@ import type {
     PushEvent
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
-import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
@@ -123,10 +123,6 @@ function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
 
 const isPullRequestUnlabeledEvent = (payload: PullRequestEvent): payload is PullRequestUnlabeledEvent => payload.action === 'unlabeled';
 
-function normalizeProcessorDisposition(disposition: DeliveryDisposition | void): DeliveryDisposition {
-    return disposition ?? { status: 'accepted' };
-}
-
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
 }
@@ -167,7 +163,7 @@ async function handleIssuesEvent(
             source: 'webhook'
         };
 
-        return normalizeProcessorDisposition(await processDetectedIssue(issue, correlationId));
+        return normalizeDisposition(await processDetectedIssue(issue, correlationId));
     }
 
     return { status: 'ignored', reason: 'unsupported_issue_action' };
@@ -215,7 +211,7 @@ async function handleIssueCommentEvent(
     const hasPullRequest = 'pull_request' in payload.issue && payload.issue.pull_request;
 
     if (isIssueCommentCreatedEvent(payload) && hasPullRequest) {
-        return normalizeProcessorDisposition(await processCommentEvent(payload, 'issue_comment', correlationId));
+        return normalizeDisposition(await processCommentEvent(payload, 'issue_comment', correlationId));
     } else if (isIssueCommentDeletedEvent(payload) && hasPullRequest) {
         await handleCommentDeleted(payload, 'issue_comment', correlationId);
         return { status: 'accepted' };
@@ -236,7 +232,7 @@ async function handlePullRequestReviewCommentEvent(
     }
 
     if (isPullRequestReviewCommentCreatedEvent(payload)) {
-        return normalizeProcessorDisposition(await processCommentEvent(payload, 'pull_request_review_comment', correlationId));
+        return normalizeDisposition(await processCommentEvent(payload, 'pull_request_review_comment', correlationId));
     } else if (isPullRequestReviewCommentDeletedEvent(payload)) {
         await handleCommentDeleted(payload, 'pull_request_review_comment', correlationId);
         return { status: 'accepted' };

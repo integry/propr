@@ -188,6 +188,10 @@ test("tunnel setup --start starts a stopped stack with tunnel settings", async (
   const calls: Array<{ fn: string; uiTunnelEnabled?: boolean }> = [];
   const { configManager, value } = fakeConfigManager(undefined);
   const orch = {
+    validateEnv: () => ({ ok: true, errors: [], warnings: [] }),
+    ensureNetwork: () => {
+      calls.push({ fn: "ensureNetwork" });
+    },
     isStackRunning: () => false,
     stopStack: () => {
       calls.push({ fn: "stopStack" });
@@ -202,13 +206,20 @@ test("tunnel setup --start starts a stopped stack with tunnel settings", async (
   await startOrRestartTunnelStack(orch, cfgWith({ uiTunnelEnabled: false }), configManager, sink);
 
   assert.equal(value(), true);
-  assert.deepEqual(calls, [{ fn: "startStack", uiTunnelEnabled: true }]);
+  assert.deepEqual(calls, [
+    { fn: "ensureNetwork" },
+    { fn: "startStack", uiTunnelEnabled: true },
+  ]);
 });
 
 test("tunnel setup --start recreates an already-running stack", async () => {
   const calls: Array<{ fn: string; uiTunnelEnabled?: boolean }> = [];
   const { configManager, value } = fakeConfigManager(false);
   const orch = {
+    validateEnv: () => ({ ok: true, errors: [], warnings: [] }),
+    ensureNetwork: () => {
+      calls.push({ fn: "ensureNetwork" });
+    },
     isStackRunning: () => true,
     stopStack: () => {
       calls.push({ fn: "stopStack" });
@@ -225,6 +236,7 @@ test("tunnel setup --start recreates an already-running stack", async () => {
   assert.equal(value(), true);
   assert.deepEqual(calls, [
     { fn: "stopStack" },
+    { fn: "ensureNetwork" },
     { fn: "startStack", uiTunnelEnabled: true },
   ]);
 });
@@ -233,6 +245,10 @@ test("tunnel setup --start fails before starting when an existing stack cannot s
   const calls: string[] = [];
   const { configManager } = fakeConfigManager(false);
   const orch = {
+    validateEnv: () => ({ ok: true, errors: [], warnings: [] }),
+    ensureNetwork: () => {
+      calls.push("ensureNetwork");
+    },
     isStackRunning: () => true,
     stopStack: () => {
       calls.push("stopStack");
@@ -249,6 +265,41 @@ test("tunnel setup --start fails before starting when an existing stack cannot s
     /failed to stop 1 service/
   );
   assert.deepEqual(calls, ["stopStack"]);
+});
+
+test("tunnel setup --start rejects invalid env before touching containers", async () => {
+  const calls: string[] = [];
+  const { configManager, value } = fakeConfigManager(undefined);
+  const orch = {
+    validateEnv: () => ({
+      ok: false,
+      errors: ["PROPR_UI_PUBLIC_API_URL is not a hosted proxy URL"],
+      warnings: [],
+    }),
+    ensureNetwork: () => {
+      calls.push("ensureNetwork");
+    },
+    isStackRunning: () => {
+      calls.push("isStackRunning");
+      return false;
+    },
+    stopStack: () => {
+      calls.push("stopStack");
+      return { failed: [] };
+    },
+    startStack: (() => {
+      calls.push("startStack");
+      return { services: [] };
+    }) as OrchestratorModule["startStack"],
+  };
+
+  await assert.rejects(
+    startOrRestartTunnelStack(orch, cfgWith({ uiTunnelEnabled: false }), configManager, sink),
+    /is not valid/
+  );
+  // Validation runs before persisting enabled=true or touching any container.
+  assert.equal(value(), undefined);
+  assert.deepEqual(calls, []);
 });
 
 test("tunnel on without a token throws and does not persist or start", async () => {

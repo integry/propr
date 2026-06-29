@@ -119,15 +119,41 @@ export interface TunnelToggleDeps {
 
 export type TunnelSetupStartOrchestrator = Pick<
   OrchestratorModule,
-  "isStackRunning" | "startStack" | "stopStack"
+  "isStackRunning" | "startStack" | "stopStack" | "ensureNetwork" | "validateEnv"
 >;
+
+/** Thrown when the setup `--start` env validation fails before any container is touched. */
+export class TunnelSetupEnvInvalidError extends Error {
+  constructor(errors: string[]) {
+    super(
+      "cannot start the tunnel stack — the env written by setup is not valid:\n" +
+        errors.map((e) => `  ✗ ${e}`).join("\n") +
+        "\n  Fix the values in your stack .env, then run 'propr start --restart'."
+    );
+    this.name = "TunnelSetupEnvInvalidError";
+  }
+}
 
 export async function startOrRestartTunnelStack(
   orch: TunnelSetupStartOrchestrator,
   cfg: OrchestratorConfig,
   configManager: Pick<ConfigManager, "setTunnelEnabled">,
-  log: (message: string) => void = console.log
+  log: (message: string) => void = console.log,
+  warn: (message: string) => void = console.warn
 ): Promise<void> {
+  const tunnelCfg = { ...cfg, uiTunnelEnabled: true };
+
+  // Run the same env validation `propr start` runs before recreating the stack,
+  // so stale/invalid values written into .env surface as structured errors here
+  // rather than as opaque Docker/runtime failures after the stack is recreated.
+  // Validate before persisting enabled=true or touching any container so a
+  // refused start leaves no override behind.
+  const validation = orch.validateEnv(tunnelCfg);
+  for (const w of validation.warnings) warn(`warning: ${w}`);
+  if (!validation.ok) {
+    throw new TunnelSetupEnvInvalidError(validation.errors);
+  }
+
   // Unlike applyTunnelToggle (a pure on/off that rolls back on Docker failure),
   // setup has already written the full tunnel .env (token, instance id, proxy
   // URLs). The operator has committed to tunnel mode, so we persist enabled=true
@@ -136,7 +162,6 @@ export async function startOrRestartTunnelStack(
   // revert to non-tunnel mode after a transient Docker error.
   await configManager.setTunnelEnabled(true);
 
-  const tunnelCfg = { ...cfg, uiTunnelEnabled: true };
   const wasRunning = orch.isStackRunning(cfg);
 
   if (wasRunning) {
@@ -151,6 +176,11 @@ export async function startOrRestartTunnelStack(
     log("Starting the ProPR stack with hosted tunnel settings...");
   }
 
+  // Ensure the Docker network exists before starting, exactly as `propr start`
+  // does. For a fresh or previously-stopped stack the network may not exist yet,
+  // and startStack does not create it, so the generated Connect one-shot path
+  // would otherwise fail even though it is advertised as the setup path.
+  orch.ensureNetwork(tunnelCfg, log);
   orch.startStack(tunnelCfg, { tunnel: true, onLog: log });
 }
 
@@ -640,7 +670,7 @@ routed; the root URL intentionally returns 404.
         await toggleTunnel(action, options.root, options.force);
       } catch (error) {
         if (error instanceof ParseStateError) {
-          console.error(`Error: ${error.message} (expected on, off, or verify)`);
+          console.error(`Error: ${error.message} (expected setup, on, off, or verify)`);
           process.exit(1);
         }
         console.error(`Error running tunnel command: ${(error as Error).message}`);
