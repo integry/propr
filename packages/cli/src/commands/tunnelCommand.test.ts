@@ -91,8 +91,12 @@ test("tunnel setup builds env from the Connect proxy URL", () => {
     }),
     {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
+      PROPR_UI_TUNNEL_ENABLED: "true",
       PROPR_INSTANCE_ID: "abc123",
       PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
+      API_PUBLIC_URL: "https://abc123.proxy.propr.dev",
+      FRONTEND_URL: "https://app.propr.dev",
+      GH_OAUTH_CALLBACK_URL: "https://abc123.proxy.propr.dev/api/auth/github/callback",
     }
   );
 });
@@ -105,8 +109,12 @@ test("tunnel setup builds env from an instance id", () => {
     }),
     {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
+      PROPR_UI_TUNNEL_ENABLED: "true",
       PROPR_INSTANCE_ID: "abc123",
       PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
+      API_PUBLIC_URL: "https://abc123.proxy.propr.dev",
+      FRONTEND_URL: "https://app.propr.dev",
+      GH_OAUTH_CALLBACK_URL: "https://abc123.proxy.propr.dev/api/auth/github/callback",
     }
   );
 });

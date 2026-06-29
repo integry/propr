@@ -302,25 +302,24 @@ For older CLI versions or manual recovery, set these in the stack `.env`. Replac
 # --- Hosted UI tunnel (v1, optional) ---
 # PROPR_UI_TUNNEL_TOKEN is a LIVE Cloudflare credential — do not commit, log, or share it.
 PROPR_UI_TUNNEL_TOKEN=your_cloudflare_tunnel_token   # Cloudflare Tunnel token; required to start. Setting it makes the tunnel start on the next `propr start`
+PROPR_UI_TUNNEL_ENABLED=true                         # explicit tunnel enablement; the CLI also records this in its config
 PROPR_INSTANCE_ID=abc123                             # this stack's instance id; valid DNS label (letters, digits, hyphens; 1-63 chars). Derives https://abc123.proxy.propr.dev
+PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev # explicit public API URL the hosted UI talks to
 
-# Optional overrides — all of these are DERIVED from PROPR_INSTANCE_ID in tunnel
-# mode, so leave them commented out unless you need to override the derived value.
-# PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev   # explicit public API URL the hosted UI talks to (overrides the id-derived one)
+# Optional override:
 # PROPR_CLOUDFLARED_IMAGE=cloudflare/cloudflared:2024.12.2 # cloudflared image; overrides the manifest-pinned default
 
-# Browser vs API origins (see Architecture above). In tunnel mode FRONTEND_URL
-# and API_PUBLIC_URL are DERIVED automatically — uncomment to override.
+# Browser vs API origins (see Architecture above). `propr tunnel setup` writes
+# these so stale localhost values from a previous local setup do not win.
 #   - FRONTEND_URL is the browser origin: the hosted UI at app.propr.dev. It is
 #     the CORS allow-origin and the post-login redirect target.
 #   - API_PUBLIC_URL is the proxy host: where the browser actually reaches the
 #     API, Socket.IO, and the OAuth callback.
-# FRONTEND_URL=https://app.propr.dev
-# API_PUBLIC_URL=https://abc123.proxy.propr.dev
+FRONTEND_URL=https://app.propr.dev
+API_PUBLIC_URL=https://abc123.proxy.propr.dev
 
 # OAuth callback lives on the API (the proxy host), NOT on app.propr.dev. This
-# is NOT derived — set it explicitly, and register this exact URL in your GitHub
-# OAuth App.
+# exact URL must be registered in your GitHub OAuth App.
 GH_OAUTH_CALLBACK_URL=https://abc123.proxy.propr.dev/api/auth/github/callback
 
 # COOKIE_DOMAIN: leave UNSET for v1 (keep the line commented out — an empty
@@ -332,9 +331,9 @@ GH_OAUTH_CALLBACK_URL=https://abc123.proxy.propr.dev/api/auth/github/callback
 
 `PROPR_INSTANCE_ID` derives the public URL `https://<id>.proxy.propr.dev` automatically, so `PROPR_UI_PUBLIC_API_URL` is only needed to override it. The browser origin and the API host are **different** hosts, so set them accordingly:
 
-- `FRONTEND_URL` is the **browser origin** — the hosted UI at `https://app.propr.dev`. The API allows this origin through CORS and redirects to it after login. In tunnel mode it is derived to `https://app.propr.dev` when left unset; set it only to override.
-- `API_PUBLIC_URL` is the **proxy host** (`https://<id>.proxy.propr.dev`) — where the browser actually reaches the API and Socket.IO, and what governs the secure session cookie. In tunnel mode it is derived from the instance id when left unset.
-- `GH_OAUTH_CALLBACK_URL` must point at the API on the **proxy host** (`https://<id>.proxy.propr.dev/api/auth/github/callback`). Unlike the two above it is **not** derived — set it explicitly and register the same URL in your GitHub OAuth App.
+- `FRONTEND_URL` is the **browser origin** — the hosted UI at `https://app.propr.dev`. The API allows this origin through CORS and redirects to it after login. In tunnel mode it is derived to `https://app.propr.dev` when left unset, and `propr tunnel setup` writes it explicitly so older localhost values do not override the tunnel.
+- `API_PUBLIC_URL` is the **proxy host** (`https://<id>.proxy.propr.dev`) — where the browser actually reaches the API and Socket.IO, and what governs the secure session cookie. In tunnel mode it is derived from the instance id when left unset, and `propr tunnel setup` writes it explicitly.
+- `GH_OAUTH_CALLBACK_URL` must point at the API on the **proxy host** (`https://<id>.proxy.propr.dev/api/auth/github/callback`). In tunnel mode it is derived when left unset, and `propr tunnel setup` writes it explicitly so older localhost callback values do not override the tunnel. Register the same URL in your GitHub OAuth App.
 
 Leave `COOKIE_DOMAIN` unset: the session cookie is host-only on the single `<id>.proxy.propr.dev` host, which is correct because that host and `app.propr.dev` are same-site under `propr.dev`. Scoping the cookie across the shared `.proxy.propr.dev` suffix is not supported for v1.
 

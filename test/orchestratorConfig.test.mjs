@@ -111,7 +111,7 @@ test('UI tunnel is disabled by default with local-development URL defaults intac
   assert.equal(cfg.cookieDomain, undefined);
 });
 
-test('enabling the tunnel points API_PUBLIC_URL at the proxy URL and FRONTEND_URL at the hosted UI origin', () => {
+test('enabling the tunnel derives public API, frontend, and OAuth callback URLs', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',
     PROPR_INSTANCE_ID: 'abc123',
@@ -120,18 +120,21 @@ test('enabling the tunnel points API_PUBLIC_URL at the proxy URL and FRONTEND_UR
   assert.equal(cfg.uiTunnelEnabled, true);
   assert.equal(cfg.apiPublicUrl, 'https://abc123.proxy.propr.dev');
   assert.equal(cfg.frontendUrl, 'https://app.propr.dev');
+  assert.equal(cfg.ghOauthCallbackUrl, 'https://abc123.proxy.propr.dev/api/auth/github/callback');
 });
 
-test('explicit API_PUBLIC_URL / FRONTEND_URL still win over tunnel-derived values', () => {
+test('explicit public URLs still win over tunnel-derived values', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',
     PROPR_INSTANCE_ID: 'abc123',
     API_PUBLIC_URL: 'https://api.example.com',
     FRONTEND_URL: 'https://ui.example.com',
+    GH_OAUTH_CALLBACK_URL: 'https://api.example.com/api/auth/github/callback',
   }, { manifestPath });
 
   assert.equal(cfg.apiPublicUrl, 'https://api.example.com');
   assert.equal(cfg.frontendUrl, 'https://ui.example.com');
+  assert.equal(cfg.ghOauthCallbackUrl, 'https://api.example.com/api/auth/github/callback');
 });
 
 test('tunnel enabled without a derivable public URL keeps the localhost API default', () => {
@@ -515,11 +518,20 @@ test('validateEnv warns when GH_OAUTH_CALLBACK_URL still points at localhost in 
     PROPR_REPOS_DIR: '/host/propr/repos',
   };
 
-  // Default callback URL is http://localhost:<port>/... — a common broken-OAuth
-  // setup once the tunnel is on. Warn (not error).
-  const localhostCallback = resolveConfig(base, { manifestPath });
+  // An explicit stale localhost callback is a common broken-OAuth setup once the
+  // tunnel is on. Warn (not error).
+  const localhostCallback = resolveConfig(
+    { ...base, GH_OAUTH_CALLBACK_URL: 'http://localhost:4400/api/auth/github/callback' },
+    { manifestPath },
+  );
   assert.deepEqual(validateEnv(localhostCallback).errors, []);
   assert.match(validateEnv(localhostCallback).warnings.join('\n'), /GH_OAUTH_CALLBACK_URL.*localhost/);
+
+  // Without an explicit value, the launcher derives the proxy callback in tunnel
+  // mode, so no manual .env edit is required.
+  const derivedCallback = resolveConfig(base, { manifestPath });
+  assert.equal(derivedCallback.ghOauthCallbackUrl, 'https://abc123.proxy.propr.dev/api/auth/github/callback');
+  assert.deepEqual(validateEnv(derivedCallback).warnings.filter((w) => /GH_OAUTH_CALLBACK_URL/.test(w)), []);
 
   // An explicit public callback URL silences the warning.
   const publicCallback = resolveConfig(

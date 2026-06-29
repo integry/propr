@@ -18,7 +18,12 @@
 
 import { Command } from "commander";
 import { join } from "node:path";
-import { proprTunnelEndpoints, isProprProxyUrl, PROPR_UI_PROXY_SUFFIX } from "@propr/shared";
+import {
+  DEFAULT_PROPR_UI_ORIGIN,
+  proprTunnelEndpoints,
+  isProprProxyUrl,
+  PROPR_UI_PROXY_SUFFIX,
+} from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig, resolveStackRoot } from "../orchestrator/index.js";
 import { parseOnOffState, ParseStateError } from "../utils/index.js";
@@ -301,8 +306,12 @@ export interface TunnelSetupInput {
 
 export interface TunnelSetupEnv {
   PROPR_UI_TUNNEL_TOKEN: string;
+  PROPR_UI_TUNNEL_ENABLED: string;
   PROPR_INSTANCE_ID: string;
   PROPR_UI_PUBLIC_API_URL: string;
+  API_PUBLIC_URL: string;
+  FRONTEND_URL: string;
+  GH_OAUTH_CALLBACK_URL: string;
 }
 
 function instanceIdFromProxyUrl(url: string): string | undefined {
@@ -344,8 +353,12 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
 
   return {
     PROPR_UI_TUNNEL_TOKEN: token,
+    PROPR_UI_TUNNEL_ENABLED: "true",
     PROPR_INSTANCE_ID: instanceId,
     PROPR_UI_PUBLIC_API_URL: publicUrl,
+    API_PUBLIC_URL: publicUrl,
+    FRONTEND_URL: DEFAULT_PROPR_UI_ORIGIN,
+    GH_OAUTH_CALLBACK_URL: `${publicUrl}/api/auth/github/callback`,
   };
 }
 
@@ -530,6 +543,8 @@ async function runTunnelSetup(options: {
   console.log("Tunnel configuration saved.");
   console.log(`  saved to: ${envPath}`);
   console.log(`  public API: ${vars.PROPR_UI_PUBLIC_API_URL}`);
+  console.log(`  hosted UI: ${vars.FRONTEND_URL}`);
+  console.log(`  OAuth callback: ${vars.GH_OAUTH_CALLBACK_URL}`);
   console.log("");
 
   if (options.start) {
@@ -567,11 +582,15 @@ Setup writes the tunnel settings to your stack .env for you:
 Starting the tunnel requires a token AND a public proxy URL:
   PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start). This is a
                            live Cloudflare credential — do not commit, log, or share it
+  PROPR_UI_TUNNEL_ENABLED  Explicitly enables the managed tunnel sidecar
   PROPR_INSTANCE_ID        Instance id; derives the public URL
                            https://<id>.proxy.propr.dev (required unless
                            PROPR_UI_PUBLIC_API_URL is set)
   PROPR_UI_PUBLIC_API_URL  Explicit public API URL advertised through the tunnel
                            (overrides the id-derived URL)
+  API_PUBLIC_URL           Same proxy URL, used by the API for public links/cookies
+  FRONTEND_URL             Hosted UI origin allowed by CORS (${DEFAULT_PROPR_UI_ORIGIN})
+  GH_OAUTH_CALLBACK_URL    Proxy-host OAuth callback URL to register in GitHub
 
 Cloudflare forwards the tunnel to the Docker-internal API service at
 http://api:4000 (NOT host port 4000), so the published host port is irrelevant

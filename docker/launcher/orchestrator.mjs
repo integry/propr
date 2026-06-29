@@ -300,7 +300,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // them, falling back to the localhost defaults for local development.
         apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiPort}`),
         frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiPort}`,
-        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || `http://localhost:${apiPort}/api/auth/github/callback`,
+        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiPort}/api/auth/github/callback`),
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
@@ -1465,12 +1465,11 @@ export function validateEnv(cfg) {
         }
     }
 
-    // GH_OAUTH_CALLBACK_URL is intentionally NOT derived from the tunnel public
-    // URL (the GitHub App's registered callback must match exactly and is operator
-    // -owned). But leaving it at the localhost default while the tunnel is enabled
-    // is a common broken-OAuth setup: GitHub redirects the browser to a localhost
-    // URL the hosted UI cannot reach. Warn so the operator updates it (and the
-    // GitHub App config) to the public proxy callback.
+    // In tunnel mode GH_OAUTH_CALLBACK_URL is derived from the public proxy URL
+    // when unset. An explicit localhost callback still wins, but it is a common
+    // broken-OAuth setup: GitHub redirects the browser to a localhost URL the
+    // hosted UI cannot reach. Warn so the operator updates it (and the GitHub App
+    // config) to the public proxy callback.
     if (cfg.uiTunnelEnabled && /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(cfg.ghOauthCallbackUrl)) {
         warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
     }
