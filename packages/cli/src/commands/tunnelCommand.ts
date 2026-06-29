@@ -545,6 +545,8 @@ async function runTunnelSetup(options: {
   console.log(`  public API: ${vars.PROPR_UI_PUBLIC_API_URL}`);
   console.log(`  hosted UI: ${vars.FRONTEND_URL}`);
   console.log(`  OAuth callback: ${vars.GH_OAUTH_CALLBACK_URL}`);
+  console.log("  GitHub OAuth: register the callback URL above in your GitHub OAuth App");
+  console.log(`  Hosted UI link: ${vars.FRONTEND_URL}?tunnel=${encodeURIComponent(vars.PROPR_UI_PUBLIC_API_URL)}`);
   console.log("");
 
   if (options.start) {
@@ -559,6 +561,7 @@ async function runTunnelSetup(options: {
 
   console.log("Next steps:");
   console.log("  propr start --restart   # apply the hosted UI/API URLs to the stack");
+  console.log("  update GitHub OAuth App  # add the callback URL printed above");
   console.log("  propr tunnel verify     # confirm the public proxy can reach this stack");
   console.log("");
   console.log("Use 'propr tunnel setup --start ...' next time to save config and start or restart the stack in one step.");
