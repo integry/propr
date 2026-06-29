@@ -107,8 +107,7 @@ outbound Cloudflare Tunnel, without opening inbound firewall ports for the API.
 Run the command Connect shows from the stack directory:
 
 ```bash
-propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev
-propr start --no-tui
+propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev --start
 ```
 
 `propr tunnel setup` writes these values to `.env`:

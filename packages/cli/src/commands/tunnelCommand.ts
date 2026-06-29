@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { PROPR_UI_PROXY_SUFFIX } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig, resolveStackRoot } from "../orchestrator/index.js";
+import type { ConfigManager } from "../config/index.js";
+import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 
 function normalizeTunnelUrl(rawUrl: string): URL {
@@ -40,6 +42,34 @@ function assertTunnelToken(token: string): string {
     throw new Error("Tunnel token cannot contain newlines.");
   }
   return trimmed;
+}
+
+export async function startOrRestartTunnelStack(
+  orch: OrchestratorModule,
+  cfg: OrchestratorConfig,
+  configManager: Pick<ConfigManager, "getUiEnabled">,
+  onLog: (line: string) => void = console.log,
+): Promise<void> {
+  const running = await orch.isStackRunningAsync(cfg);
+  if (running) {
+    onLog("Stack is already running; recreating services with hosted UI tunnel settings...");
+    const stopped = orch.stopStack(cfg, {
+      remove: true,
+      onLog,
+    });
+    if (stopped.failed.length > 0) {
+      throw new Error(
+        `Failed to stop existing stack services: ${stopped.failed.join(", ")}`
+      );
+    }
+  }
+
+  await orch.ensureNetworkAsync(cfg, onLog);
+  await orch.startStackAsync(cfg, {
+    ui: configManager.getUiEnabled(),
+    docs: cfg.docsEnabled,
+    onLog,
+  });
 }
 
 export function createTunnelCommand(): Command {
@@ -93,12 +123,7 @@ Examples:
           console.log("");
           console.log("Starting stack with hosted UI tunnel enabled...");
           const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
-          await orch.ensureNetworkAsync(cfg, (line: string) => console.log(line));
-          await orch.startStackAsync(cfg, {
-            ui: configManager.getUiEnabled(),
-            docs: cfg.docsEnabled,
-            onLog: (line: string) => console.log(line),
-          });
+          await startOrRestartTunnelStack(orch, cfg, configManager);
           console.log("Stack started.");
         } else {
           console.log("");

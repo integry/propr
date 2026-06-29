@@ -104,10 +104,10 @@ The manifest only scaffolds configuration. Direct webhook mode still requires a 
 ProPR Connect can provision a Plus-only hosted tunnel so the Connect UI reaches a local stack without exposing inbound ports. In Connect, provision the tunnel and run the generated command from the initialized stack directory:
 
 ```bash
-propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev
+propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev --start
 ```
 
-The command writes `PROPR_UI_TUNNEL_TOKEN`, `PROPR_UI_TUNNEL_ENABLED`, `PROPR_INSTANCE_ID`, and `PROPR_UI_PUBLIC_API_URL` to `.env`, and enables the tunnel preference for future `propr start` runs. Use `--start` to launch the stack immediately after saving those values. If the CLI is unavailable, copy the same four `.env` values from Connect manually, then restart the stack.
+The command writes `PROPR_UI_TUNNEL_TOKEN`, `PROPR_UI_TUNNEL_ENABLED`, `PROPR_INSTANCE_ID`, and `PROPR_UI_PUBLIC_API_URL` to `.env`, enables the tunnel preference for future `propr start` runs, and starts the stack. If the stack is already running, `--start` recreates the services so the new tunnel environment takes effect immediately. If the CLI is unavailable, copy the same four `.env` values from Connect manually, then restart the stack.
 
 ## Connect and Authenticate
 
