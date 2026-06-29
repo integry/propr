@@ -5,7 +5,7 @@
 // updates packages/shared/package.json or docker/launcher/manifest.json but
 // forgets this constant is caught by the drift test in
 // test/orchestratorProprUrlsDrift.test.ts, which asserts all three agree.
-export const PROPR_VERSION = '0.8.4';
+export const PROPR_VERSION = '0.8.5';
 
 // Bump this only when the API/UI contract changes in a way the hosted UI must
 // account for. Patch releases that do not change the browser-facing contract can
