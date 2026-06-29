@@ -112,6 +112,37 @@ export interface TunnelToggleDeps {
   warn?: (message: string) => void;
 }
 
+export type TunnelSetupStartOrchestrator = Pick<
+  OrchestratorModule,
+  "isStackRunning" | "startStack" | "stopStack"
+>;
+
+export async function startOrRestartTunnelStack(
+  orch: TunnelSetupStartOrchestrator,
+  cfg: OrchestratorConfig,
+  configManager: Pick<ConfigManager, "setTunnelEnabled">,
+  log: (message: string) => void = console.log
+): Promise<void> {
+  await configManager.setTunnelEnabled(true);
+
+  const tunnelCfg = { ...cfg, uiTunnelEnabled: true };
+  const wasRunning = orch.isStackRunning(cfg);
+
+  if (wasRunning) {
+    log("Recreating the ProPR stack with hosted tunnel settings...");
+    const stopped = orch.stopStack(cfg, { remove: true, onLog: log });
+    if (stopped.failed.length > 0) {
+      throw new Error(
+        `failed to stop ${stopped.failed.length} service${stopped.failed.length === 1 ? "" : "s"} before restart`
+      );
+    }
+  } else {
+    log("Starting the ProPR stack with hosted tunnel settings...");
+  }
+
+  orch.startStack(tunnelCfg, { tunnel: true, onLog: log });
+}
+
 /**
  * Core `propr tunnel on|off` behavior, decoupled from CLI wiring (config/orch
  * loading, process.exit) so it can be unit-tested with injected fakes. Throws
@@ -507,7 +538,7 @@ async function runTunnelSetup(options: {
       console.error("Error: cannot reach the Docker daemon. Run 'propr check'.");
       process.exit(1);
     }
-    await applyTunnelToggle({ enable: true, cfg, orch, configManager, force: options.force });
+    await startOrRestartTunnelStack(orch, cfg, configManager);
     return;
   }
 
@@ -515,7 +546,7 @@ async function runTunnelSetup(options: {
   console.log("  propr start --restart   # apply the hosted UI/API URLs to the stack");
   console.log("  propr tunnel verify     # confirm the public proxy can reach this stack");
   console.log("");
-  console.log("Use 'propr tunnel setup --start ...' next time to save config and start the sidecar in one step.");
+  console.log("Use 'propr tunnel setup --start ...' next time to save config and start or restart the stack in one step.");
 }
 
 export function createTunnelCommand(): Command {
@@ -527,13 +558,11 @@ export function createTunnelCommand(): Command {
     .option("--token <token>", "Connector token from ProPR Connect (setup only)")
     .option("--url <url>", "Public proxy URL from ProPR Connect, e.g. https://<id>.proxy.propr.dev (setup only)")
     .option("--instance-id <id>", "Instance id from ProPR Connect; derives https://<id>.proxy.propr.dev (setup only)")
-    .option("--start", "After setup, start the cloudflared sidecar immediately")
+    .option("--start", "After setup, start or restart the stack with hosted tunnel settings")
     .addHelpText("after", `
 Setup writes the tunnel settings to your stack .env for you:
 
-  $ propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev
-  $ propr start --restart
-  $ propr tunnel verify
+  $ propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev --start
 
 Starting the tunnel requires a token AND a public proxy URL:
   PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start). This is a

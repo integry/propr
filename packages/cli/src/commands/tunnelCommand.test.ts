@@ -14,6 +14,7 @@ import { test } from "node:test";
 import {
   applyTunnelToggle,
   buildTunnelSetupEnv,
+  startOrRestartTunnelStack,
   verifyTunnel,
   TunnelTokenMissingError,
   TunnelPublicUrlMissingError,
@@ -131,6 +132,73 @@ test("tunnel setup rejects a non-Connect proxy URL", () => {
       }),
     /hosted proxy URL/
   );
+});
+
+test("tunnel setup --start starts a stopped stack with tunnel settings", async () => {
+  const calls: Array<{ fn: string; uiTunnelEnabled?: boolean }> = [];
+  const { configManager, value } = fakeConfigManager(undefined);
+  const orch = {
+    isStackRunning: () => false,
+    stopStack: () => {
+      calls.push({ fn: "stopStack" });
+      return { failed: [] };
+    },
+    startStack: ((cfg) => {
+      calls.push({ fn: "startStack", uiTunnelEnabled: cfg.uiTunnelEnabled });
+      return { services: [] };
+    }) as OrchestratorModule["startStack"],
+  };
+
+  await startOrRestartTunnelStack(orch, cfgWith({ uiTunnelEnabled: false }), configManager, sink);
+
+  assert.equal(value(), true);
+  assert.deepEqual(calls, [{ fn: "startStack", uiTunnelEnabled: true }]);
+});
+
+test("tunnel setup --start recreates an already-running stack", async () => {
+  const calls: Array<{ fn: string; uiTunnelEnabled?: boolean }> = [];
+  const { configManager, value } = fakeConfigManager(false);
+  const orch = {
+    isStackRunning: () => true,
+    stopStack: () => {
+      calls.push({ fn: "stopStack" });
+      return { failed: [] };
+    },
+    startStack: ((cfg) => {
+      calls.push({ fn: "startStack", uiTunnelEnabled: cfg.uiTunnelEnabled });
+      return { services: [] };
+    }) as OrchestratorModule["startStack"],
+  };
+
+  await startOrRestartTunnelStack(orch, cfgWith({ uiTunnelEnabled: false }), configManager, sink);
+
+  assert.equal(value(), true);
+  assert.deepEqual(calls, [
+    { fn: "stopStack" },
+    { fn: "startStack", uiTunnelEnabled: true },
+  ]);
+});
+
+test("tunnel setup --start fails before starting when an existing stack cannot stop", async () => {
+  const calls: string[] = [];
+  const { configManager } = fakeConfigManager(false);
+  const orch = {
+    isStackRunning: () => true,
+    stopStack: () => {
+      calls.push("stopStack");
+      return { failed: ["api"] };
+    },
+    startStack: (() => {
+      calls.push("startStack");
+      return { services: [] };
+    }) as OrchestratorModule["startStack"],
+  };
+
+  await assert.rejects(
+    startOrRestartTunnelStack(orch, cfgWith({ uiTunnelEnabled: false }), configManager, sink),
+    /failed to stop 1 service/
+  );
+  assert.deepEqual(calls, ["stopStack"]);
 });
 
 test("tunnel on without a token throws and does not persist or start", async () => {

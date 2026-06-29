@@ -79,7 +79,7 @@ propr relay revoke <id>  # revoke a token
 The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its **API** (the API container on port 4000) to the hosted control plane through a **Cloudflare Tunnel** — propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host (the root URL returns 404, and `/webhook` is **not** routed through the tunnel) — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. The UI bundle itself is served by `app.propr.dev`, not through the tunnel; the tunnel only exposes the API the hosted UI calls. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
 
 ```bash
-propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev
+propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev --start
 propr tunnel on          # start the cloudflared sidecar
 propr tunnel off         # stop it — the token and env values are left untouched
 propr tunnel verify      # check the sidecar + public /api/status, /, /socket.io/
@@ -90,9 +90,7 @@ Cloudflare forwards the tunnel to the **Docker-internal** API service at `http:/
 Starting the tunnel always requires a configured token. The hosted ProPR Connect UI shows a one-time connector token and tunnel URL; paste those into `propr tunnel setup` and the CLI writes the required stack `.env` values for you:
 
 ```bash
-propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev
-propr start --restart
-propr tunnel verify
+propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev --start
 ```
 
 If you are on an older CLI or need to inspect the underlying settings, these are the variables `setup` writes:
@@ -105,7 +103,7 @@ If you are on an older CLI or need to inspect the underlying settings, these are
 | `PROPR_UI_PUBLIC_API_URL` | Explicit public API URL the hosted UI talks to, overriding the derived one |
 | `PROPR_CLOUDFLARED_IMAGE` | cloudflared image. Overrides the version pinned in the stack manifest (currently `cloudflare/cloudflared:2024.12.2`) |
 
-**Enablement, step by step.** With no token and no flag the tunnel is off. `propr tunnel setup` saves `PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, and `PROPR_UI_PUBLIC_API_URL`, and records the tunnel as enabled for later starts. Setting `PROPR_UI_TUNNEL_TOKEN` manually has the same default effect, so the next `propr start` (or a restart) starts the sidecar unless you have run `propr tunnel off`. Running `propr tunnel on|off` records an explicit choice in the CLI config that **overrides** the token-derived default and is honored by later `propr start`/restarts; `propr tunnel on` also starts the sidecar immediately on an already-running stack without waiting for a restart, and `propr tunnel off` stops it even while a token remains set.
+**Enablement, step by step.** With no token and no flag the tunnel is off. `propr tunnel setup` saves `PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, and `PROPR_UI_PUBLIC_API_URL`, and records the tunnel as enabled for later starts. Add `--start` to start a stopped stack or recreate an already-running stack with the hosted tunnel environment applied immediately. Setting `PROPR_UI_TUNNEL_TOKEN` manually has the same default effect, so the next `propr start` (or a restart) starts the sidecar unless you have run `propr tunnel off`. Running `propr tunnel on|off` records an explicit choice in the CLI config that **overrides** the token-derived default and is honored by later `propr start`/restarts; `propr tunnel on` also starts the sidecar immediately on an already-running stack without waiting for a restart, and `propr tunnel off` stops it even while a token remains set.
 
 `propr tunnel on` fails clearly if no token is configured rather than launching a broken container. It likewise refuses to start when the core stack is not running — cloudflared would otherwise point at an unavailable `api:4000` and look superficially healthy — so bring the stack up with `propr start` first, or pass `--force` if you intend to start the sidecar ahead of the stack. `propr tunnel off` only removes the tunnel container — it never touches the token or any other env value, so a later `propr tunnel on` works without rework.
 
@@ -117,6 +115,8 @@ If you are on an older CLI or need to inspect the underlying settings, these are
 
 :::caution Restart the stack after enabling on a running stack
 `propr tunnel on` starts only the cloudflared sidecar; it does **not** restart the already-running API/worker containers. Those keep the `API_PUBLIC_URL` / `FRONTEND_URL` they were started with, so OAuth redirects, cookie security, and attachment links still point at their pre-tunnel (localhost) values until you run `propr start --restart`. Enabling the tunnel via the token before `propr start` avoids this, since the API then comes up with the proxy URLs. The command prints this warning when it detects a running stack.
+
+`propr tunnel setup --start` avoids this by recreating the running stack after writing the tunnel settings.
 :::
 
 Each enabled stack is reachable at a per-instance hostname `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, which is how the hosted UI discovers and addresses it. See [ProPR Connect](../operations/propr-connect.md) for the role of each hosted hostname, and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and the architecture, including how `.proxy.propr.dev` differs from the central ProPR APIs.
