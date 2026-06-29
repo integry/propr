@@ -500,8 +500,9 @@ test('validateEnv rejects a tunnel public URL that is not a hosted proxy URL', (
   const onProxy = resolveConfig({ ...base, PROPR_UI_PUBLIC_API_URL: 'https://abc123.proxy.propr.dev' }, { manifestPath });
   assert.deepEqual(validateEnv(onProxy).errors.filter((e) => /not a hosted proxy URL/.test(e)), []);
 
-  // The proxy-pattern check only applies in tunnel mode; a non-proxy URL with the
-  // tunnel disabled is inert, so it produces neither an error nor a warning.
+  // The proxy-pattern check only applies in tunnel mode; a non-proxy but valid
+  // http(s) URL with the tunnel disabled is allowed for self-hosted/static UI
+  // deployments that intentionally target a custom API origin.
   const disabled = resolveConfig({ PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com', PROPR_LAUNCHER_ENV_FILE: envFileLocal, PROPR_ENV_FILE: '/host/propr/.env', PROPR_DATA_DIR: '/host/propr/data', PROPR_LOGS_DIR: '/host/propr/logs', PROPR_REPOS_DIR: '/host/propr/repos' }, { manifestPath });
   assert.equal(disabled.uiTunnelEnabled, false);
   assert.deepEqual(validateEnv(disabled).errors.filter((e) => /not a hosted proxy URL/.test(e)), []);

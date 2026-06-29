@@ -241,9 +241,9 @@ test("tunnel setup --start recreates an already-running stack", async () => {
   ]);
 });
 
-test("tunnel setup --start fails before starting when an existing stack cannot stop", async () => {
+test("tunnel setup --start keeps the configured tunnel enabled when Docker restart fails", async () => {
   const calls: string[] = [];
-  const { configManager } = fakeConfigManager(false);
+  const { configManager, value } = fakeConfigManager(false);
   const orch = {
     validateEnv: () => ({ ok: true, errors: [], warnings: [] }),
     ensureNetwork: () => {
@@ -264,6 +264,10 @@ test("tunnel setup --start fails before starting when an existing stack cannot s
     startOrRestartTunnelStack(orch, cfgWith({ uiTunnelEnabled: false }), configManager, sink),
     /failed to stop 1 service/
   );
+  // Once setup env validation passes, the .env has been written and later
+  // `propr start` should still honor the configured tunnel after a transient
+  // Docker failure. Validation failures above remain pre-persist.
+  assert.equal(value(), true);
   assert.deepEqual(calls, ["stopStack"]);
 });
 

@@ -61,13 +61,14 @@ test('CORS allows COOKIE_DOMAIN subdomains for preview environments', () => {
   assert.equal(isAllowed(validate, 'https://other.example.org'), false);
 });
 
-test('CORS rejects insecure (http) COOKIE_DOMAIN origins', () => {
-  // Cookie-domain sessions ride secure cookies, so an http:// look-alike on the
-  // same domain must not be trusted even though the hostname matches.
+test('CORS preserves http COOKIE_DOMAIN preview compatibility', () => {
+  // Existing non-tunnel PR preview environments may reach the API over
+  // http://<sub>.<cookie-domain>. Keep the legacy inline-validator behavior so
+  // tunnel work does not introduce a silent unrelated breaking change.
   const validate = createCorsOriginValidator('https://app.example.com', '.example.com');
 
-  assert.equal(isAllowed(validate, 'http://pr-1.example.com'), false);
-  assert.equal(isAllowed(validate, 'http://example.com'), false);
+  assert.equal(isAllowed(validate, 'http://pr-1.example.com'), true);
+  assert.equal(isAllowed(validate, 'http://example.com'), true);
 });
 
 test('CORS validator factory throws on an invalid FRONTEND_URL', () => {

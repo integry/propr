@@ -25,19 +25,13 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
     }
     try {
       const url = new URL(origin);
-      // Allow the base domain and any subdomain. Cookie-domain sessions are
-      // secure cookies, so require https here (except localhost, handled below)
-      // to avoid trusting an http:// look-alike on the same domain.
-      // NOTE: this https requirement is intentional hardening over the previous
-      // inline validator in server.ts, which allowed http on the cookie-domain
-      // subdomain branch. It also affects the (non-tunnel) PR-preview path: a
-      // preview env that reached the API over http://<sub>.<cookie-domain> is now
-      // rejected by CORS and must use https. This is a deliberate behavior change
-      // beyond the tunnel feature; it is safe because ProPR is pre-release and has
-      // no live http://<sub>.<cookie-domain> preview deployments to migrate.
+      // Allow the base domain and any subdomain. The previous inline validator
+      // allowed both http and https here, and some non-tunnel PR-preview
+      // deployments still use http://<sub>.<cookie-domain>. Keep that existing
+      // behavior; tunnel-specific hardening must not silently break previews.
       if (
         baseDomain &&
-        url.protocol === 'https:' &&
+        (url.protocol === 'http:' || url.protocol === 'https:') &&
         (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain))
       ) {
         callback(null, true);
