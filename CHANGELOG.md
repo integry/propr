@@ -40,13 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `propr start` now verifies ProPR-published service image freshness and may
   pull a stale local tag before starting; use `PROPR_SKIP_REMOTE_IMAGE_CHECK=1`
   to skip registry probes in offline or latency-sensitive environments.
-- **CORS hardening for cookie-domain subdomains**: when `COOKIE_DOMAIN` is set,
-  a request origin that is a subdomain of the cookie domain must now use
-  `https:` to be allowed (previously `http:` was accepted for that branch). This
-  also affects any non-tunnel preview environment that reached the API over
-  `http://<sub>.<cookie-domain>`; such previews must switch to `https`. Safe to
-  ship because ProPR is pre-release with no live `http://<sub>.<cookie-domain>`
-  preview deployments to migrate. Local development and explicit `FRONTEND_URL`
+- **CORS scheme hardening**: the shared CORS origin validator now only trusts
+  `http:`/`https:` origins on its cookie-domain and localhost branches, so an
+  unusual scheme (e.g. `file:`, `chrome-extension:`) on a cookie-domain
+  subdomain or on `localhost`/`127.0.0.1` is no longer allowed. `http:` is
+  deliberately still accepted for cookie-domain subdomains so existing
+  `http://<sub>.<cookie-domain>` PR-preview environments keep working — the
+  tunnel work does not change that. Local development and explicit `FRONTEND_URL`
   origins are unaffected.
 - **Enqueue failures now propagate from `processDetectedIssue`**: a failure to
   add an issue to the work queue is re-thrown instead of being swallowed, so the

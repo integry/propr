@@ -260,8 +260,15 @@ test("tunnel setup --start keeps the configured tunnel enabled when Docker resta
     }) as OrchestratorModule["startStack"],
   };
 
+  const warnings: string[] = [];
   await assert.rejects(
-    startOrRestartTunnelStack(orch, cfgWith({ uiTunnelEnabled: false }), configManager, sink),
+    startOrRestartTunnelStack(
+      orch,
+      cfgWith({ uiTunnelEnabled: false }),
+      configManager,
+      sink,
+      (m) => warnings.push(m)
+    ),
     /failed to stop 1 service/
   );
   // Once setup env validation passes, the .env has been written and later
@@ -269,6 +276,8 @@ test("tunnel setup --start keeps the configured tunnel enabled when Docker resta
   // Docker failure. Validation failures above remain pre-persist.
   assert.equal(value(), true);
   assert.deepEqual(calls, ["stopStack"]);
+  // The leftover enabled state is surfaced explicitly rather than silently.
+  assert.match(warnings.join("\n"), /tunnel mode is still enabled/);
 });
 
 test("tunnel setup --start rejects invalid env before touching containers", async () => {
@@ -662,4 +671,47 @@ test("tunnel off stops only the tunnel and persists false", async () => {
 
   assert.equal(value(), false);
   assert.deepEqual(calls, [{ fn: "stopService", service: "tunnel", remove: true }]);
+});
+
+test("tunnel off warns when hosted proxy env remains in .env", async () => {
+  const { orch } = fakeOrch();
+  const { configManager } = fakeConfigManager(true);
+  const warnings: string[] = [];
+
+  await applyTunnelToggle({
+    enable: false,
+    // cfg mirrors a config still carrying the hosted values `propr tunnel setup`
+    // wrote: a later `propr start` would resolve them, so off should warn.
+    cfg: cfgWith({
+      uiTunnelToken: "secret-token",
+      uiPublicApiUrl: "https://abc123.proxy.propr.dev",
+      frontendUrl: "https://app.propr.dev",
+    }),
+    orch,
+    configManager,
+    log: sink,
+    warn: (m) => warnings.push(m),
+  });
+
+  assert.match(warnings.join("\n"), /hosted proxy values/);
+});
+
+test("tunnel off does not warn about proxy env for a local-only config", async () => {
+  const { orch } = fakeOrch();
+  const { configManager } = fakeConfigManager(true);
+  const warnings: string[] = [];
+
+  await applyTunnelToggle({
+    enable: false,
+    cfg: cfgWith({
+      uiTunnelToken: "secret-token",
+      frontendUrl: "http://localhost:5173",
+    }),
+    orch,
+    configManager,
+    log: sink,
+    warn: (m) => warnings.push(m),
+  });
+
+  assert.doesNotMatch(warnings.join("\n"), /hosted proxy values/);
 });

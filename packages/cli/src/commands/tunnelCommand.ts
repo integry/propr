@@ -162,26 +162,40 @@ export async function startOrRestartTunnelStack(
   // revert to non-tunnel mode after a transient Docker error.
   await configManager.setTunnelEnabled(true);
 
-  const wasRunning = orch.isStackRunning(cfg);
+  // The override is now persisted. If the Docker stop/start below fails we keep
+  // it (see the comment above), but surface that explicitly to the operator so
+  // the leftover enabled state is not a silent surprise — `propr tunnel on`
+  // rolls back on a Docker failure, this path intentionally does not.
+  try {
+    const wasRunning = orch.isStackRunning(cfg);
 
-  if (wasRunning) {
-    log("Recreating the ProPR stack with hosted tunnel settings...");
-    const stopped = orch.stopStack(cfg, { remove: true, onLog: log });
-    if (stopped.failed.length > 0) {
-      throw new Error(
-        `failed to stop ${stopped.failed.length} service${stopped.failed.length === 1 ? "" : "s"} before restart`
-      );
+    if (wasRunning) {
+      log("Recreating the ProPR stack with hosted tunnel settings...");
+      const stopped = orch.stopStack(cfg, { remove: true, onLog: log });
+      if (stopped.failed.length > 0) {
+        throw new Error(
+          `failed to stop ${stopped.failed.length} service${stopped.failed.length === 1 ? "" : "s"} before restart`
+        );
+      }
+    } else {
+      log("Starting the ProPR stack with hosted tunnel settings...");
     }
-  } else {
-    log("Starting the ProPR stack with hosted tunnel settings...");
-  }
 
-  // Ensure the Docker network exists before starting, exactly as `propr start`
-  // does. For a fresh or previously-stopped stack the network may not exist yet,
-  // and startStack does not create it, so the generated Connect one-shot path
-  // would otherwise fail even though it is advertised as the setup path.
-  orch.ensureNetwork(tunnelCfg, log);
-  orch.startStack(tunnelCfg, { tunnel: true, onLog: log });
+    // Ensure the Docker network exists before starting, exactly as `propr start`
+    // does. For a fresh or previously-stopped stack the network may not exist yet,
+    // and startStack does not create it, so the generated Connect one-shot path
+    // would otherwise fail even though it is advertised as the setup path.
+    orch.ensureNetwork(tunnelCfg, log);
+    orch.startStack(tunnelCfg, { tunnel: true, onLog: log });
+  } catch (error) {
+    warn(
+      "Warning: the stack failed to start, but tunnel mode is still enabled in\n" +
+        "  your CLI config (this path keeps the persisted override so a later\n" +
+        "  'propr start' honors tunnel mode). Fix the underlying Docker error and\n" +
+        "  re-run 'propr start --restart', or run 'propr tunnel off' to disable it."
+    );
+    throw error;
+  }
 }
 
 /**
@@ -303,6 +317,24 @@ export async function applyTunnelToggle({
       log("Stopping tunnel…");
       orch.stopService(effectiveCfg, "tunnel", { remove: true, onLog: (l) => log(l) });
       log("tunnel stopped. Token and env values are unchanged.");
+      // `tunnel off` only removes the cloudflared sidecar; it deliberately leaves
+      // the .env untouched. If `propr tunnel setup` wrote hosted proxy values
+      // (API_PUBLIC_URL/FRONTEND_URL/PROPR_UI_PUBLIC_API_URL), a later
+      // `propr start` still resolves them — so the stack can come back up in
+      // proxy-mode configuration with no tunnel running. Warn so the operator
+      // clears or changes those values for true local/self-hosted mode.
+      if (
+        isProprProxyUrl(effectiveCfg.uiPublicApiUrl ?? "") ||
+        effectiveCfg.frontendUrl === DEFAULT_PROPR_UI_ORIGIN
+      ) {
+        warn(
+          "Warning: hosted proxy values from 'propr tunnel setup' remain in your\n" +
+            "  .env (e.g. API_PUBLIC_URL/FRONTEND_URL/PROPR_UI_PUBLIC_API_URL). A\n" +
+            "  later 'propr start' will still use them, so the stack may run in\n" +
+            "  proxy-mode configuration without a tunnel. Remove or change those\n" +
+            "  values to return to local/self-hosted mode."
+        );
+      }
     }
   } catch (error) {
     // Revert to the exact prior value (including an unset "defer to env" state)
