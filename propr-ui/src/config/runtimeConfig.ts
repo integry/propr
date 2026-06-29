@@ -9,9 +9,10 @@
 //
 // Resolution order for the API base URL:
 //   1. Hosted-UI `?tunnel=` query param — Connect's per-installation deep link.
-//   2. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
-//   3. Build-time env (VITE_API_BASE_URL) — static single-target builds.
-//   4. Empty string — same-origin (local dev via the Vite proxy).
+//   2. Previously selected hosted tunnel in localStorage — survives login redirects.
+//   3. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
+//   4. Build-time env (VITE_API_BASE_URL) — static single-target builds.
+//   5. Empty string — same-origin (local dev via the Vite proxy).
 
 import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
 
@@ -28,6 +29,8 @@ declare global {
 
 const runtimeConfig: ProprRuntimeConfig =
   (typeof window !== 'undefined' && window.__PROPR_CONFIG__) || {};
+
+export const HOSTED_TUNNEL_API_BASE_STORAGE_KEY = 'propr.hostedTunnelApiBaseUrl';
 
 /**
  * Hostname of the managed hosted UI (e.g. `app.propr.dev`), derived from the
@@ -102,6 +105,46 @@ export const hostedTunnelQueryApiBaseUrl = (
   }
 };
 
+type HostedTunnelStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+const storageForWindow = (): HostedTunnelStorage | undefined => {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+};
+
+export const readStoredHostedTunnelApiBaseUrl = (
+  hostname: string,
+  storage: HostedTunnelStorage | undefined = storageForWindow()
+): string | null => {
+  if (!isHostedUiOrigin(hostname) || !storage) return null;
+  try {
+    const stored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)?.trim();
+    if (isProprProxyUrl(stored)) return stored.replace(/\/+$/, '');
+    if (stored) storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+export const rememberHostedTunnelApiBaseUrl = (
+  hostname: string,
+  apiBaseUrl: string,
+  storage: HostedTunnelStorage | undefined = storageForWindow()
+): void => {
+  if (!isHostedUiOrigin(hostname) || !storage || !isProprProxyUrl(apiBaseUrl)) return;
+  try {
+    storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
+  } catch {
+    // localStorage can be disabled or full. The query-param path still works for
+    // the current page load; persistence is only needed across full redirects.
+  }
+};
+
 /**
  * On the hosted UI origin the bundle expects `config.js` to have run first and
  * populated window.__PROPR_CONFIG__ with a per-instance apiBaseUrl. If it is
@@ -116,10 +159,12 @@ export const hostedTunnelQueryApiBaseUrl = (
 export const runtimeConfigWarning = (
   hostname: string,
   config: ProprRuntimeConfig | undefined,
-  search = ''
+  search = '',
+  storage?: HostedTunnelStorage
 ): string | null => {
   if (!isHostedUiOrigin(hostname)) return null;
   if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
+  if (readStoredHostedTunnelApiBaseUrl(hostname, storage)) return null;
   if (!config) {
     return (
       '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
@@ -167,20 +212,29 @@ export const resolveApiBaseUrl = (
   hostname: string,
   search: string,
   config: ProprRuntimeConfig | undefined,
-  buildTimeApiBaseUrl: string | undefined
-): string =>
-  (
-    hostedTunnelQueryApiBaseUrl(hostname, search) ||
+  buildTimeApiBaseUrl: string | undefined,
+  storage?: HostedTunnelStorage
+): string => {
+  const queryApiBaseUrl = hostedTunnelQueryApiBaseUrl(hostname, search);
+  if (queryApiBaseUrl) {
+    rememberHostedTunnelApiBaseUrl(hostname, queryApiBaseUrl, storage);
+  }
+
+  return (
+    queryApiBaseUrl ||
+    readStoredHostedTunnelApiBaseUrl(hostname, storage) ||
     config?.apiBaseUrl?.trim() ||
     buildTimeApiBaseUrl?.trim() ||
     ''
   ).replace(/\/+$/, '');
+};
 
 if (typeof window !== 'undefined') {
   const warning = runtimeConfigWarning(
     window.location.hostname,
     window.__PROPR_CONFIG__,
-    window.location.search
+    window.location.search,
+    storageForWindow()
   );
   if (warning) console.warn(warning);
 }
@@ -201,5 +255,6 @@ export const getApiBaseUrl = (): string =>
     typeof window !== 'undefined' ? window.location.hostname : '',
     typeof window !== 'undefined' ? window.location.search : '',
     runtimeConfig,
-    import.meta.env.VITE_API_BASE_URL
+    import.meta.env.VITE_API_BASE_URL,
+    storageForWindow()
   );

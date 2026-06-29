@@ -7,6 +7,19 @@ const loadGetApiBaseUrl = async () => {
   return mod.getApiBaseUrl;
 };
 
+const memoryStorage = (initial: Record<string, string> = {}) => {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => {
+      values.set(key, value);
+    }),
+    removeItem: vi.fn((key: string) => {
+      values.delete(key);
+    })
+  };
+};
+
 describe('getApiBaseUrl', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -123,6 +136,56 @@ describe('hosted tunnel query API base', () => {
   });
 });
 
+describe('stored hosted tunnel API base', () => {
+  const load = async () => await import('./runtimeConfig');
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('stores a valid hosted tunnel API base for later hosted UI reloads', async () => {
+    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, rememberHostedTunnelApiBaseUrl } =
+      await load();
+    const storage = memoryStorage();
+
+    rememberHostedTunnelApiBaseUrl(
+      'app.propr.dev',
+      'https://abc123.proxy.propr.dev/',
+      storage
+    );
+
+    expect(storage.setItem).toHaveBeenCalledWith(
+      HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      'https://abc123.proxy.propr.dev'
+    );
+  });
+
+  it('reads a valid stored hosted tunnel only on the hosted UI origin', async () => {
+    const { readStoredHostedTunnelApiBaseUrl } = await load();
+    const storage = memoryStorage({
+      'propr.hostedTunnelApiBaseUrl': 'https://abc123.proxy.propr.dev/'
+    });
+
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', storage)).toBe(
+      'https://abc123.proxy.propr.dev'
+    );
+    expect(readStoredHostedTunnelApiBaseUrl('propr.example.com', storage)).toBeNull();
+  });
+
+  it('removes an invalid stored hosted tunnel value', async () => {
+    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, readStoredHostedTunnelApiBaseUrl } =
+      await load();
+    const storage = memoryStorage({
+      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://custom.example.com'
+    });
+
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', storage)).toBeNull();
+    expect(storage.removeItem).toHaveBeenCalledWith(
+      HOSTED_TUNNEL_API_BASE_STORAGE_KEY
+    );
+  });
+});
+
 describe('resolveApiBaseUrl', () => {
   const load = async () => await import('./runtimeConfig');
 
@@ -132,14 +195,17 @@ describe('resolveApiBaseUrl', () => {
 
   it('prefers the hosted Connect tunnel deep link over runtime config and build-time config', async () => {
     const { resolveApiBaseUrl } = await load();
+    const storage = memoryStorage();
     expect(
       resolveApiBaseUrl(
         'app.propr.dev',
         '?tunnel=abc123.proxy.propr.dev',
         { apiBaseUrl: 'https://runtime.proxy.propr.dev' },
-        'https://build.proxy.propr.dev'
+        'https://build.proxy.propr.dev',
+        storage
       )
     ).toBe('https://abc123.proxy.propr.dev');
+    expect(storage.setItem).toHaveBeenCalled();
   });
 
   it('falls back to runtime config when the tunnel query is invalid', async () => {
@@ -152,6 +218,34 @@ describe('resolveApiBaseUrl', () => {
         'https://build.proxy.propr.dev'
       )
     ).toBe('https://runtime.proxy.propr.dev');
+  });
+
+  it('uses the stored hosted tunnel when the query is gone after a login redirect', async () => {
+    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, resolveApiBaseUrl } = await load();
+    const storage = memoryStorage({
+      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://abc123.proxy.propr.dev'
+    });
+
+    expect(
+      resolveApiBaseUrl('app.propr.dev', '', undefined, undefined, storage)
+    ).toBe('https://abc123.proxy.propr.dev');
+  });
+
+  it('does not use the stored hosted tunnel on self-hosted origins', async () => {
+    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, resolveApiBaseUrl } = await load();
+    const storage = memoryStorage({
+      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://abc123.proxy.propr.dev'
+    });
+
+    expect(
+      resolveApiBaseUrl(
+        'propr.example.com',
+        '',
+        { apiBaseUrl: 'https://runtime.example.com' },
+        undefined,
+        storage
+      )
+    ).toBe('https://runtime.example.com');
   });
 });
 
@@ -176,6 +270,15 @@ describe('runtimeConfigWarning', () => {
         '?tunnel=abc123.proxy.propr.dev'
       )
     ).toBeNull();
+  });
+
+  it('does not warn about missing config when a stored hosted tunnel is present', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    const storage = memoryStorage({
+      'propr.hostedTunnelApiBaseUrl': 'https://abc123.proxy.propr.dev'
+    });
+
+    expect(runtimeConfigWarning('app.propr.dev', undefined, '', storage)).toBeNull();
   });
 
   it('warns on the hosted UI origin when apiBaseUrl is empty', async () => {
