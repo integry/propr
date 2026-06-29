@@ -39,16 +39,6 @@ export const HOSTED_TUNNEL_API_BASE_STORAGE_KEY = 'propr.hostedTunnelApiBaseUrl'
 const HOSTED_UI_HOSTNAME = new URL(DEFAULT_PROPR_UI_ORIGIN).hostname;
 
 /**
- * A local development origin where the UI and API ship together. The hosted-only
- * behavior keys off {@link isHostedUiOrigin} (a positive match on the hosted
- * hostname) rather than "not localhost", so this predicate currently has no
- * production caller — it is retained as the explicit complement of the hosted
- * check for readability and is exercised directly in the unit tests.
- */
-export const isLocalhostHostname = (hostname: string): boolean =>
-  hostname === 'localhost' || hostname === '127.0.0.1';
-
-/**
  * Whether the page is being served from the managed hosted UI origin
  * (`app.propr.dev`) — the single static bundle that serves many per-instance
  * proxies and is versioned independently from the API. Used to scope hosted-only

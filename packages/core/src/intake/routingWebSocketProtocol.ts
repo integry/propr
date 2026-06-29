@@ -125,10 +125,7 @@ export function normalizeDisposition(outcome: DeliveryDisposition | void | undef
 /**
  * Build the backend -> relay ACK frame for an accepted/blocked/ignored delivery.
  * `status` is always present; `reason` and `billing` are included only when the
- * disposition carries them, keeping the wire frame minimal. A relay that predates
- * the explicit-status contract still finds the original `{ type, sequence,
- * deliveryId }` fields and can ignore the rest, so the change is backward
- * compatible.
+ * disposition carries them, keeping the wire frame minimal.
  */
 export function buildAckFrame(
     sequence: number,

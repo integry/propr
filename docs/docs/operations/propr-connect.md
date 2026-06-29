@@ -138,6 +138,8 @@ Today, tunnel-based OAuth requires the local ProPR instance to use a callback UR
 
 Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token, and opens `app.propr.dev` with a validated `?tunnel=<id>.proxy.propr.dev` deep link. The raw `.env` values remain available as a fallback for older CLI versions or recovery, but the normal path is to run the generated `propr tunnel setup` command.
 
+The connector token (`PROPR_UI_TUNNEL_TOKEN`) is a live Cloudflare credential. ProPR keeps it off the process command line — it is passed to the `cloudflared` sidecar as the `TUNNEL_TOKEN` environment variable and injected into no other container — but it is still readable from that container's environment via `docker inspect`. Treat Docker daemon access on the host as equivalent to access to this token, and rotate it in ProPR Connect if the host is compromised.
+
 ## When To Use It
 
 Use ProPR Connect if you want:

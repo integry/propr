@@ -30,11 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `status` (`accepted`, `blocked`, or `ignored`), plus an optional `reason`
   (e.g. `unsupported_event`, `user_not_allowed`, `limit_reached`) and `billing`
   metadata. The webhook dispatcher may return a disposition to drive this;
-  returning nothing is treated as a plain `accepted`. The pre-existing
-  `{ type, sequence, deliveryId }` ACK fields are unchanged, so the addition is
-  backward compatible. ProPR remains the only source of truth for repo/user
-  policy; the relay forwards every eligible-looking trigger and records the
-  result. See the ProPR Connect docs for the delivery acknowledgement contract.
+  returning nothing is treated as a plain `accepted`. ProPR remains the only
+  source of truth for repo/user policy; the relay forwards every eligible-looking
+  trigger and records the result. See the ProPR Connect docs for the delivery
+  acknowledgement contract.
 - `propr check --json` remains machine-readable but now reports the additional
   check rows introduced by the grouped check output, including CLI version and
   configured agent validation rows.
@@ -47,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also affects any non-tunnel preview environment that reached the API over
   `http://<sub>.<cookie-domain>`; such previews must switch to `https`. Local
   development and explicit `FRONTEND_URL` origins are unaffected.
+- **Enqueue failures now propagate from `processDetectedIssue`**: a failure to
+  add an issue to the work queue is re-thrown instead of being swallowed, so the
+  routing intake path withholds the ACK and the delivery is redelivered. All
+  callers handle this: the polling loop catches it per-repository and continues
+  to the next cycle, and the direct-webhook handler awaits the processor before
+  ACKing so a throw returns HTTP 500 (GitHub then redelivers).
 
 ## [0.8.3] - 2026-06-16
 

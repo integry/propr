@@ -342,7 +342,7 @@ describe('isValidHttpUrl', () => {
   });
 });
 
-describe('isLocalhostHostname / isHostedUiOrigin', () => {
+describe('isHostedUiOrigin', () => {
   const load = async () => await import('./runtimeConfig');
 
   beforeEach(() => {
@@ -350,15 +350,11 @@ describe('isLocalhostHostname / isHostedUiOrigin', () => {
   });
 
   it('treats only the hosted UI origin as hosted', async () => {
-    const { isLocalhostHostname, isHostedUiOrigin } = await load();
+    const { isHostedUiOrigin } = await load();
     expect(isHostedUiOrigin('app.propr.dev')).toBe(true);
     // localhost, per-instance proxies, and self-hosted domains are NOT the
     // managed hosted UI origin.
-    for (const local of ['localhost', '127.0.0.1']) {
-      expect(isLocalhostHostname(local)).toBe(true);
-      expect(isHostedUiOrigin(local)).toBe(false);
-    }
-    for (const other of ['abc123.proxy.propr.dev', 'propr.example.com', 'example.com']) {
+    for (const other of ['localhost', '127.0.0.1', 'abc123.proxy.propr.dev', 'propr.example.com', 'example.com']) {
       expect(isHostedUiOrigin(other)).toBe(false);
     }
   });

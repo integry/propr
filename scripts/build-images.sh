@@ -191,6 +191,13 @@ image_description() {
 # --- Rewrite launcher manifest ------------------------------------------------
 # The launcher image bakes in the image tags it should pull. Write a fresh
 # manifest so the baked tags match this build.
+#
+# To re-pin the cloudflared tunnel image, update the literal below AND the
+# matching fallbacks: DEFAULT_CLOUDFLARED_IMAGE in packages/shared/src/proprServiceUrls.ts
+# and its mirror in docker/launcher/orchestrator.mjs. The manifest (regenerated
+# here) is the effective source at runtime; the shared constant is only a
+# fallback. orchestratorProprUrlsDrift.test.ts reconciles all three and fails if
+# they diverge.
 write_manifest() {
   local runtime_ns runtime_prefix
   runtime_ns="$(manifest_ns)"

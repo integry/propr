@@ -83,13 +83,22 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
  * tunnel base URL must be one of them. Requires https and *exactly one* valid
  * instance-id label in front of the shared {@link PROPR_UI_PROXY_SUFFIX} — a
  * multi-label host like `foo.bar.proxy.propr.dev` is rejected because routing
- * only addresses a single instance label. Returns false for a malformed URL.
+ * only addresses a single instance label. It must also be a bare origin: a
+ * non-root path, query, or fragment (e.g. `https://abc.proxy.propr.dev/api`) is
+ * rejected because {@link proprTunnelEndpoints} appends `/api/...` itself and a
+ * base path would double it up (`.../api/api/status`). Returns false for a
+ * malformed URL.
  */
 export function isProprProxyUrl(url: string | undefined | null): boolean {
   if (!url) return false;
   try {
-    const { protocol, hostname } = new URL(url);
+    const { protocol, hostname, pathname, search, hash } = new URL(url);
     if (protocol !== 'https:') return false;
+    // Must be a bare origin — the tunnel endpoint helpers own the path suffix.
+    // Trailing slashes (`/`, `//`) are tolerated (callers trim them); any real
+    // path segment, query, or fragment is rejected so a base path can't double
+    // up the appended `/api/...`.
+    if (/[^/]/.test(pathname) || search || hash) return false;
     const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
     if (!hostname.endsWith(suffix)) return false;
     // The portion before the suffix must be a single valid DNS label (no dots),

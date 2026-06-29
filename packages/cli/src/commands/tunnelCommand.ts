@@ -128,6 +128,12 @@ export async function startOrRestartTunnelStack(
   configManager: Pick<ConfigManager, "setTunnelEnabled">,
   log: (message: string) => void = console.log
 ): Promise<void> {
+  // Unlike applyTunnelToggle (a pure on/off that rolls back on Docker failure),
+  // setup has already written the full tunnel .env (token, instance id, proxy
+  // URLs). The operator has committed to tunnel mode, so we persist enabled=true
+  // and deliberately do NOT roll it back if the stop/start below fails: a later
+  // `propr start` should still honor the configured tunnel rather than silently
+  // revert to non-tunnel mode after a transient Docker error.
   await configManager.setTunnelEnabled(true);
 
   const tunnelCfg = { ...cfg, uiTunnelEnabled: true };
@@ -337,17 +343,22 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
     throw new Error("provide --url https://<id>.proxy.propr.dev or --instance-id <id>");
   }
 
-  const publicUrl = explicitUrl ?? `https://${explicitInstanceId}.${PROPR_UI_PROXY_SUFFIX}`;
-  if (!isProprProxyUrl(publicUrl)) {
-    throw new Error(`tunnel URL must be a hosted proxy URL such as https://<id>.${PROPR_UI_PROXY_SUFFIX}`);
+  const candidateUrl = explicitUrl ?? `https://${explicitInstanceId}.${PROPR_UI_PROXY_SUFFIX}`;
+  if (!isProprProxyUrl(candidateUrl)) {
+    throw new Error(`tunnel URL must be a bare hosted proxy URL such as https://<id>.${PROPR_UI_PROXY_SUFFIX} (no path/query/fragment)`);
   }
 
+  // Canonicalize: URL parsing already lowercases the host, and `.origin` drops
+  // any (validated-absent) path so the persisted value matches what the launcher
+  // resolves. DNS is case-insensitive, so the instance id is lowercased too — a
+  // mixed-case --instance-id would otherwise diverge from the launcher's value.
+  const publicUrl = new URL(candidateUrl).origin;
   const derivedInstanceId = instanceIdFromProxyUrl(publicUrl);
-  const instanceId = explicitInstanceId ?? derivedInstanceId;
+  const instanceId = (explicitInstanceId ?? derivedInstanceId)?.toLowerCase();
   if (!instanceId) {
     throw new Error(`could not derive an instance id from ${publicUrl}`);
   }
-  if (derivedInstanceId && explicitInstanceId && derivedInstanceId !== explicitInstanceId) {
+  if (derivedInstanceId && explicitInstanceId && derivedInstanceId.toLowerCase() !== explicitInstanceId.toLowerCase()) {
     throw new Error(`--instance-id (${explicitInstanceId}) does not match --url host (${derivedInstanceId})`);
   }
 

@@ -38,8 +38,7 @@
  *     `user_not_allowed`) surfaced in the relay's delivery history. All three
  *     statuses are terminal — the relay must not redeliver an ACKed delivery; a
  *     delivery is redelivered ONLY when no ACK is sent (a payload pull or dispatch
- *     failure). The pre-status fields are unchanged, so an older relay can ignore
- *     the additions. ProPR remains the only source of truth for repo/user policy;
+ *     failure). ProPR remains the only source of truth for repo/user policy;
  *     the relay forwards every eligible-looking trigger and records the result.
  *   - `pong`: `{ type: 'pong' }` — keepalive response.
  *

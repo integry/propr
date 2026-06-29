@@ -60,12 +60,17 @@ export function proprInstanceProxyUrl(instanceId) {
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
 // tunnel base URL must be one of them. Requires exactly one valid instance-id
 // label before the suffix (a nested host like foo.bar.proxy.propr.dev is
-// rejected). Mirrors isProprProxyUrl() in the shared pkg.
+// rejected) and a bare origin (a non-root path/query/fragment is rejected so
+// proprTunnelEndpoints does not double up the /api prefix). Mirrors
+// isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
     if (!url) return false;
     try {
-        const { protocol, hostname } = new URL(url);
+        const { protocol, hostname, pathname, search, hash } = new URL(url);
         if (protocol !== 'https:') return false;
+        // Trailing slashes are tolerated; any real path segment/query/fragment
+        // is rejected so a base path can't double up the appended /api prefix.
+        if (/[^/]/.test(pathname) || search || hash) return false;
         const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
         if (!hostname.endsWith(suffix)) return false;
         return isValidProprInstanceId(hostname.slice(0, -suffix.length));
@@ -1461,7 +1466,7 @@ export function validateEnv(cfg) {
         if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
             badUrlSink.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. Use a full URL such as https://abc123.proxy.propr.dev.`);
         } else if (cfg.uiTunnelEnabled && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
-            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a https://<id>.${PROPR_UI_PROXY_SUFFIX} URL.`);
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a bare https://<id>.${PROPR_UI_PROXY_SUFFIX} origin (no path/query/fragment — the /api and /socket.io paths are appended automatically).`);
         }
     }
 

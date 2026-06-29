@@ -142,6 +142,39 @@ test("tunnel setup rejects a non-Connect proxy URL", () => {
   );
 });
 
+test("tunnel setup rejects a proxy URL carrying a path", () => {
+  // A base URL with a path would make proprTunnelEndpoints double up the /api
+  // prefix (".../api/api/status"), so it must be rejected as a bare origin.
+  assert.throws(
+    () =>
+      buildTunnelSetupEnv({
+        token: "secret-token",
+        url: "https://abc123.proxy.propr.dev/api",
+      }),
+    /hosted proxy URL/
+  );
+});
+
+test("tunnel setup canonicalizes a mixed-case instance id", () => {
+  // DNS is case-insensitive and the launcher lowercases PROPR_INSTANCE_ID, so
+  // setup must persist the same canonical (lowercased) id and URL.
+  assert.deepEqual(
+    buildTunnelSetupEnv({
+      token: "secret-token",
+      instanceId: "AbC123",
+    }),
+    {
+      PROPR_UI_TUNNEL_TOKEN: "secret-token",
+      PROPR_UI_TUNNEL_ENABLED: "true",
+      PROPR_INSTANCE_ID: "abc123",
+      PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
+      API_PUBLIC_URL: "https://abc123.proxy.propr.dev",
+      FRONTEND_URL: "https://app.propr.dev",
+      GH_OAUTH_CALLBACK_URL: "https://abc123.proxy.propr.dev/api/auth/github/callback",
+    }
+  );
+});
+
 test("tunnel setup --start starts a stopped stack with tunnel settings", async () => {
   const calls: Array<{ fn: string; uiTunnelEnabled?: boolean }> = [];
   const { configManager, value } = fakeConfigManager(undefined);
