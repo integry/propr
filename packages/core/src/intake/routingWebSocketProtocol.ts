@@ -137,7 +137,14 @@ export function buildAckFrame(
 ): Record<string, unknown> {
     const frame: Record<string, unknown> = { type: 'ack', sequence, deliveryId, status: disposition.status };
     if (disposition.reason !== undefined) frame.reason = disposition.reason;
-    if (disposition.billing !== undefined) frame.billing = disposition.billing;
+    if (disposition.billing !== undefined) {
+        // blocked/ignored are terminal non-processing outcomes and cannot consume
+        // a seat. Normalize defensive caller mistakes here so the relay never
+        // receives a contradictory ACK it would reject or retry.
+        frame.billing = {
+            seatConsumed: disposition.status === 'accepted' ? disposition.billing.seatConsumed : false,
+        };
+    }
     return frame;
 }
 

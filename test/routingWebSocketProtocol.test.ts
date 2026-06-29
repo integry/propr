@@ -193,6 +193,12 @@ test('buildAckFrame always carries a status and includes reason/billing only whe
         buildAckFrame(7, 'd3', { status: 'blocked', reason: 'limit_reached', billing: { seatConsumed: false } }),
         { type: 'ack', sequence: 7, deliveryId: 'd3', status: 'blocked', reason: 'limit_reached', billing: { seatConsumed: false } },
     );
+    // Non-accepted dispositions are terminal non-processing outcomes; even if a
+    // buggy dispatcher claims a consumed seat, the wire frame must not.
+    assert.deepEqual(
+        buildAckFrame(8, 'd4', { status: 'ignored', reason: 'user_not_allowed', billing: { seatConsumed: true } }),
+        { type: 'ack', sequence: 8, deliveryId: 'd4', status: 'ignored', reason: 'user_not_allowed', billing: { seatConsumed: false } },
+    );
 });
 
 test('normalizeDisposition maps void/garbage to accepted and honors a valid disposition', () => {
