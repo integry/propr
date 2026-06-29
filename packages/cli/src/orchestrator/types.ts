@@ -39,6 +39,12 @@ export interface OrchestratorConfig {
   readonly proprInstanceId?: string;
   readonly uiPublicApiUrl?: string;
   readonly cloudflaredImage: string;
+  /**
+   * Hosted UI origin allowed by CORS/redirects. Always resolves to a value:
+   * an explicit FRONTEND_URL, the hosted origin in tunnel mode, or the
+   * localhost UI default for local development.
+   */
+  readonly frontendUrl: string;
   readonly mistralApiKey?: string;
   readonly vibeConfigPath?: string;
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
