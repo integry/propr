@@ -49,6 +49,7 @@ jobs:
             test/routingWebSocketProtocol.test.ts \
             test/routingWebSocketIntakeService.test.ts \
             packages/api/test/corsValidation.test.ts
+          npm run build -w @propr/shared
           npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
           echo "✅ Hosted tunnel regression tests passed"
 
