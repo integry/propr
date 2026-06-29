@@ -349,8 +349,8 @@ propr tunnel verify   # checks the sidecar + public /api/status, /, /socket.io/
 
 **Enablement.** Setting `PROPR_UI_TUNNEL_TOKEN` enables the tunnel by default, so the next `propr start` (or a restart) brings up the sidecar — you do not strictly need `propr tunnel on` first. `propr tunnel on|off` records an explicit choice that **overrides** the token-derived default and is honored by later starts; `propr tunnel on` additionally starts the sidecar immediately on an already-running stack, and `propr tunnel off` stops it while leaving the token in place. `PROPR_UI_TUNNEL_ENABLED=true` is an explicit alternative, but a token is still required — `propr check` fails if the tunnel is enabled without `PROPR_UI_TUNNEL_TOKEN`. See [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel) for the full toggle semantics.
 
-:::note[Manual for v1]
-v1 is intentionally manual: you provision the Cloudflare Tunnel token and the instance id and set them in `.env` yourself. **Automated provisioning** of the tunnel and instance id, and **selecting among multiple instances** from the hosted UI, are planned for later work.
+:::note[Connect provisioning]
+ProPR Connect provisions the Cloudflare Tunnel token and instance id for Plus installations and shows the one-time `propr tunnel setup --token ... --url ... --start` command. The raw `.env` values remain visible as a fallback for older CLI versions or manual recovery, but new installs should prefer the generated CLI command so the stack is restarted with the hosted URLs immediately.
 :::
 
 ## After Startup

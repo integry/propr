@@ -121,8 +121,8 @@ If you are on an older CLI or need to inspect the underlying settings, these are
 
 Each enabled stack is reachable at a per-instance hostname `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, which is how the hosted UI discovers and addresses it. See [ProPR Connect](../operations/propr-connect.md) for the role of each hosted hostname, and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and the architecture, including how `.proxy.propr.dev` differs from the central ProPR APIs.
 
-:::note[Manual for v1]
-In v1 the tunnel is wired up by hand: you provision the Cloudflare Tunnel token and instance id and set them in `.env` yourself. Automated provisioning and selecting among multiple instances from the hosted UI are planned for later work.
+:::note[Connect provisioning]
+ProPR Connect provisions the Cloudflare Tunnel token and instance id for Plus installations and shows the one-time `propr tunnel setup --token ... --url ... --start` command. The raw `.env` values remain visible as a fallback for older CLI versions or manual recovery, but new installs should prefer the generated CLI command so the stack is restarted with the hosted URLs immediately.
 :::
 
 ## Connect and Authenticate

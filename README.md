@@ -173,6 +173,12 @@ git push origin v0.8.4
 
 The `propr-cli` npm package is published separately with `npm run cli:publish` (build + publish the standalone, unscoped package).
 
+Hosted UI tunnel releases must ship both artifacts from the same merged commit:
+
+1. Publish the Docker images so the launcher manifest includes the `cloudflared` sidecar and tunnel-aware API/UI environment handling.
+2. Publish `propr-cli` so Connect's generated `propr tunnel setup --token ... --url ... --start` command is available to users.
+3. Smoke-test with a fresh stack: run the Connect setup command, verify the stack recreates with `API_PUBLIC_URL` / `FRONTEND_URL` applied, then run `propr tunnel verify`.
+
 ## Contributing
 
 Contributions are welcome. Please follow existing code patterns, keep tests passing, update docs alongside code, and use the structured logger for output. See [`CHANGELOG.md`](CHANGELOG.md) for release history.
