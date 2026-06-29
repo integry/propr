@@ -1453,21 +1453,27 @@ export function validateEnv(cfg) {
 
     // Validate an explicit PROPR_UI_PUBLIC_API_URL. A derived public URL is always
     // well-formed, so a bad value here can only come from an explicit override.
-    // When the tunnel is ENABLED the value is advertised to the API/worker, probed
-    // by getTunnelStatus()/verify, and must point at a hosted proxy host because
+    //
+    // A malformed value is ALWAYS a hard error, regardless of tunnel state: the
+    // launcher injects PROPR_UI_PUBLIC_API_URL into the UI container whenever it is
+    // set (buildServiceSpec('ui')), and docker-entrypoint.sh writes it into
+    // config.js as the browser's API base URL. So even with the tunnel disabled a
+    // bad value is NOT inert — it breaks the UI's API calls in local/self-hosted
+    // mode. Validate it consistently wherever it will be injected.
+    //
+    // The hosted-proxy-host requirement is narrower and stays tunnel-only: when the
+    // tunnel is ENABLED the value is advertised to the API/worker, probed by
+    // getTunnelStatus()/verify, and must point at a hosted proxy host because
     // propr-routing only forwards /api/* and /socket.io/* on
-    // https://<id>.proxy.propr.dev — so a malformed or non-proxy URL would start an
-    // unroutable tunnel stack and is a hard error (matching the routing rule and the
-    // `propr tunnel on` guard). When the tunnel is DISABLED the value is inert —
-    // nothing consumes it — so a leftover/typo'd URL is only a warning and does not
-    // block an unrelated local-dev startup.
+    // https://<id>.proxy.propr.dev — so a non-proxy URL would start an unroutable
+    // tunnel stack (matching the routing rule and the `propr tunnel on` guard). With
+    // the tunnel off, any valid http(s) origin the UI should call is legitimate, so
+    // only the well-formedness check applies.
     if (cfg.uiPublicApiUrl) {
-        // In tunnel mode a bad URL is fatal; with the tunnel off it is advisory.
-        const badUrlSink = cfg.uiTunnelEnabled ? errors : warnings;
         let parsed;
         try { parsed = new URL(cfg.uiPublicApiUrl); } catch { /* invalid below */ }
         if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
-            badUrlSink.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. Use a full URL such as https://abc123.proxy.propr.dev.`);
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. It is injected into the UI container (config.js) as the browser's API base URL even when the tunnel is off, so a malformed value breaks the UI. Use a full URL such as https://abc123.proxy.propr.dev.`);
         } else if (cfg.uiTunnelEnabled && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
             errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a bare https://<id>.${PROPR_UI_PROXY_SUFFIX} origin (no path/query/fragment — the /api and /socket.io paths are appended automatically).`);
         }

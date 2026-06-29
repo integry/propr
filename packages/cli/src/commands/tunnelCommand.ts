@@ -588,7 +588,15 @@ async function runTunnelSetup(options: {
   });
 
   upsertEnvVars(envPath, { ...vars });
-  await configManager.set("tunnelEnabled", true);
+  // Persist the CLI tunnelEnabled override only when we are NOT going on to start
+  // the stack. With --start, defer the persist to startOrRestartTunnelStack, which
+  // runs env validation first and persists tunnelEnabled=true only AFTER it passes.
+  // Persisting here unconditionally would leave the override enabled even if the
+  // start path then rejected the just-written env, contradicting its
+  // validate-before-persist contract.
+  if (!options.start) {
+    await configManager.set("tunnelEnabled", true);
+  }
 
   console.log("Tunnel configuration saved.");
   console.log(`  saved to: ${envPath}`);

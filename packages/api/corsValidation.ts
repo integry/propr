@@ -32,8 +32,9 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
       // inline validator in server.ts, which allowed http on the cookie-domain
       // subdomain branch. It also affects the (non-tunnel) PR-preview path: a
       // preview env that reached the API over http://<sub>.<cookie-domain> is now
-      // rejected by CORS and must use https. Acceptable pre-release, but it is a
-      // behavior change beyond the tunnel feature, so it is flagged here.
+      // rejected by CORS and must use https. This is a deliberate behavior change
+      // beyond the tunnel feature; it is safe because ProPR is pre-release and has
+      // no live http://<sub>.<cookie-domain> preview deployments to migrate.
       if (
         baseDomain &&
         url.protocol === 'https:' &&

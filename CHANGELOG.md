@@ -44,8 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a request origin that is a subdomain of the cookie domain must now use
   `https:` to be allowed (previously `http:` was accepted for that branch). This
   also affects any non-tunnel preview environment that reached the API over
-  `http://<sub>.<cookie-domain>`; such previews must switch to `https`. Local
-  development and explicit `FRONTEND_URL` origins are unaffected.
+  `http://<sub>.<cookie-domain>`; such previews must switch to `https`. Safe to
+  ship because ProPR is pre-release with no live `http://<sub>.<cookie-domain>`
+  preview deployments to migrate. Local development and explicit `FRONTEND_URL`
+  origins are unaffected.
 - **Enqueue failures now propagate from `processDetectedIssue`**: a failure to
   add an issue to the work queue is re-thrown instead of being swallowed, so the
   routing intake path withholds the ACK and the delivery is redelivered. All

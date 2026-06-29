@@ -396,14 +396,15 @@ test('validateEnv rejects a malformed explicit PROPR_UI_PUBLIC_API_URL in tunnel
   assert.match(validateEnv(cfg).errors.join('\n'), /PROPR_UI_PUBLIC_API_URL/);
 });
 
-test('validateEnv only warns about a malformed PROPR_UI_PUBLIC_API_URL when the tunnel is off', () => {
+test('validateEnv rejects a malformed PROPR_UI_PUBLIC_API_URL even when the tunnel is off', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFileLocal = join(rootDir, '.env');
   writeFileSync(envFileLocal, 'API_PORT=4400\n');
 
-  // A leftover/typo'd PROPR_UI_PUBLIC_API_URL with the tunnel disabled is inert —
-  // nothing consumes it — so it must not hard-fail an unrelated local-dev startup;
-  // it is only surfaced as a warning.
+  // A malformed PROPR_UI_PUBLIC_API_URL is NOT inert with the tunnel off: the
+  // launcher still injects it into the UI container (config.js) as the browser's
+  // API base URL, so a bad value breaks the UI in local/self-hosted mode. It must
+  // therefore be a hard error regardless of tunnel state, not a mere warning.
   const disabled = resolveConfig({
     PROPR_UI_PUBLIC_API_URL: 'not a url',
     PROPR_ENV_FILE: '/host/propr/.env',
@@ -413,8 +414,10 @@ test('validateEnv only warns about a malformed PROPR_UI_PUBLIC_API_URL when the 
     PROPR_REPOS_DIR: '/host/propr/repos',
   }, { manifestPath });
   assert.equal(disabled.uiTunnelEnabled, false);
-  assert.deepEqual(validateEnv(disabled).errors.filter((e) => /PROPR_UI_PUBLIC_API_URL/.test(e)), []);
-  assert.match(validateEnv(disabled).warnings.join('\n'), /PROPR_UI_PUBLIC_API_URL.*not a valid http\(s\) URL/);
+  assert.match(
+    validateEnv(disabled).errors.filter((e) => /PROPR_UI_PUBLIC_API_URL/.test(e)).join('\n'),
+    /not a valid http\(s\) URL/,
+  );
 });
 
 test('validateEnv accepts a derived public URL from the instance id', () => {
