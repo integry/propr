@@ -27,9 +27,10 @@
  *   - `ping`: an application-level keepalive. Answered with a `pong` frame.
  *
  * Backend -> relay frames:
- *   - `ack`: `{ type: 'ack', sequence, deliveryId }` — sent only after the local
- *     webhook handler returns, so the relay never advances past an event we have
- *     not durably accepted.
+ *   - `ack`: `{ type: 'ack', sequence, deliveryId, status?, reason?, billing? }`
+ *     — sent only after the local webhook handler returns, so the relay never
+ *     advances past an event we have not durably accepted. Legacy dispatchers
+ *     that return no disposition keep the old plain ACK shape.
  *   - `pong`: `{ type: 'pong' }` — keepalive response.
  *
  * The service is resilient by design: it reconnects with capped exponential
@@ -41,7 +42,11 @@
 import { DEFAULT_PROPR_ROUTING_URL } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { generateCorrelationId } from '../utils/logger.js';
-import { processWebhookEvent, type WebhookEventType } from '../webhook/webhookHandler.js';
+import {
+    processWebhookEvent,
+    type DeliveryDisposition,
+    type WebhookEventType,
+} from '../webhook/webhookHandler.js';
 import {
     BoundedTokenCache,
     DEFAULT_MAX_DEDUPE_ENTRIES,
@@ -56,6 +61,7 @@ import {
     parseTokenExpiry,
     rawDataToString,
     resolveDeliveryPayload,
+    resolvePingIntervalMs,
     validateRoutingUrl,
     type FetchLike,
     type MinimalWebSocket,
@@ -65,19 +71,6 @@ import {
 } from './routingWebSocketProtocol.js';
 
 export type { FetchLike, MinimalWebSocket, RawData, WebSocketCtor } from './routingWebSocketProtocol.js';
-
-const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
-
-function parsePositiveIntegerEnv(name: string): number | undefined {
-    const value = process.env[name];
-    if (!value) return undefined;
-    const trimmed = value.trim();
-    // Require a whole-string positive integer so values like `50abc` or `1.5`
-    // are rejected rather than silently coerced to `50`/`1`.
-    if (!/^\d+$/.test(trimmed)) return undefined;
-    const parsed = Number.parseInt(trimmed, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
 
 export interface RoutingWebSocketIntakeServiceOptions {
     /**
@@ -98,7 +91,7 @@ export interface RoutingWebSocketIntakeServiceOptions {
      * Event dispatcher. Defaults to the shared {@link processWebhookEvent}, which
      * requires {@link initializeWebhookHandler} to have run first.
      */
-    dispatch?: (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void>;
+    dispatch?: (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
     /** Initial reconnect delay in ms (doubles up to {@link maxReconnectDelayMs}). */
     reconnectDelayMs?: number;
     /** Maximum reconnect backoff delay in ms. */
@@ -155,7 +148,7 @@ export interface RoutingWebSocketStatus {
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
     private readonly relayToken: string;
-    private readonly dispatch: (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void>;
+    private readonly dispatch: (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
     private readonly initialReconnectDelayMs: number;
     private readonly maxReconnectDelayMs: number;
     private readonly pingIntervalMs: number;
@@ -207,14 +200,12 @@ export class RoutingWebSocketIntakeService {
         // Falls back to the hosted routing relay (webhook.propr.dev) so the
         // daemon connects out of the box; an explicit routingUrl or
         // PROPR_ROUTING_URL overrides it for self-hosted relays.
-        this.routingUrl =
-            (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
+        this.routingUrl = (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
         this.relayToken = (options.relayToken ?? process.env.PROPR_GH_RELAY_TOKEN ?? '').trim();
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
-        this.pingIntervalMs =
-            options.pingIntervalMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
+        this.pingIntervalMs = resolvePingIntervalMs(options.pingIntervalMs);
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;
@@ -432,7 +423,7 @@ export class RoutingWebSocketIntakeService {
             log.warn({ deliveryId, sequence }, 'Discarding event frame with no event type');
             // ACK so the relay does not redeliver an event we can never handle.
             this.deliveries.accept(deliveryId);
-            this.sendAck(sequence, deliveryId, socket);
+            this.sendAck(sequence, deliveryId, socket, { status: 'ignored', reason: 'missing_event_type' });
             return;
         }
 
@@ -459,7 +450,7 @@ export class RoutingWebSocketIntakeService {
         if (!isSupportedEventType(rawEventType)) {
             log.debug({ eventType: rawEventType, deliveryId, sequence }, 'Ignoring unsupported routing event type');
             this.deliveries.accept(deliveryId);
-            this.sendAck(sequence, deliveryId, socket);
+            this.sendAck(sequence, deliveryId, socket, { status: 'ignored', reason: 'unsupported_event_type' });
             return;
         }
 
@@ -486,9 +477,10 @@ export class RoutingWebSocketIntakeService {
             return;
         }
 
+        let disposition: DeliveryDisposition | undefined;
         try {
             log.debug({ eventType: rawEventType, deliveryId, sequence }, 'Dispatching routing event');
-            await this.dispatch(payload, rawEventType, correlationId);
+            disposition = (await this.dispatch(payload, rawEventType, correlationId)) ?? undefined;
         } catch (error) {
             this.deliveries.fail(deliveryId);
             log.error(
@@ -507,7 +499,7 @@ export class RoutingWebSocketIntakeService {
         // handler must tolerate a duplicate. Draining in stop() narrows, but does
         // not eliminate, that window (accepted ids are not persisted across restart).
         this.deliveries.accept(deliveryId);
-        this.sendAck(sequence, deliveryId, socket);
+        this.sendAck(sequence, deliveryId, socket, disposition);
     }
 
     /**
@@ -515,8 +507,14 @@ export class RoutingWebSocketIntakeService {
      * delivery id and ACK time for {@link getStatus} only when the frame is
      * actually put on the wire, so the reported "last ACK" reflects real progress.
      */
-    private sendAck(sequence: number, deliveryId: string, socket: MinimalWebSocket): void {
-        if (this.send({ type: 'ack', sequence, deliveryId }, socket)) {
+    private sendAck(sequence: number, deliveryId: string, socket: MinimalWebSocket, disposition?: DeliveryDisposition): void {
+        const frame: Record<string, unknown> = { type: 'ack', sequence, deliveryId };
+        if (disposition) {
+            frame.status = disposition.status;
+            if (disposition.reason) frame.reason = disposition.reason;
+            if (disposition.billing) frame.billing = disposition.billing;
+        }
+        if (this.send(frame, socket)) {
             this.lastDeliveryId = deliveryId;
             this.lastAckAt = this.now();
             this.notifyStatusChange();

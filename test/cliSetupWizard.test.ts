@@ -17,12 +17,17 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { runSetup, type SetupActions } from "../packages/cli/src/commands/setup/engine.js";
+import {
+  ENV_FILENAME,
+  MANIFEST_FILENAME,
+  generateGithubAppManifest,
+} from "../packages/cli/src/commands/githubAppCommands.js";
 import {
   buildSequentialPrompts,
   runSequentialSetup,
@@ -99,6 +104,22 @@ function diskActions(overrides: Partial<SetupActions> = {}): SetupActions {
     applyEnvSelection,
     clearEnvKeys,
     detectGithubAuthMode,
+    // Real GitHub App manifest helpers — they write to / inspect the temp root,
+    // matching what `propr github-app manifest` produces.
+    inspectGithubAppManifest: (rootDir) => {
+      const manifestPath = join(rootDir, MANIFEST_FILENAME);
+      const envPath = join(rootDir, ENV_FILENAME);
+      return { manifestPath, envPath, exists: existsSync(manifestPath) || existsSync(envPath) };
+    },
+    generateGithubAppManifest: async ({ rootDir, publicUrl, force }) => {
+      const generated = await generateGithubAppManifest({ root: rootDir, publicUrl, force });
+      return {
+        manifestPath: generated.manifestPath,
+        envPath: generated.envPath,
+        webhookUrl: generated.webhookUrl,
+        createUrl: generated.createUrl,
+      };
+    },
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },
@@ -186,6 +207,69 @@ test("selecting direct-webhook intake records the mode and signing secret on dis
   const env = readEnvVars(root);
   assert.equal(env.GITHUB_EVENT_INTAKE_MODE, "direct_webhook");
   assert.equal(env.GH_WEBHOOK_SECRET, "s3cret");
+});
+
+test("direct-webhook + custom App setup writes the same files as `propr github-app manifest`", async () => {
+  const root = makeRoot();
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nAPI_PUBLIC_URL=https://propr.example.com\n"
+  );
+
+  let seenPublicUrl: string | undefined;
+  const result = await runSetup({
+    root,
+    prompts: {
+      configureIntake: async () => ({ mode: "direct_webhook", webhookSecret: "s3cret" }),
+      configureGithubAppManifest: async ({ detectedPublicUrl }) => {
+        // The public URL is discovered from .env, so the renderer can reuse it.
+        seenPublicUrl = detectedPublicUrl;
+        return { publicUrl: detectedPublicUrl ?? "https://propr.example.com" };
+      },
+    },
+    actions: diskActions(),
+  });
+
+  assert.equal(seenPublicUrl, "https://propr.example.com", "API_PUBLIC_URL feeds the manifest prompt");
+  // Both output files land in the stack root, mirroring the standalone command.
+  const manifest = JSON.parse(readFileSync(join(root, MANIFEST_FILENAME), "utf-8"));
+  assert.equal(manifest.url, "https://propr.example.com");
+  assert.equal(manifest.hook_attributes.url, "https://propr.example.com/webhook");
+  const snippet = readFileSync(join(root, ENV_FILENAME), "utf-8");
+  assert.match(snippet, /GITHUB_EVENT_INTAKE_MODE=direct_webhook/);
+  // The step stays done and surfaces the create/install next steps.
+  assert.equal(statusOf(result.state, "intake"), "done");
+  assert.match(getStep(result.state, "intake")?.nextAction ?? "", /GH_APP_ID/);
+});
+
+test("setup reports a warning (not a failure) when the manifest files already exist", async () => {
+  const root = makeRoot();
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n"
+  );
+  // Pre-generate the manifest so setup encounters existing files.
+  await generateGithubAppManifest({ root, publicUrl: "https://old.example.com" });
+  const before = readFileSync(join(root, MANIFEST_FILENAME), "utf-8");
+
+  const result = await runSetup({
+    root,
+    prompts: {
+      configureIntake: async () => ({ mode: "direct_webhook", webhookSecret: "s3cret" }),
+      // The renderer declines to regenerate when files already exist → null.
+      configureGithubAppManifest: async ({ filesExist }) => {
+        assert.equal(filesExist, true, "setup detects the pre-existing manifest files");
+        return null;
+      },
+    },
+    actions: diskActions(),
+  });
+
+  assert.equal(result.completed, true, "an existing-manifest warning is non-blocking");
+  assert.equal(statusOf(result.state, "intake"), "warning");
+  assert.match(getStep(result.state, "intake")?.detail ?? "", /already exists/i);
+  // The existing manifest is left untouched (not overwritten).
+  assert.equal(readFileSync(join(root, MANIFEST_FILENAME), "utf-8"), before, "existing files are preserved");
 });
 
 test("an empty webhook secret is rejected and writes nothing to .env", async () => {
@@ -374,6 +458,58 @@ test("fallback webhook prompt re-asks until a non-empty secret is entered", asyn
   });
   assert.deepEqual(decision, { mode: "direct_webhook", webhookSecret: "hook-secret" });
   assert.match(io.lines.join("\n"), /webhook secret is required/i);
+});
+
+test("manifest prompt reuses a detected public URL and only confirms generation", async () => {
+  // A single "y" (generate?) is enough when the public URL is already known.
+  const io = scriptedIo(["y"]);
+  const decision = await buildSequentialPrompts(io).configureGithubAppManifest!({
+    rootDir: "/stack",
+    detectedPublicUrl: "https://propr.example.com",
+    filesExist: false,
+    manifestPath: "/stack/github-app-manifest.json",
+    envPath: "/stack/github-app.env",
+  });
+  assert.deepEqual(decision, { publicUrl: "https://propr.example.com", regenerate: false });
+});
+
+test("manifest prompt asks for a public URL when none is detected", async () => {
+  // generate? (y), then the public URL (no default available).
+  const io = scriptedIo(["y", "https://my.propr.example"]);
+  const decision = await buildSequentialPrompts(io).configureGithubAppManifest!({
+    rootDir: "/stack",
+    detectedPublicUrl: undefined,
+    filesExist: false,
+    manifestPath: "/stack/github-app-manifest.json",
+    envPath: "/stack/github-app.env",
+  });
+  assert.deepEqual(decision, { publicUrl: "https://my.propr.example", regenerate: false });
+});
+
+test("manifest prompt leaves existing files alone unless the user confirms regenerate", async () => {
+  // generate? (y), regenerate existing files? (blank → no) → skip, returning null.
+  const io = scriptedIo(["y", ""]);
+  const decision = await buildSequentialPrompts(io).configureGithubAppManifest!({
+    rootDir: "/stack",
+    detectedPublicUrl: "https://propr.example.com",
+    filesExist: true,
+    manifestPath: "/stack/github-app-manifest.json",
+    envPath: "/stack/github-app.env",
+  });
+  assert.equal(decision, null);
+});
+
+test("manifest prompt regenerates existing files when the user opts in", async () => {
+  // generate? (y), regenerate? (y) → decision carries regenerate: true.
+  const io = scriptedIo(["y", "y"]);
+  const decision = await buildSequentialPrompts(io).configureGithubAppManifest!({
+    rootDir: "/stack",
+    detectedPublicUrl: "https://propr.example.com",
+    filesExist: true,
+    manifestPath: "/stack/github-app-manifest.json",
+    envPath: "/stack/github-app.env",
+  });
+  assert.deepEqual(decision, { publicUrl: "https://propr.example.com", regenerate: true });
 });
 
 test("runSequentialSetup drives the engine through scripted answers and writes .env on disk", async () => {

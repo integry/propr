@@ -36,6 +36,14 @@ HOST_GH_PRIVATE_KEY=/home/you/propr/app-private-key.pem
 `propr check` verifies all three are set (not placeholders) and that the key file
 is readable.
 
+If you are registering an own App specifically to receive events over a direct
+webhook (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`), `propr github-app manifest
+--public-url https://propr.example.com` scaffolds the App — it writes a
+`github-app-manifest.json` to submit to GitHub and a `github-app.env` snippet with
+a generated webhook secret, leaving only `GH_APP_ID`, `GH_INSTALLATION_ID`, and
+`HOST_GH_PRIVATE_KEY` to fill in after GitHub creates the App. See
+[ProPR CLI](../features/propr-cli.md#own-github-app-direct-webhook-mode).
+
 ### Relay mode (shared GitHub App)
 
 When you use a **shared** GitHub App provided by the vendor, you don't hold its
