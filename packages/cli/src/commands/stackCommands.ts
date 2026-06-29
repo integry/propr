@@ -7,7 +7,7 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
-import { renderStatusTable } from "../orchestrator/format.js";
+import { renderStatusTable, renderTunnelSection } from "../orchestrator/format.js";
 import { printOutput } from "../utils/index.js";
 
 /** Creates the `status` command — local stack status. */
@@ -34,10 +34,22 @@ Examples:
         }
 
         const status = orch.getStackStatus(cfg);
-        if (printOutput(status, options.json ?? false)) return;
+        // The Cloudflare tunnel is a local managed service, so its health is part
+        // of local status. The reachability probe is best-effort with its own
+        // timeout and never throws, so it cannot fail the status command.
+        const tunnel = await orch.getTunnelStatus(cfg, status);
+        if (printOutput({ ...status, tunnel }, options.json ?? false)) return;
 
         console.log("");
         console.log(renderStatusTable(status));
+        // The tunnel is an optional service most stacks never use. Only show the
+        // human-readable Tunnel section when it is configured or enabled, so the
+        // common case isn't cluttered with an all-"no" block. (The --json output
+        // above always includes the `tunnel` key for scripted consumers.)
+        if (tunnel.configured || tunnel.enabled) {
+          console.log("");
+          console.log(renderTunnelSection(tunnel));
+        }
         console.log("");
         if (!status.running) {
           console.log("Stack is not running. Start it with: propr start");

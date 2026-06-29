@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
+import { getApiBaseUrl } from '../config/runtimeConfig';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -24,10 +25,10 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       return;
     }
 
-    // Connect to the backend WebSocket server
-    // Use the same API base URL as REST API calls
-    // When empty or undefined, socket.io-client connects to the same origin
-    const socketUrl = import.meta.env.VITE_API_BASE_URL || undefined;
+    // Connect to the backend WebSocket server using the same runtime-configured
+    // API base URL as REST calls, so REST and Socket.IO always share an origin.
+    // When empty, socket.io-client connects to the same origin.
+    const socketUrl = getApiBaseUrl() || undefined;
 
     const newSocket = io(socketUrl, {
       transports: ['websocket'],

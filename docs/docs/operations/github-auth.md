@@ -18,6 +18,10 @@ bot identity. There are three ways to configure how the backend obtains a GitHub
 > delivery, and note that `GH_WEBHOOK_SECRET` belongs to the intake configuration
 > (it applies only to `direct_webhook`), not to auth mode.
 
+For the hosted bridge that provides relay auth, GitHub event routing, failed
+delivery recovery, and optional hosted UI tunnels, see
+[ProPR Connect](./propr-connect.md).
+
 ## Modes
 
 ### App mode (own GitHub App)

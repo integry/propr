@@ -4,10 +4,16 @@ import { closeConnection } from '@propr/core';
 // These are internal wire-protocol primitives, deliberately not exported from the
 // package root, so the test imports them directly from the source module.
 import {
+    ACCEPTED_DISPOSITION,
+    BoundedDeliveryMap,
     BoundedDeliverySet,
     BoundedTokenCache,
+    DeliveryTracker,
+    IGNORED_UNSUPPORTED_DISPOSITION,
+    buildAckFrame,
     buildConnectUrl,
     extractPulledPayload,
+    normalizeDisposition,
     parseTokenExpiry,
     resolveInstallationToken,
     toHttpOrigin,
@@ -164,6 +170,77 @@ test('BoundedTokenCache treats a token with no expiry as non-expiring', () => {
     cache.set('a', 't-a');
     now = Number.MAX_SAFE_INTEGER;
     assert.equal(cache.get('a'), 't-a');
+});
+
+test('buildAckFrame always carries a status and includes reason/billing only when present', () => {
+    // Bare accepted: status only, no reason/billing keys on the wire.
+    assert.deepEqual(buildAckFrame(5, 'd1', ACCEPTED_DISPOSITION), {
+        type: 'ack',
+        sequence: 5,
+        deliveryId: 'd1',
+        status: 'accepted',
+    });
+    // Ignored carries a reason but no billing.
+    assert.deepEqual(buildAckFrame(6, 'd2', IGNORED_UNSUPPORTED_DISPOSITION), {
+        type: 'ack',
+        sequence: 6,
+        deliveryId: 'd2',
+        status: 'ignored',
+        reason: 'unsupported_event',
+    });
+    // Full disposition: reason and billing both included.
+    assert.deepEqual(
+        buildAckFrame(7, 'd3', { status: 'blocked', reason: 'limit_reached', billing: { seatConsumed: false } }),
+        { type: 'ack', sequence: 7, deliveryId: 'd3', status: 'blocked', reason: 'limit_reached', billing: { seatConsumed: false } },
+    );
+    // Non-accepted dispositions are terminal non-processing outcomes; even if a
+    // buggy dispatcher claims a consumed seat, the wire frame must not.
+    assert.deepEqual(
+        buildAckFrame(8, 'd4', { status: 'ignored', reason: 'user_not_allowed', billing: { seatConsumed: true } }),
+        { type: 'ack', sequence: 8, deliveryId: 'd4', status: 'ignored', reason: 'user_not_allowed', billing: { seatConsumed: false } },
+    );
+});
+
+test('normalizeDisposition maps void/garbage to accepted and honors a valid disposition', () => {
+    // A dispatcher that returns nothing is a plain accept.
+    assert.equal(normalizeDisposition(undefined), ACCEPTED_DISPOSITION);
+    // Unknown/missing status degrades to accepted rather than suppressing the ACK.
+    assert.equal(normalizeDisposition({} as never), ACCEPTED_DISPOSITION);
+    assert.equal(normalizeDisposition({ status: 'maybe' } as never), ACCEPTED_DISPOSITION);
+    // A recognized status is honored verbatim (same object reference returned).
+    const blocked = { status: 'blocked' as const, reason: 'limit_reached' };
+    assert.equal(normalizeDisposition(blocked), blocked);
+});
+
+test('BoundedDeliveryMap stores values, refreshes recency on set, and evicts the oldest', () => {
+    const map = new BoundedDeliveryMap<number>(2);
+    map.set('a', 1);
+    map.set('b', 2);
+    map.set('a', 3); // re-set 'a': newest value and most-recent position
+    map.set('c', 4); // evicts 'b' (least-recently-seen), keeps refreshed 'a'
+    assert.equal(map.get('a'), 3);
+    assert.equal(map.get('b'), undefined);
+    assert.equal(map.get('c'), 4);
+    assert.equal(map.size, 2);
+    // touch refreshes recency without changing the value; a no-op for unknown ids.
+    map.touch('a');
+    map.touch('missing');
+    map.set('d', 5); // evicts 'c', keeps touched 'a'
+    assert.equal(map.get('a'), 3);
+    assert.equal(map.get('c'), undefined);
+});
+
+test('DeliveryTracker remembers the disposition an accepted delivery was ACKed with', () => {
+    const tracker = new DeliveryTracker(10);
+    tracker.begin('d1');
+    assert.equal(tracker.isInFlight('d1'), true);
+    const disposition = { status: 'ignored' as const, reason: 'user_not_allowed' };
+    tracker.accept('d1', disposition);
+    assert.equal(tracker.isInFlight('d1'), false);
+    assert.equal(tracker.isAccepted('d1'), true);
+    assert.equal(tracker.getDisposition('d1'), disposition);
+    // An unknown delivery has no stored disposition.
+    assert.equal(tracker.getDisposition('nope'), undefined);
 });
 
 test('resolveInstallationToken prefers the frame token, then the cache, else undefined', () => {

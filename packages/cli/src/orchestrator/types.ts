@@ -34,13 +34,19 @@ export interface OrchestratorConfig {
   readonly vibePromptCacheDir: string;
   readonly hostVibePromptCacheDir?: string;
   readonly hostGhPrivateKey?: string;
-  readonly mistralApiKey?: string;
-  readonly vibeConfigPath?: string;
   readonly uiTunnelEnabled: boolean;
   readonly uiTunnelToken?: string;
   readonly proprInstanceId?: string;
   readonly uiPublicApiUrl?: string;
   readonly cloudflaredImage: string;
+  /**
+   * Hosted UI origin allowed by CORS/redirects. Always resolves to a value:
+   * an explicit FRONTEND_URL, the hosted origin in tunnel mode, or the
+   * localhost UI default for local development.
+   */
+  readonly frontendUrl: string;
+  readonly mistralApiKey?: string;
+  readonly vibeConfigPath?: string;
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
   readonly images: Record<string, string>;
   readonly manifestPath: string;
@@ -63,6 +69,20 @@ export interface StackStatus {
   network: string;
   running: boolean;
   services: ServiceState[];
+}
+
+/** Hosted UI tunnel diagnostics surfaced by `propr status`. */
+export interface TunnelStatus {
+  /** Tunnel turned on by resolved config (token present or explicit flag). */
+  enabled: boolean;
+  /** A tunnel token is present. */
+  configured: boolean;
+  /** The cloudflared sidecar container is running. */
+  running: boolean;
+  /** Expected public proxy URL, or null when it cannot be derived. */
+  publicApiUrl: string | null;
+  /** Best-effort <publicApiUrl>/api/status probe; null when there is no URL to probe. */
+  reachable: boolean | null;
 }
 
 /** Result of validating host paths / vibe settings. */
@@ -141,11 +161,11 @@ export interface OrchestratorModule {
   stopService(cfg: OrchestratorConfig, service: string, opts?: { remove?: boolean; onLog?: (line: string) => void }): void;
   startStack(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; onLog?: (line: string) => void }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void }
   ): StackStatus;
   startStackAsync(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; onLog?: (line: string) => void }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void }
   ): Promise<StackStatus>;
   stopStack(
     cfg: OrchestratorConfig,
@@ -154,6 +174,9 @@ export interface OrchestratorModule {
 
   getStackStatus(cfg: OrchestratorConfig): StackStatus;
   getStackStatusAsync(cfg: OrchestratorConfig): Promise<StackStatus>;
+  /** Pure parse of `docker ps` tab-separated output into per-service state. */
+  parseStackStatus(cfg: OrchestratorConfig, stdout: string): StackStatus;
+  getTunnelStatus(cfg: OrchestratorConfig, stackStatus?: StackStatus): Promise<TunnelStatus>;
   getServiceState(cfg: OrchestratorConfig, service: string): ServiceState | undefined;
   getServiceLogs(
     cfg: OrchestratorConfig,

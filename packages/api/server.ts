@@ -9,6 +9,7 @@ import { setupAuth, ensureAuthenticated } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
+import { createCorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes,
   createTaskRoutes,
@@ -50,7 +51,7 @@ import {
   getActiveTasksForPR
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
-import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
+import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 
@@ -122,9 +123,9 @@ function getIoRedisClient(): Redis {
   return ioRedisClient;
 }
 
-const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void> =>
+const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void | DeliveryDisposition> =>
   processDetectedIssueBase(issue, correlationId, getIoRedisClient() as unknown as Parameters<typeof processDetectedIssueBase>[2]);
-const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => processCommentEvent(payload, eventType, correlationId, getCommentConfig());
+const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> => processCommentEvent(payload, eventType, correlationId, getCommentConfig());
 const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
@@ -142,39 +143,13 @@ if (!process.env.FRONTEND_URL) {
 // Allow all subdomains of COOKIE_DOMAIN for CORS to support PR preview environments
 // that share sessions via cross-subdomain cookies
 const cookieDomain = process.env.COOKIE_DOMAIN;
-// Remove leading dot if present for hostname matching
-const baseDomain = cookieDomain?.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
-let frontendOrigin: string;
+// CORS origin validation function - shared between Express and Socket.IO
+let validateCorsOrigin: ReturnType<typeof createCorsOriginValidator>;
 try {
-  frontendOrigin = new URL(process.env.FRONTEND_URL).origin;
+  validateCorsOrigin = createCorsOriginValidator(process.env.FRONTEND_URL, cookieDomain);
 } catch {
   console.error(`FRONTEND_URL must be a valid URL, got: ${process.env.FRONTEND_URL}`);
   process.exit(1);
-}
-
-// CORS origin validation function - shared between Express and Socket.IO
-function validateCorsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void): void {
-  // Allow requests with no origin (e.g., mobile apps, curl, etc.)
-  if (!origin) {
-    callback(null, true);
-    return;
-  }
-  try {
-    const url = new URL(origin);
-    // Allow the base domain and any subdomain
-    if (baseDomain && (url.hostname === baseDomain || url.hostname.endsWith('.' + baseDomain))) {
-      callback(null, true);
-    } else if (url.origin === frontendOrigin) {
-      callback(null, true);
-    } else if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
-      // Allow localhost for development
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  } catch {
-    callback(new Error('Invalid origin'));
-  }
 }
 
 app.use(cors({
@@ -239,8 +214,16 @@ async function initRedis(): Promise<void> {
 }
 
 function setupRoutes(): void {
-  app.use('/api', ensureAuthenticated);
   const statusRoutes = createStatusRoutes({ redisClient });
+  // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
+  // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
+  // version-gate before the user logs in. This is the one deliberate exception to
+  // "everything under /api/* requires auth" — do not move it after the guard, and
+  // keep its handler returning only non-sensitive build metadata (version +
+  // compatibility dates). All other /api routes registered after this line are
+  // authenticated.
+  app.get('/api/compatibility', statusRoutes.getCompatibility);
+  app.use('/api', ensureAuthenticated);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -372,7 +355,9 @@ function setupWebhookRoute(): void {
         redis: { set: (key, value, opts) => opts
           ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
           : redisClient.set(key, value) as Promise<string | null> },
-        processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
+        processor: async (payload, event, cid) => {
+          await processWebhookEvent(payload, event as WebhookEventType, cid);
+        },
         correlationId,
         mergedPRTaskCanceller: {
           getActiveTasksForPR,

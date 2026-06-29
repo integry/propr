@@ -33,6 +33,10 @@ FROM node:20-slim
 WORKDIR /app
 COPY --from=build /app/propr-ui/dist /app/dist
 COPY propr-ui/serve.json /app/serve.json
-RUN npm install -g serve
+COPY propr-ui/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN npm install -g serve && chmod +x /app/docker-entrypoint.sh
 EXPOSE 5173
+# The entrypoint writes the runtime config (API / Socket.IO base URL) from
+# PROPR_UI_PUBLIC_API_URL into dist/config.js before starting the static server.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["serve", "-s", "dist", "-l", "tcp://0.0.0.0:5173", "-c", "../serve.json"]

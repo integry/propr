@@ -13,7 +13,8 @@ export type ConfigKey =
   | "defaultProject"
   | "stackRoot"
   | "uiEnabled"
-  | "docsEnabled";
+  | "docsEnabled"
+  | "tunnelEnabled";
 
 /**
  * CLI configuration structure.
@@ -53,6 +54,14 @@ export interface CLIConfig {
    * launcher's DOCS_ENABLED gate).
    */
   docsEnabled?: boolean;
+
+  /**
+   * Desired state of the Cloudflare Tunnel service. Persisted so `propr start`
+   * honors a previous `propr tunnel on|off` toggle. When unset, the launcher
+   * falls back to its env-derived default (a configured PROPR_UI_TUNNEL_TOKEN
+   * or PROPR_UI_TUNNEL_ENABLED=true).
+   */
+  tunnelEnabled?: boolean;
 }
 
 /**
@@ -65,4 +74,5 @@ export const DEFAULT_CONFIG: CLIConfig = {
   stackRoot: undefined,
   uiEnabled: undefined,
   docsEnabled: undefined,
+  tunnelEnabled: undefined,
 };

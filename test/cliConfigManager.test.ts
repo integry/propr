@@ -128,6 +128,45 @@ test("ConfigManager", async (t) => {
     cleanupTempDir(tempDir);
   });
 
+  await t.test("should persist tunnelEnabled across instances (survives load/sanitize)", async () => {
+    tempDir = createTempDir();
+
+    // Turning the tunnel off must survive a fresh CLI process so `propr start`
+    // honors a previous `propr tunnel off` even when a token is configured.
+    const manager1 = new ConfigManager(tempDir);
+    await manager1.init();
+    await manager1.setTunnelEnabled(false);
+
+    const manager2 = new ConfigManager(tempDir);
+    await manager2.init();
+
+    // The persisted value must come back through load()/sanitizeConfig() rather
+    // than being dropped (regression guard for the missing sanitize entry).
+    assert.strictEqual(manager2.getTunnelEnabled(), false);
+    assert.strictEqual(manager2.get("tunnelEnabled"), false);
+
+    // An explicit `on` round-trips too.
+    await manager2.setTunnelEnabled(true);
+    const manager3 = new ConfigManager(tempDir);
+    await manager3.init();
+    assert.strictEqual(manager3.getTunnelEnabled(), true);
+
+    cleanupTempDir(tempDir);
+  });
+
+  await t.test("getTunnelEnabled returns undefined when unset (defers to env default)", async () => {
+    tempDir = createTempDir();
+    configManager = new ConfigManager(tempDir);
+
+    await configManager.init();
+
+    // Unset means "defer to the launcher's env-derived default", so it must
+    // stay undefined rather than collapsing to false.
+    assert.strictEqual(configManager.getTunnelEnabled(), undefined);
+
+    cleanupTempDir(tempDir);
+  });
+
   await t.test("should handle corrupted JSON gracefully", async () => {
     tempDir = createTempDir();
 

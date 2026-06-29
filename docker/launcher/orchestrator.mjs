@@ -24,12 +24,81 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Mirror of the shared UI tunnel constants in
-// packages/shared/src/proprServiceUrls.ts. The orchestrator core is pure Node
-// stdlib (no transpile / npm install in the launcher image), so it cannot import
-// the TypeScript module — keep these values in sync with that source of truth.
-const PROPR_UI_PROXY_SUFFIX = '.proxy.propr.dev';
-const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:latest';
+// Hosted UI tunnel naming. These mirror the shared TypeScript constants in
+// packages/shared/src/proprServiceUrls.ts (PROPR_UI_PROXY_SUFFIX,
+// DEFAULT_CLOUDFLARED_IMAGE, DEFAULT_PROPR_UI_ORIGIN) — kept as plain literals
+// here because this module is dependency-free .mjs (Node stdlib only) and cannot
+// import the TS package. Change one, change the other;
+// test/orchestratorProprUrlsDrift.test.ts guards against the copies diverging.
+export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
+// Fallback used only when the manifest has no `cloudflared` entry. Pin it to the
+// same tag the manifest ships (docker/launcher/manifest.json) so the effective
+// default is identical whether it comes from the manifest or this fallback —
+// operator docs can then describe a single, pinned default.
+export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
+export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
+
+// Whether an instance id is a valid single DNS label for the proxy hostname
+// (<id>.proxy.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
+// leading/trailing hyphen. Mirrors isValidProprInstanceId() in the shared pkg.
+export function isValidProprInstanceId(instanceId) {
+    const id = (instanceId ?? '').trim();
+    return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
+}
+
+// Derive the per-instance public API/UI URL (https://<instanceId>.proxy.propr.dev)
+// from an instance id; returns undefined for a missing/blank or invalid id (so a
+// malformed hostname is never emitted). The id is lowercased so a mixed-case
+// PROPR_INSTANCE_ID yields a canonical hostname (DNS is case-insensitive).
+// Mirrors proprInstanceProxyUrl() in packages/shared/src/proprServiceUrls.ts.
+export function proprInstanceProxyUrl(instanceId) {
+    const id = (instanceId ?? '').trim();
+    return isValidProprInstanceId(id) ? `https://${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
+}
+
+// Whether a URL is a hosted per-instance proxy URL (https://<id>.proxy.propr.dev).
+// propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
+// tunnel base URL must be one of them. Requires exactly one valid instance-id
+// label before the suffix (a nested host like foo.bar.proxy.propr.dev is
+// rejected) and a bare origin (a non-root path/query/fragment is rejected so
+// proprTunnelEndpoints does not double up the /api prefix). Mirrors
+// isProprProxyUrl() in the shared pkg.
+export function isProprProxyUrl(url) {
+    if (!url) return false;
+    try {
+        const { protocol, hostname, pathname, search, hash } = new URL(url);
+        if (protocol !== 'https:') return false;
+        // Trailing slashes are tolerated; any real path segment/query/fragment
+        // is rejected so a base path can't double up the appended /api prefix.
+        if (/[^/]/.test(pathname) || search || hash) return false;
+        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+        if (!hostname.endsWith(suffix)) return false;
+        return isValidProprInstanceId(hostname.slice(0, -suffix.length));
+    } catch {
+        return false;
+    }
+}
+
+// The concrete endpoints the hosted UI reaches through the tunnel base URL.
+// propr-routing only allows /api/* and /socket.io/*, so the base (root) URL
+// itself intentionally returns 404 — it is NOT a health target; probe apiStatus
+// for liveness. Mirrors proprTunnelEndpoints() in packages/shared/src/proprServiceUrls.ts.
+export function proprTunnelEndpoints(baseUrl) {
+    const base = baseUrl.replace(/\/+$/, '');
+    return {
+        apiStatus: `${base}/api/status`,
+        socketIo: `${base}/socket.io/`,
+        root: `${base}/`,
+    };
+}
+
+// Broad truthy parse for env flags, mirroring parseTruthyEnvValue() in
+// packages/shared/src/demoMode.ts so `1`/`TRUE`/whitespace are accepted like
+// elsewhere in the repo (kept local because this module imports no TS package).
+function parseTruthyEnvValue(value) {
+    const normalized = value?.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1';
+}
 
 // True only for an existing regular file (guards against a path that exists but
 // is a directory, which would make readFileSync throw EISDIR).
@@ -192,26 +261,29 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // read it without the user having to stage it under data/.
     const hostGhPrivateKey = get('HOST_GH_PRIVATE_KEY');
 
-    // UI tunnel / hosted proxy settings. The hosted UI at app.propr.dev reaches
-    // a local stack through a Cloudflare tunnel; these expose the knobs the
-    // launcher needs to stand it up.
-    const uiTunnelToken = get('PROPR_UI_TUNNEL_TOKEN');
-    // A token alone is enough to enable the tunnel; PROPR_UI_TUNNEL_ENABLED=true
-    // also enables it (e.g. when the token is supplied out of band).
-    const uiTunnelEnabled = (uiTunnelToken !== undefined && uiTunnelToken !== '')
-        || get('PROPR_UI_TUNNEL_ENABLED') === 'true';
-    const proprInstanceId = get('PROPR_INSTANCE_ID');
-    const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || DEFAULT_CLOUDFLARED_IMAGE;
-
-    // Externally reachable API origin used by the hosted UI. Prefer an explicit
-    // PROPR_UI_PUBLIC_API_URL; otherwise derive it from the instance id via the
-    // hosted proxy suffix (abc123 -> https://abc123.proxy.propr.dev). Left
-    // undefined for a purely local stack with neither set.
-    const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL')
-        || (proprInstanceId ? `https://${proprInstanceId}${PROPR_UI_PROXY_SUFFIX}` : undefined);
-
     const manifestPath = overrides.manifestPath ?? resolve(__dirname, 'manifest.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+
+    // Hosted UI tunnel: expose this local stack's UI/API to the hosted control
+    // plane (https://app.propr.dev) via a Cloudflare Tunnel. A token alone is
+    // enough to enable it; PROPR_UI_TUNNEL_ENABLED=true also turns it on.
+    const uiTunnelToken = get('PROPR_UI_TUNNEL_TOKEN') || undefined;
+    // A persisted CLI toggle (`propr tunnel on|off`) wins over the env-derived
+    // default so `propr start` honors the user's last explicit choice.
+    const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED')));
+    const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
+    // Cloudflared image for the optional tunnel sidecar: an explicit env override
+    // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
+    // final fallback for manifests without a cloudflared entry.
+    const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
+    // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
+    // Falls back to undefined for local development (no instance id), where
+    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Trailing
+    // slashes are stripped once here so every consumer (API/worker/UI env, status
+    // output, endpoint rendering) sees one canonical form — the derived URL never
+    // has one, but an explicit PROPR_UI_PUBLIC_API_URL might.
+    const uiPublicApiUrl =
+        (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost,
@@ -222,16 +294,23 @@ export function resolveConfig(env = process.env, overrides = {}) {
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
         hostGhPrivateKey,
-        // misc -e overrides the launcher computed from ports/env
-        apiPublicUrl: get('API_PUBLIC_URL') || `http://localhost:${apiPort}`,
-        frontendUrl: get('FRONTEND_URL') || `http://localhost:${uiPort}`,
-        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || `http://localhost:${apiPort}/api/auth/github/callback`,
+        // Hosted UI tunnel settings (see resolution above). Defaults keep local
+        // development unaffected: no instance id ⇒ no derived public URL.
+        uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
+        // misc -e overrides the launcher computed from ports/env. When the UI
+        // tunnel is enabled the API/worker must advertise the public proxy URL
+        // (OAuth/session redirects, attachment links, browser-visible API refs)
+        // and the frontend must point at the hosted UI origin. An explicit
+        // API_PUBLIC_URL / FRONTEND_URL still wins; otherwise tunnel mode derives
+        // them, falling back to the localhost defaults for local development.
+        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiPort}`),
+        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiPort}`,
+        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiPort}/api/auth/github/callback`),
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
         mistralApiKey,
         vibeConfigPath: get('VIBE_CONFIG_PATH'),
-        uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
         manifest, images: manifest.images, manifestPath,
     });
 }
@@ -312,6 +391,21 @@ function vibePromptCacheArgs(cfg) {
         '-e', `HOST_VIBE_PROMPT_CACHE_DIR=${cfg.hostVibePromptCacheDir}`,
         '-e', 'VIBE_PROMPT_CACHE_HOST_MOUNTED=1',
     ];
+}
+
+// Tunnel-related env propagated into the API container for status/debugging and
+// future Connect support. PROPR_UI_TUNNEL_TOKEN is deliberately NOT among these
+// — only the cloudflared sidecar receives the token. The instance id and public
+// API URL are injected only when set, so local-development containers (no tunnel)
+// stay free of empty PROPR_* vars while still always reporting the enabled flag.
+function tunnelApiEnvArgs(cfg) {
+    const args = ['-e', `PROPR_UI_TUNNEL_ENABLED=${cfg.uiTunnelEnabled ? 'true' : 'false'}`];
+    // Inject the instance id lowercased so it matches the derived public URL
+    // (proprInstanceProxyUrl lowercases the host), keeping the id and the
+    // PROPR_UI_PUBLIC_API_URL host consistent for any consumer that compares them.
+    if (isValidProprInstanceId(cfg.proprInstanceId)) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId.trim().toLowerCase()}`);
+    if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
+    return args;
 }
 
 // Validates host bind-mount paths for Linux deployments. ':' rejection prevents
@@ -680,13 +774,14 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 // ---------------------------------------------------------------------------
 
 export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api'];
-export const TOGGLE_SERVICES = ['ui', 'docs'];
+export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
 
 function imageTagForService(cfg, service) {
     if (service === 'redis') return cfg.images.redis;
     if (service === 'ui') return cfg.images.ui;
     if (service === 'docs') return cfg.images.docs;
+    if (service === 'tunnel') return cfg.cloudflaredImage;
     // daemon/worker/analysis-worker/indexing-worker/api all run the app image
     return cfg.images.app;
 }
@@ -712,7 +807,7 @@ function appSpec(cfg, command, extraArgs = []) {
 }
 
 // Returns { image, args, command? } for a canonical service name.
-function buildServiceSpec(cfg, service) {
+export function buildServiceSpec(cfg, service) {
     switch (service) {
         case 'redis': {
             const args = ['-v', `${cfg.stack}-redis-data:/data`];
@@ -754,6 +849,17 @@ function buildServiceSpec(cfg, service) {
             ]);
         case 'api':
             return appSpec(cfg, ['dist/packages/api/server.js'], [
+                // Stable in-network DNS alias so the cloudflared sidecar (and the
+                // Cloudflare Tunnel ingress config) can target a fixed
+                // `http://api:4000` regardless of the stack prefix. Without it the
+                // container is only reachable as `${stack}-api` (e.g. propr-api),
+                // which would force a per-stack tunnel ingress config and break the
+                // documented `http://api:4000` target. The alias is added
+                // unconditionally (not only in tunnel mode): it is harmless for
+                // tunnel-disabled local dev — each stack has its own network, so the
+                // alias is scoped to that network and never collides — and keeping it
+                // always-on avoids restarting the API just to enable the tunnel later.
+                '--network-alias', 'api',
                 '-p', `${cfg.apiPort}:4000`,
                 '-v', `${cfg.envFileHost}:/usr/src/app/.env:ro`,
                 '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
@@ -765,11 +871,53 @@ function buildServiceSpec(cfg, service) {
                 '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
                 '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
+                ...tunnelApiEnvArgs(cfg),
             ]);
-        case 'ui':
-            return { image: cfg.images.ui, args: ['-p', `${cfg.uiPort}:5173`] };
+        case 'ui': {
+            // The UI image's docker-entrypoint.sh rewrites public/config.js from
+            // PROPR_UI_PUBLIC_API_URL so one prebuilt bundle can point at any
+            // per-instance proxy. Pass the tunnel base URL through unchanged — the
+            // UI appends /api/... to it for REST and uses /socket.io/ for Socket.IO,
+            // so the value must be the bare proxy origin (no /api suffix). Only set
+            // it when known; an unset value keeps the same-origin local default.
+            const uiArgs = ['-p', `${cfg.uiPort}:5173`];
+            if (cfg.uiPublicApiUrl) uiArgs.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
+            return { image: cfg.images.ui, args: uiArgs };
+        }
         case 'docs':
             return { image: cfg.images.docs, args: ['-p', `${cfg.docsPort}:3000`] };
+        case 'tunnel':
+            // The tunnel sidecar cannot authenticate without a token. Callers via
+            // the CLI validate this up front (validateEnv / `propr tunnel on`), but
+            // make the invariant local so a direct buildServiceSpec/startService
+            // call fails clearly instead of emitting a malformed `docker run`.
+            if (!cfg.uiTunnelToken) {
+                throw new Error('cannot build the tunnel service spec: PROPR_UI_TUNNEL_TOKEN is not set (the cloudflared sidecar needs a token to authenticate).');
+            }
+            // Optional Cloudflare Tunnel sidecar running the official cloudflared
+            // image (its entrypoint is `cloudflared`). It dials out to Cloudflare's
+            // edge, so no local ports are published.
+            //
+            // The spec's `tunnel --no-autoupdate run --token $PROPR_UI_TUNNEL_TOKEN`
+            // contract is satisfied via the env var rather than the literal flag:
+            // in cloudflared the `run` command's `--token` flag is bound to the
+            // TUNNEL_TOKEN env var (urfave/cli `EnvVars: ["TUNNEL_TOKEN"]`), so
+            // `tunnel run` reads TUNNEL_TOKEN natively and treats it exactly as if
+            // `--token <value>` had been passed. This binding is present in the
+            // pinned image (cloudflare/cloudflared:2024.12.2, see manifest.json) and
+            // has been stable across cloudflared releases, so the sidecar starts
+            // authenticated without the literal token ever appearing on argv.
+            // We prefer the env var precisely to keep the token off the process argv
+            // (otherwise visible to anyone via host `ps`/`docker top`, and to
+            // unprivileged in-container tooling). It is still present in the
+            // container's env, so a `docker inspect` by someone with Docker-daemon
+            // access can read it — Docker access is already privileged. The token
+            // is injected only here — no other container receives it.
+            return {
+                image: cfg.cloudflaredImage,
+                args: ['-e', `TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
+                command: ['tunnel', '--no-autoupdate', 'run'],
+            };
         default:
             throw new Error(`unknown service: ${service}`);
     }
@@ -823,8 +971,8 @@ export function isStackRunning(cfg) {
  * services started so far are stopped (best effort) before the error is
  * rethrown, so a failed startup doesn't leave a half-running stack behind.
  */
-export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
-    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
+export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog } = {}) {
+    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
     const started = [];
     const freshnessCache = new Map();
     try {
@@ -961,8 +1109,8 @@ async function stopServiceAsync(cfg, service, { remove = true, onLog } = {}) {
  * without blocking the event loop, rolling back already-started services on a
  * mid-startup failure (best effort) before rethrowing.
  */
-export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, onLog } = {}) {
-    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : [])];
+export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog } = {}) {
+    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
     const started = [];
     const freshnessCache = new Map();
     try {
@@ -1047,7 +1195,7 @@ export function stopStack(cfg, { remove = true, removeNetwork = false, onLog } =
 // ---------------------------------------------------------------------------
 
 /** Parse the `docker ps` table into per-service stack status (shared by sync/async). */
-function parseStackStatus(cfg, stdout) {
+export function parseStackStatus(cfg, stdout) {
     const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
     const byName = new Map();
     for (const line of stdout.split('\n').filter(Boolean)) {
@@ -1069,7 +1217,11 @@ function parseStackStatus(cfg, stdout) {
         };
     });
 
-    const anyRunning = services.some((s) => s.running);
+    // The stack is "running" only when a core service is up. A lone optional
+    // sidecar (e.g. an orphaned propr-tunnel left over after the core stack
+    // stopped) must not mask the unusable state — otherwise `propr status`
+    // would skip "Stack is not running" while the API is actually down.
+    const anyRunning = services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
     return { stack: cfg.stack, network: cfg.network, running: anyRunning, services };
 }
 
@@ -1083,6 +1235,92 @@ export function getStackStatus(cfg) {
 
 export function getServiceState(cfg, service) {
     return getStackStatus(cfg).services.find((s) => s.service === service);
+}
+
+// Best-effort GET <publicApiUrl>/api/status behind a hard timeout. propr-routing
+// only forwards /api/* and /socket.io/* on the proxy host, so the old root
+// /health path is no longer reachable through the tunnel — /api/status is the
+// public liveness endpoint. Resolves true when the API answers: a 2xx (status
+// payload) or an auth-expected 401/403 both prove the proxy reaches the API.
+// Resolves false on any other status / network error / timeout. Never throws:
+// tunnel reachability is a diagnostic, not a gate, so a slow or down proxy must
+// not fail `propr status`.
+// True for a well-formed http(s) URL. Used to skip probing/advertising a
+// malformed PROPR_UI_PUBLIC_API_URL (validateEnv flags it, but a programmatic
+// caller may have skipped validation).
+function isValidHttpUrl(value) {
+    try {
+        const { protocol } = new URL(value);
+        return protocol === 'http:' || protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
+function isLocalhostHttpUrl(value) {
+    try {
+        const { protocol, hostname } = new URL(value);
+        return (
+            (protocol === 'http:' || protocol === 'https:')
+            && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]')
+        );
+    } catch {
+        return false;
+    }
+}
+
+async function probeTunnelReachable(publicApiUrl, timeoutMs = 3000) {
+    const { apiStatus } = proprTunnelEndpoints(publicApiUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        // `redirect: 'manual'` so a redirect is treated as the proxy's own
+        // response rather than transparently followed off-host — matching the
+        // probe in `propr tunnel verify` (tunnelCommand.ts) so the two agree.
+        const res = await fetch(apiStatus, { signal: controller.signal, redirect: 'manual' });
+        // 2xx means the API answered; 401/403 means it answered but wants auth —
+        // either way the tunnel forwarded the request to the API behind it.
+        return res.ok || res.status === 401 || res.status === 403;
+    } catch {
+        return false;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * Tunnel diagnostics for `propr status`. The Cloudflare tunnel is a local
+ * managed service, so its health belongs in local status:
+ *   - enabled:      tunnel turned on by resolved config (token present or the
+ *                   explicit PROPR_UI_TUNNEL_ENABLED flag)
+ *   - configured:   a tunnel token is present
+ *   - running:      the cloudflared sidecar container is running
+ *   - publicApiUrl: the expected public proxy URL (null when not derivable)
+ *   - reachable:    best-effort <publicApiUrl>/api/status probe — true/false when
+ *                   a URL is known, null when there is nothing to probe
+ *
+ * Pass a precomputed stack status to reuse a single `docker ps`.
+ */
+export async function getTunnelStatus(cfg, stackStatus) {
+    const status = stackStatus ?? await getStackStatusAsync(cfg);
+    const tunnel = status.services.find((s) => s.service === 'tunnel');
+    const tunnelRunning = Boolean(tunnel && tunnel.running);
+    const publicApiUrl = cfg.uiPublicApiUrl ?? null;
+    // Only spend up to ~3s on the external probe when the tunnel is enabled, the
+    // cloudflared sidecar is actually running, and the public URL is a well-formed
+    // http(s) URL. Probing a configured-but-stopped tunnel can only ever fail (the
+    // sidecar that routes the request is down), so skipping it avoids adding the
+    // timeout to every `propr status` in the common "enabled but stopped" case.
+    const reachable = (cfg.uiTunnelEnabled && tunnelRunning && publicApiUrl && isValidHttpUrl(publicApiUrl))
+        ? await probeTunnelReachable(publicApiUrl)
+        : null;
+    return {
+        enabled: Boolean(cfg.uiTunnelEnabled),
+        configured: Boolean(cfg.uiTunnelToken),
+        running: tunnelRunning,
+        publicApiUrl,
+        reachable,
+    };
 }
 
 /** Spawn `docker logs` for a service. Returns the ChildProcess. */
@@ -1132,6 +1370,9 @@ export function validateEnv(cfg) {
     }
     if (cfg.envFileLocal && !isReadableFile(cfg.envFileLocal)) {
         errors.push(`cannot read the env file at ${cfg.envFileLocal}`);
+    }
+    if (cfg.proprInstanceId && !isValidProprInstanceId(cfg.proprInstanceId)) {
+        errors.push(`PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label. Use 1–63 letters/digits/hyphens with no leading or trailing hyphen, or unset PROPR_INSTANCE_ID and use a valid PROPR_UI_PUBLIC_API_URL.`);
     }
 
     if (cfg.vibeConfigPath && !cfg.hostVibeDir) {
@@ -1197,6 +1438,81 @@ export function validateEnv(cfg) {
         }
     }
 
+    // The tunnel sidecar cannot authenticate without a token. uiTunnelEnabled is
+    // true whenever a token is present, so this only trips when the tunnel was
+    // turned on without a token — either via PROPR_UI_TUNNEL_ENABLED=true or a
+    // persisted `propr tunnel on` override.
+    if (cfg.uiTunnelEnabled && !cfg.uiTunnelToken) {
+        errors.push('The UI tunnel is enabled (via PROPR_UI_TUNNEL_ENABLED=true or `propr tunnel on`) but PROPR_UI_TUNNEL_TOKEN is not set. Set PROPR_UI_TUNNEL_TOKEN to your Cloudflare Tunnel token, or disable the tunnel with `propr tunnel off` (or by unsetting PROPR_UI_TUNNEL_ENABLED).');
+    }
+
+    // Tunnel enabled but no public URL is known (cfg.uiPublicApiUrl is the
+    // explicit PROPR_UI_PUBLIC_API_URL or the id-derived one, so this only trips
+    // when neither yields a value — a missing or non-DNS-label instance id with no
+    // explicit override). The stack would then be inconsistent: frontendUrl=
+    // https://app.propr.dev but apiPublicUrl falls back to localhost, so cloudflared
+    // starts while the hosted UI has no endpoint to reach. `propr start` enables the
+    // tunnel from PROPR_UI_TUNNEL_TOKEN alone, bypassing the stricter `propr tunnel
+    // on` guard (TunnelPublicUrlMissingError), so this is a hard error here — fail
+    // startup rather than bring up a broken tunnel-mode stack.
+    if (cfg.uiTunnelEnabled && !cfg.uiPublicApiUrl) {
+        errors.push(
+            cfg.proprInstanceId
+                ? `PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label, so no https://<id>.proxy.propr.dev URL can be derived. The tunnel would start while the API advertises its localhost URL and the frontend points at the hosted UI, leaving the hosted UI with no endpoint to reach. Set a valid instance id (1–63 letters/digits/hyphens, no leading/trailing hyphen) or an explicit PROPR_UI_PUBLIC_API_URL.`
+                : 'The UI tunnel is enabled but neither PROPR_INSTANCE_ID nor PROPR_UI_PUBLIC_API_URL is set, so no public proxy URL can be derived. The tunnel would start while the API advertises its localhost URL, leaving the hosted UI with no endpoint to reach. Set PROPR_INSTANCE_ID (preferred) or an explicit PROPR_UI_PUBLIC_API_URL.'
+        );
+    }
+
+    // Validate an explicit PROPR_UI_PUBLIC_API_URL. A derived public URL is always
+    // well-formed, so a bad value here can only come from an explicit override.
+    //
+    // A malformed value is ALWAYS a hard error, regardless of tunnel state: the
+    // launcher injects PROPR_UI_PUBLIC_API_URL into the UI container whenever it is
+    // set (buildServiceSpec('ui')), and docker-entrypoint.sh writes it into
+    // config.js as the browser's API base URL. So even with the tunnel disabled a
+    // bad value is NOT inert — it breaks the UI's API calls in local/self-hosted
+    // mode. Validate it consistently wherever it will be injected.
+    //
+    // The hosted-proxy-host requirement is narrower and stays tunnel-only: when the
+    // tunnel is ENABLED the value is advertised to the API/worker, probed by
+    // getTunnelStatus()/verify, and must point at a hosted proxy host because
+    // propr-routing only forwards /api/* and /socket.io/* on
+    // https://<id>.proxy.propr.dev — so a non-proxy URL would start an unroutable
+    // tunnel stack (matching the routing rule and the `propr tunnel on` guard). With
+    // the tunnel off, any valid http(s) origin the UI should call is legitimate, so
+    // only the well-formedness check applies.
+    if (cfg.uiPublicApiUrl) {
+        let parsed;
+        try { parsed = new URL(cfg.uiPublicApiUrl); } catch { /* invalid below */ }
+        if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. It is injected into the UI container (config.js) as the browser's API base URL even when the tunnel is off, so a malformed value breaks the UI. Use a full URL such as https://abc123.proxy.propr.dev.`);
+        } else if (cfg.uiTunnelEnabled && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a bare https://<id>.${PROPR_UI_PROXY_SUFFIX} origin (no path/query/fragment — the /api and /socket.io paths are appended automatically).`);
+        }
+    }
+
+    // Existing local stacks commonly have explicit localhost API/UI URLs in
+    // their .env. Explicit values win during resolution, so without this guard
+    // enabling a tunnel can still launch a stack that advertises localhost to the
+    // API/worker or permits only localhost as the frontend origin. That breaks
+    // hosted app.propr.dev CORS, cookies, and public links even though the
+    // cloudflared sidecar itself starts successfully.
+    if (cfg.uiTunnelEnabled && isLocalhostHttpUrl(cfg.apiPublicUrl)) {
+        errors.push(`API_PUBLIC_URL ("${cfg.apiPublicUrl}") still points at localhost while the UI tunnel is enabled. In tunnel mode the API must advertise the hosted proxy URL (for example https://<id>.${PROPR_UI_PROXY_SUFFIX}) so app.propr.dev can reach this stack. Remove the explicit API_PUBLIC_URL or set it to the hosted proxy URL.`);
+    }
+    if (cfg.uiTunnelEnabled && isLocalhostHttpUrl(cfg.frontendUrl)) {
+        errors.push(`FRONTEND_URL ("${cfg.frontendUrl}") still points at localhost while the UI tunnel is enabled. In tunnel mode FRONTEND_URL must be ${DEFAULT_PROPR_UI_ORIGIN} so CORS and redirects allow the hosted UI. Remove the explicit FRONTEND_URL or set it to ${DEFAULT_PROPR_UI_ORIGIN}.`);
+    }
+
+    // In tunnel mode GH_OAUTH_CALLBACK_URL is derived from the public proxy URL
+    // when unset. An explicit localhost callback still wins, but it is a common
+    // broken-OAuth setup: GitHub redirects the browser to a localhost URL the
+    // hosted UI cannot reach. Warn so the operator updates it (and the GitHub App
+    // config) to the public proxy callback.
+    if (cfg.uiTunnelEnabled && /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(cfg.ghOauthCallbackUrl)) {
+        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
+    }
+
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);
     if (hasOpenCodeConfig && !cfg.hostOpencodeDataDir) {
         warnings.push(
@@ -1220,8 +1536,13 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
     onLog('pulling images…');
     const failedAgentImages = [];
 
-    for (const [key, tag] of Object.entries(cfg.images)) {
+    for (const [key, manifestTag] of Object.entries(cfg.images)) {
         if (key === 'docs' && !cfg.docsEnabled) continue;
+        if (key === 'cloudflared' && !cfg.uiTunnelEnabled) continue;
+        // The tunnel sidecar actually runs cfg.cloudflaredImage, which honors a
+        // PROPR_CLOUDFLARED_IMAGE override; pre-pull that image rather than the
+        // bare manifest tag so an override isn't pulled twice (here + on demand).
+        const tag = key === 'cloudflared' ? cfg.cloudflaredImage : manifestTag;
 
         if (key.startsWith('agent-') && skipAgentPull) {
             if (imagePresentLocally(tag)) {
