@@ -274,6 +274,18 @@ async function handlePlanIssueTracking(
 }
 
 /**
+ * Ensures the webhook handler dependencies have been initialized.
+ */
+function assertWebhookHandlerInitialized(
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): void {
+    if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
+        correlatedLogger.error('Webhook handler not properly initialized');
+        throw new Error('Webhook handler not initialized');
+    }
+}
+
+/**
  * Processes standard webhook events locally.
  */
 async function processStandardWebhookEvent(
@@ -282,10 +294,7 @@ async function processStandardWebhookEvent(
     correlationId: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<DeliveryDisposition> {
-    if (!processDetectedIssue || !processCommentEvent || !handleCommentDeleted || !handleCommentEdited) {
-        correlatedLogger.error('Webhook handler not properly initialized');
-        throw new Error('Webhook handler not initialized');
-    }
+    assertWebhookHandlerInitialized(correlatedLogger);
 
     switch (eventType) {
         case 'issues':
