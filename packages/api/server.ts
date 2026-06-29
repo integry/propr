@@ -50,7 +50,7 @@ import {
   getActiveTasksForPR
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
-import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
+import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 
@@ -122,11 +122,11 @@ function getIoRedisClient(): Redis {
   return ioRedisClient;
 }
 
-const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void | DeliveryDisposition> =>
+const processDetectedIssue = (issue: DetectedIssue, correlationId: string): Promise<void> =>
   processDetectedIssueBase(issue, correlationId, getIoRedisClient() as unknown as Parameters<typeof processDetectedIssueBase>[2]);
-const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> => processCommentEvent(payload, eventType, correlationId, getCommentConfig());
-const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> => handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
-const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
+const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => processCommentEvent(payload, eventType, correlationId, getCommentConfig());
+const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
+const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
 const PORT = process.env.DASHBOARD_API_PORT || 4000;
@@ -372,9 +372,7 @@ function setupWebhookRoute(): void {
         redis: { set: (key, value, opts) => opts
           ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
           : redisClient.set(key, value) as Promise<string | null> },
-        processor: async (payload, event, cid) => {
-          await processWebhookEvent(payload, event as WebhookEventType, cid);
-        },
+        processor: (payload, event, cid) => processWebhookEvent(payload, event as WebhookEventType, cid),
         correlationId,
         mergedPRTaskCanceller: {
           getActiveTasksForPR,

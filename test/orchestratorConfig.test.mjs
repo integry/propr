@@ -112,16 +112,6 @@ test('PROPR_UI_TUNNEL_ENABLED=true enables the tunnel without a token', () => {
   assert.equal(cfg.uiTunnelToken, undefined);
 });
 
-test('CLI tunnel override wins over token-derived tunnel state', () => {
-  const cfg = resolveConfig({ PROPR_UI_TUNNEL_TOKEN: 'tok-123' }, {
-    manifestPath,
-    uiTunnelEnabled: false,
-  });
-
-  assert.equal(cfg.uiTunnelEnabled, false);
-  assert.equal(cfg.uiTunnelToken, 'tok-123');
-});
-
 test('PROPR_INSTANCE_ID derives the proxy public API url when none is explicit', () => {
   const cfg = resolveConfig({ PROPR_INSTANCE_ID: 'abc123' }, { manifestPath });
 

@@ -29,7 +29,7 @@ import {
     loadPrReviewModel,
     AgentRegistry
 } from '@propr/core';
-import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
+import type { CommentPayload, CommentEventConfig, CommentEventType } from '@propr/core';
 import { logger } from '@propr/core';
 import { pollForPullRequestComments } from './polling/prCommentPolling.js';
 import {
@@ -414,11 +414,11 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 }
 
-const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>
+const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     processCommentEvent(payload, eventType, correlationId, getCommentConfig());
-const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>
+const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
-const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>
+const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 export {

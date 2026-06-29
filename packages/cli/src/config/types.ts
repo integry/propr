@@ -13,8 +13,7 @@ export type ConfigKey =
   | "defaultProject"
   | "stackRoot"
   | "uiEnabled"
-  | "docsEnabled"
-  | "tunnelEnabled";
+  | "docsEnabled";
 
 /**
  * CLI configuration structure.
@@ -54,12 +53,6 @@ export interface CLIConfig {
    * launcher's DOCS_ENABLED gate).
    */
   docsEnabled?: boolean;
-
-  /**
-   * Desired state of the hosted UI tunnel sidecar. Defaults to the stack .env
-   * token/enabled setting when unset.
-   */
-  tunnelEnabled?: boolean;
 }
 
 /**
@@ -72,5 +65,4 @@ export const DEFAULT_CONFIG: CLIConfig = {
   stackRoot: undefined,
   uiEnabled: undefined,
   docsEnabled: undefined,
-  tunnelEnabled: undefined,
 };

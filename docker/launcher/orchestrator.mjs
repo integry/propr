@@ -198,10 +198,8 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const uiTunnelToken = get('PROPR_UI_TUNNEL_TOKEN');
     // A token alone is enough to enable the tunnel; PROPR_UI_TUNNEL_ENABLED=true
     // also enables it (e.g. when the token is supplied out of band).
-    const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (
-        (uiTunnelToken !== undefined && uiTunnelToken !== '')
-        || get('PROPR_UI_TUNNEL_ENABLED') === 'true'
-    );
+    const uiTunnelEnabled = (uiTunnelToken !== undefined && uiTunnelToken !== '')
+        || get('PROPR_UI_TUNNEL_ENABLED') === 'true';
     const proprInstanceId = get('PROPR_INSTANCE_ID');
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || DEFAULT_CLOUDFLARED_IMAGE;
 

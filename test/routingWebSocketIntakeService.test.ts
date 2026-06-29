@@ -267,33 +267,6 @@ test('processes an event frame with inline payload and ACKs only after processin
     await service.stop();
 });
 
-test('includes explicit dispatcher disposition data in ACK frames', async () => {
-    const { service } = makeService({
-        dispatch: async () => ({
-            status: 'accepted',
-            billing: { seatConsumed: true },
-        }),
-    });
-    await service.start();
-    const socket = FakeWebSocket.instances[0];
-    socket.emit('open');
-
-    socket.emit('message', eventFrame({ sequence: 6, deliveryId: 'bill-1', eventType: 'issues', rawPayload: { n: 1 } }));
-    await flush();
-
-    assert.deepEqual(socket.sentFrames().filter((f) => f.type === 'ack'), [
-        {
-            type: 'ack',
-            sequence: 6,
-            deliveryId: 'bill-1',
-            status: 'accepted',
-            billing: { seatConsumed: true },
-        },
-    ]);
-
-    await service.stop();
-});
-
 test('in-flight duplicate is not ACKed until the original processing succeeds', async () => {
     // Gate the first dispatch so a duplicate arrives while it is still in flight.
     let resolveDispatch: () => void = () => {};

@@ -70,18 +70,6 @@ GH_WEBHOOK_SECRET=generate-a-strong-webhook-secret
 
 `GH_WEBHOOK_SECRET` is mandatory **for this mode only**: the API refuses to start in `direct_webhook` mode without a secret, because unsigned webhook traffic would be rejected anyway. (It is ignored by the default routing mode.)
 
-#### Scaffold the App with `propr github-app manifest`
-
-Rather than assembling the App's permissions, webhook events, and secret by hand, generate them:
-
-```bash
-propr github-app manifest --public-url https://propr.example.com
-```
-
-This writes `github-app-manifest.json` and `github-app.env` into the current directory. The manifest pre-fills the repository permissions, subscribed webhook events, the `POST /webhook` URL, and a freshly generated `GH_WEBHOOK_SECRET`; submit it at GitHub's *Register new GitHub App* page. The `.env` snippet carries the same secret plus the `GH_AUTH_MODE=app` / `GITHUB_EVENT_INTAKE_MODE=direct_webhook` settings — append it to your stack `.env`. After GitHub creates the App and you install it, fill in the values GitHub only assigns once the App exists: `GH_APP_ID`, `GH_INSTALLATION_ID`, and `HOST_GH_PRIVATE_KEY` (download the App's private key and point this at its absolute host path). See [ProPR CLI](../features/propr-cli.md#own-github-app-direct-webhook-mode) for all flags. Running `propr check` between generating the manifest and filling in those values flags exactly what is still missing and repeats the command.
-
-The manifest only scaffolds configuration — direct webhook mode still requires the public `POST /webhook` route below and installing the App on your account/org.
-
 The webhook endpoint is `POST /webhook` on the API service (port `4000`). Route it through your reverse proxy, for example with nginx. Use an exact-match `location = /webhook` so the proxy does not also forward prefix siblings such as `/webhookadmin` or `/webhook-test` to the API:
 
 ```nginx

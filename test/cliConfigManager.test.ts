@@ -107,18 +107,6 @@ test("ConfigManager", async (t) => {
     cleanupTempDir(tempDir);
   });
 
-  await t.test("should set and get tunnelEnabled", async () => {
-    tempDir = createTempDir();
-    configManager = new ConfigManager(tempDir);
-
-    await configManager.init();
-    await configManager.setTunnelEnabled(true);
-
-    assert.strictEqual(configManager.getTunnelEnabled(), true);
-
-    cleanupTempDir(tempDir);
-  });
-
   await t.test("should persist configuration between instances", async () => {
     tempDir = createTempDir();
 
@@ -203,7 +191,6 @@ test("ConfigManager", async (t) => {
         githubToken: 12345, // Should be string
         remoteUrl: { url: "test" }, // Should be string
         defaultProject: true, // Should be string
-        tunnelEnabled: "true", // Should be boolean
         unknownKey: "ignored", // Should be ignored
       })
     );
@@ -216,7 +203,6 @@ test("ConfigManager", async (t) => {
     assert.strictEqual(config.githubToken, undefined);
     assert.strictEqual(config.remoteUrl, undefined);
     assert.strictEqual(config.defaultProject, undefined);
-    assert.strictEqual(config.tunnelEnabled, undefined);
 
     cleanupTempDir(tempDir);
   });
@@ -314,12 +300,10 @@ test("ConfigManager", async (t) => {
     await configManager.set("githubToken", "generic-token");
     await configManager.set("remoteUrl", "https://generic.com");
     await configManager.set("defaultProject", "generic/project");
-    await configManager.set("tunnelEnabled", true);
 
     assert.strictEqual(configManager.get("githubToken"), "generic-token");
     assert.strictEqual(configManager.get("remoteUrl"), "https://generic.com");
     assert.strictEqual(configManager.get("defaultProject"), "generic/project");
-    assert.strictEqual(configManager.get("tunnelEnabled"), true);
 
     cleanupTempDir(tempDir);
   });
@@ -362,6 +346,5 @@ test("DEFAULT_CONFIG export", async (t) => {
     assert.strictEqual(DEFAULT_CONFIG.githubToken, undefined);
     assert.strictEqual(DEFAULT_CONFIG.remoteUrl, undefined);
     assert.strictEqual(DEFAULT_CONFIG.defaultProject, undefined);
-    assert.strictEqual(DEFAULT_CONFIG.tunnelEnabled, undefined);
   });
 });

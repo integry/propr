@@ -9,13 +9,7 @@ import { getIssueQueue } from '../queue/taskQueue.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
 import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
 import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
-import {
-    acceptedDisposition,
-    ignoredDisposition,
-    isBotLogin,
-    type DeliveryDisposition,
-    type DetectedIssue,
-} from '../webhook/webhookHandler.js';
+import type { DetectedIssue } from '../webhook/webhookHandler.js';
 
 export type { DetectedIssue };
 
@@ -176,7 +170,7 @@ async function resolveLabelApplierCached(opts: {
     }
 }
 
-export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<DeliveryDisposition> {
+export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<void> {
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
 
@@ -194,7 +188,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     if (allExcludeLabels.some(excludeLabel => issue.labels.includes(excludeLabel))) {
         correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'Issue has exclude labels, skipping');
-        return ignoredDisposition('issue_has_terminal_label');
+        return;
     }
 
     // Check for processing labels BEFORE acquiring dedup lock
@@ -208,7 +202,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             issueLabels: issue.labels,
             expectedLabels: primaryProcessingLabels
         }, 'Issue does not have any primary processing label, skipping');
-        return ignoredDisposition('no_processing_label');
+        return;
     }
 
     // Enforce the user whitelist on the trigger actor (no-op when no whitelist is
@@ -223,7 +217,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         }, issue.triggeredBy
             ? 'Trigger actor not in whitelist, skipping'
             : 'No triggeredBy on issue — skipping (fail closed). Check that all DetectedIssue producers populate triggeredBy.');
-        return ignoredDisposition('user_not_allowed');
+        return;
     }
 
     // Deduplicate rapid-fire webhook events (e.g., multiple labels added at once)
@@ -239,7 +233,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             repository: repoFullName,
             dedupeKey
         }, 'Issue processing already triggered recently, skipping duplicate');
-        return ignoredDisposition('duplicate_delivery');
+        return;
     }
 
     correlatedLogger.info({
@@ -274,7 +268,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     if (jobExists) {
         correlatedLogger.debug({ issueNumber: issue.number, repository: repoFullName }, 'A parent job for this issue is already active or waiting, skipping duplicate');
-        return ignoredDisposition('job_already_queued');
+        return;
     }
 
     correlatedLogger.info({
@@ -333,11 +327,9 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             repository: repoFullName,
             issueCorrelationId: issueJob.correlationId
         }, 'Successfully added parent job to processing queue');
-        return acceptedDisposition({ seatConsumed: !isBotLogin(issue.triggeredBy) });
 
     } catch (error) {
         handleError(error, `Failed to add issue ${issue.number} to queue`, { correlationId });
-        throw error;
     }
 }
 

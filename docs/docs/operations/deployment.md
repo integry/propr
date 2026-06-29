@@ -98,30 +98,6 @@ All `HOST_*_DIR` values and launcher path variables must be absolute host paths.
 
 Manage repositories, labels, branches, and agents in the Web UI after startup.
 
-### Hosted UI Tunnel
-
-For Plus installations using ProPR Connect, Connect can provision a hosted UI
-tunnel. This lets the hosted Connect UI reach the local stack through an
-outbound Cloudflare Tunnel, without opening inbound firewall ports for the API.
-
-Run the command Connect shows from the stack directory:
-
-```bash
-propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev --start
-```
-
-`propr tunnel setup` writes these values to `.env`:
-
-```bash
-PROPR_UI_TUNNEL_TOKEN=<token>
-PROPR_UI_TUNNEL_ENABLED=true
-PROPR_INSTANCE_ID=<instance>
-PROPR_UI_PUBLIC_API_URL=https://<instance>.proxy.propr.dev
-```
-
-Manual `.env` editing is only a fallback for hosts without the CLI; restart the
-stack after changing these values.
-
 For Antigravity agents, install the CLI on the host and authenticate before launching the stack:
 
 ```bash
@@ -156,9 +132,7 @@ GITHUB_EVENT_INTAKE_MODE=direct_webhook
 GH_WEBHOOK_SECRET=your-webhook-secret
 ```
 
-The fastest way to provision an own App for this mode is `propr github-app manifest --public-url https://propr.example.com` (see [ProPR CLI](../features/propr-cli.md#own-github-app-direct-webhook-mode)). It writes `github-app-manifest.json` (which pre-fills the required repository permissions, subscribed webhook events, your `POST /webhook` URL, and a generated `GH_WEBHOOK_SECRET`) plus a matching `github-app.env` snippet. Submit the manifest at GitHub's *Register new GitHub App* page, then — once GitHub has created the App and you have installed it — fill in `GH_APP_ID`, `GH_INSTALLATION_ID`, and `HOST_GH_PRIVATE_KEY` (the values GitHub only assigns after the App exists; `HOST_GH_PRIVATE_KEY` matches what the generated `github-app.env` recommends — see the CLI vs Launcher key-path note above if you deploy via the launcher). The manifest only scaffolds configuration: direct webhook mode still requires a public `POST /webhook` route and installing the App on your account/org.
-
-The API container serves the endpoint at `POST /webhook` (port 4000). Point your GitHub App's webhook URL at it through your reverse proxy, and set the same secret in the GitHub App settings. Direct webhook therefore requires your own GitHub App, a public URL, and `GH_WEBHOOK_SECRET`. The API refuses to start in `direct_webhook` mode without `GH_WEBHOOK_SECRET` (it is unused in the other modes — in particular, the default `routing_websocket` does not require it). Webhook delivery has no periodic backstop, so a missed or undelivered event relies on GitHub's redelivery. If you run `propr check` after generating the manifest but before filling in the App ID / installation id / private key, it flags the missing own-App values and repeats the `propr github-app manifest` next step.
+The API container serves the endpoint at `POST /webhook` (port 4000). Point your GitHub App's webhook URL at it through your reverse proxy, and set the same secret in the GitHub App settings. Direct webhook therefore requires your own GitHub App, a public URL, and `GH_WEBHOOK_SECRET`. The API refuses to start in `direct_webhook` mode without `GH_WEBHOOK_SECRET` (it is unused in the other modes — in particular, the default `routing_websocket` does not require it). Webhook delivery has no periodic backstop, so a missed or undelivered event relies on GitHub's redelivery.
 
 > **Migration from `ENABLE_GITHUB_WEBHOOKS`:** the legacy boolean `ENABLE_GITHUB_WEBHOOKS` is **deprecated** and no longer selects an intake mode. If it is still present in your environment, the backend logs a deprecation warning at startup and otherwise ignores it. Remove it and set `GITHUB_EVENT_INTAKE_MODE` explicitly (`routing_websocket`, `polling`, or `direct_webhook`); when unset, intake resolves to `routing_websocket`. Note that event intake is independent of GitHub auth mode (`GH_AUTH_MODE`) — see [GitHub Authentication](./github-auth.md).
 
