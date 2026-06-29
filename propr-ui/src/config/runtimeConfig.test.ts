@@ -75,6 +75,86 @@ describe('getApiBaseUrl', () => {
   });
 });
 
+describe('hosted tunnel query API base', () => {
+  const load = async () => await import('./runtimeConfig');
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('accepts the Connect tunnel hostname on the hosted UI origin', async () => {
+    const { hostedTunnelQueryApiBaseUrl } = await load();
+    expect(
+      hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=abc123.proxy.propr.dev')
+    ).toBe('https://abc123.proxy.propr.dev');
+  });
+
+  it('accepts a full hosted proxy URL and strips trailing slashes', async () => {
+    const { hostedTunnelQueryApiBaseUrl } = await load();
+    expect(
+      hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=https%3A%2F%2Fabc123.proxy.propr.dev%2F%2F')
+    ).toBe('https://abc123.proxy.propr.dev');
+  });
+
+  it('accepts an instance id for manually built hosted UI links', async () => {
+    const { hostedTunnelQueryApiBaseUrl } = await load();
+    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=abc123')).toBe(
+      'https://abc123.proxy.propr.dev'
+    );
+  });
+
+  it('ignores tunnel query params off the hosted UI origin', async () => {
+    const { hostedTunnelQueryApiBaseUrl } = await load();
+    expect(
+      hostedTunnelQueryApiBaseUrl('propr.example.com', '?tunnel=abc123.proxy.propr.dev')
+    ).toBeNull();
+  });
+
+  it('rejects non-ProPR proxy tunnel query params', async () => {
+    const { hostedTunnelQueryApiBaseUrl } = await load();
+    for (const bad of [
+      '?tunnel=https%3A%2F%2Fcustom.example.com',
+      '?tunnel=http%3A%2F%2Fabc123.proxy.propr.dev',
+      '?tunnel=a.b.proxy.propr.dev',
+      '?tunnel=%2Fapi'
+    ]) {
+      expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();
+    }
+  });
+});
+
+describe('resolveApiBaseUrl', () => {
+  const load = async () => await import('./runtimeConfig');
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('prefers the hosted Connect tunnel deep link over runtime config and build-time config', async () => {
+    const { resolveApiBaseUrl } = await load();
+    expect(
+      resolveApiBaseUrl(
+        'app.propr.dev',
+        '?tunnel=abc123.proxy.propr.dev',
+        { apiBaseUrl: 'https://runtime.proxy.propr.dev' },
+        'https://build.proxy.propr.dev'
+      )
+    ).toBe('https://abc123.proxy.propr.dev');
+  });
+
+  it('falls back to runtime config when the tunnel query is invalid', async () => {
+    const { resolveApiBaseUrl } = await load();
+    expect(
+      resolveApiBaseUrl(
+        'app.propr.dev',
+        '?tunnel=custom.example.com',
+        { apiBaseUrl: 'https://runtime.proxy.propr.dev' },
+        'https://build.proxy.propr.dev'
+      )
+    ).toBe('https://runtime.proxy.propr.dev');
+  });
+});
+
 describe('runtimeConfigWarning', () => {
   const loadWarning = async () => (await import('./runtimeConfig')).runtimeConfigWarning;
 
@@ -85,6 +165,17 @@ describe('runtimeConfigWarning', () => {
   it('warns on the hosted UI origin when config.js did not load', async () => {
     const runtimeConfigWarning = await loadWarning();
     expect(runtimeConfigWarning('app.propr.dev', undefined)).toContain('config.js did not load');
+  });
+
+  it('does not warn about missing config when a valid Connect tunnel deep link is present', async () => {
+    const runtimeConfigWarning = await loadWarning();
+    expect(
+      runtimeConfigWarning(
+        'app.propr.dev',
+        undefined,
+        '?tunnel=abc123.proxy.propr.dev'
+      )
+    ).toBeNull();
   });
 
   it('warns on the hosted UI origin when apiBaseUrl is empty', async () => {

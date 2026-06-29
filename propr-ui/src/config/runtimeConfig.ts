@@ -8,11 +8,12 @@
 // from the `PROPR_UI_PUBLIC_API_URL` env var (see docker-entrypoint.sh).
 //
 // Resolution order for the API base URL:
-//   1. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
-//   2. Build-time env (VITE_API_BASE_URL) — static single-target builds.
-//   3. Empty string — same-origin (local dev via the Vite proxy).
+//   1. Hosted-UI `?tunnel=` query param — Connect's per-installation deep link.
+//   2. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
+//   3. Build-time env (VITE_API_BASE_URL) — static single-target builds.
+//   4. Empty string — same-origin (local dev via the Vite proxy).
 
-import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl } from '@propr/shared';
+import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
 
 export interface ProprRuntimeConfig {
   /** Base URL for REST and Socket.IO. Empty string means same-origin. */
@@ -72,6 +73,36 @@ export const isValidHttpUrl = (value: string): boolean => {
 };
 
 /**
+ * Resolve the Connect deep-link API base from `?tunnel=`. Connect opens the
+ * hosted UI as `https://app.propr.dev?tunnel=<id>.proxy.propr.dev` after a
+ * tunnel passes health checks. Accept only hosted ProPR proxy targets and only
+ * on the managed hosted UI origin so arbitrary self-hosted pages cannot smuggle
+ * a cross-origin API base through the query string.
+ */
+export const hostedTunnelQueryApiBaseUrl = (
+  hostname: string,
+  search: string
+): string | null => {
+  if (!isHostedUiOrigin(hostname)) return null;
+
+  const raw = new URLSearchParams(search).get('tunnel')?.trim();
+  if (!raw) return null;
+
+  if (isProprProxyUrl(raw)) return raw.replace(/\/+$/, '');
+
+  const instanceUrl = proprInstanceProxyUrl(raw);
+  if (instanceUrl) return instanceUrl;
+
+  try {
+    const url = new URL(`https://${raw}`);
+    const normalized = `https://${url.hostname}`;
+    return isProprProxyUrl(normalized) ? normalized : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * On the hosted UI origin the bundle expects `config.js` to have run first and
  * populated window.__PROPR_CONFIG__ with a per-instance apiBaseUrl. If it is
  * missing — or loaded but with an empty apiBaseUrl (the more likely
@@ -84,9 +115,11 @@ export const isValidHttpUrl = (value: string): boolean => {
  */
 export const runtimeConfigWarning = (
   hostname: string,
-  config: ProprRuntimeConfig | undefined
+  config: ProprRuntimeConfig | undefined,
+  search = ''
 ): string | null => {
   if (!isHostedUiOrigin(hostname)) return null;
+  if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
   if (!config) {
     return (
       '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
@@ -130,8 +163,25 @@ export const runtimeConfigWarning = (
   return null;
 };
 
+export const resolveApiBaseUrl = (
+  hostname: string,
+  search: string,
+  config: ProprRuntimeConfig | undefined,
+  buildTimeApiBaseUrl: string | undefined
+): string =>
+  (
+    hostedTunnelQueryApiBaseUrl(hostname, search) ||
+    config?.apiBaseUrl?.trim() ||
+    buildTimeApiBaseUrl?.trim() ||
+    ''
+  ).replace(/\/+$/, '');
+
 if (typeof window !== 'undefined') {
-  const warning = runtimeConfigWarning(window.location.hostname, window.__PROPR_CONFIG__);
+  const warning = runtimeConfigWarning(
+    window.location.hostname,
+    window.__PROPR_CONFIG__,
+    window.location.search
+  );
   if (warning) console.warn(warning);
 }
 
@@ -147,4 +197,9 @@ if (typeof window !== 'undefined') {
  * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
  */
 export const getApiBaseUrl = (): string =>
-  (runtimeConfig.apiBaseUrl?.trim() || import.meta.env.VITE_API_BASE_URL?.trim() || '').replace(/\/+$/, '');
+  resolveApiBaseUrl(
+    typeof window !== 'undefined' ? window.location.hostname : '',
+    typeof window !== 'undefined' ? window.location.search : '',
+    runtimeConfig,
+    import.meta.env.VITE_API_BASE_URL
+  );
