@@ -53,6 +53,13 @@ jobs:
           npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
           echo "✅ Hosted tunnel regression tests passed"
 
+      - name: Verify CLI Release Package
+        id: cli_pack
+        run: |
+          echo "Verifying propr-cli release package..."
+          npm run cli:pack
+          echo "✅ propr-cli release package verified"
+
       - name: Detect Changes
         id: filter
         uses: dorny/paths-filter@v4
