@@ -166,6 +166,10 @@ export class ConfigManager {
       sanitized.docsEnabled = data.docsEnabled;
     }
 
+    if (typeof data.tunnelEnabled === "boolean") {
+      sanitized.tunnelEnabled = data.tunnelEnabled;
+    }
+
     return sanitized;
   }
 
@@ -321,6 +325,20 @@ export class ConfigManager {
    */
   async setDocsEnabled(enabled: boolean): Promise<void> {
     await this.set("docsEnabled", enabled);
+  }
+
+  /**
+   * Gets the desired hosted UI tunnel state. When unset, the stack .env controls it.
+   */
+  getTunnelEnabled(): boolean | undefined {
+    return this.get("tunnelEnabled");
+  }
+
+  /**
+   * Sets the desired hosted UI tunnel state.
+   */
+  async setTunnelEnabled(enabled: boolean): Promise<void> {
+    await this.set("tunnelEnabled", enabled);
   }
 
   /**
