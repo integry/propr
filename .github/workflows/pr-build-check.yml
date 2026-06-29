@@ -36,6 +36,22 @@ jobs:
           npm run test:unit
           echo "✅ Fast unit tests passed"
 
+      - name: Run Hosted Tunnel Regression Tests
+        id: tunnel_tests
+        run: |
+          echo "Running hosted tunnel regression tests..."
+          PROPR_DEMO_MODE=true npx tsx --test \
+            test/orchestratorConfig.test.mjs \
+            packages/cli/src/commands/tunnelCommand.test.ts \
+            test/orchestratorTunnelLifecycle.test.mjs \
+            test/orchestratorTunnelStatus.test.mjs \
+            test/orchestratorProprUrlsDrift.test.ts \
+            test/routingWebSocketProtocol.test.ts \
+            test/routingWebSocketIntakeService.test.ts \
+            packages/api/test/corsValidation.test.ts
+          npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
+          echo "✅ Hosted tunnel regression tests passed"
+
       - name: Detect Changes
         id: filter
         uses: dorny/paths-filter@v4
