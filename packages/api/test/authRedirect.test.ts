@@ -55,7 +55,7 @@ test('proxy mode auth redirect fallback returns the hosted UI origin', async () 
   // stays unset; an unvalidatable redirect_to must fall back to the hosted UI.
   process.env.PROPR_DEMO_MODE = 'true';
   process.env.FRONTEND_URL = 'https://app.propr.dev';
-  process.env.API_PUBLIC_URL = 'https://abc123.proxy.propr.dev';
+  process.env.API_PUBLIC_URL = 'https://t-abc123.propr.dev';
   delete process.env.COOKIE_DOMAIN;
   const app = express();
   setupAuth(app);
@@ -65,7 +65,7 @@ test('proxy mode auth redirect fallback returns the hosted UI origin', async () 
   assert.equal(fallbackResponse.headers.get('location'), 'https://app.propr.dev/');
 
   // The proxy host is not on the redirect allowlist, so it falls back too.
-  const proxyResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Fabc123.proxy.propr.dev%2Fplans');
+  const proxyResponse = await fetchFromApp(app, '/api/auth/github?redirect_to=https%3A%2F%2Ft-abc123.propr.dev%2Fplans');
   assert.equal(proxyResponse.headers.get('location'), 'https://app.propr.dev/');
 });
 

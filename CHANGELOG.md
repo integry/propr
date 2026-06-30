@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Hosted UI tunnel (ProPR Connect)**: optional CLI-managed `cloudflared`
   sidecar that exposes a local stack to the hosted UI at `app.propr.dev` through
-  a per-instance `https://<id>.proxy.propr.dev` proxy. Includes shared tunnel
+  a per-instance `https://t-<id>.propr.dev` proxy. Includes shared tunnel
   constants, `propr tunnel on|off|verify`, tunnel diagnostics in `propr status`
   (and `--json`), runtime-configurable UI API base URL, and `.env.example`
   guidance. The tunnel only routes `/api/*` and `/socket.io/*`; the proxy root

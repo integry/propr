@@ -55,7 +55,7 @@ describe('getTunnelStatus', () => {
 
   test('publicApiUrl is derived from the instance id', async () => {
     const t = await getTunnelStatus(cfgFor({ PROPR_INSTANCE_ID: 'abc123' }), stackStatus());
-    assert.equal(t.publicApiUrl, 'https://abc123.proxy.propr.dev');
+    assert.equal(t.publicApiUrl, 'https://t-abc123.propr.dev');
   });
 
   test('an unreachable public URL yields reachable=false, never throws', async () => {
@@ -76,7 +76,7 @@ describe('getTunnelStatus', () => {
     // irrelevant external probe, so reachable stays null even with a URL.
     const t = await getTunnelStatus(cfgFor({ PROPR_INSTANCE_ID: 'abc123' }), stackStatus());
     assert.equal(t.enabled, false);
-    assert.equal(t.publicApiUrl, 'https://abc123.proxy.propr.dev');
+    assert.equal(t.publicApiUrl, 'https://t-abc123.propr.dev');
     assert.equal(t.reachable, null);
   });
 

@@ -26,11 +26,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Hosted UI tunnel naming. These mirror the shared TypeScript constants in
 // packages/shared/src/proprServiceUrls.ts (PROPR_UI_PROXY_SUFFIX,
-// DEFAULT_CLOUDFLARED_IMAGE, DEFAULT_PROPR_UI_ORIGIN) — kept as plain literals
-// here because this module is dependency-free .mjs (Node stdlib only) and cannot
-// import the TS package. Change one, change the other;
+// PROPR_UI_PROXY_LABEL_PREFIX, DEFAULT_CLOUDFLARED_IMAGE,
+// DEFAULT_PROPR_UI_ORIGIN) — kept as plain literals here because this module is
+// dependency-free .mjs (Node stdlib only) and cannot import the TS package.
+// Change one, change the other;
 // test/orchestratorProprUrlsDrift.test.ts guards against the copies diverging.
-export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
+export const PROPR_UI_PROXY_SUFFIX = 'propr.dev';
+export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
 // Fallback used only when the manifest has no `cloudflared` entry. Pin it to the
 // same tag the manifest ships (docker/launcher/manifest.json) so the effective
 // default is identical whether it comes from the manifest or this fallback —
@@ -39,28 +41,29 @@ export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
 
 // Whether an instance id is a valid single DNS label for the proxy hostname
-// (<id>.proxy.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
+// (t-<id>.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
 // leading/trailing hyphen. Mirrors isValidProprInstanceId() in the shared pkg.
 export function isValidProprInstanceId(instanceId) {
     const id = (instanceId ?? '').trim();
     return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
 }
 
-// Derive the per-instance public API/UI URL (https://<instanceId>.proxy.propr.dev)
+// Derive the per-instance public API/UI URL (https://t-<instanceId>.propr.dev)
 // from an instance id; returns undefined for a missing/blank or invalid id (so a
-// malformed hostname is never emitted). The id is lowercased so a mixed-case
-// PROPR_INSTANCE_ID yields a canonical hostname (DNS is case-insensitive).
+// malformed hostname is never emitted). Accepts either the bare id or the public
+// t-<id> DNS label. The id is lowercased so a mixed-case PROPR_INSTANCE_ID
+// yields a canonical hostname (DNS is case-insensitive).
 // Mirrors proprInstanceProxyUrl() in packages/shared/src/proprServiceUrls.ts.
 export function proprInstanceProxyUrl(instanceId) {
-    const id = (instanceId ?? '').trim();
-    return isValidProprInstanceId(id) ? `https://${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
+    const id = normalizeProprInstanceId(instanceId);
+    return isValidProprInstanceId(id) ? `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
 }
 
-// Whether a URL is a hosted per-instance proxy URL (https://<id>.proxy.propr.dev).
+// Whether a URL is a hosted per-instance proxy URL (https://t-<id>.propr.dev).
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
-// tunnel base URL must be one of them. Requires exactly one valid instance-id
-// label before the suffix (a nested host like foo.bar.proxy.propr.dev is
-// rejected) and a bare origin (a non-root path/query/fragment is rejected so
+// tunnel base URL must be one of them. Requires exactly one t-<instance-id>
+// label before the suffix (other propr.dev hosts and nested hosts are rejected)
+// and a bare origin (a non-root path/query/fragment is rejected so
 // proprTunnelEndpoints does not double up the /api prefix). Mirrors
 // isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
@@ -73,10 +76,21 @@ export function isProprProxyUrl(url) {
         if (/[^/]/.test(pathname) || search || hash) return false;
         const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
         if (!hostname.endsWith(suffix)) return false;
-        return isValidProprInstanceId(hostname.slice(0, -suffix.length));
+        const label = hostname.slice(0, -suffix.length);
+        if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
+            return false;
+        }
+        return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
     } catch {
         return false;
     }
+}
+
+function normalizeProprInstanceId(instanceId) {
+    const id = (instanceId ?? '').trim();
+    return id.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+        ? id.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
+        : id;
 }
 
 // The concrete endpoints the hosted UI reaches through the tunnel base URL.
@@ -1458,7 +1472,7 @@ export function validateEnv(cfg) {
     if (cfg.uiTunnelEnabled && !cfg.uiPublicApiUrl) {
         errors.push(
             cfg.proprInstanceId
-                ? `PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label, so no https://<id>.proxy.propr.dev URL can be derived. The tunnel would start while the API advertises its localhost URL and the frontend points at the hosted UI, leaving the hosted UI with no endpoint to reach. Set a valid instance id (1–63 letters/digits/hyphens, no leading/trailing hyphen) or an explicit PROPR_UI_PUBLIC_API_URL.`
+                ? `PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label, so no https://t-<id>.propr.dev URL can be derived. The tunnel would start while the API advertises its localhost URL and the frontend points at the hosted UI, leaving the hosted UI with no endpoint to reach. Set a valid instance id (1–63 letters/digits/hyphens, no leading/trailing hyphen) or an explicit PROPR_UI_PUBLIC_API_URL.`
                 : 'The UI tunnel is enabled but neither PROPR_INSTANCE_ID nor PROPR_UI_PUBLIC_API_URL is set, so no public proxy URL can be derived. The tunnel would start while the API advertises its localhost URL, leaving the hosted UI with no endpoint to reach. Set PROPR_INSTANCE_ID (preferred) or an explicit PROPR_UI_PUBLIC_API_URL.'
         );
     }
@@ -1477,7 +1491,7 @@ export function validateEnv(cfg) {
     // tunnel is ENABLED the value is advertised to the API/worker, probed by
     // getTunnelStatus()/verify, and must point at a hosted proxy host because
     // propr-routing only forwards /api/* and /socket.io/* on
-    // https://<id>.proxy.propr.dev — so a non-proxy URL would start an unroutable
+    // https://t-<id>.propr.dev — so a non-proxy URL would start an unroutable
     // tunnel stack (matching the routing rule and the `propr tunnel on` guard). With
     // the tunnel off, any valid http(s) origin the UI should call is legitimate, so
     // only the well-formedness check applies.
@@ -1485,9 +1499,9 @@ export function validateEnv(cfg) {
         let parsed;
         try { parsed = new URL(cfg.uiPublicApiUrl); } catch { /* invalid below */ }
         if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
-            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. It is injected into the UI container (config.js) as the browser's API base URL even when the tunnel is off, so a malformed value breaks the UI. Use a full URL such as https://abc123.proxy.propr.dev.`);
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a valid http(s) URL. It is injected into the UI container (config.js) as the browser's API base URL even when the tunnel is off, so a malformed value breaks the UI. Use a full URL such as https://t-abc123.propr.dev.`);
         } else if (cfg.uiTunnelEnabled && !isProprProxyUrl(cfg.uiPublicApiUrl)) {
-            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a bare https://<id>.${PROPR_UI_PROXY_SUFFIX} origin (no path/query/fragment — the /api and /socket.io paths are appended automatically).`);
+            errors.push(`PROPR_UI_PUBLIC_API_URL ("${cfg.uiPublicApiUrl}") is not a hosted proxy URL (https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the hosted UI would be unable to reach this stack. Set PROPR_INSTANCE_ID or a bare https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX} origin (no path/query/fragment — the /api and /socket.io paths are appended automatically).`);
         }
     }
 
@@ -1498,7 +1512,7 @@ export function validateEnv(cfg) {
     // hosted app.propr.dev CORS, cookies, and public links even though the
     // cloudflared sidecar itself starts successfully.
     if (cfg.uiTunnelEnabled && isLocalhostHttpUrl(cfg.apiPublicUrl)) {
-        errors.push(`API_PUBLIC_URL ("${cfg.apiPublicUrl}") still points at localhost while the UI tunnel is enabled. In tunnel mode the API must advertise the hosted proxy URL (for example https://<id>.${PROPR_UI_PROXY_SUFFIX}) so app.propr.dev can reach this stack. Remove the explicit API_PUBLIC_URL or set it to the hosted proxy URL.`);
+        errors.push(`API_PUBLIC_URL ("${cfg.apiPublicUrl}") still points at localhost while the UI tunnel is enabled. In tunnel mode the API must advertise the hosted proxy URL (for example https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}) so app.propr.dev can reach this stack. Remove the explicit API_PUBLIC_URL or set it to the hosted proxy URL.`);
     }
     if (cfg.uiTunnelEnabled && isLocalhostHttpUrl(cfg.frontendUrl)) {
         errors.push(`FRONTEND_URL ("${cfg.frontendUrl}") still points at localhost while the UI tunnel is enabled. In tunnel mode FRONTEND_URL must be ${DEFAULT_PROPR_UI_ORIGIN} so CORS and redirects allow the hosted UI. Remove the explicit FRONTEND_URL or set it to ${DEFAULT_PROPR_UI_ORIGIN}.`);
@@ -1510,7 +1524,7 @@ export function validateEnv(cfg) {
     // hosted UI cannot reach. Warn so the operator updates it (and the GitHub App
     // config) to the public proxy callback.
     if (cfg.uiTunnelEnabled && /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(cfg.ghOauthCallbackUrl)) {
-        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
+        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
     }
 
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);

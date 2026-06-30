@@ -58,16 +58,16 @@ test('secure session cookie defaults on in production without public URL', () =>
 test('proxy mode keeps the session cookie host-only on the proxy hostname', () => {
   // Hosted UI on app.propr.dev, API served from the per-instance proxy host.
   // COOKIE_DOMAIN must stay unset so the cookie is scoped only to
-  // abc123.proxy.propr.dev rather than a broad shared domain.
+  // t-abc123.propr.dev rather than a broad shared domain.
   delete process.env.COOKIE_DOMAIN;
-  process.env.API_PUBLIC_URL = 'https://abc123.proxy.propr.dev';
+  process.env.API_PUBLIC_URL = 'https://t-abc123.propr.dev';
 
   assert.equal(getSessionCookieDomain(), undefined);
 });
 
 test('proxy mode keeps the session cookie secure over the https proxy URL', () => {
   delete process.env.COOKIE_DOMAIN;
-  process.env.API_PUBLIC_URL = 'https://abc123.proxy.propr.dev';
+  process.env.API_PUBLIC_URL = 'https://t-abc123.propr.dev';
 
   assert.equal(shouldUseSecureSessionCookie(getSessionCookieDomain()), true);
 });

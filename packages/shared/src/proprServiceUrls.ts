@@ -30,16 +30,19 @@ export const DEFAULT_PROPR_GH_RELAY_URL = 'https://webhook.propr.dev/v1';
 /**
  * Origin of the hosted Propr UI (https://app.propr.dev). This is where the
  * managed control plane is served from; a local stack exposes its own UI on a
- * tunnel under {@link PROPR_UI_PROXY_SUFFIX} so the hosted UI can reach it.
+ * tunnel under a {@link PROPR_UI_PROXY_LABEL_PREFIX} host on
+ * {@link PROPR_UI_PROXY_SUFFIX} so the hosted UI can reach it.
  */
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
 
 /**
- * DNS suffix for per-instance UI/API tunnel hostnames. Each local stack with an
- * instance id is reachable at `https://<instanceId>.proxy.propr.dev`, so the
- * hosted UI at {@link DEFAULT_PROPR_UI_ORIGIN} can discover and address it.
+ * DNS suffix and label prefix for per-instance UI/API tunnel hostnames. Each
+ * local stack with an instance id is reachable at
+ * `https://t-<instanceId>.propr.dev`, so the hosted UI at
+ * {@link DEFAULT_PROPR_UI_ORIGIN} can discover and address it.
  */
-export const PROPR_UI_PROXY_SUFFIX = 'proxy.propr.dev';
+export const PROPR_UI_PROXY_SUFFIX = 'propr.dev';
+export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
 
 /**
  * Default Cloudflare Tunnel image used to expose the local stack's UI/API to
@@ -52,7 +55,7 @@ export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 
 /**
  * Whether an instance id is usable as a single DNS label in the per-instance
- * proxy hostname (`<id>.proxy.propr.dev`). Enforces the standard label rules:
+ * proxy hostname (`t-<id>.propr.dev`). Enforces the standard label rules:
  * 1–63 characters, ASCII letters/digits/hyphens only, and no leading or
  * trailing hyphen. This rejects spaces, slashes, dots, underscores, and other
  * characters that would produce an invalid or ambiguous hostname.
@@ -64,30 +67,31 @@ export function isValidProprInstanceId(instanceId: string | undefined | null): b
 
 /**
  * Derive the public API/UI URL for a local stack from its instance id, using
- * the shared {@link PROPR_UI_PROXY_SUFFIX}. Returns `https://abc123.proxy.propr.dev`
- * for instance id `abc123`. Returns `undefined` for a missing/blank id — or an
- * id that is not a valid DNS label (see {@link isValidProprInstanceId}) — so
- * callers can fall back to an explicit URL or a local-development default
- * rather than emitting a malformed hostname. The id is lowercased so a
- * mixed-case instance id yields a canonical hostname (DNS is case-insensitive).
+ * the shared public tunnel host pattern. Returns `https://t-abc123.propr.dev`
+ * for instance id `abc123`. A caller may pass either the bare instance id or the
+ * public DNS label (`t-abc123`); the returned URL is canonicalized. Returns
+ * `undefined` for a missing/blank id — or an id that is not a valid DNS label
+ * (see {@link isValidProprInstanceId}) — so callers can fall back to an explicit
+ * URL or a local-development default rather than emitting a malformed hostname.
+ * The id is lowercased so a mixed-case instance id yields a canonical hostname
+ * (DNS is case-insensitive).
  */
 export function proprInstanceProxyUrl(instanceId: string | undefined | null): string | undefined {
-  const id = (instanceId ?? '').trim();
+  const id = normalizeProprInstanceId(instanceId);
   if (!isValidProprInstanceId(id)) return undefined;
-  return `https://${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
+  return `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
 }
 
 /**
- * Whether a URL is a hosted per-instance proxy URL (`https://<id>.proxy.propr.dev`).
+ * Whether a URL is a hosted per-instance proxy URL (`https://t-<id>.propr.dev`).
  * propr-routing only forwards `/api/*` and `/socket.io/*` on these hosts, so the
  * tunnel base URL must be one of them. Requires https and *exactly one* valid
- * instance-id label in front of the shared {@link PROPR_UI_PROXY_SUFFIX} — a
- * multi-label host like `foo.bar.proxy.propr.dev` is rejected because routing
- * only addresses a single instance label. It must also be a bare origin: a
- * non-root path, query, or fragment (e.g. `https://abc.proxy.propr.dev/api`) is
- * rejected because {@link proprTunnelEndpoints} appends `/api/...` itself and a
- * base path would double it up (`.../api/api/status`). Returns false for a
- * malformed URL.
+ * `t-<instance-id>` label in front of the shared {@link PROPR_UI_PROXY_SUFFIX}.
+ * Other propr.dev hosts like `app.propr.dev` and nested hosts are rejected. It
+ * must also be a bare origin: a non-root path, query, or fragment (e.g.
+ * `https://t-abc.propr.dev/api`) is rejected because
+ * {@link proprTunnelEndpoints} appends `/api/...` itself and a base path would
+ * double it up (`.../api/api/status`). Returns false for a malformed URL.
  */
 export function isProprProxyUrl(url: string | undefined | null): boolean {
   if (!url) return false;
@@ -101,12 +105,21 @@ export function isProprProxyUrl(url: string | undefined | null): boolean {
     if (/[^/]/.test(pathname) || search || hash) return false;
     const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
     if (!hostname.endsWith(suffix)) return false;
-    // The portion before the suffix must be a single valid DNS label (no dots),
-    // so isValidProprInstanceId rejects nested hosts like `a.b.proxy.propr.dev`.
-    return isValidProprInstanceId(hostname.slice(0, -suffix.length));
+    const label = hostname.slice(0, -suffix.length);
+    if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
+      return false;
+    }
+    return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
   } catch {
     return false;
   }
+}
+
+function normalizeProprInstanceId(instanceId: string | undefined | null): string {
+  const id = (instanceId ?? '').trim();
+  return id.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+    ? id.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
+    : id;
 }
 
 /**

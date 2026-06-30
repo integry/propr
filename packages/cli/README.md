@@ -60,6 +60,31 @@ and exits nonzero when required local stack prerequisites are missing. Scripts
 or shell integrations that invoked bare `propr` to print help text should call
 `propr --help` instead.
 
+## Hosted UI Tunnel
+
+ProPR Connect can provision a managed Cloudflare Tunnel so the hosted UI at
+`https://app.propr.dev` can reach your local stack's API. Run the one-time setup
+command shown in ProPR Connect from your initialized stack directory:
+
+```bash
+propr tunnel setup --token <connector-token> --url https://t-<id>.propr.dev --start
+```
+
+The command writes the tunnel token and public API/OAuth URLs to the stack
+`.env`, records tunnel mode as enabled, and with `--start` starts or recreates
+the stack so the API picks up the hosted URLs immediately. The public tunnel
+origin is always a bare `https://t-<id>.propr.dev` URL; ProPR routes only
+`/api/*` and `/socket.io/*` through it, and the root URL intentionally returns
+404.
+
+Useful follow-up commands:
+
+```bash
+propr tunnel verify      # check cloudflared + /api/status, /, /socket.io/
+propr tunnel off         # stop only the sidecar; token/env values stay in .env
+propr tunnel on          # restart the sidecar later
+```
+
 ## Repository Setup
 
 Use `propr init` from a repository root to scaffold `.propr` setup files used by agent execution containers.

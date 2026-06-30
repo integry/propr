@@ -49,9 +49,9 @@ ProPR uses several hostnames for different parts of the system:
 | `connect.propr.dev` | ProPR Connect dashboard and setup flow |
 | `webhook.propr.dev` | GitHub webhook intake, relay API, and routing WebSocket |
 | `app.propr.dev` | Hosted ProPR UI |
-| `<id>.proxy.propr.dev` | Optional per-instance API tunnel endpoint |
+| `t-<id>.propr.dev` | Optional per-instance API tunnel endpoint |
 
-`connect.propr.dev` is the operator-facing setup surface. `webhook.propr.dev` is the event and token relay used by the running ProPR stack. `app.propr.dev` is the browser UI. A `<id>.proxy.propr.dev` hostname points at one self-hosted stack's API through an optional managed tunnel.
+`connect.propr.dev` is the operator-facing setup surface. `webhook.propr.dev` is the event and token relay used by the running ProPR stack. `app.propr.dev` is the browser UI. A `t-<id>.propr.dev` hostname points at one self-hosted stack's API through an optional managed tunnel.
 
 ## Default Event Flow
 
@@ -103,7 +103,7 @@ When the hosted UI tunnel is enabled, the browser can use the hosted ProPR UI wh
 ```text
 Browser
   -> app.propr.dev
-  -> <id>.proxy.propr.dev
+  -> t-<id>.propr.dev
   -> local ProPR API container
 ```
 
@@ -134,9 +134,9 @@ The hosted relay is the recommended default because it avoids inbound networking
 
 ## Current Limitations
 
-Today, tunnel-based OAuth requires the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://<id>.proxy.propr.dev/api/auth/github/callback`. ProPR Connect shows this callback during tunnel setup, and `propr tunnel setup --token ... --url ... --start` writes it to `GH_OAUTH_CALLBACK_URL`; you still need to register the same URL in the GitHub OAuth App used by that stack. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
+Today, tunnel-based OAuth requires the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://t-<id>.propr.dev/api/auth/github/callback`. ProPR Connect shows this callback during tunnel setup, and `propr tunnel setup --token ... --url ... --start` writes it to `GH_OAUTH_CALLBACK_URL`; you still need to register the same URL in the GitHub OAuth App used by that stack. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
 
-Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token, and opens `app.propr.dev` with a validated `?tunnel=<id>.proxy.propr.dev` deep link. The raw `.env` values remain available as a fallback for older CLI versions or recovery, but the normal path is to run the generated `propr tunnel setup` command.
+Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token, and opens `app.propr.dev` with a validated `?tunnel=t-<id>.propr.dev` deep link. The raw `.env` values remain available as a fallback for older CLI versions or recovery, but the normal path is to run the generated `propr tunnel setup` command.
 
 The connector token (`PROPR_UI_TUNNEL_TOKEN`) is a live Cloudflare credential. ProPR keeps it off the process command line — it is passed to the `cloudflared` sidecar as the `TUNNEL_TOKEN` environment variable and injected into no other container — but it is still readable from that container's environment via `docker inspect`. Treat Docker daemon access on the host as equivalent to access to this token, and rotate it in ProPR Connect if the host is compromised.
 

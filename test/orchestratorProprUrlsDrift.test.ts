@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   PROPR_UI_PROXY_SUFFIX as SHARED_PROXY_SUFFIX,
+  PROPR_UI_PROXY_LABEL_PREFIX as SHARED_PROXY_LABEL_PREFIX,
   DEFAULT_CLOUDFLARED_IMAGE as SHARED_CLOUDFLARED_IMAGE,
   DEFAULT_PROPR_UI_ORIGIN as SHARED_PROPR_UI_ORIGIN,
   PROPR_VERSION,
@@ -23,6 +24,7 @@ import {
 // the shared source of truth.
 import {
   PROPR_UI_PROXY_SUFFIX as LAUNCHER_PROXY_SUFFIX,
+  PROPR_UI_PROXY_LABEL_PREFIX as LAUNCHER_PROXY_LABEL_PREFIX,
   DEFAULT_CLOUDFLARED_IMAGE as LAUNCHER_CLOUDFLARED_IMAGE,
   DEFAULT_PROPR_UI_ORIGIN as LAUNCHER_PROPR_UI_ORIGIN,
   proprInstanceProxyUrl as launcherProxyUrl,
@@ -34,6 +36,7 @@ import {
 describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
   test('mirrored literals match the shared constants', () => {
     assert.equal(LAUNCHER_PROXY_SUFFIX, SHARED_PROXY_SUFFIX);
+    assert.equal(LAUNCHER_PROXY_LABEL_PREFIX, SHARED_PROXY_LABEL_PREFIX);
     assert.equal(LAUNCHER_CLOUDFLARED_IMAGE, SHARED_CLOUDFLARED_IMAGE);
     assert.equal(LAUNCHER_PROPR_UI_ORIGIN, SHARED_PROPR_UI_ORIGIN);
   });
@@ -62,17 +65,17 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
 
   test('isProprProxyUrl agrees for proxy, non-proxy, and malformed URLs', () => {
     const cases = [
-      'https://abc123.proxy.propr.dev',
-      'https://abc123.proxy.propr.dev/',
+      'https://t-abc123.propr.dev',
+      'https://t-abc123.propr.dev/',
       'https://app.propr.dev',
-      'http://abc123.proxy.propr.dev',
+      'http://t-abc123.propr.dev',
       'https://abc123.example.com',
-      'https://proxy.propr.dev',
-      'https://foo.bar.proxy.propr.dev',
-      'https://.proxy.propr.dev',
-      'https://abc123.proxy.propr.dev/api',
-      'https://abc123.proxy.propr.dev?x=1',
-      'https://abc123.proxy.propr.dev/#frag',
+      'https://propr.dev',
+      'https://t-foo.bar.propr.dev',
+      'https://t-.propr.dev',
+      'https://t-abc123.propr.dev/api',
+      'https://t-abc123.propr.dev?x=1',
+      'https://t-abc123.propr.dev/#frag',
       'not a url',
       '',
       null,
@@ -88,7 +91,7 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
   });
 
   test('proprTunnelEndpoints agrees, including trailing-slash normalization', () => {
-    const cases = ['https://abc123.proxy.propr.dev', 'https://abc123.proxy.propr.dev/', 'https://abc123.proxy.propr.dev///'];
+    const cases = ['https://t-abc123.propr.dev', 'https://t-abc123.propr.dev/', 'https://t-abc123.propr.dev///'];
     for (const url of cases) {
       assert.deepEqual(
         launcherTunnelEndpoints(url),

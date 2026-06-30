@@ -1,6 +1,6 @@
 {
   "name": "@propr/cli",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "CLI for interacting with the ProPR backend",
   "type": "module",
   "main": "dist/index.js",
@@ -21,7 +21,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
-    "@propr/shared": "^0.8.5",
+    "@propr/shared": "^0.8.6",
     "commander": "^13.1.0",
     "dotenv": "^16.5.0",
     "ink": "^7.0.5",

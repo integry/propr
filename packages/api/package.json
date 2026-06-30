@@ -1,6 +1,6 @@
 {
   "name": "@propr/api",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "API server for ProPR Web UI",
   "type": "module",
   "main": "dist/server.js",

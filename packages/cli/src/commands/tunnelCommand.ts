@@ -20,9 +20,11 @@ import { Command } from "commander";
 import { join } from "node:path";
 import {
   DEFAULT_PROPR_UI_ORIGIN,
+  proprInstanceProxyUrl,
   proprTunnelEndpoints,
   isProprProxyUrl,
   PROPR_UI_PROXY_SUFFIX,
+  PROPR_UI_PROXY_LABEL_PREFIX,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig, resolveStackRoot } from "../orchestrator/index.js";
@@ -46,7 +48,7 @@ export class TunnelTokenMissingError extends Error {
 /**
  * Thrown by applyTunnelToggle when `tunnel on` is requested but no public proxy
  * URL can be derived. Hosted UI tunnel mode fundamentally needs an advertised
- * endpoint (`PROPR_INSTANCE_ID` → https://<id>.proxy.propr.dev, or an explicit
+ * endpoint (`PROPR_INSTANCE_ID` → https://t-<id>.propr.dev, or an explicit
  * `PROPR_UI_PUBLIC_API_URL`); without one the sidecar would start and the desired
  * state persist while the hosted UI has no usable endpoint, surfacing only as
  * later status/verify failures. So we refuse up front instead.
@@ -55,7 +57,7 @@ export class TunnelPublicUrlMissingError extends Error {
   constructor() {
     super(
       "cannot start the tunnel — no public proxy URL can be derived.\n" +
-        "  The hosted UI reaches this stack at https://<id>.proxy.propr.dev, so set\n" +
+        "  The hosted UI reaches this stack at https://t-<id>.propr.dev, so set\n" +
         "  PROPR_INSTANCE_ID (preferred) or an explicit PROPR_UI_PUBLIC_API_URL in\n" +
         "  your stack .env, then run 'propr tunnel on' again."
     );
@@ -65,7 +67,7 @@ export class TunnelPublicUrlMissingError extends Error {
 
 /**
  * Thrown by applyTunnelToggle when `tunnel on` is requested with a public proxy
- * URL that is not a hosted `https://<id>.proxy.propr.dev` URL. propr-routing only
+ * URL that is not a hosted `https://t-<id>.propr.dev` URL. propr-routing only
  * forwards `/api/*` and `/socket.io/*` on those hosts, so an explicit
  * `PROPR_UI_PUBLIC_API_URL` pointing anywhere else (e.g. https://custom.example.com)
  * would start a sidecar the hosted UI cannot route to. The launcher's
@@ -77,10 +79,10 @@ export class TunnelPublicUrlInvalidError extends Error {
   constructor(url: string) {
     super(
       `cannot start the tunnel — PROPR_UI_PUBLIC_API_URL ("${url}") is not a\n` +
-        `  hosted proxy URL (https://<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only\n` +
+        `  hosted proxy URL (https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}). The tunnel only\n` +
         `  routes /api/* and /socket.io/* on ${PROPR_UI_PROXY_SUFFIX} hosts, so the\n` +
         "  hosted UI could not reach this stack. Set PROPR_INSTANCE_ID (preferred) or\n" +
-        `  a https://<id>.${PROPR_UI_PROXY_SUFFIX} URL, then run 'propr tunnel on' again.`
+        `  a https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX} URL, then run 'propr tunnel on' again.`
     );
     this.name = "TunnelPublicUrlInvalidError";
   }
@@ -231,7 +233,7 @@ export async function applyTunnelToggle({
 
   // A derived public URL is always a well-formed proxy URL, but an explicit
   // PROPR_UI_PUBLIC_API_URL can be anything. propr-routing only forwards /api/*
-  // and /socket.io/* on https://<id>.proxy.propr.dev hosts, so a non-proxy URL
+  // and /socket.io/* on https://t-<id>.propr.dev hosts, so a non-proxy URL
   // would start a sidecar the hosted UI cannot route to. validateEnv() rejects
   // this for `propr start`/`propr check`; mirror it here so `propr tunnel on`
   // doesn't persist/start an unroutable configuration those commands would refuse.
@@ -399,8 +401,12 @@ function instanceIdFromProxyUrl(url: string): string | undefined {
     return undefined;
   }
   const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-  return parsed.protocol === "https:" && parsed.hostname.endsWith(suffix)
-    ? parsed.hostname.slice(0, -suffix.length)
+  if (parsed.protocol !== "https:" || !parsed.hostname.endsWith(suffix)) {
+    return undefined;
+  }
+  const label = parsed.hostname.slice(0, -suffix.length);
+  return label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+    ? label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
     : undefined;
 }
 
@@ -411,12 +417,15 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
   const explicitUrl = input.url?.trim().replace(/\/+$/, "");
   const explicitInstanceId = input.instanceId?.trim();
   if (!explicitUrl && !explicitInstanceId) {
-    throw new Error("provide --url https://<id>.proxy.propr.dev or --instance-id <id>");
+    throw new Error("provide --url https://t-<id>.propr.dev or --instance-id <id>");
   }
 
-  const candidateUrl = explicitUrl ?? `https://${explicitInstanceId}.${PROPR_UI_PROXY_SUFFIX}`;
+  const candidateUrl = explicitUrl ?? proprInstanceProxyUrl(explicitInstanceId);
+  if (!candidateUrl) {
+    throw new Error(`could not derive a hosted proxy URL from --instance-id (${explicitInstanceId})`);
+  }
   if (!isProprProxyUrl(candidateUrl)) {
-    throw new Error(`tunnel URL must be a bare hosted proxy URL such as https://<id>.${PROPR_UI_PROXY_SUFFIX} (no path/query/fragment)`);
+    throw new Error(`tunnel URL must be a bare hosted proxy URL such as https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX} (no path/query/fragment)`);
   }
 
   // Canonicalize: URL parsing already lowercases the host, and `.origin` drops
@@ -425,11 +434,18 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
   // mixed-case --instance-id would otherwise diverge from the launcher's value.
   const publicUrl = new URL(candidateUrl).origin;
   const derivedInstanceId = instanceIdFromProxyUrl(publicUrl);
-  const instanceId = (explicitInstanceId ?? derivedInstanceId)?.toLowerCase();
+  const normalizedExplicitInstanceId = explicitInstanceId?.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+    ? explicitInstanceId.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
+    : explicitInstanceId;
+  const instanceId = (normalizedExplicitInstanceId ?? derivedInstanceId)?.toLowerCase();
   if (!instanceId) {
     throw new Error(`could not derive an instance id from ${publicUrl}`);
   }
-  if (derivedInstanceId && explicitInstanceId && derivedInstanceId.toLowerCase() !== explicitInstanceId.toLowerCase()) {
+  if (
+    derivedInstanceId &&
+    normalizedExplicitInstanceId &&
+    derivedInstanceId.toLowerCase() !== normalizedExplicitInstanceId.toLowerCase()
+  ) {
     throw new Error(`--instance-id (${explicitInstanceId}) does not match --url host (${derivedInstanceId})`);
   }
 
@@ -664,20 +680,20 @@ export function createTunnelCommand(): Command {
     .option("--root <dir>", "Stack root directory")
     .option("--force", "With 'on', start the tunnel even if the core stack is not running")
     .option("--token <token>", "Connector token from ProPR Connect (setup only)")
-    .option("--url <url>", "Public proxy URL from ProPR Connect, e.g. https://<id>.proxy.propr.dev (setup only)")
-    .option("--instance-id <id>", "Instance id from ProPR Connect; derives https://<id>.proxy.propr.dev (setup only)")
+    .option("--url <url>", "Public proxy URL from ProPR Connect, e.g. https://t-<id>.propr.dev (setup only)")
+    .option("--instance-id <id>", "Instance id from ProPR Connect; derives https://t-<id>.propr.dev (setup only)")
     .option("--start", "After setup, start or restart the stack with hosted tunnel settings")
     .addHelpText("after", `
 Setup writes the tunnel settings to your stack .env for you:
 
-  $ propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev --start
+  $ propr tunnel setup --token <connector-token> --url https://t-<id>.propr.dev --start
 
 Starting the tunnel requires a token AND a public proxy URL:
   PROPR_UI_TUNNEL_TOKEN    Cloudflare Tunnel token (required to start). This is a
                            live Cloudflare credential — do not commit, log, or share it
   PROPR_UI_TUNNEL_ENABLED  Explicitly enables the managed tunnel sidecar
   PROPR_INSTANCE_ID        Instance id; derives the public URL
-                           https://<id>.proxy.propr.dev (required unless
+                           https://t-<id>.propr.dev (required unless
                            PROPR_UI_PUBLIC_API_URL is set)
   PROPR_UI_PUBLIC_API_URL  Explicit public API URL advertised through the tunnel
                            (overrides the id-derived URL)

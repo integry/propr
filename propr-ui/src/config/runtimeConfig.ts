@@ -2,7 +2,7 @@
 //
 // The hosted UI is a single static bundle that serves many local stacks, so the
 // API / Socket.IO base URL cannot be baked in at build time — each instance
-// must talk to its own per-instance proxy (e.g. https://abc123.proxy.propr.dev).
+// must talk to its own per-instance proxy (e.g. https://t-abc123.propr.dev).
 // The base URL is therefore exposed on `window.__PROPR_CONFIG__` by the static
 // `public/config.js`, which the hosting environment rewrites at container start
 // from the `PROPR_UI_PUBLIC_API_URL` env var (see docker-entrypoint.sh).
@@ -72,7 +72,7 @@ export const isValidHttpUrl = (value: string): boolean => {
 
 /**
  * Resolve the Connect deep-link API base from `?tunnel=`. Connect opens the
- * hosted UI as `https://app.propr.dev?tunnel=<id>.proxy.propr.dev` after a
+ * hosted UI as `https://app.propr.dev?tunnel=t-<id>.propr.dev` after a
  * tunnel passes health checks. Accept only hosted ProPR proxy targets and only
  * on the managed hosted UI origin so arbitrary self-hosted pages cannot smuggle
  * a cross-origin API base through the query string.
@@ -182,13 +182,13 @@ export const runtimeConfigWarning = (
   if (!isValidHttpUrl(apiBaseUrl)) {
     return (
       `[propr] window.__PROPR_CONFIG__.apiBaseUrl is not a valid http(s) URL: "${apiBaseUrl}". ` +
-      'Expected an absolute per-instance proxy URL like https://abc123.proxy.propr.dev. ' +
+      'Expected an absolute per-instance proxy URL like https://t-abc123.propr.dev. ' +
       'API calls built from this base will fail.'
     );
   }
   // Hosted UI tunnel mode is explicitly limited to per-instance proxy hosts:
   // propr-routing only forwards /api/* and /socket.io/* on
-  // https://<id>.proxy.propr.dev. A well-formed http(s) URL pointing anywhere
+  // https://t-<id>.propr.dev. A well-formed http(s) URL pointing anywhere
   // else (e.g. https://custom.example.com) parses fine but requests will not be
   // routed to the local stack, so warn rather than letting it fail silently at
   // request time. This is a warning, not a hard block — a future hosting setup
@@ -196,7 +196,7 @@ export const runtimeConfigWarning = (
   if (!isProprProxyUrl(apiBaseUrl)) {
     return (
       `[propr] window.__PROPR_CONFIG__.apiBaseUrl is not a hosted ProPR proxy URL: "${apiBaseUrl}". ` +
-      'Hosted UI tunnel mode only routes https://<id>.proxy.propr.dev, so API calls built ' +
+      'Hosted UI tunnel mode only routes https://t-<id>.propr.dev, so API calls built ' +
       'from this base may not reach the local stack.'
     );
   }
@@ -226,7 +226,7 @@ export const hostedUiConnectionIssue = (
       title: 'Invalid hosted UI configuration',
       message:
         `The configured API URL is not a valid http(s) URL: "${apiBaseUrl}". ` +
-        'Restart the stack after setting a hosted proxy URL such as https://abc123.proxy.propr.dev.',
+        'Restart the stack after setting a hosted proxy URL such as https://t-abc123.propr.dev.',
     };
   }
   if (!isProprProxyUrl(apiBaseUrl)) {
@@ -234,7 +234,7 @@ export const hostedUiConnectionIssue = (
       title: 'Invalid hosted UI tunnel',
       message:
         `The configured API URL is not a hosted ProPR proxy URL: "${apiBaseUrl}". ` +
-        'Hosted UI tunnel mode requires a bare https://<id>.proxy.propr.dev URL.',
+        'Hosted UI tunnel mode requires a bare https://t-<id>.propr.dev URL.',
     };
   }
   return null;
@@ -278,7 +278,7 @@ if (typeof window !== 'undefined') {
  *
  * Trailing slashes are stripped here, once, so the many callers that build
  * paths as `${API_BASE_URL}/api/...` never produce a double slash (e.g.
- * `https://abc.proxy.propr.dev//api/compatibility`). The orchestrator already
+ * `https://t-abc.propr.dev//api/compatibility`). The orchestrator already
  * normalizes the values it injects, but a hand-served `public/config.js`,
  * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
  */

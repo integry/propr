@@ -82,22 +82,31 @@ function cfgWith(overrides: Partial<OrchestratorConfig>): OrchestratorConfig {
   return overrides as OrchestratorConfig;
 }
 
+function emptyStackStatus(): ReturnType<OrchestratorModule["startStack"]> {
+  return {
+    stack: "propr",
+    network: "propr-net",
+    running: true,
+    services: [],
+  };
+}
+
 const sink = () => {};
 
 test("tunnel setup builds env from the Connect proxy URL", () => {
   assert.deepEqual(
     buildTunnelSetupEnv({
       token: "secret-token",
-      url: "https://abc123.proxy.propr.dev/",
+      url: "https://t-abc123.propr.dev/",
     }),
     {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
       PROPR_UI_TUNNEL_ENABLED: "true",
       PROPR_INSTANCE_ID: "abc123",
-      PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
-      API_PUBLIC_URL: "https://abc123.proxy.propr.dev",
+      PROPR_UI_PUBLIC_API_URL: "https://t-abc123.propr.dev",
+      API_PUBLIC_URL: "https://t-abc123.propr.dev",
       FRONTEND_URL: "https://app.propr.dev",
-      GH_OAUTH_CALLBACK_URL: "https://abc123.proxy.propr.dev/api/auth/github/callback",
+      GH_OAUTH_CALLBACK_URL: "https://t-abc123.propr.dev/api/auth/github/callback",
     }
   );
 });
@@ -112,10 +121,10 @@ test("tunnel setup builds env from an instance id", () => {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
       PROPR_UI_TUNNEL_ENABLED: "true",
       PROPR_INSTANCE_ID: "abc123",
-      PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
-      API_PUBLIC_URL: "https://abc123.proxy.propr.dev",
+      PROPR_UI_PUBLIC_API_URL: "https://t-abc123.propr.dev",
+      API_PUBLIC_URL: "https://t-abc123.propr.dev",
       FRONTEND_URL: "https://app.propr.dev",
-      GH_OAUTH_CALLBACK_URL: "https://abc123.proxy.propr.dev/api/auth/github/callback",
+      GH_OAUTH_CALLBACK_URL: "https://t-abc123.propr.dev/api/auth/github/callback",
     }
   );
 });
@@ -125,7 +134,7 @@ test("tunnel setup rejects mismatched URL and instance id", () => {
     () =>
       buildTunnelSetupEnv({
         token: "secret-token",
-        url: "https://abc123.proxy.propr.dev",
+        url: "https://t-abc123.propr.dev",
         instanceId: "other",
       }),
     /does not match/
@@ -150,7 +159,7 @@ test("tunnel setup rejects a proxy URL carrying a path", () => {
     () =>
       buildTunnelSetupEnv({
         token: "secret-token",
-        url: "https://abc123.proxy.propr.dev/api",
+        url: "https://t-abc123.propr.dev/api",
       }),
     /hosted proxy URL/
   );
@@ -176,10 +185,10 @@ test("tunnel setup canonicalizes a mixed-case instance id", () => {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
       PROPR_UI_TUNNEL_ENABLED: "true",
       PROPR_INSTANCE_ID: "abc123",
-      PROPR_UI_PUBLIC_API_URL: "https://abc123.proxy.propr.dev",
-      API_PUBLIC_URL: "https://abc123.proxy.propr.dev",
+      PROPR_UI_PUBLIC_API_URL: "https://t-abc123.propr.dev",
+      API_PUBLIC_URL: "https://t-abc123.propr.dev",
       FRONTEND_URL: "https://app.propr.dev",
-      GH_OAUTH_CALLBACK_URL: "https://abc123.proxy.propr.dev/api/auth/github/callback",
+      GH_OAUTH_CALLBACK_URL: "https://t-abc123.propr.dev/api/auth/github/callback",
     }
   );
 });
@@ -199,7 +208,7 @@ test("tunnel setup --start starts a stopped stack with tunnel settings", async (
     },
     startStack: ((cfg) => {
       calls.push({ fn: "startStack", uiTunnelEnabled: cfg.uiTunnelEnabled });
-      return { services: [] };
+      return emptyStackStatus();
     }) as OrchestratorModule["startStack"],
   };
 
@@ -227,7 +236,7 @@ test("tunnel setup --start recreates an already-running stack", async () => {
     },
     startStack: ((cfg) => {
       calls.push({ fn: "startStack", uiTunnelEnabled: cfg.uiTunnelEnabled });
-      return { services: [] };
+      return emptyStackStatus();
     }) as OrchestratorModule["startStack"],
   };
 
@@ -256,7 +265,7 @@ test("tunnel setup --start keeps the configured tunnel enabled when Docker resta
     },
     startStack: (() => {
       calls.push("startStack");
-      return { services: [] };
+      return emptyStackStatus();
     }) as OrchestratorModule["startStack"],
   };
 
@@ -302,7 +311,7 @@ test("tunnel setup --start rejects invalid env before touching containers", asyn
     },
     startStack: (() => {
       calls.push("startStack");
-      return { services: [] };
+      return emptyStackStatus();
     }) as OrchestratorModule["startStack"],
   };
 
@@ -435,7 +444,7 @@ test("tunnel on persists desired state before starting the sidecar", async () =>
 
   await applyTunnelToggle({
     enable: true,
-    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch,
     configManager,
     log: sink,
@@ -461,7 +470,7 @@ test("tunnel on starts the sidecar with an enabled config even when the input cf
     cfg: cfgWith({
       uiTunnelToken: "secret-token",
       uiTunnelEnabled: false,
-      uiPublicApiUrl: "https://abc123.proxy.propr.dev",
+      uiPublicApiUrl: "https://t-abc123.propr.dev",
     }),
     orch,
     configManager,
@@ -479,7 +488,7 @@ test("tunnel on rolls the persisted state back when the start fails", async () =
   await assert.rejects(
     applyTunnelToggle({
       enable: true,
-      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://t-abc123.propr.dev" }),
       orch,
       configManager,
       log: sink,
@@ -500,7 +509,7 @@ test("tunnel on with the core stack down throws and does not persist or start", 
   await assert.rejects(
     applyTunnelToggle({
       enable: true,
-      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+      cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://t-abc123.propr.dev" }),
       orch,
       configManager,
       log: sink,
@@ -522,7 +531,7 @@ test("tunnel on --force starts the sidecar even when the core stack is down", as
 
   await applyTunnelToggle({
     enable: true,
-    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch,
     configManager,
     force: true,
@@ -542,7 +551,7 @@ test("tunnel on warns about stale API env when the stack is already running", as
 
   await applyTunnelToggle({
     enable: true,
-    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiTunnelToken: "secret-token", uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch,
     configManager,
     log: sink,
@@ -575,7 +584,7 @@ function fakeFetch(byPath: Record<string, number | "error">): typeof fetch {
 
 test("verify passes when container runs and endpoints answer as expected", async () => {
   const result = await verifyTunnel({
-    cfg: cfgWith({ uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch: verifyOrch(true),
     fetchImpl: fakeFetch({ "/api/status": 200, "/": 404, "/socket.io/": 400 }),
   });
@@ -586,7 +595,7 @@ test("verify passes when container runs and endpoints answer as expected", async
 
 test("verify treats an auth-expected /api/status as reachable", async () => {
   const result = await verifyTunnel({
-    cfg: cfgWith({ uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch: verifyOrch(true),
     fetchImpl: fakeFetch({ "/api/status": 401, "/": 404, "/socket.io/": 400 }),
   });
@@ -596,7 +605,7 @@ test("verify treats an auth-expected /api/status as reachable", async () => {
 
 test("verify fails when the root path does not return 404", async () => {
   const result = await verifyTunnel({
-    cfg: cfgWith({ uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch: verifyOrch(true),
     fetchImpl: fakeFetch({ "/api/status": 200, "/": 200, "/socket.io/": 400 }),
   });
@@ -607,7 +616,7 @@ test("verify fails when the root path does not return 404", async () => {
 
 test("verify fails when the cloudflared container is not running", async () => {
   const result = await verifyTunnel({
-    cfg: cfgWith({ uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch: verifyOrch(false),
     fetchImpl: fakeFetch({ "/api/status": 200, "/": 404, "/socket.io/": 400 }),
   });
@@ -631,7 +640,7 @@ test("verify fails the HTTP checks when no public URL is known", async () => {
 
 test("verify flags a Socket.IO 404 as blocked at ingress", async () => {
   const result = await verifyTunnel({
-    cfg: cfgWith({ uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch: verifyOrch(true),
     fetchImpl: fakeFetch({ "/api/status": 200, "/": 404, "/socket.io/": 404 }),
   });
@@ -645,7 +654,7 @@ test("verify flags a Socket.IO 5xx as not reaching the server", async () => {
   // it does not prove Socket.IO is reachable — it must not be a false-positive
   // "routed".
   const result = await verifyTunnel({
-    cfg: cfgWith({ uiPublicApiUrl: "https://abc123.proxy.propr.dev" }),
+    cfg: cfgWith({ uiPublicApiUrl: "https://t-abc123.propr.dev" }),
     orch: verifyOrch(true),
     fetchImpl: fakeFetch({ "/api/status": 200, "/": 404, "/socket.io/": 502 }),
   });
@@ -684,7 +693,7 @@ test("tunnel off warns when hosted proxy env remains in .env", async () => {
     // wrote: a later `propr start` would resolve them, so off should warn.
     cfg: cfgWith({
       uiTunnelToken: "secret-token",
-      uiPublicApiUrl: "https://abc123.proxy.propr.dev",
+      uiPublicApiUrl: "https://t-abc123.propr.dev",
       frontendUrl: "https://app.propr.dev",
     }),
     orch,

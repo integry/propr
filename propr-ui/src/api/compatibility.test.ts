@@ -86,7 +86,7 @@ describe('checkProprApiCompatibility', () => {
   });
 
   it('uses the runtime API base URL when checking compatibility', async () => {
-    window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://abc123.proxy.propr.dev' };
+    window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev' };
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
         version: PROPR_VERSION,
@@ -102,7 +102,7 @@ describe('checkProprApiCompatibility', () => {
     await checkProprApiCompatibility();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://abc123.proxy.propr.dev/api/compatibility',
+      'https://t-abc123.propr.dev/api/compatibility',
       expect.objectContaining({ credentials: 'include', cache: 'no-store' })
     );
   });

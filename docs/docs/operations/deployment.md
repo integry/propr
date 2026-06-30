@@ -254,7 +254,7 @@ This works through an optional **Cloudflare Tunnel**: a managed sidecar running 
 
 For the higher-level role of the hosted bridge, including the difference between
 `connect.propr.dev`, `webhook.propr.dev`, `app.propr.dev`, and
-`<id>.proxy.propr.dev`, see [ProPR Connect](./propr-connect.md).
+`t-<id>.propr.dev`, see [ProPR Connect](./propr-connect.md).
 
 ### Architecture
 
@@ -262,13 +262,13 @@ Two distinct public hosts are in play, and they are **not** the same origin:
 
 - `https://app.propr.dev` — the **hosted UI**, and the origin the **browser is loaded from**. It is a single static bundle that serves every connected stack. Because one bundle serves many stacks, the API base URL is not baked in at build time; the browser reads it at runtime from `window.__PROPR_CONFIG__.apiBaseUrl`. This is the **browser origin**, so it is the origin the API must allow through CORS, and the origin the API redirects back to after login.
 
-  How `window.__PROPR_CONFIG__` is populated depends on **who serves the bundle**. When you **self-host** the UI bundle (the `propr/ui` container), its entrypoint rewrites the static `config.js` from `PROPR_UI_PUBLIC_API_URL` at container start, so one container targets one stack. The **vendor-hosted** `app.propr.dev` serves the same bundle to many stacks, so it cannot be rewritten per container. Instead, ProPR Connect opens the hosted UI with a validated `?tunnel=<id>.proxy.propr.dev` deep link, and the UI remembers that selected per-instance API origin through login/OAuth redirects. If the bundle loads on the hosted UI origin (`app.propr.dev`) with no tunnel deep link, no remembered tunnel, and no runtime config, the UI shows a “Connect a ProPR stack” state instead of falling through to broken same-origin API calls. Localhost and self-hosted same-origin deployments serve the API from the same origin, so they are exempt from that hosted-only guard.
-- `https://<PROPR_INSTANCE_ID>.proxy.propr.dev` — the **per-instance proxy host** for one stack, and the host the browser sends **API, Socket.IO, OAuth-callback, and session-cookie** traffic to. Each enabled stack is published under this hostname through its Cloudflare Tunnel, and the hosted UI discovers and reaches your stack through the shared `.proxy.propr.dev` suffix — no domain of your own to own or register. The tunnel fronts the **API** here (the API container on port 4000); propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host, so the root URL returns 404 and `/webhook` is **not** routed through the tunnel. The UI itself is served by `app.propr.dev`, not through the tunnel.
+  How `window.__PROPR_CONFIG__` is populated depends on **who serves the bundle**. When you **self-host** the UI bundle (the `propr/ui` container), its entrypoint rewrites the static `config.js` from `PROPR_UI_PUBLIC_API_URL` at container start, so one container targets one stack. The **vendor-hosted** `app.propr.dev` serves the same bundle to many stacks, so it cannot be rewritten per container. Instead, ProPR Connect opens the hosted UI with a validated `?tunnel=t-<id>.propr.dev` deep link, and the UI remembers that selected per-instance API origin through login/OAuth redirects. If the bundle loads on the hosted UI origin (`app.propr.dev`) with no tunnel deep link, no remembered tunnel, and no runtime config, the UI shows a “Connect a ProPR stack” state instead of falling through to broken same-origin API calls. Localhost and self-hosted same-origin deployments serve the API from the same origin, so they are exempt from that hosted-only guard.
+- `https://t-<PROPR_INSTANCE_ID>.propr.dev` — the **per-instance proxy host** for one stack, and the host the browser sends **API, Socket.IO, OAuth-callback, and session-cookie** traffic to. Each enabled stack is published under this hostname through its Cloudflare Tunnel, and the hosted UI discovers and reaches your stack through the managed `t-*.propr.dev` host pattern — no domain of your own to own or register. The tunnel fronts the **API** here (the API container on port 4000); propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host, so the root URL returns 404 and `/webhook` is **not** routed through the tunnel. The UI itself is served by `app.propr.dev`, not through the tunnel.
 - `http://api:4000` — **internal only**. This is the service-to-service address other stack containers use to reach the API inside the Docker network, and it is also **where Cloudflare forwards the tunnel** — the tunnel ingress points at the Docker-internal `http://api:4000`, **not** at host port 4000. Because routing is internal to the Docker network, the published host port is irrelevant to the tunnel and the two cannot conflict; you do not need host port 4000 free for the tunnel to work. The tunnel publishes the API publicly at the proxy host; the internal `http://api:4000` name is unchanged and is never what the browser uses.
 
-So the browser origin (`app.propr.dev`) and the API host (`<id>.proxy.propr.dev`) **differ**. They work together because both sit under the shared `propr.dev` registrable domain, which makes them *same-site* (though cross-origin): the API allows the `app.propr.dev` origin via CORS (`FRONTEND_URL`), the host-only session cookie set on the proxy host is sent with the UI's same-site API calls, and the OAuth callback lands on the proxy host. See [Configuration](#configuration-v1) below for the exact `FRONTEND_URL` / `API_PUBLIC_URL` / `GH_OAUTH_CALLBACK_URL` values.
+So the browser origin (`app.propr.dev`) and the API host (`t-<id>.propr.dev`) **differ**. They work together because both sit under the shared `propr.dev` registrable domain, which makes them *same-site* (though cross-origin): the API allows the `app.propr.dev` origin via CORS (`FRONTEND_URL`), the host-only session cookie set on the proxy host is sent with the UI's same-site API calls, and the OAuth callback lands on the proxy host. See [Configuration](#configuration-v1) below for the exact `FRONTEND_URL` / `API_PUBLIC_URL` / `GH_OAUTH_CALLBACK_URL` values.
 
-**`.proxy.propr.dev` is not `api.propr.dev`.** The per-instance `<id>.proxy.propr.dev` host is the public front door to *your own local stack* through the tunnel. The central ProPR services live on different hosts — the hosted UI at `app.propr.dev`, and the routing / GitHub-token relay at `webhook.propr.dev` (see [GitHub Authentication](./github-auth.md)). Those are vendor-run APIs shared by all installs; `.proxy.propr.dev` addresses only your stack.
+**`t-*.propr.dev` is not `api.propr.dev`.** The per-instance `t-<id>.propr.dev` host is the public front door to *your own local stack* through the tunnel. The central ProPR services live on different hosts — the hosted UI at `app.propr.dev`, and the routing / GitHub-token relay at `webhook.propr.dev` (see [GitHub Authentication](./github-auth.md)). Those are vendor-run APIs shared by all installs; `t-*.propr.dev` addresses only your stack.
 
 The browser uses the **same API base** for both REST calls and the Socket.IO connection, so they always target one origin — the per-instance proxy host when the tunnel is on, or same-origin localhost otherwise. Through the tunnel, propr-routing forwards only `/api/*` and `/socket.io/*` (the two paths the browser uses); WebSocket upgrades must be allowed on `/socket.io/`. (`/webhook` is a server-to-server endpoint used only by `direct_webhook` mode behind your own reverse proxy — it is never called by the browser and is not routed through the tunnel.)
 
@@ -293,7 +293,7 @@ missing metadata is intended to become a hard block like any other mismatch.
 ProPR Connect shows a one-time connector token and tunnel URL. Use the CLI setup command from Connect to write the stack `.env` values without editing the file by hand:
 
 ```bash
-propr tunnel setup --token <connector-token> --url https://abc123.proxy.propr.dev --start
+propr tunnel setup --token <connector-token> --url https://t-abc123.propr.dev --start
 ```
 
 For older CLI versions or manual recovery, set these in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label):
@@ -303,8 +303,8 @@ For older CLI versions or manual recovery, set these in the stack `.env`. Replac
 # PROPR_UI_TUNNEL_TOKEN is a LIVE Cloudflare credential — do not commit, log, or share it.
 PROPR_UI_TUNNEL_TOKEN=your_cloudflare_tunnel_token   # Cloudflare Tunnel token; required to start. Setting it makes the tunnel start on the next `propr start`
 PROPR_UI_TUNNEL_ENABLED=true                         # explicit tunnel enablement; the CLI also records this in its config
-PROPR_INSTANCE_ID=abc123                             # this stack's instance id; valid DNS label (letters, digits, hyphens; 1-63 chars). Derives https://abc123.proxy.propr.dev
-PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev # explicit public API URL the hosted UI talks to
+PROPR_INSTANCE_ID=abc123                             # this stack's instance id; valid DNS label (letters, digits, hyphens; 1-63 chars). Derives https://t-abc123.propr.dev
+PROPR_UI_PUBLIC_API_URL=https://t-abc123.propr.dev # explicit public API URL the hosted UI talks to
 
 # Optional override:
 # PROPR_CLOUDFLARED_IMAGE=cloudflare/cloudflared:2024.12.2 # cloudflared image; overrides the manifest-pinned default
@@ -316,26 +316,26 @@ PROPR_UI_PUBLIC_API_URL=https://abc123.proxy.propr.dev # explicit public API URL
 #   - API_PUBLIC_URL is the proxy host: where the browser actually reaches the
 #     API, Socket.IO, and the OAuth callback.
 FRONTEND_URL=https://app.propr.dev
-API_PUBLIC_URL=https://abc123.proxy.propr.dev
+API_PUBLIC_URL=https://t-abc123.propr.dev
 
 # OAuth callback lives on the API (the proxy host), NOT on app.propr.dev. This
 # exact URL must be registered in your GitHub OAuth App.
-GH_OAUTH_CALLBACK_URL=https://abc123.proxy.propr.dev/api/auth/github/callback
+GH_OAUTH_CALLBACK_URL=https://t-abc123.propr.dev/api/auth/github/callback
 
 # COOKIE_DOMAIN: leave UNSET for v1 (keep the line commented out — an empty
 # `COOKIE_DOMAIN=` is not guaranteed to be treated as absent). The session
 # cookie is then host-only on the proxy host — correct because app.propr.dev and
-# <id>.proxy.propr.dev share the propr.dev registrable domain (same-site).
+# t-<id>.propr.dev share the propr.dev registrable domain (same-site).
 # COOKIE_DOMAIN=
 ```
 
-`PROPR_INSTANCE_ID` derives the public URL `https://<id>.proxy.propr.dev` automatically, so `PROPR_UI_PUBLIC_API_URL` is only needed to override it. The browser origin and the API host are **different** hosts, so set them accordingly:
+`PROPR_INSTANCE_ID` derives the public URL `https://t-<id>.propr.dev` automatically, so `PROPR_UI_PUBLIC_API_URL` is only needed to override it. The browser origin and the API host are **different** hosts, so set them accordingly:
 
 - `FRONTEND_URL` is the **browser origin** — the hosted UI at `https://app.propr.dev`. The API allows this origin through CORS and redirects to it after login. In tunnel mode it is derived to `https://app.propr.dev` when left unset, and `propr tunnel setup` writes it explicitly so older localhost values do not override the tunnel.
-- `API_PUBLIC_URL` is the **proxy host** (`https://<id>.proxy.propr.dev`) — where the browser actually reaches the API and Socket.IO, and what governs the secure session cookie. In tunnel mode it is derived from the instance id when left unset, and `propr tunnel setup` writes it explicitly.
-- `GH_OAUTH_CALLBACK_URL` must point at the API on the **proxy host** (`https://<id>.proxy.propr.dev/api/auth/github/callback`). In tunnel mode it is derived when left unset, and `propr tunnel setup` writes it explicitly so older localhost callback values do not override the tunnel. Register the same URL in your GitHub OAuth App.
+- `API_PUBLIC_URL` is the **proxy host** (`https://t-<id>.propr.dev`) — where the browser actually reaches the API and Socket.IO, and what governs the secure session cookie. In tunnel mode it is derived from the instance id when left unset, and `propr tunnel setup` writes it explicitly.
+- `GH_OAUTH_CALLBACK_URL` must point at the API on the **proxy host** (`https://t-<id>.propr.dev/api/auth/github/callback`). In tunnel mode it is derived when left unset, and `propr tunnel setup` writes it explicitly so older localhost callback values do not override the tunnel. Register the same URL in your GitHub OAuth App.
 
-Leave `COOKIE_DOMAIN` unset: the session cookie is host-only on the single `<id>.proxy.propr.dev` host, which is correct because that host and `app.propr.dev` are same-site under `propr.dev`. Scoping the cookie across the shared `.proxy.propr.dev` suffix is not supported for v1.
+Leave `COOKIE_DOMAIN` unset: the session cookie is host-only on the single `t-<id>.propr.dev` host, which is correct because that host and `app.propr.dev` are same-site under `propr.dev`. Scoping the cookie across shared ProPR-managed tunnel hostnames is not supported for v1.
 
 Then start the sidecar and verify it:
 

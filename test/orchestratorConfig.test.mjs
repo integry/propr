@@ -118,9 +118,9 @@ test('enabling the tunnel derives public API, frontend, and OAuth callback URLs'
   }, { manifestPath });
 
   assert.equal(cfg.uiTunnelEnabled, true);
-  assert.equal(cfg.apiPublicUrl, 'https://abc123.proxy.propr.dev');
+  assert.equal(cfg.apiPublicUrl, 'https://t-abc123.propr.dev');
   assert.equal(cfg.frontendUrl, 'https://app.propr.dev');
-  assert.equal(cfg.ghOauthCallbackUrl, 'https://abc123.proxy.propr.dev/api/auth/github/callback');
+  assert.equal(cfg.ghOauthCallbackUrl, 'https://t-abc123.propr.dev/api/auth/github/callback');
 });
 
 test('explicit public URLs still win over tunnel-derived values', () => {
@@ -156,11 +156,11 @@ test('api container propagates the tunnel PROPR_UI_* env without the tunnel toke
   }, { manifestPath });
   const { args } = buildServiceSpec(cfg, 'api');
 
-  assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['https://abc123.proxy.propr.dev']);
+  assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['https://t-abc123.propr.dev']);
   assert.deepEqual(envValues(args, 'FRONTEND_URL'), ['https://app.propr.dev']);
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['true']);
   assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), ['abc123']);
-  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
   // The tunnel token must never reach the API container.
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
@@ -179,12 +179,12 @@ test('api container gets a stable `api` network alias for the tunnel ingress tar
 test('an explicit PROPR_UI_PUBLIC_API_URL is normalized (trailing slash stripped) once at resolve time', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',
-    PROPR_UI_PUBLIC_API_URL: 'https://abc123.proxy.propr.dev/',
+    PROPR_UI_PUBLIC_API_URL: 'https://t-abc123.propr.dev/',
   }, { manifestPath });
-  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
+  assert.equal(cfg.uiPublicApiUrl, 'https://t-abc123.propr.dev');
   // and every consumer sees the canonical (no trailing slash) form.
-  assert.deepEqual(envValues(buildServiceSpec(cfg, 'api').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
-  assert.deepEqual(envValues(buildServiceSpec(cfg, 'ui').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
+  assert.deepEqual(envValues(buildServiceSpec(cfg, 'api').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
+  assert.deepEqual(envValues(buildServiceSpec(cfg, 'ui').args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
 });
 
 test('ui container receives the tunnel public API URL (no /api appended) when set', () => {
@@ -196,7 +196,7 @@ test('ui container receives the tunnel public API URL (no /api appended) when se
 
   // The UI bundle appends /api/... itself, so the container must get the bare
   // proxy origin — not the origin with /api on the end.
-  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://abc123.proxy.propr.dev']);
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
 });
 
 test('ui container omits PROPR_UI_PUBLIC_API_URL in local development', () => {
@@ -223,7 +223,7 @@ test('worker API_PUBLIC_URL aligns with the proxy URL in tunnel mode', () => {
   }, { manifestPath });
   const { args } = buildServiceSpec(cfg, 'worker');
 
-  assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['https://abc123.proxy.propr.dev']);
+  assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['https://t-abc123.propr.dev']);
   // The worker never receives the tunnel token either.
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
@@ -300,7 +300,7 @@ test('PROPR_INSTANCE_ID derives the proxy public API URL when none is explicit',
   const cfg = resolveConfig({ PROPR_INSTANCE_ID: 'abc123' }, { manifestPath });
 
   assert.equal(cfg.proprInstanceId, 'abc123');
-  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
+  assert.equal(cfg.uiPublicApiUrl, 'https://t-abc123.propr.dev');
 });
 
 test('an invalid PROPR_INSTANCE_ID does not derive a malformed public URL', () => {
@@ -435,7 +435,7 @@ test('validateEnv accepts a derived public URL from the instance id', () => {
     PROPR_REPOS_DIR: '/host/propr/repos',
   }, { manifestPath });
 
-  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
+  assert.equal(cfg.uiPublicApiUrl, 'https://t-abc123.propr.dev');
   assert.deepEqual(validateEnv(cfg).errors, []);
 });
 
@@ -469,7 +469,7 @@ test('validateEnv rejects a tunnel enabled but with no public URL derivable', ()
   // propagate. Future status/debug consumers may trust the instance id, so it is
   // rejected consistently when present.
   const explicit = resolveConfig(
-    { ...base, PROPR_INSTANCE_ID: 'not a label', PROPR_UI_PUBLIC_API_URL: 'https://custom.proxy.propr.dev' },
+    { ...base, PROPR_INSTANCE_ID: 'not a label', PROPR_UI_PUBLIC_API_URL: 'https://t-custom.propr.dev' },
     { manifestPath },
   );
   assert.match(validateEnv(explicit).errors.join('\n'), /PROPR_INSTANCE_ID .*not a valid DNS label/);
@@ -490,14 +490,14 @@ test('validateEnv rejects a tunnel public URL that is not a hosted proxy URL', (
     PROPR_REPOS_DIR: '/host/propr/repos',
   };
 
-  // A valid http(s) URL that is not under proxy.propr.dev is a hard error in
+  // A valid http(s) URL that is not a managed t-*.propr.dev proxy is a hard error in
   // tunnel mode — propr-routing will not forward to it, so the stack would start
   // with an unroutable public base. Matches the documented routing requirement.
   const offProxy = resolveConfig({ ...base, PROPR_UI_PUBLIC_API_URL: 'https://custom.example.com' }, { manifestPath });
   assert.match(validateEnv(offProxy).errors.join('\n'), /not a hosted proxy URL/);
 
   // A proper per-instance proxy URL produces no such error.
-  const onProxy = resolveConfig({ ...base, PROPR_UI_PUBLIC_API_URL: 'https://abc123.proxy.propr.dev' }, { manifestPath });
+  const onProxy = resolveConfig({ ...base, PROPR_UI_PUBLIC_API_URL: 'https://t-abc123.propr.dev' }, { manifestPath });
   assert.deepEqual(validateEnv(onProxy).errors.filter((e) => /not a hosted proxy URL/.test(e)), []);
 
   // The proxy-pattern check only applies in tunnel mode; a non-proxy but valid
@@ -536,12 +536,12 @@ test('validateEnv warns when GH_OAUTH_CALLBACK_URL still points at localhost in 
   // Without an explicit value, the launcher derives the proxy callback in tunnel
   // mode, so no manual .env edit is required.
   const derivedCallback = resolveConfig(base, { manifestPath });
-  assert.equal(derivedCallback.ghOauthCallbackUrl, 'https://abc123.proxy.propr.dev/api/auth/github/callback');
+  assert.equal(derivedCallback.ghOauthCallbackUrl, 'https://t-abc123.propr.dev/api/auth/github/callback');
   assert.deepEqual(validateEnv(derivedCallback).warnings.filter((w) => /GH_OAUTH_CALLBACK_URL/.test(w)), []);
 
   // An explicit public callback URL silences the warning.
   const publicCallback = resolveConfig(
-    { ...base, GH_OAUTH_CALLBACK_URL: 'https://abc123.proxy.propr.dev/api/auth/github/callback' },
+    { ...base, GH_OAUTH_CALLBACK_URL: 'https://t-abc123.propr.dev/api/auth/github/callback' },
     { manifestPath },
   );
   assert.deepEqual(validateEnv(publicCallback).warnings.filter((w) => /GH_OAUTH_CALLBACK_URL/.test(w)), []);
@@ -583,9 +583,9 @@ test('validateEnv rejects stale localhost public URLs in tunnel mode', () => {
   const generatedSetup = resolveConfig(
     {
       ...base,
-      API_PUBLIC_URL: 'https://abc123.proxy.propr.dev',
+      API_PUBLIC_URL: 'https://t-abc123.propr.dev',
       FRONTEND_URL: 'https://app.propr.dev',
-      GH_OAUTH_CALLBACK_URL: 'https://abc123.proxy.propr.dev/api/auth/github/callback',
+      GH_OAUTH_CALLBACK_URL: 'https://t-abc123.propr.dev/api/auth/github/callback',
     },
     { manifestPath },
   );
@@ -611,7 +611,7 @@ test('validateEnv rejects stale localhost public URLs in tunnel mode', () => {
 
 test('derived proxy URL lowercases a mixed-case instance id', () => {
   const cfg = resolveConfig({ PROPR_UI_TUNNEL_TOKEN: 'secret-token', PROPR_INSTANCE_ID: 'AbC123' }, { manifestPath });
-  assert.equal(cfg.uiPublicApiUrl, 'https://abc123.proxy.propr.dev');
+  assert.equal(cfg.uiPublicApiUrl, 'https://t-abc123.propr.dev');
 });
 
 test('launcher config does not stat host bind paths inside the launcher container', () => {
