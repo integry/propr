@@ -58,6 +58,7 @@
     "images:smoke": "./scripts/smoke-test-images.sh",
     "cli:pack": "node packages/cli/scripts/build-publish.mjs",
     "cli:publish": "node packages/cli/scripts/build-publish.mjs --publish",
+    "deploy:hosted-ui": "npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml",
     "start:prod": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD/.env:/app/.env:ro -v $PWD/data:/app/data -v $PWD/logs:/app/logs -v $PWD/repos:/app/repos propr/launcher:latest"
   },
   "keywords": [],

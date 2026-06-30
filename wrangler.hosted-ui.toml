@@ -1,0 +1,12 @@
+name = "propr-hosted-ui"
+compatibility_date = "2026-05-28"
+workers_dev = false
+preview_urls = false
+
+[[routes]]
+pattern = "app.propr.dev"
+custom_domain = true
+
+[assets]
+directory = "./propr-ui/dist"
+not_found_handling = "single-page-application"
