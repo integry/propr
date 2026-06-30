@@ -67,15 +67,21 @@ ProPR Connect can provision a managed Cloudflare Tunnel so the hosted UI at
 command shown in ProPR Connect from your initialized stack directory:
 
 ```bash
+npm install -g propr-cli@latest
 propr tunnel setup --token <connector-token> --url https://t-<id>.propr.dev --start
 ```
 
-The command writes the tunnel token and public API/OAuth URLs to the stack
-`.env`, records tunnel mode as enabled, and with `--start` starts or recreates
-the stack so the API picks up the hosted URLs immediately. The public tunnel
-origin is always a bare `https://t-<id>.propr.dev` URL; ProPR routes only
-`/api/*` and `/socket.io/*` through it, and the root URL intentionally returns
-404.
+Connect-managed tunnels require `propr-cli` 0.8.6 or newer. The setup command
+writes the tunnel token, instance id, hosted UI origin, public API URL, and
+OAuth callback URL to the stack `.env`, records tunnel mode as enabled, and with
+`--start` starts or recreates the stack so the API picks up the hosted URLs
+immediately. If you have only the instance id, `--instance-id <id>` derives the
+same public URL.
+
+The public tunnel origin is always a bare `https://t-<id>.propr.dev` URL; ProPR
+routes only `/api/*` and `/socket.io/*` through it, and the root URL
+intentionally returns 404. The hosted UI itself stays on `https://app.propr.dev`
+and calls the API through the per-instance tunnel host.
 
 Useful follow-up commands:
 
@@ -84,6 +90,11 @@ propr tunnel verify      # check cloudflared + /api/status, /, /socket.io/
 propr tunnel off         # stop only the sidecar; token/env values stay in .env
 propr tunnel on          # restart the sidecar later
 ```
+
+`propr tunnel off` intentionally leaves the Connect-written `.env` values in
+place. If you are switching the same stack back to a local or custom self-hosted
+UI, remove or replace `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`,
+`FRONTEND_URL`, and `GH_OAUTH_CALLBACK_URL` before restarting.
 
 ## Repository Setup
 
