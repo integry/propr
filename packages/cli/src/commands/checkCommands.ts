@@ -27,7 +27,6 @@ import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/ind
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
 import { validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
-import { MANIFEST_FILENAME, ENV_FILENAME } from "./githubAppCommands.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -376,14 +375,11 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   // 7. GitHub credentials (the backend hard-exits without a valid auth mode)
   const fileEnv = existsSync(envPath) ? orch.readEnvFile(envPath) : {};
-  // Pass the stack root so direct-webhook guidance can recognize generated-but-
-  // incomplete own-App setup (github-app-manifest.json / github-app.env written
-  // here by `propr github-app manifest` or `propr setup`) and tailor next steps.
-  for (const r of checkGithubAuth(fileEnv, cfg, rootDir)) emit(r);
+  for (const r of checkGithubAuth(fileEnv, cfg)) emit(r);
 
   // 7b. Mode-specific GitHub intake prerequisites (the resolved intake mode
   // needs the right credentials before the daemon/API can serve it).
-  for (const r of checkGithubIntakeMode(fileEnv, rootDir)) emit(r);
+  for (const r of checkGithubIntakeMode(fileEnv)) emit(r);
 
   // 7c. Routing intake diagnostics: routing URL plus live WebSocket state, last
   // delivery id, and last ACK (when the backend is reachable) for the default
@@ -478,75 +474,6 @@ const RELAY_URL_KEY = "PROPR_GH_RELAY_URL";
 const RELAY_TOKEN_KEY = "PROPR_GH_RELAY_TOKEN";
 
 /**
- * Next-action hint pointing users running `direct_webhook` intake at the
- * generated manifest/env files and the command that produces them. Direct
- * webhook mode needs an own GitHub App; `propr github-app manifest` scaffolds the
- * manifest and a matching `.env` snippet, leaving only the App ID / installation
- * id / private key to fill in after GitHub creates the App. Surfaced when an
- * own-App value is missing and the scaffolding has NOT been generated yet, so the
- * next step is to run the command.
- */
-const DIRECT_WEBHOOK_MANIFEST_HINT =
-  `Direct webhook mode needs your own GitHub App. Generate a ready-to-fill manifest ` +
-  `with \`propr github-app manifest --public-url <url>\` (writes ${MANIFEST_FILENAME} and ` +
-  `${ENV_FILENAME}), then fill in GH_APP_ID / GH_INSTALLATION_ID / HOST_GH_PRIVATE_KEY from ` +
-  `${ENV_FILENAME} after creating and installing the App on GitHub.`;
-
-/** True when `propr github-app manifest` output already exists in `dir`. */
-function manifestFilesPresent(dir: string): boolean {
-  return existsSync(join(dir, MANIFEST_FILENAME)) || existsSync(join(dir, ENV_FILENAME));
-}
-
-/**
- * Variant of the direct-webhook hint for when the manifest/env files already
- * exist in the stack root: the user has run `propr github-app manifest` and is
- * between "generated the scaffolding" and "filled in the values" — exactly when
- * they are likely to run `propr check`. Telling them to generate again would be
- * wrong, so point at the files they already have and the GitHub-side steps that
- * still produce GH_APP_ID / GH_INSTALLATION_ID / the private key.
- */
-function directWebhookManifestGeneratedHint(rootDir: string): string {
-  return (
-    `Found generated ${MANIFEST_FILENAME} / ${ENV_FILENAME} in ${rootDir}. ` +
-    `Submit ${MANIFEST_FILENAME} at GitHub's "Register new GitHub App" page and install the App, ` +
-    `then fill in GH_APP_ID / GH_INSTALLATION_ID / HOST_GH_PRIVATE_KEY — GitHub assigns these only ` +
-    `after the App exists (GH_WEBHOOK_SECRET is already in ${ENV_FILENAME}). ` +
-    `Re-run \`propr github-app manifest --force\` only to regenerate the scaffolding.`
-  );
-}
-
-/**
- * Pick the right direct-webhook next-action hint. When the generated manifest/env
- * files are already present in the stack root, point at them and the remaining
- * GitHub-side steps; otherwise tell the user to generate them. Both variants name
- * `propr github-app manifest` so the command stays discoverable from `propr check`.
- */
-function directWebhookManifestHint(rootDir?: string): string {
-  if (rootDir && manifestFilesPresent(rootDir)) {
-    return directWebhookManifestGeneratedHint(rootDir);
-  }
-  return DIRECT_WEBHOOK_MANIFEST_HINT;
-}
-
-/**
- * Best-effort resolve whether the configured intake mode is `direct_webhook`,
- * so own-App credential failures can point at the manifest command only when it
- * is relevant. Side-effect free and guarded: a malformed intake value simply
- * yields false (it is reported separately by checkGithubIntakeMode).
- */
-function isDirectWebhookIntake(val: (k: string) => string | undefined): boolean {
-  try {
-    const { mode } = resolveGithubEventIntakeMode({
-      eventIntakeMode: val("GITHUB_EVENT_INTAKE_MODE"),
-      enableGithubWebhooks: val("ENABLE_GITHUB_WEBHOOKS"),
-    });
-    return mode === "direct_webhook";
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Verify the GitHub credentials the backend needs to boot. The daemon/worker/api
  * import @propr/core's githubAuth, which hard-exits unless one of these is true:
  * demo mode, a token relay, or a configured GitHub App + readable key.
@@ -554,7 +481,7 @@ function isDirectWebhookIntake(val: (k: string) => string | undefined): boolean 
  * The mode itself comes from @propr/shared's resolveGithubAuthMode — the same
  * function the backend uses — so this check cannot drift from boot behavior.
  */
-export function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig, rootDir?: string): CheckResult[] {
+function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorConfig): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
@@ -618,22 +545,16 @@ export function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorCo
   // App mode (default).
   out.push({ name: "GitHub auth mode", status: "ok", detail: "GitHub App (own/shared app)", group: "GitHub" });
 
-  // When direct webhook intake is selected, missing own-App values most likely
-  // mean the user generated the manifest but has not finished filling it in —
-  // point them at the manifest command and the files it writes.
-  const directWebhook = isDirectWebhookIntake(val);
-  const manifestSuffix = directWebhook ? ` ${directWebhookManifestHint(rootDir)}` : "";
-
   const appId = val("GH_APP_ID");
   const installationId = val("GH_INSTALLATION_ID");
   out.push(
     isPlaceholder(appId)
-      ? { name: "GH_APP_ID", status: "fail", detail: "missing or placeholder", group: "GitHub", fix: `Set GH_APP_ID from your GitHub App settings.${manifestSuffix}` }
+      ? { name: "GH_APP_ID", status: "fail", detail: "missing or placeholder", group: "GitHub", fix: "Set GH_APP_ID from your GitHub App settings." }
       : { name: "GH_APP_ID", status: "ok", detail: appId!, group: "GitHub" }
   );
   out.push(
     isPlaceholder(installationId)
-      ? { name: "GH_INSTALLATION_ID", status: "fail", detail: "missing or placeholder", group: "GitHub", fix: `Set GH_INSTALLATION_ID for the App's installation on your account/org.${manifestSuffix}` }
+      ? { name: "GH_INSTALLATION_ID", status: "fail", detail: "missing or placeholder", group: "GitHub", fix: "Set GH_INSTALLATION_ID for the App's installation on your account/org." }
       : { name: "GH_INSTALLATION_ID", status: "ok", detail: installationId!, group: "GitHub" }
   );
 
@@ -668,7 +589,7 @@ export function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorCo
       status: "fail",
       detail: "no private key configured",
       group: "GitHub",
-      fix: `Set HOST_GH_PRIVATE_KEY to your .pem host path (recommended), or stage the key under data/ and set GH_PRIVATE_KEY_PATH.${manifestSuffix}`,
+      fix: "Set HOST_GH_PRIVATE_KEY to your .pem host path (recommended), or stage the key under data/ and set GH_PRIVATE_KEY_PATH.",
     });
   } else {
     out.push({
@@ -688,7 +609,7 @@ export function checkGithubAuth(env: Record<string, string>, cfg: OrchestratorCo
  * Reuses the shared validateIntakeModePrerequisites helper so `propr check`
  * and the backend boot path agree on what each mode requires.
  */
-export function checkGithubIntakeMode(env: Record<string, string>, rootDir?: string): CheckResult[] {
+function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
@@ -759,12 +680,8 @@ export function checkGithubIntakeMode(env: Record<string, string>, rootDir?: str
   for (const warning of warnings) {
     out.push({ name: "GitHub intake mode", status: "warn", detail: warning, group: "GitHub" });
   }
-  // Direct webhook prerequisites (own GitHub App + webhook secret) are exactly
-  // what `propr github-app manifest` scaffolds, so attach that next-action hint
-  // when the failure is for direct webhook intake.
-  const intakeFix = intakeMode === "direct_webhook" ? directWebhookManifestHint(rootDir) : undefined;
   for (const error of errors) {
-    out.push({ name: "GitHub intake mode", status: "fail", detail: error, group: "GitHub", ...(intakeFix ? { fix: intakeFix } : {}) });
+    out.push({ name: "GitHub intake mode", status: "fail", detail: error, group: "GitHub" });
   }
   if (valid) {
     out.push({ name: "GitHub intake mode", status: "ok", detail: intakeMode, group: "GitHub" });

@@ -35,9 +35,46 @@ const cliDir = resolve(here, "..");
 const repoRoot = resolve(cliDir, "..", "..");
 const sharedDir = join(repoRoot, "packages", "shared");
 const stageDir = join(repoRoot, "dist-publish", "propr-cli");
+const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2024.12.2";
 
 const run = (cmd, cmdArgs, cwd = repoRoot) =>
   execFileSync(cmd, cmdArgs, { cwd, stdio: "inherit" });
+
+const readGitSha = () => {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "nogit";
+  }
+};
+
+const buildLauncherManifest = (version) => {
+  const registry = process.env.MANIFEST_NS || process.env.DOCKERHUB_NS || "propr";
+  const imagePrefix = process.env.MANIFEST_PREFIX || "";
+  const image = (name) => `${registry}/${imagePrefix}${name}:${version}`;
+
+  return {
+    version,
+    git_sha: readGitSha(),
+    registry,
+    images: {
+      app: image("app"),
+      ui: image("ui"),
+      docs: image("docs"),
+      "agent-claude": image("agent-claude"),
+      "agent-codex": image("agent-codex"),
+      "agent-antigravity": image("agent-antigravity"),
+      "agent-opencode": image("agent-opencode"),
+      "agent-vibe": image("agent-vibe"),
+      redis: "redis:7-alpine",
+      cloudflared: CLOUDFLARED_IMAGE,
+    },
+  };
+};
 
 // 1. Build the workspace packages we depend on.
 run("npm", ["run", "build", "-w", "@propr/shared"]);
@@ -89,6 +126,17 @@ rewriteSharedImports(join(stageDir, "dist"));
 // 6. Write the unscoped package.json (no scoped deps, no build scripts).
 const cliPkg = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8"));
 const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+// copy-assets copies docker/launcher/manifest.json into dist during the CLI
+// workspace build. That checked-in manifest is refreshed by image releases, but
+// npm publishing must not depend on an image build having just dirtied the
+// worktree. Regenerate the staged package manifest from the current commit so
+// `npm run cli:publish` always ships a launcher manifest that matches the
+// commit being published.
+writeFileSync(
+  join(stageDir, "dist", "orchestrator", "manifest.json"),
+  JSON.stringify(buildLauncherManifest(cliPkg.version), null, 2) + "\n"
+);
+
 const stagePkg = {
   name: "propr-cli",
   version: cliPkg.version,

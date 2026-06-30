@@ -33,7 +33,8 @@ GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
 BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
 IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
-IMAGE_LICENSES="${IMAGE_LICENSES:-ISC}"
+PACKAGE_LICENSE="$(node -p "require('./package.json').license || 'Apache-2.0'")"
+IMAGE_LICENSES="${IMAGE_LICENSES:-$PACKAGE_LICENSE}"
 
 resolve_vibe_cli_version() {
   if [[ -x node_modules/.bin/tsx ]]; then
@@ -191,6 +192,13 @@ image_description() {
 # --- Rewrite launcher manifest ------------------------------------------------
 # The launcher image bakes in the image tags it should pull. Write a fresh
 # manifest so the baked tags match this build.
+#
+# To re-pin the cloudflared tunnel image, update the literal below AND the
+# matching fallbacks: DEFAULT_CLOUDFLARED_IMAGE in packages/shared/src/proprServiceUrls.ts
+# and its mirror in docker/launcher/orchestrator.mjs. The manifest (regenerated
+# here) is the effective source at runtime; the shared constant is only a
+# fallback. orchestratorProprUrlsDrift.test.ts reconciles all three and fails if
+# they diverge.
 write_manifest() {
   local runtime_ns runtime_prefix
   runtime_ns="$(manifest_ns)"
@@ -209,7 +217,8 @@ write_manifest() {
     "agent-antigravity": "$runtime_ns/${runtime_prefix}agent-antigravity:$VERSION",
     "agent-opencode": "$runtime_ns/${runtime_prefix}agent-opencode:$VERSION",
     "agent-vibe": "$runtime_ns/${runtime_prefix}agent-vibe:$VERSION",
-    "redis": "redis:7-alpine"
+    "redis": "redis:7-alpine",
+    "cloudflared": "cloudflare/cloudflared:2024.12.2"
   }
 }
 EOF

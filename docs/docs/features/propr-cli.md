@@ -29,6 +29,8 @@ propr status             # local stack status (--json for scripts)
 propr ui                 # open the Web UI (http://localhost:5173)
 propr docs               # open the bundled docs site
 propr stop               # stop the stack (--keep to stop without removing containers)
+propr tunnel on          # expose the stack to the hosted UI through a Cloudflare Tunnel
+propr tunnel off         # stop the tunnel (token and env values are kept)
 ```
 
 `propr setup` is the recommended way to bring up a local stack — see the [Local Setup](../tutorials/setup-local.md) and [Server Setup](../tutorials/setup-server.md) tutorials. The `init stack` / `check` / `start` commands below are the individual steps it orchestrates, available for scripting, CI, and troubleshooting.
@@ -51,7 +53,6 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 - `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [on|off] [--url <url>]` toggles [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the state to print the current setting).
-- `propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev` saves a ProPR Connect hosted tunnel token and public API URL to the stack `.env`; pass `--start` to start the stack immediately.
 
 :::warning[Breaking changes in the control-plane CLI]
 Running bare `propr` performs the same environment checks as `propr check` (including a Docker probe) and exits nonzero when prerequisites are missing — use `propr --help` for help text. `propr status` now reports the **local Docker stack**; use `propr remote-status` for the backend health/queue JSON that older scripts read from `propr status --json`.
@@ -59,7 +60,7 @@ Running bare `propr` performs the same environment checks as `propr check` (incl
 
 ## GitHub Relay (shared-app auth)
 
-If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay (see [GitHub Authentication](../operations/github-auth.md)).
+If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge behind the shared App, routing WebSocket, relay tokens, and managed UI tunnels; see [GitHub Authentication](../operations/github-auth.md) for the token configuration details.
 
 **The easiest path is `propr setup`:** choose **Token relay** at the GitHub-authentication step and it enrolls for you — it reuses your `propr login` token, discovers your installation (auto-selecting when there is exactly one, prompting when there are several), mints the relay token, and writes `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, and `GH_INSTALLATION_ID` to the stack `.env`. If you are not logged in yet, the line-by-line wizard offers to run `propr login` first. No separate enroll step is needed.
 
@@ -73,43 +74,59 @@ propr relay revoke <id>  # revoke a token
 
 `propr relay enroll` discovers the installation automatically from your `propr login` identity when you have exactly one; pass `--installation <id>` to choose among several, or `--url <url>` to target a self-hosted relay.
 
-## Own GitHub App (direct webhook mode)
-
-The recommended default is the shared, hosted ProPR App over routing WebSocket (relay auth, above) — it needs no GitHub App of your own and no inbound endpoint. If you instead run your **own** GitHub App with `GITHUB_EVENT_INTAKE_MODE=direct_webhook` (GitHub delivers events straight to your public `POST /webhook`), `propr github-app manifest` scaffolds the App so you don't hand-assemble its permissions, webhook events, and secret:
-
-```bash
-propr github-app manifest --public-url https://propr.example.com
-```
-
-This writes two files into the current directory (use `--root <path>` to target another):
-
-- `github-app-manifest.json` — submit it at GitHub's *Register new GitHub App* page. It pre-fills the repository permissions ProPR needs, the subscribed webhook events, your `POST /webhook` delivery URL, and a freshly generated webhook secret.
-- `github-app.env` — a matching `.env` snippet (`GH_AUTH_MODE=app`, `GITHUB_EVENT_INTAKE_MODE=direct_webhook`, and the generated `GH_WEBHOOK_SECRET`). Append it to your stack `.env`.
-
-**`propr setup` offers this for you.** When you choose custom GitHub App auth and `direct_webhook` intake, the wizard prompts to generate the same two files into the stack root — reusing `API_PUBLIC_URL` or `FRONTEND_URL` from `.env` as the public URL, or asking for one when neither is set. To keep setup safe to re-run, it leaves an existing manifest in place unless you confirm a regenerate, and it folds the same create/install and `GH_APP_ID` / `GH_INSTALLATION_ID` / `HOST_GH_PRIVATE_KEY` next steps into the intake step rather than failing the run.
-
-| Option | Description |
-|--------|-------------|
-| `--public-url <url>` | **Required.** Public base URL GitHub can reach (e.g. `https://propr.example.com`). |
-| `--webhook-url <url>` | Override the delivery URL (default: `<public-url>/webhook`). |
-| `--name <name>` | GitHub App name in the manifest (default: `ProPR`). |
-| `--webhook-secret <secret>` | Use a specific secret instead of a generated one. |
-| `--org <login>` | Scope App creation to an organization instead of your personal account. |
-| `--root <path>` | Directory to write the output files into (default: current directory). |
-| `-f, --force` | Overwrite existing output files. |
-| `-j, --json` | Machine-readable output. |
-
-The manifest only scaffolds configuration. Direct webhook mode still requires a publicly reachable `POST /webhook` route (served by the API container on port 4000 — proxy it) and installing the created App on your account/org. GitHub assigns the App ID, installation id, and private key only **after** the App exists, so once it does, fill in `GH_APP_ID`, `GH_INSTALLATION_ID`, and `HOST_GH_PRIVATE_KEY` by hand. Run `propr check` in between: when direct webhook mode is selected and those own-App values are still missing, it reports each one. If it finds the generated `github-app-manifest.json` / `github-app.env` in the stack root, it recognizes the scaffolding is already in place and points at the remaining GitHub-side steps; otherwise it suggests running `propr github-app manifest` to generate them. See [Server Setup](../tutorials/setup-server.md#advanced-your-own-github-app-webhook) and [Deployment](../operations/deployment.md#issue-intake-modes).
-
 ## Hosted UI Tunnel
 
-ProPR Connect can provision a Plus-only hosted tunnel so the Connect UI reaches a local stack without exposing inbound ports. In Connect, provision the tunnel and run the generated command from the initialized stack directory:
+The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its **API** (the API container on port 4000) to the hosted control plane through a **Cloudflare Tunnel** — propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host (the root URL returns 404, and `/webhook` is **not** routed through the tunnel) — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. The UI bundle itself is served by `app.propr.dev`, not through the tunnel; the tunnel only exposes the API the hosted UI calls. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
 
 ```bash
-propr tunnel setup --token <token> --url https://<instance>.proxy.propr.dev --start
+propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev --start
+propr tunnel on          # start the cloudflared sidecar
+propr tunnel off         # stop it — the token and env values are left untouched
+propr tunnel verify      # check the sidecar + public /api/status, /, /socket.io/
 ```
 
-The command writes `PROPR_UI_TUNNEL_TOKEN`, `PROPR_UI_TUNNEL_ENABLED`, `PROPR_INSTANCE_ID`, and `PROPR_UI_PUBLIC_API_URL` to `.env`, enables the tunnel preference for future `propr start` runs, and starts the stack. If the stack is already running, `--start` recreates the services so the new tunnel environment takes effect immediately. If the CLI is unavailable, copy the same four `.env` values from Connect manually, then restart the stack.
+Cloudflare forwards the tunnel to the **Docker-internal** API service at `http://api:4000` (the address inside the stack's Docker network), **not** to host port 4000. The published host port is therefore irrelevant to tunnel routing, and the two cannot conflict — you do not need to free up host port 4000 for the tunnel to work.
+
+Starting the tunnel always requires a configured token. The hosted ProPR Connect UI shows a one-time connector token and tunnel URL; paste those into `propr tunnel setup` and the CLI writes the required stack `.env` values for you:
+
+```bash
+propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev --start
+```
+
+If you are on an older CLI or need to inspect the underlying settings, these are the variables `setup` writes:
+
+| Variable | Description |
+|---|---|
+| `PROPR_UI_TUNNEL_TOKEN` | Cloudflare Tunnel token. **Required to start** the tunnel. Once set, the tunnel is enabled by default, so the next `propr start` brings up the sidecar (unless you have run `propr tunnel off`) |
+| `PROPR_UI_TUNNEL_ENABLED` | Explicitly enable the tunnel (`true`/`1`). A **token is still required** — `propr check` fails if this is set without `PROPR_UI_TUNNEL_TOKEN`. Redundant when a token is set, since a token alone already enables the tunnel |
+| `PROPR_INSTANCE_ID` | This stack's instance id; must be a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://<id>.proxy.propr.dev` when no explicit URL is set |
+| `PROPR_UI_PUBLIC_API_URL` | Explicit public API URL the hosted UI talks to, overriding the derived one |
+| `API_PUBLIC_URL` | Public API URL advertised by the API for browser-visible links and secure cookie handling; set to the same proxy URL |
+| `FRONTEND_URL` | Browser origin allowed by CORS and used after login; set to `https://app.propr.dev` for hosted UI mode |
+| `GH_OAUTH_CALLBACK_URL` | GitHub OAuth callback on the proxy host, `https://<id>.proxy.propr.dev/api/auth/github/callback`; register this exact URL in your GitHub OAuth App |
+| `PROPR_CLOUDFLARED_IMAGE` | cloudflared image. Overrides the version pinned in the stack manifest (currently `cloudflare/cloudflared:2024.12.2`) |
+
+**Enablement, step by step.** With no token and no flag the tunnel is off. `propr tunnel setup` saves `PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, and `GH_OAUTH_CALLBACK_URL`, and records the tunnel as enabled for later starts. Add `--start` to start a stopped stack or recreate an already-running stack with the hosted tunnel environment applied immediately. Setting `PROPR_UI_TUNNEL_TOKEN` manually has the same default effect, so the next `propr start` (or a restart) starts the sidecar unless you have run `propr tunnel off`. Running `propr tunnel on|off` records an explicit choice in the CLI config that **overrides** the token-derived default and is honored by later `propr start`/restarts; `propr tunnel on` also starts the sidecar immediately on an already-running stack without waiting for a restart, and `propr tunnel off` stops it even while a token remains set.
+
+`propr tunnel on` fails clearly if no token is configured rather than launching a broken container. It likewise refuses to start when the core stack is not running — cloudflared would otherwise point at an unavailable `api:4000` and look superficially healthy — so bring the stack up with `propr start` first, or pass `--force` if you intend to start the sidecar ahead of the stack. `propr tunnel off` only removes the tunnel container — it never touches the token or any other env value, so a later `propr tunnel on` works without rework.
+
+**Verify the tunnel.** `propr tunnel verify` runs a few quick checks against the public proxy URL: the cloudflared sidecar container is running; `GET <url>/api/status` returns an OK or auth-expected response; `GET <url>/` returns **404** (the root is intentionally not routed); and `GET <url>/socket.io/` is reachable (not blocked at Cloudflare ingress). It exits non-zero if any check fails. Note that `propr status` reports tunnel reachability by probing `<url>/api/status` for the same reason — the root `/` and the old `/health` path are not routed through the tunnel.
+
+:::caution The tunnel token is a live credential
+`PROPR_UI_TUNNEL_TOKEN` is a live Cloudflare Tunnel credential: anyone holding it can route traffic through your tunnel. Keep it in your stack `.env` only — **do not commit it to source control, paste it into logs or issues, or share it.** `propr tunnel on` prints this reminder when it starts the sidecar.
+:::
+
+:::caution Restart the stack after enabling on a running stack
+`propr tunnel on` starts only the cloudflared sidecar; it does **not** restart the already-running API/worker containers. Those keep the `API_PUBLIC_URL` / `FRONTEND_URL` they were started with, so OAuth redirects, cookie security, and attachment links still point at their pre-tunnel (localhost) values until you run `propr start --restart`. Enabling the tunnel via the token before `propr start` avoids this, since the API then comes up with the proxy URLs. The command prints this warning when it detects a running stack.
+
+`propr tunnel setup --start` avoids this by recreating the running stack after writing the tunnel settings.
+:::
+
+Each enabled stack is reachable at a per-instance hostname `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, which is how the hosted UI discovers and addresses it. See [ProPR Connect](../operations/propr-connect.md) for the role of each hosted hostname, and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and the architecture, including how `.proxy.propr.dev` differs from the central ProPR APIs.
+
+:::note[Connect provisioning]
+ProPR Connect provisions the Cloudflare Tunnel token and instance id for Plus installations and shows the one-time `propr tunnel setup --token ... --url ... --start` command. The raw `.env` values remain visible as a fallback for older CLI versions or manual recovery, but new installs should prefer the generated CLI command so the stack is restarted with the hosted URLs immediately.
+:::
 
 ## Connect and Authenticate
 

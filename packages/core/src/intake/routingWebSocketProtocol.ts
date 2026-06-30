@@ -52,29 +52,97 @@ export const DEFAULT_MAX_TOKEN_ENTRIES = 5_000;
 /** Default timeout for pulling a delivery payload over HTTP. */
 export const DEFAULT_PULL_TIMEOUT_MS = 15_000;
 
-/** Default keepalive ping interval for the routing WebSocket. */
-export const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
-
 /**
- * Parse an environment variable as a strictly-positive whole integer. Requires a
- * whole-string match so values like `50abc` or `1.5` are rejected rather than
- * silently coerced to `50`/`1`; returns `undefined` when unset or invalid.
+ * The authoritative disposition ProPR reports for a routed delivery in its ACK
+ * frame. ProPR — not the relay — owns this decision; the relay forwards every
+ * eligible-looking trigger and records whatever status comes back:
+ *   - `accepted`: ProPR has processed / started work on the delivery. May consume
+ *     a seat (see {@link DeliveryAckBilling}).
+ *   - `blocked`: ProPR would have processed the delivery but policy or capacity
+ *     prevented it (e.g. an org over its seat limit). Terminal; visible to admins.
+ *   - `ignored`: ProPR deliberately took no action (unsupported event, a user not
+ *     allowed to trigger, a passive event). Terminal; consumes no seat.
+ * `blocked` and `ignored` are both terminal — the relay must not redeliver — and
+ * differ only in intent: `blocked` is "wanted to, couldn't", `ignored` is
+ * "nothing to do". A delivery is redelivered ONLY when no ACK is sent at all.
  */
-export function parsePositiveIntegerEnv(name: string): number | undefined {
-    const value = process.env[name];
-    if (!value) return undefined;
-    const trimmed = value.trim();
-    if (!/^\d+$/.test(trimmed)) return undefined;
-    const parsed = Number.parseInt(trimmed, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+export type DeliveryAckStatus = 'accepted' | 'blocked' | 'ignored';
+
+/** The set of valid {@link DeliveryAckStatus} values, for runtime validation. */
+const DELIVERY_ACK_STATUSES: readonly DeliveryAckStatus[] = ['accepted', 'blocked', 'ignored'];
+
+/** Optional billing metadata carried on an ACK frame. */
+export interface DeliveryAckBilling {
+    /** Whether processing this delivery consumed a seat. Only meaningful for `accepted`. */
+    seatConsumed: boolean;
 }
 
 /**
- * Resolve the keepalive ping interval: an explicit option wins, then
- * `PROPR_ROUTING_WS_PING_INTERVAL_MS`, then {@link DEFAULT_PING_INTERVAL_MS}.
+ * The disposition ProPR attaches to an ACK. Returned by the webhook dispatcher so
+ * the intake service can ACK with an explicit, authoritative status/reason instead
+ * of a bare acknowledgement. A dispatcher that returns nothing is treated as a
+ * plain {@link ACCEPTED_DISPOSITION} (the common case: the event was processed and
+ * no billing/policy signal was produced).
  */
-export function resolvePingIntervalMs(option: number | undefined): number {
-    return option ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
+export interface DeliveryDisposition {
+    status: DeliveryAckStatus;
+    /**
+     * Machine-readable reason for the status, primarily for `blocked`/`ignored`
+     * (e.g. `user_not_allowed`, `unsupported_event`, `limit_reached`). Surfaced in
+     * the relay's delivery history so admins can see *why* a delivery was not acted
+     * on instead of it merely showing as DELIVERED.
+     */
+    reason?: string;
+    billing?: DeliveryAckBilling;
+}
+
+/** Shared "processed, no billing/policy signal" disposition — the default ACK. */
+export const ACCEPTED_DISPOSITION: DeliveryDisposition = Object.freeze({ status: 'accepted' });
+
+/** Shared disposition for an event ProPR cannot or will not handle. */
+export const IGNORED_UNSUPPORTED_DISPOSITION: DeliveryDisposition = Object.freeze({
+    status: 'ignored',
+    reason: 'unsupported_event',
+});
+
+/**
+ * Coerce an arbitrary dispatcher return value into a {@link DeliveryDisposition}.
+ * A dispatcher may return `undefined`/`void` (the legacy and common shape) — that
+ * maps to {@link ACCEPTED_DISPOSITION}. A returned object is honored only when it
+ * carries a recognized {@link DeliveryAckStatus}; anything else degrades to
+ * `accepted` so a malformed dispatcher return can never silently suppress an ACK.
+ */
+export function normalizeDisposition(outcome: DeliveryDisposition | void | undefined): DeliveryDisposition {
+    if (outcome && typeof outcome === 'object') {
+        const status = (outcome as DeliveryDisposition).status;
+        if (typeof status === 'string' && (DELIVERY_ACK_STATUSES as readonly string[]).includes(status)) {
+            return outcome as DeliveryDisposition;
+        }
+    }
+    return ACCEPTED_DISPOSITION;
+}
+
+/**
+ * Build the backend -> relay ACK frame for an accepted/blocked/ignored delivery.
+ * `status` is always present; `reason` and `billing` are included only when the
+ * disposition carries them, keeping the wire frame minimal.
+ */
+export function buildAckFrame(
+    sequence: number,
+    deliveryId: string,
+    disposition: DeliveryDisposition,
+): Record<string, unknown> {
+    const frame: Record<string, unknown> = { type: 'ack', sequence, deliveryId, status: disposition.status };
+    if (disposition.reason !== undefined) frame.reason = disposition.reason;
+    if (disposition.billing !== undefined) {
+        // blocked/ignored are terminal non-processing outcomes and cannot consume
+        // a seat. Normalize defensive caller mistakes here so the relay never
+        // receives a contradictory ACK it would reject or retry.
+        frame.billing = {
+            seatConsumed: disposition.status === 'accepted' ? disposition.billing.seatConsumed : false,
+        };
+    }
+    return frame;
 }
 
 /** Normalize any `RawData` frame the `ws` package can emit into a UTF-8 string. */
@@ -133,20 +201,69 @@ export class BoundedDeliverySet {
 }
 
 /**
+ * Bounded, insertion-ordered map of id -> value with the same recency/eviction
+ * semantics as {@link BoundedDeliverySet}: re-setting a key refreshes its
+ * recency, and once the cap is reached the oldest entry is evicted. Used to
+ * remember each accepted delivery's {@link DeliveryDisposition} so a redelivery
+ * can be re-ACKed with the SAME status it was first ACKed with, rather than
+ * defaulting every re-ACK to `accepted`.
+ */
+export class BoundedDeliveryMap<V> {
+    private readonly entries = new Map<string, V>();
+    private readonly maxEntries: number;
+
+    /** `maxEntries` is clamped to a minimum of 1 (see {@link BoundedDeliverySet}). */
+    constructor(maxEntries: number) {
+        this.maxEntries = Math.max(1, Math.floor(maxEntries));
+    }
+
+    has(id: string): boolean {
+        return this.entries.has(id);
+    }
+
+    get(id: string): V | undefined {
+        return this.entries.get(id);
+    }
+
+    set(id: string, value: V): void {
+        // Delete-then-set refreshes recency: see BoundedDeliverySet.add.
+        this.entries.delete(id);
+        this.entries.set(id, value);
+        while (this.entries.size > this.maxEntries) {
+            const oldest = this.entries.keys().next().value as string | undefined;
+            if (oldest === undefined) break;
+            this.entries.delete(oldest);
+        }
+    }
+
+    /** Refresh an entry's recency without changing its value; no-op for unknown ids. */
+    touch(id: string): void {
+        const value = this.entries.get(id);
+        if (value !== undefined) this.set(id, value);
+    }
+
+    get size(): number {
+        return this.entries.size;
+    }
+}
+
+/**
  * Tracks delivery ids across their lifecycle to make ACKing safe under
  * redelivery. A delivery is "in flight" while its payload is being resolved and
- * dispatched, and "accepted" once dispatch has succeeded. The two states are
- * deliberately separate: a redelivery that arrives while the first attempt is
- * still in flight must NOT be ACKed (the first attempt may yet fail), whereas a
- * redelivery of an already-accepted delivery is safely re-ACKed without
- * reprocessing. The accepted set is bounded so memory cannot grow without limit.
+ * dispatched, and "accepted" once dispatch has resolved (with whatever
+ * disposition the dispatcher reported — accepted/blocked/ignored). The two
+ * states are deliberately separate: a redelivery that arrives while the first
+ * attempt is still in flight must NOT be ACKed (the first attempt may yet fail),
+ * whereas a redelivery of an already-accepted delivery is safely re-ACKed —
+ * with its original disposition — without reprocessing. The accepted map is
+ * bounded so memory cannot grow without limit.
  */
 export class DeliveryTracker {
     private readonly inFlight = new Set<string>();
-    private readonly accepted: BoundedDeliverySet;
+    private readonly accepted: BoundedDeliveryMap<DeliveryDisposition>;
 
     constructor(maxAcceptedEntries: number) {
-        this.accepted = new BoundedDeliverySet(maxAcceptedEntries);
+        this.accepted = new BoundedDeliveryMap(maxAcceptedEntries);
     }
 
     isAccepted(id: string): boolean {
@@ -157,26 +274,34 @@ export class DeliveryTracker {
         return this.inFlight.has(id);
     }
 
+    /** The disposition a delivery was first ACKed with, or undefined if not accepted. */
+    getDisposition(id: string): DeliveryDisposition | undefined {
+        return this.accepted.get(id);
+    }
+
     /** Mark a delivery as being processed. */
     begin(id: string): void {
         this.inFlight.add(id);
     }
 
-    /** Mark a delivery as durably accepted (and no longer in flight). */
-    accept(id: string): void {
+    /**
+     * Mark a delivery as durably accepted (and no longer in flight), remembering
+     * the disposition it was ACKed with so a later redelivery re-ACKs identically.
+     */
+    accept(id: string, disposition: DeliveryDisposition): void {
         this.inFlight.delete(id);
-        this.accepted.add(id);
+        this.accepted.set(id, disposition);
     }
 
     /**
-     * Refresh an already-accepted delivery's recency without changing state. Used
-     * when a duplicate of an accepted delivery is re-ACKed: re-adding moves it to
-     * the most-recently-seen position (BoundedDeliverySet refreshes on add) so a
-     * frequently-redelivered id is not evicted under heavy traffic and then
-     * reprocessed as if it were new. A no-op for unknown ids.
+     * Refresh an already-accepted delivery's recency without changing its stored
+     * disposition. Used when a duplicate of an accepted delivery is re-ACKed:
+     * re-setting moves it to the most-recently-seen position so a frequently-
+     * redelivered id is not evicted under heavy traffic and then reprocessed as if
+     * it were new. A no-op for unknown ids.
      */
     touch(id: string): void {
-        if (this.accepted.has(id)) this.accepted.add(id);
+        this.accepted.touch(id);
     }
 
     /** Release a failed delivery so a later redelivery is retried. */
@@ -519,4 +644,82 @@ export async function resolveDeliveryPayload(opts: ResolveDeliveryPayloadOptions
 
     const pulled = await pullDeliveryPayload({ routingUrl, deliveryId, token, fetchImpl: fetcher, pullTimeoutMs, log });
     return parseWebhookPayload(pulled);
+}
+
+/**
+ * Event dispatcher signature. May return a {@link DeliveryDisposition} to report an
+ * explicit authoritative status (accepted/blocked/ignored, plus optional reason and
+ * billing) the service forwards to the relay in the ACK; returning `void` is a plain
+ * `accepted`. A thrown error withholds the ACK so the relay can redeliver.
+ */
+export type RoutingEventDispatch = (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
+
+export interface RoutingWebSocketIntakeServiceOptions {
+    /**
+     * Routing relay origin (scheme + host, no path). Defaults to
+     * `process.env.PROPR_ROUTING_URL`, then to the hosted relay
+     * (`DEFAULT_PROPR_ROUTING_URL`). The service owns the paths it appends:
+     * it dials `${origin}/v1/connect` as a `ws://`/`wss://` URL and derives the
+     * HTTP origin (for payload pulls at `/v1/delivery/:id`) from the same value.
+     * A configured path/query/hash is rejected at start.
+     */
+    routingUrl?: string;
+    /**
+     * Relay credential presented on the WebSocket upgrade. Defaults to
+     * `process.env.PROPR_GH_RELAY_TOKEN`.
+     */
+    relayToken?: string;
+    /**
+     * Event dispatcher. Defaults to the shared `processWebhookEvent`, which
+     * requires `initializeWebhookHandler` to have run first. See
+     * {@link RoutingEventDispatch} for the optional disposition return.
+     */
+    dispatch?: RoutingEventDispatch;
+    /** Initial reconnect delay in ms (doubles up to {@link RoutingWebSocketIntakeServiceOptions.maxReconnectDelayMs}). */
+    reconnectDelayMs?: number;
+    /** Maximum reconnect backoff delay in ms. */
+    maxReconnectDelayMs?: number;
+    /** Keepalive ping interval in ms. */
+    pingIntervalMs?: number;
+    /** Maximum number of delivery ids retained for deduplication. */
+    maxDedupeEntries?: number;
+    /** Maximum number of installation tokens cached from `token` frames. */
+    maxTokenEntries?: number;
+    /** Timeout for pulling a delivery payload over HTTP, in ms. */
+    pullTimeoutMs?: number;
+    /**
+     * Maximum time `stop` waits to drain in-flight event handling before
+     * closing the socket anyway. Bounds shutdown so a wedged `dispatch` (which,
+     * unlike a payload pull, has no timeout of its own) cannot block the daemon's
+     * SIGINT/SIGTERM handler forever.
+     */
+    shutdownDrainTimeoutMs?: number;
+    /**
+     * WebSocket constructor to use. Defaults to a lazy import of the `ws`
+     * package; primarily a seam for tests to inject a fake transport.
+     */
+    webSocketFactory?: WebSocketCtor;
+    /** `fetch` implementation for payload pulls; defaults to the global `fetch`. */
+    fetchImpl?: FetchLike;
+    /**
+     * Clock used to stamp the last-ACK time exposed via `getStatus`.
+     * Defaults to `Date.now`; primarily a seam for deterministic tests.
+     */
+    now?: () => number;
+}
+
+/**
+ * Runtime snapshot of the routing intake connection, surfaced so operators can
+ * diagnose default (routing_websocket) deployments. Published by the daemon to
+ * Redis and rendered by the API status route / CLI.
+ */
+export interface RoutingWebSocketStatus {
+    /** Whether the routing WebSocket is currently connected to the relay. */
+    connected: boolean;
+    /** The routing relay origin this service dials (PROPR_ROUTING_URL). */
+    routingUrl: string;
+    /** Delivery id of the most recently ACKed GitHub event, or null if none yet. */
+    lastDeliveryId: string | null;
+    /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null if none yet. */
+    lastAckAt: string | null;
 }

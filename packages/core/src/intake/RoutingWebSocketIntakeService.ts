@@ -27,10 +27,19 @@
  *   - `ping`: an application-level keepalive. Answered with a `pong` frame.
  *
  * Backend -> relay frames:
- *   - `ack`: `{ type: 'ack', sequence, deliveryId, status?, reason?, billing? }`
- *     — sent only after the local webhook handler returns, so the relay never
- *     advances past an event we have not durably accepted. Legacy dispatchers
- *     that return no disposition keep the old plain ACK shape.
+ *   - `ack`: `{ type: 'ack', sequence, deliveryId, status, reason?, billing? }` —
+ *     sent only after the local webhook handler returns, so the relay never
+ *     advances past an event we have not durably resolved. `status` is ProPR's
+ *     authoritative disposition of the delivery (ProPR, not the relay, decides):
+ *       - `accepted`: processed / work started (may set `billing.seatConsumed`);
+ *       - `blocked`: policy or capacity prevented processing (e.g. seat limit);
+ *       - `ignored`: deliberately no action (unsupported event, user not allowed).
+ *     `reason` is a machine-readable explanation (e.g. `unsupported_event`,
+ *     `user_not_allowed`) surfaced in the relay's delivery history. All three
+ *     statuses are terminal — the relay must not redeliver an ACKed delivery; a
+ *     delivery is redelivered ONLY when no ACK is sent (a payload pull or dispatch
+ *     failure). ProPR remains the only source of truth for repo/user policy;
+ *     the relay forwards every eligible-looking trigger and records the result.
  *   - `pong`: `{ type: 'pong' }` — keepalive response.
  *
  * The service is resilient by design: it reconnects with capped exponential
@@ -42,113 +51,67 @@
 import { DEFAULT_PROPR_ROUTING_URL } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { generateCorrelationId } from '../utils/logger.js';
+import { processWebhookEvent } from '../webhook/webhookHandler.js';
 import {
-    processWebhookEvent,
-    type DeliveryDisposition,
-    type WebhookEventType,
-} from '../webhook/webhookHandler.js';
-import {
+    ACCEPTED_DISPOSITION,
     BoundedTokenCache,
     DEFAULT_MAX_DEDUPE_ENTRIES,
     DEFAULT_MAX_TOKEN_ENTRIES,
     DEFAULT_PULL_TIMEOUT_MS,
     DeliveryTracker,
+    IGNORED_UNSUPPORTED_DISPOSITION,
     WS_OPEN,
+    buildAckFrame,
     buildConnectUrl,
     drainWithTimeout,
     isSupportedEventType,
     loadWebSocketCtor,
+    normalizeDisposition,
     parseTokenExpiry,
     rawDataToString,
     resolveDeliveryPayload,
-    resolvePingIntervalMs,
     validateRoutingUrl,
+    type DeliveryDisposition,
     type FetchLike,
     type MinimalWebSocket,
     type RawData,
+    type RoutingEventDispatch,
     type RoutingFrame,
+    type RoutingWebSocketIntakeServiceOptions,
+    type RoutingWebSocketStatus,
     type WebSocketCtor,
 } from './routingWebSocketProtocol.js';
 
-export type { FetchLike, MinimalWebSocket, RawData, WebSocketCtor } from './routingWebSocketProtocol.js';
+export type {
+    DeliveryAckBilling,
+    DeliveryAckStatus,
+    DeliveryDisposition,
+    FetchLike,
+    MinimalWebSocket,
+    RawData,
+    RoutingEventDispatch,
+    RoutingWebSocketIntakeServiceOptions,
+    RoutingWebSocketStatus,
+    WebSocketCtor,
+} from './routingWebSocketProtocol.js';
 
-export interface RoutingWebSocketIntakeServiceOptions {
-    /**
-     * Routing relay origin (scheme + host, no path). Defaults to
-     * `process.env.PROPR_ROUTING_URL`, then to the hosted relay
-     * ({@link DEFAULT_PROPR_ROUTING_URL}). The service owns the paths it appends:
-     * it dials `${origin}/v1/connect` as a `ws://`/`wss://` URL and derives the
-     * HTTP origin (for payload pulls at `/v1/delivery/:id`) from the same value.
-     * A configured path/query/hash is rejected at {@link start}.
-     */
-    routingUrl?: string;
-    /**
-     * Relay credential presented on the WebSocket upgrade. Defaults to
-     * `process.env.PROPR_GH_RELAY_TOKEN`.
-     */
-    relayToken?: string;
-    /**
-     * Event dispatcher. Defaults to the shared {@link processWebhookEvent}, which
-     * requires {@link initializeWebhookHandler} to have run first.
-     */
-    dispatch?: (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
-    /** Initial reconnect delay in ms (doubles up to {@link maxReconnectDelayMs}). */
-    reconnectDelayMs?: number;
-    /** Maximum reconnect backoff delay in ms. */
-    maxReconnectDelayMs?: number;
-    /**
-     * Keepalive ping interval in ms. Defaults to PROPR_ROUTING_WS_PING_INTERVAL_MS,
-     * then 5 minutes. The relay also sends application-level pings, so this client
-     * ping is only a low-frequency transport liveness check.
-     */
-    pingIntervalMs?: number;
-    /** Maximum number of delivery ids retained for deduplication. */
-    maxDedupeEntries?: number;
-    /** Maximum number of installation tokens cached from `token` frames. */
-    maxTokenEntries?: number;
-    /** Timeout for pulling a delivery payload over HTTP, in ms. */
-    pullTimeoutMs?: number;
-    /**
-     * Maximum time {@link stop} waits to drain in-flight event handling before
-     * closing the socket anyway. Bounds shutdown so a wedged `dispatch` (which,
-     * unlike a payload pull, has no timeout of its own) cannot block the daemon's
-     * SIGINT/SIGTERM handler forever.
-     */
-    shutdownDrainTimeoutMs?: number;
-    /**
-     * WebSocket constructor to use. Defaults to a lazy import of the `ws`
-     * package; primarily a seam for tests to inject a fake transport.
-     */
-    webSocketFactory?: WebSocketCtor;
-    /** `fetch` implementation for payload pulls; defaults to the global `fetch`. */
-    fetchImpl?: FetchLike;
-    /**
-     * Clock used to stamp the last-ACK time exposed via {@link RoutingWebSocketIntakeService.getStatus}.
-     * Defaults to `Date.now`; primarily a seam for deterministic tests.
-     */
-    now?: () => number;
-}
+const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
 
-/**
- * Runtime snapshot of the routing intake connection, surfaced so operators can
- * diagnose default (routing_websocket) deployments. Published by the daemon to
- * Redis and rendered by the API status route / CLI.
- */
-export interface RoutingWebSocketStatus {
-    /** Whether the routing WebSocket is currently connected to the relay. */
-    connected: boolean;
-    /** The routing relay origin this service dials (PROPR_ROUTING_URL). */
-    routingUrl: string;
-    /** Delivery id of the most recently ACKed GitHub event, or null if none yet. */
-    lastDeliveryId: string | null;
-    /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null if none yet. */
-    lastAckAt: string | null;
+function parsePositiveIntegerEnv(name: string): number | undefined {
+    const value = process.env[name];
+    if (!value) return undefined;
+    const trimmed = value.trim();
+    // Require a whole-string positive integer so values like `50abc` or `1.5`
+    // are rejected rather than silently coerced to `50`/`1`.
+    if (!/^\d+$/.test(trimmed)) return undefined;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
     private readonly relayToken: string;
-    private readonly dispatch: (payload: unknown, eventType: WebhookEventType, correlationId: string) => Promise<void | DeliveryDisposition>;
+    private readonly dispatch: RoutingEventDispatch;
     private readonly initialReconnectDelayMs: number;
     private readonly maxReconnectDelayMs: number;
     private readonly pingIntervalMs: number;
@@ -200,12 +163,14 @@ export class RoutingWebSocketIntakeService {
         // Falls back to the hosted routing relay (webhook.propr.dev) so the
         // daemon connects out of the box; an explicit routingUrl or
         // PROPR_ROUTING_URL overrides it for self-hosted relays.
-        this.routingUrl = (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
+        this.routingUrl =
+            (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
         this.relayToken = (options.relayToken ?? process.env.PROPR_GH_RELAY_TOKEN ?? '').trim();
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
-        this.pingIntervalMs = resolvePingIntervalMs(options.pingIntervalMs);
+        this.pingIntervalMs =
+            options.pingIntervalMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;
@@ -421,20 +386,24 @@ export class RoutingWebSocketIntakeService {
         const rawEventType = (delivery.eventType ?? delivery.event ?? '').trim();
         if (!rawEventType) {
             log.warn({ deliveryId, sequence }, 'Discarding event frame with no event type');
-            // ACK so the relay does not redeliver an event we can never handle.
-            this.deliveries.accept(deliveryId);
-            this.sendAck(sequence, deliveryId, socket, { status: 'ignored', reason: 'missing_event_type' });
+            // ACK (as ignored) so the relay does not redeliver an event we can never
+            // handle, and records it as ignored rather than a plain delivery.
+            this.deliveries.accept(deliveryId, IGNORED_UNSUPPORTED_DISPOSITION);
+            this.sendAck(sequence, deliveryId, socket, IGNORED_UNSUPPORTED_DISPOSITION);
             return;
         }
 
         // Already durably accepted: re-ACK (a prior ACK may have been lost) but
-        // never reprocess. Refresh the id's dedupe recency so a delivery the relay
-        // keeps redelivering does not age out of the bounded accepted set and get
-        // reprocessed as if it were new under heavy traffic.
+        // never reprocess. Re-ACK with the SAME disposition the delivery was first
+        // ACKed with so the relay's recorded status stays consistent. Refresh the
+        // id's dedupe recency so a delivery the relay keeps redelivering does not
+        // age out of the bounded accepted set and get reprocessed as if it were new
+        // under heavy traffic.
         if (this.deliveries.isAccepted(deliveryId)) {
             log.debug({ deliveryId, sequence }, 'Re-ACKing already-accepted routing delivery');
+            const disposition = this.deliveries.getDisposition(deliveryId) ?? ACCEPTED_DISPOSITION;
             this.deliveries.touch(deliveryId);
-            this.sendAck(sequence, deliveryId, socket);
+            this.sendAck(sequence, deliveryId, socket, disposition);
             return;
         }
 
@@ -449,8 +418,8 @@ export class RoutingWebSocketIntakeService {
 
         if (!isSupportedEventType(rawEventType)) {
             log.debug({ eventType: rawEventType, deliveryId, sequence }, 'Ignoring unsupported routing event type');
-            this.deliveries.accept(deliveryId);
-            this.sendAck(sequence, deliveryId, socket, { status: 'ignored', reason: 'unsupported_event_type' });
+            this.deliveries.accept(deliveryId, IGNORED_UNSUPPORTED_DISPOSITION);
+            this.sendAck(sequence, deliveryId, socket, IGNORED_UNSUPPORTED_DISPOSITION);
             return;
         }
 
@@ -477,10 +446,14 @@ export class RoutingWebSocketIntakeService {
             return;
         }
 
-        let disposition: DeliveryDisposition | undefined;
+        let disposition: DeliveryDisposition;
         try {
             log.debug({ eventType: rawEventType, deliveryId, sequence }, 'Dispatching routing event');
-            disposition = (await this.dispatch(payload, rawEventType, correlationId)) ?? undefined;
+            // The dispatcher is the authority on the delivery's disposition: it may
+            // report accepted/blocked/ignored (with reason/billing); a void return
+            // means a plain `accepted`. A thrown error is handled below and withholds
+            // the ACK so the relay redelivers.
+            disposition = normalizeDisposition(await this.dispatch(payload, rawEventType, correlationId));
         } catch (error) {
             this.deliveries.fail(deliveryId);
             log.error(
@@ -490,7 +463,7 @@ export class RoutingWebSocketIntakeService {
             return;
         }
 
-        // Mark accepted and ACK only after local acceptance, so the relay never
+        // Mark accepted and ACK only after local resolution, so the relay never
         // advances past an event the webhook handler has not processed. This is
         // deliberately at-least-once: if sendAck() cannot reach the relay (socket
         // closed, send throws), the delivery stays accepted in memory and is
@@ -498,23 +471,19 @@ export class RoutingWebSocketIntakeService {
         // exits first, acceptance is lost and the relay redelivers, so the webhook
         // handler must tolerate a duplicate. Draining in stop() narrows, but does
         // not eliminate, that window (accepted ids are not persisted across restart).
-        this.deliveries.accept(deliveryId);
+        this.deliveries.accept(deliveryId, disposition);
         this.sendAck(sequence, deliveryId, socket, disposition);
     }
 
     /**
-     * Send an ACK frame to the relay for an accepted delivery. Records the
-     * delivery id and ACK time for {@link getStatus} only when the frame is
-     * actually put on the wire, so the reported "last ACK" reflects real progress.
+     * Send an ACK frame to the relay for a resolved delivery, carrying ProPR's
+     * authoritative {@link DeliveryDisposition} (status + optional reason/billing).
+     * Records the delivery id and ACK time for {@link getStatus} only when the
+     * frame is actually put on the wire, so the reported "last ACK" reflects real
+     * progress.
      */
-    private sendAck(sequence: number, deliveryId: string, socket: MinimalWebSocket, disposition?: DeliveryDisposition): void {
-        const frame: Record<string, unknown> = { type: 'ack', sequence, deliveryId };
-        if (disposition) {
-            frame.status = disposition.status;
-            if (disposition.reason) frame.reason = disposition.reason;
-            if (disposition.billing) frame.billing = disposition.billing;
-        }
-        if (this.send(frame, socket)) {
+    private sendAck(sequence: number, deliveryId: string, socket: MinimalWebSocket, disposition: DeliveryDisposition): void {
+        if (this.send(buildAckFrame(sequence, deliveryId, disposition), socket)) {
             this.lastDeliveryId = deliveryId;
             this.lastAckAt = this.now();
             this.notifyStatusChange();

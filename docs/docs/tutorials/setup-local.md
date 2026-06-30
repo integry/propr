@@ -49,7 +49,7 @@ custom `npm config set prefix`) needs no `sudo`. Mixing the two can update a
 different copy of the CLI or leave root-owned files in a user-owned prefix.
 :::
 
-`propr setup` walks through every step interactively: it scaffolds `.env` + `data/ logs/ repos/`, detects host agent credentials, pulls images, helps you choose a [GitHub auth mode](../operations/github-auth.md) and issue intake (WebSocket routing, polling, or webhooks), starts the stack, configures the user whitelist, and can add a first repository and open the Web UI. When you pick **Token relay** at the auth step, it enrolls the shared App for you — logging you in if needed, discovering your installation, minting the relay token, and writing the relay/routing credentials to `.env` — so no separate `propr relay enroll` is required. It is **safe to re-run at any time** — it re-discovers your environment, skips steps that are already satisfied, never overwrites `.env` wholesale, and never deletes data, so you can re-run it to resume an interrupted install or fill in missing settings.
+`propr setup` walks through every step interactively: it scaffolds `.env` + `data/ logs/ repos/`, detects host agent credentials, pulls images, helps you choose a [GitHub auth mode](../operations/github-auth.md) and issue intake (WebSocket routing, polling, or webhooks), starts the stack, configures the user whitelist, and can add a first repository and open the Web UI. When you pick **Token relay** at the auth step, it enrolls the shared App for you through [ProPR Connect](../operations/propr-connect.md) — logging you in if needed, discovering your installation, minting the relay token, and writing the relay/routing credentials to `.env` — so no separate `propr relay enroll` is required. It is **safe to re-run at any time** — it re-discovers your environment, skips steps that are already satisfied, never overwrites `.env` wholesale, and never deletes data, so you can re-run it to resume an interrupted install or fill in missing settings.
 
 Over SSH or in terminals without raw-mode support, add `--no-tui` for line-by-line prompts. When stdin is not a terminal at all (piped or CI), setup cannot prompt — use the manual flow below instead.
 
@@ -210,6 +210,18 @@ propr remote-status              # verify daemon, workers, Redis, GitHub auth
 ```
 
 From here, `propr plan create "..." --wait` and `propr issue implement <draft-id>/1 --wait` run the same plan-to-PR flow as the Web UI.
+
+## Optional: Drive This Stack From The Hosted UI
+
+By default a local stack is reached at `http://localhost:5173`. If you would rather use the hosted ProPR UI at `https://app.propr.dev` to drive your local stack, enable the optional **hosted UI tunnel** — a managed Cloudflare Tunnel sidecar (the official `cloudflare/cloudflared` image) that publishes this stack to the hosted control plane. It is off by default, so plain localhost use is unaffected.
+
+In brief: provision a tunnel in ProPR Connect, copy the one-time CLI command it shows, and run it in your stack:
+
+```bash
+propr tunnel setup --token <connector-token> --url https://<id>.proxy.propr.dev --start
+```
+
+The setup command writes the required tunnel settings to your stack `.env`, including the hosted CORS origin, public API URL, and proxy-host OAuth callback. With `--start`, it starts a stopped stack or recreates a running one so the API picks up the hosted URL immediately. The Connect UI also shows the raw `.env` values as a fallback for older CLI versions or manual recovery. The tunnel publishes your stack's **API** (the API container on port 4000) at `https://<PROPR_INSTANCE_ID>.proxy.propr.dev`, where propr-routing forwards only `/api/*` and `/socket.io/*` (the root URL returns 404, and `/webhook` is **not** routed through the tunnel). The hosted UI bundle is still served from `app.propr.dev` (not through the tunnel), and the browser is loaded from there; the page then calls your stack's API at the proxy host. `http://api:4000` stays the internal service-to-service address other stack containers use — it is just no longer the only way the API is reachable. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge overview, [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel), and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and architecture — including the `FRONTEND_URL` (browser origin) vs `API_PUBLIC_URL` / OAuth-callback (proxy host) distinction.
 
 ## Update ProPR
 

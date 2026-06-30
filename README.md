@@ -164,14 +164,40 @@ propr/
 
 ### Releasing
 
-Docker image releases run via the **Docker Images** GitHub Actions workflow. Bump the version, then tag the merged commit (the workflow verifies the tag matches `package.json`):
+Docker image releases run via the **Docker Images** GitHub Actions workflow.
+Bump the version, merge the release commit, then tag that merged commit (the
+workflow verifies the tag matches `package.json`):
 
 ```bash
-git tag v0.8.4
-git push origin v0.8.4
+git tag vX.Y.Z   # must match the version in package.json
+git push origin vX.Y.Z
 ```
 
-The `propr-cli` npm package is published separately with `npm run cli:publish` (build + publish the standalone, unscoped package).
+The `propr-cli` npm package is published separately from the same merged commit:
+
+```bash
+npm run cli:pack                         # build and npm-pack dry-run
+npm view propr-cli@X.Y.Z version         # should 404 before publishing
+PROPR_NPM_OTP=123456 npm run cli:publish # omit PROPR_NPM_OTP if npm does not ask
+npm view propr-cli@X.Y.Z version         # should print X.Y.Z after publishing
+```
+
+`npm run cli:publish` builds and publishes the standalone, unscoped
+`propr-cli` package. It also regenerates the staged launcher manifest from the
+current commit, so the CLI release is not dependent on a dirty local manifest
+from an image build.
+
+Hosted UI tunnel releases must ship both artifacts from the same merged commit:
+
+1. Publish the Docker images so the launcher manifest includes the `cloudflared`
+   sidecar and tunnel-aware API/UI environment handling. The Docker image
+   license label is derived from `package.json`.
+2. Publish `propr-cli` so Connect's generated
+   `propr tunnel setup --token ... --url ... --start` command is available to
+   users.
+3. Smoke-test with a fresh stack: install `propr-cli@X.Y.Z`, run the Connect
+   setup command, verify the stack recreates with `API_PUBLIC_URL` /
+   `FRONTEND_URL` applied, then run `propr tunnel verify`.
 
 ## Contributing
 

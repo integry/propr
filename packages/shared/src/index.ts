@@ -74,6 +74,10 @@ export {
   DEFAULT_PROPR_UI_ORIGIN,
   PROPR_UI_PROXY_SUFFIX,
   DEFAULT_CLOUDFLARED_IMAGE,
+  proprInstanceProxyUrl,
+  isValidProprInstanceId,
+  isProprProxyUrl,
+  proprTunnelEndpoints,
 } from './proprServiceUrls.js';
 
 // Export routing URL validation (shared by intake prerequisites and the daemon
@@ -110,6 +114,18 @@ export {
 // Export shared Redis status keys (one source of truth for cross-process status
 // keys so the daemon publisher, API status route, and CLI cannot drift)
 export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
+
+export {
+  PROPR_VERSION,
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
+  PROPR_UI_SUPPORTED_API_COMPATIBILITY,
+  getProprCompatibilityMetadata,
+  evaluateProprApiCompatibility,
+  type ProprCompatibilityMetadata,
+  type ProprApiCompatibilityInput,
+  type ProprApiCompatibilityResult,
+} from './proprCompatibility.js';
 
 export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labelUtils.js';
 

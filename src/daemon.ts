@@ -416,9 +416,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
 const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>
     processCommentEvent(payload, eventType, correlationId, getCommentConfig());
-const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>
+const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     handleCommentDeleted(payload, eventType, correlationId, getCommentConfig());
-const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>
+const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> =>
     handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 export {

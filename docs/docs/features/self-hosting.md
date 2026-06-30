@@ -73,6 +73,10 @@ Local setup is useful for trying ProPR, testing configuration, or running it for
 
 See [Server Setup](../tutorials/setup-server.md). By default ProPR receives GitHub events over a routing WebSocket from the hosted ProPR App at propr.dev — no inbound public endpoint required. Polling and running your own GitHub App with a direct webhook remain available as advanced intake options selected by `GITHUB_EVENT_INTAKE_MODE`.
 
+The hosted bridge for the shared ProPR GitHub App, relay tokens, routing
+WebSocket, and optional hosted UI tunnel is documented in
+[ProPR Connect](../operations/propr-connect.md).
+
 ## Source Development
 
 Run from source when you want to:

@@ -1,16 +1,17 @@
 {
-  "version": "0.8.4",
+  "version": "0.8.5",
   "git_sha": "b31f23cb",
   "registry": "propr",
   "images": {
-    "app": "propr/app:0.8.4",
-    "ui": "propr/ui:0.8.4",
-    "docs": "propr/docs:0.8.4",
-    "agent-claude": "propr/agent-claude:0.8.4",
-    "agent-codex": "propr/agent-codex:0.8.4",
-    "agent-antigravity": "propr/agent-antigravity:0.8.4",
-    "agent-opencode": "propr/agent-opencode:0.8.4",
-    "agent-vibe": "propr/agent-vibe:0.8.4",
-    "redis": "redis:7-alpine"
+    "app": "propr/app:0.8.5",
+    "ui": "propr/ui:0.8.5",
+    "docs": "propr/docs:0.8.5",
+    "agent-claude": "propr/agent-claude:0.8.5",
+    "agent-codex": "propr/agent-codex:0.8.5",
+    "agent-antigravity": "propr/agent-antigravity:0.8.5",
+    "agent-opencode": "propr/agent-opencode:0.8.5",
+    "agent-vibe": "propr/agent-vibe:0.8.5",
+    "redis": "redis:7-alpine",
+    "cloudflared": "cloudflare/cloudflared:2024.12.2"
   }
 }

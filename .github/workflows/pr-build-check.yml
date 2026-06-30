@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check Node.js
         run: |
@@ -36,9 +36,36 @@ jobs:
           npm run test:unit
           echo "✅ Fast unit tests passed"
 
+      - name: Run Hosted Tunnel Regression Tests
+        id: tunnel_tests
+        run: |
+          echo "Running hosted tunnel regression tests..."
+          # Build @propr/shared first: the tsx and UI tests below import from it,
+          # so a stale or missing dist in a clean checkout would fail or use old
+          # output. Build once, up front, before anything that depends on it.
+          npm run build -w @propr/shared
+          PROPR_DEMO_MODE=true npx tsx --test \
+            test/orchestratorConfig.test.mjs \
+            packages/cli/src/commands/tunnelCommand.test.ts \
+            test/orchestratorTunnelLifecycle.test.mjs \
+            test/orchestratorTunnelStatus.test.mjs \
+            test/orchestratorProprUrlsDrift.test.ts \
+            test/routingWebSocketProtocol.test.ts \
+            test/routingWebSocketIntakeService.test.ts \
+            packages/api/test/corsValidation.test.ts
+          npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
+          echo "✅ Hosted tunnel regression tests passed"
+
+      - name: Verify CLI Release Package
+        id: cli_pack
+        run: |
+          echo "Verifying propr-cli release package..."
+          npm run cli:pack
+          echo "✅ propr-cli release package verified"
+
       - name: Detect Changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             core:

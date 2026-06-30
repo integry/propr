@@ -8,7 +8,7 @@
 
 import type { ConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
-import { renderStatusTable } from "../orchestrator/format.js";
+import { renderStatusTable, renderTunnelEndpointSummary } from "../orchestrator/format.js";
 import { ensureVibePromptCacheDir } from "../commands/initStack.js";
 import { createInterface } from "node:readline/promises";
 
@@ -82,9 +82,24 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
 
   const ui = configManager.getUiEnabled();
   const docs = cfg.docsEnabled;
+  // cfg.uiTunnelEnabled already reflects a persisted `propr tunnel on|off`
+  // toggle (forwarded as an override in getHostConfig), falling back to the
+  // env-derived default when the toggle has never been set.
+  const tunnel = cfg.uiTunnelEnabled;
 
   orch.ensureNetwork(cfg, (l) => console.log(l));
-  const status = orch.startStack(cfg, { ui, docs, onLog: (l) => console.log(l) });
+  const status = orch.startStack(cfg, { ui, docs, tunnel, onLog: (l) => console.log(l) });
+
+  // When the tunnel is on, surface the concrete routed endpoints (not the base
+  // URL as a health target) so the operator can see where the hosted UI reaches
+  // this stack.
+  if (tunnel) {
+    const summary = renderTunnelEndpointSummary(cfg.uiPublicApiUrl);
+    if (summary.length > 0) {
+      console.log("");
+      for (const line of summary) console.log(line);
+    }
+  }
 
   const interactive = options.tui !== false && Boolean(process.stdout.isTTY);
 

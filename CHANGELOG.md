@@ -7,14 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hosted UI tunnel (ProPR Connect)**: optional CLI-managed `cloudflared`
+  sidecar that exposes a local stack to the hosted UI at `app.propr.dev` through
+  a per-instance `https://<id>.proxy.propr.dev` proxy. Includes shared tunnel
+  constants, `propr tunnel on|off|verify`, tunnel diagnostics in `propr status`
+  (and `--json`), runtime-configurable UI API base URL, and `.env.example`
+  guidance. The tunnel only routes `/api/*` and `/socket.io/*`; the proxy root
+  intentionally returns 404. See the hosted UI tunnel docs for setup.
+- **`/api/compatibility` endpoint**: a new, intentionally unauthenticated API
+  route that returns non-sensitive build metadata (`version`,
+  `apiCompatibility`, `uiCompatibility`) so the hosted UI can detect an
+  incompatible local stack before login. It exposes no user or repository data;
+  operators evaluating their unauthenticated API surface should note that the
+  exact release version is now readable pre-auth.
+
 ### Changed
 
+- **Explicit routing delivery acknowledgements**: the routing WebSocket intake
+  service now ACKs each forwarded GitHub delivery with an authoritative
+  `status` (`accepted`, `blocked`, or `ignored`), plus an optional `reason`
+  (e.g. `unsupported_event`, `user_not_allowed`, `limit_reached`) and `billing`
+  metadata. The webhook dispatcher may return a disposition to drive this;
+  returning nothing is treated as a plain `accepted`. ProPR remains the only
+  source of truth for repo/user policy; the relay forwards every eligible-looking
+  trigger and records the result. See the ProPR Connect docs for the delivery
+  acknowledgement contract.
 - `propr check --json` remains machine-readable but now reports the additional
   check rows introduced by the grouped check output, including CLI version and
   configured agent validation rows.
 - `propr start` now verifies ProPR-published service image freshness and may
   pull a stale local tag before starting; use `PROPR_SKIP_REMOTE_IMAGE_CHECK=1`
   to skip registry probes in offline or latency-sensitive environments.
+- **CORS scheme hardening**: the shared CORS origin validator now only trusts
+  `http:`/`https:` origins on its cookie-domain and localhost branches, so an
+  unusual scheme (e.g. `file:`, `chrome-extension:`) on a cookie-domain
+  subdomain or on `localhost`/`127.0.0.1` is no longer allowed. `http:` is
+  deliberately still accepted for cookie-domain subdomains so existing
+  `http://<sub>.<cookie-domain>` PR-preview environments keep working — the
+  tunnel work does not change that. Local development and explicit `FRONTEND_URL`
+  origins are unaffected.
+- **Enqueue failures now propagate from `processDetectedIssue`**: a failure to
+  add an issue to the work queue is re-thrown instead of being swallowed, so the
+  routing intake path withholds the ACK and the delivery is redelivered. All
+  callers handle this: the polling loop catches it per-repository and continues
+  to the next cycle, and the direct-webhook handler awaits the processor before
+  ACKing so a throw returns HTTP 500 (GitHub then redelivers).
 
 ## [0.8.3] - 2026-06-16
 

@@ -56,8 +56,10 @@ export interface CLIConfig {
   docsEnabled?: boolean;
 
   /**
-   * Desired state of the hosted UI tunnel sidecar. Defaults to the stack .env
-   * token/enabled setting when unset.
+   * Desired state of the Cloudflare Tunnel service. Persisted so `propr start`
+   * honors a previous `propr tunnel on|off` toggle. When unset, the launcher
+   * falls back to its env-derived default (a configured PROPR_UI_TUNNEL_TOKEN
+   * or PROPR_UI_TUNNEL_ENABLED=true).
    */
   tunnelEnabled?: boolean;
 }

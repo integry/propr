@@ -19,12 +19,7 @@ import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
-import {
-    acceptedDisposition,
-    ignoredDisposition,
-    isBotLogin,
-    type DeliveryDisposition,
-} from './webhookHandler.js';
+import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -94,10 +89,6 @@ type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'co
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type PRComment = { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 
-function acceptedForActor(login: string): DeliveryDisposition {
-    return acceptedDisposition({ seatConsumed: !isBotLogin(login) });
-}
-
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
     return result === 'OK';
@@ -139,7 +130,7 @@ function getCommentEventDetails(
     return null;
 }
 
-export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<DeliveryDisposition> {
+export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const owner = payload.repository.owner.login;
@@ -149,20 +140,14 @@ export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequ
     let prNumber: number, commentId: number;
     if (eventType === 'issue_comment') {
         const issuePayload = payload as IssueCommentEvent;
-        if (!issuePayload.issue.pull_request) {
-            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
-            return ignoredDisposition('not_pull_request_comment');
-        }
+        if (!issuePayload.issue.pull_request) { correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping'); return; }
         prNumber = issuePayload.issue.number;
         commentId = issuePayload.comment.id;
     } else if (eventType === 'pull_request_review_comment') {
         const prPayload = payload as PullRequestReviewCommentEvent;
         prNumber = prPayload.pull_request.number;
         commentId = prPayload.comment.id;
-    } else {
-        correlatedLogger.warn({ eventType }, 'Unknown event type for comment deletion');
-        return ignoredDisposition('unknown_comment_event_type');
-    }
+    } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment deletion'); return; }
 
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment deleted, aborting any active jobs for this PR');
     const allJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
@@ -178,10 +163,9 @@ export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequ
         }
     }
     await redisClient.del(`pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`);
-    return acceptedDisposition();
 }
 
-export async function handleCommentEdited(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<DeliveryDisposition> {
+export async function handleCommentEdited(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
     const { redisClient, processCommentEvent: processCommentEventFn } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const owner = payload.repository.owner.login;
@@ -191,20 +175,14 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     let prNumber: number, commentId: number;
     if (eventType === 'issue_comment') {
         const issuePayload = payload as IssueCommentEvent;
-        if (!issuePayload.issue.pull_request) {
-            correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
-            return ignoredDisposition('not_pull_request_comment');
-        }
+        if (!issuePayload.issue.pull_request) { correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping'); return; }
         prNumber = issuePayload.issue.number;
         commentId = issuePayload.comment.id;
     } else if (eventType === 'pull_request_review_comment') {
         const prPayload = payload as PullRequestReviewCommentEvent;
         prNumber = prPayload.pull_request.number;
         commentId = prPayload.comment.id;
-    } else {
-        correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit');
-        return ignoredDisposition('unknown_comment_event_type');
-    }
+    } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit'); return; }
 
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment edited, restarting any active jobs for this PR');
     const allJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
@@ -224,8 +202,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
 
     await redisClient.del(`pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`);
     correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'Reprocessing edited comment');
-    if (processCommentEventFn) return await processCommentEventFn(payload, eventType, correlationId, config);
-    return acceptedDisposition();
+    if (processCommentEventFn) await processCommentEventFn(payload, eventType, correlationId, config);
 }
 
 interface SlashCommandComment { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
@@ -530,6 +507,10 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     }
 }
 
+function commentSeatConsumed(commentAuthor: string, userType: string | null | undefined, configuredBotUsernames: Set<string>): boolean {
+    return userType !== 'Bot' && !configuredBotUsernames.has(commentAuthor) && !/\[bot\]$/i.test(commentAuthor);
+}
+
 export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<DeliveryDisposition> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -538,7 +519,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const repoFullName = `${owner}/${repo}`;
 
     const eventDetails = getCommentEventDetails(payload, eventType, repoFullName, correlatedLogger);
-    if (!eventDetails) return ignoredDisposition('not_pull_request_comment');
+    if (!eventDetails) return { status: 'ignored', reason: 'not_pull_request_comment' };
 
     const { prNumber, comment } = eventDetails;
 
@@ -554,12 +535,12 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         );
 
     const filterResult = filterCommentByAuthor(commentAuthor, comment.user.type ?? null, correlationId);
-    if (filterResult.shouldFilter && !isSystemUltrafixComment) return ignoredDisposition('filtered_author');
+    if (filterResult.shouldFilter && !isSystemUltrafixComment) return { status: 'ignored', reason: 'filtered_author' };
 
     // Check for ignore keywords
     const ignoreKeywords = await loadFollowupIgnoreKeywords();
     const ignoreResult = checkCommentIgnore(comment.body, ignoreKeywords, correlationId);
-    if (ignoreResult.shouldIgnore) return ignoredDisposition('ignore_keyword');
+    if (ignoreResult.shouldIgnore) return { status: 'ignored', reason: 'ignore_keyword' };
 
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     if (parsedCommand) {
@@ -570,7 +551,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         const claimed = await claimCommentForProcessing(redisClient, slashCommentTrackingKey);
         if (!claimed) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id }, 'Slash command comment already processed, skipping redelivery');
-            return ignoredDisposition('duplicate_delivery');
+            return { status: 'ignored', reason: 'duplicate_delivery' };
         }
         try {
             await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
@@ -578,7 +559,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             await redisClient.del(slashCommentTrackingKey);
             throw error;
         }
-        return acceptedForActor(commentAuthor);
+        return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
     }
 
     // Fetch PR labels early to check for processing label
@@ -589,7 +570,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const triggerResult = checkCommentTrigger(comment.body, correlationId);
     if (!hasProcessingLabel && !triggerResult.isTriggered) {
         correlatedLogger.debug({ pullRequestNumber: prNumber, commentId: comment.id }, 'PR does not have processing label and comment does not contain trigger keyword, skipping');
-        return ignoredDisposition('no_comment_trigger');
+        return { status: 'ignored', reason: 'no_comment_trigger' };
     }
 
     if (hasProcessingLabel) {
@@ -600,18 +581,18 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const alreadyQueued = await redisClient.get(commentTrackingKey);
     if (alreadyQueued) {
         correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, 'PR comment already queued/processed, skipping');
-        return ignoredDisposition('duplicate_delivery');
+        return { status: 'ignored', reason: 'duplicate_delivery' };
     }
 
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
         await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config as StoreCommentConfig);
         correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId: comment.id }, 'A job for this PR is already active or waiting, stored comment for batch processing');
-        return acceptedForActor(commentAuthor);
+        return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
     }
 
     await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId });
-    return acceptedForActor(commentAuthor);
+    return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
 }
 
 async function checkExistingJob(prNumber: number, owner: string, repo: string): Promise<boolean> {
@@ -768,9 +749,6 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
     } catch (error) {
         const err = error as Error;
         if (err.message?.includes('Job already exists')) correlatedLogger.debug({ pullRequestNumber: prNumber }, 'PR comment job already in queue, skipping');
-        else {
-            handleError(error, `Failed to add PR comment to queue`, { correlationId });
-            throw error;
-        }
+        else handleError(error, `Failed to add PR comment to queue`, { correlationId });
     }
 }

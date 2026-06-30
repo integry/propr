@@ -120,10 +120,10 @@ export type {
 export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getActiveTasksForPR, hasActiveTasksForPR } from './webhook/checkRunHelpers.js';
 export type { CheckRunsStatus, ActivePRWork, ActivePRTask, ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
-export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS, acceptedDisposition, ignoredDisposition, isBotLogin } from './webhook/webhookHandler.js';
-export type { WebhookEventType, DeliveryAckStatus, DeliveryDisposition, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
+export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
+export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
-export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike } from './intake/RoutingWebSocketIntakeService.js';
+export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
 // DeliveryTracker, URL/payload/token helpers) are internal to the intake service
 // and are intentionally NOT part of the package's public API. Tests import them

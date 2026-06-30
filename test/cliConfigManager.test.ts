@@ -107,18 +107,6 @@ test("ConfigManager", async (t) => {
     cleanupTempDir(tempDir);
   });
 
-  await t.test("should set and get tunnelEnabled", async () => {
-    tempDir = createTempDir();
-    configManager = new ConfigManager(tempDir);
-
-    await configManager.init();
-    await configManager.setTunnelEnabled(true);
-
-    assert.strictEqual(configManager.getTunnelEnabled(), true);
-
-    cleanupTempDir(tempDir);
-  });
-
   await t.test("should persist configuration between instances", async () => {
     tempDir = createTempDir();
 
@@ -136,6 +124,45 @@ test("ConfigManager", async (t) => {
     assert.strictEqual(manager2.getGithubToken(), "persist-token");
     assert.strictEqual(manager2.getRemoteUrl(), "https://persist.example.com");
     assert.strictEqual(manager2.getDefaultProject(), "persist/project");
+
+    cleanupTempDir(tempDir);
+  });
+
+  await t.test("should persist tunnelEnabled across instances (survives load/sanitize)", async () => {
+    tempDir = createTempDir();
+
+    // Turning the tunnel off must survive a fresh CLI process so `propr start`
+    // honors a previous `propr tunnel off` even when a token is configured.
+    const manager1 = new ConfigManager(tempDir);
+    await manager1.init();
+    await manager1.setTunnelEnabled(false);
+
+    const manager2 = new ConfigManager(tempDir);
+    await manager2.init();
+
+    // The persisted value must come back through load()/sanitizeConfig() rather
+    // than being dropped (regression guard for the missing sanitize entry).
+    assert.strictEqual(manager2.getTunnelEnabled(), false);
+    assert.strictEqual(manager2.get("tunnelEnabled"), false);
+
+    // An explicit `on` round-trips too.
+    await manager2.setTunnelEnabled(true);
+    const manager3 = new ConfigManager(tempDir);
+    await manager3.init();
+    assert.strictEqual(manager3.getTunnelEnabled(), true);
+
+    cleanupTempDir(tempDir);
+  });
+
+  await t.test("getTunnelEnabled returns undefined when unset (defers to env default)", async () => {
+    tempDir = createTempDir();
+    configManager = new ConfigManager(tempDir);
+
+    await configManager.init();
+
+    // Unset means "defer to the launcher's env-derived default", so it must
+    // stay undefined rather than collapsing to false.
+    assert.strictEqual(configManager.getTunnelEnabled(), undefined);
 
     cleanupTempDir(tempDir);
   });
@@ -203,7 +230,6 @@ test("ConfigManager", async (t) => {
         githubToken: 12345, // Should be string
         remoteUrl: { url: "test" }, // Should be string
         defaultProject: true, // Should be string
-        tunnelEnabled: "true", // Should be boolean
         unknownKey: "ignored", // Should be ignored
       })
     );
@@ -216,7 +242,6 @@ test("ConfigManager", async (t) => {
     assert.strictEqual(config.githubToken, undefined);
     assert.strictEqual(config.remoteUrl, undefined);
     assert.strictEqual(config.defaultProject, undefined);
-    assert.strictEqual(config.tunnelEnabled, undefined);
 
     cleanupTempDir(tempDir);
   });
@@ -314,12 +339,10 @@ test("ConfigManager", async (t) => {
     await configManager.set("githubToken", "generic-token");
     await configManager.set("remoteUrl", "https://generic.com");
     await configManager.set("defaultProject", "generic/project");
-    await configManager.set("tunnelEnabled", true);
 
     assert.strictEqual(configManager.get("githubToken"), "generic-token");
     assert.strictEqual(configManager.get("remoteUrl"), "https://generic.com");
     assert.strictEqual(configManager.get("defaultProject"), "generic/project");
-    assert.strictEqual(configManager.get("tunnelEnabled"), true);
 
     cleanupTempDir(tempDir);
   });
@@ -362,6 +385,5 @@ test("DEFAULT_CONFIG export", async (t) => {
     assert.strictEqual(DEFAULT_CONFIG.githubToken, undefined);
     assert.strictEqual(DEFAULT_CONFIG.remoteUrl, undefined);
     assert.strictEqual(DEFAULT_CONFIG.defaultProject, undefined);
-    assert.strictEqual(DEFAULT_CONFIG.tunnelEnabled, undefined);
   });
 });

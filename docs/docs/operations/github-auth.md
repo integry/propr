@@ -18,6 +18,10 @@ bot identity. There are three ways to configure how the backend obtains a GitHub
 > delivery, and note that `GH_WEBHOOK_SECRET` belongs to the intake configuration
 > (it applies only to `direct_webhook`), not to auth mode.
 
+For the hosted bridge that provides relay auth, GitHub event routing, failed
+delivery recovery, and optional hosted UI tunnels, see
+[ProPR Connect](./propr-connect.md).
+
 ## Modes
 
 ### App mode (own GitHub App)
@@ -35,14 +39,6 @@ HOST_GH_PRIVATE_KEY=/home/you/propr/app-private-key.pem
 
 `propr check` verifies all three are set (not placeholders) and that the key file
 is readable.
-
-If you are registering an own App specifically to receive events over a direct
-webhook (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`), `propr github-app manifest
---public-url https://propr.example.com` scaffolds the App — it writes a
-`github-app-manifest.json` to submit to GitHub and a `github-app.env` snippet with
-a generated webhook secret, leaving only `GH_APP_ID`, `GH_INSTALLATION_ID`, and
-`HOST_GH_PRIVATE_KEY` to fill in after GitHub creates the App. See
-[ProPR CLI](../features/propr-cli.md#own-github-app-direct-webhook-mode).
 
 ### Relay mode (shared GitHub App)
 

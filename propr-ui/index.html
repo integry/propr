@@ -8,6 +8,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>ProPR</title>
+    <!-- Runtime configuration (API / Socket.IO base URL). Loaded synchronously
+         before the app bundle so window.__PROPR_CONFIG__ is available at import
+         time. Rewritten per-instance at container start; see docker-entrypoint.sh. -->
+    <script src="/config.js"></script>
   </head>
   <body>
     <div id="root"></div>

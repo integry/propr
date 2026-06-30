@@ -26,7 +26,6 @@ import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthMode } from "@propr/shared";
 import type { AuthorizedInstallation } from "../api/relay.js";
 import type {
   SetupPrompts,
-  GithubAppManifestDecision,
   GithubAuthDecision,
   RepoSelection,
   RootDecision,
@@ -39,7 +38,6 @@ import {
   type GithubIntakeMode,
 } from "../commands/setup/github.js";
 import type { SetupState, SetupStep, SetupStepStatus } from "../commands/setup/types.js";
-import { isValidPublicUrl } from "../commands/githubAppManifestFiles.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_LOG_LINES = 8;
@@ -360,40 +358,6 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
         return { mode: "direct_webhook", webhookSecret: secret };
       }
       return { mode: choice as GithubIntakeMode };
-    },
-
-    async configureGithubAppManifest({ detectedPublicUrl, filesExist, manifestPath, envPath }): Promise<GithubAppManifestDecision | null> {
-      const generate = await bridge.confirm({
-        title: "Generate a GitHub App manifest?",
-        detail: "Writes a ready-to-submit GitHub App manifest + .env snippet for direct webhook mode (same as `propr github-app manifest`).",
-        defaultValue: true,
-      });
-      if (!generate) return null;
-      // Re-run safety: existing manifest files are left as-is unless the user
-      // explicitly confirms a regenerate.
-      let regenerate = false;
-      if (filesExist) {
-        regenerate = await bridge.confirm({
-          title: "Manifest files already exist",
-          detail: `Found ${manifestPath} and ${envPath}. Overwrite and regenerate them?`,
-          defaultValue: false,
-        });
-        if (!regenerate) return null;
-      }
-      // Prefer the public URL from .env; ask only when it's absent or invalid,
-      // and validate at prompt time (absolute http(s) URL) so the user gets a
-      // tight correction loop instead of an after-the-fact setup warning.
-      let publicUrl = (detectedPublicUrl ?? "").trim();
-      while (!isValidPublicUrl(publicUrl)) {
-        publicUrl = (
-          await bridge.input({
-            title: "Public ProPR URL",
-            detail: "Where GitHub can reach this install, e.g. https://propr.example.com. Must be an absolute http(s) URL. Used as the App homepage + webhook base URL.",
-            defaultValue: "",
-          })
-        ).trim();
-      }
-      return { publicUrl, regenerate };
     },
 
     async confirmStartStack({ rootDir, alreadyRunning }): Promise<boolean> {
