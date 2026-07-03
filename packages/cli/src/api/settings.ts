@@ -6,7 +6,7 @@
  * like worker concurrency, auto-followup thresholds, and model settings.
  */
 
-import { ApiClient, createApiClient } from "./index.js";
+import { ApiClient, createApiClient } from "./client.js";
 
 /**
  * Maximum allowed length for the free-form `pr_review_prompt` setting.

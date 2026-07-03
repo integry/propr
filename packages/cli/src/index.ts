@@ -287,7 +287,7 @@ function createBackendCommand(): Command {
   return backend;
 }
 
-function completionScript(shell: "bash" | "zsh" | "fish"): string {
+export function completionScript(shell: "bash" | "zsh" | "fish"): string {
   const commands = [
     "check", "images", "init", "start", "status", "stop", "ui", "docs", "tunnel", "tank",
     "relay", "config", "remote", "use", "login", "logout", "plan", "issue", "task", "repo",
@@ -323,7 +323,12 @@ function completionScript(shell: "bash" | "zsh" | "fish"): string {
     "config get": ["--json", "-j"],
     "config profile set": ["--remote", "--token", "--project", "--clear-remote", "--clear-token", "--clear-project"],
   };
+  const valueOptions = [
+    "--project", "-p", "--agent", "-a", "--model", "-m", "--status", "-s", "--limit", "-l",
+    "--search", "--file", "-f", "--owner", "-o", "--key", "-k", "--remote", "--token",
+  ];
   const commandWords = commands.join(" ");
+  const valueOptionPattern = valueOptions.join("|");
   const optionCases = Object.entries(options)
     .map(([path, opts]) => `    "${path}") COMPREPLY=( $(compgen -W "${opts.join(" ")}" -- "$cur") ); return 0 ;;`)
     .join("\n");
@@ -350,6 +355,9 @@ ${zshOptionCases}
 ${zshOptionCases}
     esac
   fi
+  case "$words[CURRENT-1]" in
+    ${valueOptionPattern}) _files; return ;;
+  esac
   if (( CURRENT == 4 )) && [[ "$words[2]" == "config" && "$words[3]" == "profile" ]]; then
     _values 'profile commands' use:use set:set
     return
@@ -387,6 +395,9 @@ _propr
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  case "$prev" in
+    ${valueOptionPattern}) return 0 ;;
+  esac
   if [[ \${COMP_CWORD} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${commandWords}" -- "$cur") )
     return 0

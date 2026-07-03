@@ -106,6 +106,8 @@ type ExtraConfigKey = keyof typeof EXTRA_CONFIG_ENDPOINTS;
 type ExtraConfigGetter = (endpoint: NamedConfigEndpoint) => Promise<Record<string, unknown>>;
 type DisplaySettings = Record<string, unknown>;
 
+const EXTRA_CONFIG_ERROR_KEY = "__extraConfigErrors";
+
 function isExtraConfigKey(key: string): key is ExtraConfigKey {
   return key in EXTRA_CONFIG_ENDPOINTS;
 }
@@ -119,7 +121,16 @@ export function parseExtraConfigValue(key: ExtraConfigKey, value: string): strin
     }
     return values;
   }
-  return value.trim();
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`Setting "${key}" requires a non-empty value.`);
+  }
+  return trimmed;
+}
+
+export function getExtraConfigErrors(settings: DisplaySettings): string[] {
+  const errors = settings[EXTRA_CONFIG_ERROR_KEY];
+  return Array.isArray(errors) ? errors.filter((item): item is string => typeof item === "string") : [];
 }
 
 export async function getExtraConfigSetting(
@@ -141,7 +152,7 @@ export async function getAllDisplaySettings(
       await getExtraConfigSetting(key, getter),
     ] as const)
   );
-  return {
+  const displaySettings: DisplaySettings = {
     ...settings,
     ...Object.fromEntries(
       extras
@@ -149,6 +160,17 @@ export async function getAllDisplaySettings(
         .map((result) => result.value)
     ),
   };
+  const errors = extras
+    .map((result, index) => ({ result, key: (Object.keys(EXTRA_CONFIG_ENDPOINTS) as ExtraConfigKey[])[index] }))
+    .filter((item): item is { result: PromiseRejectedResult; key: ExtraConfigKey } => item.result.status === "rejected")
+    .map(({ key, result }) => `${key}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+  if (errors.length > 0) {
+    Object.defineProperty(displaySettings, EXTRA_CONFIG_ERROR_KEY, {
+      value: errors,
+      enumerable: false,
+    });
+  }
+  return displaySettings;
 }
 
 function printAllValidKeys(includeDescriptions = false): void {
@@ -268,14 +290,18 @@ Examples:
 
           const settings = await getSettings();
           const displaySettings = await getAllDisplaySettings(settings);
+          const warnings = getExtraConfigErrors(displaySettings);
 
           if (options.json) {
-            printOutput(displaySettings, true);
+            printOutput(warnings.length > 0 ? { settings: displaySettings, warnings } : displaySettings, true);
             return;
           }
 
           console.log("");
           displaySettingsTable(displaySettings);
+          for (const warning of warnings) {
+            console.warn(`Warning: Could not fetch extra config setting ${warning}`);
+          }
           console.log("");
           console.log(`Total: ${Object.keys(displaySettings).length} setting(s)`);
         } catch (error) {

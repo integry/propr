@@ -65,12 +65,11 @@ export function createConfigCommand(): Command {
     .action(async (key: string | undefined, options: { json?: boolean }) => {
       const manager = await createConfigManager();
       const activeProfile = manager.getActiveRemoteProfile();
-      const profile = manager.getRemoteProfiles()[activeProfile] ?? {};
       const view = {
         activeProfile,
-        remoteUrl: profile.remoteUrl,
-        defaultProject: profile.defaultProject,
-        githubToken: redactToken(profile.githubToken),
+        remoteUrl: manager.getRemoteUrl(),
+        defaultProject: manager.getDefaultProject(),
+        githubToken: redactToken(manager.getGithubToken()),
       };
 
       if (key) {

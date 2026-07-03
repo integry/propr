@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -70,6 +70,35 @@ test("setRemoteProfile can clear existing profile fields", async () => {
     });
     await manager.setRemoteProfile("staging", {}, ["remoteUrl", "githubToken", "defaultProject"]);
 
+    assert.deepEqual(manager.getRemoteProfiles().staging, {});
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("useRemoteProfile preserves legacy top-level config when switching to a new empty profile", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
+      activeProfile: "default",
+      remoteUrl: "https://legacy.example.com",
+      githubToken: "legacy-token",
+      defaultProject: "owner/repo",
+    }));
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.useRemoteProfile("staging");
+
+    assert.equal(manager.getActiveRemoteProfile(), "staging");
+    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+    assert.equal(manager.getGithubToken(), "legacy-token");
+    assert.equal(manager.getDefaultProject(), "owner/repo");
+    assert.deepEqual(manager.getRemoteProfiles().default, {
+      remoteUrl: "https://legacy.example.com",
+      githubToken: "legacy-token",
+      defaultProject: "owner/repo",
+    });
     assert.deepEqual(manager.getRemoteProfiles().staging, {});
   } finally {
     cleanupTempDir(tempDir);

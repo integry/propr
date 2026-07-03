@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getAllDisplaySettings, getExtraConfigSetting, parseExtraConfigValue } from "./settingCommands.js";
+import {
+  getAllDisplaySettings,
+  getExtraConfigErrors,
+  getExtraConfigSetting,
+  parseExtraConfigValue,
+} from "./settingCommands.js";
 import type { SystemSettings } from "../api/settings.js";
 
 const SETTINGS: SystemSettings = {
@@ -62,6 +67,8 @@ test("getAllDisplaySettings keeps system settings when an extra config endpoint 
   assert.equal(displaySettings.worker_concurrency, 2);
   assert.equal(displaySettings["pr-label"], "propr");
   assert.equal(displaySettings["followup-keywords"], undefined);
+  assert.deepEqual(getExtraConfigErrors(displaySettings), ["followup-keywords: backend unavailable"]);
+  assert.deepEqual(Object.keys(displaySettings).includes("__extraConfigErrors"), false);
 });
 
 test("parseExtraConfigValue rejects empty arrays", () => {
@@ -70,4 +77,12 @@ test("parseExtraConfigValue rejects empty arrays", () => {
     /requires at least one value/
   );
   assert.deepEqual(parseExtraConfigValue("followup-keywords", "/fix, /ultrafix"), ["/fix", "/ultrafix"]);
+});
+
+test("parseExtraConfigValue rejects empty string settings", () => {
+  assert.throws(
+    () => parseExtraConfigValue("pr-label", "   "),
+    /requires a non-empty value/
+  );
+  assert.equal(parseExtraConfigValue("pr-label", " propr "), "propr");
 });

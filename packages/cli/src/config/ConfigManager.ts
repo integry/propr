@@ -374,9 +374,9 @@ export class ConfigManager {
     this.config.profiles = profiles;
     this.config.activeProfile = trimmed;
     const profile = profiles[trimmed];
-    this.config.remoteUrl = profile.remoteUrl;
-    this.config.githubToken = profile.githubToken;
-    this.config.defaultProject = profile.defaultProject;
+    if (profile.remoteUrl !== undefined) this.config.remoteUrl = profile.remoteUrl;
+    if (profile.githubToken !== undefined) this.config.githubToken = profile.githubToken;
+    if (profile.defaultProject !== undefined) this.config.defaultProject = profile.defaultProject;
     await this.save();
   }
 

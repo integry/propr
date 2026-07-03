@@ -164,6 +164,17 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
       const repository = draft.repository as string;
       const [owner, repo] = repository.split('/');
       if (!owner || !repo) { res.status(400).json({ error: 'Invalid repository format' }); return; }
+      const requestedRepository = (req.body as { repository?: unknown }).repository;
+      if (requestedRepository !== undefined) {
+        if (typeof requestedRepository !== 'string' || !requestedRepository.trim()) {
+          res.status(400).json({ error: 'repository must be an owner/repo string' });
+          return;
+        }
+        if (requestedRepository.trim() !== repository) {
+          res.status(400).json({ error: `Issue belongs to ${repository}, not ${requestedRepository.trim()}` });
+          return;
+        }
+      }
       const contextConfig = parseContextConfig(draft.context_config);
       const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(req.body as { useEpic?: unknown; autoMerge?: unknown });
       if (implementationSettingsError) { res.status(400).json({ error: implementationSettingsError }); return; }

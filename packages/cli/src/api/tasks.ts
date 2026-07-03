@@ -5,7 +5,7 @@
  * These functions provide a typed interface to list, get, stop, and delete tasks.
  */
 
-import { ApiClient, createApiClient } from "./index.js";
+import { ApiClient, createApiClient } from "./client.js";
 
 /**
  * A task summary returned from the list endpoint.

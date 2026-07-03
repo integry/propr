@@ -148,6 +148,7 @@ Examples:
           console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
 
           const result = await implementIssue(draftId, issueNumber, {
+            repository: options.project,
             agent_alias: options.agent,
             model_name: options.model,
             useEpic: options.epic,

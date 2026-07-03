@@ -6,7 +6,7 @@
  * and poll task status.
  */
 
-import { ApiClient, createApiClient } from "./index.js";
+import { ApiClient, createApiClient } from "./client.js";
 
 /**
  * Represents a single agent:model combination for multi-agent assignment.
@@ -20,6 +20,11 @@ export interface AgentModelPair {
  * Options for implementing an issue.
  */
 export interface ImplementIssueOptions {
+  /**
+   * The repository expected for the draft, in owner/repo format.
+   */
+  repository?: string;
+
   /**
    * The agent alias to use for implementation.
    */
@@ -331,6 +336,9 @@ export async function implementIssue(
 
   if (options.agent_alias !== undefined) {
     body.agent_alias = options.agent_alias;
+  }
+  if (options.repository !== undefined) {
+    body.repository = options.repository;
   }
   if (options.model_name !== undefined) {
     body.model_name = options.model_name;
