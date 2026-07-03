@@ -17,13 +17,13 @@ propr setup                # guided, re-runnable bootstrap
 ## Prerequisites For Every Path
 
 - GitHub backend access: by default the shared, hosted ProPR GitHub App via the token relay, which `propr setup` enrolls for you when you pick **Token relay** (or run `propr relay enroll` standalone) — no GitHub App of your own and no private key to manage. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge and [GitHub Authentication](../operations/github-auth.md) for auth configuration. As an advanced option you can register your own GitHub App on the target repositories (permissions: Contents (Read and write), Metadata (Read-only), Issues (Read and write), Pull Requests (Read and write), optionally Actions (Read-only)).
-- Credentials for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe), authenticated on the host before starting ProPR
+- Credentials for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — authenticate on the host before starting ProPR, or afterwards through the agent image with `propr agent login <agent>`
 - Docker with access to the Docker socket
 - Disk space for data, logs, and repository workspaces
 
 The launcher path requires a Linux host because it bind-mounts host paths and the Docker socket directly. On macOS or Windows (Docker Desktop), use the Compose-based [Source Development Setup](./setup-source.md) instead.
 
-Choose the path that matches what you are doing:
+Choose the path that matches what you are doing — **not sure? Start with [Local Setup](./setup-local.md)**:
 
 ## Local Setup
 

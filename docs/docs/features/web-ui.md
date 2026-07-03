@@ -20,16 +20,16 @@ When the backend runs with `PROPR_DEMO_MODE=true`, a banner indicates read-only 
 
 The landing page (`/`) pairs a **Recent Activity** task feed with an analytics rail: an Active / Success / Total / Failed stats grid, Total Cost, a daily activity sparkline, task status distribution, a Repository Breakdown, and Top Models. New instances also surface an onboarding widget and, when ProPR detects a running Agent Tank, a banner offering to enable it. The panels refresh live over WebSocket as tasks change. For how to read these numbers, see [System Metrics](../operations/system-metrics.md).
 
-## Plans And Plan Studio
+## Plans And Planner Studio
 
-**Plans** (`/plans`) lists every plan draft with repository, status, and timestamps, filterable by repository and status. **New Plan** opens **Plan Studio**, the guided flow for turning an idea or selected issues/PRs into a reviewed, executable plan:
+**Plans** (`/plans`) lists every plan draft with repository, status, and timestamps, filterable by repository and status. **New Plan** opens **Planner Studio**, the guided flow for turning an idea or selected issues/PRs into a reviewed, executable plan:
 
 - a setup stage (title, repository and branch, agent, context repositories, context level, granularity, file selection, and a cost preview);
 - AI generation with live progress;
 - a plan editor where you reorder, expand, refine through chat, and approve or revise items;
 - finalization into GitHub issues you can implement.
 
-Plan Studio is covered step by step in the [Planner Studio tutorial](../tutorials/planner-studio.md); see also [Planning](./planning.md).
+Planner Studio is covered step by step in the [Planner Studio tutorial](../tutorials/planner-studio.md); see also [Planning](./planning.md).
 
 ## Tasks
 
@@ -68,9 +68,9 @@ See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration]
 
 **AI engine configuration:** model roles (fast analysis, planner context, planner generation, default agent alias, PR review, and summarization), the knowledge-base reindex control, and the **LLM Usage Tracking** ([Agent Tank](../operations/agent-tank.md)) toggle and URL.
 
-**Automation rules:** the GitHub user whitelist, primary processing labels, the PR label, follow-up keywords and ignore keywords, worker concurrency, the auto-follow-up score threshold, auto-resolve merge conflicts, and the UltraFix rating goal / max cycles / pause settings.
+**Automation rules:** the GitHub user whitelist, primary processing labels, the PR label, follow-up keywords and ignore keywords, worker concurrency, the auto-follow-up score threshold, auto-resolve merge conflicts, and the Ultrafix rating goal / max cycles / pause settings.
 
-These map onto [Agent Routing](./agent-routing.md), [PR Follow-up](./pr-followup.md), the [UltraFix commands](./pr-ultrafix-commands.md), and [Execution Safety](./execution-safety.md).
+These map onto [Agent Routing](./agent-routing.md), [PR Follow-up](./pr-followup.md), the [Ultrafix commands](./pr-ultrafix-commands.md), and [Execution Safety](./execution-safety.md).
 
 ## Live Updates And Shortcuts
 

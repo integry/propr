@@ -10,23 +10,9 @@ Use this path to run ProPR on your own machine from prebuilt Docker images.
 
 - A Linux host with Docker. The stack bind-mounts host paths and the Docker socket directly, so it does not work under Docker Desktop on macOS or Windows; use the Compose-based [Source Development Setup](./setup-source.md) there.
 - GitHub access for the backend — by default the shared, hosted ProPR GitHub App via the token relay (no GitHub App of your own and no private key required), or your own GitHub App as an advanced option (below); see [GitHub Authentication](../operations/github-auth.md)
-- Credentials for at least one coding agent
+- Credentials for at least one coding agent — already on the host, or created through the agent image with `propr agent login <agent>` once the CLI is installed
 - Node.js 22+ for the recommended CLI path (the launcher-container alternative needs no Node.js)
 - Disk space for data, logs, and repository workspaces
-
-## GitHub App Permissions
-
-If you register your own GitHub App ("app mode"), create or reuse one with these repository permissions:
-
-| Permission | Access |
-| --- | --- |
-| Contents | Read and write |
-| Metadata | Read-only |
-| Issues | Read and write |
-| Pull Requests | Read and write |
-| Actions | Read-only (optional; used to read CI check results) |
-
-Install the app on every repository ProPR should process, and note the App ID and Installation ID for `.env`.
 
 ## Set Up And Start With The CLI (Recommended)
 
@@ -90,6 +76,20 @@ propr-deploy/
     ├── clones/                 # full repository clones
     └── worktrees/              # per-task Git worktrees
 ```
+
+## GitHub App Permissions (Own-App Path)
+
+Only needed if you register your own GitHub App ("app mode") instead of the default token relay, create or reuse one with these repository permissions:
+
+| Permission | Access |
+| --- | --- |
+| Contents | Read and write |
+| Metadata | Read-only |
+| Issues | Read and write |
+| Pull Requests | Read and write |
+| Actions | Read-only (optional; used to read CI check results) |
+
+Install the app on every repository ProPR should process, and note the App ID and Installation ID for `.env`.
 
 ## Create `.env`
 
@@ -221,7 +221,7 @@ In brief: provision a tunnel in ProPR Connect, copy the one-time CLI command it 
 propr tunnel setup --token <connector-token> --url https://t-<id>.propr.dev --start
 ```
 
-The setup command writes the required tunnel settings to your stack `.env`, including the hosted CORS origin, public API URL, and proxy-host OAuth callback. With `--start`, it starts a stopped stack or recreates a running one so the API picks up the hosted URL immediately. The Connect UI also shows the raw `.env` values as a fallback for older CLI versions or manual recovery. The tunnel publishes your stack's **API** (the API container on port 4000) at `https://t-<PROPR_INSTANCE_ID>.propr.dev`, where propr-routing forwards only `/api/*` and `/socket.io/*` (the root URL returns 404, and `/webhook` is **not** routed through the tunnel). The hosted UI bundle is still served from `app.propr.dev` (not through the tunnel), and the browser is loaded from there; the page then calls your stack's API at the proxy host. `http://api:4000` stays the internal service-to-service address other stack containers use — it is just no longer the only way the API is reachable. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge overview, [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel), and [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel) for the full config block and architecture — including the `FRONTEND_URL` (browser origin) vs `API_PUBLIC_URL` / OAuth-callback (proxy host) distinction.
+The setup command writes the required tunnel settings to your stack `.env` (hosted CORS origin, public API URL, proxy-host OAuth callback); with `--start` it recreates a running stack so the API picks up the hosted URLs immediately. The architecture — which paths the proxy routes, browser origin vs API host, and the full config block — lives in [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel); the commands are covered in [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel).
 
 ## Update ProPR
 

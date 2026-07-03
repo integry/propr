@@ -25,7 +25,7 @@ You should not need them for routine repository, branch, label, or agent configu
 
 ## Source Development
 
-From a source checkout (Node.js 20+):
+From a source checkout (Node.js 22+):
 
 ```bash
 npm ci

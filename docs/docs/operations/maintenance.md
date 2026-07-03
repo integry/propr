@@ -24,6 +24,20 @@ npm run compose:up
 
 `npm run compose:up` runs `scripts/compose.sh up`, which rebuilds and restarts the stack from `docker-compose.yml` plus `docker-compose.dev.yml`. Use `npm run compose:build` to force a full image rebuild and `npm run compose:down` to stop the stack.
 
+### Upgrading Safely
+
+Service and agent images are pinned to the release version of the control plane that starts them: the CLI and launcher manifests pin exact image versions, so choosing the control-plane version chooses the whole stack version. `propr/launcher:latest` and a plain `npm update -g propr-cli` track the newest release; to pin, install an exact CLI version (`npm install -g propr-cli@<version>`) and update deliberately.
+
+A safe upgrade, in order:
+
+1. Take a [backup](#backups) — at minimum the SQLite database and `.env`.
+2. Update the control plane and restart (the flows above); persistent state in `data/`, `repos/`, and the Redis volume is unaffected.
+3. From a source checkout, apply pending [database migrations](#database-migrations) with `npm run db:migrate`.
+
+After the upgrade, the API's public `/api/compatibility` endpoint reports the stack version and the API/UI compatibility contract — the hosted UI checks it before login and stops at a clear version-mismatch screen rather than running against an incompatible stack. `/api/status` includes the same metadata for authenticated diagnostics.
+
+**Rollback:** re-pin the previous version (`npm install -g propr-cli@<previous>`, or the previous launcher image) and restart from the runtime directory. Treat database migrations as forward-only in practice: the Knex migrations define `down` steps, but no packaged command runs them — `npm run db:migrate` only applies `migrate:latest` — so the reliable way to roll back the database is restoring the SQLite backup taken in step 1.
+
 ## Database Migrations
 
 The SQLite schema is managed with Knex migrations (`knexfile.ts`, migrations in `packages/core/src/db/migrations/`). After updating a source checkout, apply pending migrations:
@@ -90,17 +104,7 @@ Worktrees are removed automatically after each task finishes (controlled by `WOR
 
 ## Common Issues
 
-### Dashboard Shows Unauthorized
-
-Check the GitHub OAuth App configuration: `GH_OAUTH_CLIENT_ID`, `GH_OAUTH_CLIENT_SECRET`, `GH_OAUTH_CALLBACK_URL` (must match the OAuth App's callback URL exactly), `SESSION_SECRET`, and `FRONTEND_URL`. Sessions are stored in Redis, so a Redis outage also invalidates logins.
-
-### Worker Not Processing Issues
-
-Check Redis, GitHub App permissions, worker logs, agent credentials, repository settings, labels, and enabled agents. The `/api/status` endpoint (shown in the Web UI header) reports daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, and per-agent health checks.
-
-### Metrics Not Updating
-
-Check that Redis is running, workers are processing jobs, task records are being written to SQLite, and the API container logs are clean. Dashboard statistics come from the SQLite task tables (`/api/stats/*`) and queue counts come from BullMQ in Redis (`/api/queue/stats`).
+Symptom-by-symptom diagnosis has moved to the dedicated [Troubleshooting](./troubleshooting.md) page. It covers the scenarios that used to live here — [Dashboard Shows Unauthorized](./troubleshooting.md#dashboard-shows-unauthorized), [Worker Not Processing Issues](./troubleshooting.md#worker-not-processing-issues), and [Metrics Not Updating](./troubleshooting.md#metrics-not-updating) — plus setup failures, agent run failures, stuck queues, and hosted UI tunnel problems.
 
 ## Debugging
 
@@ -139,3 +143,42 @@ Increase concurrency only when the bottleneck is clear. The relevant knobs:
 - Agent timeouts: `CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`
 
 Watch queue depth, task duration, provider rate limits, disk usage, CPU, and memory. For provider capacity pressure, see the [Agent Tank](./agent-tank.md) usage sidebar.
+
+## Teardown
+
+To remove ProPR from a host completely:
+
+1. **Stop the stack.** `propr stop` stops and removes the stack containers (use `--keep` only if you want them retained). For launcher installs, stop the launcher container — it stops and removes the stack containers on shutdown. For source Compose installs, run `npm run compose:down`.
+
+2. **Remove the Redis volume.** Stopping the stack leaves queue state and sessions behind in a Docker volume:
+
+   ```bash
+   docker volume rm propr-redis-data     # CLI/launcher installs; the prefix follows PROPR_STACK (default: propr)
+   ```
+
+   For source Compose installs, `docker compose down --volumes` removes the compose-managed `redis_data` volume.
+
+3. **Revoke hosted credentials** (relay mode and hosted UI tunnel only), before deleting `.env`. From the stack directory:
+
+   ```bash
+   propr relay list
+   propr relay revoke <id>
+   ```
+
+   Relay tokens can also be managed from the ProPR Connect dashboard. If you used the hosted UI tunnel, deprovision the tunnel in ProPR Connect — `PROPR_UI_TUNNEL_TOKEN` is a live Cloudflare credential.
+
+4. **Delete the runtime directory** — `data/`, `logs/`, `repos/`, plus `.env` and the GitHub App private key (own-App mode):
+
+   ```bash
+   rm -rf /srv/propr     # or your propr-deploy directory
+   ```
+
+5. **Uninstall the GitHub App.** Remove the ProPR GitHub App installation (the shared hosted App, or your own) from the organization or repositories in GitHub settings. If you registered a GitHub OAuth App only for this install's dashboard login, delete that too.
+
+6. **Uninstall the CLI:**
+
+   ```bash
+   npm uninstall -g propr-cli    # use the same sudo convention as the install
+   ```
+
+Optionally reclaim disk from the pulled images: list them with `docker images 'propr/*'` and remove with `docker rmi`.
