@@ -178,7 +178,7 @@ const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRe
 const getDocumentTitle = (draft: PlannerDraft | null): string => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const draftAny = draft as any;
-  return draftAny?.name || draftAny?.task_title || draft?.repository || 'Plan Studio';
+  return draftAny?.name || draftAny?.task_title || draft?.repository || 'Planner Studio';
 };
 
 const isApprovedStatus = (status: string | undefined): boolean => {

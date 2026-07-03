@@ -260,7 +260,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         <Filters {...filterProps} />
 
         {tasks.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">No tasks found</p>
+          <p className="text-gray-500 text-center py-8">No tasks found — try clearing filters, or start one by creating a plan or adding your ProPR trigger label to a GitHub issue.</p>
         ) : (
           <TaskTableContent {...tableContentProps} />
         )}
@@ -288,7 +288,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
       <div className="flex-1 overflow-auto px-4 sm:px-6">
         {tasks.length === 0 ? (
           <div className="text-center py-20 bg-gray-50 rounded-lg border border-dashed border-gray-300">
-            <p className="text-gray-500">No tasks found</p>
+            <p className="text-gray-500">No tasks found — try clearing filters, or start one by creating a plan or adding your ProPR trigger label to a GitHub issue.</p>
           </div>
         ) : (
           <div className="flex flex-col h-full bg-white">

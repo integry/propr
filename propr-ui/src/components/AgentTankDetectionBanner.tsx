@@ -63,7 +63,7 @@ const AgentTankDetectionBanner: React.FC = () => {
             Agent Tank Detected
           </p>
           <p className="text-xs text-gray-600">
-            Monitor AI subscription limits and track usage per task execution.
+            Monitor AI subscription limits and see how much rate-limit capacity each task consumes.
           </p>
         </div>
       </div>

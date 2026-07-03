@@ -84,7 +84,7 @@ const RepositoryBreakdown: React.FC<RepositoryBreakdownProps> = ({ limit, reposi
     return (
       <div>
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Repositories</h3>
-        <div className="text-slate-500 text-center py-4">No repository data available yet.</div>
+        <div className="text-slate-500 text-center py-4">No repository activity yet — data appears after your first task runs.</div>
       </div>
     );
   }

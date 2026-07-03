@@ -299,7 +299,7 @@ const LlmLogsPage: React.FC = () => {
             <div className="mb-4">
               <Cpu className="w-16 h-16 mx-auto text-gray-400" />
             </div>
-            <p className="text-gray-500">No LLM executions found.</p>
+            <p className="text-gray-500">No LLM calls yet — once an agent runs a plan or reviews a PR, every model call appears here with its cost and token usage.</p>
           </div>
         ) : (
           <div className="flex flex-col h-full bg-white">

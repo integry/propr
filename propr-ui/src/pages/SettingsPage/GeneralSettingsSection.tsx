@@ -116,7 +116,17 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
 
         {/* Ultrafix Settings */}
         <div className="border-t border-gray-200 pt-4 mt-4">
-          <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-3">Ultrafix</h4>
+          <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-3">
+            Ultrafix{' '}
+            <a
+              href="https://docs.propr.dev/docs/features/pr-ultrafix-commands"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-normal normal-case tracking-normal text-primary-600 hover:text-primary-700 underline"
+            >
+              docs
+            </a>
+          </h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
             <CompactNumberField
               label="Rating Goal"
