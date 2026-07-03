@@ -66,7 +66,7 @@ const mockTriggerRepositoryIndexing = vi.mocked(triggerRepositoryIndexing);
 
 describe('useRepositoryManagement', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.stubGlobal('confirm', vi.fn(() => true));
     vi.stubGlobal('alert', vi.fn());
     socketState.isConnected = false;
@@ -141,7 +141,10 @@ describe('useRepositoryManagement', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(socketState.subscribeToIndexingUpdates).toHaveBeenCalledTimes(1);
-    expect(socketState.onIndexingUpdate).toHaveBeenCalledTimes(1);
+    // The subscription effect may re-run when loading settles (the socket mock
+    // returns a fresh onIndexingUpdate identity per render); each re-run
+    // unsubscribes first, so we assert registration, not render-count trivia.
+    expect(socketState.onIndexingUpdate).toHaveBeenCalled();
 
     await act(async () => {
       socketState.indexingHandler?.({

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
@@ -197,12 +197,19 @@ describe('setupWizardHooks branch resolution', () => {
   it('does not overwrite local edits when the same draft rerenders with stale server values', async () => {
     const sameDraft = makeDraft({ initial_prompt: 'Server prompt', context_config: { baseBranch: 'main', granularity: 'balanced', contextLevel: 50, compress: false, contextRepositories: [], generationModel: null, manualFiles: [], excludedFiles: [] } });
     const { result, rerender } = renderHook(({ draft }) => {
-      const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, prompt: 'Local edit', baseBranch: 'release', generationModel: 'codex:gpt-5.4' });
+      const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig });
       useDraftContextConfigSync(draft as never, setConfig);
-      return config;
+      return { config, setConfig };
     }, { initialProps: { draft: sameDraft } });
+    // Initial hydration applies the server values for a newly seen draft id.
+    await waitFor(() => expect(result.current.config).toMatchObject({ prompt: 'Server prompt', baseBranch: 'main' }));
+    // The user edits locally after hydration.
+    act(() => {
+      result.current.setConfig(prev => ({ ...prev, prompt: 'Local edit', baseBranch: 'release', generationModel: 'codex:gpt-5.4' }));
+    });
+    // A rerender with a stale server object for the SAME draft id must not revert the edits.
     rerender({ draft: { ...sameDraft } });
-    await waitFor(() => expect(result.current).toMatchObject({ prompt: 'Local edit', baseBranch: 'release', generationModel: 'codex:gpt-5.4' }));
+    await waitFor(() => expect(result.current.config).toMatchObject({ prompt: 'Local edit', baseBranch: 'release', generationModel: 'codex:gpt-5.4' }));
   });
 
   it('persists editable draft settings to context_config after debounce', async () => {

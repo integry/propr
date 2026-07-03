@@ -223,10 +223,10 @@ describe('useGenerationPolling', () => {
 
     act(() => {
       result.current.startPolling();
-      vi.advanceTimersByTime(1_000);
     });
 
     await act(async () => {
+      vi.advanceTimersByTime(1_000);
       await Promise.resolve();
     });
 

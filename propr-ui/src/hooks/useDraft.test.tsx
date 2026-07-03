@@ -191,8 +191,12 @@ describe('useDraft', () => {
       expect(result.current.draft?.status).toBe('generating');
     });
 
-    await act(async () => {
-      await Promise.all(
+    // Dispatch the terminal socket event WITHOUT awaiting the listeners: the
+    // handler's follow-up fetch is parked on deferredFetch, and awaiting here
+    // would deadlock the act() against our own later resolve call.
+    let dispatchDone: Promise<unknown> = Promise.resolve();
+    act(() => {
+      dispatchDone = Promise.all(
         [...draftUpdateListeners].map(listener => listener({
           eventType: 'draft:update',
           draftId: 'draft-1',
@@ -230,6 +234,7 @@ describe('useDraft', () => {
         },
       });
       await deferredFetch.promise;
+      await dispatchDone;
     });
 
     await waitFor(() => {
