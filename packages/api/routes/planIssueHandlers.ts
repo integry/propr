@@ -252,6 +252,26 @@ async function implementLoadedIssue(params: {
   const effectivePlanIssue = buildEffectivePlanIssue(issueForImplementation, body);
   return runIssueImplementation({ ...context, draftId, planIssue: effectivePlanIssue, models: body.models });
 }
+function parseIssueNumberParam(req: Request, res: Response): number | null {
+  const issueNumber = parseInt(req.params.issueNumber, 10);
+  if (isNaN(issueNumber)) {
+    res.status(400).json({ error: 'Invalid issue number' });
+    return null;
+  }
+  return issueNumber;
+}
+function sendImplementIssueError(res: Response, error: unknown): void {
+  if (error instanceof ContextConfigParseError) {
+    res.status(409).json({ error: error.message });
+    return;
+  }
+  if (error instanceof BadImplementationRequestError) {
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  console.error('Implement issue error:', error);
+  res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
+}
 
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
   return async function getIssues(req: Request, res: Response): Promise<void> {
@@ -283,24 +303,15 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
 export function createImplementIssueHandler(deps: PlanIssueDeps) {
   return async function implementIssue(req: Request, res: Response): Promise<void> {
     const draftId = req.params.id;
-    const issueNumber = parseInt(req.params.issueNumber, 10);
-    if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
+    const issueNumber = parseIssueNumberParam(req, res);
+    if (issueNumber === null) return;
     try {
       const target = await loadImplementationTarget({ deps, req, res, draftId, issueNumber });
       if (!target) return;
       const result = await implementLoadedIssue({ ...target, draftId, issueNumber });
       res.json(result);
     } catch (error) {
-      if (error instanceof ContextConfigParseError) {
-        res.status(409).json({ error: error.message });
-        return;
-      }
-      if (error instanceof BadImplementationRequestError) {
-        res.status(400).json({ error: error.message });
-        return;
-      }
-      console.error('Implement issue error:', error);
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
+      sendImplementIssueError(res, error);
     }
   };
 }

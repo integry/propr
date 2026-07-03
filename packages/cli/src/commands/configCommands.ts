@@ -29,6 +29,17 @@ export function sanitizeRemoteProfiles(
   );
 }
 
+export function isValidRemoteUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed !== value || trimmed.length === 0) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function createConfigCommand(): Command {
   const config = new Command("config")
     .description("Inspect and manage CLI configuration and remote profiles");
@@ -133,6 +144,10 @@ export function createConfigCommand(): Command {
       if (options.clearProject) clear.push("defaultProject");
       if (options.project !== undefined && !isValidProjectSlug(options.project)) {
         console.error("Error: Invalid project format. Expected 'owner/repo'.");
+        process.exit(1);
+      }
+      if (options.remote !== undefined && !isValidRemoteUrl(options.remote)) {
+        console.error("Error: Invalid remote URL. Expected an http:// or https:// URL.");
         process.exit(1);
       }
       const patch = {

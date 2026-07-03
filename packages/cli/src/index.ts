@@ -287,46 +287,63 @@ function createBackendCommand(): Command {
   return backend;
 }
 
+type CompletionMetadata = {
+  commands: string[];
+  subcommands: Record<string, string[]>;
+  nestedSubcommands: Record<string, Record<string, string[]>>;
+  options: Record<string, string[]>;
+  valueOptions: string[];
+};
+
+function commandPath(command: Command, path: string[]): string {
+  return [...path, command.name()].join(" ");
+}
+
+function commandOptionFlags(command: Command): string[] {
+  return command.options.flatMap((option) => [option.long, option.short].filter((flag): flag is string => Boolean(flag)));
+}
+
+function valueOptionFlags(command: Command): string[] {
+  return command.options
+    .filter((option) => option.required || option.optional)
+    .flatMap((option) => [option.long, option.short].filter((flag): flag is string => Boolean(flag)));
+}
+
+function buildCompletionMetadata(root: Command): CompletionMetadata {
+  const commands = root.commands.map((command) => command.name());
+  const subcommands: Record<string, string[]> = {};
+  const nestedSubcommands: Record<string, Record<string, string[]>> = {};
+  const options: Record<string, string[]> = {};
+  const valueOptions = new Set<string>(valueOptionFlags(root));
+
+  function visit(command: Command, parentPath: string[]): void {
+    const path = commandPath(command, parentPath);
+    const flags = commandOptionFlags(command);
+    if (flags.length > 0) options[path] = flags;
+    for (const flag of valueOptionFlags(command)) valueOptions.add(flag);
+    if (command.commands.length > 0) {
+      if (parentPath.length === 0) {
+        subcommands[command.name()] = command.commands.map((subcommand) => subcommand.name());
+      } else if (parentPath.length === 1) {
+        nestedSubcommands[parentPath[0]] ??= {};
+        nestedSubcommands[parentPath[0]][command.name()] = command.commands.map((subcommand) => subcommand.name());
+      }
+    }
+    for (const subcommand of command.commands) visit(subcommand, [...parentPath, command.name()]);
+  }
+
+  for (const command of root.commands) visit(command, []);
+  return {
+    commands,
+    subcommands,
+    nestedSubcommands,
+    options,
+    valueOptions: Array.from(valueOptions),
+  };
+}
+
 export function completionScript(shell: "bash" | "zsh" | "fish"): string {
-  const commands = [
-    "check", "images", "init", "start", "status", "stop", "ui", "docs", "tunnel", "tank",
-    "relay", "config", "remote", "use", "login", "logout", "plan", "issue", "task", "repo",
-    "agent", "setting", "todo", "log", "backend", "remote-status", "queue", "completion",
-  ];
-  const subcommands: Record<string, string[]> = {
-    plan: ["create", "list", "get", "delete", "abort", "generate", "finalize", "issues"],
-    issue: ["implement"],
-    task: ["list", "get", "stop", "delete", "followup", "import", "revert"],
-    repo: ["list", "add", "remove", "toggle", "index", "status"],
-    agent: ["list", "add", "enable", "disable", "delete"],
-    setting: ["get", "update", "reindex-summaries"],
-    config: ["list", "get", "profile"],
-    backend: ["status", "queue"],
-    completion: ["bash", "zsh", "fish"],
-  };
-  const nestedSubcommands: Record<string, Record<string, string[]>> = {
-    config: {
-      profile: ["use", "set"],
-    },
-  };
-  const options: Record<string, string[]> = {
-    "issue implement": ["--wait", "-w", "--project", "-p", "--agent", "-a", "--model", "-m", "--epic", "--auto-merge"],
-    "task list": ["--project", "-p", "--status", "-s", "--limit", "-l", "--search", "--json", "-j"],
-    "task get": ["--json", "-j"],
-    "task delete": ["--force", "-f"],
-    "task followup": ["--file", "-f"],
-    "task import": ["--project", "-p", "--file", "-f"],
-    "task revert": ["--owner", "-o", "--dry-run"],
-    "setting get": ["--key", "-k", "--json", "-j"],
-    "setting reindex-summaries": ["--ignore-cooldown", "--json", "-j"],
-    "config list": ["--json", "-j"],
-    "config get": ["--json", "-j"],
-    "config profile set": ["--remote", "--token", "--project", "--clear-remote", "--clear-token", "--clear-project"],
-  };
-  const valueOptions = [
-    "--project", "-p", "--agent", "-a", "--model", "-m", "--status", "-s", "--limit", "-l",
-    "--search", "--file", "-f", "--owner", "-o", "--key", "-k", "--remote", "--token",
-  ];
+  const { commands, subcommands, nestedSubcommands, options, valueOptions } = buildCompletionMetadata(program);
   const commandWords = commands.join(" ");
   const valueOptionPattern = valueOptions.join("|");
   const optionCases = Object.entries(options)

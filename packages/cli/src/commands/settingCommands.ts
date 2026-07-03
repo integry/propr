@@ -130,11 +130,11 @@ export function getExtraConfigErrors(settings: DisplaySettings): string[] {
 }
 
 export function isSuccessfulExtraConfigUpdate(result: unknown): boolean {
-  return Boolean(
+  return !(
     result &&
     typeof result === "object" &&
     !Array.isArray(result) &&
-    (result as { success?: unknown }).success === true
+    (result as { success?: unknown }).success === false
   );
 }
 

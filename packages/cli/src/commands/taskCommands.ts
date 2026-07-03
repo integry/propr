@@ -56,6 +56,10 @@ function truncate(str: string | null | undefined, maxLen: number): string {
   return str.substring(0, maxLen - 3) + "...";
 }
 
+export function resolveFollowupBodyArgument(bodyArg: string[] | undefined): string | undefined {
+  return bodyArg?.join(" ");
+}
+
 /**
  * Displays a table of tasks with clean formatting.
  */
@@ -597,7 +601,7 @@ Examples:
 
   // task followup
   task
-    .command("followup <task-id> [body]")
+    .command("followup <task-id> [body...]")
     .description("Post and queue a follow-up instruction for a task")
     .option("-f, --file <path>", "Read follow-up body from a file")
     .addHelpText("after", `
@@ -606,9 +610,9 @@ Examples:
   $ propr task followup abc123 --file followup.md
   $ echo "Address the review comments" | propr task followup abc123
 `)
-    .action(async (taskId: string, bodyArg: string | undefined, options: { file?: string }) => {
+    .action(async (taskId: string, bodyArg: string[] | undefined, options: { file?: string }) => {
       try {
-        let body = bodyArg;
+        let body = resolveFollowupBodyArgument(bodyArg);
         if (options.file) {
           const { readFile } = await import("node:fs/promises");
           body = (await readFile(options.file, "utf8")).trim();

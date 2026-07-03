@@ -13,7 +13,7 @@ import {
   TaskStatus,
 } from "../api/index.js";
 import { createConfigManager } from "../config/index.js";
-import { ProjectResolutionError, resolveProject } from "../utils/index.js";
+import { isValidProjectSlug } from "../utils/index.js";
 
 /**
  * Terminal states that indicate a task has finished processing.
@@ -43,6 +43,17 @@ function parseIssueId(issueId: string): { draftId: string; issueNumber: number }
     }
   }
   return null;
+}
+
+export function resolveOptionalImplementationRepository(
+  options: { project?: string },
+  configManager: { getDefaultProject(): string | undefined }
+): string | undefined {
+  const repository = options.project ?? configManager.getDefaultProject();
+  if (repository !== undefined && !isValidProjectSlug(repository)) {
+    throw new Error("Invalid project format. Expected 'owner/repo'.");
+  }
+  return repository;
 }
 
 /**
@@ -147,7 +158,7 @@ Examples:
 
           const { draftId, issueNumber } = parsed;
           const configManager = await createConfigManager();
-          const repository = resolveProject(options, configManager);
+          const repository = resolveOptionalImplementationRepository(options, configManager);
 
           console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
 
@@ -217,10 +228,6 @@ Examples:
             console.log("You can check the status later using the ProPR dashboard.");
           }
         } catch (error) {
-          if (error instanceof ProjectResolutionError) {
-            console.error(`Error: ${error.message}`);
-            process.exit(1);
-          }
           console.error(
             `Error implementing issue: ${(error as Error).message}`
           );

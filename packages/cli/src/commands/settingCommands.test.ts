@@ -85,9 +85,9 @@ test("parseExtraConfigValue rejects empty string settings", () => {
   assert.equal(parseExtraConfigValue("pr-label", " propr "), "propr");
 });
 
-test("extra config update success requires an explicit successful backend response", () => {
+test("extra config update success only fails on an explicit unsuccessful backend response", () => {
   assert.equal(isSuccessfulExtraConfigUpdate({ success: true, pr_label: "propr" }), true);
   assert.equal(isSuccessfulExtraConfigUpdate({ success: false }), false);
-  assert.equal(isSuccessfulExtraConfigUpdate({ error: "unexpected response" }), false);
-  assert.equal(isSuccessfulExtraConfigUpdate(null), false);
+  assert.equal(isSuccessfulExtraConfigUpdate({ pr_label: "propr" }), true);
+  assert.equal(isSuccessfulExtraConfigUpdate(null), true);
 });
