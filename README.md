@@ -7,7 +7,8 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0" /></a>
   <a href="https://www.npmjs.com/package/propr-cli"><img src="https://img.shields.io/npm/v/propr-cli?label=propr-cli" alt="npm: propr-cli" /></a>
-  <a href="https://github.com/integry/propr/actions/workflows/test-nightly.yml"><img src="https://github.com/integry/propr/actions/workflows/test-nightly.yml/badge.svg" alt="Tests" /></a>
+  <a href="https://github.com/integry/propr/releases"><img src="https://img.shields.io/github/v/release/integry/propr" alt="Latest release" /></a>
+  <a href="https://github.com/integry/propr/commits/main"><img src="https://img.shields.io/github/commit-activity/m/integry/propr" alt="Commit activity" /></a>
 </p>
 
 <p align="center">
