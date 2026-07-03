@@ -148,6 +148,34 @@ These are accepted per command (place them after the subcommand), not before it:
 | `-V, --version` | Print the CLI version |
 | `-h, --help` | Help for any command or subcommand |
 
+## Exit Codes
+
+CLI commands use this exit-code contract:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | General command failure |
+| `2` | Usage or local input validation failure |
+| `10` | Unauthorized API request (`401`) |
+| `11` | Forbidden API request (`403`) |
+| `12` | API resource not found (`404`) |
+| `13` | Network failure reaching the ProPR backend |
+| `14` | API request timeout |
+
+When `--json` is supported and a command fails, the CLI writes a JSON error payload to stderr:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Authentication required. Please check your GitHub token.",
+    "status": 401
+  }
+}
+```
+
 ## Repository Setup Files
 
 Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution — edit it to install task-specific tools (for example `sudo apk add --no-cache jq`).
@@ -217,6 +245,8 @@ propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
 ```
 
+`repo list`, `repo add`, `repo remove`, `repo toggle`, `repo index`, and `repo status` accept `--json`.
+
 ## Agents
 
 ```bash
@@ -233,6 +263,8 @@ propr agent login antigravity    # interactive login inside the agent's Docker i
 ```
 
 Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.
+
+`agent list`, `agent add`, `agent enable`, and `agent disable` accept `--json`.
 
 See [Agents and Models](./agents-and-models.md) for the model catalog, label formats, and per-agent credential setup, including the OpenCode host-authentication steps and the `XDG_DATA_HOME` requirement for file-based OpenCode auth.
 

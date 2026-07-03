@@ -17,6 +17,13 @@ import {
   RepositoryIndexingStatus,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
+import {
+  CLI_EXIT_CODES,
+  exitWithError,
+  exitWithUsageError,
+  errorMessage,
+  getExitCodeForError,
+} from "../utils/cliErrors.js";
 
 /**
  * Formats the enabled status for display.
@@ -255,6 +262,7 @@ Examples:
     .description("Add a repository to the monitored list for ProPR")
     .option("-a, --alias <alias>", "Display alias for the repository")
     .option("-b, --branch <branch>", "Base branch name (default: main/master)")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -262,31 +270,34 @@ Argument:
 Examples:
   $ propr repo add myorg/myrepo
   $ propr repo add myorg/myrepo -a "My Project" -b develop
+  $ propr repo add myorg/myrepo --json
 `)
     .action(
       async (
         fullName: string,
-        options: { alias?: string; branch?: string }
+        options: { alias?: string; branch?: string; json?: boolean }
       ) => {
         try {
           if (!fullName.includes("/")) {
+            if (options.json) {
+              exitWithUsageError("Repository name must be in 'owner/repo' format.", true);
+            }
             console.error(
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
             console.log("Example: propr repo add integry/gitfix");
-            process.exit(1);
+            process.exit(CLI_EXIT_CODES.usage);
           }
 
           const parts = fullName.split("/");
           if (parts.length !== 2 || !parts[0] || !parts[1]) {
-            console.error(
-              "Error: Invalid repository format. Expected 'owner/repo'."
-            );
-            process.exit(1);
+            exitWithUsageError("Invalid repository format. Expected 'owner/repo'.", options.json);
           }
 
-          console.log(`Adding repository: ${fullName}...`);
+          if (!options.json) {
+            console.log(`Adding repository: ${fullName}...`);
+          }
 
           const result = await addRepo(fullName, {
             alias: options.alias,
@@ -295,6 +306,10 @@ Examples:
           });
 
           if (result.success) {
+            if (printOutput(result, options.json ?? false)) {
+              return;
+            }
+
             console.log("");
             console.log(`Successfully added repository: ${fullName}`);
             if (options.alias) {
@@ -308,35 +323,42 @@ Examples:
               `Total monitored repositories: ${result.repos_to_monitor.length}`
             );
           } else {
-            console.error("Failed to add repository.");
-            process.exit(1);
+            exitWithError(new Error("Failed to add repository."), {
+              json: options.json,
+              message: "Failed to add repository.",
+              exitCode: CLI_EXIT_CODES.general,
+            });
           }
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (errorMessage.includes("already being monitored")) {
+          const message = errorMessage(error);
+          if (message.includes("already being monitored")) {
+            if (options.json) {
+              exitWithError(error, {
+                json: true,
+                message,
+                exitCode: CLI_EXIT_CODES.general,
+                code: "ALREADY_EXISTS",
+              });
+            }
             console.error(`Error: Repository "${fullName}" is already being monitored.`);
             console.log("");
             console.log("To update the repository settings, you can:");
             console.log(`  1. Remove it first: propr repo remove ${fullName}`);
             console.log(`  2. Add it again with new options: propr repo add ${fullName} [options]`);
-          } else if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
+          } else if (options.json) {
+            exitWithError(error, { json: true, message });
+          } else if (message.includes("401") || message.includes("unauthorized")) {
             console.error(
               "Error: Unauthorized. Please run 'propr login' first."
             );
-          } else if (
-            errorMessage.includes("403") ||
-            errorMessage.includes("forbidden")
-          ) {
+          } else if (message.includes("403") || message.includes("forbidden")) {
             console.error(
               "Error: Access denied. You do not have permission to add repositories."
             );
           } else {
-            console.error(`Error adding repository: ${errorMessage}`);
+            console.error(`Error adding repository: ${message}`);
           }
-          process.exit(1);
+          process.exit(getExitCodeForError(error));
         }
       }
     );
@@ -345,29 +367,40 @@ Examples:
   repo
     .command("remove <fullName>")
     .description("Remove a repository from the monitored list")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
 
 Example:
   $ propr repo remove myorg/myrepo
+  $ propr repo remove myorg/myrepo --json
 `)
-    .action(async (fullName: string) => {
+    .action(async (fullName: string, options: { json?: boolean }) => {
       try {
         if (!fullName.includes("/")) {
+          if (options.json) {
+            exitWithUsageError("Repository name must be in 'owner/repo' format.", true);
+          }
           console.error(
             "Error: Repository name must be in 'owner/repo' format."
           );
           console.log("");
           console.log("Example: propr repo remove integry/gitfix");
-          process.exit(1);
+          process.exit(CLI_EXIT_CODES.usage);
         }
 
-        console.log(`Removing repository: ${fullName}...`);
+        if (!options.json) {
+          console.log(`Removing repository: ${fullName}...`);
+        }
 
         const result = await removeRepo(fullName);
 
         if (result.success) {
+          if (printOutput(result, options.json ?? false)) {
+            return;
+          }
+
           console.log("");
           console.log(`Successfully removed repository: ${fullName}`);
           console.log("");
@@ -375,31 +408,38 @@ Example:
             `Remaining monitored repositories: ${result.repos_to_monitor.length}`
           );
         } else {
-          console.error("Failed to remove repository.");
-          process.exit(1);
+          exitWithError(new Error("Failed to remove repository."), {
+            json: options.json,
+            message: "Failed to remove repository.",
+            exitCode: CLI_EXIT_CODES.general,
+          });
         }
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (errorMessage.includes("not being monitored")) {
+        const message = errorMessage(error);
+        if (message.includes("not being monitored")) {
+          if (options.json) {
+            exitWithError(error, {
+              json: true,
+              message,
+              exitCode: CLI_EXIT_CODES.general,
+              code: "NOT_MONITORED",
+            });
+          }
           console.error(`Error: Repository "${fullName}" is not being monitored.`);
           console.log("");
           console.log("Use 'propr repo list' to see currently monitored repositories.");
-        } else if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
-        ) {
+        } else if (options.json) {
+          exitWithError(error, { json: true, message });
+        } else if (message.includes("401") || message.includes("unauthorized")) {
           console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (
-          errorMessage.includes("403") ||
-          errorMessage.includes("forbidden")
-        ) {
+        } else if (message.includes("403") || message.includes("forbidden")) {
           console.error(
             "Error: Access denied. You do not have permission to remove repositories."
           );
         } else {
-          console.error(`Error removing repository: ${errorMessage}`);
+          console.error(`Error removing repository: ${message}`);
         }
-        process.exit(1);
+        process.exit(getExitCodeForError(error));
       }
     });
 
@@ -409,6 +449,7 @@ Example:
     .description("Enable or disable monitoring for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -419,21 +460,22 @@ Note:
 Examples:
   $ propr repo toggle myorg/myrepo --enable
   $ propr repo toggle myorg/myrepo --disable
+  $ propr repo toggle myorg/myrepo --enable --json
 `)
     .action(
       async (
         fullName: string,
-        options: { enable?: boolean; disable?: boolean }
+        options: { enable?: boolean; disable?: boolean; json?: boolean }
       ) => {
         try {
           if (options.enable && options.disable) {
-            console.error(
-              "Error: Cannot specify both --enable and --disable."
-            );
-            process.exit(1);
+            exitWithUsageError("Cannot specify both --enable and --disable.", options.json);
           }
 
           if (!options.enable && !options.disable) {
+            if (options.json) {
+              exitWithUsageError("Must specify either --enable or --disable.", true);
+            }
             console.error(
               "Error: Must specify either --enable or --disable."
             );
@@ -441,60 +483,76 @@ Examples:
             console.log("Usage:");
             console.log(`  propr repo toggle ${fullName} --enable`);
             console.log(`  propr repo toggle ${fullName} --disable`);
-            process.exit(1);
+            process.exit(CLI_EXIT_CODES.usage);
           }
 
           if (!fullName.includes("/")) {
+            if (options.json) {
+              exitWithUsageError("Repository name must be in 'owner/repo' format.", true);
+            }
             console.error(
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
             console.log("Example: propr repo toggle integry/gitfix --enable");
-            process.exit(1);
+            process.exit(CLI_EXIT_CODES.usage);
           }
 
           const enableState = options.enable ? true : false;
           const actionWord = enableState ? "Enabling" : "Disabling";
 
-          console.log(`${actionWord} monitoring for repository: ${fullName}...`);
+          if (!options.json) {
+            console.log(`${actionWord} monitoring for repository: ${fullName}...`);
+          }
 
           const result = await updateRepo(fullName, { enabled: enableState });
 
           if (result.success) {
+            if (printOutput(result, options.json ?? false)) {
+              return;
+            }
+
             const statusWord = enableState ? "enabled" : "disabled";
             console.log("");
             console.log(
               `Successfully ${statusWord} monitoring for repository: ${fullName}`
             );
           } else {
-            console.error("Failed to update repository.");
-            process.exit(1);
+            exitWithError(new Error("Failed to update repository."), {
+              json: options.json,
+              message: "Failed to update repository.",
+              exitCode: CLI_EXIT_CODES.general,
+            });
           }
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (errorMessage.includes("not being monitored")) {
+          const message = errorMessage(error);
+          if (message.includes("not being monitored")) {
+            if (options.json) {
+              exitWithError(error, {
+                json: true,
+                message,
+                exitCode: CLI_EXIT_CODES.general,
+                code: "NOT_MONITORED",
+              });
+            }
             console.error(`Error: Repository "${fullName}" is not being monitored.`);
             console.log("");
             console.log("Use 'propr repo list' to see currently monitored repositories.");
             console.log(
               "To add a new repository, use 'propr repo add <owner/repo>'."
             );
-          } else if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
+          } else if (options.json) {
+            exitWithError(error, { json: true, message });
+          } else if (message.includes("401") || message.includes("unauthorized")) {
             console.error("Error: Unauthorized. Please run 'propr login' first.");
-          } else if (
-            errorMessage.includes("403") ||
-            errorMessage.includes("forbidden")
-          ) {
+          } else if (message.includes("403") || message.includes("forbidden")) {
             console.error(
               "Error: Access denied. You do not have permission to update repositories."
             );
           } else {
-            console.error(`Error updating repository: ${errorMessage}`);
+            console.error(`Error updating repository: ${message}`);
           }
-          process.exit(1);
+          process.exit(getExitCodeForError(error));
         }
       }
     );
@@ -505,6 +563,7 @@ Examples:
     .description("Trigger codebase indexing for a repository")
     .option("-b, --branch <branch>", "Specify the base branch to index")
     .option("--incremental", "Perform incremental indexing instead of full reindex")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -517,32 +576,35 @@ Examples:
   $ propr repo index myorg/myrepo                    # Full reindex
   $ propr repo index myorg/myrepo --incremental     # Incremental index
   $ propr repo index myorg/myrepo -b develop        # Index specific branch
+  $ propr repo index myorg/myrepo --json
 `)
     .action(
       async (
         fullName: string,
-        options: { branch?: string; incremental?: boolean }
+        options: { branch?: string; incremental?: boolean; json?: boolean }
       ) => {
         try {
           if (!fullName.includes("/")) {
+            if (options.json) {
+              exitWithUsageError("Repository name must be in 'owner/repo' format.", true);
+            }
             console.error(
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
             console.log("Example: propr repo index integry/gitfix");
-            process.exit(1);
+            process.exit(CLI_EXIT_CODES.usage);
           }
 
           const parts = fullName.split("/");
           if (parts.length !== 2 || !parts[0] || !parts[1]) {
-            console.error(
-              "Error: Invalid repository format. Expected 'owner/repo'."
-            );
-            process.exit(1);
+            exitWithUsageError("Invalid repository format. Expected 'owner/repo'.", options.json);
           }
 
           const indexType = options.incremental ? "incremental" : "full";
-          console.log(`Triggering ${indexType} indexing for repository: ${fullName}...`);
+          if (!options.json) {
+            console.log(`Triggering ${indexType} indexing for repository: ${fullName}...`);
+          }
 
           const result = await triggerIndexing(fullName, {
             fullReindex: !options.incremental,
@@ -550,6 +612,10 @@ Examples:
           });
 
           if (result.success) {
+            if (printOutput(result, options.json ?? false)) {
+              return;
+            }
+
             console.log("");
             console.log(`Successfully triggered indexing for repository: ${fullName}`);
             if (result.jobId) {
@@ -565,31 +631,38 @@ Examples:
             console.log("");
             console.log("Use 'propr repo status <fullName>' to check indexing progress.");
           } else {
-            console.error(`Failed to trigger indexing: ${result.error || "Unknown error"}`);
-            process.exit(1);
+            exitWithError(new Error(result.error || "Unknown error"), {
+              json: options.json,
+              message: `Failed to trigger indexing: ${result.error || "Unknown error"}`,
+              exitCode: CLI_EXIT_CODES.general,
+            });
           }
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (errorMessage.includes("already queued")) {
+          const message = errorMessage(error);
+          if (message.includes("already queued")) {
+            if (options.json) {
+              exitWithError(error, {
+                json: true,
+                message,
+                exitCode: CLI_EXIT_CODES.general,
+                code: "ALREADY_QUEUED",
+              });
+            }
             console.error(`Error: Indexing for "${fullName}" is already in progress or queued.`);
             console.log("");
             console.log("Use 'propr repo status' to check the current indexing status.");
-          } else if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
+          } else if (options.json) {
+            exitWithError(error, { json: true, message });
+          } else if (message.includes("401") || message.includes("unauthorized")) {
             console.error("Error: Unauthorized. Please run 'propr login' first.");
-          } else if (
-            errorMessage.includes("403") ||
-            errorMessage.includes("forbidden")
-          ) {
+          } else if (message.includes("403") || message.includes("forbidden")) {
             console.error(
               "Error: Access denied. You do not have permission to trigger indexing."
             );
           } else {
-            console.error(`Error triggering indexing: ${errorMessage}`);
+            console.error(`Error triggering indexing: ${message}`);
           }
-          process.exit(1);
+          process.exit(getExitCodeForError(error));
         }
       }
     );
