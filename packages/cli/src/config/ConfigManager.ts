@@ -338,13 +338,18 @@ export class ConfigManager {
   }
 
   getRemoteProfiles(): Record<string, RemoteProfile> {
-    const profiles = { ...(this.config.profiles ?? {}) };
+    const profiles = Object.fromEntries(
+      Object.entries(this.config.profiles ?? {}).map(([name, profile]) => [name, { ...profile }])
+    );
     if (!profiles[DEFAULT_PROFILE_NAME] && (this.config.remoteUrl || this.config.githubToken || this.config.defaultProject)) {
       profiles[DEFAULT_PROFILE_NAME] = {
         remoteUrl: this.config.remoteUrl,
         githubToken: this.config.githubToken,
         defaultProject: this.config.defaultProject,
       };
+    }
+    if (!profiles[DEFAULT_PROFILE_NAME]) {
+      profiles[DEFAULT_PROFILE_NAME] = {};
     }
     return profiles;
   }

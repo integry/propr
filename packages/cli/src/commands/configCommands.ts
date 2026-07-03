@@ -1,11 +1,32 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
+import type { RemoteProfile } from "../config/index.js";
 import { printOutput } from "../utils/index.js";
 
 function redactToken(token: string | undefined): string {
   if (!token) return "(not set)";
   if (token.length <= 8) return "(set)";
   return `${token.slice(0, 4)}...${token.slice(-4)}`;
+}
+
+type SanitizedRemoteProfile = Omit<RemoteProfile, "githubToken"> & {
+  githubToken: string;
+};
+
+export function sanitizeRemoteProfile(profile: RemoteProfile): SanitizedRemoteProfile {
+  return {
+    remoteUrl: profile.remoteUrl,
+    defaultProject: profile.defaultProject,
+    githubToken: redactToken(profile.githubToken),
+  };
+}
+
+export function sanitizeRemoteProfiles(
+  profiles: Record<string, RemoteProfile>
+): Record<string, SanitizedRemoteProfile> {
+  return Object.fromEntries(
+    Object.entries(profiles).map(([name, profile]) => [name, sanitizeRemoteProfile(profile)])
+  );
 }
 
 export function createConfigCommand(): Command {
@@ -19,7 +40,8 @@ export function createConfigCommand(): Command {
     .action(async (options: { json?: boolean }) => {
       const manager = await createConfigManager();
       const profiles = manager.getRemoteProfiles();
-      if (printOutput({ activeProfile: manager.getActiveRemoteProfile(), profiles, configFile: manager.getConfigFilePath() }, options.json ?? false)) {
+      const sanitizedProfiles = sanitizeRemoteProfiles(profiles);
+      if (printOutput({ activeProfile: manager.getActiveRemoteProfile(), profiles: sanitizedProfiles, configFile: manager.getConfigFilePath() }, options.json ?? false)) {
         return;
       }
 
@@ -48,7 +70,7 @@ export function createConfigCommand(): Command {
         activeProfile,
         remoteUrl: profile.remoteUrl,
         defaultProject: profile.defaultProject,
-        githubToken: profile.githubToken,
+        githubToken: redactToken(profile.githubToken),
       };
 
       if (key) {
@@ -59,8 +81,6 @@ export function createConfigCommand(): Command {
         const value = view[key as keyof typeof view];
         if (options.json) {
           printOutput({ [key]: value }, true);
-        } else if (key === "githubToken") {
-          console.log(redactToken(typeof value === "string" ? value : undefined));
         } else {
           console.log(value ?? "(not set)");
         }
@@ -73,7 +93,7 @@ export function createConfigCommand(): Command {
       console.log(`Active profile: ${view.activeProfile}`);
       console.log(`Remote URL:     ${view.remoteUrl ?? "(not set)"}`);
       console.log(`Default project:${view.defaultProject ? ` ${view.defaultProject}` : " (not set)"}`);
-      console.log(`GitHub token:   ${redactToken(view.githubToken)}`);
+      console.log(`GitHub token:   ${view.githubToken}`);
     });
 
   const profile = config

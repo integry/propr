@@ -102,6 +102,8 @@ const EXTRA_CONFIG_ENDPOINTS = {
 } as const;
 
 type ExtraConfigKey = keyof typeof EXTRA_CONFIG_ENDPOINTS;
+type ExtraConfigGetter = (endpoint: string) => Promise<Record<string, unknown>>;
+type DisplaySettings = Record<string, unknown>;
 
 function isExtraConfigKey(key: string): key is ExtraConfigKey {
   return key in EXTRA_CONFIG_ENDPOINTS;
@@ -115,6 +117,31 @@ function parseExtraConfigValue(key: ExtraConfigKey, value: string): string | str
   return value.trim();
 }
 
+export async function getExtraConfigSetting(
+  key: ExtraConfigKey,
+  getter: ExtraConfigGetter = getConfigValue
+): Promise<unknown> {
+  const config = EXTRA_CONFIG_ENDPOINTS[key];
+  const result = await getter(config.endpoint);
+  return result[config.field];
+}
+
+export async function getAllDisplaySettings(
+  settings: SystemSettings,
+  getter: ExtraConfigGetter = getConfigValue
+): Promise<DisplaySettings> {
+  const extras = await Promise.all(
+    (Object.keys(EXTRA_CONFIG_ENDPOINTS) as ExtraConfigKey[]).map(async (key) => [
+      key,
+      await getExtraConfigSetting(key, getter),
+    ] as const)
+  );
+  return {
+    ...settings,
+    ...Object.fromEntries(extras),
+  };
+}
+
 function printAllValidKeys(includeDescriptions = false): void {
   printValidSettingKeys(includeDescriptions);
   console.log("Additional config keys:");
@@ -126,8 +153,8 @@ function printAllValidKeys(includeDescriptions = false): void {
 /**
  * Displays all settings in a formatted table.
  */
-function displaySettingsTable(settings: SystemSettings): void {
-  const keys = Object.keys(settings) as SettingKey[];
+function displaySettingsTable(settings: DisplaySettings): void {
+  const keys = Object.keys(settings);
   const keyWidth = Math.max("Setting".length, ...keys.map((k) => k.length));
   const valueWidth = Math.max(
     "Value".length,
@@ -204,49 +231,44 @@ Examples:
     .action(
       async (options: { key?: string; json?: boolean }) => {
         try {
-          const settings = await getSettings();
-
-          if (options.json) {
-            if (options.key) {
-              if (isExtraConfigKey(options.key)) {
-                const config = EXTRA_CONFIG_ENDPOINTS[options.key];
-                printOutput(await getConfigValue(config.endpoint), true);
-                return;
-              }
-              if (!isValidSettingKey(options.key)) {
-                console.error(`Error: Invalid setting key: ${options.key}`);
-                console.log("");
-                printAllValidKeys();
-                process.exit(1);
-              }
-              printOutput({ [options.key]: settings[options.key] }, true);
+          if (options.key && isExtraConfigKey(options.key)) {
+            const value = await getExtraConfigSetting(options.key);
+            if (options.json) {
+              printOutput({ [options.key]: value }, true);
             } else {
-              printOutput(settings, true);
+              displaySettingDetail(options.key, value, EXTRA_CONFIG_ENDPOINTS[options.key].description);
             }
             return;
           }
 
           if (options.key) {
-            if (isExtraConfigKey(options.key)) {
-              const config = EXTRA_CONFIG_ENDPOINTS[options.key];
-              const result = await getConfigValue<Record<string, unknown>>(config.endpoint);
-              displaySettingDetail(options.key, result[config.field], config.description);
-              return;
-            }
             if (!isValidSettingKey(options.key)) {
               console.error(`Error: Invalid setting key: ${options.key}`);
               console.log("");
               printAllValidKeys();
               process.exit(1);
             }
-            displaySettingDetail(options.key, settings[options.key], getSettingDescription(options.key));
+            const settings = await getSettings();
+            if (options.json) {
+              printOutput({ [options.key]: settings[options.key] }, true);
+            } else {
+              displaySettingDetail(options.key, settings[options.key], getSettingDescription(options.key));
+            }
+            return;
+          }
+
+          const settings = await getSettings();
+          const displaySettings = await getAllDisplaySettings(settings);
+
+          if (options.json) {
+            printOutput(displaySettings, true);
             return;
           }
 
           console.log("");
-          displaySettingsTable(settings);
+          displaySettingsTable(displaySettings);
           console.log("");
-          console.log(`Total: ${Object.keys(settings).length} setting(s)`);
+          console.log(`Total: ${Object.keys(displaySettings).length} setting(s)`);
         } catch (error) {
           const errorMessage = (error as Error).message;
           if (
