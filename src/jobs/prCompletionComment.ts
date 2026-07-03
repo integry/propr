@@ -1,7 +1,7 @@
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
-import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
+import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 
 /** Filter out ultrafix synthetic comments (author='propr-ultrafix' or id=0) */
 function filterRealComments(comments: UnprocessedComment[]): UnprocessedComment[] {
@@ -182,6 +182,7 @@ export async function buildCompletionComment(
 
         prCommentBody += `\n\n---\n`;
         prCommentBody += buildSlashCommandsBlock();
+        prCommentBody += `${buildAttributionLine()}\n`;
         prCommentBody += buildCommentIdsSuffix(unprocessedComments);
 
         return prCommentBody;
@@ -201,6 +202,7 @@ export async function buildCompletionComment(
 
         noChangesBody += `\n\n---\n`;
         noChangesBody += buildSlashCommandsBlock();
+        noChangesBody += `${buildAttributionLine()}\n`;
         noChangesBody += buildCommentIdsSuffix(unprocessedComments);
 
         return noChangesBody;
