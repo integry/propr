@@ -205,11 +205,22 @@ function displayRevertPreview(preview: Awaited<ReturnType<typeof getRevertPrevie
   console.log(`Base branch:  ${preview.baseBranch}`);
   console.log(`Target:       ${preview.targetCommit.shortSha ?? preview.targetCommit.sha}`);
   console.log(`New head:     ${preview.newHead ? (preview.newHead.shortSha ?? preview.newHead.sha) : "(base branch)"}`);
+  console.log(`Revert base:  ${preview.willRevertToBase ? "yes" : "no"}`);
   console.log("");
   console.log(`Commits to remove (${preview.commitsToRemove.length}):`);
   for (const commit of preview.commitsToRemove) {
     const shortSha = commit.shortSha ?? commit.sha.substring(0, 7);
     console.log(`  - ${shortSha}${commit.message ? ` ${commit.message}` : ""}`);
+  }
+  console.log("");
+  console.log(`Commits remaining (${preview.remainingCommits.length}):`);
+  if (preview.remainingCommits.length === 0) {
+    console.log("  (none)");
+  } else {
+    for (const commit of preview.remainingCommits) {
+      const shortSha = commit.shortSha ?? commit.sha.substring(0, 7);
+      console.log(`  - ${shortSha}${commit.message ? ` ${commit.message}` : ""}`);
+    }
   }
 }
 

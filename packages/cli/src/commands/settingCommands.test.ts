@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getAllDisplaySettings, getExtraConfigSetting } from "./settingCommands.js";
+import { getAllDisplaySettings, getExtraConfigSetting, parseExtraConfigValue } from "./settingCommands.js";
 import type { SystemSettings } from "../api/settings.js";
 
 const SETTINGS: SystemSettings = {
@@ -45,4 +45,29 @@ test("getAllDisplaySettings includes label and keyword config values", async () 
   assert.equal(displaySettings["ai-primary-tag"], "ai");
   assert.deepEqual(displaySettings["primary-processing-labels"], ["propr", "ai"]);
   assert.deepEqual(displaySettings["followup-keywords"], ["/fix", "/ultrafix"]);
+});
+
+test("getAllDisplaySettings keeps system settings when an extra config endpoint fails", async () => {
+  const displaySettings = await getAllDisplaySettings(SETTINGS, async (endpoint) => {
+    if (endpoint === "/api/config/followup-keywords") {
+      throw new Error("backend unavailable");
+    }
+    return {
+      "/api/config/pr-label": { pr_label: "propr" },
+      "/api/config/ai-primary-tag": { ai_primary_tag: "ai" },
+      "/api/config/primary-processing-labels": { primary_processing_labels: ["propr", "ai"] },
+    }[endpoint] ?? {};
+  });
+
+  assert.equal(displaySettings.worker_concurrency, 2);
+  assert.equal(displaySettings["pr-label"], "propr");
+  assert.equal(displaySettings["followup-keywords"], undefined);
+});
+
+test("parseExtraConfigValue rejects empty arrays", () => {
+  assert.throws(
+    () => parseExtraConfigValue("followup-keywords", ","),
+    /requires at least one value/
+  );
+  assert.deepEqual(parseExtraConfigValue("followup-keywords", "/fix, /ultrafix"), ["/fix", "/ultrafix"]);
 });

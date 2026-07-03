@@ -116,14 +116,31 @@ export function createConfigCommand(): Command {
     .option("--remote <url>", "Backend API URL")
     .option("--token <token>", "GitHub token")
     .option("--project <project>", "Default project (owner/repo)")
-    .action(async (name: string, options: { remote?: string; token?: string; project?: string }) => {
+    .option("--clear-remote", "Clear the backend API URL")
+    .option("--clear-token", "Clear the GitHub token")
+    .option("--clear-project", "Clear the default project")
+    .action(async (name: string, options: {
+      remote?: string;
+      token?: string;
+      project?: string;
+      clearRemote?: boolean;
+      clearToken?: boolean;
+      clearProject?: boolean;
+    }) => {
       const manager = await createConfigManager();
-      const previous = manager.getActiveRemoteProfile();
-      await manager.useRemoteProfile(name);
-      if (options.remote) await manager.setRemoteUrl(options.remote);
-      if (options.token) await manager.setGithubToken(options.token);
-      if (options.project) await manager.setDefaultProject(options.project);
-      if (previous !== name) await manager.useRemoteProfile(previous);
+      const clear: Array<keyof RemoteProfile> = [];
+      if (options.clearRemote) clear.push("remoteUrl");
+      if (options.clearToken) clear.push("githubToken");
+      if (options.clearProject) clear.push("defaultProject");
+      await manager.setRemoteProfile(
+        name,
+        {
+          ...(options.remote !== undefined ? { remoteUrl: options.remote } : {}),
+          ...(options.token !== undefined ? { githubToken: options.token } : {}),
+          ...(options.project !== undefined ? { defaultProject: options.project } : {}),
+        },
+        clear
+      );
       console.log(`Profile saved: ${name}`);
       console.log(`Configuration saved to: ${manager.getConfigFilePath()}`);
     });

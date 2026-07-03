@@ -17,6 +17,7 @@ import {
   VALID_SETTING_KEYS,
   SystemSettings,
   SettingKey,
+  NamedConfigEndpoint,
 } from "../api/index.js";
 import {
   printOutput,
@@ -102,17 +103,21 @@ const EXTRA_CONFIG_ENDPOINTS = {
 } as const;
 
 type ExtraConfigKey = keyof typeof EXTRA_CONFIG_ENDPOINTS;
-type ExtraConfigGetter = (endpoint: string) => Promise<Record<string, unknown>>;
+type ExtraConfigGetter = (endpoint: NamedConfigEndpoint) => Promise<Record<string, unknown>>;
 type DisplaySettings = Record<string, unknown>;
 
 function isExtraConfigKey(key: string): key is ExtraConfigKey {
   return key in EXTRA_CONFIG_ENDPOINTS;
 }
 
-function parseExtraConfigValue(key: ExtraConfigKey, value: string): string | string[] {
+export function parseExtraConfigValue(key: ExtraConfigKey, value: string): string | string[] {
   const config = EXTRA_CONFIG_ENDPOINTS[key];
   if (config.type === "array") {
-    return value.split(",").map((item) => item.trim()).filter(Boolean);
+    const values = value.split(",").map((item) => item.trim()).filter(Boolean);
+    if (values.length === 0) {
+      throw new Error(`Setting "${key}" requires at least one value.`);
+    }
+    return values;
   }
   return value.trim();
 }
@@ -130,7 +135,7 @@ export async function getAllDisplaySettings(
   settings: SystemSettings,
   getter: ExtraConfigGetter = getConfigValue
 ): Promise<DisplaySettings> {
-  const extras = await Promise.all(
+  const extras = await Promise.allSettled(
     (Object.keys(EXTRA_CONFIG_ENDPOINTS) as ExtraConfigKey[]).map(async (key) => [
       key,
       await getExtraConfigSetting(key, getter),
@@ -138,7 +143,11 @@ export async function getAllDisplaySettings(
   );
   return {
     ...settings,
-    ...Object.fromEntries(extras),
+    ...Object.fromEntries(
+      extras
+        .filter((result): result is PromiseFulfilledResult<readonly [ExtraConfigKey, unknown]> => result.status === "fulfilled")
+        .map((result) => result.value)
+    ),
   };
 }
 
@@ -335,7 +344,7 @@ Examples:
         console.log(`Updating setting: ${key}...`);
 
         const result = isExtraConfigKey(key)
-          ? await updateConfigValue<{ success?: boolean }>(
+          ? await updateConfigValue(
               EXTRA_CONFIG_ENDPOINTS[key].endpoint,
               { [EXTRA_CONFIG_ENDPOINTS[key].field]: parsedValue }
             )

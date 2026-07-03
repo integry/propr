@@ -380,6 +380,45 @@ export class ConfigManager {
     await this.save();
   }
 
+  async setRemoteProfile(
+    name: string,
+    patch: Partial<RemoteProfile>,
+    clear: Array<keyof RemoteProfile> = []
+  ): Promise<void> {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("Profile name must not be empty");
+    }
+
+    const profiles = { ...(this.config.profiles ?? {}) };
+    const currentName = this.getActiveProfileName();
+    if (!profiles[currentName] && (this.config.remoteUrl || this.config.githubToken || this.config.defaultProject)) {
+      profiles[currentName] = {
+        remoteUrl: this.config.remoteUrl,
+        githubToken: this.config.githubToken,
+        defaultProject: this.config.defaultProject,
+      };
+    }
+
+    const nextProfile: RemoteProfile = {
+      ...(profiles[trimmed] ?? {}),
+      ...patch,
+    };
+    for (const key of clear) {
+      delete nextProfile[key];
+    }
+    profiles[trimmed] = nextProfile;
+    this.config.profiles = profiles;
+
+    if (currentName === trimmed) {
+      this.config.remoteUrl = nextProfile.remoteUrl;
+      this.config.githubToken = nextProfile.githubToken;
+      this.config.defaultProject = nextProfile.defaultProject;
+    }
+
+    await this.save();
+  }
+
   /**
    * Gets the local stack root directory (where .env, data/, logs/, repos/ live).
    *

@@ -103,6 +103,7 @@ Examples:
     .command("implement <issue-id>")
     .description("Implement a GitHub issue from a plan using AI agents")
     .option("-w, --wait", "Wait for the implementation to complete")
+    .option("-p, --project <project>", "Target project (owner/repo)")
     .option("-a, --agent <agent>", "Agent alias to use for implementation")
     .option("-m, --model <model>", "Model name to use for implementation")
     .option("--epic", "Create an Epic PR to collect all related PRs")
@@ -122,6 +123,7 @@ Examples:
         issueId: string,
         options: {
           wait?: boolean;
+          project?: string;
           agent?: string;
           model?: string;
           epic?: boolean;

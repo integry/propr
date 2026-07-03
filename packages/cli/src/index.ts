@@ -139,10 +139,10 @@ Command Groups:
   Configuration:  config, remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
-  Tasks:          task [list|get|stop|delete|revert]
+  Tasks:          task [list|get|stop|delete|followup|import|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
   Agents:         agent [list|add|enable|disable|delete]
-  Settings:       setting [get|update]
+  Settings:       setting [get|update|reindex-summaries]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
   Backend:        backend [status|queue], remote-status, queue
@@ -304,7 +304,32 @@ function completionScript(shell: "bash" | "zsh" | "fish"): string {
     backend: ["status", "queue"],
     completion: ["bash", "zsh", "fish"],
   };
+  const nestedSubcommands: Record<string, Record<string, string[]>> = {
+    config: {
+      profile: ["use", "set"],
+    },
+  };
+  const options: Record<string, string[]> = {
+    "issue implement": ["--wait", "-w", "--project", "-p", "--agent", "-a", "--model", "-m", "--epic", "--auto-merge"],
+    "task list": ["--project", "-p", "--status", "-s", "--limit", "-l", "--search", "--json", "-j"],
+    "task get": ["--json", "-j"],
+    "task delete": ["--force", "-f"],
+    "task followup": ["--file", "-f"],
+    "task import": ["--project", "-p", "--file", "-f"],
+    "task revert": ["--owner", "-o", "--dry-run"],
+    "setting get": ["--key", "-k", "--json", "-j"],
+    "setting reindex-summaries": ["--ignore-cooldown", "--json", "-j"],
+    "config list": ["--json", "-j"],
+    "config get": ["--json", "-j"],
+    "config profile set": ["--remote", "--token", "--project", "--clear-remote", "--clear-token", "--clear-project"],
+  };
   const commandWords = commands.join(" ");
+  const optionCases = Object.entries(options)
+    .map(([path, opts]) => `    "${path}") COMPREPLY=( $(compgen -W "${opts.join(" ")}" -- "$cur") ); return 0 ;;`)
+    .join("\n");
+  const zshOptionCases = Object.entries(options)
+    .map(([path, opts]) => `    "${path}") _values 'options' ${opts.map((option) => `${option}:${option}`).join(" ")}; return ;;`)
+    .join("\n");
 
   if (shell === "zsh") {
     return `#compdef propr
@@ -313,6 +338,20 @@ _propr() {
   commands=(${commands.map((cmd) => `${cmd}:${cmd}`).join(" ")})
   if (( CURRENT == 2 )); then
     _describe 'command' commands
+    return
+  fi
+  if [[ "$words[CURRENT]" == -* ]]; then
+    local path3="$words[2] $words[3] $words[4]"
+    local path2="$words[2] $words[3]"
+    case "$path3" in
+${zshOptionCases}
+    esac
+    case "$path2" in
+${zshOptionCases}
+    esac
+  fi
+  if (( CURRENT == 4 )) && [[ "$words[2]" == "config" && "$words[3]" == "profile" ]]; then
+    _values 'profile commands' use:use set:set
     return
   fi
   case "$words[2]" in
@@ -328,6 +367,18 @@ _propr
     for (const [cmd, subs] of Object.entries(subcommands)) {
       lines.push(`complete -c propr -f -n '__fish_seen_subcommand_from ${cmd}' -a '${subs.join(" ")}'`);
     }
+    for (const [cmd, nested] of Object.entries(nestedSubcommands)) {
+      for (const [sub, subs] of Object.entries(nested)) {
+        lines.push(`complete -c propr -f -n '__fish_seen_subcommand_from ${cmd}; and __fish_seen_subcommand_from ${sub}' -a '${subs.join(" ")}'`);
+      }
+    }
+    for (const [path, opts] of Object.entries(options)) {
+      const parts = path.split(" ");
+      const condition = parts.map((part) => `__fish_seen_subcommand_from ${part}`).join("; and ");
+      for (const option of opts) {
+        lines.push(`complete -c propr -f -n '${condition}' -a '${option}'`);
+      }
+    }
     return `${lines.join("\n")}\n`;
   }
 
@@ -339,6 +390,21 @@ _propr
   if [[ \${COMP_CWORD} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${commandWords}" -- "$cur") )
     return 0
+  fi
+  if [[ "$cur" == -* ]]; then
+    local path3="\${COMP_WORDS[1]} \${COMP_WORDS[2]} \${COMP_WORDS[3]}"
+    local path2="\${COMP_WORDS[1]} \${COMP_WORDS[2]}"
+    case "$path3" in
+${optionCases}
+    esac
+    case "$path2" in
+${optionCases}
+    esac
+  fi
+  if [[ \${COMP_CWORD} -eq 3 ]]; then
+    case "\${COMP_WORDS[1]} \${COMP_WORDS[2]}" in
+${Object.entries(nestedSubcommands).flatMap(([cmd, nested]) => Object.entries(nested).map(([sub, subs]) => `      "${cmd} ${sub}") COMPREPLY=( $(compgen -W "${subs.join(" ")}" -- "$cur") ); return 0 ;;`)).join("\n")}
+    esac
   fi
   case "\${COMP_WORDS[1]}" in
 ${Object.entries(subcommands).map(([cmd, subs]) => `    ${cmd}) COMPREPLY=( $(compgen -W "${subs.join(" ")}" -- "$cur") ) ;;`).join("\n")}

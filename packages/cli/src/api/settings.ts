@@ -92,6 +92,23 @@ export interface NamedConfigValueResponse {
   [key: string]: unknown;
 }
 
+export const NAMED_CONFIG_ENDPOINTS = {
+  prLabel: "/api/config/pr-label",
+  aiPrimaryTag: "/api/config/ai-primary-tag",
+  primaryProcessingLabels: "/api/config/primary-processing-labels",
+  followupKeywords: "/api/config/followup-keywords",
+} as const;
+
+export type NamedConfigEndpoint =
+  typeof NAMED_CONFIG_ENDPOINTS[keyof typeof NAMED_CONFIG_ENDPOINTS];
+
+export interface NamedConfigValueByEndpoint {
+  "/api/config/pr-label": { pr_label: string };
+  "/api/config/ai-primary-tag": { ai_primary_tag: string };
+  "/api/config/primary-processing-labels": { primary_processing_labels: string[] };
+  "/api/config/followup-keywords": { followup_keywords: string[] };
+}
+
 export interface ReindexAllResponse {
   success: boolean;
   repositoriesQueued: number;
@@ -398,8 +415,11 @@ export async function updateSetting(
   return updateSettings(settings, client);
 }
 
-export async function getConfigValue<T>(
-  endpoint: string,
+export async function getConfigValue<
+  E extends NamedConfigEndpoint,
+  T = NamedConfigValueByEndpoint[E],
+>(
+  endpoint: E,
   client?: ApiClient
 ): Promise<T> {
   const apiClient = client ?? (await createApiClient());
@@ -407,9 +427,12 @@ export async function getConfigValue<T>(
   return response.data;
 }
 
-export async function updateConfigValue<T>(
-  endpoint: string,
-  body: Record<string, unknown>,
+export async function updateConfigValue<
+  E extends NamedConfigEndpoint,
+  T = { success?: boolean },
+>(
+  endpoint: E,
+  body: Partial<NamedConfigValueByEndpoint[E]>,
   client?: ApiClient
 ): Promise<T> {
   const apiClient = client ?? (await createApiClient());

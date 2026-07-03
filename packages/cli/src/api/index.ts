@@ -153,6 +153,7 @@ export {
   parseSettingValue,
   settingsApi,
   VALID_SETTING_KEYS,
+  NAMED_CONFIG_ENDPOINTS,
 } from "./settings.js";
 
 export type {
@@ -161,6 +162,8 @@ export type {
   UpdateSettingsOptions,
   UpdateSettingsResponse,
   NamedConfigValueResponse,
+  NamedConfigEndpoint,
+  NamedConfigValueByEndpoint,
   ReindexAllResponse,
   SettingKey,
 } from "./settings.js";
