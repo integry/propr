@@ -7,7 +7,8 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0" /></a>
   <a href="https://www.npmjs.com/package/propr-cli"><img src="https://img.shields.io/npm/v/propr-cli?label=propr-cli" alt="npm: propr-cli" /></a>
-  <a href="https://github.com/integry/propr/actions/workflows/test-nightly.yml"><img src="https://github.com/integry/propr/actions/workflows/test-nightly.yml/badge.svg" alt="Tests" /></a>
+  <a href="https://github.com/integry/propr/releases"><img src="https://img.shields.io/github/v/release/integry/propr" alt="Latest release" /></a>
+  <a href="https://github.com/integry/propr/commits/main"><img src="https://img.shields.io/github/commit-activity/m/integry/propr" alt="Commit activity" /></a>
 </p>
 
 <p align="center">
@@ -29,6 +30,14 @@ ProPR is a **self-hosted platform** that runs AI coding agents through the GitHu
 <p align="center"><em>A real PR, planned, implemented, and reviewed by ProPR — every run posts its full record to the pull request.</em></p>
 
 ProPR builds itself: since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across its author's products have shipped through it — including [690+ merged pull requests in this repository](https://github.com/integry/propr/pulls?q=is%3Apr+is%3Amerged).
+
+<details>
+<summary><strong>More screenshots</strong> — Planner Studio, dashboard, AI review</summary>
+<br />
+<p align="center"><img src="media/readme-planner.png" alt="Planner Studio: a prompt over a chosen repository with context scope and cost estimate before generation." width="720" /></p>
+<p align="center"><img src="media/readme-dashboard.png" alt="The dashboard: recent task activity, success rate, cost, 30-day activity chart, and task-status breakdown." width="720" /></p>
+<p align="center"><img src="media/readme-review.png" alt="An AI code review posted on a GitHub pull request: overall evaluation and severity-grouped findings." width="720" /></p>
+</details>
 
 ## Modular, not all-or-nothing
 
