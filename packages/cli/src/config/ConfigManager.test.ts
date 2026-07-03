@@ -76,7 +76,7 @@ test("setRemoteProfile can clear existing profile fields", async () => {
   }
 });
 
-test("useRemoteProfile preserves legacy top-level config when switching to a new empty profile", async () => {
+test("useRemoteProfile migrates legacy top-level config without leaking it into a new empty profile", async () => {
   const tempDir = createTempDir();
   try {
     writeFileSync(join(tempDir, "config.json"), JSON.stringify({
@@ -91,15 +91,38 @@ test("useRemoteProfile preserves legacy top-level config when switching to a new
     await manager.useRemoteProfile("staging");
 
     assert.equal(manager.getActiveRemoteProfile(), "staging");
-    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
-    assert.equal(manager.getGithubToken(), "legacy-token");
-    assert.equal(manager.getDefaultProject(), "owner/repo");
+    assert.equal(manager.getRemoteUrl(), undefined);
+    assert.equal(manager.getGithubToken(), undefined);
+    assert.equal(manager.getDefaultProject(), undefined);
     assert.deepEqual(manager.getRemoteProfiles().default, {
       remoteUrl: "https://legacy.example.com",
       githubToken: "legacy-token",
       defaultProject: "owner/repo",
     });
     assert.deepEqual(manager.getRemoteProfiles().staging, {});
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("partial active profiles do not inherit unrelated credentials from top-level config", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
+      activeProfile: "default",
+      remoteUrl: "https://legacy.example.com",
+      githubToken: "legacy-token",
+      defaultProject: "owner/repo",
+    }));
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.setRemoteProfile("staging", { remoteUrl: "https://staging.example.com" });
+    await manager.useRemoteProfile("staging");
+
+    assert.equal(manager.getRemoteUrl(), "https://staging.example.com");
+    assert.equal(manager.getGithubToken(), undefined);
+    assert.equal(manager.getDefaultProject(), undefined);
   } finally {
     cleanupTempDir(tempDir);
   }

@@ -71,11 +71,8 @@ test("getAllDisplaySettings keeps system settings when an extra config endpoint 
   assert.deepEqual(Object.keys(displaySettings).includes("__extraConfigErrors"), false);
 });
 
-test("parseExtraConfigValue rejects empty arrays", () => {
-  assert.throws(
-    () => parseExtraConfigValue("followup-keywords", ","),
-    /requires at least one value/
-  );
+test("parseExtraConfigValue allows empty arrays so list settings can be cleared", () => {
+  assert.deepEqual(parseExtraConfigValue("followup-keywords", ","), []);
   assert.deepEqual(parseExtraConfigValue("followup-keywords", "/fix, /ultrafix"), ["/fix", "/ultrafix"]);
 });
 

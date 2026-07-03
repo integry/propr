@@ -205,6 +205,18 @@ export class ConfigManager {
     return this.config.profiles?.[name] ?? {};
   }
 
+  private hasActiveProfile(): boolean {
+    const name = this.getActiveProfileName();
+    return Boolean(this.config.profiles && Object.prototype.hasOwnProperty.call(this.config.profiles, name));
+  }
+
+  private getActiveProfileValue<K extends keyof RemoteProfile>(key: K): RemoteProfile[K] {
+    if (this.hasActiveProfile()) {
+      return this.getActiveProfile()[key];
+    }
+    return this.config[key];
+  }
+
   private async updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
     const name = this.getActiveProfileName();
     const profiles = { ...(this.config.profiles ?? {}) };
@@ -267,7 +279,7 @@ export class ConfigManager {
    * @returns The GitHub token, or undefined if not set.
    */
   getGithubToken(): string | undefined {
-    return this.getActiveProfile().githubToken ?? this.get("githubToken");
+    return this.getActiveProfileValue("githubToken");
   }
 
   /**
@@ -301,7 +313,7 @@ export class ConfigManager {
    * @returns The remote URL, or undefined if not set.
    */
   getRemoteUrl(): string | undefined {
-    return this.getActiveProfile().remoteUrl ?? this.get("remoteUrl");
+    return this.getActiveProfileValue("remoteUrl");
   }
 
   /**
@@ -320,7 +332,7 @@ export class ConfigManager {
    * @returns The default project (owner/repo format), or undefined if not set.
    */
   getDefaultProject(): string | undefined {
-    return this.getActiveProfile().defaultProject ?? this.get("defaultProject");
+    return this.getActiveProfileValue("defaultProject");
   }
 
   /**
@@ -374,9 +386,9 @@ export class ConfigManager {
     this.config.profiles = profiles;
     this.config.activeProfile = trimmed;
     const profile = profiles[trimmed];
-    if (profile.remoteUrl !== undefined) this.config.remoteUrl = profile.remoteUrl;
-    if (profile.githubToken !== undefined) this.config.githubToken = profile.githubToken;
-    if (profile.defaultProject !== undefined) this.config.defaultProject = profile.defaultProject;
+    this.config.remoteUrl = profile.remoteUrl;
+    this.config.githubToken = profile.githubToken;
+    this.config.defaultProject = profile.defaultProject;
     await this.save();
   }
 

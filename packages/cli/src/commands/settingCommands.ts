@@ -115,11 +115,7 @@ function isExtraConfigKey(key: string): key is ExtraConfigKey {
 export function parseExtraConfigValue(key: ExtraConfigKey, value: string): string | string[] {
   const config = EXTRA_CONFIG_ENDPOINTS[key];
   if (config.type === "array") {
-    const values = value.split(",").map((item) => item.trim()).filter(Boolean);
-    if (values.length === 0) {
-      throw new Error(`Setting "${key}" requires at least one value.`);
-    }
-    return values;
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
   }
   const trimmed = value.trim();
   if (!trimmed) {

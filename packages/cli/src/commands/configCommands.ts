@@ -131,13 +131,17 @@ export function createConfigCommand(): Command {
       if (options.clearRemote) clear.push("remoteUrl");
       if (options.clearToken) clear.push("githubToken");
       if (options.clearProject) clear.push("defaultProject");
+      const patch = {
+        ...(options.remote !== undefined ? { remoteUrl: options.remote } : {}),
+        ...(options.token !== undefined ? { githubToken: options.token } : {}),
+        ...(options.project !== undefined ? { defaultProject: options.project } : {}),
+      };
+      if (Object.keys(patch).length === 0 && clear.length === 0) {
+        console.warn("No profile changes specified.");
+      }
       await manager.setRemoteProfile(
         name,
-        {
-          ...(options.remote !== undefined ? { remoteUrl: options.remote } : {}),
-          ...(options.token !== undefined ? { githubToken: options.token } : {}),
-          ...(options.project !== undefined ? { defaultProject: options.project } : {}),
-        },
+        patch,
         clear
       );
       console.log(`Profile saved: ${name}`);
