@@ -74,7 +74,13 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
     }
     if (data?.error) throw new Error(data.error);
   }
-  if (!response.ok) throw new Error(`API request failed: ${response.status}`);
+  if (!response.ok) {
+        throw new Error(
+            response.status >= 500
+                ? `The server ran into a problem (HTTP ${response.status}). Please try again in a moment.`
+                : `The request could not be completed (HTTP ${response.status}).`
+        );
+    }
   return response;
 };
 

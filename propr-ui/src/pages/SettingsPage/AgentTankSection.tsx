@@ -49,7 +49,16 @@ const AgentTankSection: React.FC<AgentTankSectionProps> = ({
         >
           Agent Tank
         </a>{' '}
-        daemon.
+        daemon — see the{' '}
+        <a
+          href="https://docs.propr.dev/docs/operations/agent-tank"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary-600 hover:text-primary-700 underline"
+        >
+          Agent Tank guide
+        </a>
+        .
       </p>
 
       <div className="space-y-3">

@@ -219,7 +219,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const handleStopIndexing = async (repoName: string, baseBranch?: string) => {
     try {
       const displayName = baseBranch ? `${repoName} (${baseBranch})` : repoName;
-      if (!confirm(`Are you sure you want to stop indexing for ${displayName}?`)) return;
+      if (!confirm(`Are you sure you want to stop indexing for ${displayName}? Semantic search and smart file selection for this repository will be unavailable until you re-index.`)) return;
       await stopRepositoryIndexing(repoName, baseBranch);
     } catch (err) {
       alert('Failed to stop indexing: ' + (err as Error).message);

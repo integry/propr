@@ -5,7 +5,7 @@ import SummaryBrowser from '../SummaryBrowser';
 export interface RepoBrowsePanelProps {
   /** Repository owner (e.g., "integry") */
   owner: string;
-  /** Repository name (e.g., "gitfix") */
+  /** Repository name (e.g., "propr") */
   repo: string;
 }
 

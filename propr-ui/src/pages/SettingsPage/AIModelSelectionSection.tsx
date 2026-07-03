@@ -37,7 +37,7 @@ interface AIModelSelectionSectionProps {
 const NoAgentsMessage = ({ label }: { label: string }) => (
   <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
     No {label} available. Please enable an agent in the{' '}
-    <a href="/agents" className="text-primary-600 hover:text-primary-700 underline">
+    <a href="/ai-agents" className="text-primary-600 hover:text-primary-700 underline">
       AI Agents
     </a>{' '}
     page first.

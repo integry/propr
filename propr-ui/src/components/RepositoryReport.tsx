@@ -80,7 +80,7 @@ const RepositoryReport: React.FC = () => {
     return (
       <div className="dashboard-card">
         <h3 className="section-header">Performance Overview</h3>
-        <div className="text-slate-500 text-center py-4">No data available yet.</div>
+        <div className="text-slate-500 text-center py-4">No repository activity yet — data appears after your first task runs.</div>
       </div>
     );
   }

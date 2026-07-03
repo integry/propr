@@ -118,7 +118,7 @@ const TopModels: React.FC<TopModelsProps> = ({ limit, metricsOverride }) => {
     return (
       <div>
         <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Models</h3>
-        <div className="text-slate-500 text-center py-4">No model data available yet.</div>
+        <div className="text-slate-500 text-center py-4">No model usage yet — data appears after your first task runs.</div>
       </div>
     );
   }
