@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Documentation**: security overview (trust boundaries, isolation, network
+  surface, user-whitelist gating), evaluator FAQ, glossary, consolidated
+  configuration reference (shipped vs code defaults), and a symptom-organized
+  troubleshooting guide; intro gains a "First 15 Minutes" panel and the
+  hosted-UI-tunnel docs are canonicalized to the deployment guide.
+
+### Fixed
+
+- **Web UI**: dead `/agents` link in the no-models helper (now `/ai-agents`)
+  plus a catch-all 404 route; "Planner Studio" tab title; Agent Tank banner
+  reframed to rate-limit capacity; human-readable API error messages;
+  actionable empty states; contextual docs links from Settings.
+- **Docs/config drift**: `.env.example` tunnel hostnames updated to
+  `t-<id>.propr.dev`; Node.js 22+ requirement stated consistently; stale
+  OpenCode `CLI_VERSION` and `WORKER_CONCURRENCY` default corrected.
+
+## [0.8.5] - 2026-06-30
+
+### Added
+
 - **Hosted UI tunnel (ProPR Connect)**: optional CLI-managed `cloudflared`
   sidecar that exposes a local stack to the hosted UI at `app.propr.dev` through
   a per-instance `https://t-<id>.propr.dev` proxy. Includes shared tunnel
@@ -113,5 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.5]: https://github.com/integry/propr/releases/tag/v0.8.5
 [0.8.3]: https://github.com/integry/propr/releases/tag/v0.8.3
 [0.8.2]: https://github.com/integry/propr/releases/tag/v0.8.2
