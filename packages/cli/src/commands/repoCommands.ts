@@ -16,7 +16,12 @@ import {
   MonitoredRepo,
   RepositoryIndexingStatus,
 } from "../api/index.js";
-import { printOutput } from "../utils/index.js";
+import {
+  exitWithError,
+  exitWithUsageError,
+  printJsonError,
+  printOutput,
+} from "../utils/index.js";
 
 /**
  * Formats the enabled status for display.
@@ -255,6 +260,7 @@ Examples:
     .description("Add a repository to the monitored list for ProPR")
     .option("-a, --alias <alias>", "Display alias for the repository")
     .option("-b, --branch <branch>", "Base branch name (default: main/master)")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -266,27 +272,27 @@ Examples:
     .action(
       async (
         fullName: string,
-        options: { alias?: string; branch?: string }
+        options: { alias?: string; branch?: string; json?: boolean }
       ) => {
         try {
           if (!fullName.includes("/")) {
-            console.error(
-              "Error: Repository name must be in 'owner/repo' format."
-            );
-            console.log("");
-            console.log("Example: propr repo add integry/gitfix");
-            process.exit(1);
+            if (!options.json) {
+              console.log("");
+              console.log("Example: propr repo add integry/gitfix");
+            }
+            exitWithUsageError(options.json ?? false, "Repository name must be in 'owner/repo' format.", {
+              example: "propr repo add integry/gitfix",
+            });
           }
 
           const parts = fullName.split("/");
           if (parts.length !== 2 || !parts[0] || !parts[1]) {
-            console.error(
-              "Error: Invalid repository format. Expected 'owner/repo'."
-            );
-            process.exit(1);
+            exitWithUsageError(options.json ?? false, "Invalid repository format. Expected 'owner/repo'.");
           }
 
-          console.log(`Adding repository: ${fullName}...`);
+          if (!options.json) {
+            console.log(`Adding repository: ${fullName}...`);
+          }
 
           const result = await addRepo(fullName, {
             alias: options.alias,
@@ -295,6 +301,10 @@ Examples:
           });
 
           if (result.success) {
+            if (printOutput(result, options.json ?? false)) {
+              return;
+            }
+
             console.log("");
             console.log(`Successfully added repository: ${fullName}`);
             if (options.alias) {
@@ -308,10 +318,18 @@ Examples:
               `Total monitored repositories: ${result.repos_to_monitor.length}`
             );
           } else {
-            console.error("Failed to add repository.");
+            if (options.json) {
+              printJsonError(new Error("Failed to add repository."));
+            } else {
+              console.error("Failed to add repository.");
+            }
             process.exit(1);
           }
         } catch (error) {
+          if (options.json) {
+            printJsonError(error);
+            exitWithError(error);
+          }
           const errorMessage = (error as Error).message;
           if (errorMessage.includes("already being monitored")) {
             console.error(`Error: Repository "${fullName}" is already being monitored.`);
@@ -336,7 +354,7 @@ Examples:
           } else {
             console.error(`Error adding repository: ${errorMessage}`);
           }
-          process.exit(1);
+          exitWithError(error);
         }
       }
     );
@@ -345,6 +363,7 @@ Examples:
   repo
     .command("remove <fullName>")
     .description("Remove a repository from the monitored list")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -352,22 +371,29 @@ Argument:
 Example:
   $ propr repo remove myorg/myrepo
 `)
-    .action(async (fullName: string) => {
+    .action(async (fullName: string, options: { json?: boolean }) => {
       try {
         if (!fullName.includes("/")) {
-          console.error(
-            "Error: Repository name must be in 'owner/repo' format."
-          );
-          console.log("");
-          console.log("Example: propr repo remove integry/gitfix");
-          process.exit(1);
+          if (!options.json) {
+            console.log("");
+            console.log("Example: propr repo remove integry/gitfix");
+          }
+          exitWithUsageError(options.json ?? false, "Repository name must be in 'owner/repo' format.", {
+            example: "propr repo remove integry/gitfix",
+          });
         }
 
-        console.log(`Removing repository: ${fullName}...`);
+        if (!options.json) {
+          console.log(`Removing repository: ${fullName}...`);
+        }
 
         const result = await removeRepo(fullName);
 
         if (result.success) {
+          if (printOutput(result, options.json ?? false)) {
+            return;
+          }
+
           console.log("");
           console.log(`Successfully removed repository: ${fullName}`);
           console.log("");
@@ -375,10 +401,18 @@ Example:
             `Remaining monitored repositories: ${result.repos_to_monitor.length}`
           );
         } else {
-          console.error("Failed to remove repository.");
+          if (options.json) {
+            printJsonError(new Error("Failed to remove repository."));
+          } else {
+            console.error("Failed to remove repository.");
+          }
           process.exit(1);
         }
       } catch (error) {
+        if (options.json) {
+          printJsonError(error);
+          exitWithError(error);
+        }
         const errorMessage = (error as Error).message;
         if (errorMessage.includes("not being monitored")) {
           console.error(`Error: Repository "${fullName}" is not being monitored.`);
@@ -399,7 +433,7 @@ Example:
         } else {
           console.error(`Error removing repository: ${errorMessage}`);
         }
-        process.exit(1);
+        exitWithError(error);
       }
     });
 
@@ -409,6 +443,7 @@ Example:
     .description("Enable or disable monitoring for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -423,54 +458,65 @@ Examples:
     .action(
       async (
         fullName: string,
-        options: { enable?: boolean; disable?: boolean }
+        options: { enable?: boolean; disable?: boolean; json?: boolean }
       ) => {
         try {
           if (options.enable && options.disable) {
-            console.error(
-              "Error: Cannot specify both --enable and --disable."
-            );
-            process.exit(1);
+            exitWithUsageError(options.json ?? false, "Cannot specify both --enable and --disable.");
           }
 
           if (!options.enable && !options.disable) {
-            console.error(
-              "Error: Must specify either --enable or --disable."
-            );
-            console.log("");
-            console.log("Usage:");
-            console.log(`  propr repo toggle ${fullName} --enable`);
-            console.log(`  propr repo toggle ${fullName} --disable`);
-            process.exit(1);
+            if (!options.json) {
+              console.log("");
+              console.log("Usage:");
+              console.log(`  propr repo toggle ${fullName} --enable`);
+              console.log(`  propr repo toggle ${fullName} --disable`);
+            }
+            exitWithUsageError(options.json ?? false, "Must specify either --enable or --disable.");
           }
 
           if (!fullName.includes("/")) {
-            console.error(
-              "Error: Repository name must be in 'owner/repo' format."
-            );
-            console.log("");
-            console.log("Example: propr repo toggle integry/gitfix --enable");
-            process.exit(1);
+            if (!options.json) {
+              console.log("");
+              console.log("Example: propr repo toggle integry/gitfix --enable");
+            }
+            exitWithUsageError(options.json ?? false, "Repository name must be in 'owner/repo' format.", {
+              example: "propr repo toggle integry/gitfix --enable",
+            });
           }
 
           const enableState = options.enable ? true : false;
           const actionWord = enableState ? "Enabling" : "Disabling";
 
-          console.log(`${actionWord} monitoring for repository: ${fullName}...`);
+          if (!options.json) {
+            console.log(`${actionWord} monitoring for repository: ${fullName}...`);
+          }
 
           const result = await updateRepo(fullName, { enabled: enableState });
 
           if (result.success) {
+            if (printOutput(result, options.json ?? false)) {
+              return;
+            }
+
             const statusWord = enableState ? "enabled" : "disabled";
             console.log("");
             console.log(
               `Successfully ${statusWord} monitoring for repository: ${fullName}`
             );
           } else {
-            console.error("Failed to update repository.");
+            if (options.json) {
+              printJsonError(new Error("Failed to update repository."));
+            } else {
+              console.error("Failed to update repository.");
+            }
             process.exit(1);
           }
         } catch (error) {
+          if (options.json) {
+            printJsonError(error);
+            exitWithError(error);
+          }
           const errorMessage = (error as Error).message;
           if (errorMessage.includes("not being monitored")) {
             console.error(`Error: Repository "${fullName}" is not being monitored.`);
@@ -494,7 +540,7 @@ Examples:
           } else {
             console.error(`Error updating repository: ${errorMessage}`);
           }
-          process.exit(1);
+          exitWithError(error);
         }
       }
     );
@@ -505,6 +551,7 @@ Examples:
     .description("Trigger codebase indexing for a repository")
     .option("-b, --branch <branch>", "Specify the base branch to index")
     .option("--incremental", "Perform incremental indexing instead of full reindex")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Argument:
   fullName    Repository in owner/repo format
@@ -521,28 +568,28 @@ Examples:
     .action(
       async (
         fullName: string,
-        options: { branch?: string; incremental?: boolean }
+        options: { branch?: string; incremental?: boolean; json?: boolean }
       ) => {
         try {
           if (!fullName.includes("/")) {
-            console.error(
-              "Error: Repository name must be in 'owner/repo' format."
-            );
-            console.log("");
-            console.log("Example: propr repo index integry/gitfix");
-            process.exit(1);
+            if (!options.json) {
+              console.log("");
+              console.log("Example: propr repo index integry/gitfix");
+            }
+            exitWithUsageError(options.json ?? false, "Repository name must be in 'owner/repo' format.", {
+              example: "propr repo index integry/gitfix",
+            });
           }
 
           const parts = fullName.split("/");
           if (parts.length !== 2 || !parts[0] || !parts[1]) {
-            console.error(
-              "Error: Invalid repository format. Expected 'owner/repo'."
-            );
-            process.exit(1);
+            exitWithUsageError(options.json ?? false, "Invalid repository format. Expected 'owner/repo'.");
           }
 
           const indexType = options.incremental ? "incremental" : "full";
-          console.log(`Triggering ${indexType} indexing for repository: ${fullName}...`);
+          if (!options.json) {
+            console.log(`Triggering ${indexType} indexing for repository: ${fullName}...`);
+          }
 
           const result = await triggerIndexing(fullName, {
             fullReindex: !options.incremental,
@@ -550,6 +597,10 @@ Examples:
           });
 
           if (result.success) {
+            if (printOutput(result, options.json ?? false)) {
+              return;
+            }
+
             console.log("");
             console.log(`Successfully triggered indexing for repository: ${fullName}`);
             if (result.jobId) {
@@ -565,10 +616,18 @@ Examples:
             console.log("");
             console.log("Use 'propr repo status <fullName>' to check indexing progress.");
           } else {
-            console.error(`Failed to trigger indexing: ${result.error || "Unknown error"}`);
+            if (options.json) {
+              printJsonError(new Error(result.error || "Unknown error"));
+            } else {
+              console.error(`Failed to trigger indexing: ${result.error || "Unknown error"}`);
+            }
             process.exit(1);
           }
         } catch (error) {
+          if (options.json) {
+            printJsonError(error);
+            exitWithError(error);
+          }
           const errorMessage = (error as Error).message;
           if (errorMessage.includes("already queued")) {
             console.error(`Error: Indexing for "${fullName}" is already in progress or queued.`);
@@ -589,7 +648,7 @@ Examples:
           } else {
             console.error(`Error triggering indexing: ${errorMessage}`);
           }
-          process.exit(1);
+          exitWithError(error);
         }
       }
     );

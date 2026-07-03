@@ -21,3 +21,12 @@ export {
 export type { FormatOutputOptions } from "./io.js";
 
 export { parseOnOffState, ParseStateError } from "./parseState.js";
+
+export {
+  EXIT_CODES,
+  exitWithError,
+  exitWithUsageError,
+  getExitCode,
+  printJsonError,
+} from "./exitCodes.js";
+export type { CliErrorPayload, ExitCode } from "./exitCodes.js";

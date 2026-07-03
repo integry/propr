@@ -146,6 +146,23 @@ Configuration is stored in `~/.propr/config.json`.
 | `-V, --version` | Print the CLI version |
 | `-h, --help` | Help for any command or subcommand |
 
+## Exit Codes
+
+The CLI uses stable exit codes for scripts:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | General failure |
+| `2` | Invalid CLI usage or arguments |
+| `10` | Unauthorized API response (`401`) |
+| `11` | Forbidden API response (`403`) |
+| `12` | Resource not found API response (`404`) |
+| `20` | Network failure while contacting the backend |
+| `21` | Backend request timed out |
+
+Commands with `--json` print structured JSON on success. For command validation or API failures, JSON mode prints an object with `success: false`, an `error.message`, `error.type`, and `error.exitCode`; typed API errors also include `error.code` and `error.status`.
+
 ## Repository Setup Files
 
 Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution — edit it to install task-specific tools (for example `sudo apk add --no-cache jq`).
@@ -207,11 +224,11 @@ Status values for `-s`: `pending`, `queued`, `processing`, `completed`, `failed`
 
 ```bash
 propr repo list                              # Monitored repositories
-propr repo add owner/repo -a "Alias" -b dev  # Add with alias and base branch
-propr repo remove owner/repo
-propr repo toggle owner/repo --enable        # Enable/disable monitoring
-propr repo index owner/repo                  # Full reindex
-propr repo index owner/repo --incremental    # Incremental reindex
+propr repo add owner/repo -a "Alias" -b dev  # Add with alias and base branch (--json supported)
+propr repo remove owner/repo                 # --json supported
+propr repo toggle owner/repo --enable        # Enable/disable monitoring (--json supported)
+propr repo index owner/repo                  # Full reindex (--json supported)
+propr repo index owner/repo --incremental    # Incremental reindex (--json supported)
 propr repo status                            # Indexing status for all repos
 ```
 
@@ -224,8 +241,8 @@ propr agent add test -t antigravity -m antigravity-gemini-3.1-pro-high --disable
 propr agent add opencode -t opencode -m opencode-minimax-m3-free \
   -d opencode-minimax-m3-free --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)
-propr agent enable my-agent                  # Enable / disable without deleting
-propr agent disable my-agent
+propr agent enable my-agent                  # Enable / disable without deleting (--json supported)
+propr agent disable my-agent                 # --json supported
 propr agent delete my-agent --force
 ```
 

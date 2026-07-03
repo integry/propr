@@ -24,6 +24,9 @@ import { getHostConfig } from "../orchestrator/index.js";
 import { planAgentLogin, loginableAgents } from "./agentValidation.js";
 import { ApiError, NetworkError, NotFoundError, UnauthorizedError } from "../api/errors.js";
 import {
+  exitWithError,
+  exitWithUsageError,
+  printJsonError,
   printOutput,
   readJsonInput,
   validateJsonFields,
@@ -275,6 +278,10 @@ Examples:
               configPath = jsonConfig.configPath;
               enabled = jsonConfig.enabled !== false;
             } catch (error) {
+              if (options.json) {
+                printJsonError(error);
+                exitWithError(error);
+              }
               if (error instanceof JsonInputError) {
                 console.error(`Error: ${error.message}`);
               } else {
@@ -284,16 +291,13 @@ Examples:
             }
           } else {
             if (!aliasArg) {
-              console.error("Error: Alias is required. Provide it as an argument or use --file.");
-              process.exit(1);
+              exitWithUsageError(options.json ?? false, "Alias is required. Provide it as an argument or use --file.");
             }
             if (!options.type) {
-              console.error("Error: --type is required when not using --file");
-              process.exit(1);
+              exitWithUsageError(options.json ?? false, "--type is required when not using --file");
             }
             if (!options.model) {
-              console.error("Error: --model is required when not using --file");
-              process.exit(1);
+              exitWithUsageError(options.json ?? false, "--model is required when not using --file");
             }
 
             alias = aliasArg;
@@ -309,22 +313,15 @@ Examples:
           }
 
           if (!isValidAgentType(type)) {
-            console.error(
-              `Error: Invalid agent type '${type}'. Must be one of: ${AGENT_TYPE_LIST}`
-            );
-            process.exit(1);
+            exitWithUsageError(options.json ?? false, `Invalid agent type '${type}'. Must be one of: ${AGENT_TYPE_LIST}`);
           }
 
           if (models.length === 0) {
-            console.error("Error: At least one model must be specified");
-            process.exit(1);
+            exitWithUsageError(options.json ?? false, "At least one model must be specified");
           }
 
           if (defaultModel && !models.includes(defaultModel)) {
-            console.error(
-              `Error: Default model '${defaultModel}' is not in the list of supported models`
-            );
-            process.exit(1);
+            exitWithUsageError(options.json ?? false, `Default model '${defaultModel}' is not in the list of supported models`);
           }
 
           if (!options.json) {
@@ -357,10 +354,18 @@ Examples:
             console.log("");
             console.log(`Total agents configured: ${result.agents.length}`);
           } else {
-            console.error("Failed to add agent");
+            if (options.json) {
+              printJsonError(new Error("Failed to add agent"));
+            } else {
+              console.error("Failed to add agent");
+            }
             process.exit(1);
           }
         } catch (error) {
+          if (options.json) {
+            printJsonError(error);
+            exitWithError(error);
+          }
           if (error instanceof UnauthorizedError) {
             console.error("Error: Unauthorized. Please run 'propr login' first.");
           } else if (error instanceof NetworkError) {
@@ -370,22 +375,34 @@ Examples:
           } else {
             console.error(`Error adding agent: ${(error as Error).message}`);
           }
-          process.exit(1);
+          exitWithError(error);
         }
       }
     );
 
   // agent enable / disable
-  const applyEnabled = async (alias: string, enabled: boolean): Promise<void> => {
+  const applyEnabled = async (alias: string, enabled: boolean, json: boolean): Promise<void> => {
     try {
       const result = await setAgentEnabled(alias, enabled);
       if (result.success) {
+        if (printOutput(result, json)) {
+          return;
+        }
         console.log(`Agent '${alias}' ${enabled ? "enabled" : "disabled"}.`);
       } else {
-        console.error(`Failed to ${enabled ? "enable" : "disable"} agent '${alias}'`);
+        const message = `Failed to ${enabled ? "enable" : "disable"} agent '${alias}'`;
+        if (json) {
+          printJsonError(new Error(message));
+        } else {
+          console.error(message);
+        }
         process.exit(1);
       }
     } catch (error) {
+      if (json) {
+        printJsonError(error);
+        exitWithError(error);
+      }
       if (error instanceof NetworkError) {
         console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
       } else if (error instanceof NotFoundError || (error instanceof Error && error.message.includes("not found"))) {
@@ -397,30 +414,32 @@ Examples:
       } else {
         console.error(`Error updating agent: ${(error as Error).message}`);
       }
-      process.exit(1);
+      exitWithError(error);
     }
   };
 
   agent
     .command("enable <alias>")
     .description("Enable an agent (requires the stack to be running)")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Example:
   $ propr agent enable claude-prod
 `)
-    .action(async (alias: string) => {
-      await applyEnabled(alias, true);
+    .action(async (alias: string, options: { json?: boolean }) => {
+      await applyEnabled(alias, true, options.json ?? false);
     });
 
   agent
     .command("disable <alias>")
     .description("Disable an agent (requires the stack to be running)")
+    .option("-j, --json", "Output result as JSON")
     .addHelpText("after", `
 Example:
   $ propr agent disable claude-prod
 `)
-    .action(async (alias: string) => {
-      await applyEnabled(alias, false);
+    .action(async (alias: string, options: { json?: boolean }) => {
+      await applyEnabled(alias, false, options.json ?? false);
     });
 
   // agent delete
