@@ -1,3 +1,7 @@
+# Legacy source-build production compose. The supported deployment path is the
+# launcher / prebuilt images (see docs: Production Deployment); this file builds
+# from source and does not start the analysis-worker or indexing-worker
+# services that the standard stack includes.
 version: '3.8'
 
 services:
@@ -68,8 +72,6 @@ services:
       GH_APP_ID: ${GH_APP_ID}
       GH_APP_PRIVATE_KEY: ${GH_APP_PRIVATE_KEY}
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
-      GH_CLIENT_ID: ${GH_CLIENT_ID}
-      GH_CLIENT_SECRET: ${GH_CLIENT_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
@@ -97,8 +99,6 @@ services:
       GH_APP_ID: ${GH_APP_ID}
       GH_APP_PRIVATE_KEY: ${GH_APP_PRIVATE_KEY}
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
-      GH_CLIENT_ID: ${GH_CLIENT_ID}
-      GH_CLIENT_SECRET: ${GH_CLIENT_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
