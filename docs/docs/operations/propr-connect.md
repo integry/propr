@@ -98,7 +98,7 @@ This contract keeps policy local, adds no preflight latency or new request path,
 
 ### Seats And Limits
 
-A seat is a distinct developer using the installation in a billing cycle; the free Community tier includes 3. When an installation is over its limit, further deliveries are acknowledged as `blocked` with `limit_reached` and shown in the delivery history — add Plus seats from the Connect dashboard to unblock new work.
+A seat is a distinct developer using the installation in a billing cycle; the free Community tier includes 3. `github-actions[bot]` and the ProPR bot are seat-exempt; other bot accounts consume a seat like any developer if you whitelist them to trigger work. When an installation is over its limit, further deliveries are acknowledged as `blocked` with `limit_reached` and shown in the delivery history — add Plus seats from the Connect dashboard to unblock new work.
 
 ## Hosted UI Tunnel Flow
 

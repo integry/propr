@@ -30,6 +30,7 @@ Outbound network access from agent containers is **unrestricted by default**. An
 - **`direct_webhook` mode** (advanced) is the exception: it requires a public `POST /webhook` endpoint and a webhook secret.
 - **Unauthenticated endpoints:** `GET /api/compatibility` is intentionally unauthenticated so the hosted UI can check version compatibility before login — the release version of your stack is readable pre-auth. Treat that as public information or keep the API off the public internet.
 - API access is protected by session auth (GitHub OAuth) and optional bearer-token auth for automation.
+- **Organizations with GitHub IP allow lists**: add your ProPR server's egress IP to the org allow list. The GitHub App deliberately declares no IP allow list of its own — API calls are made by your self-hosted stack from your address, not from ProPR-run infrastructure, so inheriting an App-level list would block your own stack.
 
 ## Who Can Trigger Work
 
