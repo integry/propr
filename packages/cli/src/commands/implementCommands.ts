@@ -65,14 +65,14 @@ function formatState(state: TaskState | string): string {
 /**
  * Polls the task status until it reaches a terminal state.
  */
-async function pollTaskStatus(taskId: string): Promise<TaskStatus> {
+async function pollTaskStatus(taskId: string, options: { quiet?: boolean } = {}): Promise<TaskStatus> {
   const startTime = Date.now();
   let lastState = "";
 
   while (Date.now() - startTime < MAX_WAIT_MS) {
     const status = await getTaskStatus(taskId);
 
-    if (status.currentState !== lastState) {
+    if (!options.quiet && status.currentState !== lastState) {
       console.log(`Status: ${formatState(status.currentState)}`);
       lastState = status.currentState;
     }
@@ -191,7 +191,7 @@ Examples:
             console.log("Waiting for implementation to complete...");
           }
 
-          const finalStatus = await pollTaskStatus(result.taskId);
+          const finalStatus = await pollTaskStatus(result.taskId, { quiet: options.json });
 
           if (options.json) {
             const terminal = finalStatus.isCompleted || finalStatus.isFailed;

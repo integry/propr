@@ -9,7 +9,9 @@
  * literally and must fit on one line.
  */
 
-import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 /**
  * Atomically replaces `envPath` with `content`: writes a sibling temp file
@@ -17,9 +19,18 @@ import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSyn
  * so a crash mid-write can never truncate the existing secrets file.
  */
 function writeEnvFileAtomic(envPath: string, content: string): void {
-  const tmpPath = `${envPath}.tmp`;
-  writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
-  renameSync(tmpPath, envPath);
+  const tmpPath = join(dirname(envPath), `${basename(envPath)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
+    renameSync(tmpPath, envPath);
+  } catch (error) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup for a failed atomic write.
+    }
+    throw error;
+  }
 }
 
 

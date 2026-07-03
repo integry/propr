@@ -6,7 +6,7 @@
  */
 
 import { Command } from "commander";
-import { listLlmLogs, LlmLogEntry, UnauthorizedError, NetworkError } from "../api/index.js";
+import { listLlmLogs, LlmLogEntry, UnauthorizedError } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
 
 /**

@@ -11,6 +11,7 @@ export async function confirm(message: string): Promise<boolean> {
     console.error(
       "Refusing to prompt for confirmation in non-interactive mode; pass --force to proceed."
     );
+    process.exitCode = 1;
     return false;
   }
 
