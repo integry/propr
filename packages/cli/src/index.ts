@@ -95,7 +95,6 @@ program
   .name("propr")
   .description("ProPR control plane + backend client - run a local stack and implement GitHub issues with AI agents")
   .version(packageJson.version ?? "0.0.0")
-  .option("-p, --project <project>", "Specify the target project (owner/repo)")
   .addHelpText("before", `
 ProPR CLI - AI-Powered GitHub Issue Implementation
 
@@ -104,6 +103,7 @@ drive the backend (plans, issues, tasks, repos, agents).
 `)
   .addHelpText("after", `
 Quick Start (local stack):
+  $ propr setup                     Guided one-pass setup: verify, configure, start (recommended)
   $ propr                           Verify the environment (same as 'propr check')
   $ propr init stack                Scaffold .env + data/logs/repos, detect agents
   $ propr images pull               Pull stack images without starting
@@ -133,14 +133,14 @@ Examples:
   $ propr remote-status
 
 Command Groups:
-  Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank
+  Control Plane:  setup, check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank
   GitHub Relay:   relay [enroll|list|revoke]
   Configuration:  remote, use, login, logout
-  Plans:          plan [create|list|get|delete|abort]
+  Plans:          plan [create|generate|finalize|issues|list|get|delete|abort]
   Implementation: issue [implement]
   Tasks:          task [list|get|stop|delete|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
-  Agents:         agent [list|add|enable|disable|delete]
+  Agents:         agent [list|add|login|enable|disable|delete]
   Settings:       setting [get|update]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
@@ -313,6 +313,8 @@ if (!process.argv.slice(2).length) {
       console.log("");
       if (outcome.results.some((r) => r.name === STACK_CONFIG_CHECK_NAME && r.status !== "ok")) {
         console.log("Next: `propr init stack` to scaffold a stack, then `propr start`.");
+      } else if (outcome.anyFail) {
+        console.log("Next: fix the failing checks above — `propr setup` walks through them  ·  `propr check --help` for details.");
       } else {
         console.log("Next: `propr start` to launch the stack  ·  `propr --help` for all commands.");
       }

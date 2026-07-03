@@ -28,6 +28,7 @@ import {
   readJsonInput,
   validateJsonFields,
   JsonInputError,
+  confirm,
 } from "../utils/index.js";
 
 const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
@@ -108,23 +109,6 @@ function isValidAgentType(type: string): type is AgentType {
   return AGENT_TYPES.includes(type.toLowerCase() as AgentType);
 }
 
-/**
- * Prompts the user for confirmation.
- */
-async function confirm(message: string): Promise<boolean> {
-  const readline = await import("readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(`${message} (y/N): `, (answer) => {
-      rl.close();
-      resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-    });
-  });
-}
 
 /**
  * Creates the `agent` command group.
@@ -136,6 +120,8 @@ export function createAgentCommand(): Command {
 Examples:
   $ propr agent list                              # List all agents
   $ propr agent add my-claude -t claude -m ...    # Add an agent
+  $ propr agent login antigravity                 # Authenticate an agent via its image
+  $ propr agent enable my-agent                   # Enable / disable an agent
   $ propr agent delete my-agent                   # Delete an agent
 `);
 
@@ -148,6 +134,8 @@ Examples:
 Examples:
   $ propr agent list
   $ propr agent list --json
+  $ propr agent login antigravity
+  $ propr agent enable claude
 `)
     .action(async (options: { json?: boolean }) => {
       try {
@@ -515,12 +503,16 @@ Examples:
           if (error || !plan) {
             console.error(`Error: ${error ?? "could not plan login"}`);
             if (available.length > 0) console.error(`Agents with interactive login: ${available.join(", ")}`);
-            process.exit(1);
+            // exitCode + return (not process.exit) so the finally block still
+            // removes the temp directory.
+            process.exitCode = 1;
+            return;
           }
 
           if (orch.docker(["images", "-q", plan.image], { capture: true }).stdout.trim().length === 0) {
             console.error(`Image ${plan.image} is not present locally. Pull it first: propr images pull`);
-            process.exit(1);
+            process.exitCode = 1;
+            return;
           }
 
           mkdirSync(plan.hostDir, { recursive: true, mode: 0o700 });
@@ -533,7 +525,7 @@ Examples:
             console.log(`${loginType} login finished. Verify with: propr check agents --agents ${loginType}`);
           } else {
             console.error(`\n${loginType} login exited with code ${res.status ?? "?"}.`);
-            process.exit(1);
+            process.exitCode = 1;
           }
         } finally {
           rmSync(tmp, { recursive: true, force: true });

@@ -9,7 +9,30 @@
  * literally and must fit on one line.
  */
 
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+
+/**
+ * Atomically replaces `envPath` with `content`: writes a sibling temp file
+ * (0600 — the .env holds live credentials) and renames it over the target,
+ * so a crash mid-write can never truncate the existing secrets file.
+ */
+function writeEnvFileAtomic(envPath: string, content: string): void {
+  const tmpPath = join(dirname(envPath), `${basename(envPath)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
+    renameSync(tmpPath, envPath);
+  } catch (error) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup for a failed atomic write.
+    }
+    throw error;
+  }
+}
+
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -64,7 +87,7 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
     }
   }
 
-  writeFileSync(envPath, `${lines.join("\n")}\n`, { encoding: "utf-8", mode: isNew ? 0o600 : undefined });
+  writeEnvFileAtomic(envPath, `${lines.join("\n")}\n`);
   if (tightenedFrom !== null) {
     console.warn(`Note: tightened ${envPath} permissions from ${tightenedFrom.toString(8)} to 600 (secrets file).`);
   }
@@ -110,7 +133,7 @@ export function clearEnvKeys(envPath: string, keys: string[]): void {
 
   // Drop trailing blank lines, then re-add exactly one terminating newline.
   while (kept.length > 0 && kept[kept.length - 1] === "") kept.pop();
-  writeFileSync(envPath, `${kept.join("\n")}\n`, "utf-8");
+  writeEnvFileAtomic(envPath, `${kept.join("\n")}\n`);
   if (tightenedFrom !== null) {
     console.warn(`Note: tightened ${envPath} permissions from ${tightenedFrom.toString(8)} to 600 (secrets file).`);
   }

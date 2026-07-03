@@ -299,9 +299,9 @@ export class ApiClient {
     if (newBaseUrl !== undefined) {
       this.baseUrl = newBaseUrl;
     }
-    if (newToken !== undefined) {
-      this.token = newToken;
-    }
+    // Assign unconditionally: after `propr logout` the config value becomes
+    // undefined, and a long-lived client must stop sending the stale token.
+    this.token = newToken;
   }
 }
 

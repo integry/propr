@@ -137,11 +137,13 @@ Configuration is stored in `~/.propr/config.json`.
 - For a Personal Access Token, create a classic token at `https://github.com/settings/tokens` with the `repo` and `read:org` scopes.
 - `propr logout` clears the stored token.
 
-## Global Options
+## Common Options
+
+These are accepted per command (place them after the subcommand), not before it:
 
 | Option | Description |
 |--------|-------------|
-| `-p, --project <owner/repo>` | Target project for this invocation (overrides `propr use`) |
+| `-p, --project <owner/repo>` | Target project for this invocation (overrides `propr use`) — e.g. `propr plan list -p owner/repo` |
 | `-j, --json` | Machine-readable output (supported by most commands) |
 | `-V, --version` | Print the CLI version |
 | `-h, --help` | Help for any command or subcommand |
@@ -227,6 +229,7 @@ propr agent add --file agent-config.json     # From a JSON file (or `-` for stdi
 propr agent enable my-agent                  # Enable / disable without deleting
 propr agent disable my-agent
 propr agent delete my-agent --force
+propr agent login antigravity    # interactive login inside the agent's Docker image
 ```
 
 Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.

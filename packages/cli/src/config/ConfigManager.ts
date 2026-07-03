@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { CLIConfig, ConfigKey, DEFAULT_CONFIG } from "./types.js";
 
 /**
@@ -68,11 +69,26 @@ export class ConfigManager {
    * @returns A promise that resolves when the directory exists.
    */
   private async ensureConfigDir(): Promise<void> {
+    // 0700: the config file stores the GitHub token, so the directory must
+    // not be listable by other users (mirrors the .env handling in envFile).
+    await fs.promises.mkdir(this.configDir, { recursive: true, mode: 0o700 });
+
+    const stat = await fs.promises.stat(this.configDir);
+    const currentMode = stat.mode & 0o777;
+    if (currentMode !== 0o700) {
+      await fs.promises.chmod(this.configDir, 0o700);
+    }
+  }
+
+  private async tightenConfigFilePermissions(): Promise<void> {
     try {
-      await fs.promises.mkdir(this.configDir, { recursive: true });
+      const stat = await fs.promises.stat(this.configFilePath);
+      const currentMode = stat.mode & 0o777;
+      if (currentMode !== 0o600) {
+        await fs.promises.chmod(this.configFilePath, 0o600);
+      }
     } catch (error) {
-      // Directory already exists or other error
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
     }
@@ -87,6 +103,8 @@ export class ConfigManager {
    */
   async load(): Promise<CLIConfig> {
     try {
+      await this.ensureConfigDir();
+      await this.tightenConfigFilePermissions();
       const data = await fs.promises.readFile(this.configFilePath, "utf-8");
       const parsed = JSON.parse(data);
 
@@ -116,10 +134,22 @@ export class ConfigManager {
       }
 
       if (err instanceof SyntaxError) {
-        // JSON parsing error - corrupted file
-        console.warn(
-          `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). Using defaults.`
-        );
+        // JSON parsing error - corrupted file. Preserve the original before any
+        // later set()/save() overwrites it with defaults, so the user's saved
+        // token/remote/stack root can be recovered by hand.
+        const backupPath = `${this.configFilePath}.corrupt`;
+        try {
+          await fs.promises.copyFile(this.configFilePath, backupPath);
+          await fs.promises.chmod(backupPath, 0o600);
+          console.warn(
+            `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). ` +
+              `A backup was saved to ${backupPath}; continuing with defaults.`
+          );
+        } catch {
+          console.warn(
+            `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). Using defaults.`
+          );
+        }
         this.config = { ...DEFAULT_CONFIG };
         return this.config;
       }
@@ -190,7 +220,19 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
-    await fs.promises.writeFile(this.configFilePath, content, "utf-8");
+    // Atomic replace with owner-only permissions: the file stores the GitHub
+    // token, and a crash mid-write must not truncate the existing config.
+    const tmpPath = path.join(
+      this.configDir,
+      `${CONFIG_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`
+    );
+    try {
+      await fs.promises.writeFile(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
+      await fs.promises.rename(tmpPath, this.configFilePath);
+    } catch (error) {
+      await fs.promises.unlink(tmpPath).catch(() => undefined);
+      throw error;
+    }
   }
 
   /**

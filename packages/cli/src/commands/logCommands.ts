@@ -6,7 +6,7 @@
  */
 
 import { Command } from "commander";
-import { listLlmLogs, LlmLogEntry } from "../api/index.js";
+import { listLlmLogs, LlmLogEntry, UnauthorizedError } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
 
 /**
@@ -217,8 +217,9 @@ Examples:
         } catch (error) {
           const errorMessage = (error as Error).message;
           if (
+            error instanceof UnauthorizedError ||
             errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
+            errorMessage.toLowerCase().includes("unauthorized")
           ) {
             console.error(
               "Error: Unauthorized. Please run 'propr login' first."
