@@ -1,12 +1,34 @@
-# ProPR
+<p align="center">
+  <img src="media/logo-and-name.png" alt="ProPR" width="360" />
+</p>
 
-**An AI engineering platform for planning, building, reviewing, and shipping changes through GitHub.** Self-hosted.
+<p align="center"><strong>Manage AI coding agents like human engineers — plan, implement, review, and ship every change as a real pull request.</strong></p>
 
-ProPR monitors GitHub issues and pull requests, runs your choice of AI coding agents in isolated containers, and drives a complete workflow from a labeled issue to an opened pull request — with a Web UI for configuration and monitoring and a CLI that doubles as the local control plane.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0" /></a>
+  <a href="https://www.npmjs.com/package/propr-cli"><img src="https://img.shields.io/npm/v/propr-cli?label=propr-cli" alt="npm: propr-cli" /></a>
+  <a href="https://github.com/integry/propr/actions/workflows/test-nightly.yml"><img src="https://github.com/integry/propr/actions/workflows/test-nightly.yml/badge.svg" alt="Tests" /></a>
+</p>
 
-📖 **Full documentation: [docs.propr.dev](https://docs.propr.dev/docs/intro)**
+<p align="center">
+  <a href="https://propr.dev">Website</a> ·
+  <a href="https://docs.propr.dev/docs/intro">Documentation</a> ·
+  <a href="https://demo.propr.dev">Live demo</a> ·
+  <a href="https://discord.gg/5FjuaQBud">Discord</a> ·
+  <a href="https://propr.dev/proof/">Built with ProPR</a>
+</p>
 
 ---
+
+ProPR is a **self-hosted platform** that runs AI coding agents through the GitHub pull-request workflow. It monitors issues and PRs, runs your choice of agents in isolated containers on your own server, and drives the complete path from a labeled issue to a reviewed pull request — with a Web UI for configuration and monitoring and a CLI that doubles as the local control plane. You bring your existing AI subscriptions or API keys; ProPR never marks up tokens.
+
+<p align="center">
+  <img src="media/readme-real-pr.png" alt="A real pull request built by ProPR: the AI Implementation Summary posted on GitHub with status, execution time, token cost, and model." width="720" />
+</p>
+
+<p align="center"><em>A real PR, planned, implemented, and reviewed by ProPR — every run posts its full record to the pull request.</em></p>
+
+ProPR builds itself: since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across its author's products have shipped through it — including [690+ merged pull requests in this repository](https://github.com/integry/propr/pulls?q=is%3Apr+is%3Amerged).
 
 ## Modular, not all-or-nothing
 
@@ -29,15 +51,15 @@ ProPR is a set of stages you can adopt independently — use one or all:
 
 ## Quick start (recommended: CLI)
 
-The CLI is the simplest way to run a local stack. It requires **Docker** and **Node.js 22+**.
+You need a Docker-capable Linux host, **Node.js 22+**, and a login for at least one coding agent — reuse one already on the host (`claude login`, `agy login`, …) or create it through the agent's image with `propr agent login <agent>`.
 
 ```bash
 npm install -g propr-cli
 
-propr init stack    # scaffold .env, detect agent credentials
-propr check         # verify Docker, images, agents, and GitHub auth
-propr start         # boot the stack with a live dashboard
+propr setup   # guided one-pass: verify host, authorize agents, connect GitHub, start
 ```
+
+`propr setup` is re-runnable and wraps the individual steps (`propr init stack`, `propr check`, `propr start`), which remain available for scripting.
 
 Then open the Web UI at **http://localhost:5173** and add a repository and an agent (`propr repo add`, `propr agent add`, or via the UI).
 
@@ -96,6 +118,9 @@ State labels are derived from the trigger label, so an issue labeled `AI` moves 
 | Agents & models | https://docs.propr.dev/docs/features/agents-and-models |
 | Web UI guide | https://docs.propr.dev/docs/features/web-ui |
 | PR slash commands | https://docs.propr.dev/docs/features/pr-commands |
+| FAQ | https://docs.propr.dev/docs/faq |
+| Security overview | https://docs.propr.dev/docs/concepts/security-overview |
+| Troubleshooting | https://docs.propr.dev/docs/operations/troubleshooting |
 | GitHub authentication | https://docs.propr.dev/docs/operations/github-auth |
 | Deployment | https://docs.propr.dev/docs/operations/deployment |
 | Architecture | https://docs.propr.dev/docs/architecture/overview |
@@ -198,6 +223,10 @@ Hosted UI tunnel releases must ship both artifacts from the same merged commit:
 3. Smoke-test with a fresh stack: install `propr-cli@X.Y.Z`, run the Connect
    setup command, verify the stack recreates with `API_PUBLIC_URL` /
    `FRONTEND_URL` applied, then run `propr tunnel verify`.
+
+## License
+
+ProPR is free and open source under the [Apache License 2.0](LICENSE). The optional hosted relay, [ProPR Connect](https://propr.dev/connect/), is a separate service — free for up to 3 users — and you can skip it entirely by bringing your own GitHub App.
 
 ## Contributing
 
