@@ -13,6 +13,7 @@ import {
   createRepoCommand,
   createAgentCommand,
   createSettingCommand,
+  createConfigCommand,
   createLogCommand,
   createTodoCommand,
   createRemoteStatusCommand,
@@ -40,7 +41,7 @@ export {
   createConfigManager,
   DEFAULT_CONFIG,
 } from "./config/index.js";
-export type { CLIConfig, ConfigKey } from "./config/index.js";
+export type { CLIConfig, ConfigKey, RemoteProfile } from "./config/index.js";
 
 // Re-export API module for programmatic use
 export {
@@ -135,7 +136,7 @@ Examples:
 Command Groups:
   Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank
   GitHub Relay:   relay [enroll|list|revoke]
-  Configuration:  remote, use, login, logout
+  Configuration:  config, remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
   Tasks:          task [list|get|stop|delete|revert]
@@ -144,7 +145,7 @@ Command Groups:
   Settings:       setting [get|update]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
-  Backend:        remote-status, queue
+  Backend:        backend [status|queue], remote-status, queue
 
 For more information on a command, run:
   $ propr <command> --help
@@ -278,6 +279,86 @@ Example:
     }
   });
 
+function createBackendCommand(): Command {
+  const backend = new Command("backend")
+    .description("Inspect remote ProPR backend status and queues");
+  backend.addCommand(createRemoteStatusCommand().name("status"));
+  backend.addCommand(createQueueCommand());
+  return backend;
+}
+
+function completionScript(shell: "bash" | "zsh" | "fish"): string {
+  const commands = [
+    "check", "images", "init", "start", "status", "stop", "ui", "docs", "tunnel", "tank",
+    "relay", "config", "remote", "use", "login", "logout", "plan", "issue", "task", "repo",
+    "agent", "setting", "todo", "log", "backend", "remote-status", "queue", "completion",
+  ];
+  const subcommands: Record<string, string[]> = {
+    plan: ["create", "list", "get", "delete", "abort", "generate", "finalize", "issues"],
+    issue: ["implement"],
+    task: ["list", "get", "stop", "delete", "followup", "import", "revert"],
+    repo: ["list", "add", "remove", "toggle", "index", "status"],
+    agent: ["list", "add", "enable", "disable", "delete"],
+    setting: ["get", "update", "reindex-summaries"],
+    config: ["list", "get", "profile"],
+    backend: ["status", "queue"],
+    completion: ["bash", "zsh", "fish"],
+  };
+  const commandWords = commands.join(" ");
+
+  if (shell === "zsh") {
+    return `#compdef propr
+_propr() {
+  local -a commands
+  commands=(${commands.map((cmd) => `${cmd}:${cmd}`).join(" ")})
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+    return
+  fi
+  case "$words[2]" in
+${Object.entries(subcommands).map(([cmd, subs]) => `    ${cmd}) _values '${cmd} commands' ${subs.map((sub) => `${sub}:${sub}`).join(" ")} ;;`).join("\n")}
+  esac
+}
+_propr
+`;
+  }
+
+  if (shell === "fish") {
+    const lines = commands.map((cmd) => `complete -c propr -f -n '__fish_use_subcommand' -a '${cmd}'`);
+    for (const [cmd, subs] of Object.entries(subcommands)) {
+      lines.push(`complete -c propr -f -n '__fish_seen_subcommand_from ${cmd}' -a '${subs.join(" ")}'`);
+    }
+    return `${lines.join("\n")}\n`;
+  }
+
+  return `_propr_completion() {
+  local cur prev
+  COMPREPLY=()
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  if [[ \${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "${commandWords}" -- "$cur") )
+    return 0
+  fi
+  case "\${COMP_WORDS[1]}" in
+${Object.entries(subcommands).map(([cmd, subs]) => `    ${cmd}) COMPREPLY=( $(compgen -W "${subs.join(" ")}" -- "$cur") ) ;;`).join("\n")}
+  esac
+}
+complete -F _propr_completion propr
+`;
+}
+
+program
+  .command("completion <shell>")
+  .description("Generate shell completion script for bash, zsh, or fish")
+  .action((shell: string) => {
+    if (shell !== "bash" && shell !== "zsh" && shell !== "fish") {
+      console.error("Error: shell must be one of: bash, zsh, fish");
+      process.exit(1);
+    }
+    process.stdout.write(completionScript(shell));
+  });
+
 // Control-plane commands (local Docker stack)
 program.addCommand(createCheckCommand());
 program.addCommand(createImagesCommand());
@@ -289,6 +370,7 @@ program.addCommand(createDocsCommand());
 program.addCommand(createTunnelCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
+program.addCommand(createConfigCommand());
 
 // Setup + backend client command groups
 program.addCommand(createInitCommand());
@@ -301,6 +383,7 @@ program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());
 program.addCommand(createLogCommand());
 program.addCommand(createTodoCommand());
+program.addCommand(createBackendCommand());
 program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
 

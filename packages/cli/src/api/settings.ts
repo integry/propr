@@ -88,6 +88,19 @@ export interface SystemSettings {
   ultrafix_pause_seconds: number;
 }
 
+export interface NamedConfigValueResponse {
+  [key: string]: unknown;
+}
+
+export interface ReindexAllResponse {
+  success: boolean;
+  repositoriesQueued: number;
+  repositoriesSkippedCooldown: number;
+  repositoriesSkippedAlreadyQueued: number;
+  repositoriesFailedClone: number;
+  ignoreCooldown: boolean;
+}
+
 /**
  * Response from the get settings endpoint.
  */
@@ -385,6 +398,37 @@ export async function updateSetting(
   return updateSettings(settings, client);
 }
 
+export async function getConfigValue<T>(
+  endpoint: string,
+  client?: ApiClient
+): Promise<T> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.get<T>(endpoint);
+  return response.data;
+}
+
+export async function updateConfigValue<T>(
+  endpoint: string,
+  body: Record<string, unknown>,
+  client?: ApiClient
+): Promise<T> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.post<T>(endpoint, { body });
+  return response.data;
+}
+
+export async function triggerSummarizationReindexAll(
+  ignoreCooldown: boolean = false,
+  client?: ApiClient
+): Promise<ReindexAllResponse> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.post<ReindexAllResponse>(
+    "/api/config/summarization/reindex-all",
+    { body: { ignoreCooldown } }
+  );
+  return response.data;
+}
+
 /**
  * Settings API namespace providing all system settings operations.
  *
@@ -406,6 +450,9 @@ export const settingsApi = {
   getSettings,
   updateSettings,
   updateSetting,
+  getConfigValue,
+  updateConfigValue,
+  triggerSummarizationReindexAll,
   isValidSettingKey,
   parseSettingValue,
   VALID_SETTING_KEYS,

@@ -9,6 +9,9 @@ import { Command } from "commander";
 import {
   getSettings,
   updateSetting,
+  getConfigValue,
+  updateConfigValue,
+  triggerSummarizationReindexAll,
   isValidSettingKey,
   parseSettingValue,
   VALID_SETTING_KEYS,
@@ -71,6 +74,55 @@ function printValidSettingKeys(includeDescriptions = false): void {
   }
 }
 
+const EXTRA_CONFIG_ENDPOINTS = {
+  "pr-label": {
+    endpoint: "/api/config/pr-label",
+    field: "pr_label",
+    description: "GitHub label applied to ProPR-created PRs",
+    type: "string",
+  },
+  "ai-primary-tag": {
+    endpoint: "/api/config/ai-primary-tag",
+    field: "ai_primary_tag",
+    description: "Primary AI tag used for issue/PR processing",
+    type: "string",
+  },
+  "primary-processing-labels": {
+    endpoint: "/api/config/primary-processing-labels",
+    field: "primary_processing_labels",
+    description: "Labels that enable processing on existing PRs",
+    type: "array",
+  },
+  "followup-keywords": {
+    endpoint: "/api/config/followup-keywords",
+    field: "followup_keywords",
+    description: "Keywords that trigger PR follow-up processing",
+    type: "array",
+  },
+} as const;
+
+type ExtraConfigKey = keyof typeof EXTRA_CONFIG_ENDPOINTS;
+
+function isExtraConfigKey(key: string): key is ExtraConfigKey {
+  return key in EXTRA_CONFIG_ENDPOINTS;
+}
+
+function parseExtraConfigValue(key: ExtraConfigKey, value: string): string | string[] {
+  const config = EXTRA_CONFIG_ENDPOINTS[key];
+  if (config.type === "array") {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return value.trim();
+}
+
+function printAllValidKeys(includeDescriptions = false): void {
+  printValidSettingKeys(includeDescriptions);
+  console.log("Additional config keys:");
+  for (const [key, config] of Object.entries(EXTRA_CONFIG_ENDPOINTS)) {
+    console.log(`  - ${key}${includeDescriptions ? `: ${config.description}` : ""}`);
+  }
+}
+
 /**
  * Displays all settings in a formatted table.
  */
@@ -104,13 +156,13 @@ function displaySettingsTable(settings: SystemSettings): void {
 /**
  * Displays detailed information about a single setting.
  */
-function displaySettingDetail(key: SettingKey, value: unknown): void {
+function displaySettingDetail(key: string, value: unknown, description: string): void {
   console.log("");
   console.log("=".repeat(50));
   console.log(`Setting: ${key}`);
   console.log("=".repeat(50));
   console.log("");
-  console.log(`Description: ${getSettingDescription(key)}`);
+  console.log(`Description: ${description}`);
   console.log(`Value:       ${formatValue(value)}`);
   console.log("");
 }
@@ -125,7 +177,9 @@ export function createSettingCommand(): Command {
 Examples:
   $ propr setting get                                    # Show all settings
   $ propr setting get -k worker_concurrency              # Show specific setting
+  $ propr setting get -k followup-keywords               # Show label/keyword setting
   $ propr setting update worker_concurrency 10           # Update a setting
+  $ propr setting reindex-summaries                      # Reindex all summaries
 `);
 
   // setting get
@@ -137,6 +191,10 @@ Examples:
     .addHelpText("after", `
 Valid Setting Keys:
 ${formatSettingKeysHelp()}
+  pr-label                         GitHub label applied to ProPR-created PRs
+  ai-primary-tag                   Primary AI tag used for issue/PR processing
+  primary-processing-labels        Labels that enable processing on existing PRs
+  followup-keywords                Keywords that trigger PR follow-up processing
 
 Examples:
   $ propr setting get                                 # Show all settings
@@ -150,10 +208,15 @@ Examples:
 
           if (options.json) {
             if (options.key) {
+              if (isExtraConfigKey(options.key)) {
+                const config = EXTRA_CONFIG_ENDPOINTS[options.key];
+                printOutput(await getConfigValue(config.endpoint), true);
+                return;
+              }
               if (!isValidSettingKey(options.key)) {
                 console.error(`Error: Invalid setting key: ${options.key}`);
                 console.log("");
-                printValidSettingKeys();
+                printAllValidKeys();
                 process.exit(1);
               }
               printOutput({ [options.key]: settings[options.key] }, true);
@@ -164,17 +227,22 @@ Examples:
           }
 
           if (options.key) {
+            if (isExtraConfigKey(options.key)) {
+              const config = EXTRA_CONFIG_ENDPOINTS[options.key];
+              const result = await getConfigValue<Record<string, unknown>>(config.endpoint);
+              displaySettingDetail(options.key, result[config.field], config.description);
+              return;
+            }
             if (!isValidSettingKey(options.key)) {
               console.error(`Error: Invalid setting key: ${options.key}`);
               console.log("");
-              printValidSettingKeys();
+              printAllValidKeys();
               process.exit(1);
             }
-            displaySettingDetail(options.key, settings[options.key]);
+            displaySettingDetail(options.key, settings[options.key], getSettingDescription(options.key));
             return;
           }
 
-          console.log("Fetching system settings...");
           console.log("");
           displaySettingsTable(settings);
           console.log("");
@@ -212,26 +280,31 @@ Examples:
       `
 Valid setting keys:
 ${formatSettingKeysHelp()}
+  pr-label                         GitHub label applied to ProPR-created PRs
+  ai-primary-tag                   Primary AI tag used for issue/PR processing
+  primary-processing-labels        Labels that enable processing on existing PRs
+  followup-keywords                Keywords that trigger PR follow-up processing
 
 Examples:
   $ propr setting update worker_concurrency 10
   $ propr setting update auto_followup_score_threshold 7
   $ propr setting update github_user_whitelist "user1,user2,user3"
+  $ propr setting update followup-keywords "!propr,propr"
   $ propr setting update analysis_model_fast claude-3-5-sonnet-20241022
 `
     )
     .action(async (key: string, value: string) => {
       try {
-        if (!isValidSettingKey(key)) {
+        if (!isValidSettingKey(key) && !isExtraConfigKey(key)) {
           console.error(`Error: Invalid setting key: ${key}`);
           console.log("");
-          printValidSettingKeys(true);
+          printAllValidKeys(true);
           process.exit(1);
         }
 
         let parsedValue: number | string | string[] | boolean;
         try {
-          parsedValue = parseSettingValue(key, value);
+          parsedValue = isExtraConfigKey(key) ? parseExtraConfigValue(key, value) : parseSettingValue(key, value);
         } catch (parseError) {
           console.error(`Error: ${(parseError as Error).message}`);
           process.exit(1);
@@ -239,9 +312,14 @@ Examples:
 
         console.log(`Updating setting: ${key}...`);
 
-        const result = await updateSetting(key, parsedValue);
+        const result = isExtraConfigKey(key)
+          ? await updateConfigValue<{ success?: boolean }>(
+              EXTRA_CONFIG_ENDPOINTS[key].endpoint,
+              { [EXTRA_CONFIG_ENDPOINTS[key].field]: parsedValue }
+            )
+          : await updateSetting(key, parsedValue);
 
-        if (result.success) {
+        if (result.success !== false) {
           console.log("");
           console.log(`Successfully updated setting: ${key}`);
           console.log(`  New value: ${formatValue(parsedValue)}`);
@@ -253,8 +331,10 @@ Examples:
         const errorMessage = (error as Error).message;
         if (errorMessage.includes("400")) {
           console.error(`Error: Invalid value for setting "${key}".`);
-          console.log("");
-          console.log(`Description: ${getSettingDescription(key as SettingKey)}`);
+          if (isValidSettingKey(key)) {
+            console.log("");
+            console.log(`Description: ${getSettingDescription(key)}`);
+          }
         } else if (
           errorMessage.includes("401") ||
           errorMessage.includes("unauthorized")
@@ -274,6 +354,27 @@ Examples:
         } else {
           console.error(`Error updating setting: ${errorMessage}`);
         }
+        process.exit(1);
+      }
+    });
+
+  setting
+    .command("reindex-summaries")
+    .description("Trigger summarization reindexing for all configured repositories")
+    .option("--ignore-cooldown", "Queue work even when repositories are in summarization cooldown")
+    .option("-j, --json", "Output response as JSON")
+    .action(async (options: { ignoreCooldown?: boolean; json?: boolean }) => {
+      try {
+        const result = await triggerSummarizationReindexAll(options.ignoreCooldown ?? false);
+        if (printOutput(result, options.json ?? false)) {
+          return;
+        }
+        console.log(`Queued repositories: ${result.repositoriesQueued}`);
+        console.log(`Skipped by cooldown: ${result.repositoriesSkippedCooldown}`);
+        console.log(`Already queued: ${result.repositoriesSkippedAlreadyQueued}`);
+        console.log(`Failed clone: ${result.repositoriesFailedClone}`);
+      } catch (error) {
+        console.error(`Error triggering summarization reindex: ${(error as Error).message}`);
         process.exit(1);
       }
     });

@@ -6,8 +6,6 @@
  */
 
 import { Command } from "commander";
-import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError } from "../utils/index.js";
 import {
   implementIssue,
   getTaskStatus,
@@ -104,7 +102,6 @@ Examples:
   issue
     .command("implement <issue-id>")
     .description("Implement a GitHub issue from a plan using AI agents")
-    .option("-p, --project <project>", "Target project (owner/repo)")
     .option("-w, --wait", "Wait for the implementation to complete")
     .option("-a, --agent <agent>", "Agent alias to use for implementation")
     .option("-m, --model <model>", "Model name to use for implementation")
@@ -124,7 +121,6 @@ Examples:
       async (
         issueId: string,
         options: {
-          project?: string;
           wait?: boolean;
           agent?: string;
           model?: string;
@@ -214,10 +210,6 @@ Examples:
             console.log("You can check the status later using the ProPR dashboard.");
           }
         } catch (error) {
-          if (error instanceof ProjectResolutionError) {
-            console.error(`Error: ${error.message}`);
-            process.exit(1);
-          }
           console.error(
             `Error implementing issue: ${(error as Error).message}`
           );

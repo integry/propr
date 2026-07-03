@@ -14,7 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { CLIConfig, ConfigKey, DEFAULT_CONFIG } from "./types.js";
+import { CLIConfig, ConfigKey, DEFAULT_CONFIG, RemoteProfile } from "./types.js";
 
 /**
  * Default configuration directory name.
@@ -25,6 +25,7 @@ const CONFIG_DIR_NAME = ".propr";
  * Default configuration file name.
  */
 const CONFIG_FILE_NAME = "config.json";
+const DEFAULT_PROFILE_NAME = "default";
 
 /**
  * ConfigManager handles persistent CLI configuration.
@@ -154,6 +155,28 @@ export class ConfigManager {
       sanitized.defaultProject = data.defaultProject;
     }
 
+    if (typeof data.activeProfile === "string" && data.activeProfile.trim()) {
+      sanitized.activeProfile = data.activeProfile.trim();
+    }
+
+    if (data.profiles && typeof data.profiles === "object" && !Array.isArray(data.profiles)) {
+      const profiles: Record<string, RemoteProfile> = {};
+      for (const [name, rawProfile] of Object.entries(data.profiles as Record<string, unknown>)) {
+        if (!name.trim() || !rawProfile || typeof rawProfile !== "object" || Array.isArray(rawProfile)) {
+          continue;
+        }
+        const profileData = rawProfile as Record<string, unknown>;
+        const profile: RemoteProfile = {};
+        if (typeof profileData.remoteUrl === "string") profile.remoteUrl = profileData.remoteUrl;
+        if (typeof profileData.githubToken === "string") profile.githubToken = profileData.githubToken;
+        if (typeof profileData.defaultProject === "string") profile.defaultProject = profileData.defaultProject;
+        profiles[name] = profile;
+      }
+      if (Object.keys(profiles).length > 0) {
+        sanitized.profiles = profiles;
+      }
+    }
+
     if (typeof data.stackRoot === "string") {
       sanitized.stackRoot = data.stackRoot;
     }
@@ -171,6 +194,29 @@ export class ConfigManager {
     }
 
     return sanitized;
+  }
+
+  private getActiveProfileName(): string {
+    return this.config.activeProfile || DEFAULT_PROFILE_NAME;
+  }
+
+  private getActiveProfile(): RemoteProfile {
+    const name = this.getActiveProfileName();
+    return this.config.profiles?.[name] ?? {};
+  }
+
+  private async updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
+    const name = this.getActiveProfileName();
+    const profiles = { ...(this.config.profiles ?? {}) };
+    profiles[name] = {
+      ...(profiles[name] ?? {}),
+      ...patch,
+    };
+    this.config.profiles = profiles;
+    if (patch.remoteUrl !== undefined) this.config.remoteUrl = patch.remoteUrl;
+    if (patch.githubToken !== undefined) this.config.githubToken = patch.githubToken;
+    if (patch.defaultProject !== undefined) this.config.defaultProject = patch.defaultProject;
+    await this.save();
   }
 
   /**
@@ -221,7 +267,7 @@ export class ConfigManager {
    * @returns The GitHub token, or undefined if not set.
    */
   getGithubToken(): string | undefined {
-    return this.get("githubToken");
+    return this.getActiveProfile().githubToken ?? this.get("githubToken");
   }
 
   /**
@@ -231,7 +277,7 @@ export class ConfigManager {
    * @returns A promise that resolves when the token is saved.
    */
   async setGithubToken(token: string): Promise<void> {
-    await this.set("githubToken", token);
+    await this.updateActiveProfile({ githubToken: token });
   }
 
   /**
@@ -240,7 +286,13 @@ export class ConfigManager {
    * @returns A promise that resolves when the token is cleared.
    */
   async clearGithubToken(): Promise<void> {
-    await this.set("githubToken", undefined);
+    const name = this.getActiveProfileName();
+    const profiles = { ...(this.config.profiles ?? {}) };
+    profiles[name] = { ...(profiles[name] ?? {}) };
+    delete profiles[name].githubToken;
+    this.config.profiles = profiles;
+    this.config.githubToken = undefined;
+    await this.save();
   }
 
   /**
@@ -249,7 +301,7 @@ export class ConfigManager {
    * @returns The remote URL, or undefined if not set.
    */
   getRemoteUrl(): string | undefined {
-    return this.get("remoteUrl");
+    return this.getActiveProfile().remoteUrl ?? this.get("remoteUrl");
   }
 
   /**
@@ -259,7 +311,7 @@ export class ConfigManager {
    * @returns A promise that resolves when the URL is saved.
    */
   async setRemoteUrl(url: string): Promise<void> {
-    await this.set("remoteUrl", url);
+    await this.updateActiveProfile({ remoteUrl: url });
   }
 
   /**
@@ -268,7 +320,7 @@ export class ConfigManager {
    * @returns The default project (owner/repo format), or undefined if not set.
    */
   getDefaultProject(): string | undefined {
-    return this.get("defaultProject");
+    return this.getActiveProfile().defaultProject ?? this.get("defaultProject");
   }
 
   /**
@@ -278,7 +330,49 @@ export class ConfigManager {
    * @returns A promise that resolves when the project is saved.
    */
   async setDefaultProject(project: string): Promise<void> {
-    await this.set("defaultProject", project);
+    await this.updateActiveProfile({ defaultProject: project });
+  }
+
+  getActiveRemoteProfile(): string {
+    return this.getActiveProfileName();
+  }
+
+  getRemoteProfiles(): Record<string, RemoteProfile> {
+    const profiles = { ...(this.config.profiles ?? {}) };
+    if (!profiles[DEFAULT_PROFILE_NAME] && (this.config.remoteUrl || this.config.githubToken || this.config.defaultProject)) {
+      profiles[DEFAULT_PROFILE_NAME] = {
+        remoteUrl: this.config.remoteUrl,
+        githubToken: this.config.githubToken,
+        defaultProject: this.config.defaultProject,
+      };
+    }
+    return profiles;
+  }
+
+  async useRemoteProfile(name: string): Promise<void> {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("Profile name must not be empty");
+    }
+    const profiles = { ...(this.config.profiles ?? {}) };
+    const currentName = this.getActiveProfileName();
+    if (!profiles[currentName] && (this.config.remoteUrl || this.config.githubToken || this.config.defaultProject)) {
+      profiles[currentName] = {
+        remoteUrl: this.config.remoteUrl,
+        githubToken: this.config.githubToken,
+        defaultProject: this.config.defaultProject,
+      };
+    }
+    if (!profiles[trimmed]) {
+      profiles[trimmed] = {};
+    }
+    this.config.profiles = profiles;
+    this.config.activeProfile = trimmed;
+    const profile = profiles[trimmed];
+    this.config.remoteUrl = profile.remoteUrl;
+    this.config.githubToken = profile.githubToken;
+    this.config.defaultProject = profile.defaultProject;
+    await this.save();
   }
 
   /**

@@ -348,7 +348,6 @@ Examples:
           return;
         }
 
-        console.log(`Fetching plan ${draftId}...`);
         displayPlanDetails(fetchedPlan);
       } catch (error) {
         const errorMessage = (error as Error).message;

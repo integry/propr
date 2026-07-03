@@ -12,6 +12,9 @@ import {
   listTasks,
   stopTask,
   deleteTask,
+  followupTask,
+  importTasks,
+  getRevertPreview,
   revertTask,
   TaskSummary,
   getTaskStatus,
@@ -192,11 +195,32 @@ function displayTaskDetails(status: TaskStatus): void {
 
   console.log("");
   console.log("=".repeat(60));
+}
 
+function displayRevertPreview(preview: Awaited<ReturnType<typeof getRevertPreview>>): void {
   console.log("");
-  console.log("Full JSON:");
-  console.log("-".repeat(40));
-  console.log(JSON.stringify(status, null, 2));
+  console.log("Revert preview");
+  console.log("=".repeat(50));
+  console.log(`Branch:       ${preview.branch}`);
+  console.log(`Base branch:  ${preview.baseBranch}`);
+  console.log(`Target:       ${preview.targetCommit.shortSha ?? preview.targetCommit.sha}`);
+  console.log(`New head:     ${preview.newHead ? (preview.newHead.shortSha ?? preview.newHead.sha) : "(base branch)"}`);
+  console.log("");
+  console.log(`Commits to remove (${preview.commitsToRemove.length}):`);
+  for (const commit of preview.commitsToRemove) {
+    const shortSha = commit.shortSha ?? commit.sha.substring(0, 7);
+    console.log(`  - ${shortSha}${commit.message ? ` ${commit.message}` : ""}`);
+  }
+}
+
+async function readStdinIfPiped(): Promise<string | undefined> {
+  if (process.stdin.isTTY) return undefined;
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  const input = Buffer.concat(chunks).toString("utf8").trim();
+  return input || undefined;
 }
 
 /**
@@ -365,7 +389,6 @@ Examples:
           return;
         }
 
-        console.log(`Fetching task ${taskId}...`);
         displayTaskDetails(status);
       } catch (error) {
         const errorMessage = (error as Error).message;
@@ -561,20 +584,90 @@ Examples:
       }
     });
 
+  // task followup
+  task
+    .command("followup <task-id> [body]")
+    .description("Post and queue a follow-up instruction for a task")
+    .option("-f, --file <path>", "Read follow-up body from a file")
+    .addHelpText("after", `
+Examples:
+  $ propr task followup abc123 "Please also add tests"
+  $ propr task followup abc123 --file followup.md
+  $ echo "Address the review comments" | propr task followup abc123
+`)
+    .action(async (taskId: string, bodyArg: string | undefined, options: { file?: string }) => {
+      try {
+        let body = bodyArg;
+        if (options.file) {
+          const { readFile } = await import("node:fs/promises");
+          body = (await readFile(options.file, "utf8")).trim();
+        }
+        body = body ?? (await readStdinIfPiped());
+        if (!body || body.trim().length === 0) {
+          console.error("Error: Follow-up body is required as an argument, --file, or stdin.");
+          process.exit(1);
+        }
+
+        const result = await followupTask(taskId, body.trim());
+        console.log(result.message);
+        console.log(`Comment ID: ${result.commentId}`);
+        console.log(`Job ID: ${result.jobId}`);
+      } catch (error) {
+        console.error(`Error posting follow-up: ${(error as Error).message}`);
+        process.exit(1);
+      }
+    });
+
+  // task import
+  task
+    .command("import [description]")
+    .description("Reconcile or recover tasks from GitHub for a repository")
+    .option("-p, --project <project>", "Target project (owner/repo)")
+    .option("-f, --file <path>", "Read import description from a file")
+    .addHelpText("after", `
+Examples:
+  $ propr task import -p myorg/myrepo "Recover missing GitHub tasks"
+  $ propr task import --file import.md
+`)
+    .action(async (description: string | undefined, options: { project?: string; file?: string }) => {
+      try {
+        const configManager = await createConfigManager();
+        const project = resolveProject(options, configManager);
+        let taskDescription = description;
+        if (options.file) {
+          const { readFile } = await import("node:fs/promises");
+          taskDescription = (await readFile(options.file, "utf8")).trim();
+        }
+        taskDescription = taskDescription ?? (await readStdinIfPiped()) ?? "Reconcile and recover tasks from GitHub";
+        const result = await importTasks(project, taskDescription);
+        console.log(`Task import queued for ${project}.`);
+        console.log(`Job ID: ${result.jobId}`);
+      } catch (error) {
+        if (error instanceof ProjectResolutionError) {
+          console.error(`Error: ${error.message}`);
+        } else {
+          console.error(`Error importing tasks: ${(error as Error).message}`);
+        }
+        process.exit(1);
+      }
+    });
+
   // task revert
   task
-    .command("revert <repo> <pr> <commit> <commentId>")
+    .command("revert <repo> <pr> <commit> [commentId]")
     .description("Revert changes from a specific commit in a pull request")
     .option("-o, --owner <owner>", "Repository owner (required if repo is not in owner/repo format)")
+    .option("--dry-run", "Preview the branch reset without queueing a revert task")
     .addHelpText("after", `
 Arguments:
   repo         Repository name (owner/repo format) or just repo name with -o flag
   pr           Pull request number
   commit       Commit hash to revert
-  commentId    ID of the comment that triggered the revert
+  commentId    ID of the comment that triggered the revert (not required with --dry-run)
 
 Examples:
   $ propr task revert myorg/myrepo 123 abc123def 456789
+  $ propr task revert myorg/myrepo 123 abc123def --dry-run
   $ propr task revert myrepo 123 abc123def 456789 -o myorg
 `)
     .action(
@@ -582,8 +675,8 @@ Examples:
         repo: string,
         pr: string,
         commit: string,
-        commentId: string,
-        options: { owner?: string }
+        commentId: string | undefined,
+        options: { owner?: string; dryRun?: boolean }
       ) => {
         try {
           let owner = options.owner;
@@ -613,14 +706,14 @@ Examples:
           }
 
           const prNumber = parseInt(pr, 10);
-          const commentIdNum = parseInt(commentId, 10);
+          const commentIdNum = commentId ? parseInt(commentId, 10) : NaN;
 
           if (isNaN(prNumber) || prNumber <= 0) {
             console.error("Error: PR number must be a positive integer");
             process.exit(1);
           }
 
-          if (isNaN(commentIdNum) || commentIdNum <= 0) {
+          if (!options.dryRun && (isNaN(commentIdNum) || commentIdNum <= 0)) {
             console.error("Error: Comment ID must be a positive integer");
             process.exit(1);
           }
@@ -630,9 +723,11 @@ Examples:
             process.exit(1);
           }
 
-          console.log(
-            `Reverting commit ${commit} from PR #${pr} in ${owner}/${repoName}...`
-          );
+          if (options.dryRun) {
+            const preview = await getRevertPreview(owner, repoName, prNumber, commit);
+            displayRevertPreview(preview);
+            return;
+          }
 
           const result = await revertTask(owner, repoName, prNumber, commit, commentIdNum);
 

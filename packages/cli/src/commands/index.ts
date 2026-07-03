@@ -10,6 +10,7 @@ export { createTaskCommand } from "./taskCommands.js";
 export { createRepoCommand } from "./repoCommands.js";
 export { createAgentCommand } from "./agentCommands.js";
 export { createSettingCommand } from "./settingCommands.js";
+export { createConfigCommand } from "./configCommands.js";
 export { createLogCommand } from "./logCommands.js";
 export { createTodoCommand } from "./todoCommands.js";
 export { createRemoteStatusCommand, createQueueCommand } from "./systemCommands.js";

@@ -11,10 +11,18 @@ export type ConfigKey =
   | "githubToken"
   | "remoteUrl"
   | "defaultProject"
+  | "activeProfile"
+  | "profiles"
   | "stackRoot"
   | "uiEnabled"
   | "docsEnabled"
   | "tunnelEnabled";
+
+export interface RemoteProfile {
+  remoteUrl?: string;
+  githubToken?: string;
+  defaultProject?: string;
+}
 
 /**
  * CLI configuration structure.
@@ -35,6 +43,17 @@ export interface CLIConfig {
    * Format: owner/repo
    */
   defaultProject?: string;
+
+  /**
+   * Name of the active backend profile. Defaults to "default".
+   */
+  activeProfile?: string;
+
+  /**
+   * Named backend profiles. Top-level remoteUrl/githubToken/defaultProject are
+   * retained for compatibility and mirror the active profile.
+   */
+  profiles?: Record<string, RemoteProfile>;
 
   /**
    * Absolute path to the local stack root (where .env, data/, logs/, repos/
@@ -71,6 +90,8 @@ export const DEFAULT_CONFIG: CLIConfig = {
   githubToken: undefined,
   remoteUrl: undefined,
   defaultProject: undefined,
+  activeProfile: undefined,
+  profiles: undefined,
   stackRoot: undefined,
   uiEnabled: undefined,
   docsEnabled: undefined,

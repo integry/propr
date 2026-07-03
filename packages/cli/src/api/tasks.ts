@@ -323,6 +323,59 @@ export interface RevertTaskResponse {
   message: string;
 }
 
+export interface RevertPreviewCommit {
+  sha: string;
+  shortSha?: string;
+  message?: string;
+  author?: string;
+  date?: string;
+}
+
+export interface RevertPreviewResponse {
+  branch: string;
+  baseBranch: string;
+  targetCommit: RevertPreviewCommit;
+  newHead: RevertPreviewCommit | null;
+  commitsToRemove: RevertPreviewCommit[];
+  remainingCommits: RevertPreviewCommit[];
+  willRevertToBase: boolean;
+}
+
+export interface FollowupTaskResponse {
+  success: boolean;
+  message: string;
+  commentId: number;
+  jobId: string;
+}
+
+export interface ImportTasksResponse {
+  jobId: string;
+}
+
+export async function getRevertPreview(
+  owner: string,
+  repo: string,
+  prNumber: number | string,
+  commitHash: string,
+  client?: ApiClient
+): Promise<RevertPreviewResponse> {
+  const apiClient = client ?? (await createApiClient());
+
+  const response = await apiClient.get<RevertPreviewResponse>(
+    "/api/tasks/revert-preview",
+    {
+      params: {
+        owner,
+        repo,
+        pr: String(prNumber),
+        commit: commitHash,
+      },
+    }
+  );
+
+  return response.data;
+}
+
 /**
  * Queues a revert task to revert changes from a specific commit in a PR.
  *
@@ -369,5 +422,30 @@ export async function revertTask(
     { body }
   );
 
+  return response.data;
+}
+
+export async function followupTask(
+  taskId: string,
+  body: string,
+  client?: ApiClient
+): Promise<FollowupTaskResponse> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.post<FollowupTaskResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/followup`,
+    { body: { body } }
+  );
+  return response.data;
+}
+
+export async function importTasks(
+  repository: string,
+  taskDescription: string,
+  client?: ApiClient
+): Promise<ImportTasksResponse> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.post<ImportTasksResponse>("/api/import-tasks", {
+    body: { repository, taskDescription },
+  });
   return response.data;
 }

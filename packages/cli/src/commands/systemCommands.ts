@@ -276,7 +276,6 @@ Examples:
           return;
         }
 
-        console.log("Checking system status...");
         displaySystemStatus(status);
       } catch (error) {
         const errorMessage = (error as Error).message;
@@ -328,7 +327,6 @@ Examples:
           return;
         }
 
-        console.log("Fetching queue statistics...");
         displayQueueStats(stats);
       } catch (error) {
         const errorMessage = (error as Error).message;
