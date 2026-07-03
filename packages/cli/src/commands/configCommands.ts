@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import type { RemoteProfile } from "../config/index.js";
-import { printOutput } from "../utils/index.js";
+import { isValidProjectSlug, printOutput } from "../utils/index.js";
 
 function redactToken(token: string | undefined): string {
   if (!token) return "(not set)";
@@ -131,6 +131,10 @@ export function createConfigCommand(): Command {
       if (options.clearRemote) clear.push("remoteUrl");
       if (options.clearToken) clear.push("githubToken");
       if (options.clearProject) clear.push("defaultProject");
+      if (options.project !== undefined && !isValidProjectSlug(options.project)) {
+        console.error("Error: Invalid project format. Expected 'owner/repo'.");
+        process.exit(1);
+      }
       const patch = {
         ...(options.remote !== undefined ? { remoteUrl: options.remote } : {}),
         ...(options.token !== undefined ? { githubToken: options.token } : {}),

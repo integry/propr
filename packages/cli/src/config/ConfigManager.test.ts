@@ -217,3 +217,27 @@ test("remote profile names reject whitespace, path-like, and control-character v
     cleanupTempDir(tempDir);
   }
 });
+
+test("loaded remote profile names are validated before use", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
+      activeProfile: "../prod",
+      profiles: {
+        "../prod": { remoteUrl: "https://bad.example.com" },
+        staging: { remoteUrl: "https://staging.example.com" },
+      },
+    }));
+
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    assert.equal(manager.getActiveRemoteProfile(), "default");
+    assert.deepEqual(manager.getRemoteProfiles(), {
+      default: {},
+      staging: { remoteUrl: "https://staging.example.com" },
+    });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});

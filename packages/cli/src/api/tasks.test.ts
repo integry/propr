@@ -21,11 +21,11 @@ function clientWithCalls(responseData: unknown) {
 test("followupTask posts the task follow-up body", async () => {
   const { client, calls } = clientWithCalls({ success: true, message: "queued", commentId: 12, jobId: "job-1" });
 
-  await followupTask("task/id", "Please add tests", client);
+  await followupTask("task-123", "Please add tests", client);
 
   assert.deepEqual(calls, [{
     method: "POST",
-    endpoint: "/api/tasks/task%2Fid/followup",
+    endpoint: "/api/tasks/task-123/followup",
     options: { body: { body: "Please add tests" } },
   }]);
 });

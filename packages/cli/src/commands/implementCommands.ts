@@ -12,6 +12,8 @@ import {
   TaskState,
   TaskStatus,
 } from "../api/index.js";
+import { createConfigManager } from "../config/index.js";
+import { ProjectResolutionError, resolveProject } from "../utils/index.js";
 
 /**
  * Terminal states that indicate a task has finished processing.
@@ -144,11 +146,13 @@ Examples:
           }
 
           const { draftId, issueNumber } = parsed;
+          const configManager = await createConfigManager();
+          const repository = resolveProject(options, configManager);
 
           console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
 
           const result = await implementIssue(draftId, issueNumber, {
-            repository: options.project,
+            repository,
             agent_alias: options.agent,
             model_name: options.model,
             useEpic: options.epic,
@@ -213,6 +217,10 @@ Examples:
             console.log("You can check the status later using the ProPR dashboard.");
           }
         } catch (error) {
+          if (error instanceof ProjectResolutionError) {
+            console.error(`Error: ${error.message}`);
+            process.exit(1);
+          }
           console.error(
             `Error implementing issue: ${(error as Error).message}`
           );

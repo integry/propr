@@ -129,6 +129,15 @@ export function getExtraConfigErrors(settings: DisplaySettings): string[] {
   return Array.isArray(errors) ? errors.filter((item): item is string => typeof item === "string") : [];
 }
 
+export function isSuccessfulExtraConfigUpdate(result: unknown): boolean {
+  return Boolean(
+    result &&
+    typeof result === "object" &&
+    !Array.isArray(result) &&
+    (result as { success?: unknown }).success === true
+  );
+}
+
 export async function getExtraConfigSetting(
   key: ExtraConfigKey,
   getter: ExtraConfigGetter = getConfigValue
@@ -289,7 +298,12 @@ Examples:
           const warnings = getExtraConfigErrors(displaySettings);
 
           if (options.json) {
-            printOutput(displaySettings, true);
+            printOutput(
+              warnings.length > 0
+                ? { ...displaySettings, extraConfigErrors: warnings }
+                : displaySettings,
+              true
+            );
             return;
           }
 
@@ -372,7 +386,11 @@ Examples:
             )
           : await updateSetting(key, parsedValue);
 
-        if (result.success !== false) {
+        const updateSucceeded = isExtraConfigKey(key)
+          ? isSuccessfulExtraConfigUpdate(result)
+          : result.success !== false;
+
+        if (updateSucceeded) {
           console.log("");
           console.log(`Successfully updated setting: ${key}`);
           console.log(`  New value: ${formatValue(parsedValue)}`);

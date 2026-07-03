@@ -157,7 +157,11 @@ export class ConfigManager {
     }
 
     if (typeof data.activeProfile === "string" && data.activeProfile.trim()) {
-      sanitized.activeProfile = data.activeProfile.trim();
+      try {
+        sanitized.activeProfile = this.normalizeProfileName(data.activeProfile);
+      } catch {
+        // Ignore invalid profile names loaded from disk; commands only create valid names.
+      }
     }
 
     if (data.profiles && typeof data.profiles === "object" && !Array.isArray(data.profiles)) {
@@ -171,7 +175,11 @@ export class ConfigManager {
         if (typeof profileData.remoteUrl === "string") profile.remoteUrl = profileData.remoteUrl;
         if (typeof profileData.githubToken === "string") profile.githubToken = profileData.githubToken;
         if (typeof profileData.defaultProject === "string") profile.defaultProject = profileData.defaultProject;
-        profiles[name] = profile;
+        try {
+          profiles[this.normalizeProfileName(name)] = profile;
+        } catch {
+          // Ignore invalid profile names loaded from disk; commands only create valid names.
+        }
       }
       if (Object.keys(profiles).length > 0) {
         sanitized.profiles = profiles;

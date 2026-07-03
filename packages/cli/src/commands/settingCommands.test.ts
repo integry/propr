@@ -4,6 +4,7 @@ import {
   getAllDisplaySettings,
   getExtraConfigErrors,
   getExtraConfigSetting,
+  isSuccessfulExtraConfigUpdate,
   parseExtraConfigValue,
 } from "./settingCommands.js";
 import type { SystemSettings } from "../api/settings.js";
@@ -82,4 +83,11 @@ test("parseExtraConfigValue rejects empty string settings", () => {
     /requires a non-empty value/
   );
   assert.equal(parseExtraConfigValue("pr-label", " propr "), "propr");
+});
+
+test("extra config update success requires an explicit successful backend response", () => {
+  assert.equal(isSuccessfulExtraConfigUpdate({ success: true, pr_label: "propr" }), true);
+  assert.equal(isSuccessfulExtraConfigUpdate({ success: false }), false);
+  assert.equal(isSuccessfulExtraConfigUpdate({ error: "unexpected response" }), false);
+  assert.equal(isSuccessfulExtraConfigUpdate(null), false);
 });

@@ -140,17 +140,26 @@ interface ImplementIssueBody {
   model_name?: string;
 }
 function parseRepositoryParts(repository: string): { owner: string; repo: string } | null {
-  const parts = repository.split('/');
+  const parts = repository.trim().split('/');
   if (parts.length !== 2) return null;
   const [owner, repo] = parts;
-  return owner && repo ? { owner, repo } : null;
+  const isValidSegment = (segment: string): boolean => (
+    segment !== '.' &&
+    segment !== '..' &&
+    /^[A-Za-z0-9_.-]+$/.test(segment)
+  );
+  return isValidSegment(owner) && isValidSegment(repo) ? { owner, repo } : null;
 }
 function validateRequestedRepository(requestedRepository: unknown, repository: string): string | null {
   if (requestedRepository === undefined) return null;
-  if (typeof requestedRepository !== 'string' || !parseRepositoryParts(requestedRepository.trim())) {
+  if (typeof requestedRepository !== 'string') {
     return 'repository must be an owner/repo string';
   }
-  const trimmedRepository = requestedRepository.trim();
+  const requestedParts = parseRepositoryParts(requestedRepository);
+  if (!requestedParts) {
+    return 'repository must be an owner/repo string';
+  }
+  const trimmedRepository = `${requestedParts.owner}/${requestedParts.repo}`;
   return trimmedRepository === repository ? null : `Issue belongs to ${repository}, not ${trimmedRepository}`;
 }
 function buildEffectivePlanIssue(issue: PlanIssue, body: ImplementIssueBody): PlanIssue {
@@ -196,7 +205,8 @@ async function loadImplementationTarget(params: {
   const repositoryParts = parseRepositoryParts(repository);
   if (!repositoryParts) { res.status(400).json({ error: 'Invalid repository format' }); return null; }
   const body = req.body as ImplementIssueBody;
-  const requestedRepositoryError = validateRequestedRepository(body.repository, repository);
+  const repositorySlug = `${repositoryParts.owner}/${repositoryParts.repo}`;
+  const requestedRepositoryError = validateRequestedRepository(body.repository, repositorySlug);
   if (requestedRepositoryError) { res.status(400).json({ error: requestedRepositoryError }); return null; }
   const contextConfig = parseContextConfig(draft.context_config);
   const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(body);
