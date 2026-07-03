@@ -138,6 +138,7 @@ export function createConfigCommand(): Command {
       };
       if (Object.keys(patch).length === 0 && clear.length === 0) {
         console.warn("No profile changes specified.");
+        return;
       }
       await manager.setRemoteProfile(
         name,

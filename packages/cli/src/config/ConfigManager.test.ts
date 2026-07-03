@@ -13,6 +13,15 @@ function cleanupTempDir(tempDir: string): void {
   rmSync(tempDir, { recursive: true, force: true });
 }
 
+function writeLegacyRemoteConfig(tempDir: string): void {
+  writeFileSync(join(tempDir, "config.json"), JSON.stringify({
+    activeProfile: "default",
+    remoteUrl: "https://legacy.example.com",
+    githubToken: "legacy-token",
+    defaultProject: "owner/repo",
+  }));
+}
+
 test("getRemoteProfiles returns copied profiles and includes an empty default profile", async () => {
   const tempDir = createTempDir();
   try {
@@ -79,12 +88,7 @@ test("setRemoteProfile can clear existing profile fields", async () => {
 test("useRemoteProfile migrates legacy top-level config without leaking it into a new empty profile", async () => {
   const tempDir = createTempDir();
   try {
-    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
-      activeProfile: "default",
-      remoteUrl: "https://legacy.example.com",
-      githubToken: "legacy-token",
-      defaultProject: "owner/repo",
-    }));
+    writeLegacyRemoteConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
@@ -108,12 +112,7 @@ test("useRemoteProfile migrates legacy top-level config without leaking it into 
 test("partial active profiles do not inherit unrelated credentials from top-level config", async () => {
   const tempDir = createTempDir();
   try {
-    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
-      activeProfile: "default",
-      remoteUrl: "https://legacy.example.com",
-      githubToken: "legacy-token",
-      defaultProject: "owner/repo",
-    }));
+    writeLegacyRemoteConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
@@ -123,6 +122,97 @@ test("partial active profiles do not inherit unrelated credentials from top-leve
     assert.equal(manager.getRemoteUrl(), "https://staging.example.com");
     assert.equal(manager.getGithubToken(), undefined);
     assert.equal(manager.getDefaultProject(), undefined);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("setGithubToken preserves unrelated legacy active profile values", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeLegacyRemoteConfig(tempDir);
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.setGithubToken("new-token");
+
+    assert.equal(manager.getGithubToken(), "new-token");
+    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+    assert.equal(manager.getDefaultProject(), "owner/repo");
+    assert.deepEqual(manager.getRemoteProfiles().default, {
+      remoteUrl: "https://legacy.example.com",
+      githubToken: "new-token",
+      defaultProject: "owner/repo",
+    });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("setRemoteUrl preserves unrelated legacy active profile values", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeLegacyRemoteConfig(tempDir);
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.setRemoteUrl("https://new.example.com");
+
+    assert.equal(manager.getRemoteUrl(), "https://new.example.com");
+    assert.equal(manager.getGithubToken(), "legacy-token");
+    assert.equal(manager.getDefaultProject(), "owner/repo");
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("setDefaultProject preserves unrelated legacy active profile values", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeLegacyRemoteConfig(tempDir);
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.setDefaultProject("new-owner/new-repo");
+
+    assert.equal(manager.getDefaultProject(), "new-owner/new-repo");
+    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+    assert.equal(manager.getGithubToken(), "legacy-token");
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("clearGithubToken preserves unrelated legacy active profile values", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeLegacyRemoteConfig(tempDir);
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.clearGithubToken();
+
+    assert.equal(manager.getGithubToken(), undefined);
+    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+    assert.equal(manager.getDefaultProject(), "owner/repo");
+    assert.deepEqual(manager.getRemoteProfiles().default, {
+      remoteUrl: "https://legacy.example.com",
+      defaultProject: "owner/repo",
+    });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("remote profile names reject whitespace, path-like, and control-character values", async () => {
+  const tempDir = createTempDir();
+  try {
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await assert.rejects(() => manager.useRemoteProfile("bad name"), /Profile name may only contain/);
+    await assert.rejects(() => manager.setRemoteProfile("../prod", {}), /Profile name may only contain/);
+    await assert.rejects(() => manager.setRemoteProfile("prod\nnext", {}), /Profile name may only contain/);
   } finally {
     cleanupTempDir(tempDir);
   }

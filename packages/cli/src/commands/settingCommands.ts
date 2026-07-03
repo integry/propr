@@ -289,7 +289,7 @@ Examples:
           const warnings = getExtraConfigErrors(displaySettings);
 
           if (options.json) {
-            printOutput(warnings.length > 0 ? { settings: displaySettings, warnings } : displaySettings, true);
+            printOutput(displaySettings, true);
             return;
           }
 

@@ -7,6 +7,7 @@
 export {
   resolveProject,
   ProjectResolutionError,
+  isValidProjectSlug,
 } from "./resolveProject.js";
 export type { ProjectOptions } from "./resolveProject.js";
 

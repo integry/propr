@@ -28,6 +28,19 @@ export class ProjectResolutionError extends Error {
 }
 
 /**
+ * Checks whether a project value is in owner/repo form without path traversal
+ * or empty segments.
+ */
+export function isValidProjectSlug(project: string): boolean {
+  const parts = project.trim().split("/");
+  return parts.length === 2 && parts.every((part) => (
+    part !== "." &&
+    part !== ".." &&
+    /^[A-Za-z0-9_.-]+$/.test(part)
+  ));
+}
+
+/**
  * Resolves the target project by checking command options first,
  * then falling back to the configured default project.
  *

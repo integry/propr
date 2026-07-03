@@ -7,7 +7,7 @@
 
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
+import { resolveProject, ProjectResolutionError, isValidProjectSlug, printOutput } from "../utils/index.js";
 import {
   listTasks,
   stopTask,
@@ -644,6 +644,11 @@ Examples:
       try {
         const configManager = await createConfigManager();
         const project = resolveProject(options, configManager);
+        if (!isValidProjectSlug(project)) {
+          throw new ProjectResolutionError(
+            `Invalid project "${project}". Expected owner/repo format.`
+          );
+        }
         let taskDescription = description;
         if (options.file) {
           const { readFile } = await import("node:fs/promises");

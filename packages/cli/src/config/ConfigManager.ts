@@ -26,6 +26,7 @@ const CONFIG_DIR_NAME = ".propr";
  */
 const CONFIG_FILE_NAME = "config.json";
 const DEFAULT_PROFILE_NAME = "default";
+const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
  * ConfigManager handles persistent CLI configuration.
@@ -200,6 +201,19 @@ export class ConfigManager {
     return this.config.activeProfile || DEFAULT_PROFILE_NAME;
   }
 
+  private normalizeProfileName(name: string): string {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("Profile name must not be empty");
+    }
+    if (!PROFILE_NAME_PATTERN.test(trimmed)) {
+      throw new Error(
+        "Profile name may only contain letters, numbers, dots, underscores, and hyphens, and must start with a letter or number"
+      );
+    }
+    return trimmed;
+  }
+
   private getActiveProfile(): RemoteProfile {
     const name = this.getActiveProfileName();
     return this.config.profiles?.[name] ?? {};
@@ -217,17 +231,39 @@ export class ConfigManager {
     return this.config[key];
   }
 
+  private getLegacyRemoteProfile(): RemoteProfile {
+    const profile: RemoteProfile = {};
+    if (this.config.remoteUrl !== undefined) profile.remoteUrl = this.config.remoteUrl;
+    if (this.config.githubToken !== undefined) profile.githubToken = this.config.githubToken;
+    if (this.config.defaultProject !== undefined) profile.defaultProject = this.config.defaultProject;
+    return profile;
+  }
+
+  private hasLegacyRemoteConfig(): boolean {
+    return Object.keys(this.getLegacyRemoteProfile()).length > 0;
+  }
+
+  private getProfileBase(name: string): RemoteProfile {
+    return this.config.profiles?.[name] ?? (
+      name === this.getActiveProfileName() ? this.getLegacyRemoteProfile() : {}
+    );
+  }
+
+  private mirrorActiveProfile(profile: RemoteProfile): void {
+    this.config.remoteUrl = profile.remoteUrl;
+    this.config.githubToken = profile.githubToken;
+    this.config.defaultProject = profile.defaultProject;
+  }
+
   private async updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
     const name = this.getActiveProfileName();
     const profiles = { ...(this.config.profiles ?? {}) };
     profiles[name] = {
-      ...(profiles[name] ?? {}),
+      ...this.getProfileBase(name),
       ...patch,
     };
     this.config.profiles = profiles;
-    if (patch.remoteUrl !== undefined) this.config.remoteUrl = patch.remoteUrl;
-    if (patch.githubToken !== undefined) this.config.githubToken = patch.githubToken;
-    if (patch.defaultProject !== undefined) this.config.defaultProject = patch.defaultProject;
+    this.mirrorActiveProfile(profiles[name]);
     await this.save();
   }
 
@@ -300,10 +336,10 @@ export class ConfigManager {
   async clearGithubToken(): Promise<void> {
     const name = this.getActiveProfileName();
     const profiles = { ...(this.config.profiles ?? {}) };
-    profiles[name] = { ...(profiles[name] ?? {}) };
+    profiles[name] = { ...this.getProfileBase(name) };
     delete profiles[name].githubToken;
     this.config.profiles = profiles;
-    this.config.githubToken = undefined;
+    this.mirrorActiveProfile(profiles[name]);
     await this.save();
   }
 
@@ -353,12 +389,8 @@ export class ConfigManager {
     const profiles = Object.fromEntries(
       Object.entries(this.config.profiles ?? {}).map(([name, profile]) => [name, { ...profile }])
     );
-    if (!profiles[DEFAULT_PROFILE_NAME] && (this.config.remoteUrl || this.config.githubToken || this.config.defaultProject)) {
-      profiles[DEFAULT_PROFILE_NAME] = {
-        remoteUrl: this.config.remoteUrl,
-        githubToken: this.config.githubToken,
-        defaultProject: this.config.defaultProject,
-      };
+    if (!profiles[DEFAULT_PROFILE_NAME] && this.hasLegacyRemoteConfig()) {
+      profiles[DEFAULT_PROFILE_NAME] = this.getLegacyRemoteProfile();
     }
     if (!profiles[DEFAULT_PROFILE_NAME]) {
       profiles[DEFAULT_PROFILE_NAME] = {};
@@ -367,28 +399,18 @@ export class ConfigManager {
   }
 
   async useRemoteProfile(name: string): Promise<void> {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      throw new Error("Profile name must not be empty");
-    }
+    const trimmed = this.normalizeProfileName(name);
     const profiles = { ...(this.config.profiles ?? {}) };
     const currentName = this.getActiveProfileName();
-    if (!profiles[currentName] && (this.config.remoteUrl || this.config.githubToken || this.config.defaultProject)) {
-      profiles[currentName] = {
-        remoteUrl: this.config.remoteUrl,
-        githubToken: this.config.githubToken,
-        defaultProject: this.config.defaultProject,
-      };
+    if (!profiles[currentName] && this.hasLegacyRemoteConfig()) {
+      profiles[currentName] = this.getLegacyRemoteProfile();
     }
     if (!profiles[trimmed]) {
       profiles[trimmed] = {};
     }
     this.config.profiles = profiles;
     this.config.activeProfile = trimmed;
-    const profile = profiles[trimmed];
-    this.config.remoteUrl = profile.remoteUrl;
-    this.config.githubToken = profile.githubToken;
-    this.config.defaultProject = profile.defaultProject;
+    this.mirrorActiveProfile(profiles[trimmed]);
     await this.save();
   }
 
@@ -397,23 +419,16 @@ export class ConfigManager {
     patch: Partial<RemoteProfile>,
     clear: Array<keyof RemoteProfile> = []
   ): Promise<void> {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      throw new Error("Profile name must not be empty");
-    }
+    const trimmed = this.normalizeProfileName(name);
 
     const profiles = { ...(this.config.profiles ?? {}) };
     const currentName = this.getActiveProfileName();
-    if (!profiles[currentName] && (this.config.remoteUrl || this.config.githubToken || this.config.defaultProject)) {
-      profiles[currentName] = {
-        remoteUrl: this.config.remoteUrl,
-        githubToken: this.config.githubToken,
-        defaultProject: this.config.defaultProject,
-      };
+    if (!profiles[currentName] && this.hasLegacyRemoteConfig()) {
+      profiles[currentName] = this.getLegacyRemoteProfile();
     }
 
     const nextProfile: RemoteProfile = {
-      ...(profiles[trimmed] ?? {}),
+      ...this.getProfileBase(trimmed),
       ...patch,
     };
     for (const key of clear) {
@@ -423,9 +438,7 @@ export class ConfigManager {
     this.config.profiles = profiles;
 
     if (currentName === trimmed) {
-      this.config.remoteUrl = nextProfile.remoteUrl;
-      this.config.githubToken = nextProfile.githubToken;
-      this.config.defaultProject = nextProfile.defaultProject;
+      this.mirrorActiveProfile(nextProfile);
     }
 
     await this.save();
