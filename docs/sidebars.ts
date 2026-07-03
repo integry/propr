@@ -129,6 +129,7 @@ const sidebars: SidebarsConfig = {
       label: 'Operations',
       items: [
         'operations/propr-connect',
+        'operations/connect-dashboard',
         'operations/deployment',
         'operations/github-auth',
         'operations/maintenance',
