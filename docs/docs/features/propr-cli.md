@@ -76,7 +76,7 @@ propr relay revoke <id>  # revoke a token
 
 ## Hosted UI Tunnel
 
-The hosted ProPR UI at `https://app.propr.dev` is a single static bundle that can drive a locally-running stack. To make that work, the local stack publishes its **API** (the API container on port 4000) to the hosted control plane through a **Cloudflare Tunnel** — propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host (the root URL returns 404, and `/webhook` is **not** routed through the tunnel) — an optional managed sidecar (the official `cloudflare/cloudflared` image) that runs alongside the stack like the `propr ui` and `propr docs` services. The UI bundle itself is served by `app.propr.dev`, not through the tunnel; the tunnel only exposes the API the hosted UI calls. It is **off by default**; local development on `http://localhost:5173` is unaffected when the tunnel is off.
+The hosted ProPR UI at `https://app.propr.dev` can drive a locally-running stack: an optional managed `cloudflared` sidecar publishes the local **API** at a per-instance `https://t-<id>.propr.dev` hostname. It is **off by default**; local development on `http://localhost:5173` is unaffected. The architecture — which paths are routed, browser origin vs API host, and the full `.env` config — lives in [Production Deployment → Hosted UI Tunnel](../operations/deployment.md#hosted-ui-tunnel). This section covers the commands.
 
 ```bash
 propr tunnel setup --token <connector-token> --url https://t-<id>.propr.dev --start
@@ -85,7 +85,7 @@ propr tunnel off         # stop it — the token and env values are left untouch
 propr tunnel verify      # check the sidecar + public /api/status, /, /socket.io/
 ```
 
-Cloudflare forwards the tunnel to the **Docker-internal** API service at `http://api:4000` (the address inside the stack's Docker network), **not** to host port 4000. The published host port is therefore irrelevant to tunnel routing, and the two cannot conflict — you do not need to free up host port 4000 for the tunnel to work.
+Cloudflare forwards the tunnel to the Docker-internal `http://api:4000`, so the published host port is irrelevant to tunnel routing — you do not need to free host port 4000.
 
 Starting the tunnel always requires a configured token. The hosted ProPR Connect UI shows a one-time connector token and tunnel URL; paste those into `propr tunnel setup` and the CLI writes the required stack `.env` values for you:
 
@@ -93,18 +93,7 @@ Starting the tunnel always requires a configured token. The hosted ProPR Connect
 propr tunnel setup --token <connector-token> --url https://t-<id>.propr.dev --start
 ```
 
-If you are on an older CLI or need to inspect the underlying settings, these are the variables `setup` writes:
-
-| Variable | Description |
-|---|---|
-| `PROPR_UI_TUNNEL_TOKEN` | Cloudflare Tunnel token. **Required to start** the tunnel. Once set, the tunnel is enabled by default, so the next `propr start` brings up the sidecar (unless you have run `propr tunnel off`) |
-| `PROPR_UI_TUNNEL_ENABLED` | Explicitly enable the tunnel (`true`/`1`). A **token is still required** — `propr check` fails if this is set without `PROPR_UI_TUNNEL_TOKEN`. Redundant when a token is set, since a token alone already enables the tunnel |
-| `PROPR_INSTANCE_ID` | This stack's instance id; must be a valid DNS label (letters, digits, hyphens; 1–63 chars). Derives the public URL `https://t-<id>.propr.dev` when no explicit URL is set |
-| `PROPR_UI_PUBLIC_API_URL` | Explicit public API URL the hosted UI talks to, overriding the derived one |
-| `API_PUBLIC_URL` | Public API URL advertised by the API for browser-visible links and secure cookie handling; set to the same proxy URL |
-| `FRONTEND_URL` | Browser origin allowed by CORS and used after login; set to `https://app.propr.dev` for hosted UI mode |
-| `GH_OAUTH_CALLBACK_URL` | GitHub OAuth callback on the proxy host, `https://t-<id>.propr.dev/api/auth/github/callback`; register this exact URL in your GitHub OAuth App |
-| `PROPR_CLOUDFLARED_IMAGE` | cloudflared image. Overrides the version pinned in the stack manifest (currently `cloudflare/cloudflared:2024.12.2`) |
+`propr tunnel setup` writes the underlying `.env` values (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, `GH_OAUTH_CALLBACK_URL`) for you; the full variable table is in the [deployment guide](../operations/deployment.md#hosted-ui-tunnel) and the [Configuration Reference](../operations/configuration-reference.md).
 
 **Enablement, step by step.** With no token and no flag the tunnel is off. `propr tunnel setup` saves `PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, and `GH_OAUTH_CALLBACK_URL`, and records the tunnel as enabled for later starts. Add `--start` to start a stopped stack or recreate an already-running stack with the hosted tunnel environment applied immediately. Setting `PROPR_UI_TUNNEL_TOKEN` manually has the same default effect, so the next `propr start` (or a restart) starts the sidecar unless you have run `propr tunnel off`. Running `propr tunnel on|off` records an explicit choice in the CLI config that **overrides** the token-derived default and is honored by later `propr start`/restarts; `propr tunnel on` also starts the sidecar immediately on an already-running stack without waiting for a restart, and `propr tunnel off` stops it even while a token remains set.
 
@@ -231,7 +220,7 @@ propr repo status                            # Indexing status for all repos
 ```bash
 propr agent list
 propr agent add my-claude -t claude -m model1,model2 -d model1
-propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabled
+propr agent add test -t antigravity -m antigravity-gemini-3.1-pro-high --disabled
 propr agent add opencode -t opencode -m opencode-minimax-m3-free \
   -d opencode-minimax-m3-free --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)

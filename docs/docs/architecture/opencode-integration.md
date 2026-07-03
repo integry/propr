@@ -136,7 +136,7 @@ Versioned builds use the same image family, for example:
 propr/agent-opencode:<version>-<content-hash>
 ```
 
-`scripts/build-images.sh` builds the image from `Dockerfile.opencode` and installs the `opencode-ai` npm package into the shared agent base image. `Dockerfile.opencode` pins the CLI version through its `CLI_VERSION` build argument (default `1.16.2`), so image builds are reproducible; pass a different `CLI_VERSION` to build against another OpenCode release.
+`scripts/build-images.sh` builds the image from `Dockerfile.opencode` and installs the `opencode-ai` npm package into the shared agent base image. `Dockerfile.opencode` pins the CLI version through its `CLI_VERSION` build argument (currently `1.17.10` — check `Dockerfile.opencode` for the pinned default), so image builds are reproducible; pass a different `CLI_VERSION` to build against another OpenCode release.
 
 ## Operations
 

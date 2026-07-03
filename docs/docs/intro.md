@@ -10,6 +10,17 @@ Welcome to ProPR, an AI engineering platform for planning, building, reviewing, 
 
 ProPR connects to your GitHub repositories and keeps the pull request as the center of the workflow. It combines a Web UI dashboard, Planner Studio, a CLI, and multi-agent workers so you can move from an idea or GitHub issue to a reviewed pull request without stitching together separate tools.
 
+## First 15 Minutes
+
+You need a Docker-capable Linux host, Node.js 22+, and a login for at least one coding agent — reuse one already on the host (`claude login`, `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
+
+```bash
+npm install -g propr-cli
+propr setup   # guided: verify host, authorize agents, connect GitHub, start
+```
+
+Label a GitHub issue `AI` (or approve a plan in the Web UI) and the result comes back as a pull request. The [Setup Guide](./tutorials/setup.md) has the full walkthrough — or explore the [live demo](https://demo.propr.dev) first without installing anything.
+
 ## A Modular Tool, Not An All-Or-Nothing Pipeline
 
 ProPR supports the full idea-to-merge flow, but it does not require it. Each stage is a separate entry point you can adopt on its own and slot into the workflow you already have:
@@ -40,10 +51,6 @@ End-to-end usage remains fully supported — it is just one of the ways to use P
 3. **Run the work**: ProPR prepares repository context, runs the selected agent in an isolated environment, and records the task in the dashboard.
 4. **Review and iterate**: Use dashboard task views plus PR slash commands for AI review, fixes, model switching, merge assistance, or the Ultrafix review-fix loop.
 5. **Observe everything**: Follow live task progress, logs, costs, and repository activity from the dashboard and task detail views.
-
-## Quick Start
-
-Ready to get started? Check out our [Setup Guide](./tutorials/setup.md) to run ProPR locally from the prebuilt images, then finish repository and agent configuration in the Web UI.
 
 ## Documentation Structure
 

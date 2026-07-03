@@ -14,6 +14,8 @@ The Repositories page in the Web UI is the home for this: each repository entry 
 
 ProPR indexes monitored repositories and maintains file and repository summaries. The repository list shows the indexing state per repo ("Not indexed", "Indexing" with progress, "Indexed", or "Failed"), and the **Browse** tab lets you read the generated summaries.
 
+Summarization runs through a configurable agent and model, with an optional **fallback model** and quota-aware retry: when the primary model hits a provider quota, ProPR records a cooldown and switches to the fallback so indexing keeps progressing instead of failing.
+
 A background indexing worker scans for repositories to index (every 5 minutes by default, `INDEXING_SCAN_INTERVAL_MS`) and refreshes existing indexes periodically (daily by default, `INDEXING_REINDEX_INTERVAL_MS`). You can also trigger reindexing manually with the reindex button on the repository entry, or with `propr repo index` from the CLI.
 
 Summaries are useful when:

@@ -2,7 +2,7 @@
 sidebar_position: 2
 ---
 
-# Features
+# Feature Overview
 
 ProPR helps you use AI coding agents inside a GitHub pull request workflow. It gives you a place to plan work, choose the right agent, run the task safely, review the result, and continue from normal GitHub comments.
 
@@ -50,3 +50,5 @@ Every run leaves a task record you can inspect later.
 
 - [Observability and control](./observability.md): inspect task records, streamed logs, commits, costs, failures, and recovery state after every run.
 - [CLI workflows](./cli-workflows.md): source-development, validation, image, and maintenance commands for developing and operating ProPR itself. The end-user `propr` CLI is documented separately in [ProPR CLI](./propr-cli.md).
+
+Next: follow the [issue-to-PR walkthrough](../tutorials/end-to-end-workflow.md), or go straight to the [PR command reference](./pr-commands.md).

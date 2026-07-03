@@ -19,6 +19,7 @@ const sidebars: SidebarsConfig = {
   // any auto-generated sidebar and adjust ordering here, not in front matter.
   tutorialSidebar: [
     'intro',
+    'faq',
     {
       type: 'category',
       label: 'Setup',
@@ -96,6 +97,8 @@ const sidebars: SidebarsConfig = {
       items: [
         'concepts/repository-best-practices',
         'concepts/pr-review-guidelines',
+        'concepts/security-overview',
+        'concepts/glossary',
       ],
     },
     {
@@ -129,6 +132,8 @@ const sidebars: SidebarsConfig = {
         'operations/deployment',
         'operations/github-auth',
         'operations/maintenance',
+        'operations/troubleshooting',
+        'operations/configuration-reference',
         'operations/system-metrics',
         'operations/metrics-feedback-loop',
         'operations/llm-metrics',

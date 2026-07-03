@@ -8,7 +8,7 @@ Use this path only when you want to change ProPR code, run tests, validate docs,
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - Git 2.25+
 - Docker
 - Redis, if running services directly outside Docker Compose

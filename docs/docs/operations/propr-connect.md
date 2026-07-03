@@ -96,6 +96,10 @@ A delivery is redelivered only when no acknowledgement is sent at all (for examp
 
 This contract keeps policy local, adds no preflight latency or new request path, and avoids exposing a queryable whitelist surface.
 
+### Seats And Limits
+
+A seat is a distinct developer using the installation in a billing cycle; the free Community tier includes 3. When an installation is over its limit, further deliveries are acknowledged as `blocked` with `limit_reached` and shown in the delivery history — add Plus seats from the Connect dashboard to unblock new work.
+
 ## Hosted UI Tunnel Flow
 
 When the hosted UI tunnel is enabled, the browser can use the hosted ProPR UI while the API still runs locally:
