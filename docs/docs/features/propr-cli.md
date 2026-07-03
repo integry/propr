@@ -231,7 +231,7 @@ propr repo status                            # Indexing status for all repos
 ```bash
 propr agent list
 propr agent add my-claude -t claude -m model1,model2 -d model1
-propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabled
+propr agent add test -t antigravity -m antigravity-gemini-3.1-pro-high --disabled
 propr agent add opencode -t opencode -m opencode-minimax-m3-free \
   -d opencode-minimax-m3-free --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)

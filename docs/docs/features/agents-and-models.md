@@ -24,7 +24,7 @@ Authenticate each agent's CLI on the host first; the launcher and compose files 
 
 Every model has a GitHub label of the form `llm-<agent>-<model-alias>`. Add one to an issue (together with your trigger label, such as `AI`) to route that issue to the model. Adding **several** model labels to one issue creates a separate run, branch, and pull request per model, which is the built-in way to compare model output on the same task.
 
-The same model IDs work in PR comments:
+The same aliases work in PR comments (the `llm-` label minus its prefix; the raw catalog model ids are accepted too):
 
 ```
 /switch claude-opus48     # future follow-ups on this PR use this model

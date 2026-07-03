@@ -57,13 +57,13 @@ Use this only when you are changing ProPR code, validating docs, running tests, 
 
 [Source Development Setup](./setup-source.md)
 
-This path uses Node.js 20+, a source checkout, and development Compose or direct service commands.
+This path uses Node.js 22+, a source checkout, and development Compose or direct service commands.
 
 ## After Setup
 
 Once ProPR is running, configure it through either control surface — the Web UI or the [ProPR CLI](../features/propr-cli.md):
 
-1. Open the Web UI (or run `npm install -g propr-cli` and point it at the API with `propr remote` + `propr login`).
+1. Open the Web UI (or point the CLI you installed above at the API with `propr remote` + `propr login`).
 2. Add repositories (Web UI, or `propr repo add owner/repo`).
 3. Configure AI Agents and default models (Web UI, or `propr agent add`).
 4. Review labels and PR behavior.

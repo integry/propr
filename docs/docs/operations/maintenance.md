@@ -134,7 +134,7 @@ docker compose exec redis redis-cli --scan --pattern 'bull:*'
 
 Increase concurrency only when the bottleneck is clear. The relevant knobs:
 
-- `WORKER_CONCURRENCY` (default `2`) — concurrent jobs per worker
+- `WORKER_CONCURRENCY` — concurrent jobs per worker (code default `5`; the shipped `.env.example` sets `2`)
 - `POLLING_INTERVAL_MS` (default `60000`) — issue polling frequency
 - Agent timeouts: `CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`
 
