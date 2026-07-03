@@ -7,7 +7,7 @@
 
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
+import { resolveProject, ProjectResolutionError, printOutput, confirm } from "../utils/index.js";
 import {
   listTasks,
   stopTask,
@@ -199,23 +199,6 @@ function displayTaskDetails(status: TaskStatus): void {
   console.log(JSON.stringify(status, null, 2));
 }
 
-/**
- * Prompts the user for confirmation.
- */
-async function confirm(message: string): Promise<boolean> {
-  const readline = await import("readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(`${message} (y/N): `, (answer) => {
-      rl.close();
-      resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-    });
-  });
-}
 
 /**
  * Creates the `task` command group.

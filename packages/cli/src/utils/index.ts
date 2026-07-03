@@ -21,3 +21,4 @@ export {
 export type { FormatOutputOptions } from "./io.js";
 
 export { parseOnOffState, ParseStateError } from "./parseState.js";
+export { confirm } from "./confirm.js";

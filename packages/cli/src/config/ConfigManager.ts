@@ -69,7 +69,9 @@ export class ConfigManager {
    */
   private async ensureConfigDir(): Promise<void> {
     try {
-      await fs.promises.mkdir(this.configDir, { recursive: true });
+      // 0700: the config file stores the GitHub token, so the directory must
+      // not be listable by other users (mirrors the .env handling in envFile).
+      await fs.promises.mkdir(this.configDir, { recursive: true, mode: 0o700 });
     } catch (error) {
       // Directory already exists or other error
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -116,10 +118,21 @@ export class ConfigManager {
       }
 
       if (err instanceof SyntaxError) {
-        // JSON parsing error - corrupted file
-        console.warn(
-          `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). Using defaults.`
-        );
+        // JSON parsing error - corrupted file. Preserve the original before any
+        // later set()/save() overwrites it with defaults, so the user's saved
+        // token/remote/stack root can be recovered by hand.
+        const backupPath = `${this.configFilePath}.corrupt`;
+        try {
+          await fs.promises.copyFile(this.configFilePath, backupPath);
+          console.warn(
+            `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). ` +
+              `A backup was saved to ${backupPath}; continuing with defaults.`
+          );
+        } catch {
+          console.warn(
+            `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). Using defaults.`
+          );
+        }
         this.config = { ...DEFAULT_CONFIG };
         return this.config;
       }
@@ -190,7 +203,11 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
-    await fs.promises.writeFile(this.configFilePath, content, "utf-8");
+    // Atomic replace with owner-only permissions: the file stores the GitHub
+    // token, and a crash mid-write must not truncate the existing config.
+    const tmpPath = `${this.configFilePath}.tmp`;
+    await fs.promises.writeFile(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
+    await fs.promises.rename(tmpPath, this.configFilePath);
   }
 
   /**

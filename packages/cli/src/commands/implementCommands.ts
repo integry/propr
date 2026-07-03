@@ -105,6 +105,7 @@ Examples:
     .command("implement <issue-id>")
     .description("Implement a GitHub issue from a plan using AI agents")
     .option("-p, --project <project>", "Target project (owner/repo)")
+    .option("-j, --json", "Output the result (task id, state, PR) as JSON")
     .option("-w, --wait", "Wait for the implementation to complete")
     .option("-a, --agent <agent>", "Agent alias to use for implementation")
     .option("-m, --model <model>", "Model name to use for implementation")
@@ -125,6 +126,7 @@ Examples:
         issueId: string,
         options: {
           project?: string;
+          json?: boolean;
           wait?: boolean;
           agent?: string;
           model?: string;
@@ -147,7 +149,7 @@ Examples:
 
           const { draftId, issueNumber } = parsed;
 
-          console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
+          if (!options.json) console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
 
           const result = await implementIssue(draftId, issueNumber, {
             agent_alias: options.agent,
@@ -161,34 +163,50 @@ Examples:
             process.exit(1);
           }
 
-          console.log(result.message);
-
-          if (result.taskId) {
-            console.log(`Task ID: ${result.taskId}`);
-          }
-
-          if (!options.wait) {
+          if (!options.wait || !result.taskId) {
+            if (options.json) {
+              console.log(JSON.stringify({ success: true, taskId: result.taskId ?? null, message: result.message }, null, 2));
+              return;
+            }
+            console.log(result.message);
             if (result.taskId) {
+              console.log(`Task ID: ${result.taskId}`);
               console.log("");
               console.log(
                 "Use 'propr issue implement <issue-id> --wait' to wait for completion."
+              );
+            } else if (options.wait) {
+              console.log("");
+              console.log(
+                "Note: No task ID returned. The implementation may be triggered asynchronously."
               );
             }
             return;
           }
 
-          if (!result.taskId) {
+          if (!options.json) {
+            console.log(result.message);
+            console.log(`Task ID: ${result.taskId}`);
             console.log("");
-            console.log(
-              "Note: No task ID returned. The implementation may be triggered asynchronously."
-            );
-            return;
+            console.log("Waiting for implementation to complete...");
           }
 
-          console.log("");
-          console.log("Waiting for implementation to complete...");
-
           const finalStatus = await pollTaskStatus(result.taskId);
+
+          if (options.json) {
+            const terminal = finalStatus.isCompleted || finalStatus.isFailed;
+            console.log(JSON.stringify({
+              success: finalStatus.isCompleted,
+              taskId: result.taskId,
+              state: finalStatus.currentState,
+              prNumber: finalStatus.prNumber ?? null,
+              prUrl: finalStatus.prUrl ?? null,
+              failureReason: finalStatus.failureReason ?? null,
+              timedOut: !terminal,
+            }, null, 2));
+            if (!finalStatus.isCompleted) process.exitCode = 1;
+            return;
+          }
 
           console.log("");
 
@@ -212,6 +230,7 @@ Examples:
             );
             console.log(`Task ID: ${result.taskId}`);
             console.log("You can check the status later using the ProPR dashboard.");
+            process.exitCode = 1; // --wait did not reach a terminal state: fail for CI
           }
         } catch (error) {
           if (error instanceof ProjectResolutionError) {

@@ -93,14 +93,20 @@ export async function renderAgentValidation(
   const hub = new AgentTableHub();
   const instance = render(<AgentTableApp agents={agentTypesFor(agentsFilter, cfg)} hub={hub} />, { exitOnCtrlC: false });
 
-  const rows = await validateAgents(orch, cfg, {
-    agents: agentsFilter,
-    onUpdate: (agent, update) => hub.emit({ type: "update", agent, update }),
-  });
-  hub.emit({ type: "done" });
-
-  await instance.waitUntilExit();
-  return rows;
+  try {
+    const rows = await validateAgents(orch, cfg, {
+      agents: agentsFilter,
+      onUpdate: (agent, update) => hub.emit({ type: "update", agent, update }),
+    });
+    hub.emit({ type: "done" });
+    await instance.waitUntilExit();
+    return rows;
+  } catch (error) {
+    // Without this, a throw before the "done" event leaves the Ink app mounted
+    // and waitUntilExit() pending — the process hangs with the terminal captured.
+    instance.unmount();
+    throw error;
+  }
 }
 
 /**

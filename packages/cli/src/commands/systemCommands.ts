@@ -11,6 +11,8 @@ import {
   getQueueStats,
   SystemStatus,
   QueueStats,
+  UnauthorizedError,
+  NetworkError,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
 
@@ -281,11 +283,13 @@ Examples:
       } catch (error) {
         const errorMessage = (error as Error).message;
         if (
+          error instanceof UnauthorizedError ||
           errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
+          errorMessage.toLowerCase().includes("unauthorized")
         ) {
           console.error("Error: Unauthorized. Please run 'propr login' first.");
         } else if (
+          error instanceof NetworkError ||
           errorMessage.includes("ECONNREFUSED") ||
           errorMessage.includes("network")
         ) {
@@ -333,11 +337,13 @@ Examples:
       } catch (error) {
         const errorMessage = (error as Error).message;
         if (
+          error instanceof UnauthorizedError ||
           errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
+          errorMessage.toLowerCase().includes("unauthorized")
         ) {
           console.error("Error: Unauthorized. Please run 'propr login' first.");
         } else if (
+          error instanceof NetworkError ||
           errorMessage.includes("ECONNREFUSED") ||
           errorMessage.includes("network")
         ) {

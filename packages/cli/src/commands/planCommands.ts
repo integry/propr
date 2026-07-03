@@ -20,7 +20,7 @@ import {
   PlanStatus,
 } from "../api/index.js";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
+import { resolveProject, ProjectResolutionError, printOutput, confirm } from "../utils/index.js";
 
 /**
  * Formats a plan status for display with color hints.
@@ -112,23 +112,6 @@ function displayPlanDetails(plan: Plan): void {
   console.log("=".repeat(60));
 }
 
-/**
- * Prompts the user for confirmation.
- */
-async function confirm(message: string): Promise<boolean> {
-  const readline = await import("readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(`${message} (y/N): `, (answer) => {
-      rl.close();
-      resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-    });
-  });
-}
 
 /**
  * Creates the `plan` command group.
@@ -228,6 +211,7 @@ Examples:
     .description("Create a new implementation plan from a natural language prompt")
     .option("-p, --project <project>", "Target project (owner/repo)")
     .option("-b, --branch <branch>", "Target branch (default: main)", "main")
+    .option("-j, --json", "Output the created plan (draft id, status) as JSON")
     .option("-w, --wait", "Wait for plan generation to complete")
     .addHelpText("after", `
 Argument:
@@ -238,12 +222,12 @@ Examples:
   $ propr plan create "Fix the login page styling" --wait
   $ propr plan create "Add dark mode" -b develop -p myorg/myrepo --wait
 `)
-    .action(async (prompt: string, options: { project?: string; branch: string; wait?: boolean }) => {
+    .action(async (prompt: string, options: { project?: string; branch: string; json?: boolean; wait?: boolean }) => {
       try {
         const configManager = await createConfigManager();
         const project = resolveProject(options, configManager);
 
-        console.log(`Creating plan for ${project}...`);
+        if (!options.json) console.log(`Creating plan for ${project}...`);
 
         const planResult = await createPlan(project, prompt, {
           contextConfig: {
@@ -251,21 +235,27 @@ Examples:
           },
         });
 
-        console.log(`Plan created with ID: ${planResult.draft_id}`);
-        console.log(`Status: ${planResult.status}`);
-
-        // Trigger generation
-        console.log("Triggering plan generation...");
+        if (!options.json) {
+          console.log(`Plan created with ID: ${planResult.draft_id}`);
+          console.log(`Status: ${planResult.status}`);
+          console.log("Triggering plan generation...");
+        }
         await generatePlan(planResult.draft_id);
 
         if (!options.wait) {
+          if (options.json) {
+            console.log(JSON.stringify({ draftId: planResult.draft_id, status: "generating" }, null, 2));
+            return;
+          }
           console.log("");
           console.log(`Generation started. Use 'propr plan get ${planResult.draft_id}' to check status.`);
           return;
         }
 
-        console.log("");
-        console.log("Waiting for plan generation to complete...");
+        if (!options.json) {
+          console.log("");
+          console.log("Waiting for plan generation to complete...");
+        }
 
         // "review" is the terminal success state after generation completes.
         // "draft" is only terminal if we already saw generation activity.
@@ -284,7 +274,7 @@ Examples:
           currentPlan = await getPlan(planResult.draft_id);
 
           if (currentPlan.status !== lastStatus) {
-            console.log(`Status: ${formatStatus(currentPlan.status)}`);
+            if (!options.json) console.log(`Status: ${formatStatus(currentPlan.status)}`);
             lastStatus = currentPlan.status;
           }
 
@@ -301,8 +291,19 @@ Examples:
           }
         }
 
-        console.log("");
         const isDone = doneStatuses.includes(currentPlan.status) || (currentPlan.status === "draft" && sawGenerating);
+        if (options.json) {
+          console.log(JSON.stringify({
+            draftId: currentPlan.draft_id,
+            status: currentPlan.status,
+            name: currentPlan.name ?? null,
+            completed: isDone && currentPlan.status !== "failed",
+            timedOut: !isDone,
+          }, null, 2));
+          if (currentPlan.status === "failed" || !isDone) process.exitCode = 1;
+          return;
+        }
+        console.log("");
         if (currentPlan.status === "failed") {
           console.error("Plan generation failed.");
           process.exit(1);
@@ -314,6 +315,7 @@ Examples:
           }
         } else {
           console.log(`Timeout: Plan is still ${formatStatus(currentPlan.status)} after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
+          process.exitCode = 1; // --wait did not reach a terminal state: fail for CI
           console.log(`Plan ID: ${currentPlan.draft_id}`);
           console.log(`Use 'propr plan get ${currentPlan.draft_id}' to check status.`);
         }
@@ -528,6 +530,7 @@ Examples:
         }
 
         console.log(`Timeout after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
+        process.exitCode = 1; // --wait did not reach a terminal state: fail for CI
       } catch (error) {
         console.error(`Error generating plan: ${(error as Error).message}`);
         process.exit(1);
