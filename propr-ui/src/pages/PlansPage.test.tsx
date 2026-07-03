@@ -129,9 +129,12 @@ describe('PlansPage', () => {
     const statusSelect = screen.getByDisplayValue('All Statuses');
     const repoTrigger = screen.getByRole('button', { name: /All Repos/i });
 
-    expect(searchInput).toHaveClass('w-full');
-    expect(statusSelect).toHaveClass('w-full');
-    expect(repoTrigger.parentElement).toHaveClass('w-full');
+    // The header intentionally uses the inline layout (PR #1462 follow-up
+    // rolled back the stacked w-full variant): fixed-width search, a
+    // width-capped status select, and a shrinkable repo selector.
+    expect(searchInput).toHaveClass('w-64');
+    expect(statusSelect).toHaveClass('w-[120px]');
+    expect(repoTrigger.parentElement).toHaveClass('min-w-0');
   });
 
   it('refreshes repository metadata for relevant socket status changes on the current page', async () => {
