@@ -63,7 +63,7 @@ Task state is persisted so the Web UI can show progress and outcomes (`packages/
 - `failed`
 - `cancelled`
 
-`claude_execution` covers the agent-implementation phase for every agent type, not only Claude Code. State records include enough metadata to connect the original trigger, selected agent, output, commits, and PR.
+Despite its name, `claude_execution` covers the agent-implementation phase for every agent type. State records include enough metadata to connect the original trigger, selected agent, output, commits, and PR.
 
 ## Configuration
 

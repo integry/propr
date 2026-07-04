@@ -28,7 +28,7 @@ Agent Tank reads usage directly from the CLI tools you already have installed. I
 - send usage data to any remote service
 - rely on log-file heuristics
 
-This matters for ProPR: the usage numbers in the sidebar come from the same `/usage` output you would see if you ran the CLI yourself, not from an estimate.
+This matters for ProPR: the usage numbers in the sidebar come from the same `/usage` output you would see if you ran the CLI yourself; no estimation is involved.
 
 ## Run Agent Tank
 
@@ -76,11 +76,11 @@ Because Agent Tank is an external service rather than a stack container, `propr 
 
 ### Networking: ProPR To Agent Tank
 
-ProPR's daemon and workers run **inside Docker containers**, so "localhost" from a container is the container itself, not the host where Agent Tank runs. This is the most common reason the integration appears to do nothing.
+ProPR's daemon and workers run **inside Docker containers**, so "localhost" from a container refers to the container itself, while Agent Tank runs on the host. This is the most common reason the integration appears to do nothing.
 
 - Agent Tank binds `127.0.0.1` plus, when Docker is available, the **private** Docker bridge gateway addresses — so containers on the same host can reach it without exposing it on a public interface. It does *not* bind `0.0.0.0` (all interfaces) unless you explicitly start it with `--host 0.0.0.0`. Conversely, `--no-docker` keeps it on localhost only, which ProPR's containers cannot reach.
 - From a ProPR container, reach Agent Tank on the host via `http://host.docker.internal:3456` (this is the URL the detection banner probes and the recommended setting).
-- ProPR's shipped default *setting* value is `http://0.0.0.0:3456`, but `0.0.0.0` is a bind address, not a connect address — replace it with `host.docker.internal` (containers) or `localhost`/`127.0.0.1` (same-host, non-containerized) before relying on it.
+- ProPR's shipped default *setting* value is `http://0.0.0.0:3456`, but `0.0.0.0` is a bind address; to connect, replace it with `host.docker.internal` (containers) or `localhost`/`127.0.0.1` (same-host, non-containerized) before relying on it.
 
 Two environment variables tune the backend integration:
 
@@ -103,11 +103,11 @@ The integration never blocks a task. If Agent Tank is disabled, unreachable, or 
 - the LLM call runs and completes normally with no usage delta recorded, and
 - the sidebar Usage section hides itself.
 
-So a missing or stopped Agent Tank instance degrades to "no capacity bars," never to failed work.
+So a missing or stopped Agent Tank instance degrades to "no capacity bars," and the work itself completes normally.
 
 ## Troubleshooting
 
-- **Sidebar is empty / "not connected" in Settings.** Confirm Agent Tank is running (`http://127.0.0.1:3456` in a browser) and that the URL ProPR uses is reachable *from inside the container* — typically `http://host.docker.internal:3456`, not `localhost`. Avoid `--no-docker` when ProPR runs in Docker.
+- **Sidebar is empty / "not connected" in Settings.** Confirm Agent Tank is running (`http://127.0.0.1:3456` in a browser) and that the URL ProPR uses is reachable *from inside the container* — typically `http://host.docker.internal:3456`, since `localhost` there resolves to the container itself. Avoid `--no-docker` when ProPR runs in Docker.
 - **No agents found by Agent Tank.** At least one supported CLI (`claude`, `agy`, or `codex`) must be installed, authenticated, and on the `PATH` of the host running Agent Tank. Check with `claude --version` etc.
 - **`Timeout waiting for usage data`.** Make sure the CLI works and is authenticated on its own (no pending trust/auth/update prompts). For Claude, try `--claude-api`.
 

@@ -18,7 +18,7 @@ The full list of models and their labels lives in [Agents and Models](./agents-a
 
 ## What Routing Solves
 
-Different agents are better at different work. You may also have a mix of subscription access, API access, and provider-specific limits. ProPR treats the agent and model as routing decisions, not as separate workflows.
+Different agents are better at different work. You may also have a mix of subscription access, API access, and provider-specific limits. ProPR treats the agent and model as routing decisions within a single workflow.
 
 Use routing when you want to:
 

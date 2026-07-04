@@ -66,7 +66,7 @@ ProPR keeps a rolling list of recent high-cost alerts in the LLM metrics summary
 - One repository becomes unusually expensive
 - A provider starts returning rate-limit errors
 
-A cost spike should lead to an action — smaller task scope, a different model, or loop limits — not just acknowledgment.
+A cost spike should lead to an action: smaller task scope, a different model, or loop limits.
 
 ## Related Pages
 

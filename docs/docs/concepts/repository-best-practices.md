@@ -35,7 +35,7 @@ Lint rules that cap file length, function size, and cyclomatic complexity keep d
 ProPR does not measure or enforce complexity, and it indexes large files like any other. But repository knowledge degrades when structure is unclear: plans miss important files, agents change the wrong layer, and suggestions get generic (see [Repository Knowledge](../features/repository-knowledge.md)). Clear module boundaries and small files improve both planning and review.
 
 :::tip[Scope work small]
-Acceptance rate drops when tasks are too broad. Prefer smaller issues that produce focused PRs — see [Work Splitting](../features/work-splitting.md) and [Planning](../features/planning.md). Low PR acceptance usually points to scope, not the agent ([System Metrics](../operations/system-metrics.md)).
+Acceptance rate drops when tasks are too broad. Prefer smaller issues that produce focused PRs — see [Work Splitting](../features/work-splitting.md) and [Planning](../features/planning.md). Low PR acceptance usually points to a scope problem; the agent is rarely the cause ([System Metrics](../operations/system-metrics.md)).
 :::
 
 ## Match The Agent Environment To CI

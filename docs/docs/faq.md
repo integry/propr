@@ -18,7 +18,7 @@ The software is free and open source (Apache 2.0). You pay your AI providers dir
 Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe — on subscription-backed logins or API keys, switchable per task and per phase with `llm-*` labels or `/switch`. See [Agents and Models](./features/agents-and-models.md).
 
 **Is the agent sandboxed?**
-Each task runs in its own Docker container and Git worktree, and ProPR — not the agent — performs all Git and GitHub operations. Outbound network access is unrestricted by default; an optional allowlist firewall exists but requires privileged containers. See [Execution Safety](./features/execution-safety.md).
+Each task runs in its own Docker container and Git worktree, and ProPR itself performs all Git and GitHub operations on the agent's behalf. Outbound network access is unrestricted by default; an optional allowlist firewall exists but requires privileged containers. See [Execution Safety](./features/execution-safety.md).
 
 **Can I run it offline or air-gapped?**
 No. ProPR needs GitHub and your model providers to do its job. The documentation is bundled for offline reading (`propr docs`), but the workflow itself is GitHub-centered.

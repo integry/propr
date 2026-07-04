@@ -36,7 +36,7 @@ Without instructions, `/switch` only updates the label and makes no code changes
 Please investigate the flaky test failure and update the PR.
 ```
 
-The PR's model label does not change. Later work returns to the PR's configured model unless you use `/switch` or another `/use`. Like `/switch`, `/use` takes one model argument, and the agent sees only your instructions — not the command syntax.
+The PR's model label does not change. Later work returns to the PR's configured model unless you use `/switch` or another `/use`. Like `/switch`, `/use` takes one model argument, and the agent sees only your instructions, without the command syntax.
 
 ## Choosing A Model
 

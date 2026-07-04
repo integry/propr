@@ -16,7 +16,7 @@ Review these signals regularly:
 
 Pull the numbers from the dashboard (queue stats, success rate, repository breakdown, top models, total cost), the Tasks page (per-task outcomes and failure context), and the LLM Log page (per-call cost and duration). See [System Metrics](./system-metrics.md) and [LLM Metrics](./llm-metrics.md) for where each number comes from.
 
-Look at trends, not just one-off failures.
+Weight trends more heavily than one-off failures.
 
 ## Failure Analysis
 

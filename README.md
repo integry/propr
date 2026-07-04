@@ -30,7 +30,7 @@ ProPR is a **self-hosted platform** that runs AI coding agents through the GitHu
 
 ProPR builds itself: since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across its author's products have shipped through it — including [690+ merged pull requests in this repository](https://github.com/integry/propr/pulls?q=is%3Apr+is%3Amerged).
 
-## Modular, not all-or-nothing
+## Adopt one stage or all of them
 
 ProPR is a set of stages you can adopt independently — use one or all:
 

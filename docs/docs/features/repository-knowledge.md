@@ -25,7 +25,7 @@ Summaries are useful when:
 - Comparing related areas before splitting work
 - Checking whether a generated plan is looking at the right part of the repository
 
-Summaries are a map, not the source of truth — they do not replace current file context during implementation.
+Summaries are a map of the repository; they do not replace current file context during implementation.
 
 ## Repository Chat
 
@@ -48,7 +48,7 @@ The **Improve** tab generates improvement suggestions for a repository. You can:
 - Optionally select a reference repository to compare against
 - Select the suggestions worth keeping and convert them into repository todos or a new plan
 
-Suggestions are planning inputs, not automatic changes. A human decides priority, scope, and timing before anything runs.
+Suggestions are planning inputs. A human decides priority, scope, and timing before anything runs.
 
 ## Repository Todos
 

@@ -64,9 +64,9 @@ The runtime should preserve these boundaries:
 
 Agent images ship `scripts/init-firewall.sh`, an optional egress-restriction script. All current agent entrypoints skip it because applying those rules requires running the container with Docker's `--privileged` flag.
 
-Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted by default. Treat the firewall script as available hardening for deployments that can run privileged containers, not as an active control in the default runtime.
+Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted by default. Treat the firewall script as available hardening for deployments that can run privileged containers; in the default runtime it is inactive.
 
-Provider connectivity failures usually come from the host network, DNS, proxy settings, provider availability, or an external firewall, not from a ProPR-applied network policy. If you enable the firewall script in a privileged deployment, confirm its allowlist covers GitHub and the provider endpoints required by every enabled agent image.
+Provider connectivity failures usually come from the host network, DNS, proxy settings, provider availability, or an external firewall; ProPR applies no network policy of its own in the default runtime. If you enable the firewall script in a privileged deployment, confirm its allowlist covers GitHub and the provider endpoints required by every enabled agent image.
 
 ## Monitoring And Debugging
 

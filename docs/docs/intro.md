@@ -30,7 +30,7 @@ ProPR supports the full idea-to-merge flow, but it does not require it. Each sta
 - **PR review and fixes only**: run `/review`, `/fix`, and other slash commands on any eligible pull request — including PRs created outside ProPR.
 - **Existing PR takeover**: hand an already-open PR to ProPR by adding the configured processing label, then continue with normal follow-up comments or slash commands.
 
-End-to-end usage remains fully supported — it is just one of the ways to use ProPR, not a requirement.
+End-to-end usage remains fully supported — it is simply one of the ways to use ProPR.
 
 ## Key Capabilities
 
