@@ -12,7 +12,6 @@ import {
   TaskState,
   TaskStatus,
 } from "../api/index.js";
-import { createConfigManager } from "../config/index.js";
 import { normalizeProjectSlug } from "../utils/index.js";
 
 /**
@@ -45,15 +44,21 @@ function parseIssueId(issueId: string): { draftId: string; issueNumber: number }
   return null;
 }
 
+/**
+ * Resolves the repository assertion sent with an implement request.
+ *
+ * Only an explicit -p/--project becomes an assertion. The configured default
+ * project is deliberately NOT used here: the draft alone determines the
+ * repository, and sending the default would reject implements of drafts in
+ * other repositories.
+ */
 export function resolveOptionalImplementationRepository(
-  options: { project?: string },
-  configManager: { getDefaultProject(): string | undefined }
+  options: { project?: string }
 ): string | undefined {
-  const repository = options.project ?? configManager.getDefaultProject();
-  if (repository === undefined) {
+  if (options.project === undefined) {
     return undefined;
   }
-  const normalized = normalizeProjectSlug(repository);
+  const normalized = normalizeProjectSlug(options.project);
   if (normalized === null) {
     throw new Error("Invalid project format. Expected 'owner/repo'.");
   }
@@ -120,7 +125,7 @@ Examples:
     .command("implement <issue-id>")
     .description("Implement a GitHub issue from a plan using AI agents")
     .option("-w, --wait", "Wait for the implementation to complete")
-    .option("-p, --project <project>", "Target project (owner/repo)")
+    .option("-p, --project <project>", "Assert the issue's repository (owner/repo); the request fails if it does not match")
     .option("-a, --agent <agent>", "Agent alias to use for implementation")
     .option("-m, --model <model>", "Model name to use for implementation")
     .option("--epic", "Create an Epic PR to collect all related PRs")
@@ -161,8 +166,7 @@ Examples:
           }
 
           const { draftId, issueNumber } = parsed;
-          const configManager = await createConfigManager();
-          const repository = resolveOptionalImplementationRepository(options, configManager);
+          const repository = resolveOptionalImplementationRepository(options);
 
           console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
 

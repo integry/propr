@@ -132,3 +132,6 @@ export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from './labe
 
 // Export the default review guidance (the overridable part of the /review prompt)
 export { DEFAULT_REVIEW_GUIDANCE } from './reviewPrompt.js';
+
+// Export the owner/repo slug parser shared by the CLI and API
+export { parseProjectSlug } from './projectSlug.js';

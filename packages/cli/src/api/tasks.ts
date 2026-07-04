@@ -438,6 +438,13 @@ export async function followupTask(
   return response.data;
 }
 
+/**
+ * Queues a task import (reconcile/recover from GitHub) for a repository.
+ *
+ * The endpoint requires a non-empty taskDescription; callers without one
+ * should supply a default (`propr task import` uses "Reconcile and recover
+ * tasks from GitHub" when the user gives no description).
+ */
 export async function importTasks(
   repository: string,
   taskDescription: string,

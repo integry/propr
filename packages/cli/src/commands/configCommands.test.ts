@@ -25,6 +25,13 @@ test("sanitizeRemoteProfile does not expose short tokens", () => {
   });
 });
 
+test("sanitizeRemoteProfile never previews most of a mid-length token", () => {
+  // A 4+4 preview of a 9-12 character token would expose the bulk of it.
+  assert.equal(sanitizeRemoteProfile({ githubToken: "123456789" }).githubToken, "(set)");
+  assert.equal(sanitizeRemoteProfile({ githubToken: "123456789012" }).githubToken, "(set)");
+  assert.equal(sanitizeRemoteProfile({ githubToken: "1234567890123" }).githubToken, "1234...0123");
+});
+
 test("sanitizeRemoteProfiles redacts every profile token", () => {
   const view = sanitizeRemoteProfiles({
     default: { githubToken: "ghp_defaulttoken" },

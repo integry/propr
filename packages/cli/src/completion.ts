@@ -15,7 +15,10 @@ export interface CompletionMetadata {
   subcommands: Record<string, string[]>;
   nestedSubcommands: Record<string, Record<string, string[]>>;
   options: Record<string, string[]>;
+  /** Value-taking option flags whose argument is not a file path. */
   valueOptions: string[];
+  /** Value-taking option flags whose argument is a file path. */
+  fileOptions: string[];
 }
 
 /**
@@ -52,10 +55,14 @@ function commandOptionFlags(command: Command): string[] {
   return command.options.flatMap((option) => [option.long, option.short].filter((flag): flag is string => Boolean(flag)));
 }
 
-function valueOptionFlags(command: Command): string[] {
-  return command.options
-    .filter((option) => option.required || option.optional)
-    .flatMap((option) => [option.long, option.short].filter((flag): flag is string => Boolean(flag)));
+function collectValueOptionFlags(command: Command, valueOptions: Set<string>, fileOptions: Set<string>): void {
+  for (const option of command.options) {
+    if (!option.required && !option.optional) continue;
+    const target = option.long === "--file" ? fileOptions : valueOptions;
+    for (const flag of [option.long, option.short]) {
+      if (flag) target.add(flag);
+    }
+  }
 }
 
 export function buildCompletionMetadata(root: Command): CompletionMetadata {
@@ -63,13 +70,15 @@ export function buildCompletionMetadata(root: Command): CompletionMetadata {
   const subcommands: Record<string, string[]> = {};
   const nestedSubcommands: Record<string, Record<string, string[]>> = {};
   const options: Record<string, string[]> = {};
-  const valueOptions = new Set<string>(valueOptionFlags(root));
+  const valueOptions = new Set<string>();
+  const fileOptions = new Set<string>();
+  collectValueOptionFlags(root, valueOptions, fileOptions);
 
   function visit(command: Command, parentPath: string[]): void {
     const path = commandPath(command, parentPath);
     const flags = commandOptionFlags(command);
     if (flags.length > 0) options[path] = flags;
-    for (const flag of valueOptionFlags(command)) valueOptions.add(flag);
+    collectValueOptionFlags(command, valueOptions, fileOptions);
     if (command.commands.length > 0) {
       if (parentPath.length === 0) {
         subcommands[command.name()] = command.commands.map((subcommand) => subcommand.name());
@@ -87,14 +96,23 @@ export function buildCompletionMetadata(root: Command): CompletionMetadata {
     subcommands,
     nestedSubcommands,
     options,
-    valueOptions: Array.from(valueOptions),
+    valueOptions: Array.from(valueOptions).filter((flag) => !fileOptions.has(flag)),
+    fileOptions: Array.from(fileOptions),
   };
 }
 
+/**
+ * Formats a flag as fish `complete` option arguments (`-l name` / `-s n`) so
+ * options are registered as options rather than positional arguments.
+ */
+function fishOptionArgs(flag: string): string {
+  if (flag.startsWith("--")) return `-l '${escapeForFishSingleQuotes(flag.slice(2))}'`;
+  return `-s '${escapeForFishSingleQuotes(flag.slice(1))}'`;
+}
+
 export function completionScript(root: Command, shell: CompletionShell): string {
-  const { commands, subcommands, nestedSubcommands, options, valueOptions } = buildCompletionMetadata(root);
+  const { commands, subcommands, nestedSubcommands, options, valueOptions, fileOptions } = buildCompletionMetadata(root);
   const commandWords = joinEscaped(commands);
-  const valueOptionPattern = casePattern(valueOptions);
   const optionCases = Object.entries(options)
     .map(([path, opts]) => `    "${escapeForDoubleQuotes(path)}") COMPREPLY=( $(compgen -W "${joinEscaped(opts)}" -- "$cur") ); return 0 ;;`)
     .join("\n");
@@ -104,6 +122,16 @@ export function completionScript(root: Command, shell: CompletionShell): string 
   const zshNestedCases = Object.entries(nestedSubcommands)
     .flatMap(([cmd, nested]) => Object.entries(nested).map(([sub, subs]) => `      "${escapeForDoubleQuotes(`${cmd} ${sub}`)}") compadd -- ${quoteWords(subs)}; return ;;`))
     .join("\n");
+  // Files only complete after file-taking options; other value options take
+  // free-form arguments, so suggesting filenames there is noise.
+  const bashValueArms = [
+    ...(fileOptions.length > 0 ? [`    ${casePattern(fileOptions)}) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;`] : []),
+    ...(valueOptions.length > 0 ? [`    ${casePattern(valueOptions)}) return 0 ;;`] : []),
+  ].join("\n");
+  const zshValueArms = [
+    ...(fileOptions.length > 0 ? [`    ${casePattern(fileOptions)}) _files; return ;;`] : []),
+    ...(valueOptions.length > 0 ? [`    ${casePattern(valueOptions)}) return ;;`] : []),
+  ].join("\n");
 
   if (shell === "zsh") {
     return `#compdef propr
@@ -113,15 +141,19 @@ _propr() {
     return
   fi
   case "$words[CURRENT-1]" in
-    ${valueOptionPattern}) _files; return ;;
+${zshValueArms}
   esac
   if [[ "$words[CURRENT]" == -* ]]; then
     local path3="$words[2] $words[3] $words[4]"
     local path2="$words[2] $words[3]"
+    local path1="$words[2]"
     case "$path3" in
 ${zshOptionCases}
     esac
     case "$path2" in
+${zshOptionCases}
+    esac
+    case "$path1" in
 ${zshOptionCases}
     esac
   fi
@@ -130,9 +162,11 @@ ${zshOptionCases}
 ${zshNestedCases}
     esac
   fi
-  case "$words[2]" in
+  if (( CURRENT == 3 )); then
+    case "$words[2]" in
 ${Object.entries(subcommands).map(([cmd, subs]) => `    "${escapeForDoubleQuotes(cmd)}") compadd -- ${quoteWords(subs)} ;;`).join("\n")}
-  esac
+    esac
+  fi
 }
 _propr
 `;
@@ -152,7 +186,7 @@ _propr
       const parts = path.split(" ");
       const condition = parts.map((part) => `__fish_seen_subcommand_from ${escapeForFishSingleQuotes(part)}`).join("; and ");
       for (const option of opts) {
-        lines.push(`complete -c propr -f -n '${condition}' -a '${escapeForFishSingleQuotes(option)}'`);
+        lines.push(`complete -c propr -f -n '${condition}' ${fishOptionArgs(option)}`);
       }
     }
     return `${lines.join("\n")}\n`;
@@ -164,7 +198,7 @@ _propr
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
   case "$prev" in
-    ${valueOptionPattern}) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+${bashValueArms}
   esac
   if [[ \${COMP_CWORD} -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "${commandWords}" -- "$cur") )
@@ -173,10 +207,14 @@ _propr
   if [[ "$cur" == -* ]]; then
     local path3="\${COMP_WORDS[1]} \${COMP_WORDS[2]} \${COMP_WORDS[3]}"
     local path2="\${COMP_WORDS[1]} \${COMP_WORDS[2]}"
+    local path1="\${COMP_WORDS[1]}"
     case "$path3" in
 ${optionCases}
     esac
     case "$path2" in
+${optionCases}
+    esac
+    case "$path1" in
 ${optionCases}
     esac
   fi
@@ -185,9 +223,11 @@ ${optionCases}
 ${Object.entries(nestedSubcommands).flatMap(([cmd, nested]) => Object.entries(nested).map(([sub, subs]) => `      "${escapeForDoubleQuotes(`${cmd} ${sub}`)}") COMPREPLY=( $(compgen -W "${joinEscaped(subs)}" -- "$cur") ); return 0 ;;`)).join("\n")}
     esac
   fi
-  case "\${COMP_WORDS[1]}" in
+  if [[ \${COMP_CWORD} -eq 2 ]]; then
+    case "\${COMP_WORDS[1]}" in
 ${Object.entries(subcommands).map(([cmd, subs]) => `    "${escapeForDoubleQuotes(cmd)}") COMPREPLY=( $(compgen -W "${joinEscaped(subs)}" -- "$cur") ) ;;`).join("\n")}
-  esac
+    esac
+  fi
 }
 complete -F _propr_completion propr
 `;

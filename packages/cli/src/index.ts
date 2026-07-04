@@ -155,6 +155,7 @@ Command Groups:
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
   Backend:        backend [status|queue], remote-status, queue
+  Shell:          completion [bash|zsh|fish]
 
 For more information on a command, run:
   $ propr <command> --help

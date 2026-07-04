@@ -6,5 +6,5 @@
  */
 
 export { ConfigManager, createConfigManager, isValidRemoteProfileName } from "./ConfigManager.js";
-export type { CLIConfig, ConfigKey, RemoteProfile } from "./types.js";
+export type { CLIConfig, ConfigKey, ConfigValues, RemoteProfile } from "./types.js";
 export { DEFAULT_CONFIG } from "./types.js";

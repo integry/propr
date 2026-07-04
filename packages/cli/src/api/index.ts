@@ -161,7 +161,6 @@ export type {
   GetSettingsResponse,
   UpdateSettingsOptions,
   UpdateSettingsResponse,
-  NamedConfigValueResponse,
   NamedConfigEndpoint,
   NamedConfigValueByEndpoint,
   ReindexAllResponse,

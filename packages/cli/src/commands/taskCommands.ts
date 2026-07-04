@@ -811,7 +811,10 @@ Examples:
 
           const result = await revertTask(owner, repoName, prNumber, commit, commentIdNum);
 
-          if (result.success && printOutput(result, options.json ?? false)) {
+          if (printOutput(result, options.json ?? false)) {
+            if (!result.success) {
+              process.exit(1);
+            }
             return;
           }
 

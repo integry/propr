@@ -10,6 +10,7 @@ import {
   type PlanIssue
 } from '@propr/core';
 import { PlanIssueStatus } from '@propr/core';
+import { parseProjectSlug } from '@propr/shared';
 import {
   handleMultiAgentImplementation,
   handleSingleAgentImplementation,
@@ -42,10 +43,15 @@ class IssueConfigRollbackError extends Error {
     this.name = 'IssueConfigRollbackError';
   }
 }
-class BadImplementationRequestError extends Error {
-  constructor(message: string) {
+/**
+ * Request-level failure while preparing an issue implementation. The single
+ * error-signaling convention for the implement path: helpers throw, and
+ * sendImplementIssueError translates to an HTTP response in one place.
+ */
+class ImplementationRequestError extends Error {
+  constructor(readonly status: number, message: string) {
     super(message);
-    this.name = 'BadImplementationRequestError';
+    this.name = 'ImplementationRequestError';
   }
 }
 function buildConfigUpdatesFromIssueUpdate(issueUpdates: ReturnType<typeof buildIssueUpdate>): { agent_alias?: string | null; model_name?: string | null } {
@@ -135,27 +141,28 @@ interface ImplementIssueBody {
   repository?: unknown;
   useEpic?: unknown;
   autoMerge?: unknown;
-  models?: ImplementationModel[];
+  models?: unknown;
   agent_alias?: string;
   model_name?: string;
 }
-function parseRepositoryParts(repository: string): { owner: string; repo: string } | null {
-  const parts = repository.trim().split('/');
-  if (parts.length !== 2) return null;
-  const [owner, repo] = parts;
-  const isValidSegment = (segment: string): boolean => (
-    segment !== '.' &&
-    segment !== '..' &&
-    /^[A-Za-z0-9_.-]+$/.test(segment)
+function validateImplementationModels(models: unknown): ImplementationModel[] | undefined {
+  if (models === undefined) return undefined;
+  const isModel = (entry: unknown): entry is ImplementationModel => (
+    typeof entry === 'object' && entry !== null && !Array.isArray(entry) &&
+    typeof (entry as Record<string, unknown>).agent_alias === 'string' &&
+    typeof (entry as Record<string, unknown>).model_name === 'string'
   );
-  return isValidSegment(owner) && isValidSegment(repo) ? { owner, repo } : null;
+  if (!Array.isArray(models) || !models.every(isModel)) {
+    throw new ImplementationRequestError(400, 'models must be an array of { agent_alias, model_name } objects');
+  }
+  return models;
 }
 function validateRequestedRepository(requestedRepository: unknown, repository: string): string | null {
   if (requestedRepository === undefined) return null;
   if (typeof requestedRepository !== 'string') {
     return 'repository must be an owner/repo string';
   }
-  const requestedParts = parseRepositoryParts(requestedRepository);
+  const requestedParts = parseProjectSlug(requestedRepository);
   if (!requestedParts) {
     return 'repository must be an owner/repo string';
   }
@@ -180,7 +187,7 @@ async function runIssueImplementation(params: ImplementIssueContext & {
   models?: ImplementationModel[];
 }): Promise<unknown> {
   const { models } = params;
-  if (models && Array.isArray(models) && models.length > 0) {
+  if (models && models.length > 0) {
     return handleMultiAgentImplementation({ ...params, models });
   }
   return handleSingleAgentImplementation(params);
@@ -189,7 +196,6 @@ async function runIssueImplementation(params: ImplementIssueContext & {
 async function loadImplementationTarget(params: {
   deps: PlanIssueDeps;
   req: Request;
-  res: Response;
   draftId: string;
   issueNumber: number;
 }): Promise<{
@@ -199,24 +205,28 @@ async function loadImplementationTarget(params: {
   contextConfig: ReturnType<typeof parseContextConfig>;
   implementationSettings: ReturnType<typeof parseImplementationSettingsOverrides>['settings'];
   body: ImplementIssueBody;
+  models?: ImplementationModel[];
   planIssue: PlanIssue;
-} | null> {
-  const { deps, req, res, draftId, issueNumber } = params;
+}> {
+  const { deps, req, draftId, issueNumber } = params;
   const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config']);
-  if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return null; }
+  if (!ownership.authorized) {
+    throw new ImplementationRequestError(ownership.status ?? 403, ownership.error ?? 'Not authorized');
+  }
   const draft = ownership.draft!;
   const repository = draft.repository as string;
-  const repositoryParts = parseRepositoryParts(repository);
-  if (!repositoryParts) { res.status(400).json({ error: 'Invalid repository format' }); return null; }
+  const repositoryParts = parseProjectSlug(repository);
+  if (!repositoryParts) throw new ImplementationRequestError(400, 'Invalid repository format');
   const body = req.body as ImplementIssueBody;
   const repositorySlug = `${repositoryParts.owner}/${repositoryParts.repo}`;
   const requestedRepositoryError = validateRequestedRepository(body.repository, repositorySlug);
-  if (requestedRepositoryError) { res.status(400).json({ error: requestedRepositoryError }); return null; }
+  if (requestedRepositoryError) throw new ImplementationRequestError(400, requestedRepositoryError);
+  const models = validateImplementationModels(body.models);
   const contextConfig = parseContextConfig(draft.context_config);
   const { settings: implementationSettings, error: implementationSettingsError } = parseImplementationSettingsOverrides(body);
-  if (implementationSettingsError) throw new BadImplementationRequestError(implementationSettingsError);
+  if (implementationSettingsError) throw new ImplementationRequestError(400, implementationSettingsError);
   const planIssue = await getPlanIssue(draftId, issueNumber);
-  if (!planIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return null; }
+  if (!planIssue) throw new ImplementationRequestError(404, 'Issue not found in this plan');
   return {
     owner: repositoryParts.owner,
     repo: repositoryParts.repo,
@@ -224,6 +234,7 @@ async function loadImplementationTarget(params: {
     contextConfig,
     implementationSettings,
     body,
+    models,
     planIssue
   };
 }
@@ -237,9 +248,10 @@ async function implementLoadedIssue(params: {
   contextConfig: ReturnType<typeof parseContextConfig>;
   implementationSettings: ReturnType<typeof parseImplementationSettingsOverrides>['settings'];
   body: ImplementIssueBody;
+  models?: ImplementationModel[];
   planIssue: PlanIssue;
 }): Promise<unknown> {
-  const { draftId, issueNumber, owner, repo, draft, contextConfig, implementationSettings, body, planIssue } = params;
+  const { draftId, issueNumber, owner, repo, draft, contextConfig, implementationSettings, body, models, planIssue } = params;
   const [issueForImplementation] = await persistEffectiveUltrafixSettings({ draftId, issues: [planIssue], contextConfig });
   const processingLabels = await loadPrimaryProcessingLabels();
   const implementLabel = processingLabels[0] || 'AI';
@@ -254,7 +266,7 @@ async function implementLoadedIssue(params: {
     octokit, owner, repo, issueNumber, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
   };
   const effectivePlanIssue = buildEffectivePlanIssue(issueForImplementation, body);
-  return runIssueImplementation({ ...context, draftId, planIssue: effectivePlanIssue, models: body.models });
+  return runIssueImplementation({ ...context, draftId, planIssue: effectivePlanIssue, models });
 }
 function parseIssueNumberParam(req: Request, res: Response): number | null {
   const issueNumber = parseInt(req.params.issueNumber, 10);
@@ -269,8 +281,8 @@ function sendImplementIssueError(res: Response, error: unknown): void {
     res.status(409).json({ error: error.message });
     return;
   }
-  if (error instanceof BadImplementationRequestError) {
-    res.status(400).json({ error: error.message });
+  if (error instanceof ImplementationRequestError) {
+    res.status(error.status).json({ error: error.message });
     return;
   }
   console.error('Implement issue error:', error);
@@ -310,8 +322,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
     const issueNumber = parseIssueNumberParam(req, res);
     if (issueNumber === null) return;
     try {
-      const target = await loadImplementationTarget({ deps, req, res, draftId, issueNumber });
-      if (!target) return;
+      const target = await loadImplementationTarget({ deps, req, draftId, issueNumber });
       const result = await implementLoadedIssue({ ...target, draftId, issueNumber });
       res.json(result);
     } catch (error) {

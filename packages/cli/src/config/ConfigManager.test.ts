@@ -13,12 +13,16 @@ function cleanupTempDir(tempDir: string): void {
   rmSync(tempDir, { recursive: true, force: true });
 }
 
-function writeLegacyRemoteConfig(tempDir: string): void {
+function writeProfileConfig(tempDir: string): void {
   writeFileSync(join(tempDir, "config.json"), JSON.stringify({
     activeProfile: "default",
-    remoteUrl: "https://legacy.example.com",
-    githubToken: "legacy-token",
-    defaultProject: "owner/repo",
+    profiles: {
+      default: {
+        remoteUrl: "https://stored.example.com",
+        githubToken: "stored-token",
+        defaultProject: "owner/repo",
+      },
+    },
   }));
 }
 
@@ -85,10 +89,10 @@ test("setRemoteProfile can clear existing profile fields", async () => {
   }
 });
 
-test("useRemoteProfile migrates legacy top-level config without leaking it into a new empty profile", async () => {
+test("useRemoteProfile switches without leaking values into a new empty profile", async () => {
   const tempDir = createTempDir();
   try {
-    writeLegacyRemoteConfig(tempDir);
+    writeProfileConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
@@ -99,8 +103,8 @@ test("useRemoteProfile migrates legacy top-level config without leaking it into 
     assert.equal(manager.getGithubToken(), undefined);
     assert.equal(manager.getDefaultProject(), undefined);
     assert.deepEqual(manager.getRemoteProfiles().default, {
-      remoteUrl: "https://legacy.example.com",
-      githubToken: "legacy-token",
+      remoteUrl: "https://stored.example.com",
+      githubToken: "stored-token",
       defaultProject: "owner/repo",
     });
     assert.deepEqual(manager.getRemoteProfiles().staging, {});
@@ -109,10 +113,10 @@ test("useRemoteProfile migrates legacy top-level config without leaking it into 
   }
 });
 
-test("partial active profiles do not inherit unrelated credentials from top-level config", async () => {
+test("partial profiles do not inherit unrelated credentials from other profiles", async () => {
   const tempDir = createTempDir();
   try {
-    writeLegacyRemoteConfig(tempDir);
+    writeProfileConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
@@ -127,20 +131,20 @@ test("partial active profiles do not inherit unrelated credentials from top-leve
   }
 });
 
-test("setGithubToken preserves unrelated legacy active profile values", async () => {
+test("setGithubToken preserves unrelated active profile values", async () => {
   const tempDir = createTempDir();
   try {
-    writeLegacyRemoteConfig(tempDir);
+    writeProfileConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
     await manager.setGithubToken("new-token");
 
     assert.equal(manager.getGithubToken(), "new-token");
-    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+    assert.equal(manager.getRemoteUrl(), "https://stored.example.com");
     assert.equal(manager.getDefaultProject(), "owner/repo");
     assert.deepEqual(manager.getRemoteProfiles().default, {
-      remoteUrl: "https://legacy.example.com",
+      remoteUrl: "https://stored.example.com",
       githubToken: "new-token",
       defaultProject: "owner/repo",
     });
@@ -149,54 +153,54 @@ test("setGithubToken preserves unrelated legacy active profile values", async ()
   }
 });
 
-test("setRemoteUrl preserves unrelated legacy active profile values", async () => {
+test("setRemoteUrl preserves unrelated active profile values", async () => {
   const tempDir = createTempDir();
   try {
-    writeLegacyRemoteConfig(tempDir);
+    writeProfileConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
     await manager.setRemoteUrl("https://new.example.com");
 
     assert.equal(manager.getRemoteUrl(), "https://new.example.com");
-    assert.equal(manager.getGithubToken(), "legacy-token");
+    assert.equal(manager.getGithubToken(), "stored-token");
     assert.equal(manager.getDefaultProject(), "owner/repo");
   } finally {
     cleanupTempDir(tempDir);
   }
 });
 
-test("setDefaultProject preserves unrelated legacy active profile values", async () => {
+test("setDefaultProject preserves unrelated active profile values", async () => {
   const tempDir = createTempDir();
   try {
-    writeLegacyRemoteConfig(tempDir);
+    writeProfileConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
     await manager.setDefaultProject("new-owner/new-repo");
 
     assert.equal(manager.getDefaultProject(), "new-owner/new-repo");
-    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
-    assert.equal(manager.getGithubToken(), "legacy-token");
+    assert.equal(manager.getRemoteUrl(), "https://stored.example.com");
+    assert.equal(manager.getGithubToken(), "stored-token");
   } finally {
     cleanupTempDir(tempDir);
   }
 });
 
-test("clearGithubToken preserves unrelated legacy active profile values", async () => {
+test("clearGithubToken preserves unrelated active profile values", async () => {
   const tempDir = createTempDir();
   try {
-    writeLegacyRemoteConfig(tempDir);
+    writeProfileConfig(tempDir);
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
     await manager.clearGithubToken();
 
     assert.equal(manager.getGithubToken(), undefined);
-    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+    assert.equal(manager.getRemoteUrl(), "https://stored.example.com");
     assert.equal(manager.getDefaultProject(), "owner/repo");
     assert.deepEqual(manager.getRemoteProfiles().default, {
-      remoteUrl: "https://legacy.example.com",
+      remoteUrl: "https://stored.example.com",
       defaultProject: "owner/repo",
     });
   } finally {
@@ -236,15 +240,23 @@ test("generic get and set operate on the active profile for remote-backed keys",
   }
 });
 
-test("pre-profile top-level config is migrated into profiles and not written back", async () => {
+test("top-level remote fields are ignored on load and never written back", async () => {
   const tempDir = createTempDir();
   try {
-    writeLegacyRemoteConfig(tempDir);
+    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
+      remoteUrl: "https://top-level.example.com",
+      githubToken: "top-level-token",
+      defaultProject: "top/level",
+      profiles: {
+        default: { remoteUrl: "https://profile.example.com" },
+      },
+    }));
     const manager = new ConfigManager(tempDir);
     await manager.init();
 
-    assert.equal(manager.getGithubToken(), "legacy-token");
-    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+    assert.equal(manager.getRemoteUrl(), "https://profile.example.com");
+    assert.equal(manager.getGithubToken(), undefined);
+    assert.equal(manager.getDefaultProject(), undefined);
 
     await manager.save();
     const persisted = JSON.parse(readFileSync(join(tempDir, "config.json"), "utf8"));
@@ -252,9 +264,7 @@ test("pre-profile top-level config is migrated into profiles and not written bac
     assert.equal(persisted.remoteUrl, undefined);
     assert.equal(persisted.defaultProject, undefined);
     assert.deepEqual(persisted.profiles.default, {
-      remoteUrl: "https://legacy.example.com",
-      githubToken: "legacy-token",
-      defaultProject: "owner/repo",
+      remoteUrl: "https://profile.example.com",
     });
   } finally {
     cleanupTempDir(tempDir);

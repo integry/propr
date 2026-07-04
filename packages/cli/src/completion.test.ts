@@ -46,9 +46,47 @@ test("completion command supports every advertised shell", () => {
   assert.match(completionScript(program, "fish"), /complete -c propr/);
 });
 
-test("bash completion falls back to file completion after value options", () => {
+test("bash completion completes files only after file-taking options", () => {
   const bash = completionScript(buildTestProgram(), "bash");
-  assert.match(bash, /compgen -f -- "\$cur"/);
+  const metadata = buildCompletionMetadata(buildTestProgram());
+
+  assert.deepEqual(metadata.fileOptions.sort(), ["--file", "-f"].sort());
+  assert.equal(metadata.valueOptions.includes("--project"), true);
+  assert.equal(metadata.valueOptions.includes("--file"), false);
+
+  // Exactly one file-completion arm, guarded by the file options; other value
+  // options suppress suggestions instead of offering filenames.
+  assert.equal((bash.match(/compgen -f/g) ?? []).length, 1);
+  assert.match(bash, /"--file"\|"-f"\) COMPREPLY=\( \$\(compgen -f -- "\$cur"\) \); return 0 ;;/);
+  assert.match(bash, /"--project"[^\n]*\) return 0 ;;/);
+});
+
+test("options complete for single-word commands", () => {
+  const program = new Command("propr");
+  program.command("queue").description("queue").option("-j, --json", "JSON output");
+
+  const bash = completionScript(program, "bash");
+  assert.match(bash, /case "\$path1" in/);
+  assert.match(bash, /"queue"\) COMPREPLY=\( \$\(compgen -W "--json -j" -- "\$cur"\) \); return 0 ;;/);
+
+  const zsh = completionScript(program, "zsh");
+  assert.match(zsh, /case "\$path1" in/);
+  assert.match(zsh, /"queue"\) compadd -- "--json" "-j"; return ;;/);
+});
+
+test("group subcommand suggestions are gated on cursor depth", () => {
+  const bash = completionScript(buildTestProgram(), "bash");
+  assert.match(bash, /if \[\[ \$\{COMP_CWORD\} -eq 2 \]\]; then/);
+
+  const zsh = completionScript(buildTestProgram(), "zsh");
+  assert.match(zsh, /if \(\( CURRENT == 3 \)\); then/);
+});
+
+test("fish registers options as options rather than arguments", () => {
+  const fish = completionScript(buildTestProgram(), "fish");
+  assert.match(fish, /-l 'json'/);
+  assert.match(fish, /-s 'j'/);
+  assert.doesNotMatch(fish, /-a '--/);
 });
 
 test("zsh completion derives nested subcommands from metadata and avoids _values", () => {

@@ -88,10 +88,6 @@ export interface SystemSettings {
   ultrafix_pause_seconds: number;
 }
 
-export interface NamedConfigValueResponse {
-  [key: string]: unknown;
-}
-
 export const NAMED_CONFIG_ENDPOINTS = {
   prLabel: "/api/config/pr-label",
   aiPrimaryTag: "/api/config/ai-primary-tag",

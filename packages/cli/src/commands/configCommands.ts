@@ -5,7 +5,8 @@ import { normalizeProjectSlug, printOutput } from "../utils/index.js";
 
 function redactToken(token: string | undefined): string {
   if (!token) return "(not set)";
-  if (token.length <= 8) return "(set)";
+  // Below this length the 4+4 preview would expose most of the token.
+  if (token.length <= 12) return "(set)";
   return `${token.slice(0, 4)}...${token.slice(-4)}`;
 }
 
@@ -119,10 +120,10 @@ Note:
         if (printOutput(view, options.json ?? false)) {
           return;
         }
-        console.log(`Active profile: ${view.activeProfile}`);
-        console.log(`Remote URL:     ${view.remoteUrl ?? "(not set)"}`);
-        console.log(`Default project:${view.defaultProject ? ` ${view.defaultProject}` : " (not set)"}`);
-        console.log(`GitHub token:   ${view.githubToken}`);
+        console.log(`Active profile:  ${view.activeProfile}`);
+        console.log(`Remote URL:      ${view.remoteUrl ?? "(not set)"}`);
+        console.log(`Default project: ${view.defaultProject ?? "(not set)"}`);
+        console.log(`GitHub token:    ${view.githubToken}`);
       } catch (error) {
         console.error(`Error reading configuration: ${(error as Error).message}`);
         process.exit(1);
@@ -163,6 +164,11 @@ Note:
     .option("--clear-remote", "Clear the backend API URL")
     .option("--clear-token", "Clear the GitHub token")
     .option("--clear-project", "Clear the default project")
+    .addHelpText("after", `
+Note:
+  --token places the secret in shell history and process listings.
+  Prefer 'propr login' on the target profile to store a token.
+`)
     .action(async (name: string, options: {
       remote?: string;
       token?: string;
@@ -172,6 +178,14 @@ Note:
       clearProject?: boolean;
     }) => {
       try {
+        const conflicts: string[] = [];
+        if (options.remote !== undefined && options.clearRemote) conflicts.push("--remote with --clear-remote");
+        if (options.token !== undefined && options.clearToken) conflicts.push("--token with --clear-token");
+        if (options.project !== undefined && options.clearProject) conflicts.push("--project with --clear-project");
+        if (conflicts.length > 0) {
+          console.error(`Error: Conflicting options: ${conflicts.join(", ")}. Provide either the value or its --clear-* flag, not both.`);
+          process.exit(1);
+        }
         const manager = await createConfigManager();
         const clear: Array<keyof RemoteProfile> = [];
         if (options.clearRemote) clear.push("remoteUrl");

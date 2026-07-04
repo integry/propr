@@ -14,7 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { CLIConfig, ConfigKey, DEFAULT_CONFIG, RemoteProfile } from "./types.js";
+import { CLIConfig, ConfigKey, ConfigValues, DEFAULT_CONFIG, RemoteProfile } from "./types.js";
 
 /**
  * Default configuration directory name.
@@ -126,7 +126,6 @@ export class ConfigManager {
         ...DEFAULT_CONFIG,
         ...this.sanitizeConfig(parsed),
       };
-      this.migrateTopLevelRemoteConfig();
 
       return this.config;
     } catch (error) {
@@ -164,18 +163,6 @@ export class ConfigManager {
    */
   private sanitizeConfig(data: Record<string, unknown>): Partial<CLIConfig> {
     const sanitized: Partial<CLIConfig> = {};
-
-    if (typeof data.githubToken === "string") {
-      sanitized.githubToken = data.githubToken;
-    }
-
-    if (typeof data.remoteUrl === "string") {
-      sanitized.remoteUrl = data.remoteUrl;
-    }
-
-    if (typeof data.defaultProject === "string") {
-      sanitized.defaultProject = data.defaultProject;
-    }
 
     if (typeof data.activeProfile === "string" && data.activeProfile.trim()) {
       try {
@@ -243,30 +230,6 @@ export class ConfigManager {
     return trimmed;
   }
 
-  /**
-   * Moves top-level remoteUrl/githubToken/defaultProject values (the config
-   * shape written before named profiles existed) into the active profile.
-   * Profiles are the single source of truth afterwards; the top-level fields
-   * are dropped and no longer written back on save.
-   */
-  private migrateTopLevelRemoteConfig(): void {
-    const topLevel: RemoteProfile = {};
-    if (this.config.remoteUrl !== undefined) topLevel.remoteUrl = this.config.remoteUrl;
-    if (this.config.githubToken !== undefined) topLevel.githubToken = this.config.githubToken;
-    if (this.config.defaultProject !== undefined) topLevel.defaultProject = this.config.defaultProject;
-    if (Object.keys(topLevel).length > 0) {
-      const name = this.getActiveProfileName();
-      const profiles = { ...(this.config.profiles ?? {}) };
-      if (!profiles[name]) {
-        profiles[name] = topLevel;
-      }
-      this.config.profiles = profiles;
-    }
-    this.config.remoteUrl = undefined;
-    this.config.githubToken = undefined;
-    this.config.defaultProject = undefined;
-  }
-
   private getActiveProfile(): RemoteProfile {
     const name = this.getActiveProfileName();
     return this.config.profiles?.[name] ?? {};
@@ -317,11 +280,11 @@ export class ConfigManager {
    * @param key - The configuration key to retrieve.
    * @returns The configuration value, or undefined if not set.
    */
-  get<K extends ConfigKey>(key: K): CLIConfig[K] {
+  get<K extends ConfigKey>(key: K): ConfigValues[K] {
     if (isProfileBackedKey(key)) {
-      return this.getActiveProfileValue(key) as CLIConfig[K];
+      return this.getActiveProfileValue(key) as ConfigValues[K];
     }
-    return this.config[key];
+    return (this.config as ConfigValues)[key];
   }
 
   /**
@@ -335,12 +298,12 @@ export class ConfigManager {
    * @param value - The value to set.
    * @returns A promise that resolves when the value is saved.
    */
-  async set<K extends ConfigKey>(key: K, value: CLIConfig[K]): Promise<void> {
+  async set<K extends ConfigKey>(key: K, value: ConfigValues[K]): Promise<void> {
     if (isProfileBackedKey(key)) {
       await this.updateActiveProfile({ [key]: value as string | undefined });
       return;
     }
-    this.config[key] = value;
+    (this.config as ConfigValues)[key] = value;
     await this.save();
   }
 

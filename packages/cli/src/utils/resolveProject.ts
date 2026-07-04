@@ -5,6 +5,7 @@
  * command options first, then falling back to the configured default project.
  */
 
+import { parseProjectSlug } from "@propr/shared";
 import { ConfigManager } from "../config/index.js";
 
 /**
@@ -36,14 +37,8 @@ export class ProjectResolutionError extends Error {
  * whitespace never reaches config files or API requests.
  */
 export function normalizeProjectSlug(project: string): string | null {
-  const trimmed = project.trim();
-  const parts = trimmed.split("/");
-  const valid = parts.length === 2 && parts.every((part) => (
-    part !== "." &&
-    part !== ".." &&
-    /^[A-Za-z0-9_.-]+$/.test(part)
-  ));
-  return valid ? trimmed : null;
+  const parts = parseProjectSlug(project);
+  return parts ? `${parts.owner}/${parts.repo}` : null;
 }
 
 /**
