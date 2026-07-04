@@ -13,7 +13,7 @@ import {
   TaskStatus,
 } from "../api/index.js";
 import { createConfigManager } from "../config/index.js";
-import { isValidProjectSlug } from "../utils/index.js";
+import { normalizeProjectSlug } from "../utils/index.js";
 
 /**
  * Terminal states that indicate a task has finished processing.
@@ -50,10 +50,14 @@ export function resolveOptionalImplementationRepository(
   configManager: { getDefaultProject(): string | undefined }
 ): string | undefined {
   const repository = options.project ?? configManager.getDefaultProject();
-  if (repository !== undefined && !isValidProjectSlug(repository)) {
+  if (repository === undefined) {
+    return undefined;
+  }
+  const normalized = normalizeProjectSlug(repository);
+  if (normalized === null) {
     throw new Error("Invalid project format. Expected 'owner/repo'.");
   }
-  return repository;
+  return normalized;
 }
 
 /**

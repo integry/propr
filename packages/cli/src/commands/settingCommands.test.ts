@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   getAllDisplaySettings,
-  getExtraConfigErrors,
   getExtraConfigSetting,
   isSuccessfulExtraConfigUpdate,
   parseExtraConfigValue,
@@ -44,17 +43,18 @@ test("getAllDisplaySettings includes label and keyword config values", async () 
     "/api/config/followup-keywords": { followup_keywords: ["/fix", "/ultrafix"] },
   };
 
-  const displaySettings = await getAllDisplaySettings(SETTINGS, async (endpoint) => responses[endpoint]);
+  const { settings: displaySettings, errors } = await getAllDisplaySettings(SETTINGS, async (endpoint) => responses[endpoint]);
 
   assert.equal(displaySettings.worker_concurrency, 2);
   assert.equal(displaySettings["pr-label"], "propr");
   assert.equal(displaySettings["ai-primary-tag"], "ai");
   assert.deepEqual(displaySettings["primary-processing-labels"], ["propr", "ai"]);
   assert.deepEqual(displaySettings["followup-keywords"], ["/fix", "/ultrafix"]);
+  assert.deepEqual(errors, []);
 });
 
 test("getAllDisplaySettings keeps system settings when an extra config endpoint fails", async () => {
-  const displaySettings = await getAllDisplaySettings(SETTINGS, async (endpoint) => {
+  const { settings: displaySettings, errors } = await getAllDisplaySettings(SETTINGS, async (endpoint) => {
     if (endpoint === "/api/config/followup-keywords") {
       throw new Error("backend unavailable");
     }
@@ -68,8 +68,7 @@ test("getAllDisplaySettings keeps system settings when an extra config endpoint 
   assert.equal(displaySettings.worker_concurrency, 2);
   assert.equal(displaySettings["pr-label"], "propr");
   assert.equal(displaySettings["followup-keywords"], undefined);
-  assert.deepEqual(getExtraConfigErrors(displaySettings), ["followup-keywords: backend unavailable"]);
-  assert.deepEqual(Object.keys(displaySettings).includes("__extraConfigErrors"), false);
+  assert.deepEqual(errors, ["followup-keywords: backend unavailable"]);
 });
 
 test("parseExtraConfigValue allows empty arrays so list settings can be cleared", () => {

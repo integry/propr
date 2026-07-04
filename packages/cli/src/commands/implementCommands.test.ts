@@ -38,3 +38,12 @@ test("resolveOptionalImplementationRepository rejects invalid repositories", () 
     /Invalid project format/
   );
 });
+
+test("resolveOptionalImplementationRepository trims surrounding whitespace before sending", () => {
+  const repository = resolveOptionalImplementationRepository(
+    { project: " owner/repo " },
+    { getDefaultProject: () => undefined }
+  );
+
+  assert.equal(repository, "owner/repo");
+});

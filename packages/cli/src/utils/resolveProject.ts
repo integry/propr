@@ -28,16 +28,30 @@ export class ProjectResolutionError extends Error {
 }
 
 /**
- * Checks whether a project value is in owner/repo form without path traversal
- * or empty segments.
+ * Normalizes a project value to a trimmed owner/repo slug.
+ *
+ * Returns the trimmed slug when the value is in owner/repo form without path
+ * traversal or empty segments, or null when the value is invalid. Callers must
+ * persist and send the returned slug (not the raw input) so surrounding
+ * whitespace never reaches config files or API requests.
  */
-export function isValidProjectSlug(project: string): boolean {
-  const parts = project.trim().split("/");
-  return parts.length === 2 && parts.every((part) => (
+export function normalizeProjectSlug(project: string): string | null {
+  const trimmed = project.trim();
+  const parts = trimmed.split("/");
+  const valid = parts.length === 2 && parts.every((part) => (
     part !== "." &&
     part !== ".." &&
     /^[A-Za-z0-9_.-]+$/.test(part)
   ));
+  return valid ? trimmed : null;
+}
+
+/**
+ * Checks whether a project value is in owner/repo form without path traversal
+ * or empty segments.
+ */
+export function isValidProjectSlug(project: string): boolean {
+  return normalizeProjectSlug(project) !== null;
 }
 
 /**

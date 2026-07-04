@@ -15,6 +15,7 @@ import {
   isValidSettingKey,
   parseSettingValue,
   VALID_SETTING_KEYS,
+  NAMED_CONFIG_ENDPOINTS,
   SystemSettings,
   SettingKey,
   NamedConfigEndpoint,
@@ -77,25 +78,25 @@ function printValidSettingKeys(includeDescriptions = false): void {
 
 const EXTRA_CONFIG_ENDPOINTS = {
   "pr-label": {
-    endpoint: "/api/config/pr-label",
+    endpoint: NAMED_CONFIG_ENDPOINTS.prLabel,
     field: "pr_label",
     description: "GitHub label applied to ProPR-created PRs",
     type: "string",
   },
   "ai-primary-tag": {
-    endpoint: "/api/config/ai-primary-tag",
+    endpoint: NAMED_CONFIG_ENDPOINTS.aiPrimaryTag,
     field: "ai_primary_tag",
     description: "Primary AI tag used for issue/PR processing",
     type: "string",
   },
   "primary-processing-labels": {
-    endpoint: "/api/config/primary-processing-labels",
+    endpoint: NAMED_CONFIG_ENDPOINTS.primaryProcessingLabels,
     field: "primary_processing_labels",
     description: "Labels that enable processing on existing PRs",
     type: "array",
   },
   "followup-keywords": {
-    endpoint: "/api/config/followup-keywords",
+    endpoint: NAMED_CONFIG_ENDPOINTS.followupKeywords,
     field: "followup_keywords",
     description: "Keywords that trigger PR follow-up processing",
     type: "array",
@@ -106,10 +107,14 @@ type ExtraConfigKey = keyof typeof EXTRA_CONFIG_ENDPOINTS;
 type ExtraConfigGetter = (endpoint: NamedConfigEndpoint) => Promise<Record<string, unknown>>;
 type DisplaySettings = Record<string, unknown>;
 
-const EXTRA_CONFIG_ERROR_KEY = "__extraConfigErrors";
-
 function isExtraConfigKey(key: string): key is ExtraConfigKey {
-  return key in EXTRA_CONFIG_ENDPOINTS;
+  return Object.prototype.hasOwnProperty.call(EXTRA_CONFIG_ENDPOINTS, key);
+}
+
+function formatExtraConfigKeysHelp(): string {
+  return Object.entries(EXTRA_CONFIG_ENDPOINTS)
+    .map(([key, config]) => `  ${key.padEnd(32)} ${config.description}`)
+    .join("\n");
 }
 
 export function parseExtraConfigValue(key: ExtraConfigKey, value: string): string | string[] {
@@ -122,11 +127,6 @@ export function parseExtraConfigValue(key: ExtraConfigKey, value: string): strin
     throw new Error(`Setting "${key}" requires a non-empty value.`);
   }
   return trimmed;
-}
-
-export function getExtraConfigErrors(settings: DisplaySettings): string[] {
-  const errors = settings[EXTRA_CONFIG_ERROR_KEY];
-  return Array.isArray(errors) ? errors.filter((item): item is string => typeof item === "string") : [];
 }
 
 export function isSuccessfulExtraConfigUpdate(result: unknown): boolean {
@@ -150,7 +150,7 @@ export async function getExtraConfigSetting(
 export async function getAllDisplaySettings(
   settings: SystemSettings,
   getter: ExtraConfigGetter = getConfigValue
-): Promise<DisplaySettings> {
+): Promise<{ settings: DisplaySettings; errors: string[] }> {
   const extras = await Promise.allSettled(
     (Object.keys(EXTRA_CONFIG_ENDPOINTS) as ExtraConfigKey[]).map(async (key) => [
       key,
@@ -169,13 +169,7 @@ export async function getAllDisplaySettings(
     .map((result, index) => ({ result, key: (Object.keys(EXTRA_CONFIG_ENDPOINTS) as ExtraConfigKey[])[index] }))
     .filter((item): item is { result: PromiseRejectedResult; key: ExtraConfigKey } => item.result.status === "rejected")
     .map(({ key, result }) => `${key}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
-  if (errors.length > 0) {
-    Object.defineProperty(displaySettings, EXTRA_CONFIG_ERROR_KEY, {
-      value: errors,
-      enumerable: false,
-    });
-  }
-  return displaySettings;
+  return { settings: displaySettings, errors };
 }
 
 function printAllValidKeys(includeDescriptions = false): void {
@@ -254,10 +248,7 @@ Examples:
     .addHelpText("after", `
 Valid Setting Keys:
 ${formatSettingKeysHelp()}
-  pr-label                         GitHub label applied to ProPR-created PRs
-  ai-primary-tag                   Primary AI tag used for issue/PR processing
-  primary-processing-labels        Labels that enable processing on existing PRs
-  followup-keywords                Keywords that trigger PR follow-up processing
+${formatExtraConfigKeysHelp()}
 
 Examples:
   $ propr setting get                                 # Show all settings
@@ -294,8 +285,7 @@ Examples:
           }
 
           const settings = await getSettings();
-          const displaySettings = await getAllDisplaySettings(settings);
-          const warnings = getExtraConfigErrors(displaySettings);
+          const { settings: displaySettings, errors: warnings } = await getAllDisplaySettings(settings);
 
           if (options.json) {
             printOutput(
@@ -347,10 +337,7 @@ Examples:
       `
 Valid setting keys:
 ${formatSettingKeysHelp()}
-  pr-label                         GitHub label applied to ProPR-created PRs
-  ai-primary-tag                   Primary AI tag used for issue/PR processing
-  primary-processing-labels        Labels that enable processing on existing PRs
-  followup-keywords                Keywords that trigger PR follow-up processing
+${formatExtraConfigKeysHelp()}
 
 Examples:
   $ propr setting update worker_concurrency 10

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ConfigManager } from "./ConfigManager.js";
+import { ConfigManager, isValidRemoteProfileName } from "./ConfigManager.js";
 
 function createTempDir(): string {
   return mkdtempSync(join(tmpdir(), "propr-cli-config-test-"));
@@ -216,6 +216,72 @@ test("remote profile names reject whitespace, path-like, and control-character v
   } finally {
     cleanupTempDir(tempDir);
   }
+});
+
+test("generic get and set operate on the active profile for remote-backed keys", async () => {
+  const tempDir = createTempDir();
+  try {
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.useRemoteProfile("staging");
+    await manager.set("remoteUrl", "https://staging.example.com");
+
+    assert.equal(manager.get("remoteUrl"), "https://staging.example.com");
+    assert.equal(manager.getRemoteUrl(), "https://staging.example.com");
+    assert.equal(manager.getRemoteProfiles().staging.remoteUrl, "https://staging.example.com");
+    assert.equal(manager.getRemoteProfiles().default.remoteUrl, undefined);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("pre-profile top-level config is migrated into profiles and not written back", async () => {
+  const tempDir = createTempDir();
+  try {
+    writeLegacyRemoteConfig(tempDir);
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    assert.equal(manager.getGithubToken(), "legacy-token");
+    assert.equal(manager.getRemoteUrl(), "https://legacy.example.com");
+
+    await manager.save();
+    const persisted = JSON.parse(readFileSync(join(tempDir, "config.json"), "utf8"));
+    assert.equal(persisted.githubToken, undefined);
+    assert.equal(persisted.remoteUrl, undefined);
+    assert.equal(persisted.defaultProject, undefined);
+    assert.deepEqual(persisted.profiles.default, {
+      remoteUrl: "https://legacy.example.com",
+      githubToken: "legacy-token",
+      defaultProject: "owner/repo",
+    });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("useRemoteProfile reports whether a new empty profile was created", async () => {
+  const tempDir = createTempDir();
+  try {
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    assert.equal(manager.hasRemoteProfile("staging"), false);
+    assert.deepEqual(await manager.useRemoteProfile("staging"), { created: true });
+    assert.equal(manager.hasRemoteProfile("staging"), true);
+    assert.deepEqual(await manager.useRemoteProfile("staging"), { created: false });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("isValidRemoteProfileName mirrors the profile name rules", () => {
+  assert.equal(isValidRemoteProfileName("staging"), true);
+  assert.equal(isValidRemoteProfileName("prod-2.eu_west"), true);
+  assert.equal(isValidRemoteProfileName("bad name"), false);
+  assert.equal(isValidRemoteProfileName("../prod"), false);
+  assert.equal(isValidRemoteProfileName(""), false);
 });
 
 test("loaded remote profile names are validated before use", async () => {

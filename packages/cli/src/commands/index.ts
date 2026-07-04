@@ -13,7 +13,7 @@ export { createSettingCommand } from "./settingCommands.js";
 export { createConfigCommand } from "./configCommands.js";
 export { createLogCommand } from "./logCommands.js";
 export { createTodoCommand } from "./todoCommands.js";
-export { createRemoteStatusCommand, createQueueCommand } from "./systemCommands.js";
+export { createRemoteStatusCommand, createQueueCommand, createBackendCommand } from "./systemCommands.js";
 export { createInitCommand } from "./initCommands.js";
 export { createSetupCommand } from "./setupCommand.js";
 

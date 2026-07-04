@@ -250,8 +250,11 @@ function displayQueueStats(stats: QueueStats): void {
  * Reports the health of a remote ProPR backend (API/Redis/daemon/worker) over
  * HTTP. The top-level `propr status` now reports the local Docker stack, so this
  * backend health view is exposed as `remote-status`.
+ *
+ * @param invocation - How the command is invoked in help examples, so the same
+ *                     implementation reads correctly under `propr backend status`.
  */
-export function createRemoteStatusCommand(): Command {
+export function createRemoteStatusCommand(invocation = "propr remote-status"): Command {
   return new Command("remote-status")
     .description("Display the health status of a remote ProPR backend (API, Redis, daemon, worker)")
     .option("--json", "Output raw JSON response")
@@ -265,8 +268,8 @@ Components Checked:
   - Claude authentication
 
 Examples:
-  $ propr remote-status           # Human-readable output
-  $ propr remote-status --json    # JSON output for scripting
+  $ ${invocation}           # Human-readable output
+  $ ${invocation} --json    # JSON output for scripting
 `)
     .action(async (options: { json?: boolean }) => {
       try {
@@ -301,8 +304,11 @@ Examples:
 
 /**
  * Creates the `queue` command.
+ *
+ * @param invocation - How the command is invoked in help examples, so the same
+ *                     implementation reads correctly under `propr backend queue`.
  */
-export function createQueueCommand(): Command {
+export function createQueueCommand(invocation = "propr queue"): Command {
   return new Command("queue")
     .description("Display job queue statistics and counts")
     .option("--json", "Output raw JSON response")
@@ -316,8 +322,8 @@ Statistics Shown:
   - Failure rate
 
 Examples:
-  $ propr queue           # Human-readable output
-  $ propr queue --json    # JSON output for scripting
+  $ ${invocation}           # Human-readable output
+  $ ${invocation} --json    # JSON output for scripting
 `)
     .action(async (options: { json?: boolean }) => {
       try {
@@ -348,4 +354,17 @@ Examples:
         process.exit(1);
       }
     });
+}
+
+/**
+ * Creates the `backend` command group, exposing the remote backend health and
+ * queue views as `propr backend status|queue` alongside the top-level
+ * `remote-status` and `queue` commands.
+ */
+export function createBackendCommand(): Command {
+  const backend = new Command("backend")
+    .description("Inspect remote ProPR backend status and queues");
+  backend.addCommand(createRemoteStatusCommand("propr backend status").name("status"));
+  backend.addCommand(createQueueCommand("propr backend queue").name("queue"));
+  return backend;
 }

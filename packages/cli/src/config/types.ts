@@ -30,17 +30,29 @@ export interface RemoteProfile {
 export interface CLIConfig {
   /**
    * GitHub personal access token for authentication.
+   *
+   * Accepted on load from configs written before named profiles existed and
+   * migrated into the active profile; the profile is the source of truth and
+   * this field is never written back.
    */
   githubToken?: string;
 
   /**
    * Remote API URL for the ProPR backend.
+   *
+   * Accepted on load from configs written before named profiles existed and
+   * migrated into the active profile; the profile is the source of truth and
+   * this field is never written back.
    */
   remoteUrl?: string;
 
   /**
    * Default project to use when not specified in commands.
    * Format: owner/repo
+   *
+   * Accepted on load from configs written before named profiles existed and
+   * migrated into the active profile; the profile is the source of truth and
+   * this field is never written back.
    */
   defaultProject?: string;
 
@@ -50,8 +62,8 @@ export interface CLIConfig {
   activeProfile?: string;
 
   /**
-   * Named backend profiles. Top-level remoteUrl/githubToken/defaultProject are
-   * retained for compatibility and mirror the active profile.
+   * Named backend profiles holding remoteUrl/githubToken/defaultProject.
+   * This is the single source of truth for remote settings.
    */
   profiles?: Record<string, RemoteProfile>;
 

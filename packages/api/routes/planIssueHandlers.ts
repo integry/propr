@@ -160,7 +160,11 @@ function validateRequestedRepository(requestedRepository: unknown, repository: s
     return 'repository must be an owner/repo string';
   }
   const trimmedRepository = `${requestedParts.owner}/${requestedParts.repo}`;
-  return trimmedRepository === repository ? null : `Issue belongs to ${repository}, not ${trimmedRepository}`;
+  // GitHub owner/repo slugs are case-insensitive, so a stored "Owner/Repo"
+  // must match a requested "owner/repo".
+  return trimmedRepository.toLowerCase() === repository.toLowerCase()
+    ? null
+    : `Issue belongs to ${repository}, not ${trimmedRepository}`;
 }
 function buildEffectivePlanIssue(issue: PlanIssue, body: ImplementIssueBody): PlanIssue {
   if (!body.agent_alias && !body.model_name) return issue;

@@ -8,6 +8,7 @@ export {
   resolveProject,
   ProjectResolutionError,
   isValidProjectSlug,
+  normalizeProjectSlug,
 } from "./resolveProject.js";
 export type { ProjectOptions } from "./resolveProject.js";
 

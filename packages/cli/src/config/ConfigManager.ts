@@ -29,6 +29,26 @@ const DEFAULT_PROFILE_NAME = "default";
 const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
+ * Config keys whose values live on the active remote profile rather than at
+ * the top level of the config file.
+ */
+const PROFILE_BACKED_KEYS = ["remoteUrl", "githubToken", "defaultProject"] as const;
+type ProfileBackedKey = (typeof PROFILE_BACKED_KEYS)[number];
+
+function isProfileBackedKey(key: ConfigKey): key is ProfileBackedKey {
+  return (PROFILE_BACKED_KEYS as readonly string[]).includes(key);
+}
+
+/**
+ * Checks whether a value is usable as a remote profile name: non-empty after
+ * trimming, containing only letters, numbers, dots, underscores, and hyphens,
+ * and starting with a letter or number.
+ */
+export function isValidRemoteProfileName(name: string): boolean {
+  return PROFILE_NAME_PATTERN.test(name.trim());
+}
+
+/**
  * ConfigManager handles persistent CLI configuration.
  */
 export class ConfigManager {
@@ -106,6 +126,7 @@ export class ConfigManager {
         ...DEFAULT_CONFIG,
         ...this.sanitizeConfig(parsed),
       };
+      this.migrateTopLevelRemoteConfig();
 
       return this.config;
     } catch (error) {
@@ -214,7 +235,7 @@ export class ConfigManager {
     if (!trimmed) {
       throw new Error("Profile name must not be empty");
     }
-    if (!PROFILE_NAME_PATTERN.test(trimmed)) {
+    if (!isValidRemoteProfileName(trimmed)) {
       throw new Error(
         "Profile name may only contain letters, numbers, dots, underscores, and hyphens, and must start with a letter or number"
       );
@@ -222,56 +243,47 @@ export class ConfigManager {
     return trimmed;
   }
 
+  /**
+   * Moves top-level remoteUrl/githubToken/defaultProject values (the config
+   * shape written before named profiles existed) into the active profile.
+   * Profiles are the single source of truth afterwards; the top-level fields
+   * are dropped and no longer written back on save.
+   */
+  private migrateTopLevelRemoteConfig(): void {
+    const topLevel: RemoteProfile = {};
+    if (this.config.remoteUrl !== undefined) topLevel.remoteUrl = this.config.remoteUrl;
+    if (this.config.githubToken !== undefined) topLevel.githubToken = this.config.githubToken;
+    if (this.config.defaultProject !== undefined) topLevel.defaultProject = this.config.defaultProject;
+    if (Object.keys(topLevel).length > 0) {
+      const name = this.getActiveProfileName();
+      const profiles = { ...(this.config.profiles ?? {}) };
+      if (!profiles[name]) {
+        profiles[name] = topLevel;
+      }
+      this.config.profiles = profiles;
+    }
+    this.config.remoteUrl = undefined;
+    this.config.githubToken = undefined;
+    this.config.defaultProject = undefined;
+  }
+
   private getActiveProfile(): RemoteProfile {
     const name = this.getActiveProfileName();
     return this.config.profiles?.[name] ?? {};
   }
 
-  private hasActiveProfile(): boolean {
-    const name = this.getActiveProfileName();
-    return Boolean(this.config.profiles && Object.prototype.hasOwnProperty.call(this.config.profiles, name));
-  }
-
   private getActiveProfileValue<K extends keyof RemoteProfile>(key: K): RemoteProfile[K] {
-    if (this.hasActiveProfile()) {
-      return this.getActiveProfile()[key];
-    }
-    return this.config[key];
-  }
-
-  private getLegacyRemoteProfile(): RemoteProfile {
-    const profile: RemoteProfile = {};
-    if (this.config.remoteUrl !== undefined) profile.remoteUrl = this.config.remoteUrl;
-    if (this.config.githubToken !== undefined) profile.githubToken = this.config.githubToken;
-    if (this.config.defaultProject !== undefined) profile.defaultProject = this.config.defaultProject;
-    return profile;
-  }
-
-  private hasLegacyRemoteConfig(): boolean {
-    return Object.keys(this.getLegacyRemoteProfile()).length > 0;
-  }
-
-  private getProfileBase(name: string): RemoteProfile {
-    return this.config.profiles?.[name] ?? (
-      name === this.getActiveProfileName() ? this.getLegacyRemoteProfile() : {}
-    );
-  }
-
-  private mirrorActiveProfile(profile: RemoteProfile): void {
-    this.config.remoteUrl = profile.remoteUrl;
-    this.config.githubToken = profile.githubToken;
-    this.config.defaultProject = profile.defaultProject;
+    return this.getActiveProfile()[key];
   }
 
   private async updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
     const name = this.getActiveProfileName();
     const profiles = { ...(this.config.profiles ?? {}) };
     profiles[name] = {
-      ...this.getProfileBase(name),
+      ...(profiles[name] ?? {}),
       ...patch,
     };
     this.config.profiles = profiles;
-    this.mirrorActiveProfile(profiles[name]);
     await this.save();
   }
 
@@ -298,21 +310,36 @@ export class ConfigManager {
   /**
    * Gets a configuration value by key.
    *
+   * Remote settings (remoteUrl, githubToken, defaultProject) are read from the
+   * active profile so the generic accessor stays consistent with the dedicated
+   * getters.
+   *
    * @param key - The configuration key to retrieve.
    * @returns The configuration value, or undefined if not set.
    */
   get<K extends ConfigKey>(key: K): CLIConfig[K] {
+    if (isProfileBackedKey(key)) {
+      return this.getActiveProfileValue(key) as CLIConfig[K];
+    }
     return this.config[key];
   }
 
   /**
    * Sets a configuration value by key.
    *
+   * Remote settings (remoteUrl, githubToken, defaultProject) are written to
+   * the active profile so the generic accessor stays consistent with the
+   * dedicated setters.
+   *
    * @param key - The configuration key to set.
    * @param value - The value to set.
    * @returns A promise that resolves when the value is saved.
    */
   async set<K extends ConfigKey>(key: K, value: CLIConfig[K]): Promise<void> {
+    if (isProfileBackedKey(key)) {
+      await this.updateActiveProfile({ [key]: value as string | undefined });
+      return;
+    }
     this.config[key] = value;
     await this.save();
   }
@@ -344,10 +371,9 @@ export class ConfigManager {
   async clearGithubToken(): Promise<void> {
     const name = this.getActiveProfileName();
     const profiles = { ...(this.config.profiles ?? {}) };
-    profiles[name] = { ...this.getProfileBase(name) };
+    profiles[name] = { ...(profiles[name] ?? {}) };
     delete profiles[name].githubToken;
     this.config.profiles = profiles;
-    this.mirrorActiveProfile(profiles[name]);
     await this.save();
   }
 
@@ -397,29 +423,37 @@ export class ConfigManager {
     const profiles = Object.fromEntries(
       Object.entries(this.config.profiles ?? {}).map(([name, profile]) => [name, { ...profile }])
     );
-    if (!profiles[DEFAULT_PROFILE_NAME] && this.hasLegacyRemoteConfig()) {
-      profiles[DEFAULT_PROFILE_NAME] = this.getLegacyRemoteProfile();
-    }
     if (!profiles[DEFAULT_PROFILE_NAME]) {
       profiles[DEFAULT_PROFILE_NAME] = {};
     }
     return profiles;
   }
 
-  async useRemoteProfile(name: string): Promise<void> {
+  /**
+   * Checks whether a named remote profile exists in the stored configuration.
+   */
+  hasRemoteProfile(name: string): boolean {
+    const trimmed = this.normalizeProfileName(name);
+    return Boolean(this.config.profiles && Object.prototype.hasOwnProperty.call(this.config.profiles, trimmed));
+  }
+
+  /**
+   * Switches the active remote profile, creating an empty profile when the
+   * name does not exist yet.
+   *
+   * @returns Whether a new (empty) profile had to be created.
+   */
+  async useRemoteProfile(name: string): Promise<{ created: boolean }> {
     const trimmed = this.normalizeProfileName(name);
     const profiles = { ...(this.config.profiles ?? {}) };
-    const currentName = this.getActiveProfileName();
-    if (!profiles[currentName] && this.hasLegacyRemoteConfig()) {
-      profiles[currentName] = this.getLegacyRemoteProfile();
-    }
-    if (!profiles[trimmed]) {
+    const created = !profiles[trimmed];
+    if (created) {
       profiles[trimmed] = {};
     }
     this.config.profiles = profiles;
     this.config.activeProfile = trimmed;
-    this.mirrorActiveProfile(profiles[trimmed]);
     await this.save();
+    return { created };
   }
 
   async setRemoteProfile(
@@ -430,13 +464,8 @@ export class ConfigManager {
     const trimmed = this.normalizeProfileName(name);
 
     const profiles = { ...(this.config.profiles ?? {}) };
-    const currentName = this.getActiveProfileName();
-    if (!profiles[currentName] && this.hasLegacyRemoteConfig()) {
-      profiles[currentName] = this.getLegacyRemoteProfile();
-    }
-
     const nextProfile: RemoteProfile = {
-      ...this.getProfileBase(trimmed),
+      ...(profiles[trimmed] ?? {}),
       ...patch,
     };
     for (const key of clear) {
@@ -444,10 +473,6 @@ export class ConfigManager {
     }
     profiles[trimmed] = nextProfile;
     this.config.profiles = profiles;
-
-    if (currentName === trimmed) {
-      this.mirrorActiveProfile(nextProfile);
-    }
 
     await this.save();
   }

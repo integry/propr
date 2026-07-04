@@ -7,7 +7,7 @@
 
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError, isValidProjectSlug, printOutput } from "../utils/index.js";
+import { resolveProject, ProjectResolutionError, normalizeProjectSlug, printOutput } from "../utils/index.js";
 import {
   listTasks,
   stopTask,
@@ -58,6 +58,55 @@ function truncate(str: string | null | undefined, maxLen: number): string {
 
 export function resolveFollowupBodyArgument(bodyArg: string[] | undefined): string | undefined {
   return bodyArg?.join(" ");
+}
+
+export type BodySource = "argument" | "file" | "stdin" | "none";
+
+/**
+ * Picks the single text source for a command that accepts a positional
+ * argument, --file, and --stdin, and rejects conflicting combinations so no
+ * input is silently discarded.
+ */
+export function selectBodySource(sources: {
+  argument?: string;
+  file?: string;
+  stdin?: boolean;
+}): BodySource {
+  const provided: BodySource[] = [];
+  if (sources.argument !== undefined && sources.argument.length > 0) provided.push("argument");
+  if (sources.file) provided.push("file");
+  if (sources.stdin) provided.push("stdin");
+  if (provided.length > 1) {
+    throw new Error(
+      `Provide the text via only one of: argument, --file, or --stdin (got ${provided.join(" and ")}).`
+    );
+  }
+  return provided[0] ?? "none";
+}
+
+/**
+ * Resolves command text from a variadic positional argument, --file, or
+ * --stdin. Stdin is read only when --stdin is given explicitly, so commands
+ * never block on an inherited-but-silent stdin pipe (cron, CI).
+ */
+async function resolveTextInput(
+  positional: string[] | undefined,
+  options: { file?: string; stdin?: boolean }
+): Promise<string | undefined> {
+  const argument = resolveFollowupBodyArgument(positional);
+  const source = selectBodySource({ argument, file: options.file, stdin: options.stdin });
+  switch (source) {
+    case "file": {
+      const { readFile } = await import("node:fs/promises");
+      return (await readFile(options.file!, "utf8")).trim();
+    }
+    case "stdin":
+      return readStdinBody();
+    case "argument":
+      return argument;
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -228,8 +277,12 @@ function displayRevertPreview(preview: Awaited<ReturnType<typeof getRevertPrevie
   }
 }
 
-async function readStdinIfPiped(): Promise<string | undefined> {
-  if (process.stdin.isTTY) return undefined;
+async function readStdinBody(): Promise<string | undefined> {
+  if (process.stdin.isTTY) {
+    throw new Error(
+      "--stdin was given but stdin is a terminal. Pipe the text in, or use an argument or --file."
+    );
+  }
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
@@ -604,22 +657,20 @@ Examples:
     .command("followup <task-id> [body...]")
     .description("Post and queue a follow-up instruction for a task")
     .option("-f, --file <path>", "Read follow-up body from a file")
+    .option("--stdin", "Read follow-up body from standard input")
     .addHelpText("after", `
+The body must come from exactly one source: the argument, --file, or --stdin.
+
 Examples:
-  $ propr task followup abc123 "Please also add tests"
+  $ propr task followup abc123 Please also add tests
   $ propr task followup abc123 --file followup.md
-  $ echo "Address the review comments" | propr task followup abc123
+  $ echo "Address the review comments" | propr task followup abc123 --stdin
 `)
-    .action(async (taskId: string, bodyArg: string[] | undefined, options: { file?: string }) => {
+    .action(async (taskId: string, bodyArg: string[] | undefined, options: { file?: string; stdin?: boolean }) => {
       try {
-        let body = resolveFollowupBodyArgument(bodyArg);
-        if (options.file) {
-          const { readFile } = await import("node:fs/promises");
-          body = (await readFile(options.file, "utf8")).trim();
-        }
-        body = body ?? (await readStdinIfPiped());
+        const body = await resolveTextInput(bodyArg, options);
         if (!body || body.trim().length === 0) {
-          console.error("Error: Follow-up body is required as an argument, --file, or stdin.");
+          console.error("Error: Follow-up body is required via an argument, --file, or --stdin.");
           process.exit(1);
         }
 
@@ -635,30 +686,32 @@ Examples:
 
   // task import
   task
-    .command("import [description]")
+    .command("import [description...]")
     .description("Reconcile or recover tasks from GitHub for a repository")
     .option("-p, --project <project>", "Target project (owner/repo)")
     .option("-f, --file <path>", "Read import description from a file")
+    .option("--stdin", "Read import description from standard input")
     .addHelpText("after", `
+The description must come from at most one source: the argument, --file, or
+--stdin. When omitted, a default reconcile description is used.
+
 Examples:
-  $ propr task import -p myorg/myrepo "Recover missing GitHub tasks"
+  $ propr task import -p myorg/myrepo Recover missing GitHub tasks
   $ propr task import --file import.md
+  $ echo "Recover missing GitHub tasks" | propr task import --stdin
 `)
-    .action(async (description: string | undefined, options: { project?: string; file?: string }) => {
+    .action(async (descriptionArg: string[] | undefined, options: { project?: string; file?: string; stdin?: boolean }) => {
       try {
         const configManager = await createConfigManager();
-        const project = resolveProject(options, configManager);
-        if (!isValidProjectSlug(project)) {
+        const rawProject = resolveProject(options, configManager);
+        const project = normalizeProjectSlug(rawProject);
+        if (project === null) {
           throw new ProjectResolutionError(
-            `Invalid project "${project}". Expected owner/repo format.`
+            `Invalid project "${rawProject}". Expected owner/repo format.`
           );
         }
-        let taskDescription = description;
-        if (options.file) {
-          const { readFile } = await import("node:fs/promises");
-          taskDescription = (await readFile(options.file, "utf8")).trim();
-        }
-        taskDescription = taskDescription ?? (await readStdinIfPiped()) ?? "Reconcile and recover tasks from GitHub";
+        const taskDescription =
+          (await resolveTextInput(descriptionArg, options)) ?? "Reconcile and recover tasks from GitHub";
         const result = await importTasks(project, taskDescription);
         console.log(`Task import queued for ${project}.`);
         console.log(`Job ID: ${result.jobId}`);
@@ -678,12 +731,13 @@ Examples:
     .description("Revert changes from a specific commit in a pull request")
     .option("-o, --owner <owner>", "Repository owner (required if repo is not in owner/repo format)")
     .option("--dry-run", "Preview the branch reset without queueing a revert task")
+    .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Arguments:
   repo         Repository name (owner/repo format) or just repo name with -o flag
   pr           Pull request number
   commit       Commit hash to revert
-  commentId    ID of the comment that triggered the revert (not required with --dry-run)
+  commentId    ID of the comment that triggered the revert (not required and ignored with --dry-run)
 
 Examples:
   $ propr task revert myorg/myrepo 123 abc123def 456789
@@ -696,7 +750,7 @@ Examples:
         pr: string,
         commit: string,
         commentId: string | undefined,
-        options: { owner?: string; dryRun?: boolean }
+        options: { owner?: string; dryRun?: boolean; json?: boolean }
       ) => {
         try {
           let owner = options.owner;
@@ -744,12 +798,22 @@ Examples:
           }
 
           if (options.dryRun) {
+            if (commentId !== undefined) {
+              console.warn("Note: commentId is ignored with --dry-run; no revert task is queued.");
+            }
             const preview = await getRevertPreview(owner, repoName, prNumber, commit);
+            if (printOutput(preview, options.json ?? false)) {
+              return;
+            }
             displayRevertPreview(preview);
             return;
           }
 
           const result = await revertTask(owner, repoName, prNumber, commit, commentIdNum);
+
+          if (result.success && printOutput(result, options.json ?? false)) {
+            return;
+          }
 
           if (result.success) {
             console.log("");
