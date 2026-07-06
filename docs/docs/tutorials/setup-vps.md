@@ -89,15 +89,13 @@ sudo fail2ban-client status sshd
 
 *Run as: **root** (or `you` with `sudo`).*
 
-:::tip[Cloudflare Tunnel users — read this first]
-If you plan to front ProPR with Cloudflare Tunnel (see
-[Advanced VPS Hardening](./setup-vps-hardening.md)), you do **not** need to open
-ports 80/443 and can skip Certbot in step 9. The tunnel makes an outbound
-connection to Cloudflare's edge, so no public inbound web ports are required. You
-still need the firewall (allow SSH only) and nginx (it routes requests locally).
-Decide now — complete steps 1–8 here, then follow the hardening tutorial instead
-of step 9, which walks through the localhost-only nginx config and the tunnel
-together.
+:::info[Decision point — public TLS or Cloudflare Tunnel?]
+This is where the tutorial branches. Choose how the outside world reaches ProPR:
+
+- **Public TLS (default):** open ports 80/443 below, then terminate TLS with nginx and Certbot in step 9.
+- **Cloudflare Tunnel:** `cloudflared` makes an outbound connection to Cloudflare's edge, so the VPS needs no public inbound web ports. Skip the two `ufw allow 80/443` lines below, complete steps 1–8 here, then follow [Advanced VPS Hardening](./setup-vps-hardening.md) **instead of step 9** — it covers the localhost-only nginx config and the tunnel together, and can add an SSO identity gate. Resume here at step 10 afterward.
+
+Either way you still need the firewall (allow SSH) and nginx (it routes requests locally).
 :::
 
 Allow SSH (and, for the public-TLS path, web traffic); deny everything else
@@ -109,18 +107,14 @@ sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow OpenSSH
 
-# Public-TLS path only (step 9 with nginx + Certbot). SKIP these two lines if you
-# are using Cloudflare Tunnel — the hardening tutorial needs no public web ports.
+# Public-TLS path only (step 9 with nginx + Certbot). SKIP these two lines on
+# the Cloudflare Tunnel path — it needs no public web ports.
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 
 sudo ufw enable
 sudo ufw status verbose
 ```
-
-If you are taking the Cloudflare Tunnel path, run everything above **except** the
-two `ufw allow 80/443` lines; the tunnel reaches nginx over localhost and needs no
-inbound web ports.
 
 :::danger[Docker bypasses UFW for published ports]
 Docker inserts its own `iptables` rules in the `DOCKER` chain when a container
@@ -285,7 +279,7 @@ bundled template, and records any agent credential directories it detects under
 
 *Run as: **you**.*
 
-Choose one auth mode (full detail in [GitHub Authentication](../operations/github-auth.md)):
+Choose one auth mode: by default the shared, hosted ProPR App via the token relay (no private key on the server), with your own GitHub App as the advanced option. Full detail, including mode precedence, lives in [GitHub Authentication](../operations/github-auth.md).
 
 - **Own GitHub App** — copy the App private key onto the server first, then lock
   down its permissions (readable only by `you`) and set the App identifiers in
@@ -303,24 +297,13 @@ Choose one auth mode (full detail in [GitHub Authentication](../operations/githu
 
   ```bash
   # in /srv/propr/.env
-  GH_AUTH_MODE=app                                # app mode is inferred from the keys below, but set it explicitly here
+  GH_AUTH_MODE=app                                # inferred from the keys below; set it explicitly to avoid surprises
   GH_APP_ID=123456
   GH_INSTALLATION_ID=987654
   HOST_GH_PRIVATE_KEY=/srv/propr/app-private-key.pem
   ```
 
-  App mode is the inferred default once `GH_APP_ID`/`GH_INSTALLATION_ID`/the
-  private key are present (the resolution order is demo → relay → app), so
-  `GH_AUTH_MODE=app` is optional — but set it explicitly to avoid surprises if a
-  relay variable is ever left in the environment. See
-  [GitHub Authentication](../operations/github-auth.md) for the mode precedence.
-
-- **Shared App via relay** — no private key on the server. The easiest path is
-  to pick **Token relay** in `propr setup`, which enrolls and writes the
-  relay/routing credentials to `.env` for you. To enroll standalone, run
-  `propr relay enroll` from the stack directory — it discovers your installation
-  from your `propr login` identity (pass `--installation <id>` to choose among
-  several) and writes a relay token to `.env`:
+- **Shared App via relay (default)** — pick **Token relay** in `propr setup`, which enrolls and writes the relay/routing credentials to `.env` for you. To enroll standalone:
 
   ```bash
   cd /srv/propr         # run from the stack directory so the token lands in its .env
@@ -405,13 +388,7 @@ URLs above yourself. On a TLS server you would set them regardless.
 *Run as: **you** with `sudo` (system service config); the `.env` stays owned by
 `you`.*
 
-:::tip[Planning to use Cloudflare Tunnel?]
-If you intend to use Cloudflare Zero Trust, **skip this step entirely** and
-follow [Advanced VPS Hardening](./setup-vps-hardening.md) instead. That tutorial
-sets up nginx bound to localhost (Cloudflare provides edge TLS and the tunnel
-reaches nginx over the loopback), so there is no Certbot and no public port to
-open. Resume this tutorial at step 10 afterward.
-:::
+On the Cloudflare Tunnel path (decision point in step 3), skip this step and follow [Advanced VPS Hardening](./setup-vps-hardening.md) instead, then resume at step 10.
 
 :::warning[DNS first]
 Point your domain's DNS `A` record at the server (`propr.example.com →
@@ -574,7 +551,7 @@ show `127.0.0.1:4000`/`127.0.0.1:5173` (or `[::1]:...`); a `0.0.0.0:*` or
 `*:*` value would mean they are listening on every interface:
 
 ```bash
-ss -ltnp | grep -E ':4000|:5173'   # both must be bound to 127.0.0.1, not 0.0.0.0
+ss -ltnp | grep -E ':4000|:5173'   # both must show a 127.0.0.1 bind; 0.0.0.0 means every interface
 ```
 
 Only `https://propr.example.com` (443) and SSH (22) should answer.
@@ -611,13 +588,6 @@ CLI install from step 4.*
 
 For deeper operational guidance — image manifest, container names, metrics, and
 recovery — see [Deployment](../operations/deployment.md) and
-[Maintenance](../operations/maintenance.md).
-
-## Go Further: Cloudflare Zero Trust
-
-To remove **all** public inbound traffic from the VPS — closing ports 80 and 443
-so only SSH remains — front ProPR with Cloudflare Tunnel, and optionally add a
-Cloudflare Access SSO gate. That advanced hardening layer lives in its own
-tutorial: [Advanced VPS Hardening](./setup-vps-hardening.md). Follow it instead
-of step 9 if you decided up front to use Cloudflare (see the tips in steps 3
-and 9).
+[Maintenance](../operations/maintenance.md). To remove all public inbound web
+traffic with a Cloudflare Tunnel and an SSO gate, take the tunnel branch at the
+step 3 decision point: [Advanced VPS Hardening](./setup-vps-hardening.md).

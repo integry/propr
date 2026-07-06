@@ -6,60 +6,22 @@ sidebar_position: 8
 
 ProPR is meant to run under your control, using your repositories and your agent credentials. Most installs should use the published Docker images. Source checkout is mainly for teams modifying ProPR itself.
 
-## Published Images
+## What Stays On Your Infrastructure
 
-Images are published to Docker Hub under the `propr/` namespace and to GHCR under `ghcr.io/proprdev/` (GHCR uses a flat namespace, for example `ghcr.io/proprdev/propr-app`):
+Everything that touches your code runs where you deployed it:
 
-| Image | Purpose |
-|---|---|
-| `propr/launcher` | Single-command launcher that pulls and runs the whole stack |
-| `propr/app` | API, daemon, worker, analysis worker, and indexing worker (one image, different commands) |
-| `propr/ui` | Web UI |
-| `propr/docs` | This documentation site (optional) |
-| `propr/agent-base` | Shared base for agent images |
-| `propr/agent-claude` | Claude Code agent runtime |
-| `propr/agent-codex` | Codex agent runtime |
-| `propr/agent-antigravity` | Antigravity agent runtime |
-| `propr/agent-opencode` | OpenCode agent runtime |
-| `propr/agent-vibe` | Mistral Vibe agent runtime |
+- Repository clones and per-task worktrees
+- Agent execution containers and their prompts, logs, and generated patches
+- The SQLite application database and Redis queue state
+- GitHub App credentials and agent credentials
 
-Redis runs from the upstream `redis:7-alpine` image.
+You supply the GitHub App credentials and agent credentials. ProPR does not require a hosted ProPR account for the core self-hosted workflow. The supported agents, their Docker images, and the `HOST_*` credential-mount variables are documented in [Agents and Models](./agents-and-models.md#supported-agents).
 
-## Launcher Flow
+## How A Deployment Looks
 
-The recommended setup is one `docker run` of `propr/launcher`. The launcher mounts your `.env`, the GitHub App private key, the Docker socket, and your data/logs/repos directories, then pulls the pinned image set and starts sibling containers on the host Docker daemon:
+The recommended setup is the published image set, orchestrated either by the ProPR CLI control plane or by one `docker run` of the launcher container. Both pull a pinned image set and start the service containers — Redis, daemon, worker, analysis and indexing workers, API, and Web UI — as siblings on the host Docker daemon, with your `.env`, data, logs, and repos directories mounted in. The image list and orchestration details live in [Production Deployment](../operations/deployment.md#published-images).
 
-- `propr-redis` (queue and transient state)
-- `propr-daemon` (issue and comment intake)
-- `propr-worker` (task execution)
-- `propr-analysis-worker` and `propr-indexing-worker`
-- `propr-api` (dashboard API, webhook receiver)
-- `propr-ui` (Web UI), and optionally `propr-docs`
-
-Local directory layout next to your `.env`: the GitHub App `<key>.pem`, plus `data/` (SQLite database), `logs/`, and `repos/` (clones and worktrees). This works for both local workstation setup and remote server deployment.
-
-See [Setup](../tutorials/setup.md) for the full flow, including the required GitHub App permissions (Contents R/W, Issues R/W, Pull Requests R/W, Metadata R, Actions R optional).
-
-## Own Credentials
-
-You supply the GitHub App credentials and agent credentials. ProPR does not require a hosted ProPR account for the core self-hosted workflow.
-
-The launcher mounts host credential directories into the worker and API containers (and from there into spawned agent containers) when you set the matching `HOST_*` variables. All values must be absolute paths:
-
-| Agent | Variable | Typical host path |
-|---|---|---|
-| Claude Code | `HOST_CLAUDE_DIR` | `~/.claude` |
-| Codex | `HOST_CODEX_DIR` | `~/.codex` |
-| Antigravity | `HOST_ANTIGRAVITY_DIR` | `~/.gemini` |
-| OpenCode | `HOST_OPENCODE_XDG_DIR` | `~/.config/opencode` |
-| OpenCode (login data) | `HOST_OPENCODE_DATA_DIR` | `~/.local/share/opencode` |
-| Mistral Vibe | `HOST_VIBE_DIR` | `~/.vibe` |
-
-Omit a variable to skip mounts for that agent. Notes:
-
-- For Antigravity, install the CLI, run `agy login` on the host, and pass `HOST_ANTIGRAVITY_DIR` pointing at `~/.gemini` (Antigravity stores its login state there).
-- For OpenCode, also set `HOST_OPENCODE_DATA_DIR` so credentials from `opencode auth login` are visible to spawned agent containers.
-- For Vibe with the launcher, ensure the host prompt cache exists. The launcher defaults `HOST_VIBE_PROMPT_CACHE_DIR` to `/tmp/propr-vibe-prompts-$(id -u)` and `VIBE_PROMPT_CACHE_DIR` to `/tmp/propr-vibe-prompts` inside containers; override them only if you need different bind paths. Vibe can also authenticate via `MISTRAL_API_KEY` instead of a mounted `~/.vibe`.
+Local directory layout next to your `.env`: the GitHub App `<key>.pem` (own-App mode only), plus `data/` (SQLite database), `logs/`, and `repos/` (clones and worktrees). This works for both local workstation setup and remote server deployment. See [Setup](../tutorials/setup.md) for the full flow, including the required GitHub App permissions (Contents R/W, Issues R/W, Pull Requests R/W, Metadata R, Actions R optional).
 
 ## Local Or Server
 
@@ -71,7 +33,7 @@ Local setup is useful for trying ProPR, testing configuration, or running it for
 - Longer-lived persistent storage
 - More careful credential and Docker socket access controls
 
-See [Server Setup](../tutorials/setup-server.md). By default ProPR receives GitHub events over a routing WebSocket from the hosted ProPR App at propr.dev — no inbound public endpoint required. Polling and running your own GitHub App with a direct webhook remain available as advanced intake options selected by `GITHUB_EVENT_INTAKE_MODE`.
+See [Server Setup](../tutorials/setup-server.md) for the walkthrough and [Production Deployment](../operations/deployment.md) for the reference. By default ProPR receives GitHub events over a routing WebSocket from the hosted ProPR App at propr.dev — no inbound public endpoint required. Polling and running your own GitHub App with a direct webhook remain available as advanced intake options selected by `GITHUB_EVENT_INTAKE_MODE`.
 
 The hosted bridge for the shared ProPR GitHub App, relay tokens, routing
 WebSocket, and optional hosted UI tunnel is documented in

@@ -11,7 +11,7 @@ Run lint, type checks, tests, and the build on every pull request through GitHub
 Two ProPR features consume CI results directly, so CI is not just a reviewer aid — it changes how automation behaves:
 
 - **Auto-merge** (`--auto-merge`, or the `auto-merge` label) enables GitHub's native auto-merge, which holds the merge until all **required** status checks and approvals pass. This is only as safe as your branch protection: if no checks are marked *required*, auto-merge can merge as soon as the PR is mergeable. Define required status checks in [branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) so auto-merge waits for them. See [`--auto-merge`](../features/propr-cli.md) and [Planner Studio](../tutorials/planner-studio.md).
-- **`/ultrafix`** defers its next review/fix cycle until checks are passing and resumes when a `check_run` completes. Fast, reliable CI means tighter cleanup loops; slow or flaky CI stalls them. Note that a commit with *no* check runs is treated as ready, so `/ultrafix` only benefits from CI when checks actually exist. See [UltraFix commands](../features/pr-ultrafix-commands.md).
+- **`/ultrafix`** defers its next review/fix cycle until checks are passing and resumes when a `check_run` completes. Fast, reliable CI means tighter cleanup loops; slow or flaky CI stalls them. Note that a commit with *no* check runs is treated as ready, so `/ultrafix` only benefits from CI when checks actually exist. See [`/ultrafix`](../features/pr-commands.md#ultrafix).
 
 Practical implications: keep CI **fast** (loops and merges wait on it) and **deterministic** — flaky tests stall `/ultrafix`, block auto-merge, and can send fix loops chasing failures that aren't real.
 
@@ -35,7 +35,7 @@ Lint rules that cap file length, function size, and cyclomatic complexity keep d
 ProPR does not measure or enforce complexity, and it indexes large files like any other. But repository knowledge degrades when structure is unclear: plans miss important files, agents change the wrong layer, and suggestions get generic (see [Repository Knowledge](../features/repository-knowledge.md)). Clear module boundaries and small files improve both planning and review.
 
 :::tip[Scope work small]
-Acceptance rate drops when tasks are too broad. Prefer smaller issues that produce focused PRs — see [Work Splitting](../features/work-splitting.md) and [Planning](../features/planning.md). Low PR acceptance usually points to a scope problem; the agent is rarely the cause ([System Metrics](../operations/system-metrics.md)).
+Broad tasks produce PRs that stall in review. Prefer smaller issues that produce focused PRs — see [Work Splitting](../features/work-splitting.md) and [Planning](../features/planning.md). When PRs keep needing heavy rework, the scope of the issues is the first thing to fix; the [Metrics](../operations/metrics.md) page shows where time and cost concentrate.
 :::
 
 ## Match The Agent Environment To CI
@@ -57,4 +57,4 @@ ProPR's planning and review draw on repository knowledge. A clear `README`, a `C
 - Issues are scoped small enough to produce focused PRs
 - Conventions documented in `README`/`CONTRIBUTING`
 
-For how ProPR reviews PRs and what "good" looks like, see [PR Review Guidelines](./pr-review-guidelines.md) and [Execution Safety](../features/execution-safety.md).
+For how ProPR reviews PRs and what "good" looks like, see [PR Comment Commands](../features/pr-commands.md) and [Execution Safety](../features/execution-safety.md).

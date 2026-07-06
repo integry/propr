@@ -6,10 +6,7 @@ sidebar_position: 5
 
 ProPR runs Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe through one shared coding-agent integration pattern. The agent name changes the CLI, image, credential mount, and model catalog, but the architectural contract stays the same: ProPR routes a job to an enabled agent, starts that agent in a Docker runtime, gives it a bounded prompt, parses its output, and then the worker finalizes the result.
 
-Runtime and agent-specific pages cover details that do not belong in the common contract:
-
-- [Agent Runtime Reference](./agent-runtime.md)
-- [OpenCode Integration](./opencode-integration.md)
+The [Agent Runtime Reference](./agent-runtime.md) covers runtime and agent-specific details that do not belong in the common contract.
 
 ## Integration Contract
 
@@ -45,19 +42,11 @@ Enabled agents are stored as normal ProPR agent configs with a type, alias, Dock
 
 Routing happens before the worker starts the runtime. Labels such as `llm-claude-sonnet46`, `llm-codex-gpt55`, `llm-opencode-minimax-m3-free`, or dynamic slash-command selections resolve to a concrete agent and model. The worker then passes that model to the selected implementation, while the implementation translates ProPR model IDs into whatever the underlying CLI expects.
 
-See [Agent Routing](../features/agent-routing.md) for label formats, aliases, defaults, and multi-model work splitting.
+See [Agents and Models](../features/agents-and-models.md) for label formats, aliases, defaults, and multi-model work splitting.
 
 ## Docker Runtime
 
-Every supported coding agent uses the same containerized runtime shape: an agent image with ProPR's common tooling, an entrypoint script, the task worktree mounted at `/home/node/workspace`, and the required host credential directory mounted into the container. Most images build on `propr/agent-base`; Antigravity uses a Debian slim base for CLI compatibility while preserving the same runtime contract.
-
-| Agent | Dockerfile | Entrypoint | Credential mount |
-| --- | --- | --- | --- |
-| Claude Code | `Dockerfile.claude` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) |
-| Codex | `Dockerfile.codex` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) |
-| Antigravity | `Dockerfile.antigravity` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) |
-| OpenCode | `Dockerfile.opencode` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) and related dirs |
-| Mistral Vibe | `Dockerfile.vibe` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) |
+Every supported coding agent uses the same containerized runtime shape: an agent image with ProPR's common tooling, an entrypoint script, the task worktree mounted at `/home/node/workspace`, and the required host credential directory mounted into the container. Most images build on `propr/agent-base`; Antigravity uses a Debian slim base for CLI compatibility while preserving the same runtime contract. The [Agent Runtime Reference](./agent-runtime.md) holds the canonical table of images, Dockerfiles, entrypoints, and credential mounts.
 
 The runtime receives GitHub credentials, selected model settings, timeout settings, and any agent-specific environment variables. Containers run independently so concurrent jobs can use different agents and models without sharing mutable checkouts.
 
@@ -100,15 +89,14 @@ Use the generic integration contract first, then branch into agent details only 
 
 - [Agent Runtime Reference](./agent-runtime.md): shared container settings, network behavior, timeouts, debugging, and per-agent runtime notes.
 - [Claude Code Runtime Details](./agent-runtime.md#claude-code): Claude Code container settings, CLI invocation, timeouts, and troubleshooting.
-- [OpenCode Integration](./opencode-integration.md): OpenCode configuration, model ID translation, auth data mounts, and JSON execution mode.
+- [OpenCode Runtime Details](./agent-runtime.md#opencode): OpenCode host setup, auth-data handling, model-ID translation, and JSON execution mode.
 - [Agents and Models](../features/agents-and-models.md): supported model labels and credential setup across all agents.
 
 ## Related Pages
 
-- [Agent Routing](../features/agent-routing.md)
+- [Agents and Models](../features/agents-and-models.md)
 - [Worker Architecture](./worker.md)
 - [Worker Runtime Reference](./worker-runtime.md)
 - [Isolated And Safe Execution](../features/execution-safety.md)
 - [Agent Runtime Reference](./agent-runtime.md)
 - [Claude Code Runtime Details](./agent-runtime.md#claude-code)
-- [OpenCode Integration](./opencode-integration.md)

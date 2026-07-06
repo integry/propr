@@ -1,6 +1,6 @@
 # Web UI Integration Guide
 
-This guide explains how ProPR's browser UI fits together with the dashboard API, workers, and GitHub automation services — ports, authentication, WebSockets, and deployment. For a tour of the UI's screens and what each does, see the [Web UI Guide](../features/web-ui.md).
+This guide is for contributors working on ProPR's browser UI or building against the dashboard API. It explains how the UI fits together with the API, workers, and GitHub automation services — ports, authentication, WebSockets, and where to add code when extending the integration. For a tour of the UI's screens and what each does, see the [Web UI Guide](../features/web-ui.md). For deploying the UI and API in production, see [Production Deployment](./deployment.md); for driving a local stack from the hosted UI, see [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
 ## Overview
 
@@ -79,25 +79,15 @@ The Vite dev server runs on `http://localhost:5173` by default. `VITE_API_URL` s
 
 ## Production Integration
 
-In production, the UI and API can be deployed behind the same domain or different subdomains. In the launcher stack, the UI is the `propr/ui` container (port 5173) and the API is part of the `propr/app` image (port 4000).
-
-Important integration points:
-
-- Point the frontend at the correct API origin so browser requests reach the dashboard API. Prefer runtime config (`PROPR_UI_PUBLIC_API_URL` → `window.__PROPR_CONFIG__.apiBaseUrl`), which lets one published image serve any backend; build-time `VITE_API_BASE_URL` is a fallback for single-target builds. See [Hosted UI And Runtime Config](#hosted-ui-and-runtime-config) below
-- Configure `GH_OAUTH_CALLBACK_URL` to match the public API origin
-- Allow credentials and cookies to flow correctly if the UI and API are on different origins (`FRONTEND_URL` drives the API's CORS configuration)
-- Route `/api/*`, `/webhook`, and `/socket.io/` traffic to the dashboard API if you serve everything behind one reverse proxy, and enable WebSocket upgrades for `/socket.io/`
+In production, the UI and API can be deployed behind the same domain or different subdomains. In the launcher stack, the UI is the `propr/ui` container (port 5173) and the API is part of the `propr/app` image (port 4000). Reverse-proxy routing, TLS, and the `FRONTEND_URL` / `GH_OAUTH_CALLBACK_URL` wiring are covered in [Production Deployment](./deployment.md); publishing a local API to the hosted UI at `app.propr.dev` is covered in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
 If you build your own frontend around ProPR, treat the dashboard API as the system contract and reuse the existing route structure instead of re-implementing worker or daemon logic in the browser.
 
-## Hosted UI And Runtime Config
+## API Base URL Resolution
 
-The hosted ProPR UI at `https://app.propr.dev` is one static bundle that serves many local stacks, so its API base URL cannot be baked in at build time. Connect opens it with a validated `?tunnel=t-<id>.propr.dev` deep link; the UI remembers that selection through login/OAuth redirects. Self-hosted UI containers can still use `window.__PROPR_CONFIG__`, which the UI container rewrites at start from `PROPR_UI_PUBLIC_API_URL`. The resolution order is: Connect tunnel query param on `app.propr.dev` → remembered hosted tunnel selection → runtime config (`window.__PROPR_CONFIG__.apiBaseUrl`) → build-time `VITE_API_BASE_URL` → empty string (same-origin, local dev through the Vite proxy). **REST and Socket.IO use this same resolved base**, so both always target one origin.
+The frontend resolves its API base URL at load time, which is what lets one published UI image serve any backend. The resolution order is: Connect tunnel query param on `app.propr.dev` → remembered hosted tunnel selection → runtime config (`window.__PROPR_CONFIG__.apiBaseUrl`, which the `propr/ui` container rewrites at start from `PROPR_UI_PUBLIC_API_URL`) → build-time `VITE_API_BASE_URL` → empty string (same-origin, local dev through the Vite proxy). **REST and Socket.IO use this same resolved base**, so both always target one origin.
 
-When a local stack opts in to the hosted UI, an optional Cloudflare Tunnel publishes its **API** (the API container on port 4000) at a per-instance `https://t-<PROPR_INSTANCE_ID>.propr.dev` host — distinct from the vendor-run hosts (`app.propr.dev` for the UI, `webhook.propr.dev` for routing/relay). The browser is loaded from `app.propr.dev` and calls the API at that proxy host, so the two are different origins: set `FRONTEND_URL` to the hosted UI origin (`https://app.propr.dev`, the CORS allow-origin) and `API_PUBLIC_URL` plus `GH_OAUTH_CALLBACK_URL` to the proxy host. `http://api:4000` remains the internal service-to-service address inside the Docker network. See [Production Deployment → Hosted UI Tunnel](./deployment.md#hosted-ui-tunnel) for the full architecture and config block.
-
-For the broader hosted bridge that owns GitHub event routing, relay tokens, and
-managed tunnel coordination, see [ProPR Connect](./propr-connect.md).
+The hosted-UI entries in that chain exist because `app.propr.dev` is one static bundle serving many local stacks — the deployment-side story (Cloudflare Tunnel, `t-<id>.propr.dev` proxy hosts, `FRONTEND_URL` / `API_PUBLIC_URL`) lives in [Hosted UI Tunnel](./hosted-ui-tunnel.md). For the broader hosted bridge that owns GitHub event routing, relay tokens, and managed tunnel coordination, see [ProPR Connect](./propr-connect.md).
 
 ## Extending The Integration
 

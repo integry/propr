@@ -11,6 +11,8 @@ Sign in with the GitHub account that installed the [ProPR GitHub App](https://gi
 
 ## Dashboard
 
+{/* SCREENSHOT PLACEHOLDER (P2 — no site asset covers this surface yet): Capture the Connect dashboard landing page for a Plus installation: plan badge, the Assigned seats roster with two or three developers, and the 24-hour webhook activity panel with real deliveries. Use the installation picker to scope to an installation whose repositories are all public. */}
+
 The landing page shows the installation's plan badge (Community or Plus), the **Assigned seats** roster — which developers hold a seat this billing cycle — and webhook activity for the last 24 hours: events by repository, type, and user, average delivery latency, cached events, and failed deliveries that still need replay. An **All seats in use** alert appears when a new developer's trigger would exceed the plan; **Manage Plus seats** opens the Polar-backed checkout and customer portal. Seat mechanics are covered in [ProPR Connect → Seats and limits](./propr-connect.md#seats-and-limits).
 
 ## Deliveries
@@ -23,7 +25,7 @@ Relay tokens (`prt_…`) are the durable credential a self-hosted stack uses to 
 
 ## Tunnels
 
-Plus installations can provision a managed hosted-UI tunnel: Connect creates the Cloudflare connector and shows a one-time `propr tunnel setup --token … --url https://t-<id>.propr.dev --start` command to run in the stack directory. The page also health-checks the tunnel and offers rotate/delete. Architecture and configuration live in [Production Deployment → Hosted UI Tunnel](./deployment.md#hosted-ui-tunnel).
+Plus installations can provision a managed hosted-UI tunnel: Connect creates the Cloudflare connector and shows a one-time setup command to run in the stack directory. The page also health-checks the tunnel and offers rotate/delete. Architecture, the setup command, and configuration live in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
 ## Checking Connect health
 

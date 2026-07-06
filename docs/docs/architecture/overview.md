@@ -40,15 +40,7 @@ ProPR has four main parts:
 
 Every supported agent follows the same runtime pattern: a Docker image with ProPR's common tooling, an entrypoint script, and a host credential directory mounted into the container. Most images build on the shared `propr/agent-base` image; Antigravity uses Debian slim for CLI compatibility.
 
-| Agent | Dockerfile | Entrypoint | Credential mount |
-| --- | --- | --- | --- |
-| Claude Code | `Dockerfile.claude` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) |
-| Codex | `Dockerfile.codex` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) |
-| Antigravity | `Dockerfile.antigravity` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) |
-| OpenCode | `Dockerfile.opencode` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) and related dirs |
-| Mistral Vibe | `Dockerfile.vibe` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) |
-
-The [Agent Runtime Reference](./agent-runtime.md) documents the pattern in detail, including runtime-specific notes for Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe.
+The [Agent Runtime Reference](./agent-runtime.md) holds the canonical table of images, Dockerfiles, entrypoints, and credential mounts, plus runtime-specific notes for Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe.
 
 ## Important Boundaries
 
@@ -61,6 +53,6 @@ The [Agent Runtime Reference](./agent-runtime.md) documents the pattern in detai
 
 - [Daemon Architecture](./daemon.md): how work is detected.
 - [Worker Architecture](./worker.md): how jobs execute.
-- [Agent Routing](../features/agent-routing.md): how models are selected.
+- [Agents and Models](../features/agents-and-models.md): how models are selected.
 - [Isolated And Safe Execution](../features/execution-safety.md): why runs stay separated.
 - [Observability And Control](../features/observability.md): how to inspect what happened.

@@ -258,95 +258,46 @@ it is the user's own browser, which has already authenticated.
 
 ### 4a. (Advanced) Bypass Access For The Webhook Path
 
-:::danger[Advanced and security-sensitive — the default routing WebSocket is strongly preferred]
-**Use the default routing WebSocket (or polling). Treat this bypass as a rare
-exception.** Skip this entire subsection unless you have a
-concrete, standing reason to run your own App's `direct_webhook` instead — the
-default routing WebSocket and polling (above) need no exception and carry none of
-the risk below.
-
-A bypass carves a public, unauthenticated hole through your SSO gate, and its
-safety depends entirely on Cloudflare's path-matching and route-precedence
-behavior **and** on ProPR's current routes — both of which can change underneath
-you. A wrong path or precedence assumption silently over-exposes the app. Because
-the boundary is this fragile, the bypass is **not** a set-and-forget control: it
-must be re-validated after every Cloudflare configuration change and after every
-ProPR upgrade that could alter routes (see the re-audit note at the end of this
-subsection). If you cannot commit to that revalidation discipline, do not enable
-it — stay on the default routing WebSocket.
+:::danger[A public hole through your SSO gate — prefer the default routing WebSocket]
+Skip this subsection unless you have a concrete, standing reason to run your own
+App's `direct_webhook`; the default routing WebSocket and polling need no
+exception and carry none of this risk. A *Bypass* policy carves a public,
+unauthenticated path through Access, and its safety rests on Cloudflare's
+path-matching and policy-precedence behavior plus ProPR's current routes — all of
+which can change underneath you and silently over-expose the app. The bypass is a
+standing exception that must be re-validated (checklist below) after every
+Cloudflare configuration change and every ProPR upgrade; if you cannot commit to
+that discipline, stay on the routing WebSocket.
 :::
 
-If you genuinely need direct webhook delivery behind Access, add a second,
-**path-scoped** Access application with a single *Bypass* policy. Scope it to the
-webhook path **and nothing else**. The path matters: do **not** bypass the bare
-`propr.example.com` hostname, which would disable the Access gate for the entire
-app.
+If you proceed, add a second, **path-scoped** Access application with a single
+*Bypass* policy:
 
-:::tip[Decision checkpoint — the default routing WebSocket is recommended; only continue if all apply]
-Before adding the bypass below, confirm every one of these. If any is "no", stop
-and stay on the default routing WebSocket (or polling):
+- Scope the application to `propr.example.com/webhook` — the exact path only,
+  matching the `location = /webhook` nginx block. Never bypass the bare
+  `propr.example.com` hostname, which would disable Access for the entire app,
+  and skip broad `/webhook/*` sub-path rules.
+- Keep `GH_WEBHOOK_SECRET` set: the endpoint still verifies the HMAC signature
+  even though Access no longer gates it.
+- The path-scoped application must be evaluated before the hostname-wide Allow
+  policy. Confirm the current rules against Cloudflare's
+  [Access application path matching](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-public-app/)
+  and [policy precedence](https://developers.cloudflare.com/cloudflare-one/policies/access/)
+  documentation.
 
-- [ ] You have a concrete, standing reason your own App's `direct_webhook` must be
-      used instead of the default routing WebSocket (e.g. you run your own GitHub
-      App and require direct delivery).
-- [ ] You will **re-validate** the bypass after every Cloudflare config change and
-      every ProPR upgrade (the two-direction test below).
-- [ ] `GH_WEBHOOK_SECRET` is set so the endpoint still verifies the HMAC signature
-      even though Access no longer gates it.
+Then verify all three directions before relying on it — and re-run this checklist
+after every Cloudflare configuration change and every ProPR upgrade that could
+add routes:
 
-The default routing WebSocket needs none of this — it is outbound-only and carries
-none of the bypass risk.
-:::
-
-ProPR serves a single `POST /webhook` route, so scope the bypass to that **exact
-path only** — matching the `location = /webhook` nginx block in the main
-tutorial. Add one path to the application; do not add a broad `/webhook/*`
-sub-path bypass unless a future release documents webhook subpaths you genuinely
-need to exempt:
-
-| Application domain | Intended to match |
-|---|---|
-| `propr.example.com/webhook` | the exact endpoint, including `?query` strings |
-
-Cloudflare is expected to evaluate the more specific path-scoped application
-before the hostname-wide Allow policy, so only this exact webhook path skips SSO
-while everything else stays gated. **Path matching is security-sensitive and
-Cloudflare's exact prefix/precedence behavior can change, so treat the above as a
-starting point you must verify yourself** — confirm the current rules
-against Cloudflare's
-[Access application path matching](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-public-app/)
-and
-[policy precedence](https://developers.cloudflare.com/cloudflare-one/policies/access/)
-documentation. Then test both directions before relying on it:
-
-- Send a test delivery from your GitHub App's **Recent Deliveries** tab and
-  confirm `/webhook` returns `2xx` (not a Cloudflare Access login redirect).
-- Load `https://propr.example.com/` in a fresh/incognito browser and confirm the
-  app itself still forces SSO — proving the bypass did **not** widen beyond the
-  webhook path.
-- **Required:** from a fresh/incognito browser, load a *sibling* path that shares
-  the `/webhook` prefix but is not the webhook endpoint — for example
-  `https://propr.example.com/webhookadmin` and
-  `https://propr.example.com/webhook-test` — and confirm each is **still forced
-  through SSO** (an Access login redirect). If any sibling path
-  skips SSO, your bypass is matching by bare prefix and is over-scoped: narrow the
-  application path until only the exact `/webhook` endpoint is exempt before you
-  rely on this setup.
-
-The endpoint stays protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature
-that ProPR already verifies.
-
-Because these rules bypass Access by **path prefix**, treat the bypass as a
-standing exception that requires revalidation. Re-audit
-it on **two triggers**: whenever you change Cloudflare configuration (Access
-applications, policies, or their ordering — precedence is what keeps the bypass
-scoped to `/webhook`) and whenever you upgrade ProPR or otherwise add routes.
-Each time, re-run the test above and confirm the bypass still covers only the
-exact `/webhook` endpoint. If a future release ever serves a different route that
-shares the prefix — a sibling like `/webhookadmin`, or anything under
-`/webhook/` — make sure it has **not** inherited the bypass and is left sitting
-unauthenticated behind Access. Keep the application's paths as narrow as the
-endpoints you actually expose.
+- [ ] A test delivery from your GitHub App's **Recent Deliveries** tab returns
+      `2xx` on `/webhook`; an Access login redirect means the bypass is missing
+      the path.
+- [ ] In a fresh/incognito browser, `https://propr.example.com/` still forces
+      SSO — proving the bypass stayed within the webhook path.
+- [ ] Sibling paths such as `https://propr.example.com/webhookadmin` and
+      `https://propr.example.com/webhook-test` still force SSO. If any sibling
+      skips SSO, the bypass is matching by bare prefix and is over-scoped —
+      narrow it until only the exact `/webhook` endpoint is exempt.
 
 ## Next Steps
 

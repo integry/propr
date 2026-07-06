@@ -89,15 +89,7 @@ The same worker structure applies across job types: prepare, run, finalize, reco
 
 ## Agent Runtimes
 
-Workers run whichever agent the job's routing metadata selects. All agents share the same containerized runtime pattern: a Docker image with ProPR's common tooling, an entrypoint script, and a host credential mount:
-
-- Claude Code: `Dockerfile.claude`, `scripts/claude-entrypoint.sh`, mounts `HOST_CLAUDE_DIR`
-- Codex: `Dockerfile.codex`, `scripts/codex-entrypoint.sh`, mounts `HOST_CODEX_DIR`
-- Antigravity: `Dockerfile.antigravity`, `scripts/antigravity-entrypoint.sh`, mounts `HOST_ANTIGRAVITY_DIR`
-- OpenCode: `Dockerfile.opencode`, `scripts/opencode-entrypoint.sh`, mounts the `HOST_OPENCODE_*` directories
-- Mistral Vibe: `Dockerfile.vibe`, `scripts/vibe-entrypoint.sh`, mounts `HOST_VIBE_DIR`
-
-See [Coding Agent Integration](./coding-agent-integration.md) for the shared contract and [Agent Runtime Reference](./agent-runtime.md) for shared container behavior and agent-specific runtime detail.
+Workers run whichever agent the job's routing metadata selects. All agents share the same containerized runtime pattern: a Docker image with ProPR's common tooling, an entrypoint script, and a host credential mount. The [Agent Runtime Reference](./agent-runtime.md) holds the canonical table of images, Dockerfiles, entrypoints, and credential mounts, plus agent-specific runtime detail; see [Coding Agent Integration](./coding-agent-integration.md) for the shared contract.
 
 ## Isolation Model
 

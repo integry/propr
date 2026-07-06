@@ -6,7 +6,7 @@ sidebar_position: 2
 
 The daemon detects eligible issues and pull request events, then enqueues jobs for workers. It is responsible for intake, filtering, deduplication, and queue handoff. Workers perform the actual repository setup, agent execution, and pull request finalization.
 
-Runtime settings, reset mode, monitoring, and error handling live in [Daemon Runtime Reference](./daemon-runtime.md).
+Runtime settings, reset mode, monitoring, and error handling live in the [Runtime Reference](#runtime-reference) at the end of this page.
 
 ## Core Responsibilities
 
@@ -117,3 +117,102 @@ Deterministic job IDs are the primary deduplication mechanism: enqueueing the sa
 ## Relationship To Workers
 
 The daemon is an intake service. Workers are execution services. Keeping those roles separate makes it easier to scale worker capacity without changing GitHub polling behavior.
+
+## Runtime Reference
+
+### Configuration
+
+Common settings:
+
+```bash
+# Repository monitoring
+GITHUB_REPOS_TO_MONITOR=owner/repo1,owner/repo2
+POLLING_INTERVAL_MS=60000
+
+# Label configuration
+PRIMARY_PROCESSING_LABELS=AI,propr
+MODEL_LABEL_PATTERN=^llm-(.+)$
+DEFAULT_MODEL_NAME=<model-id-used-when-no-llm-label-is-present>
+
+# Event intake mode: routing_websocket (default), polling, or direct_webhook.
+# GH_WEBHOOK_SECRET applies only to direct_webhook (your own GitHub App).
+GITHUB_EVENT_INTAKE_MODE=routing_websocket
+# GH_WEBHOOK_SECRET=your-webhook-secret
+
+# GitHub authentication
+GH_APP_ID=your_app_id
+GH_PRIVATE_KEY_PATH=/app/config/app.pem
+GH_INSTALLATION_ID=your_installation_id
+
+# Redis connection
+REDIS_HOST=redis
+REDIS_PORT=6379
+```
+
+Repository, label, branch, and agent settings should normally be managed in the Web UI after install.
+
+### Commands
+
+Source or direct local runs can start the daemon with npm scripts:
+
+```bash
+npm run daemon
+npm run daemon:dev
+npm run daemon:reset
+npm run daemon:reset:dev
+```
+
+Image-based installs start the daemon container through the launcher.
+
+### Reset Mode
+
+Reset mode (`npm run daemon:reset`, or `daemon:reset:dev` with debug logging) is a development and recovery tool. It can clear queue state and remove processing labels so stuck work can be retried.
+
+Use reset mode carefully in shared environments because it can affect active work. Prefer targeted recovery from the Web UI when available.
+
+### Error Handling
+
+Common daemon failures:
+
+- GitHub API rate limits
+- GitHub App permission errors
+- Webhook signature verification failures (`GH_WEBHOOK_SECRET` mismatch)
+- Redis connection failures
+- Invalid repository configuration
+- Invalid or unavailable model labels
+
+The daemon should log enough context to identify the repository, issue or PR, trigger label, and correlation ID.
+
+### Performance
+
+Important tuning knobs:
+
+- Event intake mode (see [Intake Modes](#intake-modes))
+- Polling interval (`polling` mode)
+- Number of monitored repositories
+- GitHub API rate limits
+- Queue depth
+- Worker capacity
+
+Shorter polling intervals increase responsiveness but use more GitHub API capacity. Event-driven intake (`routing_websocket` by default, or `direct_webhook`) avoids polling pressure entirely by receiving events as they happen.
+
+### Monitoring
+
+Watch:
+
+- Intake rate
+- Queue depth
+- Duplicate-skip count
+- GitHub API failures
+- Redis connection failures
+- Time from eligible issue to queued job
+
+These signals help separate intake problems from worker execution problems.
+
+### Best Practices
+
+1. Keep repository configuration in the Web UI where possible.
+2. Use clear primary labels for human-triggered automation.
+3. Keep model labels aligned with configured AI Agents.
+4. Prefer event-driven intake for low-latency processing. Reserve `polling` for environments that cannot receive events, and avoid aggressive polling intervals unless the GitHub API budget supports it.
+5. Treat reset mode as a deliberate recovery action.

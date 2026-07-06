@@ -111,9 +111,9 @@ Browser
   -> local ProPR API container
 ```
 
-The tunnel is intended for the ProPR API only. It is not a general-purpose tunnel. The proxy routes the browser-facing API and Socket.IO paths used by the UI; it does not expose the GitHub webhook endpoint through the tunnel.
+The tunnel carries ProPR API traffic only: the proxy routes the browser-facing API and Socket.IO paths used by the UI, and the GitHub webhook endpoint stays off the tunnel. The hosted UI checks the selected local API's compatibility metadata before using it, so a hosted UI bundle never silently runs against an incompatible local API contract.
 
-The hosted UI checks the selected local API's compatibility metadata before using it, so a hosted UI bundle does not silently run against an incompatible local API contract.
+Architecture, provisioning, configuration, and troubleshooting for the tunnel live in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
 ## Authentication And Tokens
 
@@ -138,11 +138,9 @@ The hosted relay is the recommended default because it avoids inbound networking
 
 ## Current Limitations
 
-Today, tunnel-based OAuth requires the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://t-<id>.propr.dev/api/auth/github/callback`. ProPR Connect shows this callback during tunnel setup, and `propr tunnel setup --token ... --url ... --start` writes it to `GH_OAUTH_CALLBACK_URL`; you still need to register the same URL in the GitHub OAuth App used by that stack. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
+Today, tunnel-based OAuth requires the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://t-<id>.propr.dev/api/auth/github/callback`; you must register the same URL in the GitHub OAuth App used by that stack. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
 
-Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token, and opens `app.propr.dev` with a validated `?tunnel=t-<id>.propr.dev` deep link. The raw `.env` values remain available as a fallback for older CLI versions or recovery, but the normal path is to run the generated `propr tunnel setup` command.
-
-The connector token (`PROPR_UI_TUNNEL_TOKEN`) is a live Cloudflare credential. ProPR keeps it off the process command line — it is passed to the `cloudflared` sidecar as the `TUNNEL_TOKEN` environment variable and injected into no other container — but it is still readable from that container's environment via `docker inspect`. Treat Docker daemon access on the host as equivalent to access to this token, and rotate it in ProPR Connect if the host is compromised.
+Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token and setup command, and opens `app.propr.dev` with a validated `?tunnel=t-<id>.propr.dev` deep link. The setup command, configuration, and the handling of the live connector token are documented in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
 ## When To Use It
 
@@ -159,6 +157,6 @@ Use a custom deployment path if you need to own every public endpoint, GitHub Ap
 ## Related Setup Guides
 
 - [GitHub Authentication](./github-auth.md) explains relay mode and installation token handling.
-- [Production Deployment](./deployment.md) documents issue intake modes and hosted UI tunnel configuration.
-- [Web UI Integration](./web-ui-integration.md) describes how the browser UI, API, sessions, and Socket.IO fit together.
+- [Production Deployment](./deployment.md) documents issue intake modes and server deployment.
+- [Hosted UI Tunnel](./hosted-ui-tunnel.md) covers tunnel architecture, provisioning, and configuration.
 - [ProPR CLI](../features/propr-cli.md) documents the `propr relay` and `propr tunnel` commands.

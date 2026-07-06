@@ -13,7 +13,7 @@ Each worker process handles up to `WORKER_CONCURRENCY` jobs at once (code defaul
 ```bash
 # Direct local runs
 npm run worker
-npm run worker
+npm run worker:dev
 ```
 
 For source-based Compose deployments, scale the worker service:
@@ -73,10 +73,10 @@ Common worker settings:
 # Worker configuration
 WORKER_CONCURRENCY=2
 
-# Agent runtime timeouts
+# Agent runtime timeouts (code defaults shown)
 CLAUDE_TIMEOUT_MS=300000
 CODEX_TIMEOUT_MS=3600000
-ANTIGRAVITY_TIMEOUT_MS=300000   # .env.example value; the code default is 3600000
+ANTIGRAVITY_TIMEOUT_MS=3600000  # the shipped .env.example lowers this to 300000
 OPENCODE_TIMEOUT_MS=3600000
 VIBE_TIMEOUT_MS=3600000
 

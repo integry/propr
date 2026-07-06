@@ -136,7 +136,7 @@ const SECTIONS: SectionCard[] = [
     links: [
       {label: 'Daily use', to: '/docs/tutorials/usage'},
       {label: 'Planner Studio', to: '/docs/tutorials/planner-studio'},
-      {label: 'Issue labels and routing', to: '/docs/features/agent-routing'},
+      {label: 'Issue labels and routing', to: '/docs/features/agents-and-models'},
     ],
   },
   {
@@ -146,9 +146,9 @@ const SECTIONS: SectionCard[] = [
     icon: 'slash',
     accent: 'blue',
     links: [
-      {label: '/review and /fix', to: '/docs/features/pr-review-fix-commands'},
-      {label: '/ultrafix and /merge', to: '/docs/features/pr-ultrafix-commands'},
-      {label: '/switch and /use', to: '/docs/features/pr-model-routing-commands'},
+      {label: '/review and /fix', to: '/docs/features/pr-commands'},
+      {label: '/ultrafix and /merge', to: '/docs/features/pr-commands'},
+      {label: '/switch and /use', to: '/docs/features/pr-commands'},
     ],
   },
   {
@@ -159,7 +159,7 @@ const SECTIONS: SectionCard[] = [
     accent: 'gold',
     links: [
       {label: 'Model labels (llm-*)', to: '/docs/features/agents-and-models#model-labels'},
-      {label: 'Agent routing', to: '/docs/features/agent-routing'},
+      {label: 'Agent routing', to: '/docs/features/agents-and-models'},
       {label: 'Execution safety', to: '/docs/features/execution-safety'},
     ],
   },
@@ -183,7 +183,7 @@ const SECTIONS: SectionCard[] = [
     links: [
       {label: 'Self-hosting and images', to: '/docs/features/self-hosting'},
       {label: 'Maintenance', to: '/docs/operations/maintenance'},
-      {label: 'Cost and LLM metrics', to: '/docs/operations/llm-metrics'},
+      {label: 'Cost and LLM metrics', to: '/docs/operations/metrics'},
     ],
   },
   {
@@ -193,8 +193,8 @@ const SECTIONS: SectionCard[] = [
     icon: 'activity',
     accent: 'green',
     links: [
-      {label: 'System metrics', to: '/docs/operations/system-metrics'},
-      {label: 'Metrics feedback loop', to: '/docs/operations/metrics-feedback-loop'},
+      {label: 'Metrics', to: '/docs/operations/metrics'},
+      {label: 'Agent Tank', to: '/docs/operations/agent-tank'},
     ],
   },
   {

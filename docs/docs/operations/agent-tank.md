@@ -10,7 +10,7 @@ This page covers what Agent Tank is, how to run it, how to connect ProPR to it (
 
 Agent Tank is for **subscription-based** coding agents whose CLI exposes session or rate-limit information — for example Claude Code Pro/Max, Antigravity CLI on a supported plan, and ChatGPT Codex. It reads the limits the CLI already reports.
 
-It is **not** an API-spend tracker. For pay-as-you-go API key billing or per-request cost, use the provider's own billing dashboard, or ProPR's [LLM Log](./llm-metrics.md), which records cost per call.
+It is **not** an API-spend tracker. For pay-as-you-go API key billing or per-request cost, use the provider's own billing dashboard, or ProPR's [LLM Log](./metrics.md), which records cost per call.
 
 | Provider | How Agent Tank reads it | Metrics surfaced in ProPR |
 |---|---|---|
@@ -76,11 +76,14 @@ Because Agent Tank is an external service rather than a stack container, `propr 
 
 ### Networking: ProPR To Agent Tank
 
-ProPR's daemon and workers run **inside Docker containers**, so "localhost" from a container refers to the container itself, while Agent Tank runs on the host. This is the most common reason the integration appears to do nothing.
+ProPR's shipped default URL is `http://0.0.0.0:3456`; the `propr tank` CLI client defaults to `http://127.0.0.1:3456`. The default only reaches Agent Tank when the ProPR backend runs directly on the host (a source checkout running `npm run daemon`/`npm run worker`). In the standard install the backend runs in Docker, where `0.0.0.0` and `localhost` resolve to the container itself — set the URL to `http://host.docker.internal:3456` there, which is exactly what the detection banner offers to do for you.
 
-- Agent Tank binds `127.0.0.1` plus, when Docker is available, the **private** Docker bridge gateway addresses — so containers on the same host can reach it without exposing it on a public interface. It does *not* bind `0.0.0.0` (all interfaces) unless you explicitly start it with `--host 0.0.0.0`. Conversely, `--no-docker` keeps it on localhost only, which ProPR's containers cannot reach.
-- From a ProPR container, reach Agent Tank on the host via `http://host.docker.internal:3456` (this is the URL the detection banner probes and the recommended setting).
-- ProPR's shipped default *setting* value is `http://0.0.0.0:3456`, but `0.0.0.0` is a bind address; to connect, replace it with `host.docker.internal` (containers) or `localhost`/`127.0.0.1` (same-host, non-containerized) before relying on it.
+Change the URL in two situations:
+
+- **Agent Tank runs on another host.** Point the setting at that host's address, and start Agent Tank with `--host 0.0.0.0` so it listens beyond localhost.
+- **ProPR reaches Agent Tank across a Docker network.** From inside a container, `localhost` refers to the container itself. Use `http://host.docker.internal:3456` to reach an Agent Tank on the container's host — this is the URL the detection banner probes — or the service name when Agent Tank runs as a service on the same Docker network.
+
+Agent Tank's own bind addresses support the container case: by default it listens on `127.0.0.1` plus, when Docker is available, the **private** Docker bridge gateway addresses, so same-host containers can reach it without it being exposed on a public interface. `--no-docker` restricts it to localhost, which Docker containers cannot reach.
 
 Two environment variables tune the backend integration:
 
@@ -90,10 +93,10 @@ Two environment variables tune the backend integration:
 ## What You See Once Enabled
 
 - **Sidebar usage bars.** A per-provider Usage section shows each provider's windows (Claude session/weekly, Codex 5-hour/weekly, Antigravity per-model) as color-coded bars with reset countdowns, refreshed every 60 seconds, with a manual refresh button.
-- **Per-call usage deltas.** Around each agent run ProPR snapshots usage before and after the call, computes the delta per metric, and stores it next to the [LLM Log](./llm-metrics.md) entry. The task detail context strip shows a compact session/weekly delta chip for the run.
-- **Capacity in your metrics.** Provider capacity pressure becomes a first-class signal alongside cost and cycle time — see [System Metrics](./system-metrics.md) and the [Metrics Feedback Loop](./metrics-feedback-loop.md).
+- **Per-call usage deltas.** Around each agent run ProPR snapshots usage before and after the call, computes the delta per metric, and stores it next to the [LLM Log](./metrics.md) entry. The task detail context strip shows a compact session/weekly delta chip for the run.
+- **Capacity in your metrics.** Provider capacity pressure becomes a first-class signal alongside cost and cycle time — see [Metrics](./metrics.md).
 
-{/* SCREENSHOT PLACEHOLDER: Capture the sidebar Usage section with Agent Tank enabled, showing provider rows (for example Claude and Codex) with colored usage bars and percentages, and one provider expanded to show its session and weekly metrics. Requires a running Agent Tank instance configured in Settings. */}
+{/* SCREENSHOT PLACEHOLDER (P3 — needs a running Agent Tank instance; interim: the site's ui-agent-tank.png): Capture the sidebar Usage section with Agent Tank enabled, showing provider rows (for example Claude and Codex) with colored usage bars and percentages, and one provider expanded to show its session and weekly metrics. Requires a running Agent Tank instance configured in Settings. */}
 
 ## Best-Effort By Design
 
@@ -111,4 +114,4 @@ So a missing or stopped Agent Tank instance degrades to "no capacity bars," and 
 - **No agents found by Agent Tank.** At least one supported CLI (`claude`, `agy`, or `codex`) must be installed, authenticated, and on the `PATH` of the host running Agent Tank. Check with `claude --version` etc.
 - **`Timeout waiting for usage data`.** Make sure the CLI works and is authenticated on its own (no pending trust/auth/update prompts). For Claude, try `--claude-api`.
 
-For deeper operational context, see [LLM Metrics](./llm-metrics.md) and [System Metrics](./system-metrics.md).
+For deeper operational context, see [Metrics](./metrics.md).

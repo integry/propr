@@ -21,7 +21,7 @@ Use the Web UI to:
 
 Environment variables and CLI commands are mostly for install and development work.
 
-{/* SCREENSHOT PLACEHOLDER: Capture the dashboard home page with at least a few completed tasks, showing queue stats, success rate, and the recent task list. Run two or three small test issues first so the dashboard has real data. */}
+{/* SCREENSHOT PLACEHOLDER (P1 — one capture also serves operations/metrics.md's dashboard shot; interim: the site's ui-dashboard.png): Capture the dashboard home page with at least a few completed tasks, showing queue stats, success rate, and the recent task list. Run two or three small test issues first so the dashboard has real data. */}
 
 ## Run Work From An Issue
 
