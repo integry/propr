@@ -261,4 +261,4 @@ Reserve `/ultrafix` for stronger cleanup passes. For small edits and direct chan
 
 When a command or follow-up task finishes, ProPR posts a completion comment on the PR with a summary of what was done, the commit hash when changes were committed, and an expandable "ProPR Slash Commands" reference block listing the available commands.
 
-{/* SCREENSHOT PLACEHOLDER: Capture a PR conversation showing a `/review` comment, the resulting AI review with severity findings and a `Score: N/10` line, and a ProPR completion comment with the expanded slash commands block. */}
+{/* SCREENSHOT PLACEHOLDER (P1 — public repo only; interim: the site's real-review-1.png + real-pr-propr-claude.png): Capture a PR conversation showing a `/review` comment, the resulting AI review with severity findings and a `Score: N/10` line, and a ProPR completion comment with the expanded slash commands block. */}

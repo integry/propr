@@ -96,7 +96,7 @@ Two environment variables tune the backend integration:
 - **Per-call usage deltas.** Around each agent run ProPR snapshots usage before and after the call, computes the delta per metric, and stores it next to the [LLM Log](./metrics.md) entry. The task detail context strip shows a compact session/weekly delta chip for the run.
 - **Capacity in your metrics.** Provider capacity pressure becomes a first-class signal alongside cost and cycle time — see [Metrics](./metrics.md).
 
-{/* SCREENSHOT PLACEHOLDER: Capture the sidebar Usage section with Agent Tank enabled, showing provider rows (for example Claude and Codex) with colored usage bars and percentages, and one provider expanded to show its session and weekly metrics. Requires a running Agent Tank instance configured in Settings. */}
+{/* SCREENSHOT PLACEHOLDER (P3 — needs a running Agent Tank instance; interim: the site's ui-agent-tank.png): Capture the sidebar Usage section with Agent Tank enabled, showing provider rows (for example Claude and Codex) with colored usage bars and percentages, and one provider expanded to show its session and weekly metrics. Requires a running Agent Tank instance configured in Settings. */}
 
 ## Best-Effort By Design
 

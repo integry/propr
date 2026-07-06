@@ -44,7 +44,7 @@ ProPR picks up the label through its configured event intake mode — by default
 
 The task record shows the selected repository, branch, model, status, logs, and resulting PR.
 
-{/* SCREENSHOT PLACEHOLDER: Capture a GitHub issue with the `AI` trigger label, one `llm-*` model label, and the auto-applied `AI-processing` state label visible in the label list. Trigger a run on a test issue and screenshot it while the task is in progress. */}
+{/* SCREENSHOT PLACEHOLDER (P1 — public repo only; the label mechanics are the product's core trigger and a picture beats prose here): Capture a GitHub issue with the `AI` trigger label, one `llm-*` model label, and the auto-applied `AI-processing` state label visible in the label list. Trigger a run on a test issue and screenshot it while the task is in progress. */}
 
 ## Review The Pull Request
 
@@ -58,7 +58,7 @@ When ProPR opens the PR:
 
 Review the PR in your normal process. ProPR helps create and refine it — merging the PR remains a human decision.
 
-{/* SCREENSHOT PLACEHOLDER: Capture the task record detail view in the Web UI for a completed run, showing status, agent and model, commit list, the linked PR, and the live log panel. */}
+{/* SCREENSHOT PLACEHOLDER (P2 — same capture family as features/observability.md's task detail; interim: the site's ui-task-detail.png): Capture the task record detail view in the Web UI for a completed run, showing status, agent and model, commit list, the linked PR, and the live log panel. */}
 
 ## Ask For Follow-Up
 

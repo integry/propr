@@ -15,7 +15,7 @@ Four kinds of evidence exist after every run:
 - **The completion comment.** When a command or follow-up task finishes, ProPR posts a summary comment on the PR with the commit hash and the available slash commands, so the outcome is visible from GitHub without opening the UI. See [PR Commands](./pr-commands.md).
 - **The metrics trail.** Every model call lands in the LLM Log with cost, tokens, and duration, and the dashboard aggregates outcomes per repository and model. [Metrics](../operations/metrics.md) covers both.
 
-{/* SCREENSHOT PLACEHOLDER: Capture a task detail view for a completed implementation task: context strip with repository/model/PR link/cost, the result overview, and the file changes section expanded to show at least one diff. */}
+{/* SCREENSHOT PLACEHOLDER (P2 — same capture family as the end-to-end tutorial's task record shot; interim: the site's ui-task-detail.png): Capture a task detail view for a completed implementation task: context strip with repository/model/PR link/cost, the result overview, and the file changes section expanded to show at least one diff. */}
 
 ## Live Output While Work Runs
 

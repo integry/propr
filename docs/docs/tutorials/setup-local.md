@@ -167,7 +167,7 @@ propr remote-status              # verify daemon, workers, Redis, GitHub auth
 
 From here, `propr plan create "..." --wait` and `propr issue implement <draft-id>/1 --wait` run the same plan-to-PR flow as the Web UI. `propr stop` shuts the stack down.
 
-{/* SCREENSHOT PLACEHOLDER: Capture the Web UI dashboard at `http://localhost:5173` immediately after first launch, showing the empty repository list and the prompt to add a repository. Start the launcher with a fresh `data/` directory to reach this state. */}
+{/* SCREENSHOT PLACEHOLDER (P3 — needs a fresh `data/` directory; docs-only state with no site reuse): Capture the Web UI dashboard at `http://localhost:5173` immediately after first launch, showing the empty repository list and the prompt to add a repository. Start the launcher with a fresh `data/` directory to reach this state. */}
 
 ## Alternative: Launcher Container Without The CLI
 

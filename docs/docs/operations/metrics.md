@@ -14,7 +14,7 @@ The dashboard combines several API sources:
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
 
-{/* SCREENSHOT PLACEHOLDER: Capture the Dashboard page with a populated instance: the Recent Activity task list on the left and the analytics rail on the right showing the Active/Success/Total/Failed grid, Total Cost, the activity sparkline, task status distribution, Repository Breakdown, and Top Models. Run a handful of tasks first so all panels have data. */}
+{/* SCREENSHOT PLACEHOLDER (P2 — same capture as tutorials/usage.md's dashboard shot, cropped to include the analytics rail; interim: the site's ui-dashboard.png): Capture the Dashboard page with a populated instance: the Recent Activity task list on the left and the analytics rail on the right showing the Active/Success/Total/Failed grid, Total Cost, the activity sparkline, task status distribution, Repository Breakdown, and Top Models. Run a handful of tasks first so all panels have data. */}
 
 ### Breakdowns the product provides
 
@@ -54,7 +54,7 @@ Filter the list by status (success/failed), work type (task/plan/repository), ex
 
 Providers differ in what they expose. ProPR normalizes what it can and leaves provider-specific gaps visible (for example, token counts may be null for some agents).
 
-{/* SCREENSHOT PLACEHOLDER: Capture the LLM Log page with several entries of different execution types, the filter dropdowns (Status, Work, Type, Model) visible in the header, and one row expanded to show its details (repository, session/correlation IDs, cache statistics). Run a few tasks and a plan generation first so multiple work types appear. */}
+{/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-llm-log.png): Capture the LLM Log page with several entries of different execution types, the filter dropdowns (Status, Work, Type, Model) visible in the header, and one row expanded to show its details (repository, session/correlation IDs, cache statistics). Run a few tasks and a plan generation first so multiple work types appear. */}
 
 This is the page to use when comparing model costs across real work or investigating an unexpectedly expensive run.
 
