@@ -290,6 +290,85 @@ describe('planIssueHandlers follow-up fixes', () => {
     assert.strictEqual(res.statusCode, 200);
   });
 
+  test('implementIssue rejects a repository assertion that does not match the draft', async () => {
+    resetMocks();
+    const handler = createImplementIssueHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+          name: 'Plan',
+          context_config: null,
+        },
+      }),
+    });
+
+    const req = {
+      params: { id: 'draft-mismatch', issueNumber: '5' },
+      user: { id: 'user-1' },
+      body: { repository: 'other/repo' },
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.strictEqual(res.statusCode, 400);
+    assert.deepStrictEqual(res.body, { error: 'Issue belongs to owner/repo, not other/repo' });
+  });
+
+  test('implementIssue rejects malformed models entries with 400', async () => {
+    resetMocks();
+    const handler = createImplementIssueHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+          name: 'Plan',
+          context_config: null,
+        },
+      }),
+    });
+
+    const req = {
+      params: { id: 'draft-models', issueNumber: '5' },
+      user: { id: 'user-1' },
+      body: { models: [{ agent_alias: 'codex' }] },
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.strictEqual(res.statusCode, 400);
+    assert.deepStrictEqual(res.body, { error: 'models must be an array of { agent_alias, model_name } objects' });
+  });
+
+  test('implementIssue returns 404 when the issue is missing from the plan', async () => {
+    resetMocks();
+    const handler = createImplementIssueHandler({
+      verifyOwnership: async () => ({
+        authorized: true,
+        draft: {
+          repository: 'owner/repo',
+          name: 'Plan',
+          context_config: null,
+        },
+      }),
+    });
+    mockGetPlanIssue.mock.mockImplementationOnce(async () => null);
+
+    const req = {
+      params: { id: 'draft-missing', issueNumber: '99' },
+      user: { id: 'user-1' },
+      body: {},
+    };
+    const res = createResponse();
+
+    await handler(req as never, res as never);
+
+    assert.strictEqual(res.statusCode, 404);
+    assert.deepStrictEqual(res.body, { error: 'Issue not found in this plan' });
+  });
+
   test('updateIssueHandler preserves stored ultrafix disablement for partial PATCH updates', async () => {
     resetMocks();
     const handler = createUpdateIssueHandler({

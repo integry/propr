@@ -9,11 +9,16 @@ import { Command } from "commander";
 import {
   getSettings,
   updateSetting,
+  getConfigValue,
+  updateConfigValue,
+  triggerSummarizationReindexAll,
   isValidSettingKey,
   parseSettingValue,
   VALID_SETTING_KEYS,
+  NAMED_CONFIG_ENDPOINTS,
   SystemSettings,
   SettingKey,
+  NamedConfigEndpoint,
 } from "../api/index.js";
 import {
   printOutput,
@@ -71,11 +76,115 @@ function printValidSettingKeys(includeDescriptions = false): void {
   }
 }
 
+const EXTRA_CONFIG_ENDPOINTS = {
+  "pr-label": {
+    endpoint: NAMED_CONFIG_ENDPOINTS.prLabel,
+    field: "pr_label",
+    description: "GitHub label applied to ProPR-created PRs",
+    type: "string",
+  },
+  "ai-primary-tag": {
+    endpoint: NAMED_CONFIG_ENDPOINTS.aiPrimaryTag,
+    field: "ai_primary_tag",
+    description: "Primary AI tag used for issue/PR processing",
+    type: "string",
+  },
+  "primary-processing-labels": {
+    endpoint: NAMED_CONFIG_ENDPOINTS.primaryProcessingLabels,
+    field: "primary_processing_labels",
+    description: "Labels that enable processing on existing PRs",
+    type: "array",
+  },
+  "followup-keywords": {
+    endpoint: NAMED_CONFIG_ENDPOINTS.followupKeywords,
+    field: "followup_keywords",
+    description: "Keywords that trigger PR follow-up processing",
+    type: "array",
+  },
+} as const;
+
+type ExtraConfigKey = keyof typeof EXTRA_CONFIG_ENDPOINTS;
+type ExtraConfigGetter = (endpoint: NamedConfigEndpoint) => Promise<Record<string, unknown>>;
+type DisplaySettings = Record<string, unknown>;
+
+function isExtraConfigKey(key: string): key is ExtraConfigKey {
+  return Object.prototype.hasOwnProperty.call(EXTRA_CONFIG_ENDPOINTS, key);
+}
+
+function formatExtraConfigKeysHelp(): string {
+  return Object.entries(EXTRA_CONFIG_ENDPOINTS)
+    .map(([key, config]) => `  ${key.padEnd(32)} ${config.description}`)
+    .join("\n");
+}
+
+export function parseExtraConfigValue(key: ExtraConfigKey, value: string): string | string[] {
+  const config = EXTRA_CONFIG_ENDPOINTS[key];
+  if (config.type === "array") {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`Setting "${key}" requires a non-empty value.`);
+  }
+  return trimmed;
+}
+
+export function isSuccessfulExtraConfigUpdate(result: unknown): boolean {
+  return !(
+    result &&
+    typeof result === "object" &&
+    !Array.isArray(result) &&
+    (result as { success?: unknown }).success === false
+  );
+}
+
+export async function getExtraConfigSetting(
+  key: ExtraConfigKey,
+  getter: ExtraConfigGetter = getConfigValue
+): Promise<unknown> {
+  const config = EXTRA_CONFIG_ENDPOINTS[key];
+  const result = await getter(config.endpoint);
+  return result[config.field];
+}
+
+export async function getAllDisplaySettings(
+  settings: SystemSettings,
+  getter: ExtraConfigGetter = getConfigValue
+): Promise<{ settings: DisplaySettings; errors: string[] }> {
+  const extras = await Promise.allSettled(
+    (Object.keys(EXTRA_CONFIG_ENDPOINTS) as ExtraConfigKey[]).map(async (key) => [
+      key,
+      await getExtraConfigSetting(key, getter),
+    ] as const)
+  );
+  const displaySettings: DisplaySettings = {
+    ...settings,
+    ...Object.fromEntries(
+      extras
+        .filter((result): result is PromiseFulfilledResult<readonly [ExtraConfigKey, unknown]> => result.status === "fulfilled")
+        .map((result) => result.value)
+    ),
+  };
+  const errors = extras
+    .map((result, index) => ({ result, key: (Object.keys(EXTRA_CONFIG_ENDPOINTS) as ExtraConfigKey[])[index] }))
+    .filter((item): item is { result: PromiseRejectedResult; key: ExtraConfigKey } => item.result.status === "rejected")
+    .map(({ key, result }) => `${key}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+  return { settings: displaySettings, errors };
+}
+
+function printAllValidKeys(includeDescriptions = false): void {
+  printValidSettingKeys(includeDescriptions);
+  console.log("Additional config keys:");
+  for (const [key, config] of Object.entries(EXTRA_CONFIG_ENDPOINTS)) {
+    console.log(`  - ${key}${includeDescriptions ? `: ${config.description}` : ""}`);
+  }
+}
+
 /**
  * Displays all settings in a formatted table.
  */
-function displaySettingsTable(settings: SystemSettings): void {
-  const keys = Object.keys(settings) as SettingKey[];
+function displaySettingsTable(settings: DisplaySettings): void {
+  const keys = Object.keys(settings);
   const keyWidth = Math.max("Setting".length, ...keys.map((k) => k.length));
   const valueWidth = Math.max(
     "Value".length,
@@ -104,13 +213,13 @@ function displaySettingsTable(settings: SystemSettings): void {
 /**
  * Displays detailed information about a single setting.
  */
-function displaySettingDetail(key: SettingKey, value: unknown): void {
+function displaySettingDetail(key: string, value: unknown, description: string): void {
   console.log("");
   console.log("=".repeat(50));
   console.log(`Setting: ${key}`);
   console.log("=".repeat(50));
   console.log("");
-  console.log(`Description: ${getSettingDescription(key)}`);
+  console.log(`Description: ${description}`);
   console.log(`Value:       ${formatValue(value)}`);
   console.log("");
 }
@@ -125,7 +234,9 @@ export function createSettingCommand(): Command {
 Examples:
   $ propr setting get                                    # Show all settings
   $ propr setting get -k worker_concurrency              # Show specific setting
+  $ propr setting get -k followup-keywords               # Show label/keyword setting
   $ propr setting update worker_concurrency 10           # Update a setting
+  $ propr setting reindex-summaries                      # Reindex all summaries
 `);
 
   // setting get
@@ -137,6 +248,7 @@ Examples:
     .addHelpText("after", `
 Valid Setting Keys:
 ${formatSettingKeysHelp()}
+${formatExtraConfigKeysHelp()}
 
 Examples:
   $ propr setting get                                 # Show all settings
@@ -146,19 +258,12 @@ Examples:
     .action(
       async (options: { key?: string; json?: boolean }) => {
         try {
-          const settings = await getSettings();
-
-          if (options.json) {
-            if (options.key) {
-              if (!isValidSettingKey(options.key)) {
-                console.error(`Error: Invalid setting key: ${options.key}`);
-                console.log("");
-                printValidSettingKeys();
-                process.exit(1);
-              }
-              printOutput({ [options.key]: settings[options.key] }, true);
+          if (options.key && isExtraConfigKey(options.key)) {
+            const value = await getExtraConfigSetting(options.key);
+            if (options.json) {
+              printOutput({ [options.key]: value }, true);
             } else {
-              printOutput(settings, true);
+              displaySettingDetail(options.key, value, EXTRA_CONFIG_ENDPOINTS[options.key].description);
             }
             return;
           }
@@ -167,18 +272,38 @@ Examples:
             if (!isValidSettingKey(options.key)) {
               console.error(`Error: Invalid setting key: ${options.key}`);
               console.log("");
-              printValidSettingKeys();
+              printAllValidKeys();
               process.exit(1);
             }
-            displaySettingDetail(options.key, settings[options.key]);
+            const settings = await getSettings();
+            if (options.json) {
+              printOutput({ [options.key]: settings[options.key] }, true);
+            } else {
+              displaySettingDetail(options.key, settings[options.key], getSettingDescription(options.key));
+            }
             return;
           }
 
-          console.log("Fetching system settings...");
+          const settings = await getSettings();
+          const { settings: displaySettings, errors: warnings } = await getAllDisplaySettings(settings);
+
+          if (options.json) {
+            printOutput(
+              warnings.length > 0
+                ? { ...displaySettings, extraConfigErrors: warnings }
+                : displaySettings,
+              true
+            );
+            return;
+          }
+
           console.log("");
-          displaySettingsTable(settings);
+          displaySettingsTable(displaySettings);
+          for (const warning of warnings) {
+            console.warn(`Warning: Could not fetch extra config setting ${warning}`);
+          }
           console.log("");
-          console.log(`Total: ${Object.keys(settings).length} setting(s)`);
+          console.log(`Total: ${Object.keys(displaySettings).length} setting(s)`);
         } catch (error) {
           const errorMessage = (error as Error).message;
           if (
@@ -212,26 +337,28 @@ Examples:
       `
 Valid setting keys:
 ${formatSettingKeysHelp()}
+${formatExtraConfigKeysHelp()}
 
 Examples:
   $ propr setting update worker_concurrency 10
   $ propr setting update auto_followup_score_threshold 7
   $ propr setting update github_user_whitelist "user1,user2,user3"
+  $ propr setting update followup-keywords "!propr,propr"
   $ propr setting update analysis_model_fast claude-3-5-sonnet-20241022
 `
     )
     .action(async (key: string, value: string) => {
       try {
-        if (!isValidSettingKey(key)) {
+        if (!isValidSettingKey(key) && !isExtraConfigKey(key)) {
           console.error(`Error: Invalid setting key: ${key}`);
           console.log("");
-          printValidSettingKeys(true);
+          printAllValidKeys(true);
           process.exit(1);
         }
 
         let parsedValue: number | string | string[] | boolean;
         try {
-          parsedValue = parseSettingValue(key, value);
+          parsedValue = isExtraConfigKey(key) ? parseExtraConfigValue(key, value) : parseSettingValue(key, value);
         } catch (parseError) {
           console.error(`Error: ${(parseError as Error).message}`);
           process.exit(1);
@@ -239,9 +366,18 @@ Examples:
 
         console.log(`Updating setting: ${key}...`);
 
-        const result = await updateSetting(key, parsedValue);
+        const result = isExtraConfigKey(key)
+          ? await updateConfigValue(
+              EXTRA_CONFIG_ENDPOINTS[key].endpoint,
+              { [EXTRA_CONFIG_ENDPOINTS[key].field]: parsedValue }
+            )
+          : await updateSetting(key, parsedValue);
 
-        if (result.success) {
+        const updateSucceeded = isExtraConfigKey(key)
+          ? isSuccessfulExtraConfigUpdate(result)
+          : result.success !== false;
+
+        if (updateSucceeded) {
           console.log("");
           console.log(`Successfully updated setting: ${key}`);
           console.log(`  New value: ${formatValue(parsedValue)}`);
@@ -253,8 +389,10 @@ Examples:
         const errorMessage = (error as Error).message;
         if (errorMessage.includes("400")) {
           console.error(`Error: Invalid value for setting "${key}".`);
-          console.log("");
-          console.log(`Description: ${getSettingDescription(key as SettingKey)}`);
+          if (isValidSettingKey(key)) {
+            console.log("");
+            console.log(`Description: ${getSettingDescription(key)}`);
+          }
         } else if (
           errorMessage.includes("401") ||
           errorMessage.includes("unauthorized")
@@ -274,6 +412,27 @@ Examples:
         } else {
           console.error(`Error updating setting: ${errorMessage}`);
         }
+        process.exit(1);
+      }
+    });
+
+  setting
+    .command("reindex-summaries")
+    .description("Trigger summarization reindexing for all configured repositories")
+    .option("--ignore-cooldown", "Queue work even when repositories are in summarization cooldown")
+    .option("-j, --json", "Output response as JSON")
+    .action(async (options: { ignoreCooldown?: boolean; json?: boolean }) => {
+      try {
+        const result = await triggerSummarizationReindexAll(options.ignoreCooldown ?? false);
+        if (printOutput(result, options.json ?? false)) {
+          return;
+        }
+        console.log(`Queued repositories: ${result.repositoriesQueued}`);
+        console.log(`Skipped by cooldown: ${result.repositoriesSkippedCooldown}`);
+        console.log(`Already queued: ${result.repositoriesSkippedAlreadyQueued}`);
+        console.log(`Failed clone: ${result.repositoriesFailedClone}`);
+      } catch (error) {
+        console.error(`Error triggering summarization reindex: ${(error as Error).message}`);
         process.exit(1);
       }
     });

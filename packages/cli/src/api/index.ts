@@ -85,6 +85,9 @@ export {
   listTasks,
   stopTask,
   deleteTask,
+  followupTask,
+  importTasks,
+  getRevertPreview,
   revertTask,
 } from "./tasks.js";
 
@@ -93,6 +96,10 @@ export type {
   ListTasksResponse,
   ListTasksOptions,
   StopTaskResponse,
+  FollowupTaskResponse,
+  ImportTasksResponse,
+  RevertPreviewCommit,
+  RevertPreviewResponse,
   RevertTaskResponse,
 } from "./tasks.js";
 
@@ -139,10 +146,14 @@ export {
   getSettings,
   updateSettings,
   updateSetting,
+  getConfigValue,
+  updateConfigValue,
+  triggerSummarizationReindexAll,
   isValidSettingKey,
   parseSettingValue,
   settingsApi,
   VALID_SETTING_KEYS,
+  NAMED_CONFIG_ENDPOINTS,
 } from "./settings.js";
 
 export type {
@@ -150,6 +161,9 @@ export type {
   GetSettingsResponse,
   UpdateSettingsOptions,
   UpdateSettingsResponse,
+  NamedConfigEndpoint,
+  NamedConfigValueByEndpoint,
+  ReindexAllResponse,
   SettingKey,
 } from "./settings.js";
 

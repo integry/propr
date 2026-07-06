@@ -6,6 +6,7 @@ import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createConfigManager } from "./config/index.js";
+import { completionScript } from "./completion.js";
 import {
   createIssueCommand,
   createPlanCommand,
@@ -13,10 +14,12 @@ import {
   createRepoCommand,
   createAgentCommand,
   createSettingCommand,
+  createConfigCommand,
   createLogCommand,
   createTodoCommand,
   createRemoteStatusCommand,
   createQueueCommand,
+  createBackendCommand,
   createInitCommand,
   createSetupCommand,
   createCheckCommand,
@@ -34,13 +37,18 @@ import {
   STACK_CONFIG_CHECK_NAME,
 } from "./commands/index.js";
 
+// Re-export completion generation for programmatic use
+export { completionScript, buildCompletionMetadata } from "./completion.js";
+export type { CompletionShell, CompletionMetadata } from "./completion.js";
+
 // Re-export configuration module for programmatic use
 export {
   ConfigManager,
   createConfigManager,
+  isValidRemoteProfileName,
   DEFAULT_CONFIG,
 } from "./config/index.js";
-export type { CLIConfig, ConfigKey } from "./config/index.js";
+export type { CLIConfig, ConfigKey, RemoteProfile } from "./config/index.js";
 
 // Re-export API module for programmatic use
 export {
@@ -70,6 +78,8 @@ export type {
 export {
   resolveProject,
   ProjectResolutionError,
+  isValidProjectSlug,
+  normalizeProjectSlug,
   formatOutput,
   printOutput,
   readJsonInput,
@@ -135,16 +145,17 @@ Examples:
 Command Groups:
   Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank
   GitHub Relay:   relay [enroll|list|revoke]
-  Configuration:  remote, use, login, logout
+  Configuration:  config, remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
-  Tasks:          task [list|get|stop|delete|revert]
+  Tasks:          task [list|get|stop|delete|followup|import|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
   Agents:         agent [list|add|enable|disable|delete]
-  Settings:       setting [get|update]
+  Settings:       setting [get|update|reindex-summaries]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
-  Backend:        remote-status, queue
+  Backend:        backend [status|queue], remote-status, queue
+  Shell:          completion [bash|zsh|fish]
 
 For more information on a command, run:
   $ propr <command> --help
@@ -278,6 +289,17 @@ Example:
     }
   });
 
+program
+  .command("completion <shell>")
+  .description("Generate shell completion script for bash, zsh, or fish")
+  .action((shell: string) => {
+    if (shell !== "bash" && shell !== "zsh" && shell !== "fish") {
+      console.error("Error: shell must be one of: bash, zsh, fish");
+      process.exit(1);
+    }
+    process.stdout.write(completionScript(program, shell));
+  });
+
 // Control-plane commands (local Docker stack)
 program.addCommand(createCheckCommand());
 program.addCommand(createImagesCommand());
@@ -289,6 +311,7 @@ program.addCommand(createDocsCommand());
 program.addCommand(createTunnelCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
+program.addCommand(createConfigCommand());
 
 // Setup + backend client command groups
 program.addCommand(createInitCommand());
@@ -301,6 +324,7 @@ program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());
 program.addCommand(createLogCommand());
 program.addCommand(createTodoCommand());
+program.addCommand(createBackendCommand());
 program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
 

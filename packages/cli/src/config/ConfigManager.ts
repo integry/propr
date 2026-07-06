@@ -14,7 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { CLIConfig, ConfigKey, DEFAULT_CONFIG } from "./types.js";
+import { CLIConfig, ConfigKey, ConfigValues, DEFAULT_CONFIG, RemoteProfile } from "./types.js";
 
 /**
  * Default configuration directory name.
@@ -25,6 +25,28 @@ const CONFIG_DIR_NAME = ".propr";
  * Default configuration file name.
  */
 const CONFIG_FILE_NAME = "config.json";
+const DEFAULT_PROFILE_NAME = "default";
+const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Config keys whose values live on the active remote profile rather than at
+ * the top level of the config file.
+ */
+const PROFILE_BACKED_KEYS = ["remoteUrl", "githubToken", "defaultProject"] as const;
+type ProfileBackedKey = (typeof PROFILE_BACKED_KEYS)[number];
+
+function isProfileBackedKey(key: ConfigKey): key is ProfileBackedKey {
+  return (PROFILE_BACKED_KEYS as readonly string[]).includes(key);
+}
+
+/**
+ * Checks whether a value is usable as a remote profile name: non-empty after
+ * trimming, containing only letters, numbers, dots, underscores, and hyphens,
+ * and starting with a letter or number.
+ */
+export function isValidRemoteProfileName(name: string): boolean {
+  return PROFILE_NAME_PATTERN.test(name.trim());
+}
 
 /**
  * ConfigManager handles persistent CLI configuration.
@@ -142,16 +164,34 @@ export class ConfigManager {
   private sanitizeConfig(data: Record<string, unknown>): Partial<CLIConfig> {
     const sanitized: Partial<CLIConfig> = {};
 
-    if (typeof data.githubToken === "string") {
-      sanitized.githubToken = data.githubToken;
+    if (typeof data.activeProfile === "string" && data.activeProfile.trim()) {
+      try {
+        sanitized.activeProfile = this.normalizeProfileName(data.activeProfile);
+      } catch {
+        // Ignore invalid profile names loaded from disk; commands only create valid names.
+      }
     }
 
-    if (typeof data.remoteUrl === "string") {
-      sanitized.remoteUrl = data.remoteUrl;
-    }
-
-    if (typeof data.defaultProject === "string") {
-      sanitized.defaultProject = data.defaultProject;
+    if (data.profiles && typeof data.profiles === "object" && !Array.isArray(data.profiles)) {
+      const profiles: Record<string, RemoteProfile> = {};
+      for (const [name, rawProfile] of Object.entries(data.profiles as Record<string, unknown>)) {
+        if (!name.trim() || !rawProfile || typeof rawProfile !== "object" || Array.isArray(rawProfile)) {
+          continue;
+        }
+        const profileData = rawProfile as Record<string, unknown>;
+        const profile: RemoteProfile = {};
+        if (typeof profileData.remoteUrl === "string") profile.remoteUrl = profileData.remoteUrl;
+        if (typeof profileData.githubToken === "string") profile.githubToken = profileData.githubToken;
+        if (typeof profileData.defaultProject === "string") profile.defaultProject = profileData.defaultProject;
+        try {
+          profiles[this.normalizeProfileName(name)] = profile;
+        } catch {
+          // Ignore invalid profile names loaded from disk; commands only create valid names.
+        }
+      }
+      if (Object.keys(profiles).length > 0) {
+        sanitized.profiles = profiles;
+      }
     }
 
     if (typeof data.stackRoot === "string") {
@@ -171,6 +211,43 @@ export class ConfigManager {
     }
 
     return sanitized;
+  }
+
+  private getActiveProfileName(): string {
+    return this.config.activeProfile || DEFAULT_PROFILE_NAME;
+  }
+
+  private normalizeProfileName(name: string): string {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error("Profile name must not be empty");
+    }
+    if (!isValidRemoteProfileName(trimmed)) {
+      throw new Error(
+        "Profile name may only contain letters, numbers, dots, underscores, and hyphens, and must start with a letter or number"
+      );
+    }
+    return trimmed;
+  }
+
+  private getActiveProfile(): RemoteProfile {
+    const name = this.getActiveProfileName();
+    return this.config.profiles?.[name] ?? {};
+  }
+
+  private getActiveProfileValue<K extends keyof RemoteProfile>(key: K): RemoteProfile[K] {
+    return this.getActiveProfile()[key];
+  }
+
+  private async updateActiveProfile(patch: Partial<RemoteProfile>): Promise<void> {
+    const name = this.getActiveProfileName();
+    const profiles = { ...(this.config.profiles ?? {}) };
+    profiles[name] = {
+      ...(profiles[name] ?? {}),
+      ...patch,
+    };
+    this.config.profiles = profiles;
+    await this.save();
   }
 
   /**
@@ -196,22 +273,37 @@ export class ConfigManager {
   /**
    * Gets a configuration value by key.
    *
+   * Remote settings (remoteUrl, githubToken, defaultProject) are read from the
+   * active profile so the generic accessor stays consistent with the dedicated
+   * getters.
+   *
    * @param key - The configuration key to retrieve.
    * @returns The configuration value, or undefined if not set.
    */
-  get<K extends ConfigKey>(key: K): CLIConfig[K] {
-    return this.config[key];
+  get<K extends ConfigKey>(key: K): ConfigValues[K] {
+    if (isProfileBackedKey(key)) {
+      return this.getActiveProfileValue(key) as ConfigValues[K];
+    }
+    return (this.config as ConfigValues)[key];
   }
 
   /**
    * Sets a configuration value by key.
    *
+   * Remote settings (remoteUrl, githubToken, defaultProject) are written to
+   * the active profile so the generic accessor stays consistent with the
+   * dedicated setters.
+   *
    * @param key - The configuration key to set.
    * @param value - The value to set.
    * @returns A promise that resolves when the value is saved.
    */
-  async set<K extends ConfigKey>(key: K, value: CLIConfig[K]): Promise<void> {
-    this.config[key] = value;
+  async set<K extends ConfigKey>(key: K, value: ConfigValues[K]): Promise<void> {
+    if (isProfileBackedKey(key)) {
+      await this.updateActiveProfile({ [key]: value as string | undefined });
+      return;
+    }
+    (this.config as ConfigValues)[key] = value;
     await this.save();
   }
 
@@ -221,7 +313,7 @@ export class ConfigManager {
    * @returns The GitHub token, or undefined if not set.
    */
   getGithubToken(): string | undefined {
-    return this.get("githubToken");
+    return this.getActiveProfileValue("githubToken");
   }
 
   /**
@@ -231,7 +323,7 @@ export class ConfigManager {
    * @returns A promise that resolves when the token is saved.
    */
   async setGithubToken(token: string): Promise<void> {
-    await this.set("githubToken", token);
+    await this.updateActiveProfile({ githubToken: token });
   }
 
   /**
@@ -240,7 +332,12 @@ export class ConfigManager {
    * @returns A promise that resolves when the token is cleared.
    */
   async clearGithubToken(): Promise<void> {
-    await this.set("githubToken", undefined);
+    const name = this.getActiveProfileName();
+    const profiles = { ...(this.config.profiles ?? {}) };
+    profiles[name] = { ...(profiles[name] ?? {}) };
+    delete profiles[name].githubToken;
+    this.config.profiles = profiles;
+    await this.save();
   }
 
   /**
@@ -249,7 +346,7 @@ export class ConfigManager {
    * @returns The remote URL, or undefined if not set.
    */
   getRemoteUrl(): string | undefined {
-    return this.get("remoteUrl");
+    return this.getActiveProfileValue("remoteUrl");
   }
 
   /**
@@ -259,7 +356,7 @@ export class ConfigManager {
    * @returns A promise that resolves when the URL is saved.
    */
   async setRemoteUrl(url: string): Promise<void> {
-    await this.set("remoteUrl", url);
+    await this.updateActiveProfile({ remoteUrl: url });
   }
 
   /**
@@ -268,7 +365,7 @@ export class ConfigManager {
    * @returns The default project (owner/repo format), or undefined if not set.
    */
   getDefaultProject(): string | undefined {
-    return this.get("defaultProject");
+    return this.getActiveProfileValue("defaultProject");
   }
 
   /**
@@ -278,7 +375,69 @@ export class ConfigManager {
    * @returns A promise that resolves when the project is saved.
    */
   async setDefaultProject(project: string): Promise<void> {
-    await this.set("defaultProject", project);
+    await this.updateActiveProfile({ defaultProject: project });
+  }
+
+  getActiveRemoteProfile(): string {
+    return this.getActiveProfileName();
+  }
+
+  getRemoteProfiles(): Record<string, RemoteProfile> {
+    const profiles = Object.fromEntries(
+      Object.entries(this.config.profiles ?? {}).map(([name, profile]) => [name, { ...profile }])
+    );
+    if (!profiles[DEFAULT_PROFILE_NAME]) {
+      profiles[DEFAULT_PROFILE_NAME] = {};
+    }
+    return profiles;
+  }
+
+  /**
+   * Checks whether a named remote profile exists in the stored configuration.
+   */
+  hasRemoteProfile(name: string): boolean {
+    const trimmed = this.normalizeProfileName(name);
+    return Boolean(this.config.profiles && Object.prototype.hasOwnProperty.call(this.config.profiles, trimmed));
+  }
+
+  /**
+   * Switches the active remote profile, creating an empty profile when the
+   * name does not exist yet.
+   *
+   * @returns Whether a new (empty) profile had to be created.
+   */
+  async useRemoteProfile(name: string): Promise<{ created: boolean }> {
+    const trimmed = this.normalizeProfileName(name);
+    const profiles = { ...(this.config.profiles ?? {}) };
+    const created = !profiles[trimmed];
+    if (created) {
+      profiles[trimmed] = {};
+    }
+    this.config.profiles = profiles;
+    this.config.activeProfile = trimmed;
+    await this.save();
+    return { created };
+  }
+
+  async setRemoteProfile(
+    name: string,
+    patch: Partial<RemoteProfile>,
+    clear: Array<keyof RemoteProfile> = []
+  ): Promise<void> {
+    const trimmed = this.normalizeProfileName(name);
+
+    const profiles = { ...(this.config.profiles ?? {}) };
+    const nextProfile: RemoteProfile = {
+      ...(profiles[trimmed] ?? {}),
+      ...patch,
+    };
+    for (const key of clear) {
+      delete nextProfile[key];
+    }
+    profiles[trimmed] = nextProfile;
+    this.config.profiles = profiles;
+
+    await this.save();
   }
 
   /**

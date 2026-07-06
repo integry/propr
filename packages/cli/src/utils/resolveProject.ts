@@ -5,6 +5,7 @@
  * command options first, then falling back to the configured default project.
  */
 
+import { parseProjectSlug } from "@propr/shared";
 import { ConfigManager } from "../config/index.js";
 
 /**
@@ -25,6 +26,27 @@ export class ProjectResolutionError extends Error {
     super(message);
     this.name = "ProjectResolutionError";
   }
+}
+
+/**
+ * Normalizes a project value to a trimmed owner/repo slug.
+ *
+ * Returns the trimmed slug when the value is in owner/repo form without path
+ * traversal or empty segments, or null when the value is invalid. Callers must
+ * persist and send the returned slug (not the raw input) so surrounding
+ * whitespace never reaches config files or API requests.
+ */
+export function normalizeProjectSlug(project: string): string | null {
+  const parts = parseProjectSlug(project);
+  return parts ? `${parts.owner}/${parts.repo}` : null;
+}
+
+/**
+ * Checks whether a project value is in owner/repo form without path traversal
+ * or empty segments.
+ */
+export function isValidProjectSlug(project: string): boolean {
+  return normalizeProjectSlug(project) !== null;
 }
 
 /**

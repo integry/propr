@@ -6,14 +6,13 @@
  */
 
 import { Command } from "commander";
-import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError } from "../utils/index.js";
 import {
   implementIssue,
   getTaskStatus,
   TaskState,
   TaskStatus,
 } from "../api/index.js";
+import { normalizeProjectSlug } from "../utils/index.js";
 
 /**
  * Terminal states that indicate a task has finished processing.
@@ -43,6 +42,27 @@ function parseIssueId(issueId: string): { draftId: string; issueNumber: number }
     }
   }
   return null;
+}
+
+/**
+ * Resolves the repository assertion sent with an implement request.
+ *
+ * Only an explicit -p/--project becomes an assertion. The configured default
+ * project is deliberately NOT used here: the draft alone determines the
+ * repository, and sending the default would reject implements of drafts in
+ * other repositories.
+ */
+export function resolveOptionalImplementationRepository(
+  options: { project?: string }
+): string | undefined {
+  if (options.project === undefined) {
+    return undefined;
+  }
+  const normalized = normalizeProjectSlug(options.project);
+  if (normalized === null) {
+    throw new Error("Invalid project format. Expected 'owner/repo'.");
+  }
+  return normalized;
 }
 
 /**
@@ -104,8 +124,8 @@ Examples:
   issue
     .command("implement <issue-id>")
     .description("Implement a GitHub issue from a plan using AI agents")
-    .option("-p, --project <project>", "Target project (owner/repo)")
     .option("-w, --wait", "Wait for the implementation to complete")
+    .option("-p, --project <project>", "Assert the issue's repository (owner/repo); the request fails if it does not match")
     .option("-a, --agent <agent>", "Agent alias to use for implementation")
     .option("-m, --model <model>", "Model name to use for implementation")
     .option("--epic", "Create an Epic PR to collect all related PRs")
@@ -124,8 +144,8 @@ Examples:
       async (
         issueId: string,
         options: {
-          project?: string;
           wait?: boolean;
+          project?: string;
           agent?: string;
           model?: string;
           epic?: boolean;
@@ -146,10 +166,12 @@ Examples:
           }
 
           const { draftId, issueNumber } = parsed;
+          const repository = resolveOptionalImplementationRepository(options);
 
           console.log(`Implementing issue #${issueNumber} from draft ${draftId}...`);
 
           const result = await implementIssue(draftId, issueNumber, {
+            repository,
             agent_alias: options.agent,
             model_name: options.model,
             useEpic: options.epic,
@@ -214,10 +236,6 @@ Examples:
             console.log("You can check the status later using the ProPR dashboard.");
           }
         } catch (error) {
-          if (error instanceof ProjectResolutionError) {
-            console.error(`Error: ${error.message}`);
-            process.exit(1);
-          }
           console.error(
             `Error implementing issue: ${(error as Error).message}`
           );

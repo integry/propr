@@ -6,7 +6,7 @@
  * like worker concurrency, auto-followup thresholds, and model settings.
  */
 
-import { ApiClient, createApiClient } from "./index.js";
+import { ApiClient, createApiClient } from "./client.js";
 
 /**
  * Maximum allowed length for the free-form `pr_review_prompt` setting.
@@ -86,6 +86,32 @@ export interface SystemSettings {
    * Pause duration in seconds between ultrafix cycles.
    */
   ultrafix_pause_seconds: number;
+}
+
+export const NAMED_CONFIG_ENDPOINTS = {
+  prLabel: "/api/config/pr-label",
+  aiPrimaryTag: "/api/config/ai-primary-tag",
+  primaryProcessingLabels: "/api/config/primary-processing-labels",
+  followupKeywords: "/api/config/followup-keywords",
+} as const;
+
+export type NamedConfigEndpoint =
+  typeof NAMED_CONFIG_ENDPOINTS[keyof typeof NAMED_CONFIG_ENDPOINTS];
+
+export interface NamedConfigValueByEndpoint {
+  "/api/config/pr-label": { pr_label: string };
+  "/api/config/ai-primary-tag": { ai_primary_tag: string };
+  "/api/config/primary-processing-labels": { primary_processing_labels: string[] };
+  "/api/config/followup-keywords": { followup_keywords: string[] };
+}
+
+export interface ReindexAllResponse {
+  success: boolean;
+  repositoriesQueued: number;
+  repositoriesSkippedCooldown: number;
+  repositoriesSkippedAlreadyQueued: number;
+  repositoriesFailedClone: number;
+  ignoreCooldown: boolean;
 }
 
 /**
@@ -385,6 +411,43 @@ export async function updateSetting(
   return updateSettings(settings, client);
 }
 
+export async function getConfigValue<
+  E extends NamedConfigEndpoint,
+  T = NamedConfigValueByEndpoint[E],
+>(
+  endpoint: E,
+  client?: ApiClient
+): Promise<T> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.get<T>(endpoint);
+  return response.data;
+}
+
+export async function updateConfigValue<
+  E extends NamedConfigEndpoint,
+  T = { success?: boolean },
+>(
+  endpoint: E,
+  body: Partial<NamedConfigValueByEndpoint[E]>,
+  client?: ApiClient
+): Promise<T> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.post<T>(endpoint, { body });
+  return response.data;
+}
+
+export async function triggerSummarizationReindexAll(
+  ignoreCooldown: boolean = false,
+  client?: ApiClient
+): Promise<ReindexAllResponse> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.post<ReindexAllResponse>(
+    "/api/config/summarization/reindex-all",
+    { body: { ignoreCooldown } }
+  );
+  return response.data;
+}
+
 /**
  * Settings API namespace providing all system settings operations.
  *
@@ -406,6 +469,9 @@ export const settingsApi = {
   getSettings,
   updateSettings,
   updateSetting,
+  getConfigValue,
+  updateConfigValue,
+  triggerSummarizationReindexAll,
   isValidSettingKey,
   parseSettingValue,
   VALID_SETTING_KEYS,

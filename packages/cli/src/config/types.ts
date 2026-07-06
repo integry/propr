@@ -4,37 +4,27 @@
  * These types define the configuration schema for the CLI.
  */
 
-/**
- * Supported configuration keys for the CLI.
- */
-export type ConfigKey =
-  | "githubToken"
-  | "remoteUrl"
-  | "defaultProject"
-  | "stackRoot"
-  | "uiEnabled"
-  | "docsEnabled"
-  | "tunnelEnabled";
+export interface RemoteProfile {
+  remoteUrl?: string;
+  githubToken?: string;
+  defaultProject?: string;
+}
 
 /**
- * CLI configuration structure.
+ * CLI configuration structure as stored on disk. Remote settings (remoteUrl,
+ * githubToken, defaultProject) live only on named profiles.
  */
 export interface CLIConfig {
   /**
-   * GitHub personal access token for authentication.
+   * Name of the active backend profile. Defaults to "default".
    */
-  githubToken?: string;
+  activeProfile?: string;
 
   /**
-   * Remote API URL for the ProPR backend.
+   * Named backend profiles holding remoteUrl/githubToken/defaultProject.
+   * This is the single source of truth for remote settings.
    */
-  remoteUrl?: string;
-
-  /**
-   * Default project to use when not specified in commands.
-   * Format: owner/repo
-   */
-  defaultProject?: string;
+  profiles?: Record<string, RemoteProfile>;
 
   /**
    * Absolute path to the local stack root (where .env, data/, logs/, repos/
@@ -65,12 +55,22 @@ export interface CLIConfig {
 }
 
 /**
+ * Values addressable through the generic get/set accessors. Remote settings
+ * are virtual keys routed to the active profile rather than stored top-level.
+ */
+export type ConfigValues = CLIConfig & RemoteProfile;
+
+/**
+ * Supported configuration keys for the CLI.
+ */
+export type ConfigKey = keyof ConfigValues;
+
+/**
  * Default configuration values.
  */
 export const DEFAULT_CONFIG: CLIConfig = {
-  githubToken: undefined,
-  remoteUrl: undefined,
-  defaultProject: undefined,
+  activeProfile: undefined,
+  profiles: undefined,
   stackRoot: undefined,
   uiEnabled: undefined,
   docsEnabled: undefined,
