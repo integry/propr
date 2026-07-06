@@ -67,4 +67,4 @@ The loop is controlled by the visible `ultrafix` PR label, which acts as a circu
 - **Goal reached**: the `ultrafix` label is removed. If the PR belongs to a planned issue labeled `auto-merge`, ProPR re-enables GitHub auto-merge on the PR.
 - **Max cycles exhausted**: ProPR posts a warning comment with the requested goal and the last score, and manual review takes over.
 
-Use `/ultrafix` for stronger cleanup passes, not for every small edit. For direct changes, a normal PR comment is usually better.
+Reserve `/ultrafix` for stronger cleanup passes. For small edits and direct changes, a normal PR comment is usually better.

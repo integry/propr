@@ -41,7 +41,7 @@ chmod 600 your-app-private-key.pem
 | `logs/` | Log directory mounted into the service containers at `/usr/src/app/logs` |
 | `repos/` | Git working area: `clones/` (cached repository clones) and `worktrees/` (per-task worktrees) |
 
-Redis data lives in the Docker volume `propr-redis-data`, not in this directory.
+Redis data lives outside this directory, in the Docker volume `propr-redis-data`.
 
 ## Published Images
 
@@ -141,7 +141,7 @@ The API container serves the endpoint at `POST /webhook` (port 4000). Point your
 
 ### Polling And GitHub API Rate Limits
 
-Polling authenticates as the GitHub App installation, so every request draws from that installation's shared budget — **5,000 requests/hour** (up to 15,000 for large installations). The budget is shared across all monitored repositories and workers, not allocated per repository or per user.
+Polling authenticates as the GitHub App installation, so every request draws from that installation's shared budget — **5,000 requests/hour** (up to 15,000 for large installations). The budget is shared across all monitored repositories and workers; there is no per-repository or per-user allocation.
 
 A polling cycle's request count grows with:
 
@@ -166,13 +166,13 @@ For example, 20 repositories, 2 processing labels, and ~5 open PRs each, at the 
 
 That already exceeds the standard 5,000/hour budget and approaches the 15,000 large-installation ceiling. At small scale (a few repositories) the default interval stays well within budget, but a large install — many repositories, many open PRs, a user whitelist, or a shortened interval — can exhaust the hourly budget, after which GitHub rejects requests until the window resets.
 
-ProPR's safeguards here are **reactive, not proactive**: it retries rate-limited requests with exponential backoff and logs a warning suggesting a longer interval, but it does not pause polling based on remaining budget, and it does not use conditional (ETag) requests — so every cycle costs against the budget even when nothing has changed.
+ProPR's safeguards here are **reactive only**: it retries rate-limited requests with exponential backoff and logs a warning suggesting a longer interval, but it does not pause polling based on remaining budget, and it does not use conditional (ETag) requests — so every cycle costs against the budget even when nothing has changed.
 
 To stay within limits:
 
 - raise `POLLING_INTERVAL_MS` (the single biggest lever for many repositories);
 - leave `GITHUB_USER_WHITELIST` empty unless you need applier verification, since it adds per-issue timeline calls;
-- prefer an event-driven mode at scale — the default `routing_websocket` (or, with your own App, `direct_webhook`) replaces polling entirely, so the periodic listing cost disappears (the daemon makes API calls only when reacting to an event, not on a fixed interval).
+- prefer an event-driven mode at scale — the default `routing_websocket` (or, with your own App, `direct_webhook`) replaces polling entirely, so the periodic listing cost disappears (the daemon makes API calls only when reacting to an event).
 
 ## Start The Stack
 
@@ -221,7 +221,7 @@ line. Do not also set `HOST_GH_PRIVATE_KEY` here: that variable is for the CLI
 start path, and the two key variables must not be mixed (see
 [Environment](#environment) above).
 
-The path variables are passed as environment values, not mounts, because the launcher spawns sibling containers through the host Docker daemon — every `-v` value it passes must resolve on the host.
+The path variables are passed as environment values; mounting them would not work because the launcher spawns sibling containers through the host Docker daemon, and every `-v` value it passes must resolve on the host.
 
 The launcher starts these containers (stack prefix configurable with `PROPR_STACK`, default `propr`):
 
@@ -263,8 +263,8 @@ Two distinct public hosts are in play, and they are **not** the same origin:
 - `https://app.propr.dev` — the **hosted UI**, and the origin the **browser is loaded from**. It is a single static bundle that serves every connected stack. Because one bundle serves many stacks, the API base URL is not baked in at build time; the browser reads it at runtime from `window.__PROPR_CONFIG__.apiBaseUrl`. This is the **browser origin**, so it is the origin the API must allow through CORS, and the origin the API redirects back to after login.
 
   How `window.__PROPR_CONFIG__` is populated depends on **who serves the bundle**. When you **self-host** the UI bundle (the `propr/ui` container), its entrypoint rewrites the static `config.js` from `PROPR_UI_PUBLIC_API_URL` at container start, so one container targets one stack. The **vendor-hosted** `app.propr.dev` serves the same bundle to many stacks, so it cannot be rewritten per container. Instead, ProPR Connect opens the hosted UI with a validated `?tunnel=t-<id>.propr.dev` deep link, and the UI remembers that selected per-instance API origin through login/OAuth redirects. If the bundle loads on the hosted UI origin (`app.propr.dev`) with no tunnel deep link, no remembered tunnel, and no runtime config, the UI shows a “Connect a ProPR stack” state instead of falling through to broken same-origin API calls. Localhost and self-hosted same-origin deployments serve the API from the same origin, so they are exempt from that hosted-only guard.
-- `https://t-<PROPR_INSTANCE_ID>.propr.dev` — the **per-instance proxy host** for one stack, and the host the browser sends **API, Socket.IO, OAuth-callback, and session-cookie** traffic to. Each enabled stack is published under this hostname through its Cloudflare Tunnel, and the hosted UI discovers and reaches your stack through the managed `t-*.propr.dev` host pattern — no domain of your own to own or register. The tunnel fronts the **API** here (the API container on port 4000); propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host, so the root URL returns 404 and `/webhook` is **not** routed through the tunnel. The UI itself is served by `app.propr.dev`, not through the tunnel.
-- `http://api:4000` — **internal only**. This is the service-to-service address other stack containers use to reach the API inside the Docker network, and it is also **where Cloudflare forwards the tunnel** — the tunnel ingress points at the Docker-internal `http://api:4000`, **not** at host port 4000. Because routing is internal to the Docker network, the published host port is irrelevant to the tunnel and the two cannot conflict; you do not need host port 4000 free for the tunnel to work. The tunnel publishes the API publicly at the proxy host; the internal `http://api:4000` name is unchanged and is never what the browser uses.
+- `https://t-<PROPR_INSTANCE_ID>.propr.dev` — the **per-instance proxy host** for one stack, and the host the browser sends **API, Socket.IO, OAuth-callback, and session-cookie** traffic to. Each enabled stack is published under this hostname through its Cloudflare Tunnel, and the hosted UI discovers and reaches your stack through the managed `t-*.propr.dev` host pattern — no domain of your own to own or register. The tunnel fronts the **API** here (the API container on port 4000); propr-routing forwards only `/api/*` and `/socket.io/*` on the proxy host, so the root URL returns 404 and `/webhook` is **not** routed through the tunnel. The UI itself is served by `app.propr.dev`, entirely outside the tunnel.
+- `http://api:4000` — **internal only**. This is the service-to-service address other stack containers use to reach the API inside the Docker network, and it is also **where Cloudflare forwards the tunnel** — the tunnel ingress points at the Docker-internal `http://api:4000`. Because routing is internal to the Docker network, the published host port is irrelevant to the tunnel and the two cannot conflict; you do not need host port 4000 free for the tunnel to work. The tunnel publishes the API publicly at the proxy host; the internal `http://api:4000` name is unchanged and is never what the browser uses.
 
 So the browser origin (`app.propr.dev`) and the API host (`t-<id>.propr.dev`) **differ**. They work together because both sit under the shared `propr.dev` registrable domain, which makes them *same-site* (though cross-origin): the API allows the `app.propr.dev` origin via CORS (`FRONTEND_URL`), the host-only session cookie set on the proxy host is sent with the UI's same-site API calls, and the OAuth callback lands on the proxy host. See [Configuration](#configuration-v1) below for the exact `FRONTEND_URL` / `API_PUBLIC_URL` / `GH_OAUTH_CALLBACK_URL` values.
 

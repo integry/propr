@@ -21,7 +21,7 @@ Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe — on subscription-
 A terminal session needs you at the keyboard, approving commands and edits as the agent works. ProPR runs the same agents unattended: the isolated workspace is the permission boundary, and your approval moves to the pull request. A well-scoped task becomes delegation — label the issue, walk away, review the PR. Follow-up feedback is lighter too: screenshots paste straight into GitHub comments, and ProPR hands them to the agent.
 
 **Is the agent sandboxed?**
-Each task runs in its own Docker container and Git worktree, and ProPR — not the agent — performs all Git and GitHub operations. Outbound network access is unrestricted by default; an optional allowlist firewall exists but requires privileged containers. See [Execution Safety](./features/execution-safety.md).
+Each task runs in its own Docker container and Git worktree, and ProPR itself performs all Git and GitHub operations on the agent's behalf. Outbound network access is unrestricted by default; an optional allowlist firewall exists but requires privileged containers. See [Execution Safety](./features/execution-safety.md).
 
 **Can I run it offline or air-gapped?**
 No. ProPR needs GitHub and your model providers to do its job. The documentation is bundled for offline reading (`propr docs`), but the workflow itself is GitHub-centered.

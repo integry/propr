@@ -152,7 +152,7 @@ cloudflared tunnel route dns propr propr.example.com
 
 Run as `you`, the credentials JSON and cert land under `~/.cloudflared/`. The
 service installed below runs as **root**, so move the credentials file into
-`/etc/cloudflared/` (root-owned, not world-readable) before installing the
+`/etc/cloudflared/` (root-owned and unreadable by other users) before installing the
 service; you create the config there directly in the next step. Replace `<UUID>`
 with the value printed by `tunnel create`:
 
@@ -230,10 +230,10 @@ firewall holes. The application is now reachable exclusively through
 
 ## 4. Add An Access Identity Gate
 
-Cloudflare Access can require SSO before any request reaches your origin. It is
-**defense-in-depth on top of** ProPR's own GitHub login and user whitelist — not
-a replacement — so expect users to authenticate twice unless you configure
-Access to use GitHub as its identity provider.
+Cloudflare Access can require SSO before any request reaches your origin. It adds
+**defense-in-depth on top of** ProPR's own GitHub login and user whitelist, and
+both layers stay active — so expect users to authenticate twice unless you
+configure Access to use GitHub as its identity provider.
 
 In the Zero Trust dashboard, add a self-hosted Access application for
 `propr.example.com` with an Allow policy scoped to your team's emails or GitHub
@@ -259,8 +259,8 @@ it is the user's own browser, which has already authenticated.
 ### 4a. (Advanced) Bypass Access For The Webhook Path
 
 :::danger[Advanced and security-sensitive — the default routing WebSocket is strongly preferred]
-**Use the default routing WebSocket (or polling). Treat this bypass as an
-exception, not a recommended path.** Skip this entire subsection unless you have a
+**Use the default routing WebSocket (or polling). Treat this bypass as a rare
+exception.** Skip this entire subsection unless you have a
 concrete, standing reason to run your own App's `direct_webhook` instead — the
 default routing WebSocket and polling (above) need no exception and carry none of
 the risk below.
@@ -312,7 +312,7 @@ Cloudflare is expected to evaluate the more specific path-scoped application
 before the hostname-wide Allow policy, so only this exact webhook path skips SSO
 while everything else stays gated. **Path matching is security-sensitive and
 Cloudflare's exact prefix/precedence behavior can change, so treat the above as a
-starting point you must verify, not a guarantee** — confirm the current rules
+starting point you must verify yourself** — confirm the current rules
 against Cloudflare's
 [Access application path matching](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-public-app/)
 and
@@ -328,7 +328,7 @@ documentation. Then test both directions before relying on it:
   the `/webhook` prefix but is not the webhook endpoint — for example
   `https://propr.example.com/webhookadmin` and
   `https://propr.example.com/webhook-test` — and confirm each is **still forced
-  through SSO** (an Access login redirect), not bypassed. If any sibling path
+  through SSO** (an Access login redirect). If any sibling path
   skips SSO, your bypass is matching by bare prefix and is over-scoped: narrow the
   application path until only the exact `/webhook` endpoint is exempt before you
   rely on this setup.
@@ -337,7 +337,7 @@ The endpoint stays protected by the mandatory `GH_WEBHOOK_SECRET` HMAC signature
 that ProPR already verifies.
 
 Because these rules bypass Access by **path prefix**, treat the bypass as a
-standing exception that requires revalidation — not a permanent control. Re-audit
+standing exception that requires revalidation. Re-audit
 it on **two triggers**: whenever you change Cloudflare configuration (Access
 applications, policies, or their ordering — precedence is what keeps the bypass
 scoped to `/webhook`) and whenever you upgrade ProPR or otherwise add routes.

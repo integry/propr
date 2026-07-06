@@ -43,7 +43,7 @@ The exact labels and model IDs come from your repository and AI Agent settings.
 - **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-opus48`, `llm-codex-gpt55`, `llm-antigravity-pro-high`, `llm-opencode-minimax-m3-free`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
 - **`base-<branch>`** targets a non-default base branch, for example `base-develop`.
 
-Throughout these docs, "processing label" means the configured trigger label you add yourself (for example `AI` or `propr`) — not the `<trigger>-processing` state label, which ProPR applies automatically while a run is in progress.
+Throughout these docs, "processing label" means the configured trigger label you add yourself (for example `AI` or `propr`). The `<trigger>-processing` state label is a separate label that ProPR applies automatically while a run is in progress.
 
 ## Run Work From A Plan
 
@@ -62,7 +62,7 @@ You can also use Planner Studio for **planning only**: review and finalize the p
 
 ## Refine A Pull Request
 
-This works on any eligible pull request, not only PRs ProPR created. To **review or fix only**, comment `/review` or `/fix` on a PR opened elsewhere — slash commands from an allowed author run directly, with no processing label required. To **take over an existing PR** so natural comments are picked up too, add a processing label such as `AI` or `propr` to the PR, then comment normally.
+This works on any eligible pull request, whether or not ProPR created it. To **review or fix only**, comment `/review` or `/fix` on a PR opened elsewhere — slash commands from an allowed author run directly, with no processing label required. To **take over an existing PR** so natural comments are picked up too, add a processing label such as `AI` or `propr` to the PR, then comment normally.
 
 For normal follow-up, post a regular GitHub PR comment:
 

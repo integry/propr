@@ -66,7 +66,7 @@ The script is **not executed by default**. Every agent entrypoint (`scripts/clau
 Skipping firewall setup (would require --privileged Docker flag)
 ```
 
-Applying iptables rules inside a container requires elevated container privileges (`--privileged` or equivalent capabilities), which ProPR does not request for agent containers. Treat the firewall script as available hardening you can wire in yourself if your deployment can grant those privileges — not as an active default. Without it, agent containers have ordinary outbound network access.
+Applying iptables rules inside a container requires elevated container privileges (`--privileged` or equivalent capabilities), which ProPR does not request for agent containers. Treat the firewall script as available hardening you can wire in yourself if your deployment can grant those privileges; it is inactive by default. Without it, agent containers have ordinary outbound network access.
 
 ## Failure Handling And Recovery
 

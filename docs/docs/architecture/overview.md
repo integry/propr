@@ -54,7 +54,7 @@ The [Agent Runtime Reference](./agent-runtime.md) documents the pattern in detai
 
 - Agents edit files; ProPR handles git and GitHub finalization.
 - Each task gets its own worktree and branch context.
-- Agent and model choice is a routing decision, not a separate workflow.
+- Agent and model choice is a routing decision within the same workflow.
 - The Web UI is the normal place for repository, branch, agent, and task visibility.
 
 ## Where To Go Next

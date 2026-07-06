@@ -12,7 +12,7 @@ Slash commands are for specific actions: AI review, applying AI review feedback,
 
 These commands are not limited to PRs that ProPR created. You can run `/review`, `/fix`, and the others on any eligible pull request — including ones opened by a teammate, another agent, or yourself outside ProPR — as long as you are an allowed author. A slash command from an allowed author is processed directly and does not require the PR to carry a processing label.
 
-To **take over an existing PR** for ongoing work (so that natural follow-up comments are picked up too, not just commands), add a configured processing label such as `AI` or `propr` to the PR. See [Use ProPR On Any Pull Request](./pr-followup.md#use-propr-on-any-pull-request).
+To **take over an existing PR** for ongoing work (so that natural follow-up comments are picked up alongside commands), add a configured processing label such as `AI` or `propr` to the PR. See [Use ProPR On Any Pull Request](./pr-followup.md#use-propr-on-any-pull-request).
 
 ## Quick Reference
 

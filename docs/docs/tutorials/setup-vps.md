@@ -205,8 +205,8 @@ which propr && propr --version   # should resolve to the global npm prefix, e.g.
 *Run as: **you** (the unprivileged user) for this and every following section.*
 
 :::warning[Switch to your unprivileged user now]
-All remaining steps must run as `you`, not root. If you are still in a root
-session, switch now:
+All remaining steps must run as the unprivileged `you` user. If you are still in
+a root session, switch now:
 
 ```bash
 su - you
@@ -228,7 +228,7 @@ claude login        # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-
 # or: agy login     # Antigravity  -> ~/.gemini  (curl -fsSL https://antigravity.google/cli/install.sh | bash)
 ```
 
-These two are examples, not the full set. Install and log in to whichever agents
+These two are examples only. Install and log in to whichever agents
 you plan to run; each writes its login state to a credential directory under
 `/home/you` that the stack mounts into worker runs.
 
@@ -356,9 +356,9 @@ GH_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
 SESSION_SECRET=paste_the_generated_hex_string_here
 ```
 
-:::caution[Keep the port values in `host:port` form, not URL form]
+:::caution[Keep the port values in bare `host:port` form]
 `API_PORT`/`UI_PORT` are Docker port bindings, so they take a bare
-`127.0.0.1:4000` host-and-port value — **not** a URL. Do not prefix them with
+`127.0.0.1:4000` host-and-port value. Do not prefix them with
 `http://` or add a path: a value like `http://127.0.0.1:4000` is invalid here and
 will break the published-port binding. The `http(s)://…` form belongs only on the
 `FRONTEND_URL`/`API_PUBLIC_URL`/`GH_OAUTH_CALLBACK_URL` lines below.
@@ -557,9 +557,9 @@ propr remote-status  # backend health: daemon, workers, Redis, GitHub auth
 ```
 
 Open `https://propr.example.com`, sign in with GitHub, and confirm the dashboard
-loads. Note that `GITHUB_USER_WHITELIST` (step 10) gates who can **trigger** work
-from GitHub comments — it is an action/trigger gate, not a dashboard sign-in
-control. To restrict who can authenticate to or view the Web UI itself, put it
+loads. Note that `GITHUB_USER_WHITELIST` (step 10) gates only who can **trigger**
+work from GitHub comments. To restrict who can authenticate to or view the Web UI
+itself, put it
 behind an SSO gate such as the Cloudflare Access layer in
 [Advanced VPS Hardening](./setup-vps-hardening.md). From a machine off the server,
 verify the raw ports are **not** reachable — these should both fail/time out:
@@ -570,8 +570,8 @@ curl -m 5 http://203.0.113.10:5173/   # UI port  — must NOT respond
 ```
 
 You can also confirm the bind locally on the VPS — the published ports should
-show `127.0.0.1:4000`/`127.0.0.1:5173` (or `[::1]:...`), never `0.0.0.0:*` or
-`*:*`, which would mean they are listening on every interface:
+show `127.0.0.1:4000`/`127.0.0.1:5173` (or `[::1]:...`); a `0.0.0.0:*` or
+`*:*` value would mean they are listening on every interface:
 
 ```bash
 ss -ltnp | grep -E ':4000|:5173'   # both must be bound to 127.0.0.1, not 0.0.0.0
