@@ -31,6 +31,6 @@ title: Glossary
 
 **Task** — one unit of agent work with its own record: prompt, isolated run, logs, usage, commits, and resulting PR or follow-up.
 
-**Ultrafix** — the automated review-fix loop: `/review` scores the PR, fixes are applied, and cycles repeat until the target score, cycle limit, or a human stop. See [Ultrafix Commands](../features/pr-ultrafix-commands.md).
+**Ultrafix** — the automated review-fix loop: `/review` scores the PR, fixes are applied, and cycles repeat until the target score, cycle limit, or a human stop. See [PR Comment Commands](../features/pr-commands.md#ultrafix).
 
 **Worktree** — the dedicated Git working directory each task gets, paired with its own branch and container, so parallel tasks never collide and the main checkout stays untouched.

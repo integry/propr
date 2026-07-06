@@ -51,7 +51,7 @@ The GitHub OAuth App callback URL must match.
 
 ## GitHub Event Intake
 
-By default ProPR receives GitHub events through the hosted ProPR GitHub App over WebSocket routing (`GITHUB_EVENT_INTAKE_MODE=routing_websocket`). Events stream to ProPR over an **outbound** WebSocket, so a server needs **no inbound public URL** for intake, no GitHub App of its own, and no webhook secret — and delivery is near-immediate (low latency). `propr relay enroll` provisions the shared-App install and the routing/relay credentials. This is the recommended path for almost every server. Note that `GH_WEBHOOK_SECRET` is **not** used in routing mode — it applies only to the own-App webhook option below.
+By default ProPR receives GitHub events through the hosted ProPR GitHub App over WebSocket routing (`GITHUB_EVENT_INTAKE_MODE=routing_websocket`). Events stream to ProPR over an **outbound** WebSocket with near-immediate delivery, so a server needs **no inbound public URL** for intake and no webhook secret — the recommended path for almost every server. `propr relay enroll` provisions the shared-App install and the routing/relay credentials; see [GitHub Authentication](../operations/github-auth.md). Note that `GH_WEBHOOK_SECRET` applies only to the own-App webhook option below and is ignored in routing mode.
 
 Two advanced intake modes are available when you have a specific reason to use them:
 
@@ -89,7 +89,7 @@ sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/
 propr setup --root /srv/propr  # guided, re-runnable bootstrap
 ```
 
-Over SSH, run `propr setup --no-tui` if your terminal lacks raw-mode support; setup then prompts line-by-line. Choosing **Token relay** at the auth step enrolls the shared App automatically (logging you in if needed, then writing the relay/routing credentials to `.env`), so no separate `propr relay enroll` is needed. Setup is **safe to re-run** — it skips already-satisfied steps and never overwrites `.env` or deletes data — so you can re-run it after editing public URLs or switching intake mode.
+Over SSH, run `propr setup --no-tui` if your terminal lacks raw-mode support; setup then prompts line-by-line. Choosing **Token relay** at the auth step enrolls the shared App automatically (logging you in if needed, then writing the relay/routing credentials to `.env`), so no separate `propr relay enroll` is needed. Setup is safe to re-run after editing public URLs or switching intake mode: it skips already-satisfied steps and never overwrites `.env` or deletes data.
 
 ### Manual / Advanced Flow
 
@@ -98,17 +98,12 @@ To control each step yourself (useful for scripted provisioning and CI), run the
 ```bash
 sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/propr
 propr init stack               # scaffold .env + data/ logs/ repos/
-# configure GitHub auth in .env: shared App via `propr relay enroll` (default),
-# or your own App (GH_APP_ID, GH_INSTALLATION_ID, HOST_GH_PRIVATE_KEY)
+# configure GitHub auth in .env before `propr check` — see below
 propr check
 propr start --no-tui
 ```
 
-Configure GitHub auth in `.env` before `propr check` — by default the shared,
-hosted App via `propr relay enroll` (no private key), or your own App
-(`GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`) as an advanced
-option. See [GitHub Authentication](../operations/github-auth.md) for the full
-walkthrough.
+Configure GitHub auth in `.env` before `propr check`: by default the shared, hosted App via `propr relay enroll` (no private key), with your own App (`GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`) as the advanced option. See [GitHub Authentication](../operations/github-auth.md) for the full walkthrough.
 
 `propr status`, `propr stop`, and `propr start --restart` manage the running stack. Prefer a container-only host? Use the launcher below instead.
 

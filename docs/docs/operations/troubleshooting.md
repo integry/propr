@@ -31,7 +31,7 @@ docker logs -f propr-api
 
 - The host `logs/` directory (`PROPR_LOGS_DIR`) is mounted into the service containers at `/usr/src/app/logs`.
 - Agent session logs are written under `/tmp/claude-logs` and surfaced per task in the Web UI task detail view.
-- Per-LLM-call records: `propr log list` (`--failed` for failures only), or the LLM Log page; see [LLM Metrics](./llm-metrics.md).
+- Per-LLM-call records: `propr log list` (`--failed` for failures only), or the LLM Log page; see [Metrics](./metrics.md#the-llm-log-page).
 - Set `LOG_LEVEL=debug` in `.env` for more verbose service logs.
 
 ## `propr check` Fails Or The Stack Will Not Start

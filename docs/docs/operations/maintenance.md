@@ -77,21 +77,19 @@ Other locations:
 
 - The host `logs/` directory (`PROPR_LOGS_DIR`) is mounted into the service containers at `/usr/src/app/logs`.
 - Agent session logs are written under `/tmp/claude-logs` (mounted into worker, analysis, and API containers), and are surfaced per task in the Web UI task detail view and through the `/api/execution/...` endpoints.
-- Per-LLM-call records are stored in the SQLite `llm_logs` table and shown on the LLM Log page; see [LLM Metrics](./llm-metrics.md).
+- Per-LLM-call records are stored in the SQLite `llm_logs` table and shown on the LLM Log page; see [Metrics](./metrics.md).
 - Set `LOG_LEVEL=debug` in `.env` for more verbose service logs.
 
 ## Backups
 
-Deployment-time backup planning (what to persist and where it lives) is covered in [Deployment](./deployment.md); this section is the operational checklist.
-
 Back up:
 
-- The SQLite database (`data/propr.sqlite`, including `-wal`/`-shm` files; use `sqlite3 propr.sqlite ".backup backup.sqlite"` for a live snapshot)
-- Production `.env` and the GitHub App private key (or their secret source)
-- The `propr-redis-data` Docker volume if you want to preserve queue state and sessions
+- The SQLite database (`data/propr.sqlite`, including `-wal`/`-shm` files) — the primary application state. Copy it while the stack is stopped, or use `sqlite3 propr.sqlite ".backup backup.sqlite"` for a consistent snapshot of a live database (WAL mode is enabled)
+- Production `.env` and the GitHub App private key (or the secret source that produces them)
+- The `propr-redis-data` Docker volume if you want queue state and sessions to survive a restore
 - Logs, if you need history
 
-Do not back up only `repos/` and `logs/`. They do not contain the application state.
+`repos/` is a working area: clones are re-created on demand and worktrees are per-task, so it needs no backup. Do not back up only `repos/` and `logs/` — they do not contain the application state. The runtime directory these paths live in is described in [Deployment → Runtime Directory Layout](./deployment.md#runtime-directory-layout).
 
 ## Repository And Worktree Cleanup
 

@@ -12,7 +12,7 @@ ProPR connects to your GitHub repositories and keeps the pull request as the cen
 
 ## First 15 Minutes
 
-You need a Docker-capable Linux host, Node.js 22+, and a login for at least one coding agent — reuse one already on the host (`claude login`, `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
+You need a Docker-capable Linux host, Node.js 22+, and a login for at least one coding agent — reuse one already on the host (Claude Code's `claude login`, Antigravity's `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
 
 ```bash
 npm install -g propr-cli
@@ -21,9 +21,9 @@ propr setup   # guided: verify host, authorize agents, connect GitHub, start
 
 Label a GitHub issue `AI` (or approve a plan in the Web UI) and the result comes back as a pull request. The [Setup Guide](./tutorials/setup.md) has the full walkthrough — or explore the [live demo](https://demo.propr.dev) first without installing anything.
 
-## A Modular Tool, Not An All-Or-Nothing Pipeline
+## A Modular Tool
 
-ProPR supports the full idea-to-merge flow, but it does not require it. Each stage is a separate entry point you can adopt on its own and slot into the workflow you already have:
+ProPR supports the full idea-to-merge flow and leaves every stage optional. Each stage is a separate entry point you can adopt on its own and slot into the workflow you already have:
 
 - **Planning only**: use Planner Studio to generate GitHub issues, then implement them manually or with another tool or agent.
 - **Issue implementation only**: write issues by hand (or with another planning tool), then trigger ProPR by adding a processing label such as `AI` or `propr` and an optional `llm-*` model label.
@@ -60,4 +60,4 @@ End-to-end usage remains fully supported — it is simply one of the ways to use
 - **Tutorials**: Daily use, issue-to-PR, and Planner Studio walkthroughs
 - **Architecture**: Focused overviews and runtime references for intake, workers, agent runs, and git management
 - **Operations**: Deployment, maintenance, metrics, feedback loops, and Web UI integration
-- **[Concepts](./concepts/pr-review-guidelines.md)**: ProPR-specific PR follow-up rules
+- **[Concepts](./concepts/glossary.md)**: Glossary, security overview, and repository best practices

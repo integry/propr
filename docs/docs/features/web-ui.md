@@ -18,7 +18,7 @@ When the backend runs with `PROPR_DEMO_MODE=true`, a banner indicates read-only 
 
 ## Dashboard
 
-The landing page (`/`) pairs a **Recent Activity** task feed with an analytics rail: an Active / Success / Total / Failed stats grid, Total Cost, a daily activity sparkline, task status distribution, a Repository Breakdown, and Top Models. New instances also surface an onboarding widget and, when ProPR detects a running Agent Tank, a banner offering to enable it. The panels refresh live over WebSocket as tasks change. For how to read these numbers, see [System Metrics](../operations/system-metrics.md).
+The landing page (`/`) pairs a **Recent Activity** task feed with an analytics rail: an Active / Success / Total / Failed stats grid, Total Cost, a daily activity sparkline, task status distribution, a Repository Breakdown, and Top Models. New instances also surface an onboarding widget and, when ProPR detects a running Agent Tank, a banner offering to enable it. The panels refresh live over WebSocket as tasks change. For where each number comes from and how to read it, see [Metrics](../operations/metrics.md).
 
 ## Plans And Planner Studio
 
@@ -56,11 +56,11 @@ See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration]
 
 ## Coding Agents
 
-**Coding Agents** (`/ai-agents`) is a split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. See [Agents And Models](./agents-and-models.md) and [Agent Routing](./agent-routing.md).
+**Coding Agents** (`/ai-agents`) is a split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. See [Agents And Models](./agents-and-models.md).
 
 ## LLM Log
 
-**LLM Log** (`/llm-logs`) records every model call — type, model, status, duration, tokens, and cost — with expandable rows linking each call to its task, plan, issue, or PR, plus cache statistics. Filter by execution type, model, status, and work type. This is the page for comparing model costs and investigating expensive runs; see [LLM Metrics](../operations/llm-metrics.md).
+**LLM Log** (`/llm-logs`) shows every model call with expandable rows and filters by execution type, model, status, and work type. What each record contains and how to use the page for cost analysis is covered in [Metrics](../operations/metrics.md).
 
 ## Settings
 
@@ -70,7 +70,7 @@ See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration]
 
 **Automation rules:** the GitHub user whitelist, primary processing labels, the PR label, follow-up keywords and ignore keywords, worker concurrency, the auto-follow-up score threshold, auto-resolve merge conflicts, and the Ultrafix rating goal / max cycles / pause settings.
 
-These map onto [Agent Routing](./agent-routing.md), [PR Follow-up](./pr-followup.md), the [Ultrafix commands](./pr-ultrafix-commands.md), and [Execution Safety](./execution-safety.md).
+These map onto [Agents And Models](./agents-and-models.md), [PR Follow-up](./pr-followup.md), the [Ultrafix commands](./pr-commands.md), and [Execution Safety](./execution-safety.md).
 
 ## Live Updates And Shortcuts
 

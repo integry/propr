@@ -19,13 +19,15 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 
 Most agent images build on the shared `propr/agent-base` image, which includes Node.js, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. Antigravity currently uses a Debian slim base because its installer requires glibc, but it keeps the same workspace, credential, GitHub token, entrypoint, and logging contract.
 
-| Agent | Image | Dockerfile | Entrypoint | Container credential path |
-| --- | --- | --- | --- | --- |
-| Claude Code | `propr/agent-claude` | `Dockerfile.claude` | `scripts/claude-entrypoint.sh` | `/home/node/.claude` |
-| Codex | `propr/agent-codex` | `Dockerfile.codex` | `scripts/codex-entrypoint.sh` | `/home/node/.codex` |
-| Antigravity | `propr/agent-antigravity` | `Dockerfile.antigravity` | `scripts/antigravity-entrypoint.sh` | `/home/node/.gemini` |
-| OpenCode | `propr/agent-opencode` | `Dockerfile.opencode` | `scripts/opencode-entrypoint.sh` | `/home/node/.config/opencode` |
-| Mistral Vibe | `propr/agent-vibe` | `Dockerfile.vibe` | `scripts/vibe-entrypoint.sh` | `/home/node/.vibe` |
+This table is the canonical mapping of agent images, Dockerfiles, entrypoints, and credential mounts; other pages link here instead of repeating it.
+
+| Agent | Image | Dockerfile | Entrypoint | Host credential mount | Container credential path |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | `propr/agent-claude` | `Dockerfile.claude` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) | `/home/node/.claude` |
+| Codex | `propr/agent-codex` | `Dockerfile.codex` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) | `/home/node/.codex` |
+| Antigravity | `propr/agent-antigravity` | `Dockerfile.antigravity` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) | `/home/node/.gemini` |
+| OpenCode | `propr/agent-opencode` | `Dockerfile.opencode` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
+| Mistral Vibe | `propr/agent-vibe` | `Dockerfile.vibe` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
 
 ## Container Configuration
 
@@ -46,6 +48,8 @@ Timeouts prevent runaway jobs and make failures visible in task state. Defaults 
 | Antigravity | `ANTIGRAVITY_TIMEOUT_MS` | `3600000` | Not used | N/A |
 | OpenCode | `OPENCODE_TIMEOUT_MS` | `3600000` | Not used | N/A |
 | Mistral Vibe | `VIBE_TIMEOUT_MS` | `3600000` | `VIBE_MAX_TURNS` | `1000` |
+
+These are the code defaults. The shipped `.env.example` sets `ANTIGRAVITY_TIMEOUT_MS=300000`, so deployments that keep that line run Antigravity with a 5-minute timeout; every other `.env.example` timeout matches its code default.
 
 When tuning these values, consider repository size, task complexity, provider rate limits, worker concurrency, and host CPU and memory. Increase timeouts only after checking task and worker logs; a timeout may indicate missing context, provider slowness, a task that should be split, or an agent loop.
 
@@ -177,9 +181,41 @@ OPENCODE_TIMEOUT_MS=3600000
 OPENCODE_DOCKER_IMAGE=propr/agent-opencode:latest
 ```
 
-The entrypoint sets `OPENCODE_CONFIG_DIR=/home/node/.config/opencode` and prepares XDG data and state directories. When `HOST_OPENCODE_DATA_DIR` is set, ProPR mounts it for OpenCode auth data; otherwise it can infer the data path from the XDG config path.
+The entrypoint sets `OPENCODE_CONFIG_DIR=/home/node/.config/opencode` and prepares XDG data and state directories. OpenCode runs in JSON mode through the OpenCode adapter (`scripts/opencode-run.sh` with `--format json`). ProPR passes the selected model with `--model <id>` and parses OpenCode responses back into the shared agent result shape.
 
-OpenCode runs in JSON mode through the OpenCode adapter. ProPR passes the selected model with `--model <id>` and parses OpenCode responses back into the shared agent result shape.
+#### Host Setup
+
+Install OpenCode on the host and initialize the directories ProPR can mount:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+# or: npm install -g opencode-ai
+
+mkdir -p ~/.config/opencode ~/.local/share/opencode
+opencode --version
+opencode auth login
+```
+
+OpenCode's config location is `~/.config/opencode`; configure OpenCode agents with that path. The built-in free models run without provider login — operators only need credentials for OpenCode Go or any other authenticated provider they configure.
+
+#### Auth Data
+
+OpenCode stores provider auth in `~/.local/share/opencode/auth.json`. When `HOST_OPENCODE_DATA_DIR` is set in the worker environment, ProPR mounts that host directory into OpenCode agent containers at `/home/node/.local/share/opencode`, read-write so the CLI can refresh auth metadata. When it is unset, ProPR infers the matching host data path for default config paths like `/home/your-user/.config/opencode` and mounts it when the directory exists.
+
+Without either data mount, make credentials available another way:
+
+- Pass provider API keys as agent `envVars`.
+- Copy `auth.json` under the mounted config tree and point `XDG_DATA_HOME` at it in the agent `envVars` (`XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`). Re-sync the file after changing providers or refreshing OpenCode auth:
+
+```bash
+mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
+```
+
+By default the container receives `XDG_CONFIG_HOME=/home/node/.config` and `XDG_DATA_HOME=/home/node/.local/share`; the `envVars` override applies only for copied file-based auth. Authentication failures usually mean the configured config path does not point at the host's initialized OpenCode directory, `HOST_OPENCODE_DATA_DIR`/`XDG_DATA_HOME` does not point at mounted auth data, or the selected provider API key is missing or expired.
+
+#### Model-ID Translation
+
+ProPR catalog IDs for OpenCode carry the `opencode-` prefix, for example `opencode-minimax-m3-free`. ProPR converts these back to OpenCode's native `provider/model` syntax at execution time (`opencode-minimax-m3-free` becomes `minimax/minimax-m3`) and strips only the internal `opencode:` routing prefix, so provider-qualified model IDs remain intact. The OpenCode model list is dynamic: run `opencode models` on the host after changing auth providers, then register any desired authenticated provider IDs (for example `opencode-openai/gpt-5.5`) on the agent's supported models. ProPR keeps only the built-in free OpenCode models as defaults and does not add authenticated provider models automatically. See [Agents and Models](../features/agents-and-models.md) for the catalog and label formats.
 
 ### Mistral Vibe
 

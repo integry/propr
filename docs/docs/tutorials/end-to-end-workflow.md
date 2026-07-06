@@ -56,31 +56,13 @@ When ProPR opens the PR:
 - Confirm the change matches the issue.
 - Look at the task record if anything is unclear.
 
-Review the PR in your normal process. ProPR helps create and refine it; it does not decide whether it should merge.
+Review the PR in your normal process. ProPR helps create and refine it — merging the PR remains a human decision.
 
 {/* SCREENSHOT PLACEHOLDER: Capture the task record detail view in the Web UI for a completed run, showing status, agent and model, commit list, the linked PR, and the live log panel. */}
 
 ## Ask For Follow-Up
 
-For direct changes, write a normal PR comment:
-
-```text
-Please add a regression test for the empty state.
-```
-
-ProPR processes normal user comments directly once the PR carries a processing label (or the comment includes a configured trigger keyword). Line-level review comments include their file and line context, and images in comments are available to the agent.
-
-The same follow-up tools work even if ProPR did not open the PR. To take over a PR created elsewhere, add a processing label such as `AI` or `propr` and comment normally; slash commands like `/review` run directly without a label.
-
-Use slash commands for specific actions:
-
-- `/review` for a read-only AI review with severity findings and `Score: N/10`; add model IDs for a multi-model review (`/review claude-fable codex-gpt55`) and put focus instructions on the lines below the command
-- `/fix` to apply unprocessed AI review comments from `/review`
-- `/merge` to merge base into the PR branch with automatic conflict resolution
-- `/switch <model-id>` to change the PR's model going forward, or `/use <model-id>` for a one-off task
-- `/ultrafix goal=<score> max=<cycles> pause=<seconds> model=<model-id>` for a review-fix loop; the `ultrafix` PR label is the circuit breaker — remove it to stop
-
-See [PR Slash Commands](../features/pr-commands.md).
+A plain PR comment such as `Please add a regression test for the empty state.` initiates a follow-up run once the PR carries a processing label (or the comment includes a configured trigger keyword) — this works on PRs opened outside ProPR too. Slash commands cover specific actions: `/review` posts a read-only AI review, `/fix` applies the pending suggestions a `/review` produced, and `/merge` merges the base branch into the PR branch. [Daily Use → Refine A Pull Request](./usage.md#refine-a-pull-request) covers the full command list and PR takeover; [PR Slash Commands](../features/pr-commands.md) is the reference.
 
 ## Recover Or Re-Run
 

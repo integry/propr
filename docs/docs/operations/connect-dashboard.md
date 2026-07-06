@@ -23,7 +23,7 @@ Relay tokens (`prt_…`) are the durable credential a self-hosted stack uses to 
 
 ## Tunnels
 
-Plus installations can provision a managed hosted-UI tunnel: Connect creates the Cloudflare connector and shows a one-time `propr tunnel setup --token … --url https://t-<id>.propr.dev --start` command to run in the stack directory. The page also health-checks the tunnel and offers rotate/delete. Architecture and configuration live in [Production Deployment → Hosted UI Tunnel](./deployment.md#hosted-ui-tunnel).
+Plus installations can provision a managed hosted-UI tunnel: Connect creates the Cloudflare connector and shows a one-time setup command to run in the stack directory. The page also health-checks the tunnel and offers rotate/delete. Architecture, the setup command, and configuration live in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 
 ## Checking Connect health
 

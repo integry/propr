@@ -56,7 +56,7 @@ Each agent run starts a dedicated container from the matching agent image (`prop
 
 The image-based install starts service and agent containers from published images. Source builds can use local images during development.
 
-## Network Firewall (Optional Hardening, Not Active By Default)
+## Network Firewall (Optional, Off By Default)
 
 The agent images ship `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, SSH, and HTTPS to provider and GitHub endpoints (for example `api.anthropic.com`, `api.github.com`, `github.com`, `objects.githubusercontent.com`).
 

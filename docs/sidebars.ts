@@ -56,11 +56,9 @@ const sidebars: SidebarsConfig = {
       label: 'Core Workflow',
       items: [
         'features/planning',
-        'features/agent-routing',
-        'features/agents-and-models',
+        'features/work-splitting',
         'features/execution-safety',
         'features/observability',
-        'features/self-hosting',
       ],
     },
     {
@@ -69,9 +67,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/pr-followup',
         'features/pr-commands',
-        'features/pr-review-fix-commands',
-        'features/pr-model-routing-commands',
-        'features/pr-ultrafix-commands',
       ],
     },
     {
@@ -79,16 +74,15 @@ const sidebars: SidebarsConfig = {
       label: 'Repository Context',
       items: [
         'features/repository-knowledge',
-        'features/work-splitting',
         'features/branch-config',
       ],
     },
     {
       type: 'category',
-      label: 'Tools',
+      label: 'Reference',
       items: [
+        'features/agents-and-models',
         'features/propr-cli',
-        'features/cli-workflows',
       ],
     },
     {
@@ -96,7 +90,6 @@ const sidebars: SidebarsConfig = {
       label: 'Concepts',
       items: [
         'concepts/repository-best-practices',
-        'concepts/pr-review-guidelines',
         'concepts/security-overview',
         'concepts/glossary',
       ],
@@ -111,14 +104,14 @@ const sidebars: SidebarsConfig = {
         'architecture/coding-agent-integration',
         'architecture/agent-runtime',
         'architecture/git-management',
+        'operations/web-ui-integration',
+        'features/cli-workflows',
         {
           type: 'category',
           label: 'Related references',
           collapsed: true,
           items: [
-            'architecture/daemon-runtime',
             'architecture/worker-runtime',
-            'architecture/opencode-integration',
             'architecture/git-runtime',
           ],
         },
@@ -128,18 +121,17 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Operations',
       items: [
-        'operations/propr-connect',
-        'operations/connect-dashboard',
+        'features/self-hosting',
         'operations/deployment',
         'operations/github-auth',
+        'operations/propr-connect',
+        'operations/connect-dashboard',
+        'operations/hosted-ui-tunnel',
+        'operations/configuration-reference',
+        'operations/metrics',
+        'operations/agent-tank',
         'operations/maintenance',
         'operations/troubleshooting',
-        'operations/configuration-reference',
-        'operations/system-metrics',
-        'operations/metrics-feedback-loop',
-        'operations/llm-metrics',
-        'operations/agent-tank',
-        'operations/web-ui-integration',
       ],
     },
   ],

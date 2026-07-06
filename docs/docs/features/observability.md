@@ -4,33 +4,22 @@ sidebar_position: 7
 
 # Observability And Control
 
-ProPR is built so you can see what happened after every agent run. A task should not disappear into a terminal session or a provider dashboard; it should leave a record that connects the request, selected agent, logs, commits, costs, outcome, and recovery state.
+Every agent run leaves a record that connects the request, selected agent, logs, commits, costs, outcome, and recovery state. This page covers the signals a run produces and what to look for in them. For the anatomy of each Web UI screen, see the [Web UI Guide](./web-ui.md); for where every number comes from and how to read them over time, see [Metrics](../operations/metrics.md).
 
-## Task Records
+## What A Run Leaves Behind
 
-Each run creates a task record that can be inspected from the Web UI. Task records answer:
+Four kinds of evidence exist after every run:
 
-- What triggered this run?
-- Which repository, branch, agent, and model were used?
-- What state is the task in now?
-- Which commits or pull request came out of it?
-- Where did a failure occur?
-
-The task detail view shows:
-
-- A context strip with the repository, model, pull request link, commit, duration, and token usage
-- The exact prompt sent to the agent (View Prompt)
-- Execution log files (View Logs)
-- A live execution event log and, where the agent emits it, a thinking log
-- Live file changes with diffs per file
-- A progress bar over the agent's todo list
-- Action buttons: Follow Up (compose a follow-up for the task's PR or issue), Stop (while pending or processing), and Delete
+- **The task record.** Opened from the Tasks page, it answers: what triggered this run, which repository, branch, agent, and model were used, what state the task is in, which commits or pull request came out of it, and where a failure occurred. The [Web UI Guide](./web-ui.md#tasks) walks through the task detail view.
+- **The prompt and logs.** Each task keeps the exact prompt sent to the agent, its execution log files, and a live event log (plus a thinking log where the agent emits one). Job state is held in Redis with correlation IDs, so log lines across daemon, worker, and agent containers can be traced back to one task.
+- **The completion comment.** When a command or follow-up task finishes, ProPR posts a summary comment on the PR with the commit hash and the available slash commands, so the outcome is visible from GitHub without opening the UI. See [PR Commands](./pr-commands.md).
+- **The metrics trail.** Every model call lands in the LLM Log with cost, tokens, and duration, and the dashboard aggregates outcomes per repository and model. [Metrics](../operations/metrics.md) covers both.
 
 {/* SCREENSHOT PLACEHOLDER: Capture a task detail view for a completed implementation task: context strip with repository/model/PR link/cost, the result overview, and the file changes section expanded to show at least one diff. */}
 
-## Logs And Live Output
+## Live Output While Work Runs
 
-Task detail views expose progress while work is running, including streamed output where supported. That helps operators tell the difference between:
+The task detail view exposes progress during execution, including streamed output where supported. That helps operators tell the difference between:
 
 - A job waiting in the queue
 - A job actively running
@@ -38,40 +27,9 @@ Task detail views expose progress while work is running, including streamed outp
 - A git or GitHub finalization failure
 - A completed task waiting for review
 
-Job state is held in Redis with correlation IDs, so log lines across daemon, worker, and agent containers can be traced back to one task.
+## Provider Capacity
 
-## Dashboard
-
-The dashboard summarizes activity across repositories:
-
-- Queue stats: active, success rate, total, and failed task counts
-- Total cost in USD
-- A task statistics chart and the recent task list
-- Top Repositories (task counts and success rate per repo)
-- Top Models (task counts and usage share per model)
-- Global search across tasks
-
-{/* SCREENSHOT PLACEHOLDER: Capture the dashboard with real history: the stats grid (Active / Success / Total / Failed / Total Cost), the task chart, and the Top Repositories and Top Models tables populated. */}
-
-## LLM Log
-
-The LLM Log page records every model call:
-
-- Status, model, execution type, cost, duration, and work type per call
-- Expandable details linking each call to its task, plan draft, issue, or PR
-- Session ID, correlation ID, and agent alias for tracing
-- Cache statistics (cache creation and cache read tokens)
-- Filters by execution type, model, status, and work type
-
-This is the page to use when comparing model costs across real work or investigating an unexpectedly expensive run.
-
-{/* SCREENSHOT PLACEHOLDER: Capture the LLM Log page with one row expanded, showing the Work Reference section (task link, repository) and the cache statistics. */}
-
-## Agent Tank Usage Tracking
-
-Agent Tank is an optional integration that tracks provider capacity and rate-limit usage per task execution for CLI subscriptions (Claude, Codex, Antigravity). Once enabled, the sidebar shows live usage bars per provider (for example Claude session/weekly limits, Codex 5-hour session and weekly limits) refreshed every 60 seconds, and each LLM log entry records the usage delta the call consumed. Tracking is best-effort: if Agent Tank is unavailable, tasks proceed normally without usage data.
-
-Turn it on from the dashboard banner ProPR shows when it detects a running instance, from **Settings → LLM Usage Tracking**, or with `propr tank on`. See [Agent Tank Usage Tracking](../operations/agent-tank.md) for the full guide, including how to run Agent Tank and the Docker networking the connection needs.
+With the optional [Agent Tank](../operations/agent-tank.md) integration enabled, provider capacity becomes a visible signal too: the sidebar shows live usage bars per subscription provider, and each LLM log entry records the usage delta its call consumed. Turn it on from the dashboard banner ProPR shows when it detects a running instance, from **Settings → LLM Usage Tracking**, or with `propr tank on`.
 
 ## Recovery
 
@@ -82,5 +40,3 @@ Observability matters most when a run fails. ProPR tracks enough state to suppor
 - Re-run a follow-up with stronger instructions from the PR conversation
 - Switch models with `/switch` or `/use` when the current model is a bad fit
 - Revert a commit through a signed system task (authorized via `SYSTEM_TASK_SECRET`), which resets the branch and force-pushes
-
-For deeper operational metrics, see [LLM Metrics](../operations/llm-metrics.md) and [System Metrics](../operations/system-metrics.md).

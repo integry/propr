@@ -6,18 +6,6 @@ bot identity. There are three ways to configure how the backend obtains a GitHub
 **installation access token**. The mode is inferred from your environment
 (precedence: demo → relay → app), or set explicitly with `GH_AUTH_MODE`.
 
-> **Auth mode and event intake mode are configured separately.** `GH_AUTH_MODE`
-> controls only how the backend *authenticates* to GitHub (how it obtains an
-> installation token). How ProPR *receives* GitHub events — routing WebSocket,
-> polling, or a direct webhook — is configured by `GITHUB_EVENT_INTAKE_MODE`
-> (default `routing_websocket`). They are set independently, but not every
-> combination is valid: the routing WebSocket shares the vendor's relay
-> infrastructure, so `routing_websocket` intake **requires relay auth mode**.
-> Polling works with either relay or App auth, and `direct_webhook` requires App
-> auth. See [Issue Intake Modes](./deployment.md#issue-intake-modes) for event
-> delivery, and note that `GH_WEBHOOK_SECRET` belongs to the intake configuration
-> (it applies only to `direct_webhook`) and is independent of auth mode.
-
 For the hosted bridge that provides relay auth, GitHub event routing, failed
 delivery recovery, and optional hosted UI tunnels, see
 [ProPR Connect](./propr-connect.md).
@@ -78,6 +66,24 @@ PROPR_DEMO_MODE=true
 
 No GitHub access; the API serves read-only with a curated config. The daemon and
 workers do not operate.
+
+## Auth Mode vs Event Intake Mode
+
+`GH_AUTH_MODE` controls only how the backend *authenticates* to GitHub (how it
+obtains an installation token). How ProPR *receives* GitHub events — routing
+WebSocket, polling, or a direct webhook — is configured separately by
+`GITHUB_EVENT_INTAKE_MODE` (default `routing_websocket`); see
+[Issue Intake Modes](./deployment.md#issue-intake-modes) for event delivery.
+
+The two are set independently, but some combinations are invalid:
+
+- `routing_websocket` intake **requires relay auth mode** — the routing
+  WebSocket shares the vendor's relay infrastructure.
+- `polling` works with either relay or App auth.
+- `direct_webhook` requires App auth.
+
+`GH_WEBHOOK_SECRET` belongs to the intake configuration (it applies only to
+`direct_webhook`) and is independent of auth mode.
 
 ## Relay endpoint contract
 
