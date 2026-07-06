@@ -104,6 +104,7 @@ export function buildReviewComment(
     comment += `> Add extra instructions if needed, e.g. \`/fix only address the critical findings\`.\n`;
 
     // --- Machine-readable marker ---
+    comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;
     comment += `\n<!-- propr:ai-review model="${effectiveModel}" -->`;
 
     return comment;
