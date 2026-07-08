@@ -13,18 +13,56 @@ permissions:
   issues: write
 
 jobs:
-  deploy:
-    name: Deploy Preview
+  # Authorization is based on WHO applied the preview-env label, not who
+  # authored the PR. Our PRs are opened by an automation bot whose
+  # author_association is CONTRIBUTOR, so gating on the author permanently
+  # blocked bot-authored previews. Applying a label already requires triage+
+  # access, but we additionally verify the label actor has write/admin on the
+  # repo before running PR code on the self-hosted runner. Fail-closed.
+  authorize:
+    name: Authorize label actor
+    runs-on: ubuntu-latest
     if: >-
-      github.event.pull_request.state == 'open' &&
       github.event.action == 'labeled' &&
       github.event.label.name == 'preview-env' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (
-        github.event.pull_request.author_association == 'OWNER' ||
-        github.event.pull_request.author_association == 'MEMBER' ||
-        github.event.pull_request.author_association == 'COLLABORATOR'
-      )
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+    steps:
+      - name: Verify label actor has write access
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          http_status="$(curl -sS -o perm.json -w '%{http_code}' \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission")"
+          if [ "$http_status" != "200" ]; then
+            echo "::error::Could not resolve repository permission for '$ACTOR' (HTTP $http_status). Denying preview deploy."
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          permission="$(jq -r '.permission' perm.json)"
+          echo "Label actor '$ACTOR' has repository permission: $permission"
+          if [ "$permission" = "admin" ] || [ "$permission" = "write" ]; then
+            echo "approved=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::'$ACTOR' lacks write access (permission: $permission). Denying preview deploy."
+            echo "approved=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: Deploy Preview
+    needs: authorize
+    if: needs.authorize.outputs.approved == 'true'
     # The propr label must target the single host that owns preview Docker stacks.
     runs-on: [self-hosted, linux, x64, propr]
     timeout-minutes: 45
@@ -204,13 +242,12 @@ jobs:
 
   teardown:
     name: Teardown Preview
+    # No actor gate here: teardown only checks out the trusted default branch
+    # and runs teardown-pr.sh with the PR number (no PR-authored code executes).
+    # A 'closed' event's sender is often the automation bot merging its own PR,
+    # so gating on actor permission here would skip cleanup and leak previews.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      (
-        github.event.pull_request.author_association == 'OWNER' ||
-        github.event.pull_request.author_association == 'MEMBER' ||
-        github.event.pull_request.author_association == 'COLLABORATOR'
-      ) &&
       (
         (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview-env')) ||
         (github.event.action == 'unlabeled' && github.event.label.name == 'preview-env')
