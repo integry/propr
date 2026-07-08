@@ -118,15 +118,16 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
       })();
 
   return (
-    <div className={`flex items-center gap-3 px-4 py-2 bg-white border-b border-slate-200 ${className}`}>
+    <div className={`flex min-w-0 flex-col gap-2 bg-white px-3 py-2 sm:flex-row sm:items-center sm:gap-3 sm:px-4 border-b border-slate-200 ${className}`}>
+      {/* Small screens get a wrapped two-line control bar so long model names cannot widen the panel. */}
       {/* Model Selector */}
-      <div className="flex items-center gap-1.5">
-        <Cpu className="w-3.5 h-3.5 text-gray-400" />
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Cpu className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
         <select
           value={normalizedSelectedModel}
           onChange={(e) => handleModelChange(e.target.value)}
           disabled={disabled}
-          className={`text-xs bg-transparent border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500 ${
+          className={`min-w-0 flex-1 rounded border border-gray-200 bg-transparent px-2 py-1 text-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 sm:flex-none ${
             disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-gray-300'
           }`}
         >
@@ -141,26 +142,26 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
           ))}
         </select>
         {selectedModelInfo && (
-          <span className="text-[10px] text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">
+          <span className="flex-shrink-0 rounded bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-400">
             {selectedModelInfo.contextWindow}
           </span>
         )}
       </div>
 
       {/* Divider */}
-      <div className="w-px h-4 bg-gray-200" />
+      <div className="hidden h-4 w-px bg-gray-200 sm:block" />
 
       {/* Context Level Selector */}
-      <div className="flex items-center gap-1.5">
-        <Layers className="w-3.5 h-3.5 text-gray-400" />
-        <div className="flex items-center gap-0.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Layers className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
+        <div className="flex min-w-0 flex-wrap items-center gap-0.5">
           {CONTEXT_LEVELS.map((level) => (
             <button
               key={level.type}
               onClick={() => onContextLevelChange(level.value)}
               disabled={disabled}
               title={level.description}
-              className={`text-[10px] px-2 py-1 rounded transition-all ${
+              className={`rounded px-2 py-1 text-[10px] transition-all ${
                 disabled
                   ? 'opacity-50 cursor-not-allowed'
                   : currentLevelType === level.type

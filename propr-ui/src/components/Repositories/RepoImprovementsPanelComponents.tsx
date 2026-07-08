@@ -146,12 +146,12 @@ export const ReferenceRepoSelector: React.FC<ReferenceRepoSelectorProps> = ({
             ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:border-gray-300 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent'}
           `}
         >
-          <span className={selectedReferenceRepo ? 'text-gray-700' : 'text-gray-400'}>
+          <span className={`min-w-0 truncate ${selectedReferenceRepo ? 'text-gray-700' : 'text-gray-400'}`}>
             {selectedReferenceRepo ? displayName : 'Select repository'}
           </span>
           <ChevronDown
             size={16}
-            className={`text-gray-400 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}
+            className={`flex-shrink-0 text-gray-400 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}
           />
         </button>
 
@@ -173,9 +173,9 @@ export const ReferenceRepoSelector: React.FC<ReferenceRepoSelectorProps> = ({
                   ${selectedReferenceRepo === repo.id ? 'text-teal-600 bg-teal-50' : 'text-gray-700'}
                 `}
               >
-                <span>{repo.alias || repo.name}</span>
+                <span className="min-w-0 truncate">{repo.alias || repo.name}</span>
                 {selectedReferenceRepo === repo.id && (
-                  <Check size={14} className="text-teal-500" />
+                  <Check size={14} className="flex-shrink-0 text-teal-500" />
                 )}
               </button>
             ))}
@@ -199,7 +199,7 @@ export const GenerateButton: React.FC<GenerateButtonProps> = ({
   showHint,
   onClick,
 }) => (
-  <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 bg-slate-100">
+  <div className="flex-shrink-0 border-t border-slate-200 bg-slate-100 px-3 py-3 sm:px-4">
     <button
       onClick={onClick}
       disabled={!canGenerate}
@@ -244,10 +244,10 @@ export const CreatePlanButton: React.FC<CreatePlanButtonProps> = ({
   <button
     onClick={onClick}
     disabled={disabled}
-    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-teal-600 text-white hover:bg-teal-700 shadow-sm disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed"
+    className="flex min-h-11 w-full min-w-0 items-center justify-center gap-2 rounded-lg bg-teal-600 px-4 py-3 text-sm font-semibold leading-tight text-white shadow-sm transition-all hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 sm:flex-1"
   >
-    <ArrowRight size={16} />
-    <span>Create Plan ({selectedCount})</span>
+    <ArrowRight size={16} className="flex-shrink-0" />
+    <span className="min-w-0 text-center">Create Plan ({selectedCount})</span>
   </button>
 );
 
@@ -267,14 +267,14 @@ export const SaveToTodosButton: React.FC<SaveToTodosButtonProps> = ({
   <button
     onClick={onClick}
     disabled={isLoading || disabled}
-    className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all bg-slate-600 text-white hover:bg-slate-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+    className="flex min-h-11 w-full min-w-0 items-center justify-center gap-2 rounded-lg bg-slate-600 px-4 py-3 text-sm font-semibold leading-tight text-white shadow-sm transition-all hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-1"
   >
     {isLoading ? (
-      <Loader2 size={16} className="animate-spin" />
+      <Loader2 size={16} className="flex-shrink-0 animate-spin" />
     ) : (
-      <ListTodo size={16} />
+      <ListTodo size={16} className="flex-shrink-0" />
     )}
-    <span>{isLoading ? 'Saving...' : `Save ${selectedCount} to To-Dos`}</span>
+    <span className="min-w-0 text-center">{isLoading ? 'Saving...' : `Save ${selectedCount} to To-Dos`}</span>
   </button>
 );
 
@@ -293,8 +293,9 @@ export const SelectedSuggestionsFooter: React.FC<SelectedSuggestionsFooterProps>
   isSavingTodos = false,
   disabled = false,
 }) => (
-  <div className="flex-shrink-0 px-4 py-3 border-t border-slate-200 bg-slate-100">
-    <div className="flex gap-2">
+  <div className="flex-shrink-0 border-t border-slate-200 bg-slate-100 px-3 py-3 sm:px-4">
+    {/* Stack selected-suggestion actions on mobile for reliable tap targets; restore the compact row at sm+. */}
+    <div className="flex flex-col gap-2 sm:flex-row">
       <CreatePlanButton selectedCount={selectedCount} onClick={onCreatePlan} disabled={disabled} />
       <SaveToTodosButton selectedCount={selectedCount} onClick={onSaveToTodos} isLoading={isSavingTodos} disabled={disabled} />
     </div>
