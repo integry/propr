@@ -11,6 +11,10 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  # PR comments post to /issues/{n}/comments, but for the GITHUB_TOKEN
+  # (a fine-grained token) that endpoint requires the pull-requests scope
+  # when {n} is a pull request; issues:write alone returns 403.
+  pull-requests: write
 
 jobs:
   # Authorization is based on WHO applied the preview-env label, not who
