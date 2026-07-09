@@ -39,12 +39,12 @@ const formatDuration = (ms: number): string => {
 
 /** Header component for the improvements panel - sits directly on tinted background */
 const ImprovementsPanelHeader: React.FC<{ repositoryName?: string }> = ({ repositoryName }) => (
-  <div className="flex items-center gap-3">
+  <div className="flex min-w-0 items-center gap-3">
     <div className="w-8 h-8 rounded-lg bg-teal-100 flex items-center justify-center flex-shrink-0">
       <Sparkles size={16} className="text-teal-600" />
     </div>
-    <div>
-      <h3 className="text-sm font-semibold text-slate-800">
+    <div className="min-w-0">
+      <h3 className="truncate text-sm font-semibold text-slate-800">
         {repositoryName ? `Improve ${repositoryName}` : 'Repository Improvements'}
       </h3>
       <p className="text-xs text-slate-500">
@@ -199,7 +199,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   }, [disabled, repositoryId, selectedSuggestions, onTodosSaved]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-50">
+    <div className="flex h-full min-w-0 flex-col bg-slate-50">
       {/* Model and Context Level Selector */}
       <ModelContextSelector
         selectedModel={selectedModel}
@@ -210,12 +210,13 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
       />
 
       <div
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-6"
+        className="flex-1 overflow-y-auto px-3 py-3 space-y-4 sm:px-4 sm:py-4 sm:space-y-6"
         style={{
           scrollbarWidth: 'thin',
           scrollbarColor: '#d1d5db transparent',
         }}
       >
+        {/* Mobile spacing is tighter to preserve readable controls without changing the desktop rhythm. */}
         {/* Header */}
         <ImprovementsPanelHeader repositoryName={repositoryName} />
 
