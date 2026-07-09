@@ -14,8 +14,9 @@
 #                         /usr/src/app/data/propr.sqlite as a local/container fallback.
 #   PR_SOURCE_DIR       - Path to the pre-checked-out PR source tree.
 #   PR_HEAD_SHA         - Optional PR head SHA for deployment logs.
-#   PR_HAS_DEMO_LABEL   - Deprecated for CI previews; sanitized PR previews run
-#                         in PROPR_DEMO_MODE because secrets are not copied.
+#   PR_HAS_DEMO_LABEL   - Set to "true" to force PROPR_DEMO_MODE (read-only,
+#                         synthetic user). Previews otherwise run with real
+#                         GitHub login via re-injected OAuth/session keys.
 #
 
 set -e
@@ -175,6 +176,37 @@ write_sanitized_preview_env() {
     mv "$tmp_file" "$preview_env_file"
 }
 
+# Re-inject a small allowlist of auth keys (stripped by sanitization) from the
+# staging env into the preview env, copying each value verbatim. Used to restore
+# real GitHub login and prod session sharing for maintainer-gated previews.
+# Only call with non-secret-bearing key names you have deliberately vetted.
+reinject_env_keys() {
+    source_env_file=$1
+    dest_env_file=$2
+    shift 2
+
+    if [ -z "$source_env_file" ] || [ ! -f "$source_env_file" ]; then
+        return 0
+    fi
+
+    for key in "$@"; do
+        line=$(grep -E "^${key}=" "$source_env_file" 2>/dev/null | head -n1 || true)
+        if [ -z "$line" ]; then
+            echo "Warning: auth key '$key' not found in staging env; skipping"
+            continue
+        fi
+        # Drop any pre-existing entry, then append the staging value verbatim
+        # (avoids sed so secret values with special characters are preserved).
+        if [ -f "$dest_env_file" ] && grep -q "^${key}=" "$dest_env_file"; then
+            tmp_file="${dest_env_file}.tmp.$$"
+            grep -v "^${key}=" "$dest_env_file" > "$tmp_file" || true
+            mv "$tmp_file" "$dest_env_file"
+        fi
+        printf '%s\n' "$line" >> "$dest_env_file"
+        echo "Re-injected auth key: $key"
+    done
+}
+
 # 3. Determine the env file to use (staging .env provides base config)
 # In GitHub Actions, STAGING_ENV_FILE is an explicit host path validated by the
 # trusted workflow. The /usr/src/app fallback is only for local/container runs.
@@ -211,15 +243,21 @@ else
 fi
 
 # Docker Compose env_file entries are relative to the PR checkout, but the PR
-# checkout is also the Docker build context. Never copy staging secrets or PEM
-# files there; generate only a sanitized preview .env for compose compatibility.
+# checkout is also the Docker build context. We start from a sanitized preview
+# .env (no secrets), then re-inject ONLY the auth keys needed for real GitHub
+# login and prod session sharing. All other secrets (webhook/app/system
+# secrets, tokens, DB password, PEM files) stay stripped. This deliberately
+# places OAuth + session secrets into PR-controlled source, so access is gated:
+# the pr-preview.yml authorize job restricts deploys to same-repo PRs approved
+# by a write/admin collaborator applying the preview-env label; forks are blocked.
 PREVIEW_ENV_FILE="$REPO_ROOT/.env"
 if [ -n "${PR_SOURCE_DIR:-}" ]; then
     write_sanitized_preview_env "$ENV_FILE" "$PREVIEW_ENV_FILE"
-    set_env_var "$PREVIEW_ENV_FILE" "PROPR_DEMO_MODE" "true"
+    reinject_env_keys "$ENV_FILE" "$PREVIEW_ENV_FILE" \
+        GH_OAUTH_CLIENT_ID GH_OAUTH_CLIENT_SECRET GH_OAUTH_CALLBACK_URL SESSION_SECRET
     set_env_var "$PREVIEW_ENV_FILE" "ENABLE_GITHUB_WEBHOOKS" "false"
     set_env_var "$PREVIEW_ENV_FILE" "ENABLE_BEARER_AUTH" "false"
-    echo "Sanitized PR preview env uses demo mode with webhooks and bearer auth disabled"
+    echo "Preview env re-injects OAuth/session keys for real login; webhooks and bearer auth disabled"
 elif [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$PREVIEW_ENV_FILE" ]; then
     cp "$ENV_FILE" "$PREVIEW_ENV_FILE"
 fi
