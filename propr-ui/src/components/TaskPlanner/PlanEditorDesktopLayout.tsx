@@ -49,6 +49,7 @@ interface PlanEditorPanelsProps {
   draftId: string;
   chatHistory?: ChatMessage[];
   refinementProgress: PlanRefinementState['refinementProgress'];
+  defaultModel?: string | null;
   onTaskChange: PlanRefinementState['updateTask'];
   onDeleteTask: (taskId: string) => void;
   onReorderTasks: PlanRefinementState['reorderTasks'];
@@ -63,6 +64,7 @@ const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
   draftId,
   chatHistory,
   refinementProgress,
+  defaultModel,
   onTaskChange,
   onDeleteTask,
   onReorderTasks,
@@ -96,6 +98,7 @@ const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
             initialMessages={chatHistory}
             onMessagesChange={onChatMessagesChange}
             refinementProgress={refinementProgress}
+            defaultModel={defaultModel}
             onStop={onStopRefinement}
           />
         </div>
@@ -228,6 +231,7 @@ export interface PlanEditorDesktopLayoutProps {
   draftId: string;
   chatHistory?: ChatMessage[];
   refinementProgress: PlanRefinementState['refinementProgress'];
+  defaultModel?: string | null;
   showBackToSetupDialog: boolean;
   showDeleteDialog: boolean;
   onDelete: () => void;
@@ -267,6 +271,7 @@ export const PlanEditorDesktopLayout: React.FC<PlanEditorDesktopLayoutProps> = (
   draftId,
   chatHistory,
   refinementProgress,
+  defaultModel,
   showBackToSetupDialog,
   showDeleteDialog,
   onDelete,
@@ -318,6 +323,7 @@ export const PlanEditorDesktopLayout: React.FC<PlanEditorDesktopLayoutProps> = (
       draftId={draftId}
       chatHistory={chatHistory}
       refinementProgress={refinementProgress}
+      defaultModel={defaultModel}
       onTaskChange={onTaskChange}
       onDeleteTask={onDeleteTask}
       onReorderTasks={onReorderTasks}

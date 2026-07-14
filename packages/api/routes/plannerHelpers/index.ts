@@ -10,10 +10,13 @@ export * from './types.js';
 export { checkDbAndAuth, withAuthCheck, checkAuth, sendCheckError, verifyDraftOwnership, getRepoAuthToken } from './auth.js';
 
 // Validation utilities
-export { VALID_GRANULARITIES, validateContextRepositories, validatePreviewInput } from './validation.js';
+export { VALID_GRANULARITIES, validateContextRepositories, validatePreviewInput, validateRefineInput } from './validation.js';
 
 // Repository setup utilities
 export { setupRepoContext, getRefineRepoContext } from './repoSetup.js';
+
+// Background refinement
+export { runBackgroundRefinement } from './refineBackground.js';
 
 // Utility functions
 export { updateDraftContextConfig, runBackgroundGeneration, scoreDraftsBySearch, buildIssueSummaries, parseDraftJsonFields } from './utils.js';

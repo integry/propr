@@ -153,11 +153,13 @@ export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[
   await handleApiResponse(response);
 };
 
-export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string, signal?: AbortSignal): Promise<RefineResponse> => {
+export const refinePlan = async (draftId: string, currentPlan: PlanTask[], instruction: string, signal?: AbortSignal, generationModel?: string): Promise<RefineResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/planner/refine`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draftId, plan: currentPlan, instruction }),
+    // Send the chosen model when the user overrides it; the server otherwise
+    // refines with the model the plan was generated with.
+    body: JSON.stringify({ draftId, plan: currentPlan, instruction, ...(generationModel ? { generationModel } : {}) }),
     credentials: 'include',
     signal
   });
