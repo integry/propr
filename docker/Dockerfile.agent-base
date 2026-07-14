@@ -14,29 +14,32 @@
 FROM node:20-slim
 
 # System dependencies:
+#   GNU coreutils/env is provided by the Debian base as an Essential package.
 #   git, curl, ca-certificates — source + network
 #   sudo                        — entrypoints fix ownership before dropping privs
 #   iptables                    — optional firewall init
 #   procps                      — ps/top used by some CLI internals
+#   build-essential             — native addon/tool compilation
 #   gh                          — GitHub CLI command from cli.github.com apt repo
 #   tini                        — PID 1 for clean signal handling
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
+        ca-certificates=20230311+deb12u1 \
+        curl=7.88.1-10+deb12u15 \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash \
-        git \
-        sudo \
-        iptables \
-        procps \
-        gh \
-        tini \
+        bash=5.2.15-2+b13 \
+        build-essential=12.9 \
+        git=1:2.39.5-0+deb12u3 \
+        gh=2.96.0 \
+        iptables=1.8.9-2 \
+        procps=2:4.0.2-3 \
+        sudo=1.9.13p3-1+deb12u4 \
+        tini=0.19.0-1+b3 \
     && rm -rf /var/lib/apt/lists/*
 
 # node:20-slim already has a `node` user (UID 1000). Grant it passwordless sudo

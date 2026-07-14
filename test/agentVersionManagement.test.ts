@@ -79,14 +79,16 @@ describe('agent version management', () => {
         assert.match(agentBaseDockerfile, /^FROM node:20-slim$/m);
         assert.match(agentBaseDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
         assert.match(agentBaseDockerfile, /signed-by=\/etc\/apt\/keyrings\/githubcli-archive-keyring\.gpg/);
-        assert.match(agentBaseDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgh\b[\s\S]*\btini\b/);
+        assert.match(agentBaseDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bca-certificates=20230311\+deb12u1\b[\s\S]*\bcurl=7\.88\.1-10\+deb12u15\b/);
+        assert.match(agentBaseDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bbuild-essential=12\.9\b[\s\S]*\bgh=2\.96\.0\b[\s\S]*\btini=0\.19\.0-1\+b3\b/);
         assert.match(antigravityDockerfile, /^FROM node:20-slim$/m);
         assert.match(antigravityDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
         assert.match(antigravityDockerfile, /signed-by=\/etc\/apt\/keyrings\/githubcli-archive-keyring\.gpg/);
-        assert.match(antigravityDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgh\b/);
-        assert.match(codexDockerfile, /apt-get install -y --no-install-recommends ripgrep/);
-        assert.match(opencodeDockerfile, /apt-get install -y --no-install-recommends gosu/);
-        assert.match(vibeDockerfile, /apt-get install -y --no-install-recommends bash python3 sudo gosu/);
+        assert.match(antigravityDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bca-certificates=20230311\+deb12u1\b[\s\S]*\bcurl=7\.88\.1-10\+deb12u15\b/);
+        assert.match(antigravityDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bbuild-essential=12\.9\b[\s\S]*\bgh=2\.96\.0\b/);
+        assert.match(codexDockerfile, /apt-get install -y --no-install-recommends ripgrep=13\.0\.0-4\+b2/);
+        assert.match(opencodeDockerfile, /apt-get install -y --no-install-recommends gosu=1\.14-1\+b10/);
+        assert.match(vibeDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bbash=5\.2\.15-2\+b13\b[\s\S]*\bgosu=1\.14-1\+b10\b[\s\S]*\bpython3=3\.11\.2-1\+b1\b[\s\S]*\bsudo=1\.9\.13p3-1\+deb12u4\b/);
 
         for (const dockerfile of [agentBaseDockerfile, antigravityDockerfile, codexDockerfile, opencodeDockerfile, vibeDockerfile]) {
             assert.doesNotMatch(dockerfile, /\bapk add\b/);

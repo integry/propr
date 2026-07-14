@@ -56,8 +56,8 @@ Bundled third-party components
    Upstream:   https://github.com/cli/cli
    Installed from the official distribution at cli.github.com.
 
-6. Debian Linux base image and system packages (bash, git, curl,
-   ca-certificates, sudo, iptables, procps, tini)
+6. Debian Linux base image and system packages (bash, build-essential, git,
+   curl, ca-certificates, sudo, iptables, procps, tini, ripgrep, gosu, python3)
    Various open-source licenses. See the Debian package tracker for
    per-package details: https://tracker.debian.org/
 

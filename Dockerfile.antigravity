@@ -9,20 +9,21 @@ ARG CLI_VERSION=latest
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
+        ca-certificates=20230311+deb12u1 \
+        curl=7.88.1-10+deb12u15 \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash \
-        gh \
-        git \
-        iptables \
-        procps \
-        sudo \
+        bash=5.2.15-2+b13 \
+        build-essential=12.9 \
+        gh=2.96.0 \
+        git=1:2.39.5-0+deb12u3 \
+        iptables=1.8.9-2 \
+        procps=2:4.0.2-3 \
+        sudo=1.9.13p3-1+deb12u4 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
