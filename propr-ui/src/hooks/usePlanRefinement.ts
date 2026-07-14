@@ -73,11 +73,19 @@ const parsePlanJson = (planJson: unknown): PlanTask[] | null => {
 /**
  * Safely parses refinement result, handling both string and object inputs.
  */
-const parseRefinementResult = (result: unknown): { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined => {
+type ParsedRefinementResult = {
+  summary?: string;
+  action?: 'modified' | 'answered' | 'both' | 'cancelled';
+  status?: 'in_progress' | 'completed' | 'failed';
+  error?: string;
+  model?: string;
+};
+
+const parseRefinementResult = (result: unknown): ParsedRefinementResult | undefined => {
   if (typeof result === 'string') {
     try { return JSON.parse(result); } catch { return undefined; }
   }
-  return result as { summary?: string; action?: 'modified' | 'answered' | 'both' | 'cancelled' } | undefined;
+  return result as ParsedRefinementResult | undefined;
 };
 
 export interface RefinementProgress {
@@ -89,6 +97,8 @@ export interface RefinementProgress {
   estimatedDuration?: number;
   /** Whether the estimate is based on historical data */
   isHistoricalEstimate?: boolean;
+  /** Model being used for the in-progress refinement, for display. */
+  model?: string;
 }
 
 interface UsePlanRefinementResult {
@@ -99,7 +109,7 @@ interface UsePlanRefinementResult {
   deleteTask: (taskId: string) => DeletedTask | null;
   restoreTask: (deleted: DeletedTask) => void;
   reorderTasks: (activeId: string, overId: string) => void;
-  handleRefine: (instruction: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
+  handleRefine: (instruction: string, signal?: AbortSignal, generationModel?: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -241,7 +251,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     updatePlan(newPlan, 'user');
   }, [currentPlan, updatePlan]);
 
-  const handleRefine = useCallback(async (instruction: string, signal?: AbortSignal): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }> => {
+  const handleRefine = useCallback(async (instruction: string, signal?: AbortSignal, generationModel?: string): Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }> => {
     const cancelledResult = { success: false, message: 'Refinement cancelled by user.', cancelled: true };
 
     const checkAborted = (): boolean => signal?.aborted ?? false;
@@ -251,6 +261,14 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
       if (refinementResult?.action === 'cancelled') {
         return { success: false, message: refinementResult.summary || 'Refinement cancelled by user.', cancelled: true };
+      }
+
+      // A failed refinement leaves plan_json unchanged, so we must detect the
+      // failure explicitly and show its error — otherwise the old plan parses
+      // fine and we'd falsely report success.
+      if (refinementResult?.status === 'failed' || refinementResult?.error) {
+        setRefinementProgress({ isRefining: false });
+        return { success: false, message: refinementResult.error || 'Refinement failed. Please try again.' };
       }
 
       const planJson = parsePlanJson(draft.plan_json);
@@ -278,7 +296,8 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
           isRefining: true,
           startedAt: refinementResult.startedAt,
           estimatedDuration: refinementResult.estimatedDuration,
-          isHistoricalEstimate: refinementResult.isHistoricalEstimate
+          isHistoricalEstimate: refinementResult.isHistoricalEstimate,
+          model: refinementResult.model
         });
         return true;
       }
@@ -292,7 +311,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
       setRefinementProgress({ isRefining: true });
 
-      await refinePlan(draftId, currentPlan, instruction, signal);
+      await refinePlan(draftId, currentPlan, instruction, signal, generationModel);
 
       const maxAttempts = 300;
       let hasUpdatedProgress = false;
