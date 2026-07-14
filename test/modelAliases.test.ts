@@ -171,6 +171,17 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         assert.strictEqual(result.model, 'gpt-5.4', 'Should resolve to correct codex model');
     });
 
+    await t.test('static Claude aliases resolve to Claude even when default agent is Codex', async () => {
+        registry.getDefaultAgent = () => mockAgentConfigs[2] as any;
+        try {
+            const result = await resolveLlmLabel('fable');
+            assert.strictEqual(result.agentAlias, 'claude', 'Should route Claude alias to Claude agent');
+            assert.strictEqual(result.model, 'claude-fable-5', 'Should resolve fable alias to Claude Fable');
+        } finally {
+            registry.getDefaultAgent = () => mockAgentConfigs[0] as any;
+        }
+    });
+
     await t.test('Step 3: resolves exact githubLabel for OpenCode models', async () => {
         const result = await resolveLlmLabel('opencode-minimax-m3-free');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
@@ -697,6 +708,18 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         assert.strictEqual(results[0].agentAlias, 'claude');
         assert.strictEqual(results[0].model, 'claude-sonnet-4-6', 'Should use default Claude model');
         assert.ok(results[0].displayLabel, 'Should have a display label');
+    });
+
+    await t.test('/review fable resolves to Claude Fable even when default agent is Codex', async () => {
+        registry.getDefaultAgent = () => mockAgentConfigs[2] as any;
+        try {
+            const results = await resolveReviewModels(['fable']);
+            assert.strictEqual(results.length, 1, 'Should resolve to exactly one assignment');
+            assert.strictEqual(results[0].agentAlias, 'claude');
+            assert.strictEqual(results[0].model, 'claude-fable-5');
+        } finally {
+            registry.getDefaultAgent = () => mockAgentConfigs[0] as any;
+        }
     });
 
     await t.test('/review with two distinct models resolves to two assignments', async () => {
