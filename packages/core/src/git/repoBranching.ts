@@ -195,6 +195,18 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
         return { rebased: true, commitHash };
     };
 
+    const performPushWithRebaseFallback = async (token: string | undefined): Promise<PushBranchResult | undefined> => {
+        try {
+            await performPush(token);
+            return undefined;
+        } catch (pushError) {
+            if (isNonFastForwardPushError(pushError) && rebaseOnNonFastForward) {
+                return await rebaseOntoRemoteAndPush(token, pushError);
+            }
+            throw pushError;
+        }
+    };
+
     try {
         await performPush(authToken);
         logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully');
@@ -214,14 +226,8 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
             try {
                 const freshOctokit = await getAuthenticatedOctokit();
                 const freshAuth = await (freshOctokit as unknown as { auth: (opts: { type: string }) => Promise<InstallationAuth> }).auth({ type: "installation" });
-                try {
-                    await performPush(freshAuth.token);
-                } catch (retryError) {
-                    if (isNonFastForwardPushError(retryError) && rebaseOnNonFastForward) {
-                        return await rebaseOntoRemoteAndPush(freshAuth.token, retryError);
-                    }
-                    throw retryError;
-                }
+                const rebasedResult = await performPushWithRebaseFallback(freshAuth.token);
+                if (rebasedResult) return rebasedResult;
                 logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully after token refresh');
                 return { rebased: false, commitHash: await getHeadCommitHash(git) };
             } catch (retryError) {
