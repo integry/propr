@@ -11,7 +11,9 @@ import {
   toProprOpenCodeModelId,
   buildDynamicLlmLabel,
   getIssueQueue,
-  generateCorrelationId
+  generateCorrelationId,
+  withRetry,
+  retryConfigs
 } from '@propr/core';
 
 export interface ImplementIssueContext {
@@ -41,6 +43,7 @@ export interface EpicPRParams {
   repo: string;
   planName: string;
   issueNumber: number;
+  baseBranch?: string;
   correlationId: string;
   labelLogger: ReturnType<typeof logger.withCorrelation>;
 }
@@ -241,25 +244,36 @@ export async function handleSingleAgentImplementation(params: SingleAgentParams)
   };
 }
 
-export async function handleEpicPRCreation(params: EpicPRParams): Promise<string | null> {
-  const { owner, repo, planName, issueNumber, correlationId, labelLogger } = params;
+export async function handleEpicPRCreation(params: EpicPRParams): Promise<string> {
+  const { owner, repo, planName, issueNumber, baseBranch, correlationId, labelLogger } = params;
 
-  labelLogger.info({ owner, repo, planName, issueNumber }, 'Creating Epic PR for implementation');
-  const epicResult = await ensureEpicPR({
-    owner,
-    repoName: repo,
-    firstIssueId: issueNumber,
-    planName,
-    correlationId
-  });
+  labelLogger.info({ owner, repo, planName, issueNumber, baseBranch }, 'Creating Epic PR for implementation');
 
-  if (epicResult.success && epicResult.labelName) {
-    labelLogger.info({ epicLabelName: epicResult.labelName, prNumber: epicResult.prNumber }, 'Epic PR created successfully');
-    return epicResult.labelName;
-  }
+  // Retry on failure and throw if it ultimately fails. We must NOT silently
+  // continue without an epic label: doing so makes the child PR target the
+  // default branch with auto-merge enabled, sending changes straight to the
+  // base branch instead of aggregating them under the epic.
+  const epicResult = await withRetry(
+    async () => {
+      const result = await ensureEpicPR({
+        owner,
+        repoName: repo,
+        firstIssueId: issueNumber,
+        planName,
+        baseBranch,
+        correlationId
+      });
+      if (!result.success || !result.labelName) {
+        throw new Error(result.error || 'Epic PR creation did not return a label');
+      }
+      return result;
+    },
+    retryConfigs.githubApi,
+    `ensure_epic_pr_${owner}_${repo}_${issueNumber}`
+  );
 
-  labelLogger.warn({ error: epicResult.error }, 'Failed to create Epic PR, continuing without epic labels');
-  return null;
+  labelLogger.info({ epicLabelName: epicResult.labelName, prNumber: epicResult.prNumber }, 'Epic PR created successfully');
+  return epicResult.labelName!;
 }
 
 export interface GetOrCreateEpicLabelParams {
@@ -287,12 +301,18 @@ export async function getOrCreateEpicLabel(params: GetOrCreateEpicLabelParams): 
     return contextConfig.epicLabel;
   }
 
-  // Create new epic PR and label
+  // Create new epic PR and label. Fork from the draft's configured base branch
+  // when set; ensureEpicPR falls back to the repository's actual default branch
+  // (not a hardcoded 'main') when it isn't.
+  const configuredBaseBranch = typeof contextConfig?.baseBranch === 'string' && contextConfig.baseBranch
+    ? contextConfig.baseBranch
+    : undefined;
   const epicLabelName = await handleEpicPRCreation({
     owner,
     repo,
     planName,
     issueNumber: firstIssueNumber,
+    baseBranch: configuredBaseBranch,
     correlationId,
     labelLogger
   });
