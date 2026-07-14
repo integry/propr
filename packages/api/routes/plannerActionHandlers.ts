@@ -28,6 +28,22 @@ import {
   GenerateRequestBody
 } from './plannerHelpers/index.js';
 
+/**
+ * Extract the model a plan was generated with from a draft's context_config
+ * (stored as JSON text in SQLite or an object elsewhere). Returns undefined when
+ * absent/unparseable so callers fall back to the planner generation setting.
+ */
+function parseDraftGenerationModel(contextConfig: unknown): string | undefined {
+  if (!contextConfig) return undefined;
+  try {
+    const config = typeof contextConfig === 'string' ? JSON.parse(contextConfig) : contextConfig;
+    const model = (config as { generationModel?: unknown })?.generationModel;
+    return typeof model === 'string' && model.trim() ? model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createGenerateHandler(db: Knex) {
   return async function generate(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
@@ -101,10 +117,11 @@ export function createRefineHandler(db: Knex) {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, plan: currentPlan, instruction } = req.body;
+    const { draftId, plan: currentPlan, instruction, generationModel: requestedModel } = req.body;
     if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
     if (!currentPlan || !Array.isArray(currentPlan)) { res.status(400).json({ error: 'currentPlan array is required' }); return; }
     if (!instruction || typeof instruction !== 'string') { res.status(400).json({ error: 'instruction is required' }); return; }
+    if (requestedModel !== undefined && typeof requestedModel !== 'string') { res.status(400).json({ error: 'generationModel must be a string' }); return; }
 
     const correlationId = generateCorrelationId();
 
@@ -115,8 +132,13 @@ export function createRefineHandler(db: Knex) {
 
       // Calculate estimation early so we can store it before the LLM call starts
       // Fetch original context to include in the token estimate (this is the bulk of the prompt)
-      const draftForContext = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
+      const draftForContext = await db('task_drafts').where({ draft_id: draftId }).select('generated_context', 'context_config').first();
       const originalContext = draftForContext?.generated_context as string | undefined;
+
+      // Refine with the model the plan was generated with (stored on the draft),
+      // overridable per-request from the UI model switcher. This keeps refinement
+      // consistent with the original plan and respects that model's input limit.
+      const draftGenerationModel = parseDraftGenerationModel(draftForContext?.context_config);
 
       // Build a close approximation of the full prompt for token estimation
       // This matches the structure in taskPlanningService.refinePlan()
@@ -129,7 +151,7 @@ export function createRefineHandler(db: Knex) {
       const estimatedInputTokens = estimateTokens(roughPrompt);
 
       const settings = await loadSettings();
-      const generationModel = settings.planner_generation_model || 'opus';
+      const generationModel = requestedModel || draftGenerationModel || settings.planner_generation_model || 'opus';
 
       const estimation = await estimateLlmDuration({
         executionType: 'plan-refinement',
@@ -145,6 +167,7 @@ export function createRefineHandler(db: Knex) {
       const initialRefinementMeta = {
         status: 'in_progress',
         startedAt,
+        model: generationModel,
         estimatedDuration: estimation.estimatedDurationMs,
         isHistoricalEstimate: estimation.isHistoricalEstimate,
         sampleCount: estimation.sampleCount
@@ -201,7 +224,8 @@ export function createRefineHandler(db: Knex) {
             githubToken: repoContext.authToken,
             correlationId,
             originalContext: originalContext || undefined,
-            draftId
+            draftId,
+            generationModel
           });
 
           // Check if aborted before saving result (race condition protection)
@@ -215,6 +239,7 @@ export function createRefineHandler(db: Knex) {
             status: 'completed',
             action: result.action,
             summary: result.summary,
+            model: result.model,
             timestamp: new Date().toISOString(),
             // Include estimation data from the LLM call
             estimatedDuration: result.estimation?.estimatedDurationMs,
@@ -237,10 +262,19 @@ export function createRefineHandler(db: Knex) {
           const errorStack = error instanceof Error ? error.stack : undefined;
           console.error(`[refine] Plan refinement failed for draft ${draftId}:`, errorMessage);
           if (errorStack) console.error(`[refine] Stack trace:`, errorStack);
-          // Only revert status to review on failure if not aborted
+          // Only revert status to review on failure if not aborted. Persist the
+          // error into refinement_result so the UI can surface it to the user
+          // instead of silently returning to review with no explanation.
           if (!(await checkAborted())) {
+            const failureMeta = {
+              status: 'failed',
+              error: errorMessage,
+              model: generationModel,
+              timestamp: new Date().toISOString()
+            };
             await db('task_drafts').where({ draft_id: draftId }).update({
               status: 'review',
+              refinement_result: JSON.stringify(failureMeta),
               updated_at: db.fn.now()
             });
           }

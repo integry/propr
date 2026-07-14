@@ -97,12 +97,20 @@ export interface RefinePlanOptions {
   originalContext?: string;
   /** Draft ID for LLM metrics tracking */
   draftId?: string;
+  /**
+   * Model to refine with. Defaults to the model the plan was generated with
+   * (passed by the caller from the draft) so refinement matches the original
+   * plan; falls back to the planner generation setting when omitted.
+   */
+  generationModel?: string;
 }
 
 export interface RefinePlanResult {
   plan: Plan;
   action: 'modified' | 'answered' | 'clarify';
   summary: string;
+  /** The model actually used to refine, so callers/UI can display it. */
+  model: string;
 }
 
 export interface RefinePlanEstimation {
