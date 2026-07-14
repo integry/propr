@@ -52,8 +52,8 @@ if [ -f ".propr/package.json" ]; then
   fi
 fi
 
-# Example for Alpine-based agent images:
-# sudo apk add --no-cache jq
+# Example for Debian-based agent images:
+# sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
 `;
 
 const PACKAGE_JSON = `{
@@ -81,7 +81,7 @@ Before each implementation execution, ProPR runs:
 \`\`\`
 
 Use \`.propr/package.json\` for npm packages that agents need while working in this repository.
-Use \`sudo apk add --no-cache <package>\` in \`setup.sh\` for Alpine system packages.
+Use guarded \`sudo apt-get update && sudo apt-get install -y --no-install-recommends <package>\` commands in \`setup.sh\` for Debian system packages.
 
 Runtime caches and installed packages should stay out of commits.
 `;
@@ -150,7 +150,7 @@ function displayInitResult(result: InitCommandResult): void {
   console.log("  cd .propr && npm install <package>");
   console.log("");
   console.log("Add system packages by editing .propr/setup.sh:");
-  console.log("  sudo apk add --no-cache <package>");
+  console.log("  sudo apt-get update && sudo apt-get install -y --no-install-recommends <package>");
 }
 
 async function runRepoScaffold(options: { force?: boolean; json?: boolean }): Promise<void> {

@@ -69,6 +69,23 @@ describe('agent version management', () => {
         assert.match(buildScript, new RegExp(`^CODEX_CLI_VERSION="\\$\\{CODEX_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.codex}\\}"$`, 'm'));
     });
 
+    test('uses Debian/glibc package management for shared agent images', () => {
+        const agentBaseDockerfile = fs.readFileSync('docker/Dockerfile.agent-base', 'utf8');
+        const codexDockerfile = fs.readFileSync('Dockerfile.codex', 'utf8');
+        const opencodeDockerfile = fs.readFileSync('Dockerfile.opencode', 'utf8');
+        const vibeDockerfile = fs.readFileSync('Dockerfile.vibe', 'utf8');
+
+        assert.match(agentBaseDockerfile, /^FROM node:20-slim$/m);
+        assert.match(agentBaseDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgh\b[\s\S]*\btini\b/);
+        assert.match(codexDockerfile, /apt-get install -y --no-install-recommends ripgrep/);
+        assert.match(opencodeDockerfile, /apt-get install -y --no-install-recommends gosu/);
+        assert.match(vibeDockerfile, /apt-get install -y --no-install-recommends bash python3 sudo gosu/);
+
+        for (const dockerfile of [agentBaseDockerfile, codexDockerfile, opencodeDockerfile, vibeDockerfile]) {
+            assert.doesNotMatch(dockerfile, /\bapk add\b/);
+        }
+    });
+
     test('returns OpenCode package tags and default version metadata', async () => {
         globalThis.fetch = (async () => new Response(JSON.stringify({
             name: 'opencode-ai',

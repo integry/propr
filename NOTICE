@@ -56,10 +56,10 @@ Bundled third-party components
    Upstream:   https://github.com/cli/cli
    Installed from the official distribution at cli.github.com.
 
-6. Alpine Linux base image and system packages (git, curl, jq, sudo,
-   docker-cli, tini, ca-certificates, iptables, procps, python3, make, g++)
-   Various open-source licenses. See the Alpine packages database for
-   per-package details: https://pkgs.alpinelinux.org/
+6. Debian Linux base image and system packages (bash, git, curl,
+   ca-certificates, sudo, iptables, procps, coreutils, gh, tini)
+   Various open-source licenses. See the Debian package tracker for
+   per-package details: https://tracker.debian.org/
 
 7. Node.js 20 runtime
    License:    MIT (Node.js itself) plus various licenses for bundled

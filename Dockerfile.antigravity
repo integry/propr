@@ -1,8 +1,7 @@
 # Antigravity CLI agent image.
 #
-# Antigravity's installer currently publishes a linux_amd64 manifest for glibc
-# but not linux_amd64_musl, so this image uses Debian slim instead of the shared
-# Alpine agent base used by the other agent images.
+# Antigravity uses Debian slim, matching the shared glibc-based agent runtime
+# family while keeping its installer-specific image build.
 
 FROM node:20-slim
 

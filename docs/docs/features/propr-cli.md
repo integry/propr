@@ -118,7 +118,7 @@ Configuration is stored in `~/.propr/config.json`.
 
 ## Repository Setup Files
 
-Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution — edit it to install task-specific tools (for example `sudo apk add --no-cache jq`).
+Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution — edit it to install task-specific tools (for example `sudo apt-get update && sudo apt-get install -y --no-install-recommends jq`).
 
 ## Plans
 

@@ -478,10 +478,11 @@ describe('VibeAgent Docker args', () => {
         assert.doesNotMatch(script, /sudo -E -u node -H/);
     });
 
-    test('Vibe image installs su-exec for no-new-privileges user switching', () => {
+    test('Vibe image provides a su-exec-compatible helper for no-new-privileges user switching', () => {
         const dockerfile = fs.readFileSync(path.resolve('Dockerfile.vibe'), 'utf8');
 
-        assert.match(dockerfile, /apk add --no-cache[^\n]*su-exec/);
+        assert.match(dockerfile, /apt-get install -y --no-install-recommends[^\n]*gosu/);
+        assert.match(dockerfile, /ln -sf "\$\(command -v gosu\)" \/usr\/local\/bin\/su-exec/);
     });
 
     test('propagates Mistral API key through the explicit credential path', () => {

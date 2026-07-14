@@ -105,7 +105,7 @@ propr init
 cd .propr && npm install <package>
 ```
 
-The generated `.propr/setup.sh` runs before each implementation execution. Edit it to install system tools with commands such as `sudo apk add --no-cache jq`.
+The generated `.propr/setup.sh` runs before each implementation execution. Edit it to install system tools with commands such as `sudo apt-get update && sudo apt-get install -y --no-install-recommends jq`.
 
 ### Authentication
 

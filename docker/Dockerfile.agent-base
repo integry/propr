@@ -5,13 +5,13 @@
 # Each concrete agent image extends this with one `npm install -g` and its
 # own entrypoint.
 #
-# Alpine (musl) has been verified to boot the supported CLIs with coreutils
-# providing GNU env. See git history for the empirical test.
+# Debian slim provides glibc compatibility for common user-installed tooling,
+# prebuilt binaries, native npm addons, Python wheels, and release-binary CLIs.
 #
 # Build:
 #   docker build -f docker/Dockerfile.agent-base -t propr/agent-base .
 
-FROM node:20-alpine
+FROM node:20-slim
 
 # System dependencies:
 #   git, curl, ca-certificates — source + network
@@ -20,21 +20,23 @@ FROM node:20-alpine
 #   procps                      — ps/top used by some CLI internals
 #   coreutils                   — GNU env support for CLI shebangs
 #                                 which BusyBox env doesn't support
-#   github-cli                  — gh command
+#   gh                          — GitHub CLI command
 #   tini                        — PID 1 for clean signal handling
-RUN apk add --no-cache \
-    bash \
-    git \
-    curl \
-    ca-certificates \
-    sudo \
-    iptables \
-    procps \
-    coreutils \
-    github-cli \
-    tini
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        git \
+        curl \
+        ca-certificates \
+        sudo \
+        iptables \
+        procps \
+        coreutils \
+        gh \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
 
-# node:20-alpine already has a `node` user (UID 1000). Grant it passwordless sudo
+# node:20-slim already has a `node` user (UID 1000). Grant it passwordless sudo
 # for the entrypoint scripts that need to adjust file ownership before dropping privs.
 RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
@@ -56,4 +58,4 @@ ENV NODE_OPTIONS="--max-old-space-size=8192"
 USER node
 WORKDIR /home/node/workspace
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--"]

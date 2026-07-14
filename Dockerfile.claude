@@ -1,4 +1,4 @@
-# Claude Code agent image. Extends the ProPR agent base image (alpine + common tooling).
+# Claude Code agent image. Extends the ProPR agent base image (Debian/glibc + common tooling).
 # The CLI is installed at build time and exercised with --version as a smoke
 # test so binary-loading regressions fail the build rather than leaking into
 # user runtime.

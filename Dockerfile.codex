@@ -1,4 +1,4 @@
-# OpenAI Codex agent image. Extends the ProPR agent base image (alpine + common tooling).
+# OpenAI Codex agent image. Extends the ProPR agent base image (Debian/glibc + common tooling).
 # The CLI is installed at build time and exercised with --version as a smoke
 # test so binary-loading regressions fail the build rather than leaking into
 # user runtime.
@@ -18,7 +18,9 @@ USER root
 # image. Do NOT remove this as an "unused" package — it is invoked by the Codex
 # agent at runtime, so its absence only surfaces as a degraded "rg is not
 # installed here" message rather than a build failure.
-RUN apk add --no-cache ripgrep
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ripgrep \
+    && rm -rf /var/lib/apt/lists/*
 # Smoke test: fail the build now if rg ever disappears from the image.
 RUN rg --version
 RUN npm install -g @openai/codex@${CLI_VERSION}

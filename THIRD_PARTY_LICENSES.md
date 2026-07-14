@@ -9,6 +9,16 @@ See NOTICE for a higher-level summary and end-user obligations.
 
 ---
 
+## Debian base image and system packages
+
+The shared `propr/agent-base` image is based on `node:20-slim` and installs
+system packages from Debian repositories, including bash, git, curl,
+ca-certificates, sudo, iptables, procps, coreutils, gh, and tini.
+See the Debian package tracker for per-package licensing details:
+https://tracker.debian.org/
+
+---
+
 ## @anthropic-ai/claude-code@2.1.191
 
 ```

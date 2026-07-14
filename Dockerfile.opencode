@@ -1,4 +1,4 @@
-# OpenCode agent image. Extends propr/agent-base (alpine + common tooling).
+# OpenCode agent image. Extends propr/agent-base (Debian/glibc + common tooling).
 
 # BASE_IMAGE must point at the exact agent-base image built alongside this
 # agent image. scripts/build-images.sh passes it automatically.
@@ -10,9 +10,12 @@ FROM ${BASE_IMAGE}
 ARG CLI_VERSION=1.17.10
 
 USER root
-# su-exec is used by scripts/opencode-entrypoint.sh when Docker starts the
-# container as root so it can drop back to the node user after setup.
-RUN apk add --no-cache su-exec \
+# gosu provides the no-new-privileges-friendly user switch used by the
+# entrypoint. Keep a su-exec-compatible command name for the shared script.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
+    && rm -rf /var/lib/apt/lists/* \
     && npm install -g opencode-ai@${CLI_VERSION}
 # Smoke-test the binary and verify the installed CLI exposes the flags the
 # entrypoint relies on. Keep the checks tolerant of help text indentation and
@@ -38,4 +41,4 @@ RUN git config --global user.name "ProPR OpenCode Bot" \
     && git config --global init.defaultBranch main \
     && git config --global --add safe.directory '*'
 
-ENTRYPOINT ["/sbin/tini", "--", "/home/node/opencode-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/home/node/opencode-entrypoint.sh"]

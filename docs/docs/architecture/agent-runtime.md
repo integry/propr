@@ -17,7 +17,7 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 - `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network
 - Structured stdout, stderr, exit code, duration, session ID, and token usage capture when the CLI exposes those fields
 
-Most agent images build on the shared `propr/agent-base` image, which includes Node.js, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. Antigravity currently uses a Debian slim base because its installer requires glibc, but it keeps the same workspace, credential, GitHub token, entrypoint, and logging contract.
+Most agent images build on the shared Debian/glibc `propr/agent-base` image, which includes Node.js, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. Antigravity uses the same Debian slim runtime family while keeping the same workspace, credential, GitHub token, entrypoint, and logging contract.
 
 This table is the canonical mapping of agent images, Dockerfiles, entrypoints, and credential mounts; other pages link here instead of repeating it.
 

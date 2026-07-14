@@ -8,7 +8,7 @@ describe('getFixEnvironmentRepairInstructions', () => {
 
         assert.ok(instructions.includes('Environment Repair for /fix'));
         assert.ok(instructions.includes('.propr/setup.sh'));
-        assert.ok(instructions.includes('sudo apk add --no-cache'));
+        assert.ok(instructions.includes('sudo apt-get update/install'));
         assert.ok(instructions.includes('retry the failed verification command once'));
     });
 
