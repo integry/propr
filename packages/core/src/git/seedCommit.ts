@@ -1,8 +1,8 @@
-import { SimpleGit } from 'simple-git';
+import { simpleGit, SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
-import { setupAuthenticatedRemote } from './repoBranching.js';
+import { setupAuthenticatedRemote, redactAuthenticatedGitUrl } from './repoBranching.js';
 import { AI_COMMIT_AUTHOR } from './commitOperations.js';
 
 export interface SeedCommitOptions {
@@ -48,6 +48,42 @@ Thumbs.db
 `;
 
 /**
+ * Return true only when the local repository provably has at least one commit
+ * reachable from any ref. A thrown git error is NOT treated as "empty": it is
+ * propagated so that a transient failure (e.g. lock contention in the shared
+ * clone) can never be mistaken for an empty repo and trigger a destructive
+ * seed commit. See the mcptest 22cb898 incident.
+ */
+async function localRepoHasCommits(git: SimpleGit): Promise<boolean> {
+    const revList = await git.raw(['rev-list', '-n', '1', '--all']);
+    return revList.trim().length > 0;
+}
+
+/**
+ * Return true when the remote already has any ref (branch or tag). Seeding only
+ * makes sense for a genuinely brand-new empty remote, so a non-empty result
+ * must abort seeding. Errors are propagated rather than swallowed.
+ */
+async function remoteHasAnyRefs(repoUrl: string, authToken: string): Promise<boolean> {
+    const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
+    try {
+        const lsRemote = await simpleGit().raw(['ls-remote', authenticatedUrl]);
+        return lsRemote.trim().length > 0;
+    } catch (error) {
+        throw new Error(redactAuthenticatedGitUrl((error as Error).message));
+    }
+}
+
+/**
+ * Return true when HEAD resolves to an existing commit. Used as a final guard:
+ * we must never seed on top of real history.
+ */
+async function headPointsAtCommit(git: SimpleGit): Promise<boolean> {
+    const head = await git.raw(['rev-parse', '--verify', '--quiet', 'HEAD']).catch(() => '');
+    return head.trim().length > 0;
+}
+
+/**
  * Check if a repository is empty (has no commits) and create a seed commit if needed.
  * This allows the system to work with newly created empty repositories.
  */
@@ -57,8 +93,22 @@ export async function ensureSeedCommitIfEmpty(
 ): Promise<boolean> {
     const { localRepoPath, owner, repoName, defaultBranch, authToken, repoUrl } = options;
     try {
-        const logResult = await git.raw(['rev-list', '-n', '1', '--all']).catch(() => '');
-        if (logResult.trim()) {
+        if (await localRepoHasCommits(git)) {
+            return false;
+        }
+
+        // The local clone looks empty, but a transient/partial local state can
+        // present as empty while the remote actually has history. Never perform
+        // the destructive seed unless the remote is confirmed empty too.
+        if (await remoteHasAnyRefs(repoUrl, authToken)) {
+            logger.warn({ repo: `${owner}/${repoName}` }, 'Local clone appears empty but remote has refs; skipping seed commit to avoid overwriting existing history');
+            return false;
+        }
+
+        // Final safety net: if HEAD already resolves to a commit, the repo is not
+        // empty regardless of what the checks above concluded. Refuse to seed.
+        if (await headPointsAtCommit(git)) {
+            logger.warn({ repo: `${owner}/${repoName}` }, 'HEAD resolves to an existing commit; refusing to create a seed commit on top of existing history');
             return false;
         }
 
