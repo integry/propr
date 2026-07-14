@@ -5,7 +5,8 @@ import {
     getModelShortName,
     withRetry,
     retryConfigs,
-    MODEL_INFO_MAP
+    MODEL_INFO_MAP,
+    isEpicBranch
 } from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
 export {
@@ -77,6 +78,57 @@ export async function updateTaskTitleInStorage(
         }
     } catch (redisError) {
         correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
+    }
+}
+
+/**
+ * Ensure a child PR's base branch exists before creating the PR.
+ *
+ * Epic base branches (ProPR-managed, e.g. `187-epic-modernize-and-n7j`) can be
+ * deleted after their Epic PR is closed. On a rerun the child issue still
+ * carries the `base-<branch>` label, so the child PR targets a branch that no
+ * longer exists and GitHub rejects it with
+ * `{"field":"base","code":"invalid"}`. Recreate the missing epic base branch
+ * from the repository default branch so the child PR can be created again.
+ *
+ * Only ProPR epic branches are auto-created — a missing user-specified base
+ * (e.g. a typo'd `base-develop`) is left to fail loudly rather than silently
+ * fabricating a branch.
+ */
+export async function ensureEpicBaseBranchExists(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    baseBranch: string,
+    defaultBranch: string | undefined,
+    correlatedLogger: Logger
+): Promise<void> {
+    if (!isEpicBranch(baseBranch)) return;
+
+    try {
+        await octokit.request('GET /repos/{owner}/{repo}/git/ref/{ref}', { owner, repo, ref: `heads/${baseBranch}` });
+        return; // Base branch already exists.
+    } catch (error) {
+        if ((error as { status?: number }).status !== 404) throw error;
+    }
+
+    const source = defaultBranch || 'main';
+    const sourceRef = await octokit.request<{ data: { object: { sha: string } } }>('GET /repos/{owner}/{repo}/git/ref/{ref}', {
+        owner, repo, ref: `heads/${source}`
+    });
+    const sha = sourceRef.data.object.sha;
+
+    try {
+        await octokit.request('POST /repos/{owner}/{repo}/git/refs', { owner, repo, ref: `refs/heads/${baseBranch}`, sha });
+        correlatedLogger.info({ baseBranch, source, sha }, 'Recreated missing epic base branch from default branch before PR creation');
+    } catch (error) {
+        const err = error as Error & { status?: number };
+        // Concurrent job created it first — that's fine.
+        if (err.status === 422 && err.message?.includes('Reference already exists')) {
+            correlatedLogger.info({ baseBranch }, 'Epic base branch already recreated by a concurrent job');
+            return;
+        }
+        throw error;
     }
 }
 

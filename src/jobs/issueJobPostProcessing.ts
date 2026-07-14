@@ -10,7 +10,7 @@ import { redactSecrets } from '@propr/core';
 import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
-import { createPullRequest, type PostProcessingResult } from './issueJobHelpers.js';
+import { createPullRequest, ensureEpicBaseBranchExists, type PostProcessingResult } from './issueJobHelpers.js';
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import type { GitHubToken } from './githubTypes.js';
@@ -115,6 +115,15 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 correlatedLogger.info({ taskId }, 'Task was cancelled by user, skipping PR creation');
                 throw new Error('Execution aborted by user request');
             }
+        }
+
+        // Self-heal a deleted epic base branch (e.g. after its Epic PR was
+        // closed) so the child PR isn't rejected with base "invalid" on rerun.
+        if (issueRef.baseBranch) {
+            await ensureEpicBaseBranchExists(
+                octokit, issueRef.repoOwner, issueRef.repoName,
+                issueRef.baseBranch, repoValidation.repoData?.defaultBranch, correlatedLogger
+            );
         }
 
         postProcessingResult = await createPullRequest(
