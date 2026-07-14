@@ -93,16 +93,23 @@ should_build() {
   done
   if [[ "$1" == "agent-base" ]]; then
     for s in "${SELECTED[@]}"; do
-      [[ "$s" == agent-* && "$s" != "agent-base" ]] && return 0
+      uses_agent_base "$s" && return 0
     done
   fi
   return 1
 }
 
+uses_agent_base() {
+  case "$1" in
+    agent-claude|agent-codex|agent-opencode|agent-vibe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 include_agent_base_when_needed() {
   [[ -z "$ONLY" ]] && return
   should_build "agent-base" && return
-  for agent_name in agent-claude agent-codex agent-vibe; do
+  for agent_name in agent-claude agent-codex agent-opencode agent-vibe; do
     if should_build "$agent_name"; then
       ONLY="agent-base,$ONLY"
       return
@@ -243,8 +250,8 @@ build_image() {
     build_args+=("--platform" "$PLATFORM")
   fi
 
-  # Agent images extend agent-base — pin to the exact image built in this run.
-  if [[ "$name" == agent-claude || "$name" == agent-codex || "$name" == agent-antigravity || "$name" == agent-opencode || "$name" == agent-vibe ]]; then
+  # Agent images that extend agent-base pin to the exact image built in this run.
+  if uses_agent_base "$name"; then
     build_args+=("--build-arg" "BASE_IMAGE=$(agent_base_image)")
   fi
   case "$name" in
