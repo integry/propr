@@ -42,56 +42,6 @@ function defaultModelLabel(defaultModel?: string | null): string | undefined {
   return getModelDisplayName(defaultModel);
 }
 
-interface ChatMessageItemProps {
-  message: Message;
-  isLast: boolean;
-  refinementProgress?: RefinementProgress;
-}
-
-const ChatMessageItem: React.FC<ChatMessageItemProps> = ({ message, isLast, refinementProgress }) => (
-  <div
-    className={`flex items-start pb-6 ${!isLast ? 'border-b border-slate-100' : ''}`}
-  >
-    <div className="w-10 flex-shrink-0 flex justify-center">
-      <div
-        className={`
-          w-8 h-8 rounded-full flex items-center justify-center
-          ${message.role === 'thinking' ? 'bg-gray-300' : message.role === 'assistant' ? 'bg-gray-700' : 'bg-white border border-slate-200'}
-        `}
-      >
-        {message.role === 'user' ? (
-          <User size={16} className="text-slate-600" />
-        ) : message.role === 'thinking' ? (
-          <Loader2 size={16} className="text-gray-600 animate-spin" />
-        ) : (
-          <Bot size={16} className="text-white" />
-        )}
-      </div>
-    </div>
-    <div className="flex-1 min-w-0 ml-3">
-      <div
-        className={`
-          rounded-lg
-          ${message.role === 'user'
-            ? 'bg-white border border-indigo-100 text-slate-800 shadow-sm px-4 py-2 inline-block'
-            : message.role === 'thinking'
-              ? 'bg-slate-200 text-gray-600 italic p-3 w-full max-w-xs'
-              : 'bg-transparent text-gray-800 inline-block'
-          }
-        `}
-      >
-        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-        {message.role === 'thinking' && refinementProgress?.startedAt && refinementProgress?.estimatedDuration && (
-          <RefinementProgressBar
-            startedAt={refinementProgress.startedAt}
-            estimatedDuration={refinementProgress.estimatedDuration}
-          />
-        )}
-      </div>
-    </div>
-  </div>
-);
-
 interface ChatInputFormProps {
   isMobile: boolean;
   effectiveInput: string;

@@ -44,6 +44,15 @@ export function validateContextRepositories(
   return { valid: true, repositories: validated };
 }
 
+export function validateRefineInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
+  const { draftId, plan, instruction, generationModel } = body;
+  if (!draftId) return { valid: false, error: 'draftId is required' };
+  if (!plan || !Array.isArray(plan)) return { valid: false, error: 'currentPlan array is required' };
+  if (!instruction || typeof instruction !== 'string') return { valid: false, error: 'instruction is required' };
+  if (generationModel !== undefined && typeof generationModel !== 'string') return { valid: false, error: 'generationModel must be a string' };
+  return { valid: true };
+}
+
 export function validatePreviewInput(body: Record<string, unknown>): { valid: boolean; error?: string } {
   const { draftId, prompt, baseBranch, granularity, files, contextRepositories, excludedFiles } = body;
   if (!draftId) return { valid: false, error: 'draftId is required' };

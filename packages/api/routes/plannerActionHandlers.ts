@@ -5,7 +5,6 @@ import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Redis } from 'ioredis';
 import {
-  refinePlan,
   executeDraft,
   getGitHubInstallationToken,
   ensureRepoCloned,
@@ -24,7 +23,8 @@ import {
   validateContextRepositories,
   updateDraftContextConfig,
   runBackgroundGeneration,
-  getRefineRepoContext,
+  runBackgroundRefinement,
+  validateRefineInput,
   GenerateRequestBody
 } from './plannerHelpers/index.js';
 
@@ -118,10 +118,8 @@ export function createRefineHandler(db: Knex) {
     if (!check.valid) { sendCheckError(res, check); return; }
 
     const { draftId, plan: currentPlan, instruction, generationModel: requestedModel } = req.body;
-    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
-    if (!currentPlan || !Array.isArray(currentPlan)) { res.status(400).json({ error: 'currentPlan array is required' }); return; }
-    if (!instruction || typeof instruction !== 'string') { res.status(400).json({ error: 'instruction is required' }); return; }
-    if (requestedModel !== undefined && typeof requestedModel !== 'string') { res.status(400).json({ error: 'generationModel must be a string' }); return; }
+    const inputCheck = validateRefineInput(req.body);
+    if (!inputCheck.valid) { res.status(400).json({ error: inputCheck.error }); return; }
 
     const correlationId = generateCorrelationId();
 
@@ -191,95 +189,15 @@ export function createRefineHandler(db: Knex) {
       res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
 
       // Run refinement in background
-      (async () => {
-        // Helper to check if refinement was aborted
-        const checkAborted = async (): Promise<boolean> => {
-          const redis = new Redis({
-            host: process.env.REDIS_HOST || 'redis',
-            port: parseInt(process.env.REDIS_PORT || '6379', 10)
-          });
-          const aborted = await redis.get(`planner:abort:${draftId}`);
-          await redis.quit();
-          return !!aborted;
-        };
-
-        try {
-          // Check if already aborted before starting
-          if (await checkAborted()) {
-            console.log(`[refine] Refinement aborted before starting for draft ${draftId}`);
-            return;
-          }
-
-          const repoContext = await getRefineRepoContext(db, draftId, req.user?.accessToken || '');
-
-          // Fetch original generated context from the draft for richer refinement
-          const draft = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
-          const originalContext = draft?.generated_context as string | undefined;
-
-          const result = await refinePlan({
-            currentPlan: currentPlan as Plan,
-            instruction,
-            worktreePath: repoContext.worktreePath,
-            repository: repoContext.repository,
-            githubToken: repoContext.authToken,
-            correlationId,
-            originalContext: originalContext || undefined,
-            draftId,
-            generationModel
-          });
-
-          // Check if aborted before saving result (race condition protection)
-          if (await checkAborted()) {
-            console.log(`[refine] Refinement aborted after completion for draft ${draftId}, not saving result`);
-            return;
-          }
-
-          // Store the refinement result including action, summary, and estimation data
-          const refinementMeta = {
-            status: 'completed',
-            action: result.action,
-            summary: result.summary,
-            model: result.model,
-            timestamp: new Date().toISOString(),
-            // Include estimation data from the LLM call
-            estimatedDuration: result.estimation?.estimatedDurationMs,
-            startedAt: result.estimation?.startedAt,
-            isHistoricalEstimate: result.estimation?.isHistoricalEstimate,
-            sampleCount: result.estimation?.sampleCount
-          };
-
-          console.log(`[refine] Storing refinement result for draft ${draftId}:`, JSON.stringify(refinementMeta));
-
-          await db('task_drafts').where({ draft_id: draftId }).update({
-            plan_json: JSON.stringify(result.plan),
-            refinement_result: JSON.stringify(refinementMeta),
-            status: 'review',
-            updated_at: db.fn.now()
-          });
-          console.log(`[refine] Plan refinement completed for draft ${draftId} (action: ${result.action})`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          const errorStack = error instanceof Error ? error.stack : undefined;
-          console.error(`[refine] Plan refinement failed for draft ${draftId}:`, errorMessage);
-          if (errorStack) console.error(`[refine] Stack trace:`, errorStack);
-          // Only revert status to review on failure if not aborted. Persist the
-          // error into refinement_result so the UI can surface it to the user
-          // instead of silently returning to review with no explanation.
-          if (!(await checkAborted())) {
-            const failureMeta = {
-              status: 'failed',
-              error: errorMessage,
-              model: generationModel,
-              timestamp: new Date().toISOString()
-            };
-            await db('task_drafts').where({ draft_id: draftId }).update({
-              status: 'review',
-              refinement_result: JSON.stringify(failureMeta),
-              updated_at: db.fn.now()
-            });
-          }
-        }
-      })();
+      void runBackgroundRefinement({
+        db,
+        draftId,
+        currentPlan: currentPlan as Plan,
+        instruction,
+        generationModel,
+        correlationId,
+        accessToken: req.user?.accessToken || ''
+      });
     } catch (error) {
       console.error('Refine plan error:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to refine plan' });
