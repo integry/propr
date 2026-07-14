@@ -649,6 +649,7 @@ interface HandlePlanPRUpdateTestContext {
     findPlanIssueByRepoAndNumberCalls: Array<{ repository: string; issueNumber: number }>;
     linkPRToPlanIssueCalls: Array<{ repository: string; issueNumber: number; prNumber: number }>;
     updatePlanIssueByPRCalls: Array<{ repository: string; prNumber: number; updates: { status?: PlanIssueStatus } }>;
+    updatePlanIssueStatusCalls: Array<{ repository: string; issueNumber: number; status: PlanIssueStatus }>;
     handleEpicPROpenedCalls: Array<{ repository: string; prNumber: number }>;
     handleMergedPRNextIssueTriggerCalls: Array<{ repository: string; issueNumber: number; draftId: string }>;
     loggedInfo: Array<Record<string, unknown>>;
@@ -670,6 +671,9 @@ function simulateHandlePlanPRUpdate(
     mockDependencies: {
         findPlanIssueByRepoAndPR: (repo: string, prNumber: number) => MockPlanIssueFromDB | null;
         findPlanIssueByRepoAndNumber: (repo: string, issueNumber: number) => MockPlanIssueFromDB | null;
+        // Mirrors isAbandonedPrLink: whether the PR already linked to the plan
+        // issue is a closed, unmerged attempt that a new PR may take over.
+        isExistingPrAbandoned?: (repo: string, existingPrNumber: number) => boolean;
     }
 ): { skipped: boolean; reason?: string; updatedStatus?: PlanIssueStatus | null; linkedIssue?: number; triggeredNextIssue?: boolean } {
     const repository = payload.repository.full_name;
@@ -701,12 +705,26 @@ function simulateHandlePlanPRUpdate(
                     context.findPlanIssueByRepoAndNumberCalls.push({ repository, issueNumber: linkedIssueNumber });
                     const linkedPlanIssue = mockDependencies.findPlanIssueByRepoAndNumber(repository, linkedIssueNumber);
                     if (linkedPlanIssue) {
-                        // Don't overwrite existing PR link
+                        // A different PR is already linked. Keep it unless that PR
+                        // was abandoned (closed, unmerged) and the issue was
+                        // reprocessed into a new PR, which may take over the link.
                         if (linkedPlanIssue.pr_number && linkedPlanIssue.pr_number !== prNumber) {
-                            continue;
+                            const canTakeOver = mockDependencies.isExistingPrAbandoned
+                                ? mockDependencies.isExistingPrAbandoned(repository, linkedPlanIssue.pr_number)
+                                : false;
+                            if (!canTakeOver) {
+                                continue;
+                            }
                         }
                         context.linkPRToPlanIssueCalls.push({ repository, issueNumber: linkedIssueNumber, prNumber });
-                        planIssue = linkedPlanIssue;
+                        // Recover a terminal closed status so the recreated PR's
+                        // merge can advance the plan.
+                        let effectiveStatus = linkedPlanIssue.status;
+                        if (linkedPlanIssue.status === 'closed') {
+                            context.updatePlanIssueStatusCalls.push({ repository, issueNumber: linkedIssueNumber, status: 'under_review' });
+                            effectiveStatus = 'under_review';
+                        }
+                        planIssue = { ...linkedPlanIssue, pr_number: prNumber, status: effectiveStatus };
                         return {
                             skipped: false,
                             linkedIssue: linkedIssueNumber,
@@ -757,6 +775,7 @@ function createTestContext(): HandlePlanPRUpdateTestContext {
         findPlanIssueByRepoAndNumberCalls: [],
         linkPRToPlanIssueCalls: [],
         updatePlanIssueByPRCalls: [],
+        updatePlanIssueStatusCalls: [],
         handleEpicPROpenedCalls: [],
         handleMergedPRNextIssueTriggerCalls: [],
         loggedInfo: [],
@@ -954,6 +973,115 @@ describe('handlePlanPRUpdate', () => {
             assert.strictEqual(result.skipped, true);
             assert.strictEqual(result.reason, 'No plan issue found');
             assert.strictEqual(context.linkPRToPlanIssueCalls.length, 0);
+        });
+
+        test('keeps existing link when the already-linked PR is still active (not abandoned)', () => {
+            const context = createTestContext();
+            const payload: MockPullRequestEvent = {
+                action: 'opened',
+                repository: { full_name: 'owner/repo' },
+                pull_request: {
+                    number: 200,
+                    title: 'Another PR',
+                    body: 'fixes #123'
+                }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 123,
+                pr_number: 100, // Linked to an open PR #100
+                status: 'under_review'
+            };
+
+            const result = simulateHandlePlanPRUpdate(payload, context, {
+                findPlanIssueByRepoAndPR: () => null,
+                findPlanIssueByRepoAndNumber: (repo, num) => num === 123 ? mockPlanIssue : null,
+                isExistingPrAbandoned: () => false // PR #100 is still open
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(context.linkPRToPlanIssueCalls.length, 0);
+            assert.strictEqual(context.updatePlanIssueStatusCalls.length, 0);
+        });
+
+        test('recreated PR takes over an abandoned (closed) PR link on a reprocessed issue', () => {
+            // Reprocess scenario: issue #187's PR #190 was closed unmerged, the
+            // same issue was reprocessed, and PR #191 was recreated for it. The
+            // new PR must take over the link so the epic keeps flowing.
+            const context = createTestContext();
+            const payload: MockPullRequestEvent = {
+                action: 'opened',
+                repository: { full_name: 'integry/mcptest' },
+                pull_request: {
+                    number: 191,
+                    title: '[187 by GPT-5.5] Modernize the design foundation',
+                    body: 'fixes #187'
+                }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'integry/mcptest',
+                issue_number: 187,
+                pr_number: 190, // Stale link to the closed, unmerged PR
+                status: 'closed',
+                draft_id: 'draft-epic-1'
+            };
+
+            const result = simulateHandlePlanPRUpdate(payload, context, {
+                findPlanIssueByRepoAndPR: () => null,
+                findPlanIssueByRepoAndNumber: (repo, num) => num === 187 ? mockPlanIssue : null,
+                isExistingPrAbandoned: (repo, existingPrNumber) => existingPrNumber === 190
+            });
+
+            assert.strictEqual(result.skipped, false);
+            assert.strictEqual(result.linkedIssue, 187);
+            // Re-linked to the recreated PR #191...
+            assert.strictEqual(context.linkPRToPlanIssueCalls.length, 1);
+            assert.deepStrictEqual(context.linkPRToPlanIssueCalls[0], {
+                repository: 'integry/mcptest',
+                issueNumber: 187,
+                prNumber: 191
+            });
+            // ...and the terminal closed status is recovered so the eventual merge
+            // will advance the epic (determinePRStatusUpdate needs a live status).
+            assert.strictEqual(context.updatePlanIssueStatusCalls.length, 1);
+            assert.deepStrictEqual(context.updatePlanIssueStatusCalls[0], {
+                repository: 'integry/mcptest',
+                issueNumber: 187,
+                status: 'under_review'
+            });
+            assert.strictEqual(result.updatedStatus, 'under_review');
+        });
+
+        test('does not resurrect a merged issue even if a new PR references it', () => {
+            const context = createTestContext();
+            const payload: MockPullRequestEvent = {
+                action: 'opened',
+                repository: { full_name: 'owner/repo' },
+                pull_request: {
+                    number: 300,
+                    title: 'Stray PR',
+                    body: 'fixes #123'
+                }
+            };
+
+            const mockPlanIssue: MockPlanIssueFromDB = {
+                repository: 'owner/repo',
+                issue_number: 123,
+                pr_number: 250,
+                status: 'merged'
+            };
+
+            const result = simulateHandlePlanPRUpdate(payload, context, {
+                findPlanIssueByRepoAndPR: () => null,
+                findPlanIssueByRepoAndNumber: (repo, num) => num === 123 ? mockPlanIssue : null,
+                isExistingPrAbandoned: () => false // merged PR is never abandoned
+            });
+
+            assert.strictEqual(result.skipped, true);
+            assert.strictEqual(context.linkPRToPlanIssueCalls.length, 0);
+            assert.strictEqual(context.updatePlanIssueStatusCalls.length, 0);
         });
 
         test('does not attempt linking on non-opened actions', () => {
