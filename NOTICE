@@ -57,7 +57,7 @@ Bundled third-party components
    Installed from the official distribution at cli.github.com.
 
 6. Debian Linux base image and system packages (bash, git, curl,
-   ca-certificates, sudo, iptables, procps, coreutils, gh, tini)
+   ca-certificates, sudo, iptables, procps, tini)
    Various open-source licenses. See the Debian package tracker for
    per-package details: https://tracker.debian.org/
 

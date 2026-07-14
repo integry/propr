@@ -71,17 +71,24 @@ describe('agent version management', () => {
 
     test('uses Debian/glibc package management for shared agent images', () => {
         const agentBaseDockerfile = fs.readFileSync('docker/Dockerfile.agent-base', 'utf8');
+        const antigravityDockerfile = fs.readFileSync('Dockerfile.antigravity', 'utf8');
         const codexDockerfile = fs.readFileSync('Dockerfile.codex', 'utf8');
         const opencodeDockerfile = fs.readFileSync('Dockerfile.opencode', 'utf8');
         const vibeDockerfile = fs.readFileSync('Dockerfile.vibe', 'utf8');
 
         assert.match(agentBaseDockerfile, /^FROM node:20-slim$/m);
+        assert.match(agentBaseDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
+        assert.match(agentBaseDockerfile, /signed-by=\/etc\/apt\/keyrings\/githubcli-archive-keyring\.gpg/);
         assert.match(agentBaseDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgh\b[\s\S]*\btini\b/);
+        assert.match(antigravityDockerfile, /^FROM node:20-slim$/m);
+        assert.match(antigravityDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
+        assert.match(antigravityDockerfile, /signed-by=\/etc\/apt\/keyrings\/githubcli-archive-keyring\.gpg/);
+        assert.match(antigravityDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgh\b/);
         assert.match(codexDockerfile, /apt-get install -y --no-install-recommends ripgrep/);
         assert.match(opencodeDockerfile, /apt-get install -y --no-install-recommends gosu/);
         assert.match(vibeDockerfile, /apt-get install -y --no-install-recommends bash python3 sudo gosu/);
 
-        for (const dockerfile of [agentBaseDockerfile, codexDockerfile, opencodeDockerfile, vibeDockerfile]) {
+        for (const dockerfile of [agentBaseDockerfile, antigravityDockerfile, codexDockerfile, opencodeDockerfile, vibeDockerfile]) {
             assert.doesNotMatch(dockerfile, /\bapk add\b/);
         }
     });
