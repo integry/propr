@@ -112,49 +112,48 @@ async function linkPRToReferencedPlanIssue(
 ): Promise<Awaited<ReturnType<typeof findPlanIssueByRepoAndNumber>> | null> {
     for (const ref of issueRefs) {
         const match = ref.match(/#(\d+)/);
-        if (match) {
-            const linkedIssueNumber = parseInt(match[1], 10);
-            const linkedPlanIssue = await findPlanIssueByRepoAndNumber(repository, linkedIssueNumber);
-            if (linkedPlanIssue) {
-                // A different PR is already linked. Normally we keep it (this
-                // prevents Epic PRs from overwriting the implementation PR link).
-                // But when the linked PR was abandoned (closed, unmerged) and the
-                // issue was reprocessed into a new PR, let the new PR take over so
-                // the epic keeps flowing without recreating the whole plan.
-                if (linkedPlanIssue.pr_number && linkedPlanIssue.pr_number !== prNumber) {
-                    const canTakeOver = await isAbandonedPrLink(repository, linkedPlanIssue.pr_number, linkedPlanIssue.status, log);
-                    if (!canTakeOver) {
-                        log.debug({
-                            repository,
-                            prNumber,
-                            issueNumber: linkedIssueNumber,
-                            existingPrNumber: linkedPlanIssue.pr_number
-                        }, 'Skipping PR link - plan issue already has an active or merged PR linked');
-                        continue;
-                    }
-                    log.info({
-                        repository,
-                        prNumber,
-                        issueNumber: linkedIssueNumber,
-                        replacedPrNumber: linkedPlanIssue.pr_number
-                    }, 'Recreated PR takes over abandoned PR link for reprocessed plan issue');
-                }
+        if (!match) continue;
+        const linkedIssueNumber = parseInt(match[1], 10);
+        const linkedPlanIssue = await findPlanIssueByRepoAndNumber(repository, linkedIssueNumber);
+        if (!linkedPlanIssue) continue;
 
-                await linkPRToPlanIssue(repository, linkedIssueNumber, prNumber);
-
-                // If the issue went terminal (closed) when its previous PR was
-                // abandoned, bring it back to under_review so the recreated PR's
-                // eventual merge triggers the next issue in the plan.
-                let effectiveStatus = linkedPlanIssue.status;
-                if (linkedPlanIssue.status === PlanIssueStatus.CLOSED) {
-                    await updatePlanIssueStatus(repository, linkedIssueNumber, PlanIssueStatus.UNDER_REVIEW);
-                    effectiveStatus = PlanIssueStatus.UNDER_REVIEW;
-                    log.info({ repository, prNumber, issueNumber: linkedIssueNumber }, 'Reset plan issue from closed to under_review for reprocessed PR');
-                }
-                log.info({ repository, prNumber, issueNumber: linkedIssueNumber }, 'Linked PR to plan issue');
-                return { ...linkedPlanIssue, pr_number: prNumber, status: effectiveStatus };
+        // A different PR is already linked. Normally we keep it (this
+        // prevents Epic PRs from overwriting the implementation PR link).
+        // But when the linked PR was abandoned (closed, unmerged) and the
+        // issue was reprocessed into a new PR, let the new PR take over so
+        // the epic keeps flowing without recreating the whole plan.
+        if (linkedPlanIssue.pr_number && linkedPlanIssue.pr_number !== prNumber) {
+            const canTakeOver = await isAbandonedPrLink(repository, linkedPlanIssue.pr_number, linkedPlanIssue.status, log);
+            if (!canTakeOver) {
+                log.debug({
+                    repository,
+                    prNumber,
+                    issueNumber: linkedIssueNumber,
+                    existingPrNumber: linkedPlanIssue.pr_number
+                }, 'Skipping PR link - plan issue already has an active or merged PR linked');
+                continue;
             }
+            log.info({
+                repository,
+                prNumber,
+                issueNumber: linkedIssueNumber,
+                replacedPrNumber: linkedPlanIssue.pr_number
+            }, 'Recreated PR takes over abandoned PR link for reprocessed plan issue');
         }
+
+        await linkPRToPlanIssue(repository, linkedIssueNumber, prNumber);
+
+        // If the issue went terminal (closed) when its previous PR was
+        // abandoned, bring it back to under_review so the recreated PR's
+        // eventual merge triggers the next issue in the plan.
+        let effectiveStatus = linkedPlanIssue.status;
+        if (linkedPlanIssue.status === PlanIssueStatus.CLOSED) {
+            await updatePlanIssueStatus(repository, linkedIssueNumber, PlanIssueStatus.UNDER_REVIEW);
+            effectiveStatus = PlanIssueStatus.UNDER_REVIEW;
+            log.info({ repository, prNumber, issueNumber: linkedIssueNumber }, 'Reset plan issue from closed to under_review for reprocessed PR');
+        }
+        log.info({ repository, prNumber, issueNumber: linkedIssueNumber }, 'Linked PR to plan issue');
+        return { ...linkedPlanIssue, pr_number: prNumber, status: effectiveStatus };
     }
     return null;
 }
