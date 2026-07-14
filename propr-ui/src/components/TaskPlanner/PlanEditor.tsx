@@ -85,7 +85,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     await abortRefinement(draft.draft_id);
   }, [draft.draft_id, isDemoMode]);
 
-  const handleRefineRequest = useCallback(async (message: string, signal?: AbortSignal) => {
+  const handleRefineRequest = useCallback(async (message: string, signal?: AbortSignal, generationModel?: string) => {
     if (isDemoMode) {
       return {
         success: false,
@@ -93,7 +93,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
         cancelled: true,
       };
     }
-    return handleRefine(message, signal);
+    return handleRefine(message, signal, generationModel);
   }, [handleRefine, isDemoMode]);
 
   const handleDeletePlanConfirm = async () => {
@@ -181,6 +181,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
         draftId={draft.draft_id}
         chatHistory={draft.chat_history}
         refinementProgress={refinementProgress}
+        defaultModel={draft.context_config?.generationModel ?? null}
         isChatExpanded={isChatExpanded}
         showBackToSetupDialog={showBackToSetupDialog}
         showDeleteDialog={showDeleteDialog}
@@ -225,6 +226,7 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
       draftId={draft.draft_id}
       chatHistory={draft.chat_history}
       refinementProgress={refinementProgress}
+      defaultModel={draft.context_config?.generationModel ?? null}
       showBackToSetupDialog={showBackToSetupDialog}
       showDeleteDialog={showDeleteDialog}
       onDelete={showDeletePlanDialog}

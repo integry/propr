@@ -4,6 +4,9 @@ import { ChatMessage } from '../../api/proprApi';
 import type { RefinementProgress } from '../../hooks/usePlanRefinement';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { RefinementProgressBar } from './RefinementProgressBar';
+import { ModelSelector } from './SetupWizardComponents';
+import { useAgentsLoader } from './setupWizardHooks';
+import { getModelDisplayName } from '../../utils/modelDisplay';
 
 interface Message {
   id: string;
@@ -13,11 +16,13 @@ interface Message {
 }
 
 interface RefinementChatProps {
-  onSendMessage: (message: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
+  onSendMessage: (message: string, signal?: AbortSignal, generationModel?: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   initialMessages?: ChatMessage[];
   onMessagesChange?: (messages: ChatMessage[]) => void;
   refinementProgress?: RefinementProgress;
   onStop?: () => Promise<void>;
+  /** Model the plan was generated with; the default the switcher refines with. */
+  defaultModel?: string | null;
   inputValueOverride?: string;
   isLoadingOverride?: boolean;
   sendButtonPressed?: boolean;
@@ -27,6 +32,14 @@ interface RefinementChatProps {
   disableSmoothAutoScroll?: boolean;
   disableAutoScroll?: boolean;
   stableComposerHeight?: number;
+}
+
+/** Human label for the plan's default model, shown as the switcher's default option. */
+function defaultModelLabel(defaultModel?: string | null): string | undefined {
+  if (!defaultModel) return undefined;
+  const [maybeAgent, ...rest] = defaultModel.split(':');
+  if (rest.length > 0) return `${maybeAgent} / ${getModelDisplayName(rest.join(':'))}`;
+  return getModelDisplayName(defaultModel);
 }
 
 interface ChatMessageItemProps {
@@ -92,12 +105,13 @@ interface ChatInputFormProps {
   onInputChange: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onStop: () => void;
+  footer?: React.ReactNode;
 }
 
 const ChatInputForm: React.FC<ChatInputFormProps> = ({
   isMobile, effectiveInput, effectiveIsLoading, submitDisabled,
   showStopButton, sendButtonPressed, stableComposerHeight,
-  textareaRef, onSubmit, onInputChange, onKeyDown, onStop,
+  textareaRef, onSubmit, onInputChange, onKeyDown, onStop, footer,
 }) => (
   <div className={`flex-shrink-0 ${isMobile ? 'm-3' : 'm-4'}`}>
     <form onSubmit={onSubmit}>
@@ -133,6 +147,7 @@ const ChatInputForm: React.FC<ChatInputFormProps> = ({
           </button>
         )}
       </div>
+      {footer && <div className="flex items-center gap-2 mt-2 px-1">{footer}</div>}
     </form>
   </div>
 );
@@ -225,12 +240,16 @@ const getVisibleMessages = (syncInitialMessages: boolean, syncedMessages: Messag
   syncInitialMessages ? syncedMessages : messages
 );
 
-export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
+export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, defaultModel, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight }) => {
   const isMobile = useIsMobile();
+  const agents = useAgentsLoader();
   const syncedMessages = useMemo<Message[]>(() => toMessages(initialMessages), [initialMessages]);
   const [messages, setMessages] = useState<Message[]>(() => initMessages(initialMessages));
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // null = refine with the plan's default model (server falls back to it);
+  // a value overrides it for this and subsequent refinements.
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const effectiveInput = inputValueOverride ?? input;
   const effectiveIsLoading = isLoadingOverride ?? isLoading;
   const showStopButton = effectiveIsLoading && (showStopButtonOverride ?? true);
@@ -361,7 +380,7 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
     onMessagesChange?.(toChatMessages(messagesWithUser));
 
     const enrichedMessage = buildEnrichedMessage(userMessage.content, messages);
-    const result = await onSendMessage(enrichedMessage, abortController.signal);
+    const result = await onSendMessage(enrichedMessage, abortController.signal, selectedModel || undefined);
 
     abortControllerRef.current = null;
 
@@ -432,6 +451,18 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
         onInputChange={setInput}
         onKeyDown={handleKeyDown}
         onStop={handleStop}
+        footer={agents.length > 0 ? (
+          <>
+            <span className="text-xs text-gray-500 flex-shrink-0">Refine with</span>
+            <ModelSelector
+              agents={agents}
+              generationModel={selectedModel}
+              onModelChange={setSelectedModel}
+              modelName={defaultModelLabel(defaultModel)}
+              disabled={effectiveIsLoading}
+            />
+          </>
+        ) : undefined}
       />
     </div>
   );

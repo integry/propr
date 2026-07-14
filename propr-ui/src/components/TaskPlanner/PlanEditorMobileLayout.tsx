@@ -26,6 +26,7 @@ export interface PlanEditorMobileLayoutProps {
   draftId: string;
   chatHistory?: ChatMessage[];
   refinementProgress?: RefinementProgress;
+  defaultModel?: string | null;
   isChatExpanded: boolean;
   showBackToSetupDialog: boolean;
   showDeleteDialog: boolean;
@@ -39,7 +40,7 @@ export interface PlanEditorMobileLayoutProps {
   onReorderTasks: (taskIds: string[]) => void;
   onFinalize: () => void;
   onSetChatExpanded: (value: boolean) => void;
-  onRefine: (message: string, signal?: AbortSignal) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
+  onRefine: (message: string, signal?: AbortSignal, generationModel?: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   onChatMessagesChange: (messages: ChatMessage[]) => void;
   onStopRefinement: () => Promise<void>;
   onSetShowBackToSetupDialog: (value: boolean) => void;
@@ -67,6 +68,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
   draftId,
   chatHistory,
   refinementProgress,
+  defaultModel,
   isChatExpanded,
   showBackToSetupDialog,
   showDeleteDialog,
@@ -194,6 +196,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
               initialMessages={chatHistory}
               onMessagesChange={onChatMessagesChange}
               refinementProgress={refinementProgress}
+              defaultModel={defaultModel}
               onStop={onStopRefinement}
             />
           </div>
