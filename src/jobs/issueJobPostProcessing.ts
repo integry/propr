@@ -120,10 +120,13 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         // Self-heal a deleted epic base branch (e.g. after its Epic PR was
         // closed) so the child PR isn't rejected with base "invalid" on rerun.
         if (issueRef.baseBranch) {
-            await ensureEpicBaseBranchExists(
-                octokit, issueRef.repoOwner, issueRef.repoName,
-                issueRef.baseBranch, repoValidation.repoData?.defaultBranch, correlatedLogger
-            );
+            await ensureEpicBaseBranchExists(octokit, {
+                owner: issueRef.repoOwner,
+                repo: issueRef.repoName,
+                baseBranch: issueRef.baseBranch,
+                defaultBranch: repoValidation.repoData?.defaultBranch,
+                correlatedLogger
+            });
         }
 
         postProcessingResult = await createPullRequest(

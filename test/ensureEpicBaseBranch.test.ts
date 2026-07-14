@@ -25,10 +25,14 @@ function httpError(message: string, status: number): Error {
 
 const EPIC_BRANCH = '187-epic-modernize-and-n7j';
 
+function opts(baseBranch: string) {
+  return { owner: 'o', repo: 'r', baseBranch, defaultBranch: 'master', correlatedLogger: noopLogger };
+}
+
 describe('ensureEpicBaseBranchExists', () => {
   test('does nothing for a non-epic base branch', async () => {
     const octo = makeOctokit(() => { throw new Error('should not call the API'); });
-    await ensureEpicBaseBranchExists(octo, 'o', 'r', 'develop', 'master', noopLogger);
+    await ensureEpicBaseBranchExists(octo, opts('develop'));
     assert.strictEqual(octo.calls.length, 0);
   });
 
@@ -37,7 +41,7 @@ describe('ensureEpicBaseBranchExists', () => {
       if (endpoint === 'GET /repos/{owner}/{repo}/git/ref/{ref}') return { data: { object: { sha: 'abc' } } };
       throw new Error(`unexpected ${endpoint}`);
     });
-    await ensureEpicBaseBranchExists(octo, 'o', 'r', EPIC_BRANCH, 'master', noopLogger);
+    await ensureEpicBaseBranchExists(octo, opts(EPIC_BRANCH));
     assert.ok(octo.calls.every(c => !c.endpoint.startsWith('POST')), 'must not create a ref');
     assert.strictEqual(octo.calls.length, 1);
   });
@@ -51,7 +55,7 @@ describe('ensureEpicBaseBranchExists', () => {
       if (endpoint === 'POST /repos/{owner}/{repo}/git/refs') return { data: {} };
       throw new Error(`unexpected ${endpoint} ${JSON.stringify(options)}`);
     });
-    await ensureEpicBaseBranchExists(octo, 'o', 'r', EPIC_BRANCH, 'master', noopLogger);
+    await ensureEpicBaseBranchExists(octo, opts(EPIC_BRANCH));
     const create = octo.calls.find(c => c.endpoint === 'POST /repos/{owner}/{repo}/git/refs');
     assert.ok(create, 'should create the missing epic base branch');
     assert.strictEqual(create!.options.ref, `refs/heads/${EPIC_BRANCH}`);
@@ -67,11 +71,11 @@ describe('ensureEpicBaseBranchExists', () => {
       if (endpoint === 'POST /repos/{owner}/{repo}/git/refs') return httpError('Reference already exists', 422);
       throw new Error(`unexpected ${endpoint}`);
     });
-    await assert.doesNotReject(() => ensureEpicBaseBranchExists(octo, 'o', 'r', EPIC_BRANCH, 'master', noopLogger));
+    await assert.doesNotReject(() => ensureEpicBaseBranchExists(octo, opts(EPIC_BRANCH)));
   });
 
   test('propagates unexpected errors from the existence check', async () => {
     const octo = makeOctokit(() => httpError('Server Error', 500));
-    await assert.rejects(() => ensureEpicBaseBranchExists(octo, 'o', 'r', EPIC_BRANCH, 'master', noopLogger), /Server Error/);
+    await assert.rejects(() => ensureEpicBaseBranchExists(octo, opts(EPIC_BRANCH)), /Server Error/);
   });
 });

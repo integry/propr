@@ -95,14 +95,19 @@ export async function updateTaskTitleInStorage(
  * (e.g. a typo'd `base-develop`) is left to fail loudly rather than silently
  * fabricating a branch.
  */
+export interface EnsureEpicBaseBranchOptions {
+    owner: string;
+    repo: string;
+    baseBranch: string;
+    defaultBranch: string | undefined;
+    correlatedLogger: Logger;
+}
+
 export async function ensureEpicBaseBranchExists(
     octokit: Octokit,
-    owner: string,
-    repo: string,
-    baseBranch: string,
-    defaultBranch: string | undefined,
-    correlatedLogger: Logger
+    options: EnsureEpicBaseBranchOptions
 ): Promise<void> {
+    const { owner, repo, baseBranch, defaultBranch, correlatedLogger } = options;
     if (!isEpicBranch(baseBranch)) return;
 
     try {
