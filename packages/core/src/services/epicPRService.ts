@@ -57,6 +57,14 @@ export interface EnsureEpicPROptions {
   correlationId?: string;
 }
 
+interface ResolveEpicBaseBranchOptions {
+  octokit: Pick<OctokitLike, 'request'>;
+  owner: string;
+  repo: string;
+  explicitBase: string | undefined;
+  correlatedLogger: { warn: (obj: Record<string, unknown>, msg: string) => void };
+}
+
 /**
  * Regex pattern to detect Epic branch names.
  * Format: {id}-epic-{word1}-{word2}-{rand}
@@ -150,13 +158,13 @@ export function extractFirstIssueIdFromEpicBranch(branchName: string): number | 
  * explicit base when given, otherwise use the repository's actual default
  * branch, falling back to 'main' only if that lookup fails.
  */
-export async function resolveEpicBaseBranch(
-  octokit: Pick<OctokitLike, 'request'>,
-  owner: string,
-  repo: string,
-  explicitBase: string | undefined,
-  correlatedLogger: { warn: (obj: Record<string, unknown>, msg: string) => void }
-): Promise<string> {
+export async function resolveEpicBaseBranch({
+  octokit,
+  owner,
+  repo,
+  explicitBase,
+  correlatedLogger
+}: ResolveEpicBaseBranchOptions): Promise<string> {
   if (explicitBase) return explicitBase;
   try {
     const repoResponse = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
@@ -183,7 +191,13 @@ export async function ensureEpicPR(options: EnsureEpicPROptions): Promise<EpicPR
 
   const octokit = await getAuthenticatedOctokit();
 
-  const baseBranch = await resolveEpicBaseBranch(octokit, owner, repoName, options.baseBranch, correlatedLogger);
+  const baseBranch = await resolveEpicBaseBranch({
+    octokit,
+    owner,
+    repo: repoName,
+    explicitBase: options.baseBranch,
+    correlatedLogger
+  });
 
   // Generate the Epic branch name
   const branchName = generateEpicBranchName(firstIssueId, planName);
