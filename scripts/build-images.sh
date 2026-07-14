@@ -101,7 +101,7 @@ should_build() {
 
 uses_agent_base() {
   case "$1" in
-    agent-claude|agent-codex|agent-opencode|agent-vibe) return 0 ;;
+    agent-claude|agent-codex|agent-antigravity|agent-opencode|agent-vibe) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -109,7 +109,7 @@ uses_agent_base() {
 include_agent_base_when_needed() {
   [[ -z "$ONLY" ]] && return
   should_build "agent-base" && return
-  for agent_name in agent-claude agent-codex agent-opencode agent-vibe; do
+  for agent_name in agent-claude agent-codex agent-antigravity agent-opencode agent-vibe; do
     if should_build "$agent_name"; then
       ONLY="agent-base,$ONLY"
       return
