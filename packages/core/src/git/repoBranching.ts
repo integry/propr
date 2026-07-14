@@ -114,10 +114,36 @@ interface PushBranchOptions {
     repoUrl?: string;
     authToken?: string;
     remote?: string;
+    rebaseOnNonFastForward?: boolean;
 }
 
-export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<void> {
-    const { repoUrl, authToken, remote = 'origin' } = options;
+export interface PushBranchResult {
+    rebased: boolean;
+    commitHash?: string;
+}
+
+function isAuthenticationError(error: unknown): boolean {
+    const message = (error as Error).message || '';
+    return message.includes('Authentication failed') || message.includes('Invalid username or token');
+}
+
+function isNonFastForwardPushError(error: unknown): boolean {
+    const message = (error as Error).message || '';
+    return message.includes('[rejected] (fetch first)')
+        || message.includes('non-fast-forward')
+        || message.includes('Updates were rejected because the remote contains work that you do not');
+}
+
+async function getHeadCommitHash(git: SimpleGit): Promise<string | undefined> {
+    try {
+        return (await git.revparse(['HEAD'])).trim();
+    } catch {
+        return undefined;
+    }
+}
+
+export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<PushBranchResult> {
+    const { repoUrl, authToken, remote = 'origin', rebaseOnNonFastForward = false } = options;
 
     const git = simpleGit({ baseDir: worktreePath });
 
@@ -146,17 +172,64 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
         await git.push([remote, branchName, '--set-upstream']);
     };
 
+    const rebaseOntoRemoteAndPush = async (token: string | undefined, originalError: unknown): Promise<PushBranchResult> => {
+        logger.info({ worktreePath, branchName, remote }, 'Push rejected because remote branch advanced; rebasing local work onto latest remote head');
+
+        try {
+            await git.raw(['fetch', remote, `+refs/heads/${branchName}:refs/remotes/${remote}/${branchName}`]);
+            await git.raw(['rebase', `${remote}/${branchName}`]);
+        } catch (rebaseError) {
+            try {
+                await git.raw(['rebase', '--abort']);
+            } catch {
+                // Ignore abort failures; the rebase error below is the actionable failure.
+            }
+            const originalMessage = redactAuthenticatedGitUrl((originalError as Error).message || '');
+            const rebaseMessage = redactAuthenticatedGitUrl((rebaseError as Error).message || '');
+            throw new Error(`Push was rejected because ${remote}/${branchName} advanced, and automatic rebase failed.\n\nOriginal push error:\n${originalMessage}\n\nRebase error:\n${rebaseMessage}`);
+        }
+
+        await performPush(token);
+        const commitHash = await getHeadCommitHash(git);
+        logger.info({ worktreePath, branchName, remote, commitHash }, 'Branch pushed to remote successfully after rebase');
+        return { rebased: true, commitHash };
+    };
+
+    const performPushWithRebaseFallback = async (token: string | undefined): Promise<PushBranchResult | undefined> => {
+        try {
+            await performPush(token);
+            return undefined;
+        } catch (pushError) {
+            if (isNonFastForwardPushError(pushError) && rebaseOnNonFastForward) {
+                return await rebaseOntoRemoteAndPush(token, pushError);
+            }
+            throw pushError;
+        }
+    };
+
     try {
         await performPush(authToken);
         logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully');
+        return { rebased: false, commitHash: await getHeadCommitHash(git) };
     } catch (error) {
-        if ((error as Error).message && ((error as Error).message.includes('Authentication failed') || (error as Error).message.includes('Invalid username or token'))) {
+        if (isNonFastForwardPushError(error) && rebaseOnNonFastForward) {
+            try {
+                return await rebaseOntoRemoteAndPush(authToken, error);
+            } catch (retryError) {
+                handleError(retryError, `Failed to push branch ${branchName} from worktree ${worktreePath} after rebase`);
+                throw retryError;
+            }
+        }
+
+        if (isAuthenticationError(error)) {
             logger.info({ worktreePath, branchName }, 'Authentication error detected, attempting to refresh token');
             try {
                 const freshOctokit = await getAuthenticatedOctokit();
                 const freshAuth = await (freshOctokit as unknown as { auth: (opts: { type: string }) => Promise<InstallationAuth> }).auth({ type: "installation" });
-                await performPush(freshAuth.token);
+                const rebasedResult = await performPushWithRebaseFallback(freshAuth.token);
+                if (rebasedResult) return rebasedResult;
                 logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully after token refresh');
+                return { rebased: false, commitHash: await getHeadCommitHash(git) };
             } catch (retryError) {
                 handleError(retryError, `Failed to push branch ${branchName} from worktree ${worktreePath} after token refresh`);
                 throw retryError;

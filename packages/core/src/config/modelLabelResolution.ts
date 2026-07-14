@@ -232,12 +232,22 @@ function resolveAgentPrefixedLabel(
     return null;
 }
 
-function resolveStaticModelAliasLabel(lowerLabel: string): LlmLabelResolution | null {
+function resolveStaticModelAliasLabel(lowerLabel: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
     const model = MODEL_ALIASES[lowerLabel];
     if (!model) return null;
 
-    const defaultAgent = AgentRegistry.getInstance().getDefaultAgent();
-    return { agentAlias: defaultAgent?.config.alias || 'default', model };
+    const agentType = getAgentTypeFromModel(model);
+    const agent = findAgentByType(agentType, agents);
+    return { agentAlias: agent?.config.alias || agentType, model };
+}
+
+function resolveKnownModelAliasLabel(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
+    const resolvedModel = resolveModelAlias(label);
+    if (resolvedModel === label) return null;
+
+    const agentType = getAgentTypeFromModel(resolvedModel);
+    const agent = findAgentByType(agentType, agents);
+    return { agentAlias: agent?.config.alias || agentType, model: resolvedModel };
 }
 
 /**
@@ -303,9 +313,14 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         return agentPrefixMatch;
     }
 
-    const staticAliasMatch = resolveStaticModelAliasLabel(lowerLabel);
+    const staticAliasMatch = resolveStaticModelAliasLabel(lowerLabel, agents);
     if (staticAliasMatch) {
         return staticAliasMatch;
+    }
+
+    const knownAliasMatch = resolveKnownModelAliasLabel(label, agents);
+    if (knownAliasMatch) {
+        return knownAliasMatch;
     }
 
     const defaultAgent = registry.getDefaultAgent();

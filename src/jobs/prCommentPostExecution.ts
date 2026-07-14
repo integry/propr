@@ -79,7 +79,14 @@ async function commitAndPush(
     if (commitResult) {
         const repoUrl = getRepoUrl({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
         const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
-        await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
+        const pushResult = await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, {
+            repoUrl,
+            authToken: githubToken.token,
+            rebaseOnNonFastForward: true,
+        });
+        if (pushResult.rebased && pushResult.commitHash) {
+            commitResult.commitHash = pushResult.commitHash;
+        }
     }
 
     return { commitResult, changesSummary, commitMessage };
