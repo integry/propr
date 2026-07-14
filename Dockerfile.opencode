@@ -13,7 +13,7 @@ USER root
 # gosu provides the no-new-privileges-friendly user switch used by the
 # entrypoint. Keep a su-exec-compatible command name for the shared script.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu=1.14-1+b10 \
+    && apt-get install -y --no-install-recommends gosu \
     && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g opencode-ai@${CLI_VERSION}

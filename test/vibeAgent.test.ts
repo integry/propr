@@ -481,7 +481,7 @@ describe('VibeAgent Docker args', () => {
     test('Vibe image provides a su-exec-compatible helper for no-new-privileges user switching', () => {
         const dockerfile = fs.readFileSync(path.resolve('Dockerfile.vibe'), 'utf8');
 
-        assert.match(dockerfile, /apt-get install -y --no-install-recommends[^\n]*gosu/);
+        assert.match(dockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgosu\b/);
         assert.match(dockerfile, /ln -sf "\$\(command -v gosu\)" \/usr\/local\/bin\/su-exec/);
     });
 

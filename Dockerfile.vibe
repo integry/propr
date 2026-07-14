@@ -14,10 +14,8 @@ ARG CLI_VERSION=2.17.1
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash=5.2.15-2+b13 \
-        gosu=1.14-1+b10 \
-        python3=3.11.2-1+b1 \
-        sudo=1.9.13p3-1+deb12u4 \
+        gosu \
+        python3 \
     && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv-bin /uv /uvx /usr/local/bin/

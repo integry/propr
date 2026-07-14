@@ -11,11 +11,11 @@ See NOTICE for a higher-level summary and end-user obligations.
 
 ## Debian base image and system packages
 
-The shared `propr/agent-base` image is based on `node:20-slim` and installs
-system packages from Debian repositories, including bash, build-essential, git,
-curl, ca-certificates, sudo, iptables, procps, tini, ripgrep, gosu, and
-python3. GitHub CLI (`gh`) is installed from the official GitHub CLI apt
-repository at cli.github.com.
+The shared `propr/agent-base` image is based on `node:20-bookworm-slim` and
+the agent image family installs system packages from Debian repositories,
+including bash, build-essential, git, curl, ca-certificates, sudo, iptables,
+procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from
+the official GitHub CLI apt repository at cli.github.com.
 See the Debian package tracker for per-package licensing details:
 https://tracker.debian.org/
 

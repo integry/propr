@@ -100,6 +100,7 @@ should_build() {
 }
 
 uses_agent_base() {
+  # Keep this list in sync with IMAGES entries whose Dockerfiles use BASE_IMAGE.
   case "$1" in
     agent-claude|agent-codex|agent-antigravity|agent-opencode|agent-vibe) return 0 ;;
     *) return 1 ;;

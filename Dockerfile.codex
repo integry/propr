@@ -19,7 +19,7 @@ USER root
 # agent at runtime, so its absence only surfaces as a degraded "rg is not
 # installed here" message rather than a build failure.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ripgrep=13.0.0-4+b2 \
+    && apt-get install -y --no-install-recommends ripgrep \
     && rm -rf /var/lib/apt/lists/*
 # Smoke test: fail the build now if rg ever disappears from the image.
 RUN rg --version

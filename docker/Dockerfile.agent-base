@@ -1,9 +1,9 @@
 # Shared base for propr/agent-* images.
 #
-# Contains everything common to Claude / Codex / OpenCode / Vibe agent containers:
-# system tools, GitHub CLI, firewall script, gh wrapper, third-party notices.
-# Each concrete agent image extends this with one `npm install -g` and its
-# own entrypoint.
+# Contains everything common to Claude / Codex / Antigravity / OpenCode / Vibe
+# agent containers: system tools, GitHub CLI, firewall script, gh wrapper,
+# third-party notices. Each concrete agent image extends this with its own CLI
+# install and entrypoint.
 #
 # Debian slim provides glibc compatibility for common user-installed tooling,
 # prebuilt binaries, native npm addons, Python wheels, and release-binary CLIs.
@@ -11,7 +11,7 @@
 # Build:
 #   docker build -f docker/Dockerfile.agent-base -t propr/agent-base .
 
-FROM node:20-slim
+FROM node:20-bookworm-slim
 
 # System dependencies:
 #   GNU coreutils/env is provided by the Debian base as an Essential package.
@@ -24,25 +24,25 @@ FROM node:20-slim
 #   tini                        — PID 1 for clean signal handling
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates=20230311+deb12u1 \
-        curl=7.88.1-10+deb12u15 \
+        ca-certificates \
+        curl \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash=5.2.15-2+b13 \
-        build-essential=12.9 \
-        git=1:2.39.5-0+deb12u3 \
-        gh=2.96.0 \
-        iptables=1.8.9-2 \
-        procps=2:4.0.2-3 \
-        sudo=1.9.13p3-1+deb12u4 \
-        tini=0.19.0-1+b3 \
+        bash \
+        build-essential \
+        git \
+        gh \
+        iptables \
+        procps \
+        sudo \
+        tini \
     && rm -rf /var/lib/apt/lists/*
 
-# node:20-slim already has a `node` user (UID 1000). Grant it passwordless sudo
+# node:20-bookworm-slim already has a `node` user (UID 1000). Grant it passwordless sudo
 # for the entrypoint scripts that need to adjust file ownership before dropping privs.
 RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
