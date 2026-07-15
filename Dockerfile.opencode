@@ -8,15 +8,16 @@ FROM ${BASE_IMAGE}
 # Keep this default aligned with AGENT_DEFAULT_VERSIONS.opencode for
 # reproducible direct builds. scripts/build-images.sh may override it.
 ARG CLI_VERSION=1.17.10
+ARG GOSU_VERSION=1.14-1+b10
 
 USER root
 # gosu provides the no-new-privileges-friendly user switch used by the
 # entrypoint. Keep a su-exec-compatible command name for the shared script.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
+    && apt-get install -y --no-install-recommends gosu="${GOSU_VERSION}" \
     && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install -g opencode-ai@${CLI_VERSION}
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g opencode-ai@${CLI_VERSION}
 # Smoke-test the binary and verify the installed CLI exposes the flags the
 # entrypoint relies on. Keep the checks tolerant of help text indentation and
 # wrapping; pin CLI_VERSION above if opencode-ai changes its CLI contract.

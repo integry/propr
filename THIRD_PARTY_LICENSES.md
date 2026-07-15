@@ -4,7 +4,7 @@ Third-Party Licenses
 This file lists every third-party package bundled in the Propr Docker images,
 its license, and (where required) the full license text.
 
-Generated: 2026-06-30
+Generated: 2026-07-15
 See NOTICE for a higher-level summary and end-user obligations.
 
 ---
@@ -18,6 +18,16 @@ procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from
 the official GitHub CLI apt repository at cli.github.com.
 See the Debian package tracker for per-package licensing details:
 https://tracker.debian.org/
+
+---
+
+## Alpine base image and system packages
+
+The `propr/app` and `propr/launcher` images still use Alpine Linux base images
+and install Alpine system packages including git, curl, jq, sudo, docker-cli,
+tini, python3, make, and g++. See Alpine package metadata for per-package
+licensing details:
+https://pkgs.alpinelinux.org/packages
 
 ---
 

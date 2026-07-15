@@ -10,12 +10,14 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 FROM ${BASE_IMAGE}
 
 ARG CLI_VERSION=2.17.1
+ARG GOSU_VERSION=1.14-1+b10
+ARG PYTHON3_VERSION=3.11.2-1+b1
 
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        gosu \
-        python3 \
+        gosu="${GOSU_VERSION}" \
+        python3="${PYTHON3_VERSION}" \
     && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv-bin /uv /uvx /usr/local/bin/

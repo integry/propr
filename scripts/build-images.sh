@@ -109,9 +109,12 @@ uses_agent_base() {
 
 include_agent_base_when_needed() {
   [[ -z "$ONLY" ]] && return
-  should_build "agent-base" && return
-  for agent_name in agent-claude agent-codex agent-antigravity agent-opencode agent-vibe; do
-    if should_build "$agent_name"; then
+  IFS=',' read -ra SELECTED <<< "$ONLY"
+  for selected_name in "${SELECTED[@]}"; do
+    [[ "$selected_name" == "agent-base" ]] && return
+  done
+  for selected_name in "${SELECTED[@]}"; do
+    if uses_agent_base "$selected_name"; then
       ONLY="agent-base,$ONLY"
       return
     fi

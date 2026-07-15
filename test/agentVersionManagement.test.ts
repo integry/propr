@@ -79,20 +79,26 @@ describe('agent version management', () => {
         assert.match(agentBaseDockerfile, /^FROM node:20-bookworm-slim$/m);
         assert.match(agentBaseDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
         assert.match(agentBaseDockerfile, /signed-by=\/etc\/apt\/keyrings\/githubcli-archive-keyring\.gpg/);
-        assert.match(agentBaseDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bca-certificates\b[\s\S]*\bcurl\b/);
-        assert.match(agentBaseDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bbuild-essential\b[\s\S]*\bgh\b[\s\S]*\btini\b/);
+        assert.match(agentBaseDockerfile, /GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b/);
+        assert.match(agentBaseDockerfile, /sha256sum -c -/);
+        assert.match(agentBaseDockerfile, /ca-certificates="\$\{CA_CERTIFICATES_VERSION\}"/);
+        assert.match(agentBaseDockerfile, /curl="\$\{CURL_VERSION\}"/);
+        assert.match(agentBaseDockerfile, /build-essential="\$\{BUILD_ESSENTIAL_VERSION\}"/);
+        assert.match(agentBaseDockerfile, /gh="\$\{GH_VERSION\}"/);
+        assert.match(agentBaseDockerfile, /tini="\$\{TINI_VERSION\}"/);
         assert.match(antigravityDockerfile, /^ARG BASE_IMAGE=propr\/agent-base:latest$/m);
         assert.match(antigravityDockerfile, /^FROM \${BASE_IMAGE}$/m);
         assert.doesNotMatch(antigravityDockerfile, /apt-get install/);
-        assert.match(codexDockerfile, /apt-get install -y --no-install-recommends ripgrep/);
-        assert.match(opencodeDockerfile, /apt-get install -y --no-install-recommends gosu/);
-        assert.match(vibeDockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgosu\b[\s\S]*\bpython3\b/);
-        assert.doesNotMatch(vibeDockerfile, /\bbash=/);
-        assert.doesNotMatch(vibeDockerfile, /\bsudo=/);
+        assert.match(codexDockerfile, /ARG RIPGREP_VERSION=13\.0\.0-4\+b2/);
+        assert.match(codexDockerfile, /ripgrep="\$\{RIPGREP_VERSION\}"/);
+        assert.match(opencodeDockerfile, /ARG GOSU_VERSION=1\.14-1\+b10/);
+        assert.match(opencodeDockerfile, /gosu="\$\{GOSU_VERSION\}"/);
+        assert.match(opencodeDockerfile, /rm -rf \/var\/lib\/apt\/lists\/\*\nRUN npm install -g opencode-ai@\$\{CLI_VERSION\}/);
+        assert.match(vibeDockerfile, /gosu="\$\{GOSU_VERSION\}"/);
+        assert.match(vibeDockerfile, /python3="\$\{PYTHON3_VERSION\}"/);
 
         for (const dockerfile of [agentBaseDockerfile, antigravityDockerfile, codexDockerfile, opencodeDockerfile, vibeDockerfile]) {
             assert.doesNotMatch(dockerfile, /\bapk add\b/);
-            assert.doesNotMatch(dockerfile, /\b(?:bash|curl|sudo|ripgrep|gosu|python3|ca-certificates|build-essential|gh|tini)=[0-9]/);
         }
     });
 

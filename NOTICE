@@ -62,7 +62,12 @@ Bundled third-party components
    Various open-source licenses. See the Debian package tracker for
    per-package details: https://tracker.debian.org/
 
-7. Node.js 20 runtime
+7. Alpine Linux base image and system packages in the Propr app and launcher
+   images (git, curl, jq, sudo, docker-cli, tini, python3, make, g++)
+   Various open-source licenses. See Alpine package metadata for per-package
+   details: https://pkgs.alpinelinux.org/packages
+
+8. Node.js 20 runtime
    License:    MIT (Node.js itself) plus various licenses for bundled
                components (V8, libuv, OpenSSL, etc.)
    Upstream:   https://nodejs.org/

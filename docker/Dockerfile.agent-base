@@ -13,6 +13,18 @@
 
 FROM node:20-bookworm-slim
 
+ARG BASH_VERSION=5.2.15-2+b13
+ARG BUILD_ESSENTIAL_VERSION=12.9
+ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
+ARG CURL_VERSION=7.88.1-10+deb12u15
+ARG GH_VERSION=2.96.0
+ARG GIT_VERSION=1:2.39.5-0+deb12u3
+ARG IPTABLES_VERSION=1.8.9-2
+ARG PROCPS_VERSION=2:4.0.2-3
+ARG SUDO_VERSION=1.9.13p3-1+deb12u4
+ARG TINI_VERSION=0.19.0-1+b3
+ARG GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
+
 # System dependencies:
 #   GNU coreutils/env is provided by the Debian base as an Essential package.
 #   git, curl, ca-certificates — source + network
@@ -24,22 +36,23 @@ FROM node:20-bookworm-slim
 #   tini                        — PID 1 for clean signal handling
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
+        ca-certificates="${CA_CERTIFICATES_VERSION}" \
+        curl="${CURL_VERSION}" \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && echo "${GITHUBCLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash \
-        build-essential \
-        git \
-        gh \
-        iptables \
-        procps \
-        sudo \
-        tini \
+        bash="${BASH_VERSION}" \
+        build-essential="${BUILD_ESSENTIAL_VERSION}" \
+        gh="${GH_VERSION}" \
+        git="${GIT_VERSION}" \
+        iptables="${IPTABLES_VERSION}" \
+        procps="${PROCPS_VERSION}" \
+        sudo="${SUDO_VERSION}" \
+        tini="${TINI_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 # node:20-bookworm-slim already has a `node` user (UID 1000). Grant it passwordless sudo
