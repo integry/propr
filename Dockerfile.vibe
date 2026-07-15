@@ -22,7 +22,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv-bin /uv /uvx /usr/local/bin/
 ENV UV_TOOL_DIR=/opt/uv/tools \
-    UV_TOOL_BIN_DIR=/usr/local/bin
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python
 RUN if [ "$CLI_VERSION" = "latest" ]; then \
       uv tool install mistral-vibe; \
     elif printf '%s' "$CLI_VERSION" | grep -Eq '^[0-9A-Za-z][A-Za-z0-9.!+_-]*$'; then \
