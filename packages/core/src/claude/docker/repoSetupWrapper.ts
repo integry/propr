@@ -47,8 +47,27 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     fi
 fi
 
-exec "$entrypoint" "$@"
+if ! command -v setpriv >/dev/null 2>&1; then
+    echo "Cannot secure agent process: setpriv is not installed" >&2
+    exit 1
+fi
+
+exec setpriv --no-new-privs "$entrypoint" "$@"
 `.trim();
+
+function removeNoNewPrivilegesSecurityOpt(args: string[]): string[] {
+    const filtered: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index];
+        if (arg === '--security-opt' && args[index + 1] === 'no-new-privileges') {
+            index += 1;
+            continue;
+        }
+        if (arg === '--security-opt=no-new-privileges') continue;
+        filtered.push(arg);
+    }
+    return filtered;
+}
 
 export function wrapDockerRunArgsWithRepoSetup(
     dockerArgs: string[],
@@ -60,7 +79,9 @@ export function wrapDockerRunArgsWithRepoSetup(
         throw new Error(`Cannot enable repo setup hook: Docker image '${dockerImage}' was not found in docker run arguments`);
     }
 
-    const beforeImage = dockerArgs.slice(0, imageIndex);
+    // Repo setup is the only phase allowed to elevate through sudo. Reapply
+    // no_new_privs inside the container before starting the agent process.
+    const beforeImage = removeNoNewPrivilegesSecurityOpt(dockerArgs.slice(0, imageIndex));
     const afterImage = dockerArgs.slice(imageIndex + 1);
     const cacheDir = `${DEFAULT_CACHE_ROOT}/${agentType}`;
     const setupEnv = [

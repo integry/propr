@@ -1,0 +1,92 @@
+import assert from 'node:assert/strict';
+import { after, describe, test } from 'node:test';
+import type { Request, Response } from 'express';
+import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
+import { closeConnection, type AgentRuntimePackageState } from '@propr/core';
+
+after(async () => closeConnection());
+
+const initialState = (): AgentRuntimePackageState => ({
+    installationId: 'test-installation',
+    packages: [],
+    activePackages: [],
+    status: 'disabled',
+    images: {},
+    updatedAt: '2026-07-15T00:00:00.000Z'
+});
+
+function responseRecorder() {
+    const record: { status: number; body?: unknown } = { status: 200 };
+    const response = {
+        status(code: number) { record.status = code; return response; },
+        json(body: unknown) { record.body = body; return response; }
+    } as unknown as Response;
+    return { response, record };
+}
+
+describe('agent runtime package routes', () => {
+    test('queues a validated package profile for every configured agent image', async () => {
+        let state = initialState();
+        let queued: unknown;
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: { add: async (_name: string, data: unknown) => { queued = data; } } as never,
+            services: {
+                loadState: async () => state,
+                loadAgents: async () => [
+                    { dockerImage: 'propr/agent-codex:latest' },
+                    { dockerImage: 'propr/agent-vibe:latest' },
+                    { dockerImage: 'propr/agent-codex:latest' }
+                ] as never,
+                requestBuild: async (packages, baseImages) => {
+                    state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-1' };
+                    return { buildId: 'build-1', packages: packages as string[], baseImages };
+                }
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.putRuntimePackages({ body: { packages: ['chromium'] }, user: { username: 'admin' } } as unknown as Request, response);
+
+        assert.equal(record.status, 202);
+        assert.deepEqual(queued, {
+            buildId: 'build-1',
+            packages: ['chromium'],
+            baseImages: ['propr/agent-codex:latest', 'propr/agent-vibe:latest']
+        });
+        assert.equal((record.body as AgentRuntimePackageState).status, 'pending');
+    });
+
+    test('persists a failed state when queue submission fails', async () => {
+        let state: AgentRuntimePackageState = { ...initialState(), packages: ['jq'], status: 'pending', buildId: 'build-2' };
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: { add: async () => { throw new Error('redis unavailable'); } } as never,
+            services: {
+                loadState: async () => state,
+                loadAgents: async () => [{ dockerImage: 'propr/agent-codex:latest' }] as never,
+                requestBuild: async (_packages, baseImages) => ({ buildId: 'build-2', packages: ['jq'], baseImages }),
+                saveState: async next => { state = next; }
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' } } as unknown as Request, response);
+
+        assert.equal(record.status, 500);
+        assert.equal(state.status, 'failed');
+        assert.equal(state.error, 'redis unavailable');
+    });
+
+    test('enforces PROPR_ADMIN_USERS when configured', async () => {
+        const previous = process.env.PROPR_ADMIN_USERS;
+        process.env.PROPR_ADMIN_USERS = 'owner';
+        try {
+            const routes = createAgentRuntimeRoutes({ runtimeBuildQueue: {} as never });
+            const { response, record } = responseRecorder();
+            await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' } } as unknown as Request, response);
+            assert.equal(record.status, 403);
+        } finally {
+            if (previous === undefined) delete process.env.PROPR_ADMIN_USERS;
+            else process.env.PROPR_ADMIN_USERS = previous;
+        }
+    });
+});

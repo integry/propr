@@ -14,6 +14,7 @@ import { shutdownQueue } from '../queue/taskQueue.js';
 import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
+import { resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -254,7 +255,7 @@ export class AgentRegistry {
                 contentHash
             );
             if (result.success) {
-                config.dockerImage = result.imageTag || expectedImageTag;
+                config.dockerImage = await resolveAgentRuntimeImage(result.imageTag || expectedImageTag);
             }
             return result.success;
         }
@@ -263,6 +264,7 @@ export class AgentRegistry {
         // This matters for production images like propr/agent-claude:latest.
         // The versioned-build path below only works when Dockerfiles are present.
         if (config.dockerImage && await ensureAgentDockerImage(config.type, config.dockerImage)) {
+            config.dockerImage = await resolveAgentRuntimeImage(config.dockerImage);
             return true;
         }
 
@@ -277,6 +279,7 @@ export class AgentRegistry {
             if (result.success && result.imageTag !== config.dockerImage) {
                 config.dockerImage = result.imageTag;
             }
+            if (result.success) config.dockerImage = await resolveAgentRuntimeImage(config.dockerImage);
             return result.success;
         }
         return false;
@@ -345,6 +348,7 @@ export class AgentRegistry {
                 dockerImage: defaultConfig.dockerImage
             }, 'Failed to ensure Docker image for default agent');
         }
+        if (imageReady) defaultConfig.dockerImage = await resolveAgentRuntimeImage(defaultConfig.dockerImage);
 
         const agent = new ClaudeAgent(defaultConfig);
         this.agents.set(defaultConfig.id, agent);

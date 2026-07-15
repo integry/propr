@@ -32,6 +32,7 @@ import {
   createTunnelCommand,
   createTankCommand,
   createRelayCommand,
+  createRuntimeCommand,
   runChecks,
   printChecks,
   STACK_CONFIG_CHECK_NAME,
@@ -143,7 +144,7 @@ Examples:
   $ propr remote-status
 
 Command Groups:
-  Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank
+  Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank, runtime
   GitHub Relay:   relay [enroll|list|revoke]
   Configuration:  config, remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
@@ -311,6 +312,7 @@ program.addCommand(createDocsCommand());
 program.addCommand(createTunnelCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
+program.addCommand(createRuntimeCommand());
 program.addCommand(createConfigCommand());
 
 // Setup + backend client command groups

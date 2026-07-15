@@ -33,6 +33,7 @@ import {
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
+  createAgentRuntimeRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
@@ -48,7 +49,8 @@ import {
   handleCommentEdited,
   processCommentEvent,
   closeUltrafixStateRedis,
-  getActiveTasksForPR
+  getActiveTasksForPR,
+  AGENT_RUNTIME_BUILD_QUEUE_NAME
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -176,6 +178,7 @@ setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
+let runtimeBuildQueue: Queue;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -194,6 +197,7 @@ async function initRedis(): Promise<void> {
   if (demoMode) {
     redisClient = createDemoRedisClient();
     taskQueue = createDemoTaskQueue();
+    runtimeBuildQueue = createDemoTaskQueue();
     console.log('Demo mode: Redis and task queue clients are disabled; using read-only in-memory facades');
     return;
   }
@@ -209,6 +213,10 @@ async function initRedis(): Promise<void> {
   taskQueue = new Queue(queueName, {
     connection: { ...redisRuntimeConfig.options }
   });
+  runtimeBuildQueue = new Queue(AGENT_RUNTIME_BUILD_QUEUE_NAME, {
+    connection: { ...redisRuntimeConfig.options }
+  });
+  await runtimeBuildQueue.setGlobalConcurrency(1);
   
   console.log('Connected to Redis');
 }
@@ -244,6 +252,7 @@ function setupRoutes(): void {
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
+  const agentRuntimeRoutes = createAgentRuntimeRoutes({ runtimeBuildQueue });
   const register = (method: RouteMethod, path: string, ...handlers: RouteHandler[]): void => {
     app[method](path, ...handlers);
   };
@@ -277,6 +286,10 @@ function setupRoutes(): void {
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
     ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
+    ['get', '/api/agent-runtime/packages', agentRuntimeRoutes.getRuntimePackages],
+    ['post', '/api/agent-runtime/packages/validate', agentRuntimeRoutes.validateRuntimePackages],
+    ['put', '/api/agent-runtime/packages', agentRuntimeRoutes.putRuntimePackages],
+    ['post', '/api/agent-runtime/packages/apply', agentRuntimeRoutes.applyRuntimePackages],
   ];
   assertNoDuplicateRoutes(routes);
   routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
@@ -434,6 +447,7 @@ async function start(): Promise<void> {
       console.log('SIGTERM received, shutting down gracefully...');
       const shutdownTasks: ShutdownTask[] = [
         { name: 'task queue', close: () => taskQueue.close() },
+        { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
         { name: 'redis client', close: () => redisClient.quit() }
       ];
       if (!demoMode) {

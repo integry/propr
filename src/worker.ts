@@ -11,6 +11,11 @@ import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
 import { validateAttachmentBaseUrlConfig } from '@propr/core';
+import {
+    AGENT_RUNTIME_BUILD_QUEUE_NAME,
+    buildAgentRuntimePackageProfile,
+    type AgentRuntimeBuildJobData
+} from '@propr/core';
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
@@ -307,6 +312,35 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         }
     }, { concurrency: workerConcurrency });
 
+    const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
+        AGENT_RUNTIME_BUILD_QUEUE_NAME,
+        async (job) => {
+            logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
+            await job.updateProgress(5);
+            const state = await buildAgentRuntimePackageProfile(job.data);
+            if (state.buildId !== job.data.buildId) {
+                logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
+                return state;
+            }
+            await job.updateProgress(90);
+            await AgentRegistry.getInstance().refresh();
+            await job.updateProgress(100);
+            logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
+            return state;
+        },
+        {
+            connection: {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                maxRetriesPerRequest: null
+            },
+            concurrency: 1
+        }
+    );
+    runtimeBuildWorker.on('failed', (job, error) => {
+        logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
+    });
+
     process.on('SIGINT', async () => {
         logger.info('Worker received SIGINT, shutting down gracefully...');
         await heartbeatRedis.srem('system:status:workers', workerId);
@@ -314,6 +348,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await worker.close();
+        await runtimeBuildWorker.close();
         process.exit(0);
     });
 
@@ -324,6 +359,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await worker.close();
+        await runtimeBuildWorker.close();
         process.exit(0);
     });
 

@@ -120,6 +120,20 @@ Configuration is stored in `~/.propr/config.json`.
 
 Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution — edit it to install task-specific tools (for example `sudo apt-get update && sudo apt-get install -y --no-install-recommends jq`).
 
+## Agent Runtime Packages
+
+Installation-wide Debian packages are built into local derivatives of every configured agent image. The previous profile remains active until every derived image builds successfully.
+
+```bash
+propr runtime packages list
+propr runtime packages add chromium ffmpeg --wait
+propr runtime packages remove ffmpeg --wait
+propr runtime packages apply --wait
+propr runtime status --json
+```
+
+Use runtime packages for tools needed across repositories. Keep repository-specific or experimental dependencies in `.propr/setup.sh`; those are installed in each fresh execution container.
+
 ## Plans
 
 ```bash

@@ -228,6 +228,22 @@ export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaud
 export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError, ensureVersionedAgentImage } from './claude/docker/dockerExecutor.js';
 export { cleanupUnusedAgentImages, listAgentImages } from './claude/docker/dockerImageManager.js';
 export type { VersionedImageBuildResult } from './claude/docker/dockerExecutor.js';
+export {
+    AGENT_RUNTIME_BUILD_QUEUE_NAME,
+    buildAgentRuntimePackageProfile,
+    loadAgentRuntimePackageState,
+    requestAgentRuntimePackageBuild,
+    resolveAgentRuntimeImage,
+    saveAgentRuntimePackageState,
+    validateAgentRuntimePackages
+} from './agents/runtime/agentRuntimePackages.js';
+export type {
+    AgentRuntimeBuildJobData,
+    AgentRuntimeBuildStatus,
+    AgentRuntimeImageRecord,
+    AgentRuntimePackageState,
+    RuntimePackageValidation
+} from './agents/runtime/agentRuntimePackages.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
