@@ -7,13 +7,14 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import logger from '../../utils/logger.js';
-import type { AgentType } from '../types.js';
+import type { AgentConfig, AgentType } from '../types.js';
 import { VERSIONED_AGENT_IMAGE_NAMES } from '../constants.js';
 import type { AvailableVersionsResponse, CliVersionType } from './types.js';
 import {
     AGENT_CLI_PACKAGES,
     AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
+    AGENT_IMAGE_NAMES,
     DOCKER_CONTENT_FILES
 } from './types.js';
 import {
@@ -258,6 +259,25 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
 
     const fullHash = hash.digest('hex');
     return fullHash.substring(0, 6);
+}
+
+/**
+ * Resolves a managed versioned config to the tag produced by the current
+ * Docker build inputs. Custom image references are returned unchanged.
+ */
+export function resolveConfiguredAgentBaseImage(
+    config: Pick<AgentConfig, 'type' | 'dockerImage' | 'cliVersionType' | 'cliVersionResolved'>,
+    basePath: string = PROJECT_ROOT
+): string {
+    if (!config.cliVersionType || !config.cliVersionResolved) return config.dockerImage;
+    const managedImageName = AGENT_IMAGE_NAMES[config.type];
+    if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return config.dockerImage;
+    const configuredTag = config.dockerImage.slice(managedImageName.length + 1);
+    const versionTag = getDockerTagComponent(config.cliVersionResolved);
+    if (!configuredTag.startsWith(`${versionTag}-`) || !/-[0-9a-f]{6}$/i.test(configuredTag)) {
+        return config.dockerImage;
+    }
+    return `${managedImageName}:${versionTag}-${computeContentHash(config.type, basePath)}`;
 }
 
 /**

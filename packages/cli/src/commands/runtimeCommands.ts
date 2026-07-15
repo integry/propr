@@ -52,7 +52,7 @@ function handleError(error: unknown): never {
 
 export function createRuntimeCommand(): Command {
   const runtime = new Command('runtime').description('Manage the installation agent runtime');
-  const packages = new Command('packages').description('Manage installation-wide Debian packages');
+  const packages = new Command('packages').description('Manage installation-wide system packages');
 
   packages.command('list')
     .description('Show desired and active runtime packages')

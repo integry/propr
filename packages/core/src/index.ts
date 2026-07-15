@@ -231,6 +231,7 @@ export type { VersionedImageBuildResult } from './claude/docker/dockerExecutor.j
 export {
     AGENT_RUNTIME_BUILD_QUEUE_NAME,
     buildAgentRuntimePackageProfile,
+    inspectAgentRuntimeBaseImage,
     loadAgentRuntimePackageState,
     requestAgentRuntimePackageBuild,
     resolveAgentRuntimeImage,
@@ -240,10 +241,23 @@ export {
 export type {
     AgentRuntimeBuildJobData,
     AgentRuntimeBuildStatus,
+    AgentRuntimeBaseImageInspection,
     AgentRuntimeImageRecord,
+    AgentRuntimePackageManager,
     AgentRuntimePackageState,
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
+export {
+    clearAgentRuntimePackageCatalogCache,
+    searchAgentRuntimePackages,
+    validateAgentRuntimePackageAvailability
+} from './agents/runtime/agentRuntimePackageCatalog.js';
+export type {
+    AgentRuntimePackageAvailability,
+    AgentRuntimePackageAvailabilityResult,
+    AgentRuntimePackageSearchResult,
+    AgentRuntimePackageSource
+} from './agents/runtime/agentRuntimePackageCatalog.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 

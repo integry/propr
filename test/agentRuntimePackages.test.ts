@@ -5,6 +5,7 @@ import {
     getAgentRuntimeImageTag,
     validateAgentRuntimePackages
 } from '../packages/core/src/agents/runtime/agentRuntimePackages.js';
+import { resolveConfiguredAgentBaseImage } from '../packages/core/src/agents/version/versionService.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 
 after(async () => closeConnection());
@@ -57,6 +58,31 @@ describe('agent runtime package profiles', () => {
         assert.match(dockerfile, /rm -rf \/var\/lib\/apt\/lists\/\*/);
         assert.match(dockerfile, /USER node\n$/);
         assert.doesNotMatch(dockerfile, /^\+/m);
+    });
+
+    test('generates an apk install layer for Alpine-based custom images', () => {
+        const dockerfile = buildAgentRuntimeDockerfile(
+            'custom/agent:alpine',
+            ['chromium', 'ffmpeg'],
+            'node',
+            'apk'
+        );
+
+        assert.match(dockerfile, /RUN apk add --no-cache chromium ffmpeg/);
+        assert.doesNotMatch(dockerfile, /apt-get/);
+        assert.match(dockerfile, /USER node\n$/);
+    });
+
+    test('resolves stale managed hashes to the current build inputs', () => {
+        const resolved = resolveConfiguredAgentBaseImage({
+            type: 'claude',
+            dockerImage: 'propr/agent-claude:2.1.170-b41d7a',
+            cliVersionType: 'default',
+            cliVersionResolved: '2.1.170'
+        }, process.cwd());
+
+        assert.match(resolved, /^propr\/agent-claude:2\.1\.170-[0-9a-f]{6}$/);
+        assert.notEqual(resolved, 'propr/agent-claude:2.1.170-b41d7a');
     });
 
     test('runtime tags are stable and change with the base digest or packages', () => {

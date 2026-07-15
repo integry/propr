@@ -10,13 +10,24 @@ const PACKAGE_SPEC = /^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?(?:=[A-Za-z0-
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 const SAFE_USER = /^[A-Za-z0-9_.:-]+$/;
 const INSTALLATION_ID = /^[a-z0-9-]{1,64}$/;
+const baseImageInspectionCache = new Map<string, AgentRuntimeBaseImageInspection>();
 
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
+export type AgentRuntimePackageManager = 'apt' | 'apk';
+
+export interface AgentRuntimeBaseImageInspection {
+    id: string;
+    user: string;
+    packageManager: AgentRuntimePackageManager;
+    packageSourceFingerprint: string;
+    osName: string;
+}
 
 export interface AgentRuntimeImageRecord {
     baseImage: string;
     baseImageId: string;
     image: string;
+    packageManager: AgentRuntimePackageManager;
     builtAt: string;
 }
 
@@ -69,13 +80,13 @@ function normalizePackageList(packages: unknown): string[] {
 
 export function validateAgentRuntimePackages(packages: unknown): RuntimePackageValidation {
     if (!Array.isArray(packages)) {
-        return { valid: false, packages: [], errors: ['packages must be an array of Debian package names'] };
+        return { valid: false, packages: [], errors: ['packages must be an array of system package names'] };
     }
     const normalized = normalizePackageList(packages);
     const errors: string[] = [];
     if (normalized.length > MAX_PACKAGES) errors.push(`at most ${MAX_PACKAGES} packages may be configured`);
     for (const packageSpec of normalized) {
-        if (!PACKAGE_SPEC.test(packageSpec)) errors.push(`invalid Debian package spec: ${packageSpec}`);
+        if (!PACKAGE_SPEC.test(packageSpec)) errors.push(`invalid package spec: ${packageSpec}`);
     }
     return { valid: errors.length === 0, packages: normalized, errors };
 }
@@ -142,7 +153,7 @@ export async function requestAgentRuntimePackageBuild(
     };
 }
 
-async function inspectBaseImage(baseImage: string): Promise<{ id: string; user: string }> {
+export async function inspectAgentRuntimeBaseImage(baseImage: string): Promise<AgentRuntimeBaseImageInspection> {
     if (!IMAGE_REFERENCE.test(baseImage)) throw new Error(`Invalid agent image reference: ${baseImage}`);
     const result = await executeDockerCommand('docker', [
         'image', 'inspect', baseImage, '--format', '{{.Id}}\t{{json .Config.User}}'
@@ -150,9 +161,48 @@ async function inspectBaseImage(baseImage: string): Promise<{ id: string; user: 
     if (result.exitCode !== 0) throw new Error(`Agent image ${baseImage} is not available: ${result.stderr.trim()}`);
     const [id, encodedUser = '""'] = result.stdout.trim().split('\t');
     let user = '';
-    try { user = JSON.parse(encodedUser) as string; } catch { user = ''; }
+    try {
+        const parsed = JSON.parse(encodedUser) as unknown;
+        user = typeof parsed === 'string' ? parsed : '';
+    } catch { user = ''; }
     if (user && !SAFE_USER.test(user)) throw new Error(`Agent image ${baseImage} has an unsupported USER value`);
-    return { id, user };
+    const cached = baseImageInspectionCache.get(id);
+    if (cached) return { ...cached, user };
+
+    const environment = await executeDockerCommand('docker', [
+        'run', '--rm', '--user', 'root', '--entrypoint', 'sh', baseImage, '-c',
+        `set -eu
+if command -v apt-get >/dev/null 2>&1; then
+  echo apt
+  cat /etc/os-release 2>/dev/null || true
+  cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+elif command -v apk >/dev/null 2>&1; then
+  echo apk
+  cat /etc/os-release 2>/dev/null || true
+  cat /etc/apk/repositories 2>/dev/null || true
+else
+  echo unsupported
+  exit 3
+fi`
+    ], { timeout: 30000 });
+    if (environment.exitCode !== 0) {
+        throw new Error(`Agent image ${baseImage} does not provide a supported package manager (apt or apk)`);
+    }
+    const [managerLine, ...metadataLines] = environment.stdout.trim().split('\n');
+    if (managerLine !== 'apt' && managerLine !== 'apk') {
+        throw new Error(`Agent image ${baseImage} reported an unsupported package manager: ${managerLine || 'unknown'}`);
+    }
+    const metadata = metadataLines.join('\n');
+    const prettyName = metadataLines.find(line => line.startsWith('PRETTY_NAME='))?.slice('PRETTY_NAME='.length);
+    const inspection: AgentRuntimeBaseImageInspection = {
+        id,
+        user,
+        packageManager: managerLine,
+        packageSourceFingerprint: crypto.createHash('sha256').update(`${managerLine}\n${metadata}`).digest('hex').slice(0, 16),
+        osName: prettyName?.replace(/^"|"$/g, '') || managerLine
+    };
+    baseImageInspectionCache.set(id, inspection);
+    return inspection;
 }
 
 export function getAgentRuntimeImageTag(
@@ -172,8 +222,19 @@ export function getAgentRuntimeImageTag(
 export function buildAgentRuntimeDockerfile(
     baseImage: string,
     packages: string[],
-    finalUser: string
+    finalUser: string,
+    packageManager: AgentRuntimePackageManager = 'apt'
 ): string {
+    if (packageManager === 'apk') {
+        const lines = [
+            `FROM ${baseImage}`,
+            'LABEL dev.propr.agent-runtime="true"',
+            'USER root',
+            `RUN apk add --no-cache ${packages.join(' ')}`
+        ];
+        if (finalUser) lines.push(`USER ${finalUser}`);
+        return `${lines.join('\n')}\n`;
+    }
     const packageLines = packages.map(packageSpec => `        ${packageSpec} \\`).join('\n');
     const restoreUser = finalUser ? `\nUSER ${finalUser}` : '';
     return `FROM ${baseImage}\nLABEL dev.propr.agent-runtime="true"\nUSER root\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends \\\n${packageLines}\n    && rm -rf /var/lib/apt/lists/*${restoreUser}\n`;
@@ -189,11 +250,11 @@ async function buildRuntimeImage(
     packages: string[],
     installationId: string
 ): Promise<{ record: AgentRuntimeImageRecord; log: string }> {
-    const { id: baseImageId, user } = await inspectBaseImage(baseImage);
+    const { id: baseImageId, user, packageManager } = await inspectAgentRuntimeBaseImage(baseImage);
     const image = getAgentRuntimeImageTag(baseImage, baseImageId, packages, installationId);
     if (await imageExists(image)) {
         return {
-            record: { baseImage, baseImageId, image, builtAt: new Date().toISOString() },
+            record: { baseImage, baseImageId, image, packageManager, builtAt: new Date().toISOString() },
             log: `${image} already exists locally`
         };
     }
@@ -203,12 +264,12 @@ async function buildRuntimeImage(
         '-t', image, '-'
     ], {
         timeout: 20 * 60 * 1000,
-        stdinData: buildAgentRuntimeDockerfile(baseImage, packages, user)
+        stdinData: buildAgentRuntimeDockerfile(baseImage, packages, user, packageManager)
     });
     const log = `${result.stdout}\n${result.stderr}`.trim();
     if (result.exitCode !== 0) throw new Error(log || `Docker build exited with code ${result.exitCode}`);
     return {
-        record: { baseImage, baseImageId, image, builtAt: new Date().toISOString() },
+        record: { baseImage, baseImageId, image, packageManager, builtAt: new Date().toISOString() },
         log
     };
 }
@@ -242,6 +303,23 @@ async function cleanupRuntimeImages(
 
 function tailBuildLog(log: string, maxLength = 20000): string {
     return log.length <= maxLength ? log : log.slice(log.length - maxLength);
+}
+
+function summarizeBuildError(message: string): string {
+    const clean = message.replace(/\u001b\[[0-9;]*m/g, '');
+    const lines = clean.split('\n').map(line => line.trim()).filter(Boolean);
+    const preferredPatterns = [
+        /unable to locate package/i,
+        /no such package/i,
+        /not found/i,
+        /does not provide a supported package manager/i,
+        /returned a non-zero code/i
+    ];
+    for (const pattern of preferredPatterns) {
+        const line = [...lines].reverse().find(candidate => pattern.test(candidate));
+        if (line) return line.slice(0, 500);
+    }
+    return (lines.at(-1) || 'Agent runtime image build failed').slice(0, 500);
 }
 
 export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobData): Promise<AgentRuntimePackageState> {
@@ -310,7 +388,7 @@ export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobD
         const failed: AgentRuntimePackageState = {
             ...latest,
             status: 'failed',
-            error: message,
+            error: summarizeBuildError(message),
             buildLog: tailBuildLog([...logs, message].join('\n\n')),
             updatedAt: new Date().toISOString()
         };
@@ -323,7 +401,7 @@ export async function resolveAgentRuntimeImage(baseImage: string): Promise<strin
     const state = await loadAgentRuntimePackageState();
     if (state.activePackages.length === 0) return baseImage;
     const activePackages = state.activePackages;
-    const inspected = await inspectBaseImage(baseImage);
+    const inspected = await inspectAgentRuntimeBaseImage(baseImage);
     const existing = state.images[baseImage];
     if (existing?.baseImageId === inspected.id && await imageExists(existing.image)) return existing.image;
 

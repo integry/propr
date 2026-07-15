@@ -11,7 +11,7 @@ import * as configManager from '../config/configManager.js';
 import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
-import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
+import { computeContentHash, getDockerTagComponent, resolveConfiguredAgentBaseImage } from './version/versionService.js';
 import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
@@ -248,7 +248,7 @@ export class AgentRegistry {
         const cliVersionResolved = config.cliVersionResolved;
         if (this.isManagedVersionedImage(config, cliVersionResolved)) {
             const contentHash = computeContentHash(config.type);
-            const expectedImageTag = generateImageTag(config.type, cliVersionResolved!, contentHash);
+            const expectedImageTag = resolveConfiguredAgentBaseImage(config);
             const result = await ensureVersionedAgentImage(
                 config.type,
                 cliVersionResolved!,

@@ -24,6 +24,14 @@ function responseRecorder() {
     return { response, record };
 }
 
+const availablePackages = async (packages: unknown) => ({
+    valid: true,
+    packages: packages as string[],
+    errors: [],
+    availability: [],
+    sources: []
+});
+
 describe('agent runtime package routes', () => {
     test('queues a validated package profile for every configured agent image', async () => {
         let state = initialState();
@@ -40,7 +48,8 @@ describe('agent runtime package routes', () => {
                 requestBuild: async (packages, baseImages) => {
                     state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-1' };
                     return { buildId: 'build-1', packages: packages as string[], baseImages };
-                }
+                },
+                validateAvailability: availablePackages
             }
         });
         const { response, record } = responseRecorder();
@@ -64,7 +73,8 @@ describe('agent runtime package routes', () => {
                 loadState: async () => state,
                 loadAgents: async () => [{ dockerImage: 'propr/agent-codex:latest' }] as never,
                 requestBuild: async (_packages, baseImages) => ({ buildId: 'build-2', packages: ['jq'], baseImages }),
-                saveState: async next => { state = next; }
+                saveState: async next => { state = next; },
+                validateAvailability: availablePackages
             }
         });
         const { response, record } = responseRecorder();
@@ -74,6 +84,45 @@ describe('agent runtime package routes', () => {
         assert.equal(record.status, 500);
         assert.equal(state.status, 'failed');
         assert.equal(state.error, 'redis unavailable');
+    });
+
+    test('rejects a package missing from an effective runtime before queueing', async () => {
+        let queued = false;
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: { add: async () => { queued = true; } } as never,
+            services: {
+                loadAgents: async () => [{ dockerImage: 'propr/agent-codex:latest' }] as never,
+                validateAvailability: async packages => ({
+                    valid: false,
+                    packages: packages as string[],
+                    errors: ['not-real is unavailable on Debian 12'],
+                    availability: [{ package: 'not-real', available: false, unavailableOn: ['Debian 12'] }],
+                    sources: []
+                })
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.putRuntimePackages({ body: { packages: ['not-real'] }, user: { username: 'admin' } } as unknown as Request, response);
+
+        assert.equal(record.status, 400);
+        assert.equal(queued, false);
+        assert.match((record.body as { error: string }).error, /unavailable on Debian 12/);
+    });
+
+    test('returns package suggestions from configured runtimes', async () => {
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: {} as never,
+            services: {
+                loadAgents: async () => [{ dockerImage: 'propr/agent-codex:latest' }] as never,
+                search: async query => ({ query, suggestions: ['chromium'], sources: [] })
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.searchRuntimePackages({ query: { q: 'chrom' }, user: { username: 'admin' } } as unknown as Request, response);
+
+        assert.deepEqual(record.body, { query: 'chrom', suggestions: ['chromium'], sources: [] });
     });
 
     test('enforces PROPR_ADMIN_USERS when configured', async () => {

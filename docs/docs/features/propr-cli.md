@@ -122,7 +122,7 @@ Run `propr init` from a repository root to scaffold `.propr/` setup files used i
 
 ## Agent Runtime Packages
 
-Installation-wide Debian packages are built into local derivatives of every configured agent image. The previous profile remains active until every derived image builds successfully.
+Installation-wide system packages are built into local derivatives of every configured agent image. ProPR validates names against each runtime's package catalog (`apt` or `apk`), and the previous profile remains active until every derived image builds successfully.
 
 ```bash
 propr runtime packages list
@@ -133,6 +133,8 @@ propr runtime status --json
 ```
 
 Use runtime packages for tools needed across repositories. Keep repository-specific or experimental dependencies in `.propr/setup.sh`; those are installed in each fresh execution container.
+
+The Settings package field searches the configured runtime catalogs and validates availability across every agent image before a build is queued. The first search after an API restart may take a few seconds while package indexes are refreshed.
 
 ## Plans
 

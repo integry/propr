@@ -60,24 +60,28 @@ export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
  */
 export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
     claude: [
+        'docker/Dockerfile.agent-base',
         'Dockerfile.claude',
         'scripts/claude-entrypoint.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ],
     codex: [
+        'docker/Dockerfile.agent-base',
         'Dockerfile.codex',
         'scripts/codex-entrypoint.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ],
     antigravity: [
+        'docker/Dockerfile.agent-base',
         'Dockerfile.antigravity',
         'scripts/antigravity-entrypoint.sh',
         'scripts/init-firewall.sh',
         'scripts/gh-wrapper.sh'
     ],
     opencode: [
+        'docker/Dockerfile.agent-base',
         'Dockerfile.opencode',
         'scripts/opencode-entrypoint.sh',
         'scripts/opencode-run.sh',
@@ -85,6 +89,7 @@ export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
         'scripts/gh-wrapper.sh'
     ],
     vibe: [
+        'docker/Dockerfile.agent-base',
         'Dockerfile.vibe',
         'scripts/vibe-entrypoint.sh',
         'scripts/init-firewall.sh',

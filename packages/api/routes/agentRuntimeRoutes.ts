@@ -4,7 +4,10 @@ import {
     loadAgentRuntimePackageState,
     loadAgents,
     requestAgentRuntimePackageBuild,
+    resolveConfiguredAgentBaseImage,
     saveAgentRuntimePackageState,
+    searchAgentRuntimePackages,
+    validateAgentRuntimePackageAvailability,
     validateAgentRuntimePackages,
     type AgentRuntimeBuildJobData
 } from '@propr/core';
@@ -19,7 +22,9 @@ interface AgentRuntimeRouteServices {
     loadAgents: typeof loadAgents;
     requestBuild: typeof requestAgentRuntimePackageBuild;
     saveState: typeof saveAgentRuntimePackageState;
+    search: typeof searchAgentRuntimePackages;
     validate: typeof validateAgentRuntimePackages;
+    validateAvailability: typeof validateAgentRuntimePackageAvailability;
 }
 
 function canManageRuntime(req: Request): boolean {
@@ -40,7 +45,7 @@ function requireRuntimeAdmin(req: Request, res: Response): boolean {
 
 async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Promise<string[]> {
     const agents = await loadConfiguredAgents();
-    const images = agents.map(agent => agent.dockerImage).filter(Boolean);
+    const images = agents.map(agent => resolveConfiguredAgentBaseImage(agent)).filter(Boolean);
     if (images.length === 0) {
         images.push(process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest');
     }
@@ -53,7 +58,9 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
         loadAgents,
         requestBuild: requestAgentRuntimePackageBuild,
         saveState: saveAgentRuntimePackageState,
+        search: searchAgentRuntimePackages,
         validate: validateAgentRuntimePackages,
+        validateAvailability: validateAgentRuntimePackageAvailability,
         ...overrides
     };
 
@@ -67,14 +74,46 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
 
     async function validateRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireRuntimeAdmin(req, res)) return;
-        const result = services.validate(req.body?.packages);
-        res.status(result.valid ? 200 : 400).json(result);
+        try {
+            const syntax = services.validate(req.body?.packages);
+            if (!syntax.valid) {
+                res.status(400).json(syntax);
+                return;
+            }
+            const images = await configuredBaseImages(services.loadAgents);
+            const result = await services.validateAvailability(syntax.packages, images);
+            res.status(result.valid ? 200 : 400).json(result);
+        } catch (error) {
+            res.status(500).json({ error: (error as Error).message });
+        }
+    }
+
+    async function searchRuntimePackages(req: Request, res: Response): Promise<void> {
+        if (!requireRuntimeAdmin(req, res)) return;
+        try {
+            const query = typeof req.query.q === 'string' ? req.query.q : '';
+            const images = await configuredBaseImages(services.loadAgents);
+            res.json(await services.search(query, images));
+        } catch (error) {
+            res.status(500).json({ error: (error as Error).message });
+        }
     }
 
     async function queueBuild(packages: unknown, res: Response): Promise<void> {
         let jobData: AgentRuntimeBuildJobData | undefined;
         try {
-            jobData = await services.requestBuild(packages, await configuredBaseImages(services.loadAgents));
+            const syntax = services.validate(packages);
+            if (!syntax.valid) {
+                res.status(400).json({ error: syntax.errors.join('; '), errors: syntax.errors });
+                return;
+            }
+            const images = await configuredBaseImages(services.loadAgents);
+            const availability = await services.validateAvailability(syntax.packages, images);
+            if (!availability.valid) {
+                res.status(400).json({ error: availability.errors.join('; '), ...availability });
+                return;
+            }
+            jobData = await services.requestBuild(availability.packages, images);
             await runtimeBuildQueue.add('build-agent-runtime', jobData, {
                 jobId: jobData.buildId,
                 removeOnComplete: 20,
@@ -112,5 +151,11 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
         await queueBuild(state.packages, res);
     }
 
-    return { getRuntimePackages, validateRuntimePackages, putRuntimePackages, applyRuntimePackages };
+    return {
+        getRuntimePackages,
+        searchRuntimePackages,
+        validateRuntimePackages,
+        putRuntimePackages,
+        applyRuntimePackages
+    };
 }

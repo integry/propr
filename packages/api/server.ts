@@ -287,6 +287,7 @@ function setupRoutes(): void {
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
     ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
     ['get', '/api/agent-runtime/packages', agentRuntimeRoutes.getRuntimePackages],
+    ['get', '/api/agent-runtime/packages/search', agentRuntimeRoutes.searchRuntimePackages],
     ['post', '/api/agent-runtime/packages/validate', agentRuntimeRoutes.validateRuntimePackages],
     ['put', '/api/agent-runtime/packages', agentRuntimeRoutes.putRuntimePackages],
     ['post', '/api/agent-runtime/packages/apply', agentRuntimeRoutes.applyRuntimePackages],
