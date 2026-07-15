@@ -10,6 +10,7 @@ const PACKAGE_SPEC = /^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?(?:=[A-Za-z0-
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 const SAFE_USER = /^[A-Za-z0-9_.:-]+$/;
 const INSTALLATION_ID = /^[a-z0-9-]{1,64}$/;
+const ANSI_SGR_REGEX = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
 const baseImageInspectionCache = new Map<string, AgentRuntimeBaseImageInspection>();
 
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
@@ -306,7 +307,7 @@ function tailBuildLog(log: string, maxLength = 20000): string {
 }
 
 function summarizeBuildError(message: string): string {
-    const clean = message.replace(/\u001b\[[0-9;]*m/g, '');
+    const clean = message.replace(ANSI_SGR_REGEX, '');
     const lines = clean.split('\n').map(line => line.trim()).filter(Boolean);
     const preferredPatterns = [
         /unable to locate package/i,
