@@ -11,6 +11,7 @@ import {
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
 import { extractModelLabelToken } from './prModelLabelUtils.js';
+import { buildWorkEvidenceMarker } from '../shared/workEvidenceMarker.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -236,9 +237,13 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
     }
     if (octokit && startingWorkComment) {
         try {
+            const realCommentIds = unprocessedComments
+                .filter(comment => comment.author !== 'propr-ultrafix' && comment.id !== 0)
+                .map(comment => comment.id);
+            const failedEvidence = buildWorkEvidenceMarker('failed', realCommentIds);
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
-                body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.`,
+                body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');

@@ -40,6 +40,7 @@ import {
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
+import { buildWorkEvidenceMarker } from '../shared/workEvidenceMarker.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -216,7 +217,8 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
     const commentIdsSuffix = realComments.length > 0
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id) + '✓').join(', ')}_`
         : '';
-    return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}`;
+    const evidenceMarker = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
+    return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${evidenceMarker ? `\n${evidenceMarker}` : ''}`;
 }
 
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {

@@ -27,6 +27,7 @@ import {
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
+import { buildWorkEvidenceMarker } from '../shared/workEvidenceMarker.js';
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -263,10 +264,16 @@ async function updateReviewCompletionComment(
         const statusText = failCount === 0
             ? `Posted ${successCount} review${successCount > 1 ? 's' : ''}`
             : `Posted ${successCount} review${successCount > 1 ? 's' : ''}, ${failCount} failed`;
+        const completedEvidence = buildWorkEvidenceMarker(
+            failCount === reviewResults.length ? 'failed' : 'completed',
+            state.unprocessedComments
+                .filter(comment => comment.author !== 'propr-ultrafix' && comment.id !== 0)
+                .map(comment => comment.id),
+        );
 
         await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id,
-            body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})`,
+            body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})${completedEvidence ? `\n${completedEvidence}` : ''}`,
         });
     } catch (updateError) {
         correlatedLogger.warn({ error: (updateError as Error).message }, 'Failed to update starting review comment');
@@ -341,7 +348,8 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
         : '';
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}` });
+    const startedEvidence = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
+    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}` });
 
     const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
     const titleContext = buildPrTaskTitleContext({ workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText: job.data.commandInstructions, recentComments: allComments, prDescription: prData!.data.body, excludeCommentIds: state.unprocessedComments.map(comment => comment.id) });

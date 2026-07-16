@@ -2,6 +2,7 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
+import { buildWorkEvidenceMarker } from '../shared/workEvidenceMarker.js';
 
 /** Filter out ultrafix synthetic comments (author='propr-ultrafix' or id=0) */
 function filterRealComments(comments: UnprocessedComment[]): UnprocessedComment[] {
@@ -184,6 +185,8 @@ export async function buildCompletionComment(
         prCommentBody += buildSlashCommandsBlock();
         prCommentBody += `${buildAttributionLine()}\n`;
         prCommentBody += buildCommentIdsSuffix(unprocessedComments);
+        const completedEvidence = buildWorkEvidenceMarker('completed', filterRealComments(unprocessedComments).map(comment => comment.id));
+        if (completedEvidence) prCommentBody += `\n${completedEvidence}`;
 
         return prCommentBody;
     } else {
@@ -204,6 +207,8 @@ export async function buildCompletionComment(
         noChangesBody += buildSlashCommandsBlock();
         noChangesBody += `${buildAttributionLine()}\n`;
         noChangesBody += buildCommentIdsSuffix(unprocessedComments);
+        const completedEvidence = buildWorkEvidenceMarker('completed', filterRealComments(unprocessedComments).map(comment => comment.id));
+        if (completedEvidence) noChangesBody += `\n${completedEvidence}`;
 
         return noChangesBody;
     }

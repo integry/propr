@@ -86,6 +86,7 @@ export type {
     DeliveryAckBilling,
     DeliveryAckStatus,
     DeliveryDisposition,
+    DeliveryAckEvidence,
     FetchLike,
     MinimalWebSocket,
     RawData,

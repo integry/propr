@@ -214,10 +214,10 @@ async function handleIssueCommentEvent(
         return normalizeDisposition(await processCommentEvent(payload, 'issue_comment', correlationId));
     } else if (isIssueCommentDeletedEvent(payload) && hasPullRequest) {
         await handleCommentDeleted(payload, 'issue_comment', correlationId);
-        return { status: 'accepted' };
+        return { status: 'accepted', billing: { seatConsumed: false } };
     } else if (isIssueCommentEditedEvent(payload) && hasPullRequest) {
         await handleCommentEdited(payload, 'issue_comment', correlationId);
-        return { status: 'accepted' };
+        return { status: 'accepted', billing: { seatConsumed: false } };
     }
 
     return { status: 'ignored', reason: hasPullRequest ? 'unsupported_comment_action' : 'not_pull_request_comment' };
@@ -235,10 +235,10 @@ async function handlePullRequestReviewCommentEvent(
         return normalizeDisposition(await processCommentEvent(payload, 'pull_request_review_comment', correlationId));
     } else if (isPullRequestReviewCommentDeletedEvent(payload)) {
         await handleCommentDeleted(payload, 'pull_request_review_comment', correlationId);
-        return { status: 'accepted' };
+        return { status: 'accepted', billing: { seatConsumed: false } };
     } else if (isPullRequestReviewCommentEditedEvent(payload)) {
         await handleCommentEdited(payload, 'pull_request_review_comment', correlationId);
-        return { status: 'accepted' };
+        return { status: 'accepted', billing: { seatConsumed: false } };
     }
 
     return { status: 'ignored', reason: 'unsupported_review_comment_action' };
@@ -302,7 +302,7 @@ async function processStandardWebhookEvent(
         case 'pull_request':
             if (isPullRequestEvent(payload)) {
                 if (processPullRequest) await processPullRequest(payload, correlationId);
-                return { status: 'accepted' };
+                return { status: 'accepted', billing: { seatConsumed: false } };
             }
             break;
         case 'pull_request_review_comment':
@@ -311,14 +311,14 @@ async function processStandardWebhookEvent(
         case 'check_run':
             if (isCheckRunEvent(payload)) {
                 if (processCheckRun) await processCheckRun(payload, correlationId);
-                return { status: 'accepted' };
+                return { status: 'accepted', billing: { seatConsumed: false } };
             }
             break;
         case 'push':
-            if (isPushEvent(payload)) return { status: 'accepted' };
+            if (isPushEvent(payload)) return { status: 'accepted', billing: { seatConsumed: false } };
             break;
         case 'status':
-            if (isStatusEvent(payload)) return { status: 'accepted' };
+            if (isStatusEvent(payload)) return { status: 'accepted', billing: { seatConsumed: false } };
             break;
         default:
             correlatedLogger.debug({ event: eventType }, 'Ignoring webhook event');

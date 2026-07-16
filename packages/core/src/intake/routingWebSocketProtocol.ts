@@ -77,6 +77,11 @@ export interface DeliveryAckBilling {
     seatConsumed: boolean;
 }
 
+export interface DeliveryAckEvidence {
+    /** GitHub comment IDs whose contents caused this delivery to start work. */
+    triggerCommentIds: number[];
+}
+
 /**
  * The disposition ProPR attaches to an ACK. Returned by the webhook dispatcher so
  * the intake service can ACK with an explicit, authoritative status/reason instead
@@ -94,6 +99,7 @@ export interface DeliveryDisposition {
      */
     reason?: string;
     billing?: DeliveryAckBilling;
+    evidence?: DeliveryAckEvidence;
 }
 
 /** Shared "processed, no billing/policy signal" disposition — the default ACK. */
@@ -140,6 +146,13 @@ export function buildAckFrame(
         // receives a contradictory ACK it would reject or retry.
         frame.billing = {
             seatConsumed: disposition.status === 'accepted' ? disposition.billing.seatConsumed : false,
+        };
+    }
+    if (disposition.evidence !== undefined && disposition.status === 'accepted') {
+        frame.evidence = {
+            triggerCommentIds: [...new Set(disposition.evidence.triggerCommentIds)]
+                .filter(id => Number.isSafeInteger(id) && id > 0)
+                .slice(0, 100),
         };
     }
     return frame;
