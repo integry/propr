@@ -165,7 +165,7 @@ test("pulls only core images plus the selected agents", async () => {
     actions: mockActions({
       pullImages: async ({ agentTypes }) => {
         pulledAgentTypes = agentTypes;
-        return { pulledCore: ["propr/api"], pulledAgents: ["propr/agent-claude"], failedCore: [], failedAgents: [] };
+        return { pulledCore: ["propr/api"], pulledAgents: ["propr/agent"], failedCore: [], failedAgents: [] };
       },
     }),
   });

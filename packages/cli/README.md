@@ -277,7 +277,7 @@ Dynamic OpenCode GitHub labels use the format `llm-<agent-alias>~<propr-opencode
   "type": "opencode",
   "models": ["opencode-minimax-m3-free"],
   "defaultModel": "opencode-minimax-m3-free",
-  "dockerImage": "propr/agent-opencode:latest",
+  "dockerImage": "propr/agent:latest",
   "configPath": "/home/your-user/.config/opencode",
   "enabled": true,
   "envVars": {

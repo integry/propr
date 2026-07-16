@@ -1,0 +1,199 @@
+# Unified ProPR coding-agent image.
+#
+# The common Debian runtime is an internal stage. Each CLI is installed in its
+# own stage so changing one version preserves the build cache for every other
+# agent. Only this final image is published.
+
+ARG UV_VERSION=0.8.17
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+
+FROM node:22-bookworm-slim AS agent-base
+
+ARG BASH_VERSION=5.2.15-2+b13
+ARG BUILD_ESSENTIAL_VERSION=12.9
+ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
+ARG CURL_VERSION=7.88.1-10+deb12u15
+ARG GH_VERSION=2.96.0
+ARG GIT_VERSION=1:2.39.5-0+deb12u3
+ARG GOSU_VERSION=1.14-1+b10
+ARG IPTABLES_VERSION=1.8.9-2
+ARG PROCPS_VERSION=2:4.0.2-3
+ARG PYTHON3_VERSION=3.11.2-1+b1
+ARG RIPGREP_VERSION=13.0.0-4+b2
+ARG SUDO_VERSION=1.9.13p3-1+deb12u4
+ARG TINI_VERSION=0.19.0-1+b3
+ARG GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates="${CA_CERTIFICATES_VERSION}" \
+        curl="${CURL_VERSION}" \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && echo "${GITHUBCLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash="${BASH_VERSION}" \
+        build-essential="${BUILD_ESSENTIAL_VERSION}" \
+        gh="${GH_VERSION}" \
+        git="${GIT_VERSION}" \
+        gosu="${GOSU_VERSION}" \
+        iptables="${IPTABLES_VERSION}" \
+        procps="${PROCPS_VERSION}" \
+        python3="${PYTHON3_VERSION}" \
+        ripgrep="${RIPGREP_VERSION}" \
+        sudo="${SUDO_VERSION}" \
+        tini="${TINI_VERSION}" \
+    && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
+    && mkdir -p /home/node/workspace \
+    && chown -R node:node /home/node
+
+COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/gh-wrapper
+
+COPY NOTICE /usr/share/licenses/propr/NOTICE
+COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+USER node
+WORKDIR /home/node/workspace
+
+
+FROM agent-base AS claude-cli
+ARG CLAUDE_CLI_VERSION=2.1.211
+USER root
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && claude --version
+
+
+FROM agent-base AS codex-cli
+ARG CODEX_CLI_VERSION=0.144.5
+USER root
+RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && codex --version
+
+
+FROM agent-base AS opencode-cli
+ARG OPENCODE_CLI_VERSION=1.18.2
+USER root
+RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && opencode --version \
+    && opencode run --help 2>&1 | tee /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--file([=[:space:],]|$)' /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--format([=[:space:],]|$)' /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--model([=[:space:],]|$)' /tmp/opencode-help \
+    && rm -f /tmp/opencode-help
+
+
+FROM agent-base AS vibe-cli
+ARG VIBE_CLI_VERSION=2.20.0
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+ENV UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python
+USER root
+RUN case "${VIBE_CLI_VERSION}" in \
+        *"@"*|*"://"*|*.whl|*.tar.gz) vibe_install_spec="${VIBE_CLI_VERSION}" ;; \
+        *) vibe_install_spec="mistral-vibe==${VIBE_CLI_VERSION}" ;; \
+    esac \
+    && uv tool install "${vibe_install_spec}" \
+    && chmod -R a+rX /opt/uv \
+    && uv cache clean \
+    && vibe --version
+
+
+FROM agent-base AS antigravity-cli
+ARG ANTIGRAVITY_CLI_VERSION=latest
+ENV PATH="/home/node/.local/bin:${PATH}" \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true
+RUN if [ "${ANTIGRAVITY_CLI_VERSION}" != "latest" ]; then \
+        echo "Antigravity only supports version 'latest'; got ${ANTIGRAVITY_CLI_VERSION}" >&2; \
+        exit 1; \
+    fi \
+    && curl -fsSL -o /tmp/antigravity-install.sh https://antigravity.google/cli/install.sh \
+    && test -s /tmp/antigravity-install.sh \
+    && bash -n /tmp/antigravity-install.sh \
+    && bash /tmp/antigravity-install.sh \
+    && rm -f /tmp/antigravity-install.sh \
+    && agy --version
+
+
+FROM agent-base AS final
+ARG CLAUDE_CLI_VERSION=2.1.211
+ARG CODEX_CLI_VERSION=0.144.5
+ARG ANTIGRAVITY_CLI_VERSION=latest
+ARG OPENCODE_CLI_VERSION=1.18.2
+ARG VIBE_CLI_VERSION=2.20.0
+
+LABEL dev.propr.agent-bundle="true" \
+      dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \
+      dev.propr.agent.codex.version="${CODEX_CLI_VERSION}" \
+      dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
+      dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
+      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}"
+
+USER root
+COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
+COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
+COPY --from=opencode-cli /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=vibe-cli /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=vibe-cli /usr/local/bin/uvx /usr/local/bin/uvx
+COPY --from=vibe-cli /usr/local/bin/vibe /usr/local/bin/vibe
+COPY --from=vibe-cli /usr/local/bin/vibe-acp /usr/local/bin/vibe-acp
+COPY --from=vibe-cli /opt/uv /opt/uv
+COPY --from=antigravity-cli --chown=node:node /home/node/.local /home/node/.local
+
+ENV UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    PATH="/home/node/.local/bin:${PATH}" \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true
+
+COPY --chown=node:node \
+    scripts/agent-entrypoint.sh \
+    scripts/claude-entrypoint.sh \
+    scripts/codex-entrypoint.sh \
+    scripts/antigravity-entrypoint.sh \
+    scripts/opencode-entrypoint.sh \
+    scripts/vibe-entrypoint.sh \
+    /home/node/
+COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
+COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
+RUN ln -sf ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude \
+    && ln -sf ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
+    && ln -sf ../lib/node_modules/opencode-ai/bin/opencode.exe /usr/local/bin/opencode \
+    && chmod +x \
+        /home/node/agent-entrypoint.sh \
+        /home/node/claude-entrypoint.sh \
+        /home/node/codex-entrypoint.sh \
+        /home/node/antigravity-entrypoint.sh \
+        /home/node/opencode-entrypoint.sh \
+        /home/node/vibe-entrypoint.sh \
+        /usr/local/bin/opencode-run \
+        /usr/local/bin/propr-vibe-prompt-file \
+    && claude --version \
+    && codex --version \
+    && opencode --version \
+    && vibe --version \
+    && agy --version
+
+USER node
+RUN git config --global user.name "ProPR Agent Bot" \
+    && git config --global user.email "agent-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
+
+WORKDIR /home/node/workspace
+ENTRYPOINT ["/usr/bin/tini", "--", "/home/node/agent-entrypoint.sh"]

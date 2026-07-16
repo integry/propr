@@ -5,7 +5,8 @@ import {
     AgentRegistry,
     resolveVersion,
     computeContentHash,
-    generateImageTag,
+    generateAgentBundleImageTag,
+    getAgentCliVersionMatrix,
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
@@ -93,7 +94,6 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
         const agentType = agent.type as AgentType;
         const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
         processedAgent.cliVersionResolved = resolvedVersion;
-        processedAgent.dockerImage = generateImageTag(agentType, resolvedVersion, computeContentHash(agentType));
       } catch (versionError) {
         const { message, status } = classifyVersionResolutionError(versionError);
         return { error: `Failed to resolve version for agent '${agent.alias}': ${message}`, status };
@@ -102,16 +102,18 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
       const agentType = agent.type as AgentType;
       processedAgent.cliVersionType = 'default';
       processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
-      if (!processedAgent.dockerImage) {
-        processedAgent.dockerImage = generateImageTag(
-          agentType,
-          processedAgent.cliVersionResolved,
-          computeContentHash(agentType)
-        );
-      }
     }
 
     processedAgents.push(processedAgent);
+  }
+
+  try {
+    const bundleImage = generateAgentBundleImageTag(getAgentCliVersionMatrix(processedAgents), computeContentHash());
+    for (const agent of processedAgents) {
+      agent.dockerImage = bundleImage;
+    }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Invalid unified agent version configuration', status: 400 };
   }
 
   return { processedAgents };

@@ -44,12 +44,12 @@ describe('agent runtime package profiles', () => {
 
     test('generates a package-only Dockerfile and restores the base user', () => {
         const dockerfile = buildAgentRuntimeDockerfile(
-            'propr/agent-codex:1.2.3',
+            'propr/agent:bundle-test',
             ['chromium', 'ffmpeg'],
             'node'
         );
 
-        assert.match(dockerfile, /^FROM propr\/agent-codex:1\.2\.3/m);
+        assert.match(dockerfile, /^FROM propr\/agent:bundle-test/m);
         assert.match(dockerfile, /LABEL dev\.propr\.agent-runtime="true"/);
         assert.match(dockerfile, /USER root/);
         assert.match(dockerfile, /apt-get install -y --no-install-recommends/);
@@ -73,26 +73,25 @@ describe('agent runtime package profiles', () => {
         assert.match(dockerfile, /USER node\n$/);
     });
 
-    test('resolves stale managed hashes to the current build inputs', () => {
+    test('preserves the configured unified bundle image', () => {
         const resolved = resolveConfiguredAgentBaseImage({
             type: 'claude',
-            dockerImage: 'propr/agent-claude:2.1.170-b41d7a',
+            dockerImage: 'propr/agent:bundle-test',
             cliVersionType: 'default',
             cliVersionResolved: '2.1.170'
         }, process.cwd());
 
-        assert.match(resolved, /^propr\/agent-claude:2\.1\.170-[0-9a-f]{6}$/);
-        assert.notEqual(resolved, 'propr/agent-claude:2.1.170-b41d7a');
+        assert.equal(resolved, 'propr/agent:bundle-test');
     });
 
     test('runtime tags are stable and change with the base digest or packages', () => {
-        const first = getAgentRuntimeImageTag('propr/agent-codex:latest', 'sha256:one', ['chromium']);
-        assert.equal(first, getAgentRuntimeImageTag('propr/agent-codex:latest', 'sha256:one', ['chromium']));
-        assert.notEqual(first, getAgentRuntimeImageTag('propr/agent-codex:latest', 'sha256:two', ['chromium']));
-        assert.notEqual(first, getAgentRuntimeImageTag('propr/agent-codex:latest', 'sha256:one', ['chromium', 'ffmpeg']));
+        const first = getAgentRuntimeImageTag('propr/agent:latest', 'sha256:one', ['chromium']);
+        assert.equal(first, getAgentRuntimeImageTag('propr/agent:latest', 'sha256:one', ['chromium']));
+        assert.notEqual(first, getAgentRuntimeImageTag('propr/agent:latest', 'sha256:two', ['chromium']));
+        assert.notEqual(first, getAgentRuntimeImageTag('propr/agent:latest', 'sha256:one', ['chromium', 'ffmpeg']));
         assert.notEqual(
-            getAgentRuntimeImageTag('propr/agent-codex:latest', 'sha256:one', ['chromium'], 'installation-a'),
-            getAgentRuntimeImageTag('propr/agent-codex:latest', 'sha256:one', ['chromium'], 'installation-b')
+            getAgentRuntimeImageTag('propr/agent:latest', 'sha256:one', ['chromium'], 'installation-a'),
+            getAgentRuntimeImageTag('propr/agent:latest', 'sha256:one', ['chromium'], 'installation-b')
         );
     });
 });

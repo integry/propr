@@ -338,7 +338,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     private async resolveRuntimeDockerImage(): Promise<string> {
-        if (process.env.OPENCODE_DOCKER_IMAGE) return process.env.OPENCODE_DOCKER_IMAGE;
+        if (process.env.AGENT_DOCKER_IMAGE) return process.env.AGENT_DOCKER_IMAGE;
         const configuredImage = this.config.dockerImage;
         if (!configuredImage || configuredImage === DEFAULT_AGENT_DOCKER_IMAGES.opencode) {
             return DEFAULT_AGENT_DOCKER_IMAGES.opencode;

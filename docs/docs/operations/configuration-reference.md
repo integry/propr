@@ -62,7 +62,7 @@ Per-agent images, credential paths, and execution limits. `ANTIGRAVITY_TIMEOUT_M
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
-| `CLAUDE_DOCKER_IMAGE` | `propr/agent-claude:latest` | Image used for Claude Code agent containers. | Optional. |
+| `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. | Optional. |
 | `CLAUDE_CONFIG_PATH` | Empty | Absolute path to your `~/.claude` directory. `~` and `${HOME}` are **not** expanded in `.env` files or Docker bind mounts. | Running Claude Code. |
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Claude run timeout. | Optional. |

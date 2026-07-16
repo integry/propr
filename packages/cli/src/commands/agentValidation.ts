@@ -193,7 +193,7 @@ function baseArgs(
   hostDir: string,
   containerConfigPath: string,
   workspaceDir: string,
-  opts: { env?: string[]; extra?: string[]; configMode?: "ro" | "rw" } = {}
+  opts: { agentType?: string; env?: string[]; extra?: string[]; configMode?: "ro" | "rw" } = {}
 ): string[] {
   return [
     "run", "--rm", "-i",
@@ -207,6 +207,7 @@ function baseArgs(
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
     "-v", `${hostDir}:${containerConfigPath}:${opts.configMode ?? "rw"}`,
     "-e", "GH_TOKEN",
+    ...(opts.agentType ? ["-e", `PROPR_AGENT_TYPE=${opts.agentType}`] : []),
     ...(opts.env ?? []),
     ...(opts.extra ?? []),
     "-w", WORKSPACE,
@@ -219,7 +220,7 @@ const home = homedir();
 const DESCRIPTORS: AgentValidationDescriptor[] = [
   {
     type: "claude",
-    imageKey: "agent-claude",
+    imageKey: "agent",
     hostDirKey: "hostClaudeDir",
     envKey: "HOST_CLAUDE_DIR",
     defaultHostDir: join(home, ".claude"),
@@ -227,7 +228,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     hostInvocation: ({ prompt }) => ({ args: ["-p", prompt, "--output-format", "text"] }),
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
-        ...baseArgs(image, hostDir, "/home/node/.claude", workspaceDir),
+        ...baseArgs(image, hostDir, "/home/node/.claude", workspaceDir, { agentType: "claude" }),
         "claude", "-p", "-", "--output-format", "text", "--dangerously-skip-permissions",
       ],
       stdin: VALIDATION_PROMPT,
@@ -238,7 +239,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
   {
     type: "codex",
-    imageKey: "agent-codex",
+    imageKey: "agent",
     hostDirKey: "hostCodexDir",
     envKey: "HOST_CODEX_DIR",
     defaultHostDir: join(home, ".codex"),
@@ -247,6 +248,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.codex", workspaceDir, {
+          agentType: "codex",
           extra: ["--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined"],
         }),
         "codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--cd", WORKSPACE, "-",
@@ -259,7 +261,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
   {
     type: "antigravity",
-    imageKey: "agent-antigravity",
+    imageKey: "agent",
     hostDirKey: "hostAntigravityDir",
     envKey: "HOST_ANTIGRAVITY_DIR",
     defaultHostDir: join(home, ".gemini"),
@@ -268,6 +270,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     imageInvocation: ({ image, hostDir, workspaceDir }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.gemini", workspaceDir, {
+          agentType: "antigravity",
           env: ["-e", "ANTIGRAVITY_CLI=1", "-e", "ANTIGRAVITY_CLI_TRUST_WORKSPACE=true"],
         }),
         "/bin/bash", "-lc", 'set -e\nexec agy --dangerously-skip-permissions --print - "$@"', "propr-antigravity",
@@ -284,7 +287,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
   {
     type: "opencode",
-    imageKey: "agent-opencode",
+    imageKey: "agent",
     hostDirKey: "hostOpencodeXdgDir",
     envKey: "HOST_OPENCODE_XDG_DIR",
     defaultHostDir: join(home, ".config", "opencode"),
@@ -297,7 +300,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
         : [];
       return {
         args: [
-          ...baseArgs(image, hostDir, "/home/node/.config/opencode", workspaceDir, { extra }),
+          ...baseArgs(image, hostDir, "/home/node/.config/opencode", workspaceDir, { agentType: "opencode", extra }),
           "opencode", "run", VALIDATION_PROMPT,
         ],
       };
@@ -310,7 +313,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
   {
     type: "vibe",
-    imageKey: "agent-vibe",
+    imageKey: "agent",
     hostDirKey: "hostVibeDir",
     envKey: "HOST_VIBE_DIR",
     defaultHostDir: join(home, ".vibe"),
@@ -320,6 +323,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     imageInvocation: ({ image, hostDir, workspaceDir, promptFileHost, cfg }) => ({
       args: [
         ...baseArgs(image, hostDir, "/home/node/.vibe", workspaceDir, {
+          agentType: "vibe",
           configMode: "ro",
           env: [
             ...(cfg.mistralApiKey ? ["-e", "MISTRAL_API_KEY"] : []),
@@ -458,7 +462,7 @@ async function versionInfo(
     ? execAsync(d.hostBin, ["--version"], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
     : Promise.resolve(undefined);
   const imagePromise = image && imagePresent(orch, image)
-    ? execAsync("docker", ["run", "--rm", "--network=none", image, ...d.versionArgs], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
+    ? execAsync("docker", ["run", "--rm", "--network=none", "-e", `PROPR_AGENT_TYPE=${d.type}`, image, ...d.versionArgs], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
     : Promise.resolve(undefined);
   const [host, img] = await Promise.all([hostPromise, imagePromise]);
   const drift = host && img && host !== img ? (compareVersions(img, host) < 0 ? "older" : "newer") : undefined;
@@ -637,6 +641,7 @@ export function planAgentLogin(
     "-v", `${workspaceDir}:${WORKSPACE}:rw`,
     "-v", `${hostDir}:${d.containerConfigPath}:rw`,
     "-e", "GH_TOKEN",
+    "-e", `PROPR_AGENT_TYPE=${d.type}`,
     ...(d.loginExtraArgs?.(cfg) ?? []),
     "-w", WORKSPACE,
     image,

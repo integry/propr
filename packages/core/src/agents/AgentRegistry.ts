@@ -8,11 +8,11 @@ import { AntigravityAgent } from './impl/AntigravityAgent.js';
 import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
-import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
+import { ensureAgentBundleImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
-import { computeContentHash, getDockerTagComponent, resolveConfiguredAgentBaseImage } from './version/versionService.js';
-import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
+import { computeContentHash, getAgentCliVersionMatrix, getDefaultAgentCliVersionMatrix } from './version/versionService.js';
+import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 
@@ -75,6 +75,8 @@ export class AgentRegistry {
                 return;
             }
 
+            const bundleImage = await this.ensureUnifiedAgentImage(configs);
+
             for (const config of configs) {
                 if (!config.enabled) {
                     logger.debug({ agentAlias: config.alias }, 'Skipping disabled agent');
@@ -92,17 +94,7 @@ export class AgentRegistry {
                         continue;
                     }
 
-                    // Ensure Docker image exists before registering agent
-                    const imageReady = await this.ensureAgentImage(config);
-
-                    if (!imageReady) {
-                        logger.error({
-                            agentAlias: config.alias,
-                            agentType: config.type,
-                            dockerImage: config.dockerImage
-                        }, 'Failed to ensure Docker image, skipping agent registration');
-                        continue;
-                    }
+                    config.dockerImage = bundleImage;
 
                     const agent = this.createAgentFromConfig(config);
                     this.agents.set(config.id, agent);
@@ -232,66 +224,13 @@ export class AgentRegistry {
         }
     }
 
-    /**
-     * Ensures the Docker image for an agent config is ready.
-     * Uses versioned image if version config is present, otherwise uses default.
-     */
-    private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
-        if (config.type === 'antigravity') {
-            if (config.cliVersionType === 'default') {
-                delete config.cliVersion;
-            } else {
-                config.cliVersion = 'latest';
-            }
-            config.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
+    private async ensureUnifiedAgentImage(configs: AgentConfig[]): Promise<string> {
+        const versions = getAgentCliVersionMatrix(configs);
+        const result = await ensureAgentBundleImage(versions, computeContentHash());
+        if (!result.success) {
+            throw new Error(result.error || `Failed to ensure unified agent image ${result.imageTag}`);
         }
-        const cliVersionResolved = config.cliVersionResolved;
-        if (this.isManagedVersionedImage(config, cliVersionResolved)) {
-            const contentHash = computeContentHash(config.type);
-            const expectedImageTag = resolveConfiguredAgentBaseImage(config);
-            const result = await ensureVersionedAgentImage(
-                config.type,
-                cliVersionResolved!,
-                contentHash
-            );
-            if (result.success) {
-                config.dockerImage = await resolveAgentRuntimeImage(result.imageTag || expectedImageTag);
-            }
-            return result.success;
-        }
-
-        // Prefer the user-configured dockerImage (pull-first, build fallback).
-        // This matters for production images like propr/agent-claude:latest.
-        // The versioned-build path below only works when Dockerfiles are present.
-        if (config.dockerImage && await ensureAgentDockerImage(config.type, config.dockerImage)) {
-            config.dockerImage = await resolveAgentRuntimeImage(config.dockerImage);
-            return true;
-        }
-
-        // Fallback: versioned build (dev flow) — requires Dockerfile on disk.
-        if (config.cliVersionType && config.cliVersionResolved) {
-            const contentHash = computeContentHash(config.type);
-            const result = await ensureVersionedAgentImage(
-                config.type,
-                cliVersionResolved!,
-                contentHash
-            );
-            if (result.success && result.imageTag !== config.dockerImage) {
-                config.dockerImage = result.imageTag;
-            }
-            if (result.success) config.dockerImage = await resolveAgentRuntimeImage(config.dockerImage);
-            return result.success;
-        }
-        return false;
-    }
-
-    private isManagedVersionedImage(config: AgentConfig, cliVersionResolved = config.cliVersionResolved): boolean {
-        if (!config.cliVersionType || !cliVersionResolved) return false;
-        const managedImageName = AGENT_IMAGE_NAMES[config.type];
-        if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return false;
-        const tag = config.dockerImage.slice(managedImageName.length + 1);
-        const versionTag = getDockerTagComponent(cliVersionResolved);
-        return tag.startsWith(`${versionTag}-`) && /-[0-9a-f]{6}$/i.test(tag);
+        return resolveAgentRuntimeImage(result.imageTag);
     }
 
     /**
@@ -325,7 +264,7 @@ export class AgentRegistry {
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
+            dockerImage: process.env.AGENT_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
                 'claude-fable-5',
@@ -337,18 +276,20 @@ export class AgentRegistry {
                 'claude-sonnet-4-5-20250929',
                 'claude-haiku-4-5-20251001'
             ],
-            defaultModel: process.env.CLAUDE_MODEL || undefined
+            defaultModel: process.env.CLAUDE_MODEL || undefined,
+            cliVersionType: 'default',
+            cliVersionResolved: AGENT_DEFAULT_VERSIONS.claude
         };
 
-        // Ensure Docker image exists before registering
-        const imageReady = await ensureAgentDockerImage(defaultConfig.type, defaultConfig.dockerImage);
-        if (!imageReady) {
-            logger.error({
-                agentType: defaultConfig.type,
-                dockerImage: defaultConfig.dockerImage
-            }, 'Failed to ensure Docker image for default agent');
+        if (process.env.AGENT_DOCKER_IMAGE) {
+            defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE);
+        } else {
+            const result = await ensureAgentBundleImage(getDefaultAgentCliVersionMatrix(), computeContentHash());
+            if (!result.success) {
+                throw new Error(result.error || `Failed to ensure unified agent image ${result.imageTag}`);
+            }
+            defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag);
         }
-        if (imageReady) defaultConfig.dockerImage = await resolveAgentRuntimeImage(defaultConfig.dockerImage);
 
         const agent = new ClaudeAgent(defaultConfig);
         this.agents.set(defaultConfig.id, agent);

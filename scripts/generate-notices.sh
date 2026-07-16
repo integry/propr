@@ -32,8 +32,8 @@ EOF
 cat >> "$OUT" <<'EOF'
 ## Debian base image and system packages
 
-The shared `propr/agent-base` image is based on `node:20-bookworm-slim` and
-the agent image family installs system packages from Debian repositories,
+The unified `propr/agent` image is based on `node:20-bookworm-slim` and
+installs system packages from Debian repositories,
 including bash, build-essential, git, curl, ca-certificates, sudo, iptables,
 procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from
 the official GitHub CLI apt repository at cli.github.com.
@@ -77,24 +77,24 @@ done
 # @openai/codex, Antigravity CLI, opencode-ai, and mistral-vibe are installed
 # only in agent images (not in root node_modules). Reference their licenses.
 cat >> "$OUT" <<'EOF'
-## @openai/codex (installed in propr/agent-codex image)
+## @openai/codex (installed in propr/agent image)
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/openai/codex
 
-## Antigravity CLI (installed in propr/agent-antigravity image)
+## Antigravity CLI (installed in propr/agent image)
 
 Licensed under Google Terms of Service for Google Products and Antigravity
 supplemental terms.
 Source: https://codeassist.google/
 
-## opencode-ai (installed in propr/agent-opencode image)
+## opencode-ai (installed in propr/agent image)
 
 Licensed under the MIT License (verified from the published npm package metadata).
 Source: https://github.com/sst/opencode
 
 
-## mistral-vibe (installed in propr/agent-vibe image)
+## mistral-vibe (installed in propr/agent image)
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/mistralai/mistral-vibe

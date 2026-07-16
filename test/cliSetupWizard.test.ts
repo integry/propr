@@ -413,7 +413,7 @@ test("only the selected agents' images are requested for pulling", async () => {
     actions: diskActions({
       pullImages: async ({ agentTypes }) => {
         pulledAgentTypes = agentTypes;
-        return { pulledCore: ["propr/api"], pulledAgents: ["propr/agent-claude", "propr/agent-codex"], failedCore: [], failedAgents: [] };
+        return { pulledCore: ["propr/api"], pulledAgents: ["propr/agent"], failedCore: [], failedAgents: [] };
       },
     }),
   });

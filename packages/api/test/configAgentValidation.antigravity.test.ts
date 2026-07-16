@@ -13,7 +13,7 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     type: 'antigravity',
     alias: 'antigravity',
     enabled: true,
-    dockerImage: 'propr/agent-antigravity:latest',
+    dockerImage: 'propr/agent:latest',
     configPath: '~/.gemini',
     supportedModels: ['antigravity-gemini-3.5-flash-medium'],
     defaultModel: 'antigravity-gemini-3.5-flash-medium',

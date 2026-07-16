@@ -47,7 +47,7 @@ async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Pr
     const agents = await loadConfiguredAgents();
     const images = agents.map(agent => resolveConfiguredAgentBaseImage(agent)).filter(Boolean);
     if (images.length === 0) {
-        images.push(process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest');
+        images.push(process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest');
     }
     return [...new Set(images)].sort();
 }

@@ -53,7 +53,7 @@ function fakeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
     docsEnabled: false,
     vibePromptCacheDir: "/tmp/propr-vibe-prompts",
     manifest: { version: "test", images: {} },
-    images: { "agent-claude": "propr/agent-claude:test", "agent-vibe": "propr/agent-vibe:test" },
+    images: { agent: "propr/agent:test" },
     manifestPath: "/tmp/manifest.json",
     ...overrides,
   };

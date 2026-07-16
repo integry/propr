@@ -46,7 +46,7 @@ See [Agents and Models](../features/agents-and-models.md) for label formats, ali
 
 ## Docker Runtime
 
-Every supported coding agent uses the same containerized runtime shape: an agent image built on the Debian/glibc `propr/agent-base` runtime, an entrypoint script, the task worktree mounted at `/home/node/workspace`, and the required host credential directory mounted into the container. The [Agent Runtime Reference](./agent-runtime.md) holds the canonical table of images, Dockerfiles, entrypoints, and credential mounts.
+Every supported coding agent uses the same containerized runtime shape: the unified Debian/glibc `propr/agent` image, a type-specific entrypoint, the task worktree mounted at `/home/node/workspace`, and the required host credential directory mounted into the container. The [Agent Runtime Reference](./agent-runtime.md) holds the canonical table of entrypoints and credential mounts.
 
 The runtime receives GitHub credentials, selected model settings, timeout settings, and any agent-specific environment variables. Containers run independently so concurrent jobs can use different agents and models without sharing mutable checkouts.
 

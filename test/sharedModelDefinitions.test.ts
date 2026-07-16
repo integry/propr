@@ -12,10 +12,10 @@ describe('shared model definitions', () => {
             OPENCODE_MODELS.map(model => model.id)
         );
         assert.strictEqual(AGENT_DEFAULTS.opencode.defaultAlias, 'opencode');
-        assert.strictEqual(AGENT_DEFAULTS.opencode.dockerImage, 'propr/agent-opencode:latest');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.dockerImage, 'propr/agent:latest');
         assert.strictEqual(AGENT_DEFAULTS.opencode.configPath, '~/.config/opencode');
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.17.10');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.18.2');
     });
 
     test('every default agent model is present in the shared model catalog', () => {

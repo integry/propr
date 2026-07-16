@@ -371,7 +371,7 @@ function getDefaultClaudeConfig(): AgentConfig {
     type: 'claude',
     alias: 'default',
     enabled: true,
-    dockerImage: process.env.CLAUDE_DOCKER_IMAGE || 'propr/agent-claude:latest',
+    dockerImage: process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest',
     configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
     supportedModels: [
       'claude-fable-5',

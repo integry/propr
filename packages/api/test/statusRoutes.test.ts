@@ -88,7 +88,7 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     type: 'codex',
     alias: 'codex-prod',
     enabled: true,
-    dockerImage: 'propr/agent-codex:latest',
+    dockerImage: 'propr/agent:latest',
     configPath: '/tmp/codex',
     supportedModels: ['gpt-5.5'],
     ...overrides,

@@ -25,11 +25,11 @@ Use routing when you want to:
 
 | Agent | Type | Docker image | Host credentials |
 |-------|------|--------------|------------------|
-| Claude Code (Anthropic) | `claude` | `propr/agent-claude` | `HOST_CLAUDE_DIR` → `~/.claude` |
-| Codex (OpenAI) | `codex` | `propr/agent-codex` | `HOST_CODEX_DIR` → `~/.codex` |
-| Antigravity (Google, multi-model) | `antigravity` | `propr/agent-antigravity` | `HOST_ANTIGRAVITY_DIR` → `~/.gemini` (authenticate with `agy login`) |
-| OpenCode | `opencode` | `propr/agent-opencode` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
-| Mistral Vibe | `vibe` | `propr/agent-vibe` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
+| Claude Code (Anthropic) | `claude` | `propr/agent` | `HOST_CLAUDE_DIR` → `~/.claude` |
+| Codex (OpenAI) | `codex` | `propr/agent` | `HOST_CODEX_DIR` → `~/.codex` |
+| Antigravity (Google, multi-model) | `antigravity` | `propr/agent` | `HOST_ANTIGRAVITY_DIR` → `~/.gemini` (authenticate with `agy login`) |
+| OpenCode | `opencode` | `propr/agent` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
+| Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
 
 Authenticate each agent's CLI on the host first; the launcher and compose files mount the credential directories into agent containers at their host paths. These mounts are read-write — worker containers may refresh auth state (the launcher mounts the OpenCode data directory read-write for workers and read-only elsewhere); only the `.env` file is mounted read-only. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
 

@@ -46,7 +46,7 @@ function createAgent(envVars?: Record<string, string>, configPath = '/tmp/missin
         type: 'vibe',
         alias: 'vibe-test',
         enabled: true,
-        dockerImage: 'propr/agent-vibe:latest',
+        dockerImage: 'propr/agent:latest',
         configPath,
         supportedModels: ['mistral-medium-3.5'],
         envVars
@@ -64,7 +64,7 @@ test('Vibe Docker args use supported default CLI invocation', () => {
         mode: 'analysis'
     });
 
-    const imageIndex = args.indexOf('propr/agent-vibe:latest');
+    const imageIndex = args.indexOf('propr/agent:latest');
     assert.deepEqual(args.slice(imageIndex + 1), ['--output', 'json']);
     assert.equal(args.some(arg => arg.includes('propr-vibe-prompt.md')), false);
 
@@ -83,7 +83,7 @@ test('Vibe Docker args honor VIBE_CLI_ARGS override', () => {
         mode: 'analysis'
     });
 
-    const imageIndex = args.indexOf('propr/agent-vibe:latest');
+    const imageIndex = args.indexOf('propr/agent:latest');
     assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--output', 'json', 'two words']);
 });
 
@@ -97,7 +97,7 @@ test('Vibe Docker args can read CLI override from agent env vars', () => {
         mode: 'analysis'
     });
 
-    const imageIndex = args.indexOf('propr/agent-vibe:latest');
+    const imageIndex = args.indexOf('propr/agent:latest');
     assert.deepEqual(args.slice(imageIndex + 1), ['vibe', '--plain', '--output', 'json']);
 });
 

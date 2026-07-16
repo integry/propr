@@ -7,7 +7,8 @@ import {
     resolvePyPiVersionSpec
 } from '../packages/core/src/agents/version/pypiClient.js';
 import {
-    generateImageTag,
+    generateAgentBundleImageTag,
+    getDefaultAgentCliVersionMatrix,
     getAvailableVersions,
     resolveVersion
 } from '../packages/core/src/agents/version/versionService.js';
@@ -151,7 +152,9 @@ describe('pypiClient', () => {
     });
 
     test('generates Vibe versioned tags in the agent image namespace', () => {
-        assert.strictEqual(generateImageTag('vibe', '2.12.1', 'abcdef'), 'propr/agent-vibe:2.12.1-abcdef');
+        const versions = getDefaultAgentCliVersionMatrix();
+        versions.vibe = '2.12.1';
+        assert.match(generateAgentBundleImageTag(versions, 'abcdef'), /^propr\/agent:bundle-[0-9a-f]{12}-abcdef$/);
     });
 
     test('returns Vibe available versions in API-facing shape', async () => {

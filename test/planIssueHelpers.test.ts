@@ -24,7 +24,7 @@ test('getLlmLabel emits explicit dynamic labels for configured OpenCode provider
         type: 'opencode',
         alias: 'opencode',
         enabled: true,
-        dockerImage: 'propr/agent-opencode:latest',
+        dockerImage: 'propr/agent:latest',
         configPath: '~/.config/opencode',
         supportedModels: ['opencode-openai/gpt-5.5', 'opencode-go/qwen3.7-max'],
         defaultModel: 'opencode-minimax-m3-free'
@@ -53,7 +53,7 @@ test('getLlmLabel hashes long dynamic labels to fit GitHub limits', async () => 
         type: 'opencode',
         alias: 'opencode',
         enabled: true,
-        dockerImage: 'propr/agent-opencode:latest',
+        dockerImage: 'propr/agent:latest',
         configPath: '~/.config/opencode',
         supportedModels: [longModel],
         defaultModel: 'opencode-minimax-m3-free'

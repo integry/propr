@@ -16,7 +16,7 @@ export interface AgentConfig {
     enabled: boolean;
 
     // Docker configuration
-    dockerImage: string;    // e.g., 'propr/agent-claude:latest'
+    dockerImage: string;    // e.g., 'propr/agent:latest'
     configPath: string;     // Host path or '~' path resolved before Docker bind use
 
     // Model configuration

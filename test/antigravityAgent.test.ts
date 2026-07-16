@@ -20,7 +20,7 @@ function createAgent(configPath: string): AntigravityAgent {
         type: 'antigravity',
         alias: 'antigravity',
         enabled: true,
-        dockerImage: 'propr/agent-antigravity:latest',
+        dockerImage: 'propr/agent:latest',
         configPath,
         supportedModels: ['antigravity-gemini-3.5-flash-high'],
         defaultModel: 'antigravity-gemini-3.5-flash-high'

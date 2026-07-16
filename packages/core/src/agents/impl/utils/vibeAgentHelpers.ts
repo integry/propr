@@ -196,7 +196,7 @@ export function splitVibeCliArgs(input: string): string[] {
     return args;
 }
 
-// Tied to the pinned mistral-vibe version in Dockerfile.vibe; override via VIBE_CLI_ARGS if flags change.
+// Tied to the pinned mistral-vibe version in Dockerfile.agent; override via VIBE_CLI_ARGS if flags change.
 export function getDefaultVibeCliArgs(): string[] {
     return ['--output', 'json'];
 }

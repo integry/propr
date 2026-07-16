@@ -8,14 +8,14 @@ import path from 'path';
 import crypto from 'crypto';
 import logger from '../../utils/logger.js';
 import type { AgentConfig, AgentType } from '../types.js';
-import { VERSIONED_AGENT_IMAGE_NAMES } from '../constants.js';
+import { AGENT_TYPES } from '../constants.js';
 import type { AvailableVersionsResponse, CliVersionType } from './types.js';
 import {
     AGENT_CLI_PACKAGES,
     AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
-    AGENT_IMAGE_NAMES,
-    DOCKER_CONTENT_FILES
+    AGENT_BUNDLE_CONTENT_FILES,
+    AGENT_IMAGE_NAME
 } from './types.js';
 import {
     getDistTags,
@@ -31,10 +31,44 @@ import {
 const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
 const INSTALLER_AGENT_TYPES = new Set<AgentType>(['antigravity']);
 
-function validatePyPiCustomVersion(versionSpec: string, packageName: string): string {
+export type AgentCliVersionMatrix = Record<AgentType, string>;
+
+export function getDefaultAgentCliVersionMatrix(): AgentCliVersionMatrix {
+    return { ...AGENT_DEFAULT_VERSIONS };
+}
+
+export function getAgentCliVersionMatrix(
+    agents: Array<Pick<AgentConfig, 'type' | 'cliVersionResolved'> & Partial<Pick<AgentConfig, 'enabled'>>>
+): AgentCliVersionMatrix {
+    const versions = getDefaultAgentCliVersionMatrix();
+    const configured = new Map<AgentType, string>();
+    for (const agent of agents) {
+        if (agent.enabled === false) continue;
+        const version = agent.cliVersionResolved || AGENT_DEFAULT_VERSIONS[agent.type];
+        const existing = configured.get(agent.type);
+        if (existing && existing !== version) {
+            throw new Error(
+                `All ${agent.type} agents must use the same CLI version in the unified image; configured ${existing} and ${version}`
+            );
+        }
+        configured.set(agent.type, version);
+        versions[agent.type] = version;
+    }
+    return versions;
+}
+
+export function getAgentBundleVersionHash(versions: AgentCliVersionMatrix): string {
+    const serialized = AGENT_TYPES.map(type => `${type}=${versions[type]}`).join('\n');
+    return crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 12);
+}
+
+function validatePyPiCustomVersion(versionSpec: string, packageName: string): string | Promise<string> {
     const trimmedVersionSpec = versionSpec.trim();
     if (!trimmedVersionSpec) {
         throw new Error('Version spec required');
+    }
+    if (!trimmedVersionSpec.includes('@') && !trimmedVersionSpec.includes('://') && !/\.(?:whl|tar\.gz)$/i.test(trimmedVersionSpec)) {
+        return resolvePyPiVersionSpec(packageName, trimmedVersionSpec);
     }
     logger.debug({ packageName, versionSpec: trimmedVersionSpec }, 'Using custom PyPI install spec');
     return trimmedVersionSpec;
@@ -228,7 +262,8 @@ export async function getAvailableVersions(agentType: AgentType): Promise<Availa
 
 // Default project root - can be overridden via environment variable
 // In Docker container, the app root is /usr/src/app but cwd may be /usr/src/app/packages/api
-const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
+const PROJECT_ROOT = process.env.PROPR_ROOT
+    || (fs.existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
 
 /**
  * Computes a content hash for the Docker build files of an agent.
@@ -238,8 +273,8 @@ const PROJECT_ROOT = process.env.PROPR_ROOT || '/usr/src/app';
  * @param basePath - Base path where Dockerfiles are located (defaults to project root)
  * @returns First 6 characters of SHA256 hash
  */
-export function computeContentHash(agentType: AgentType, basePath: string = PROJECT_ROOT): string {
-    const files = DOCKER_CONTENT_FILES[agentType];
+export function computeContentHash(_agentType?: AgentType, basePath: string = PROJECT_ROOT): string {
+    const files = AGENT_BUNDLE_CONTENT_FILES;
     const hash = crypto.createHash('sha256');
 
     for (const file of files) {
@@ -249,11 +284,11 @@ export function computeContentHash(agentType: AgentType, basePath: string = PROJ
                 const content = fs.readFileSync(filePath, 'utf-8');
                 hash.update(content);
             } else {
-                logger.warn({ agentType, file }, 'Docker content file not found, skipping in hash');
+                logger.warn({ file }, 'Agent bundle content file not found, skipping in hash');
             }
         } catch (error) {
             const err = error as Error;
-            logger.warn({ agentType, file, error: err.message }, 'Failed to read Docker content file');
+            logger.warn({ file, error: err.message }, 'Failed to read agent bundle content file');
         }
     }
 
@@ -269,28 +304,15 @@ export function resolveConfiguredAgentBaseImage(
     config: Pick<AgentConfig, 'type' | 'dockerImage' | 'cliVersionType' | 'cliVersionResolved'>,
     basePath: string = PROJECT_ROOT
 ): string {
-    if (!config.cliVersionType || !config.cliVersionResolved) return config.dockerImage;
-    const managedImageName = AGENT_IMAGE_NAMES[config.type];
-    if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return config.dockerImage;
-    const configuredTag = config.dockerImage.slice(managedImageName.length + 1);
-    const versionTag = getDockerTagComponent(config.cliVersionResolved);
-    if (!configuredTag.startsWith(`${versionTag}-`) || !/-[0-9a-f]{6}$/i.test(configuredTag)) {
-        return config.dockerImage;
-    }
-    return `${managedImageName}:${versionTag}-${computeContentHash(config.type, basePath)}`;
+    void basePath;
+    return config.dockerImage;
 }
 
-/**
- * Generates the Docker image tag for a specific version and content hash.
- *
- * @param agentType - The agent type
- * @param cliVersion - The CLI version
- * @param contentHash - The content hash (6 chars)
- * @returns Docker image tag (e.g., 'propr/agent-claude:2.1.77-a3f2b1')
- */
-export function generateImageTag(agentType: AgentType, cliVersion: string, contentHash: string): string {
-    const imageName = VERSIONED_AGENT_IMAGE_NAMES[agentType];
-    return `${imageName}:${getDockerTagComponent(cliVersion)}-${contentHash}`;
+export function generateAgentBundleImageTag(
+    versions: AgentCliVersionMatrix,
+    contentHash: string
+): string {
+    return `${AGENT_IMAGE_NAME}:bundle-${getAgentBundleVersionHash(versions)}-${contentHash}`;
 }
 
 /**
@@ -324,7 +346,8 @@ export {
     AGENT_CLI_PACKAGES,
     AGENT_CLI_TAGS,
     AGENT_DEFAULT_VERSIONS,
-    DOCKER_CONTENT_FILES
+    AGENT_BUNDLE_CONTENT_FILES,
+    AGENT_IMAGE_NAME
 };
 
 export type { CliVersionType, AvailableVersionsResponse };

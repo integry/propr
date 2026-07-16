@@ -48,7 +48,7 @@ Branch names include the model identifier, so concurrent multi-model runs never 
 
 ## Containerized Agent Runs
 
-Each agent run starts a dedicated container from the matching agent image (`propr/agent-claude`, `propr/agent-codex`, `propr/agent-antigravity`, `propr/agent-opencode`, `propr/agent-vibe`). The container gets:
+Each agent run starts a dedicated container from the unified `propr/agent` image. The container gets:
 
 - The task worktree mounted as its working directory
 - The agent credential directories mounted read-write from the host at their original paths (for example `~/.claude`, `~/.codex`, `~/.gemini`) so CLIs can refresh auth state; only the `.env` file is mounted read-only

@@ -1,11 +1,6 @@
 import logger from '../../utils/logger.js';
 import { executeDockerCommand } from './dockerExecutor.js';
-import { AGENT_IMAGE_NAMES } from '../../agents/version/types.js';
-import type { AgentType } from '../../agents/types.js';
-
-function getAgentImageName(agentType: string): string | undefined {
-    return AGENT_IMAGE_NAMES[agentType as AgentType];
-}
+import { AGENT_IMAGE_NAME } from '../../agents/version/types.js';
 
 
 /**
@@ -15,14 +10,9 @@ function getAgentImageName(agentType: string): string | undefined {
  * @returns Array of image tags (e.g., ['2.1.77-a3f2b1', '2.1.76-b4c3d2'])
  */
 export async function listAgentImages(agentType: string): Promise<string[]> {
-    const imageName = getAgentImageName(agentType);
-    if (!imageName) {
-        return [];
-    }
-
     try {
         const result = await executeDockerCommand('docker', [
-            'images', `${imageName}`, '--format', '{{.Tag}}'
+            'images', AGENT_IMAGE_NAME, '--format', '{{.Tag}}'
         ]);
 
         const tags = result.stdout
@@ -47,13 +37,8 @@ export async function listAgentImages(agentType: string): Promise<string[]> {
  */
 export async function cleanupUnusedAgentImages(
     agentType: string,
-    versionsInUse?: Set<string>
+    tagsInUse?: Set<string>
 ): Promise<number> {
-    const imageName = getAgentImageName(agentType);
-    if (!imageName) {
-        return 0;
-    }
-
     try {
         // Get all image tags for this agent
         const allTags = await listAgentImages(agentType);
@@ -63,28 +48,23 @@ export async function cleanupUnusedAgentImages(
         }
 
         // If versionsInUse not provided, don't delete anything (safe default)
-        if (!versionsInUse || versionsInUse.size === 0) {
+        if (!tagsInUse || tagsInUse.size === 0) {
             logger.debug({ agentType }, 'No versions specified to keep, skipping cleanup');
             return 0;
         }
 
         // Always keep 'latest' tag
-        versionsInUse.add('latest');
+        tagsInUse.add('latest');
 
         let deletedCount = 0;
 
         for (const tag of allTags) {
-            // Extract version from tag (format: version-hash or just version)
-            const versionMatch = tag.match(/^([^-]+)/);
-            const version = versionMatch ? versionMatch[1] : tag;
-
-            // Skip if version is in use or if it's 'latest'
-            if (tag === 'latest' || versionsInUse.has(version) || versionsInUse.has(tag)) {
+            if (tagsInUse.has(tag)) {
                 continue;
             }
 
             // Delete the image
-            const fullImageName = `${imageName}:${tag}`;
+            const fullImageName = `${AGENT_IMAGE_NAME}:${tag}`;
             logger.info({ agentType, imageTag: fullImageName }, 'Deleting unused agent Docker image');
 
             try {

@@ -14,7 +14,7 @@ const opencodeConfig: AgentConfig = {
     type: 'opencode',
     alias: 'opencode',
     enabled: true,
-    dockerImage: 'propr/agent-opencode:latest',
+    dockerImage: 'propr/agent:latest',
     configPath: '~/.config/opencode',
     supportedModels: ['opencode-minimax-m3-free'],
     defaultModel: 'opencode-minimax-m3-free'
@@ -51,7 +51,7 @@ after(async () => {
 });
 
 function skipImageChecks(registry: InstanceType<typeof AgentRegistry>): void {
-    (registry as unknown as { ensureAgentImage: () => Promise<boolean> }).ensureAgentImage = async () => true;
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => 'propr/agent:latest';
 }
 
 function stubDefaultClaudeRegistration(registry: InstanceType<typeof AgentRegistry>): void {
@@ -64,7 +64,7 @@ function stubDefaultClaudeRegistration(registry: InstanceType<typeof AgentRegist
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: 'propr/agent-claude:latest',
+            dockerImage: 'propr/agent:latest',
             configPath: '~/.claude',
             supportedModels: ['claude-sonnet-4-6'],
             defaultModel: undefined

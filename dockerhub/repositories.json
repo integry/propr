@@ -20,23 +20,8 @@
     "overview": "docs.md"
   },
   {
-    "name": "agent-base",
-    "description": "Shared base image for ProPR agent execution containers.",
-    "overview": "agent-base.md"
-  },
-  {
-    "name": "agent-claude",
-    "description": "Claude Code execution container for ProPR agent runs.",
-    "overview": "agent-claude.md"
-  },
-  {
-    "name": "agent-codex",
-    "description": "OpenAI Codex execution container for ProPR agent runs.",
-    "overview": "agent-codex.md"
-  },
-  {
-    "name": "agent-antigravity",
-    "description": "Antigravity execution container for ProPR agent runs.",
-    "overview": "agent-antigravity.md"
+    "name": "agent",
+    "description": "Unified Claude, Codex, Antigravity, OpenCode, and Vibe execution container.",
+    "overview": "agent.md"
   }
 ]

@@ -16,13 +16,13 @@ export type AgentType = "claude" | "codex" | "antigravity" | "opencode" | "vibe"
 
 export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "opencode", "vibe"] as const;
 
-// Keep in sync with packages/core/src/agents/version/types.ts AGENT_IMAGE_NAMES
+// Keep in sync with the core unified agent image name.
 const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
-  claude: "propr/agent-claude",
-  codex: "propr/agent-codex",
-  antigravity: "propr/agent-antigravity",
-  opencode: "propr/agent-opencode",
-  vibe: "propr/agent-vibe",
+  claude: "propr/agent",
+  codex: "propr/agent",
+  antigravity: "propr/agent",
+  opencode: "propr/agent",
+  vibe: "propr/agent",
 };
 
 /**
@@ -50,7 +50,7 @@ export interface AgentConfig {
   enabled: boolean;
 
   /**
-   * Docker image for the agent (e.g., 'propr/agent-claude:latest').
+   * Docker image for the agent (e.g., 'propr/agent:latest').
    */
   dockerImage: string;
 

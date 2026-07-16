@@ -1169,7 +1169,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(result.status, 200);
         assert.strictEqual(typeof (result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage, 'string');
-        assert.match(String((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage), /^propr\/agent-claude:.*-abc123$/);
+        assert.match(String((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage), /^propr\/agent:bundle-[0-9a-f]{12}-abc123$/);
         contentHashMock.mock.restore();
     });
 

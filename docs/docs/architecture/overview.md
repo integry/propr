@@ -38,7 +38,7 @@ ProPR has four main parts:
 
 ## Agent Runtimes
 
-Every supported agent follows the same runtime pattern: a Docker image built on the shared Debian/glibc `propr/agent-base` image, an entrypoint script, and a host credential directory mounted into the container.
+Every supported agent follows the same runtime pattern: the unified Debian/glibc `propr/agent` image, a type-specific entrypoint, and a host credential directory mounted into the container.
 
 The [Agent Runtime Reference](./agent-runtime.md) holds the canonical table of images, Dockerfiles, entrypoints, and credential mounts, plus runtime-specific notes for Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe.
 

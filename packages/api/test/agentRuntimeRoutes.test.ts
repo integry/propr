@@ -33,7 +33,7 @@ const availablePackages = async (packages: unknown) => ({
 });
 
 describe('agent runtime package routes', () => {
-    test('queues a validated package profile for every configured agent image', async () => {
+    test('queues one validated package profile for the unified agent image', async () => {
         let state = initialState();
         let queued: unknown;
         const routes = createAgentRuntimeRoutes({
@@ -41,9 +41,9 @@ describe('agent runtime package routes', () => {
             services: {
                 loadState: async () => state,
                 loadAgents: async () => [
-                    { dockerImage: 'propr/agent-codex:latest' },
-                    { dockerImage: 'propr/agent-vibe:latest' },
-                    { dockerImage: 'propr/agent-codex:latest' }
+                    { dockerImage: 'propr/agent:bundle-test' },
+                    { dockerImage: 'propr/agent:bundle-test' },
+                    { dockerImage: 'propr/agent:bundle-test' }
                 ] as never,
                 requestBuild: async (packages, baseImages) => {
                     state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-1' };
@@ -60,7 +60,7 @@ describe('agent runtime package routes', () => {
         assert.deepEqual(queued, {
             buildId: 'build-1',
             packages: ['chromium'],
-            baseImages: ['propr/agent-codex:latest', 'propr/agent-vibe:latest']
+            baseImages: ['propr/agent:bundle-test']
         });
         assert.equal((record.body as AgentRuntimePackageState).status, 'pending');
     });
@@ -71,7 +71,7 @@ describe('agent runtime package routes', () => {
             runtimeBuildQueue: { add: async () => { throw new Error('redis unavailable'); } } as never,
             services: {
                 loadState: async () => state,
-                loadAgents: async () => [{ dockerImage: 'propr/agent-codex:latest' }] as never,
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
                 requestBuild: async (_packages, baseImages) => ({ buildId: 'build-2', packages: ['jq'], baseImages }),
                 saveState: async next => { state = next; },
                 validateAvailability: availablePackages
@@ -91,7 +91,7 @@ describe('agent runtime package routes', () => {
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: { add: async () => { queued = true; } } as never,
             services: {
-                loadAgents: async () => [{ dockerImage: 'propr/agent-codex:latest' }] as never,
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
                 validateAvailability: async packages => ({
                     valid: false,
                     packages: packages as string[],
@@ -114,7 +114,7 @@ describe('agent runtime package routes', () => {
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: {} as never,
             services: {
-                loadAgents: async () => [{ dockerImage: 'propr/agent-codex:latest' }] as never,
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
                 search: async query => ({ query, suggestions: ['chromium'], sources: [] })
             }
         });

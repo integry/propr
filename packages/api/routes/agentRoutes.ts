@@ -78,7 +78,7 @@ async function hasLocalDockerImage(image: string): Promise<boolean> {
 }
 
 async function resolveOpenCodeDiscoveryImage(savedDockerImage?: string): Promise<string> {
-  if (process.env.OPENCODE_DOCKER_IMAGE) return process.env.OPENCODE_DOCKER_IMAGE;
+  if (process.env.AGENT_DOCKER_IMAGE) return process.env.AGENT_DOCKER_IMAGE;
   const fallbackImage = AGENT_DEFAULTS.opencode.dockerImage;
   if (!savedDockerImage || savedDockerImage === fallbackImage) return fallbackImage;
   return await hasLocalDockerImage(savedDockerImage) ? savedDockerImage : fallbackImage;

@@ -292,5 +292,5 @@ function detectContainerId(worktreePath: string, state: { containerIdDetected: b
 }
 
 // Re-export image builder functions for backward compatibility
-export { buildClaudeDockerImage, ensureAgentDockerImage, ensureVersionedAgentImage } from './dockerImageBuilder.js';
+export { buildClaudeDockerImage, ensureAgentBundleImage, ensureAgentDockerImage } from './dockerImageBuilder.js';
 export type { VersionedImageBuildResult } from './dockerImageBuilder.js';

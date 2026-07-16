@@ -23,7 +23,7 @@ function createAgent(overrides: Partial<AgentConfig>): AgentConfig {
         type: 'claude',
         alias: 'agent',
         enabled: true,
-        dockerImage: 'propr/agent-claude:latest',
+        dockerImage: 'propr/agent:latest',
         configPath: '/tmp/agent',
         supportedModels: [],
         ...overrides
@@ -83,10 +83,25 @@ describe('agent config migration', () => {
         assert.strictEqual(agent.dockerImage, 'local/codex-custom:latest');
     });
 
+    test('advances stale default CLI versions for every agent type', () => {
+        const agent = createAgent({
+            type: 'opencode',
+            supportedModels: ['opencode-minimax-m3-free'],
+            defaultModel: 'opencode-minimax-m3-free',
+            cliVersionType: 'default',
+            cliVersion: 'latest',
+            cliVersionResolved: '1.17.10'
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.opencode);
+        assert.strictEqual(agent.cliVersion, undefined);
+    });
+
     test('migrates legacy Antigravity config paths to Gemini credentials', () => {
         const agent = createAgent({
             type: 'antigravity',
-            dockerImage: 'propr/agent-antigravity:latest',
+            dockerImage: 'propr/agent:latest',
             configPath: '~/.antigravity',
             supportedModels: ['gemini-3-pro']
         });

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
-    generateImageTag,
+    generateAgentBundleImageTag,
+    getAgentBundleVersionHash,
+    getAgentCliVersionMatrix,
+    getDefaultAgentCliVersionMatrix,
     getDockerTagComponent,
     resolveVersion
 } from '../src/agents/version/index.js';
@@ -57,11 +60,49 @@ test('Antigravity installer versions only allow latest', async () => {
 });
 
 test('Docker image tags are safe for custom Python install specs', () => {
-    const component = getDockerTagComponent('mistral-vibe @ https://packages.example.test/builds/vibe.whl');
+    const installSpec = 'mistral-vibe @ https://packages.example.test/builds/vibe.whl';
+    const component = getDockerTagComponent(installSpec);
+    const versions = getDefaultAgentCliVersionMatrix();
+    versions.vibe = installSpec;
 
     assert.match(component, /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/);
-    assert.equal(
-        generateImageTag('vibe', 'mistral-vibe @ https://packages.example.test/builds/vibe.whl', 'abc123'),
-        `propr/agent-vibe:${component}-abc123`
+    assert.match(
+        generateAgentBundleImageTag(versions, 'abc123'),
+        /^propr\/agent:bundle-[0-9a-f]{12}-abc123$/
     );
+});
+
+test('unified image matrix combines versions across agent types deterministically', () => {
+    const matrix = getAgentCliVersionMatrix([
+        { type: 'claude', cliVersionResolved: '2.1.200' },
+        { type: 'codex', cliVersionResolved: '0.140.0' }
+    ]);
+    const reordered = getAgentCliVersionMatrix([
+        { type: 'codex', cliVersionResolved: '0.140.0' },
+        { type: 'claude', cliVersionResolved: '2.1.200' }
+    ]);
+
+    assert.equal(matrix.claude, '2.1.200');
+    assert.equal(matrix.codex, '0.140.0');
+    assert.equal(getAgentBundleVersionHash(matrix), getAgentBundleVersionHash(reordered));
+    assert.notEqual(
+        getAgentBundleVersionHash(matrix),
+        getAgentBundleVersionHash(getDefaultAgentCliVersionMatrix())
+    );
+});
+
+test('unified image matrix rejects conflicting versions for aliases of one agent type', () => {
+    assert.throws(() => getAgentCliVersionMatrix([
+        { type: 'codex', cliVersionResolved: '0.140.0' },
+        { type: 'codex', cliVersionResolved: '0.141.0' }
+    ]), /All codex agents must use the same CLI version/);
+});
+
+test('unified image matrix ignores disabled aliases', () => {
+    const matrix = getAgentCliVersionMatrix([
+        { type: 'codex', enabled: true, cliVersionResolved: '0.140.0' },
+        { type: 'codex', enabled: false, cliVersionResolved: '0.141.0' }
+    ]);
+
+    assert.equal(matrix.codex, '0.140.0');
 });

@@ -1,6 +1,7 @@
 import type { AgentType } from './types.js';
 
 export const AGENT_TYPES = ['claude', 'codex', 'antigravity', 'opencode', 'vibe'] as const satisfies readonly AgentType[];
+export const AGENT_IMAGE_NAME = 'propr/agent';
 
 const VALID_AGENT_TYPES_SET = new Set<string>(AGENT_TYPES);
 
@@ -16,23 +17,10 @@ export function validateAgentType(agentType: unknown): AgentTypeValidationResult
     };
 }
 
-export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
-    claude: 'propr/agent-claude',
-    codex: 'propr/agent-codex',
-    antigravity: 'propr/agent-antigravity',
-    opencode: 'propr/agent-opencode',
-    vibe: 'propr/agent-vibe'
-};
-
-export const VERSIONED_AGENT_IMAGE_NAMES: Record<AgentType, string> = {
-    ...AGENT_IMAGE_NAMES,
-    opencode: 'propr-opencode'
-};
-
 export const DEFAULT_AGENT_DOCKER_IMAGES: Record<AgentType, string> = {
-    claude: `${AGENT_IMAGE_NAMES.claude}:latest`,
-    codex: `${AGENT_IMAGE_NAMES.codex}:latest`,
-    antigravity: `${AGENT_IMAGE_NAMES.antigravity}:latest`,
-    opencode: `${AGENT_IMAGE_NAMES.opencode}:latest`,
-    vibe: `${AGENT_IMAGE_NAMES.vibe}:latest`
+    claude: `${AGENT_IMAGE_NAME}:latest`,
+    codex: `${AGENT_IMAGE_NAME}:latest`,
+    antigravity: `${AGENT_IMAGE_NAME}:latest`,
+    opencode: `${AGENT_IMAGE_NAME}:latest`,
+    vibe: `${AGENT_IMAGE_NAME}:latest`
 };
