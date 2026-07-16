@@ -58,7 +58,7 @@ The image-based install starts service and agent containers from published image
 
 ## Network Firewall (Optional, Off By Default)
 
-The agent images ship `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, SSH, and HTTPS to provider and GitHub endpoints (for example `api.anthropic.com`, `api.github.com`, `github.com`, `objects.githubusercontent.com`).
+The unified agent image ships `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, SSH, and HTTPS to provider and GitHub endpoints (for example `api.anthropic.com`, `api.github.com`, `github.com`, `objects.githubusercontent.com`).
 
 The script is **not executed by default**. Every agent entrypoint (`scripts/claude-entrypoint.sh`, `codex-entrypoint.sh`, `antigravity-entrypoint.sh`, `opencode-entrypoint.sh`, `vibe-entrypoint.sh`) currently skips it and logs:
 

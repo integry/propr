@@ -47,7 +47,7 @@ async function main() {
         if (strictAgentPull) {
             console.error(`\nERROR: ${failedAgentImages.length} agent image(s) could not be pulled (PROPR_STRICT_AGENT_PULL is enabled):\n${list}`);
             console.error('  Build locally with scripts/build-images.sh or push to the registry.');
-            console.error('  Set PROPR_STRICT_AGENT_PULL=false to allow startup without all agent images.\n');
+            console.error('  Set PROPR_STRICT_AGENT_PULL=false to allow startup without the agent image.\n');
             process.exit(1);
         }
         console.warn(`\nWARNING: ${failedAgentImages.length} agent image(s) could not be pulled (strict mode disabled):\n${list}`);

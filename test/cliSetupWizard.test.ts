@@ -399,10 +399,10 @@ test("runSequentialSetup drives the engine through scripted answers and writes .
 });
 
 // ---------------------------------------------------------------------------
-// 5. Only the selected agent images are pulled.
+// 5. The shared agent image is pulled only when an agent is selected.
 // ---------------------------------------------------------------------------
 
-test("only the selected agents' images are requested for pulling", async () => {
+test("selected agents request the shared agent image", async () => {
   const root = makeRoot();
   seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
 
@@ -440,7 +440,7 @@ test("unknown and duplicate agent selections are filtered before pulling images"
   assert.deepEqual(pulledAgentTypes, ["claude", "codex"], "duplicates de-duped and unknown names dropped");
 });
 
-test("no selected agents means no agent images are pulled", async () => {
+test("no selected agents means the agent image is not pulled", async () => {
   const root = makeRoot();
   seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
 
@@ -456,7 +456,7 @@ test("no selected agents means no agent images are pulled", async () => {
     }),
   });
 
-  assert.deepEqual(pulledAgentTypes, [], "no agents selected → no agent images requested");
+  assert.deepEqual(pulledAgentTypes, [], "no agents selected means no agent image requested");
   assert.equal(statusOf(result.state, "configure-agents"), "skipped");
   assert.equal(statusOf(result.state, "enable-agents"), "skipped");
 });

@@ -52,7 +52,7 @@ if [ -f ".propr/package.json" ]; then
   fi
 fi
 
-# Example for Debian-based agent images:
+# Example for the Debian-based agent image:
 # sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
 `;
 

@@ -19,7 +19,7 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 
 All agents run from the unified Debian/glibc `propr/agent` image. Its internal base stage includes Node.js, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. Independent CLI build stages preserve Docker cache reuse when one configured version changes.
 
-This table is the canonical mapping of agent images, Dockerfiles, entrypoints, and credential mounts; other pages link here instead of repeating it.
+This table maps each agent type to the unified image, its type-specific entrypoint, and its credential mount; other pages link here instead of repeating it.
 
 | Agent | Image | Dockerfile | Entrypoint | Host credential mount | Container credential path |
 | --- | --- | --- | --- | --- | --- |
@@ -31,7 +31,7 @@ This table is the canonical mapping of agent images, Dockerfiles, entrypoints, a
 
 ## Container Configuration
 
-The worker launches the selected agent image with a prepared worktree, a generated container name, the configured credential mount, and any agent-level environment variables. Containers are removed after execution with `--rm`, run with stdin enabled, and use `/home/node/workspace` as the working directory.
+The worker launches the unified agent image with a prepared worktree, a generated container name, the selected type's credential mount, and any agent-level environment variables. Containers are removed after execution with `--rm`, run with stdin enabled, and use `/home/node/workspace` as the working directory.
 
 Most entrypoints start as root so they can prepare runtime directories or fix container-local ownership, then drop to the `node` user before running the CLI. Entrypoints also mark Git directories as safe, install the `gh` wrapper when present, and emit diagnostics that are captured with the task logs.
 

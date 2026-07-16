@@ -47,7 +47,7 @@ Bundled third-party components
    Provider:   Google Antigravity
    Installed via the official Antigravity CLI installer. The installer does
    not publish a separate license, historical version artifact, or checksum in
-   the ProPR build inputs. ProPR Antigravity agent images therefore install the
+   the ProPR build inputs. The ProPR agent image therefore installs the
    current upstream CLI at image build time and cannot be reproduced from a
    pinned Antigravity CLI version.
 
@@ -56,7 +56,7 @@ Bundled third-party components
    Upstream:   https://github.com/cli/cli
    Installed from the official distribution at cli.github.com.
 
-6. Debian Linux base image and system packages across the agent image family
+6. Debian Linux base image and system packages in the unified agent image
    (bash, build-essential, git, curl, ca-certificates, sudo, iptables, procps,
    tini, ripgrep, gosu, python3)
    Various open-source licenses. See the Debian package tracker for

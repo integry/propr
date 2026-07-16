@@ -11,7 +11,7 @@ See NOTICE for a higher-level summary and end-user obligations.
 
 ## Debian base image and system packages
 
-The unified `propr/agent` image is based on `node:20-bookworm-slim` and
+The unified `propr/agent` image is based on `node:22-bookworm-slim` and
 installs system packages from Debian repositories,
 including bash, build-essential, git, curl, ca-certificates, sudo, iptables,
 procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from

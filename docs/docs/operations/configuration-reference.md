@@ -58,7 +58,7 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 
 ## Agents & Timeouts
 
-Per-agent images, credential paths, and execution limits. `ANTIGRAVITY_TIMEOUT_MS` and `CLAUDE_MAX_TURNS` are the two places the shipped value and the code fallback diverge most — deleting the line does not restore the shipped behavior.
+Unified image selection, per-agent credential paths, and execution limits. `ANTIGRAVITY_TIMEOUT_MS` and `CLAUDE_MAX_TURNS` are the two places the shipped value and the code fallback diverge most — deleting the line does not restore the shipped behavior.
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|

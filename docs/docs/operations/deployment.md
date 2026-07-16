@@ -272,7 +272,7 @@ The SQLite database in `data/` is the primary application state; `.env` and the 
 ### CLI update path
 
 Update the CLI package, then restart the stack. The CLI manifest pins exact
-image versions; the new version pulls the matching service and agent images:
+image versions; the new version pulls the matching service images and unified agent image:
 
 ```bash
 sudo npm update -g propr-cli
@@ -300,7 +300,7 @@ Pull the newer launcher image:
 docker pull propr/launcher:latest
 ```
 
-Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service and agent images on startup.
+Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service images and unified agent image on startup.
 
 ---
 

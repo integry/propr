@@ -6,7 +6,7 @@
 # Requires:
 #   - propr/launcher:latest and propr/app:latest built locally
 #     (npm run images:build)
-#   - Agent images pulled or built locally (propr/agent-{vibe,antigravity,opencode})
+#   - Unified agent image pulled or built locally (`propr/agent:latest`)
 #   - `gh auth login` or PROPR_E2E_TOKEN
 #   - Mounted agent credentials on the host ($HOME/.vibe, /.gemini,
 #     and /.config/opencode as applicable for the tests being run)

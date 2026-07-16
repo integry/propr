@@ -28,7 +28,7 @@
  *   - `.env` is never overwritten wholesale; edits go through the non-destructive
  *     {@link applyEnvSelection} (per-key, never blanks an existing value).
  *   - No step deletes user data; a running stack is reused, not recreated.
- *   - Core images pull by default; agent images pull only for selected agents.
+ *   - Core images pull by default; the agent image pulls when an agent is selected.
  */
 
 import { existsSync } from "node:fs";
@@ -397,7 +397,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       for (const [key, tag] of Object.entries(cfg.images)) {
         if (key === "docs" && !cfg.docsEnabled) continue;
         const isAgent = key === "agent";
-        // Only pull agent images for the agents the user selected; core images
+        // Pull the shared agent image when the user selected any agent; core images
         // (api/worker/daemon/redis/…) always pull.
         if (isAgent && selected.size === 0) continue;
 
@@ -751,8 +751,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     return finish();
   }
 
-  // 3. Pull images — core images by default, agent images only for the agents
-  //    the user selects (defaulting to the ones detected on this host).
+  // 3. Pull images — core images by default, plus the shared agent image when
+  //    the user selects an agent (defaulting to those detected on this host).
   begin("pull-images");
   const detected = detectInstalledAgents(catalog);
   try {

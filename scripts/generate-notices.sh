@@ -32,7 +32,7 @@ EOF
 cat >> "$OUT" <<'EOF'
 ## Debian base image and system packages
 
-The unified `propr/agent` image is based on `node:20-bookworm-slim` and
+The unified `propr/agent` image is based on `node:22-bookworm-slim` and
 installs system packages from Debian repositories,
 including bash, build-essential, git, curl, ca-certificates, sudo, iptables,
 procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from
@@ -75,7 +75,7 @@ for entry in \
 done
 
 # @openai/codex, Antigravity CLI, opencode-ai, and mistral-vibe are installed
-# only in agent images (not in root node_modules). Reference their licenses.
+# only in the agent image (not in root node_modules). Reference their licenses.
 cat >> "$OUT" <<'EOF'
 ## @openai/codex (installed in propr/agent image)
 

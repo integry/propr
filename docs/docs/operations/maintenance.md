@@ -12,7 +12,7 @@ For launcher-based installs, pull the newer launcher image and restart the stack
 docker pull propr/launcher:latest
 ```
 
-Stop the running launcher (Ctrl-C, or stop its container — it tears down the stack containers on shutdown), then start it again with your usual `docker run` command from [Production Deployment](./deployment.md). The launcher's manifest pins exact image versions, so the newer launcher pulls the newer service and agent images.
+Stop the running launcher (Ctrl-C, or stop its container — it tears down the stack containers on shutdown), then start it again with your usual `docker run` command from [Production Deployment](./deployment.md). The launcher's manifest pins exact image versions, so the newer launcher pulls the newer service images and unified agent image.
 
 For source-based Compose deployments:
 
@@ -26,7 +26,7 @@ npm run compose:up
 
 ### Upgrading Safely
 
-Service and agent images are pinned to the release version of the control plane that starts them: the CLI and launcher manifests pin exact image versions, so choosing the control-plane version chooses the whole stack version. `propr/launcher:latest` and a plain `npm update -g propr-cli` track the newest release; to pin, install an exact CLI version (`npm install -g propr-cli@<version>`) and update deliberately.
+Service images and the unified agent image are pinned to the release version of the control plane that starts them: the CLI and launcher manifests pin exact image versions, so choosing the control-plane version chooses the whole stack version. `propr/launcher:latest` and a plain `npm update -g propr-cli` track the newest release; to pin, install an exact CLI version (`npm install -g propr-cli@<version>`) and update deliberately.
 
 A safe upgrade, in order:
 

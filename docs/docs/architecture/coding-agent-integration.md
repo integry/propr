@@ -50,7 +50,7 @@ Every supported coding agent uses the same containerized runtime shape: the unif
 
 The runtime receives GitHub credentials, selected model settings, timeout settings, and any agent-specific environment variables. Containers run independently so concurrent jobs can use different agents and models without sharing mutable checkouts.
 
-See [Isolated And Safe Execution](../features/execution-safety.md) for the execution boundary and [Agent Runtime Reference](./agent-runtime.md) for concrete runtime configuration and debugging details across all agent images.
+See [Isolated And Safe Execution](../features/execution-safety.md) for the execution boundary and [Agent Runtime Reference](./agent-runtime.md) for concrete runtime configuration and debugging details across all agent entrypoints.
 
 ## Prompt Boundary
 

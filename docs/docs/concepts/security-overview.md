@@ -22,7 +22,7 @@ Model calls go directly from your stack to the provider you configured. ProPR is
 
 Every implementation task runs in its own Docker container and its own Git worktree on a dedicated branch. The agent edits files; it does not commit, push, or open PRs — ProPR performs those Git and GitHub operations deterministically after the agent finishes. The main checkout is never touched, and a wrong result is contained to a branch you can review, retry, or discard. Details: [Execution Safety](../features/execution-safety.md).
 
-Outbound network access from agent containers is **unrestricted by default**. An optional allowlist firewall (model provider, GitHub, DNS only) ships in the agent images but is off by default because it requires privileged containers — do not assume network sandboxing unless you enabled it.
+Outbound network access from agent containers is **unrestricted by default**. An optional allowlist firewall (model provider, GitHub, DNS only) ships in the unified agent image but is off by default because it requires privileged containers — do not assume network sandboxing unless you enabled it.
 
 ## Network Surface
 
