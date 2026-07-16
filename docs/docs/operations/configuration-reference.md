@@ -43,6 +43,7 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `GITHUB_EVENT_INTAKE_MODE` | `routing_websocket` | Selects the intake path: `routing_websocket`, `polling`, or `direct_webhook`. Unset also means `routing_websocket`. | Set explicitly to keep polling/webhook behavior on installs that run their own GitHub App. |
 | `PROPR_ROUTING_URL` | Hosted `wss://webhook.propr.dev` when unset | Routing WebSocket origin (`wss://`; `ws://` only for localhost). | Self-hosted relay only. |
 | `PROPR_ROUTING_WS_PING_INTERVAL_MS` | `300000` (5 minutes) | Transport keepalive interval. Lower it only if a network path closes otherwise-healthy WebSockets. | Optional. |
+| `PROPR_ROUTING_WS_PONG_TIMEOUT_MS` | `30000` (30 seconds) | Maximum wait for a transport pong before the stale socket is terminated and reconnected. | Optional. |
 | `POLLING_INTERVAL_MS` | `60000` | Poll period when pulling events from the GitHub API. | Polling mode only. |
 | `GH_WEBHOOK_SECRET` | Unset | Shared secret GitHub signs webhook deliveries with. | Direct webhook mode. |
 | `GITHUB_REPOS_TO_MONITOR` | Placeholder (`owner/repo1,owner/repo2`) | Comma-separated repositories the daemon watches. | Always. |

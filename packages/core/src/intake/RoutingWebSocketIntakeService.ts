@@ -43,7 +43,7 @@
  *   - `pong`: `{ type: 'pong' }` — keepalive response.
  *
  * The service is resilient by design: it reconnects with capped exponential
- * backoff, keeps the socket alive with periodic WebSocket pings, deduplicates
+ * backoff, verifies socket liveness with periodic WebSocket ping/pong deadlines, deduplicates
  * deliveries by id with bounded memory, and shuts down cleanly so the daemon can
  * stop it on SIGINT/SIGTERM without leaking sockets or timers.
  */
@@ -96,6 +96,7 @@ export type {
 } from './routingWebSocketProtocol.js';
 
 const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_PONG_TIMEOUT_MS = 30 * 1000;
 
 function parsePositiveIntegerEnv(name: string): number | undefined {
     const value = process.env[name];
@@ -115,6 +116,7 @@ export class RoutingWebSocketIntakeService {
     private readonly initialReconnectDelayMs: number;
     private readonly maxReconnectDelayMs: number;
     private readonly pingIntervalMs: number;
+    private readonly pongTimeoutMs: number;
     private readonly pullTimeoutMs: number;
     private readonly shutdownDrainTimeoutMs: number;
     private readonly webSocketFactory?: WebSocketCtor;
@@ -124,6 +126,7 @@ export class RoutingWebSocketIntakeService {
     private socket: MinimalWebSocket | null = null;
     private reconnectTimer: NodeJS.Timeout | null = null;
     private pingTimer: NodeJS.Timeout | null = null;
+    private pongDeadlineTimer: NodeJS.Timeout | null = null;
     private currentReconnectDelayMs: number;
     private stopped = false;
     /** Guards {@link start} so a second call cannot open a parallel socket. */
@@ -171,6 +174,8 @@ export class RoutingWebSocketIntakeService {
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
         this.pingIntervalMs =
             options.pingIntervalMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
+        this.pongTimeoutMs =
+            options.pongTimeoutMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PONG_TIMEOUT_MS') ?? DEFAULT_PONG_TIMEOUT_MS;
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;
@@ -258,8 +263,14 @@ export class RoutingWebSocketIntakeService {
             this.currentReconnectDelayMs = this.initialReconnectDelayMs;
             this.connected = true;
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
-            this.startPing();
+            this.startPing(socket);
             this.notifyStatusChange();
+        });
+
+        socket.on('pong', () => {
+            // A late pong from a socket that has already been replaced must not
+            // clear the current connection's liveness deadline.
+            if (socket === this.socket) this.clearPongDeadline();
         });
 
         socket.on('message', (data: RawData) => {
@@ -271,6 +282,9 @@ export class RoutingWebSocketIntakeService {
         });
 
         socket.on('close', (code: number) => {
+            // A delayed close from an older socket must not tear down a newer
+            // connection created by a stop/start cycle or reconnect.
+            if (socket !== this.socket) return;
             this.stopPing();
             this.socket = null;
             this.connected = false;
@@ -557,17 +571,63 @@ export class RoutingWebSocketIntakeService {
         };
     }
 
-    private startPing(): void {
+    private startPing(socket: MinimalWebSocket): void {
         this.stopPing();
         this.pingTimer = setInterval(() => {
-            if (this.socket && this.socket.readyState === WS_OPEN) {
+            if (socket !== this.socket || socket.readyState !== WS_OPEN) return;
+
+            // Do not let a short custom ping interval continually postpone the
+            // deadline for an unanswered ping. One outstanding ping is enough to
+            // establish whether this TCP/WebSocket connection is still alive.
+            if (this.pongDeadlineTimer) return;
+
+            this.pongDeadlineTimer = setTimeout(() => {
+                this.pongDeadlineTimer = null;
+                if (socket !== this.socket || socket.readyState !== WS_OPEN) return;
+
+                logger.warn(
+                    { pongTimeoutMs: this.pongTimeoutMs },
+                    'Routing WebSocket pong deadline expired; terminating stale connection',
+                );
+                if (this.connected) {
+                    this.connected = false;
+                    this.notifyStatusChange();
+                }
                 try {
-                    this.socket.ping();
+                    // `ws.terminate()` emits `close`, whose existing handler owns
+                    // reconnect scheduling and cleanup.
+                    socket.terminate();
+                } catch (error) {
+                    logger.error(
+                        { error: (error as Error).message },
+                        'Failed to terminate stale routing WebSocket',
+                    );
+                }
+            }, this.pongTimeoutMs);
+
+            try {
+                socket.ping();
+            } catch (error) {
+                this.clearPongDeadline();
+                logger.warn(
+                    { error: (error as Error).message },
+                    'Routing WebSocket ping failed; terminating connection',
+                );
+                try {
+                    socket.terminate();
                 } catch {
-                    // A failed ping surfaces via the socket 'error'/'close' handlers.
+                    // The socket is already unusable; its close handler normally
+                    // owns reconnect scheduling.
                 }
             }
         }, this.pingIntervalMs);
+    }
+
+    private clearPongDeadline(): void {
+        if (this.pongDeadlineTimer) {
+            clearTimeout(this.pongDeadlineTimer);
+            this.pongDeadlineTimer = null;
+        }
     }
 
     private stopPing(): void {
@@ -575,6 +635,7 @@ export class RoutingWebSocketIntakeService {
             clearInterval(this.pingTimer);
             this.pingTimer = null;
         }
+        this.clearPongDeadline();
     }
 
     private scheduleReconnect(WebSocketImpl: WebSocketCtor): void {

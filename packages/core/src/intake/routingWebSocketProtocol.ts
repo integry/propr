@@ -681,6 +681,11 @@ export interface RoutingWebSocketIntakeServiceOptions {
     maxReconnectDelayMs?: number;
     /** Keepalive ping interval in ms. */
     pingIntervalMs?: number;
+    /**
+     * Maximum time to wait for a WebSocket pong after each transport ping before
+     * terminating the stale socket so the normal reconnect path can take over.
+     */
+    pongTimeoutMs?: number;
     /** Maximum number of delivery ids retained for deduplication. */
     maxDedupeEntries?: number;
     /** Maximum number of installation tokens cached from `token` frames. */
