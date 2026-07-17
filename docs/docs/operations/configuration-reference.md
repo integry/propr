@@ -52,7 +52,8 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PR_LABEL` | `propr` | Label applied to PRs ProPR creates. | Optional. |
 | `GITHUB_BOT_USERNAME` | Placeholder / code falls back to `propr-dev[bot]` | The bot identity, used to filter its own comments out of triggers. | Optional. |
 | `GITHUB_USER_WHITELIST` / `GITHUB_USER_BLACKLIST` | Empty | Comma-separated allow/deny lists for who can trigger processing. | Optional. |
-| `PROPR_ADMIN_USERS` | Empty | Comma-separated authenticated GitHub usernames allowed to change installation-level agent runtime packages. Empty permits any authenticated ProPR user. | Optional. |
+| `PROPR_ADMIN_USERS` | Empty | Comma-separated authenticated GitHub usernames allowed to change installation-level agent runtime packages. Empty denies changes unless `PROPR_AGENT_RUNTIME_ADMIN_ANY_USER=true` is set. | Optional. |
+| `PROPR_AGENT_RUNTIME_ADMIN_ANY_USER` | `false` | Explicit opt-in that lets any authenticated ProPR user change installation-level agent runtime packages when `PROPR_ADMIN_USERS` is empty. | Optional. |
 | `PR_FOLLOWUP_TRIGGER_KEYWORDS` | `!propr` | Keywords in PR comments that trigger follow-up work. See [PR Follow-up](../features/pr-followup.md). | Optional. |
 | `LABEL_APPLIER_TIMELINE_MAX_PAGES` | `5` | With a whitelist set, polling resolves who applied the trigger label from the issue timeline (page 1 + the most recent N pages). Raise it if long-lived issues are skipped with "Could not determine label applier". | Optional. |
 

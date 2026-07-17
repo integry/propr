@@ -84,6 +84,7 @@ export class RoutingWebSocketKeepalive {
                     { error: (error as Error).message },
                     'Routing WebSocket ping failed; terminating connection',
                 );
+                this.onStaleConnection();
                 try {
                     socket.terminate();
                 } catch {

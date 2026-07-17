@@ -1,10 +1,25 @@
 import assert from 'node:assert/strict';
-import { after, describe, test } from 'node:test';
+import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
 import { closeConnection, type AgentRuntimePackageState } from '@propr/core';
 
 after(async () => closeConnection());
+
+const originalAdminUsers = process.env.PROPR_ADMIN_USERS;
+const originalAdminAnyUser = process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
+
+beforeEach(() => {
+    process.env.PROPR_ADMIN_USERS = 'admin';
+    delete process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
+});
+
+afterEach(() => {
+    if (originalAdminUsers === undefined) delete process.env.PROPR_ADMIN_USERS;
+    else process.env.PROPR_ADMIN_USERS = originalAdminUsers;
+    if (originalAdminAnyUser === undefined) delete process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
+    else process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER = originalAdminAnyUser;
+});
 
 const initialState = (): AgentRuntimePackageState => ({
     installationId: 'test-installation',
@@ -137,6 +152,37 @@ describe('agent runtime package routes', () => {
             if (previous === undefined) delete process.env.PROPR_ADMIN_USERS;
             else process.env.PROPR_ADMIN_USERS = previous;
         }
+    });
+
+    test('denies runtime package changes by default when no admin policy is configured', async () => {
+        delete process.env.PROPR_ADMIN_USERS;
+        const routes = createAgentRuntimeRoutes({ runtimeBuildQueue: {} as never });
+        const { response, record } = responseRecorder();
+
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' } } as unknown as Request, response);
+
+        assert.equal(record.status, 403);
+    });
+
+    test('allows explicit any-authenticated-user runtime administration opt-in', async () => {
+        delete process.env.PROPR_ADMIN_USERS;
+        process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER = 'true';
+        let queued = false;
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: { add: async () => { queued = true; } } as never,
+            services: {
+                loadState: async () => ({ ...initialState(), packages: ['jq'], status: 'pending', buildId: 'build-any' }),
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                requestBuild: async (packages, baseImages) => ({ buildId: 'build-any', packages: packages as string[], baseImages }),
+                validateAvailability: availablePackages
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' } } as unknown as Request, response);
+
+        assert.equal(record.status, 202);
+        assert.equal(queued, true);
     });
 
     test('redacts runtime build details for non-admin readers', async () => {

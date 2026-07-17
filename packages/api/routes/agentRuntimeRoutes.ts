@@ -32,8 +32,10 @@ function canManageRuntime(req: Request): boolean {
         .split(',')
         .map(value => value.trim().toLowerCase())
         .filter(Boolean);
-    if (configured.length === 0) return true;
     const username = req.user?.username?.toLowerCase();
+    if (configured.length === 0) {
+        return Boolean(username && /^(1|true|yes)$/i.test(process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER || ''));
+    }
     return Boolean(username && configured.includes(username));
 }
 
@@ -106,8 +108,9 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
 
     async function queueBuild(packages: unknown, res: Response): Promise<void> {
         let jobData: AgentRuntimeBuildJobData | undefined;
+        let syntax: ReturnType<AgentRuntimeRouteServices['validate']> | undefined;
         try {
-            const syntax = services.validate(packages);
+            syntax = services.validate(packages);
             if (!syntax.valid) {
                 res.status(400).json({ error: syntax.errors.join('; '), errors: syntax.errors });
                 return;
@@ -141,10 +144,9 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
                     /* Preserve the original queue/validation error response. */
                 }
             }
-            const validation = services.validate(packages);
-            res.status(validation.valid ? 500 : 400).json({
+            res.status(syntax?.valid === false ? 400 : 500).json({
                 error: (error as Error).message,
-                ...(validation.valid ? {} : { errors: validation.errors })
+                ...(syntax?.valid === false ? { errors: syntax.errors } : {})
             });
         }
     }

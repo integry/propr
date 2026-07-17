@@ -47,9 +47,11 @@ export function getAgentCliVersionMatrix(
         const version = agent.cliVersionResolved || AGENT_DEFAULT_VERSIONS[agent.type];
         const existing = configured.get(agent.type);
         if (existing && existing !== version) {
-            throw new Error(
-                `All ${agent.type} agents must use the same CLI version in the unified image; configured ${existing} and ${version}`
+            logger.warn(
+                { agentType: agent.type, selectedVersion: existing, ignoredVersion: version },
+                'Conflicting CLI versions configured for unified agent image; keeping the first enabled version',
             );
+            continue;
         }
         configured.set(agent.type, version);
         versions[agent.type] = version;
@@ -300,6 +302,8 @@ export function generateAgentBundleImageTag(
     versions: AgentCliVersionMatrix,
     contentHash: string
 ): string {
+    // This tag captures the CLI matrix and repository build content. It does not
+    // encode live Debian package versions resolved by apt during Docker builds.
     return `${AGENT_IMAGE_NAME}:bundle-${getAgentBundleVersionHash(versions)}-${contentHash}`;
 }
 

@@ -25,6 +25,7 @@ describe('AgentRuntimePackagesSection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getState.mockResolvedValue({
+      installationId: 'test-installation',
       packages: ['jq'],
       activePackages: ['jq'],
       status: 'ready',
@@ -40,6 +41,7 @@ describe('AgentRuntimePackagesSection', () => {
       updatedAt: 'now'
     });
     updateState.mockResolvedValue({
+      installationId: 'test-installation',
       packages: ['chromium', 'jq'],
       activePackages: ['jq'],
       status: 'pending',
@@ -87,6 +89,7 @@ describe('AgentRuntimePackagesSection', () => {
 
   it('allows an unchanged failed profile to be retried', async () => {
     getState.mockResolvedValueOnce({
+      installationId: 'test-installation',
       packages: ['jq'],
       activePackages: [],
       status: 'failed',

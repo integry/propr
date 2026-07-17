@@ -91,11 +91,13 @@ test('unified image matrix combines versions across agent types deterministicall
     );
 });
 
-test('unified image matrix rejects conflicting versions for aliases of one agent type', () => {
-    assert.throws(() => getAgentCliVersionMatrix([
+test('unified image matrix keeps the first enabled version for conflicting aliases of one agent type', () => {
+    const matrix = getAgentCliVersionMatrix([
         { type: 'codex', cliVersionResolved: '0.140.0' },
         { type: 'codex', cliVersionResolved: '0.141.0' }
-    ]), /All codex agents must use the same CLI version/);
+    ]);
+
+    assert.equal(matrix.codex, '0.140.0');
 });
 
 test('unified image matrix ignores disabled aliases', () => {

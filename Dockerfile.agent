@@ -37,7 +37,14 @@ RUN set -eu; \
     apt_version_arg() { \
         package="$1"; \
         prefix="$2"; \
+        fallback_latest="${3:-false}"; \
         version="$(apt-cache madison "$package" | awk -v prefix="$prefix" 'index($3, prefix) == 1 { print $3; exit }')"; \
+        if [ -z "$version" ] && [ "$fallback_latest" = "true" ]; then \
+            version="$(apt-cache madison "$package" | awk 'NF >= 3 { print $3; exit }')"; \
+            if [ -n "$version" ]; then \
+                echo "No apt version found for ${package} with prefix ${prefix}; falling back to ${version}" >&2; \
+            fi; \
+        fi; \
         if [ -z "$version" ]; then \
             echo "No apt version found for ${package} with prefix ${prefix}" >&2; \
             exit 1; \
@@ -57,7 +64,7 @@ RUN set -eu; \
     && apt-get install -y --allow-downgrades --no-install-recommends \
         "$(apt_version_arg bash "$BASH_VERSION_PREFIX")" \
         "$(apt_version_arg build-essential "$BUILD_ESSENTIAL_VERSION_PREFIX")" \
-        "$(apt_version_arg gh "$GH_VERSION_PREFIX")" \
+        "$(apt_version_arg gh "$GH_VERSION_PREFIX" true)" \
         "$(apt_version_arg git "$GIT_VERSION_PREFIX")" \
         "$(apt_version_arg gosu "$GOSU_VERSION_PREFIX")" \
         "$(apt_version_arg iptables "$IPTABLES_VERSION_PREFIX")" \

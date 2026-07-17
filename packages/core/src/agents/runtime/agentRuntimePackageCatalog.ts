@@ -7,6 +7,7 @@ import {
 
 const SEARCH_QUERY = /^[a-z0-9+.-]{1,80}$/;
 const CATALOG_PACKAGE = /^[a-z0-9][a-z0-9+.-]*$/;
+const PINNED_VALIDATION_CONCURRENCY = 8;
 const catalogCache = new Map<string, Promise<Set<string>>>();
 const pinnedPackageValidationCache = new Map<string, Promise<string | null>>();
 
@@ -139,6 +140,23 @@ async function validatePinnedPackage(environment: PackageEnvironment, packageSpe
     }
 }
 
+async function mapWithConcurrency<T, R>(
+    values: T[],
+    concurrency: number,
+    mapper: (value: T) => Promise<R>
+): Promise<R[]> {
+    const results = new Array<R>(values.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(Math.max(1, concurrency), values.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+        while (nextIndex < values.length) {
+            const currentIndex = nextIndex++;
+            results[currentIndex] = await mapper(values[currentIndex]);
+        }
+    }));
+    return results;
+}
+
 export async function searchAgentRuntimePackages(
     query: string,
     baseImages: string[],
@@ -188,18 +206,38 @@ export async function validateAgentRuntimePackageAvailability(
     const catalogs = await uniqueCatalogs(environments);
     const sources = groupSources(environments);
     const uniqueEnvironments = [...new Map(environments.map(environment => [environment.key, environment])).values()];
-    const availability: AgentRuntimePackageAvailability[] = [];
-    for (const packageSpec of syntax.packages) {
+    const availability = syntax.packages.map(packageSpec => {
         const packageName = packageNameFromSpec(packageSpec);
         const unavailableOn = catalogs
             .filter(catalog => !catalog.packages.has(packageName))
             .map(catalog => catalog.environment.inspection.osName);
+        return { package: packageSpec, available: unavailableOn.length === 0, unavailableOn };
+    });
+    const byPackage = new Map(availability.map(result => [result.package, result]));
+    const pinnedChecks: Array<{ packageSpec: string; environment: PackageEnvironment }> = [];
+    for (const packageSpec of syntax.packages) {
+        const packageName = packageNameFromSpec(packageSpec);
         for (const environment of uniqueEnvironments) {
-            if (unavailableOn.includes(environment.inspection.osName)) continue;
-            const versionError = await validatePinnedPackage(environment, packageSpec);
-            if (versionError) unavailableOn.push(`${environment.inspection.osName}: ${versionError}`);
+            const catalog = catalogs.find(candidate => candidate.environment.key === environment.key);
+            if (!catalog?.packages.has(packageName)) continue;
+            pinnedChecks.push({ packageSpec, environment });
         }
-        availability.push({ package: packageSpec, available: unavailableOn.length === 0, unavailableOn });
+    }
+    const pinnedResults = await mapWithConcurrency(
+        pinnedChecks,
+        PINNED_VALIDATION_CONCURRENCY,
+        async ({ packageSpec, environment }) => ({
+            packageSpec,
+            osName: environment.inspection.osName,
+            versionError: await validatePinnedPackage(environment, packageSpec)
+        })
+    );
+    for (const result of pinnedResults) {
+        if (!result.versionError) continue;
+        byPackage.get(result.packageSpec)?.unavailableOn.push(`${result.osName}: ${result.versionError}`);
+    }
+    for (const result of availability) {
+        result.available = result.unavailableOn.length === 0;
     }
     const errors = availability
         .filter(result => !result.available)

@@ -1,4 +1,5 @@
 import path from 'path';
+import logger from '../../utils/logger.js';
 
 export interface DirectoryInfo {
   dirPath: string;
@@ -65,9 +66,14 @@ export function extractDirectories(filePaths: string[]): string[] {
 
 export function extractRepositoryDirectories(filePaths: string[], fullName: string): string[] {
   const repositoryPrefix = `${fullName}/`;
-  return extractDirectories(filePaths).filter(dirPath =>
+  const directories = extractDirectories(filePaths);
+  const repositoryDirectories = directories.filter(dirPath =>
     dirPath === fullName || dirPath.startsWith(repositoryPrefix)
   );
+  if (directories.length > 0 && repositoryDirectories.length === 0) {
+    logger.warn({ fullName, directoryCount: directories.length }, 'No summary-miner directories matched the repository prefix');
+  }
+  return repositoryDirectories;
 }
 
 export function createDirectoryBatches(directories: DirectoryInfo[], maxBatchTokens: number, maxDirsPerBatch: number, charsPerTokenEstimate: number): DirectoryInfo[][] {

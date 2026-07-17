@@ -383,19 +383,29 @@ export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobD
     }
 }
 
-export async function resolveAgentRuntimeImage(baseImage: string): Promise<string> {
+export async function resolveAgentRuntimeImage(
+    baseImage: string,
+    options: { buildMissing?: boolean } = {}
+): Promise<string> {
     const state = await loadAgentRuntimePackageState();
     if (state.activePackages.length === 0) return baseImage;
     const activePackages = state.activePackages;
     const inspected = await inspectAgentRuntimeBaseImage(baseImage);
     const existing = state.images[baseImage];
     if (existing?.baseImageId === inspected.id && await imageExists(existing.image)) return existing.image;
+    if (options.buildMissing === false) {
+        logger.warn(
+            { baseImage },
+            'Agent runtime image is not ready locally; using the base image until the runtime build worker completes',
+        );
+        return baseImage;
+    }
 
     const built = await buildRuntimeImage(baseImage, activePackages, state.installationId);
     const latest = await loadAgentRuntimePackageState();
     if (latest.activePackages.join('\0') !== activePackages.join('\0')) {
         await cleanupRuntimeImages({ [baseImage]: built.record }, latest.images, state.installationId);
-        return resolveAgentRuntimeImage(baseImage);
+        return resolveAgentRuntimeImage(baseImage, options);
     }
     await saveAgentRuntimePackageState({
         ...latest,

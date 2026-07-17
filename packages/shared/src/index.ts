@@ -135,3 +135,5 @@ export { DEFAULT_REVIEW_GUIDANCE } from './reviewPrompt.js';
 
 // Export the owner/repo slug parser shared by the CLI and API
 export { parseProjectSlug } from './projectSlug.js';
+
+export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';

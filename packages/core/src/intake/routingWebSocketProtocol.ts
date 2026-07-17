@@ -6,7 +6,10 @@
  * stays focused on connection lifecycle and dispatch.
  */
 
-import { validateRoutingUrl as validateRoutingUrlPolicy } from '@propr/shared';
+import {
+    normalizeWorkEvidenceCommentIds,
+    validateRoutingUrl as validateRoutingUrlPolicy
+} from '@propr/shared';
 
 import { SUPPORTED_WEBHOOK_EVENTS, type WebhookEventType } from '../webhook/webhookHandler.js';
 import { parseWebhookPayload } from './webhookPayload.js';
@@ -150,9 +153,7 @@ export function buildAckFrame(
     }
     if (disposition.evidence !== undefined && disposition.status === 'accepted') {
         frame.evidence = {
-            triggerCommentIds: [...new Set(disposition.evidence.triggerCommentIds)]
-                .filter(id => Number.isSafeInteger(id) && id > 0)
-                .slice(0, 100),
+            triggerCommentIds: normalizeWorkEvidenceCommentIds(disposition.evidence.triggerCommentIds),
         };
     }
     return frame;

@@ -267,7 +267,7 @@ export class AgentRegistry {
                 logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure unified agent image');
                 return null;
             }
-            return resolveAgentRuntimeImage(result.imageTag);
+            return resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
         } catch (error) {
             logger.error({ error: (error as Error).message }, 'Failed to resolve unified agent image');
             return null;
@@ -324,7 +324,7 @@ export class AgentRegistry {
 
         if (process.env.AGENT_DOCKER_IMAGE) {
             try {
-                defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE);
+                defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE, { buildMissing: false });
             } catch (error) {
                 logger.error({ error: (error as Error).message }, 'Failed to resolve default Claude agent image');
                 return;
@@ -336,7 +336,7 @@ export class AgentRegistry {
                     logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure default agent image');
                     return;
                 }
-                defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag);
+                defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
             } catch (error) {
                 logger.error({ error: (error as Error).message }, 'Failed to register default Claude agent image');
                 return;

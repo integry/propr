@@ -4,6 +4,7 @@ import logger from '../../utils/logger.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from '../../agents/constants.js';
 import {
     type AgentCliVersionMatrix,
+    AGENT_IMAGE_NAME,
     generateAgentBundleImageTag,
     getDefaultAgentCliVersionMatrix
 } from '../../agents/version/versionService.js';
@@ -84,6 +85,19 @@ async function buildBundle(
     return { success: true, imageTag };
 }
 
+function scheduleBundleImageCleanup(imageTag: string): void {
+    const tag = imageTag.startsWith(`${AGENT_IMAGE_NAME}:`)
+        ? imageTag.slice(`${AGENT_IMAGE_NAME}:`.length)
+        : imageTag;
+    setImmediate(() => {
+        import('./dockerImageManager.js')
+            .then(({ cleanupUnusedAgentImages }) => cleanupUnusedAgentImages(new Set([tag])))
+            .catch(error => {
+                logger.debug({ imageTag, error: (error as Error).message }, 'Agent image cleanup after build failed');
+            });
+    });
+}
+
 export async function ensureAgentBundleImage(
     versions: AgentCliVersionMatrix,
     contentHash: string,
@@ -95,7 +109,9 @@ export async function ensureAgentBundleImage(
     try {
         if (await imageExists(imageTag)) return { success: true, imageTag };
         if (await pullImage(imageTag)) return { success: true, imageTag };
-        return await buildBundle(imageTag, versions, basePath);
+        const built = await buildBundle(imageTag, versions, basePath);
+        if (built.success) scheduleBundleImageCleanup(imageTag);
+        return built;
     } catch (error) {
         const message = (error as Error).message;
         logger.error({ imageTag, versions, error: message }, 'Error ensuring unified agent image');

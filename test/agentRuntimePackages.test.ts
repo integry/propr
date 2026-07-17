@@ -56,6 +56,7 @@ describe('agent runtime package profiles', () => {
         assert.match(dockerfile, /ffmpeg/);
         assert.match(dockerfile, /rm -rf \/var\/lib\/apt\/lists\/\*/);
         assert.match(dockerfile, /USER node\n$/);
+        // Guard against accidentally pasting unified-diff markers into the generated Dockerfile.
         assert.doesNotMatch(dockerfile, /^\+/m);
     });
 

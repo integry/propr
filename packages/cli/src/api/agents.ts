@@ -206,7 +206,7 @@ export async function addAgent(
     type: options.type,
     alias: options.alias,
     enabled: options.enabled !== undefined ? options.enabled : true,
-    dockerImage: options.dockerImage || getDefaultDockerImage(options.type),
+    dockerImage: options.dockerImage || getDefaultDockerImage(),
     configPath,
     supportedModels: options.models,
     defaultModel: options.defaultModel || options.models[0],
@@ -311,13 +311,11 @@ export async function setAgentEnabled(
 }
 
 /**
- * Gets the default Docker image for an agent type.
+ * Gets the default unified Docker image.
  *
- * @param type - The agent type.
  * @returns The default Docker image name.
  */
-function getDefaultDockerImage(type: AgentType): string {
-  void type;
+function getDefaultDockerImage(): string {
   return `${AGENT_IMAGE_NAME}:latest`;
 }
 

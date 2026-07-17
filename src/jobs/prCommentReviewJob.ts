@@ -265,7 +265,7 @@ async function updateReviewCompletionComment(
             ? `Posted ${successCount} review${successCount > 1 ? 's' : ''}`
             : `Posted ${successCount} review${successCount > 1 ? 's' : ''}, ${failCount} failed`;
         const completedEvidence = buildWorkEvidenceMarker(
-            failCount === reviewResults.length ? 'failed' : 'completed',
+            reviewResults.length > 0 && failCount === reviewResults.length ? 'failed' : 'completed',
             state.unprocessedComments
                 .filter(comment => comment.author !== 'propr-ultrafix' && comment.id !== 0)
                 .map(comment => comment.id),
