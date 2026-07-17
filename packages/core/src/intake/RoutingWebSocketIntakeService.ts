@@ -53,6 +53,11 @@ import logger from '../utils/logger.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import { processWebhookEvent } from '../webhook/webhookHandler.js';
 import {
+    resolveRoutingPingIntervalMs,
+    resolveRoutingPongTimeoutMs,
+    RoutingWebSocketKeepalive,
+} from './routingWebSocketKeepalive.js';
+import {
     ACCEPTED_DISPOSITION,
     BoundedTokenCache,
     DEFAULT_MAX_DEDUPE_ENTRIES,
@@ -96,38 +101,21 @@ export type {
     WebSocketCtor,
 } from './routingWebSocketProtocol.js';
 
-const DEFAULT_PING_INTERVAL_MS = 5 * 60 * 1000;
-const DEFAULT_PONG_TIMEOUT_MS = 30 * 1000;
-
-function parsePositiveIntegerEnv(name: string): number | undefined {
-    const value = process.env[name];
-    if (!value) return undefined;
-    const trimmed = value.trim();
-    // Require a whole-string positive integer so values like `50abc` or `1.5`
-    // are rejected rather than silently coerced to `50`/`1`.
-    if (!/^\d+$/.test(trimmed)) return undefined;
-    const parsed = Number.parseInt(trimmed, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
     private readonly relayToken: string;
     private readonly dispatch: RoutingEventDispatch;
     private readonly initialReconnectDelayMs: number;
     private readonly maxReconnectDelayMs: number;
-    private readonly pingIntervalMs: number;
-    private readonly pongTimeoutMs: number;
     private readonly pullTimeoutMs: number;
     private readonly shutdownDrainTimeoutMs: number;
     private readonly webSocketFactory?: WebSocketCtor;
     private readonly fetchImpl?: FetchLike;
     private readonly now: () => number;
+    private readonly keepalive: RoutingWebSocketKeepalive;
 
     private socket: MinimalWebSocket | null = null;
     private reconnectTimer: NodeJS.Timeout | null = null;
-    private pingTimer: NodeJS.Timeout | null = null;
-    private pongDeadlineTimer: NodeJS.Timeout | null = null;
     private currentReconnectDelayMs: number;
     private stopped = false;
     /** Guards {@link start} so a second call cannot open a parallel socket. */
@@ -173,10 +161,6 @@ export class RoutingWebSocketIntakeService {
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
-        this.pingIntervalMs =
-            options.pingIntervalMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PING_INTERVAL_MS') ?? DEFAULT_PING_INTERVAL_MS;
-        this.pongTimeoutMs =
-            options.pongTimeoutMs ?? parsePositiveIntegerEnv('PROPR_ROUTING_WS_PONG_TIMEOUT_MS') ?? DEFAULT_PONG_TIMEOUT_MS;
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
         this.webSocketFactory = options.webSocketFactory;
@@ -185,6 +169,12 @@ export class RoutingWebSocketIntakeService {
         this.currentReconnectDelayMs = this.initialReconnectDelayMs;
         this.deliveries = new DeliveryTracker(options.maxDedupeEntries ?? DEFAULT_MAX_DEDUPE_ENTRIES);
         this.installationTokens = new BoundedTokenCache(options.maxTokenEntries ?? DEFAULT_MAX_TOKEN_ENTRIES);
+        this.keepalive = new RoutingWebSocketKeepalive({
+            pingIntervalMs: resolveRoutingPingIntervalMs(options.pingIntervalMs),
+            pongTimeoutMs: resolveRoutingPongTimeoutMs(options.pongTimeoutMs),
+            isCurrentSocket: socket => socket === this.socket,
+            onStaleConnection: () => this.markDisconnected(),
+        });
     }
 
     /**
@@ -264,14 +254,14 @@ export class RoutingWebSocketIntakeService {
             this.currentReconnectDelayMs = this.initialReconnectDelayMs;
             this.connected = true;
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
-            this.startPing(socket);
+            this.keepalive.start(socket);
             this.notifyStatusChange();
         });
 
         socket.on('pong', () => {
             // A late pong from a socket that has already been replaced must not
             // clear the current connection's liveness deadline.
-            if (socket === this.socket) this.clearPongDeadline();
+            if (socket === this.socket) this.keepalive.clearPongDeadline();
         });
 
         socket.on('message', (data: RawData) => {
@@ -286,7 +276,7 @@ export class RoutingWebSocketIntakeService {
             // A delayed close from an older socket must not tear down a newer
             // connection created by a stop/start cycle or reconnect.
             if (socket !== this.socket) return;
-            this.stopPing();
+            this.keepalive.stop();
             this.socket = null;
             this.connected = false;
             this.notifyStatusChange();
@@ -572,73 +562,6 @@ export class RoutingWebSocketIntakeService {
         };
     }
 
-    private startPing(socket: MinimalWebSocket): void {
-        this.stopPing();
-        this.pingTimer = setInterval(() => {
-            if (socket !== this.socket || socket.readyState !== WS_OPEN) return;
-
-            // Do not let a short custom ping interval continually postpone the
-            // deadline for an unanswered ping. One outstanding ping is enough to
-            // establish whether this TCP/WebSocket connection is still alive.
-            if (this.pongDeadlineTimer) return;
-
-            this.pongDeadlineTimer = setTimeout(() => {
-                this.pongDeadlineTimer = null;
-                if (socket !== this.socket || socket.readyState !== WS_OPEN) return;
-
-                logger.warn(
-                    { pongTimeoutMs: this.pongTimeoutMs },
-                    'Routing WebSocket pong deadline expired; terminating stale connection',
-                );
-                if (this.connected) {
-                    this.connected = false;
-                    this.notifyStatusChange();
-                }
-                try {
-                    // `ws.terminate()` emits `close`, whose existing handler owns
-                    // reconnect scheduling and cleanup.
-                    socket.terminate();
-                } catch (error) {
-                    logger.error(
-                        { error: (error as Error).message },
-                        'Failed to terminate stale routing WebSocket',
-                    );
-                }
-            }, this.pongTimeoutMs);
-
-            try {
-                socket.ping();
-            } catch (error) {
-                this.clearPongDeadline();
-                logger.warn(
-                    { error: (error as Error).message },
-                    'Routing WebSocket ping failed; terminating connection',
-                );
-                try {
-                    socket.terminate();
-                } catch {
-                    // The socket is already unusable; its close handler normally
-                    // owns reconnect scheduling.
-                }
-            }
-        }, this.pingIntervalMs);
-    }
-
-    private clearPongDeadline(): void {
-        if (this.pongDeadlineTimer) {
-            clearTimeout(this.pongDeadlineTimer);
-            this.pongDeadlineTimer = null;
-        }
-    }
-
-    private stopPing(): void {
-        if (this.pingTimer) {
-            clearInterval(this.pingTimer);
-            this.pingTimer = null;
-        }
-        this.clearPongDeadline();
-    }
-
     private scheduleReconnect(WebSocketImpl: WebSocketCtor): void {
         if (this.stopped || this.reconnectTimer) return;
 
@@ -668,7 +591,7 @@ export class RoutingWebSocketIntakeService {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
-        this.stopPing();
+        this.keepalive.stop();
 
         // Drain in-flight event handling BEFORE closing the socket so a delivery
         // that finishes during shutdown can still send its ACK over the open
@@ -702,5 +625,12 @@ export class RoutingWebSocketIntakeService {
         }
 
         logger.info('Routing WebSocket intake service stopped');
+    }
+
+    private markDisconnected(): void {
+        if (this.connected) {
+            this.connected = false;
+            this.notifyStatusChange();
+        }
     }
 }
