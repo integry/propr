@@ -118,7 +118,7 @@ Configuration is stored in `~/.propr/config.json`.
 
 ## Repository Setup Files
 
-Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution — edit it to install task-specific tools (for example `sudo apt-get update && sudo apt-get install -y --no-install-recommends jq`).
+Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution; use it for repository-local setup such as installing npm helper packages from `.propr/package.json`.
 
 ## Agent Runtime Packages
 
@@ -132,7 +132,7 @@ propr runtime packages apply --wait
 propr runtime status --json
 ```
 
-Use runtime packages for tools needed across repositories. Keep repository-specific or experimental dependencies in `.propr/setup.sh`; those are installed in each fresh execution container.
+Use runtime packages for Debian system tools needed across repositories or by a specific installation. Keep repository-specific npm helpers and setup commands in `.propr/setup.sh`; those run in each fresh execution container without sudo privileges.
 
 The Settings package field searches the configured runtime catalogs and validates availability across every agent image before a build is queued. The first search after an API restart may take a few seconds while package indexes are refreshed.
 

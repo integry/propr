@@ -421,7 +421,12 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const selected = options.agents && options.agents.length
       ? agentDescriptors().filter((a) => options.agents!.includes(a.type))
       : agentDescriptors();
+    const verifiedCliKeys = new Set<string>();
     for (const agent of selected) {
+      const runtimeType = agent.runtimeType || agent.type;
+      const cliKey = `${agent.imageKey}:${runtimeType}:${agent.bin}`;
+      if (verifiedCliKeys.has(cliKey)) continue;
+      verifiedCliKeys.add(cliKey);
       const tag = cfg.images[agent.imageKey];
       if (!tag || !imagePresent(orch, tag)) {
         emit({
@@ -432,7 +437,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         });
         continue;
       }
-      const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", "-e", `PROPR_AGENT_TYPE=${agent.runtimeType || agent.type}`, tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000 });
+      const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", "-e", `PROPR_AGENT_TYPE=${runtimeType}`, tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000 });
       if (run.status === 0) {
         emit({ name: `Verify: ${agent.type}`, status: "ok", detail: `image runs (${(run.stdout || "").trim().split("\n")[0]})`, group: "Agents" });
       } else {

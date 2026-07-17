@@ -18,7 +18,6 @@ const baseImageInspectionCache = new Map<string, AgentRuntimeBaseImageInspection
 
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
 export type AgentRuntimePackageManager = 'apt';
-
 export interface AgentRuntimeBaseImageInspection {
     id: string;
     user: string;
@@ -54,11 +53,7 @@ export interface AgentRuntimeBuildJobData {
     baseImages: string[];
 }
 
-export interface RuntimePackageValidation {
-    valid: boolean;
-    packages: string[];
-    errors: string[];
-}
+export interface RuntimePackageValidation { valid: boolean; packages: string[]; errors: string[]; }
 
 const defaultState = (): AgentRuntimePackageState => ({
     installationId: crypto.randomUUID(),
@@ -228,9 +223,13 @@ export function buildAgentRuntimeDockerfile(
     packages: string[],
     finalUser: string
 ): string {
+    const normalizedFinalUser = finalUser.trim();
+    const userName = normalizedFinalUser.split(':')[0];
+    if (!normalizedFinalUser || userName === '0' || userName === 'root') {
+        throw new Error(`Agent image ${baseImage} must declare a non-root USER before runtime packages can be applied`);
+    }
     const packageLines = packages.map(packageSpec => `        ${packageSpec} \\`).join('\n');
-    const restoreUser = finalUser ? `\nUSER ${finalUser}` : '';
-    return `FROM ${baseImage}\nLABEL dev.propr.agent-runtime="true"\nUSER root\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends \\\n${packageLines}\n    && rm -rf /var/lib/apt/lists/*${restoreUser}\n`;
+    return `FROM ${baseImage}\nLABEL dev.propr.agent-runtime="true"\nUSER root\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends \\\n${packageLines}\n    && rm -rf /var/lib/apt/lists/*\nUSER ${normalizedFinalUser}\n`;
 }
 
 async function imageExists(image: string): Promise<boolean> {

@@ -216,6 +216,13 @@ test('buildAckFrame always carries a status and includes reason/billing only whe
             evidence: { triggerCommentIds: [4992520130] },
         },
     );
+    assert.deepEqual(
+        buildAckFrame(10, 'd6', {
+            status: 'accepted',
+            evidence: { triggerCommentIds: [-1, 0, Number.NaN] },
+        }),
+        { type: 'ack', sequence: 10, deliveryId: 'd6', status: 'accepted' },
+    );
 });
 
 test('normalizeDisposition maps void/garbage to accepted and honors a valid disposition', () => {

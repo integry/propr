@@ -75,9 +75,11 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, /^ARG GITHUBCLI_KEYRING_SHA256=[0-9a-f]{64}$/m);
         assert.match(agentDockerfile, /^ARG CURL_VERSION_PREFIX=/m);
         assert.match(agentDockerfile, /apt_version_arg\(\) /);
-        assert.match(agentDockerfile, /apt_version_arg gh "\$GH_VERSION_PREFIX" true/);
-        assert.match(agentDockerfile, /apt_version_arg util-linux "\$UTIL_LINUX_VERSION_PREFIX"/);
-        assert.match(agentDockerfile, /setpriv --version/);
+        assert.match(agentDockerfile, /apt_version_arg gh "\$GH_VERSION_PREFIX"/);
+        assert.doesNotMatch(agentDockerfile, /apt_version_arg gh "\$GH_VERSION_PREFIX" true/);
+        assert.doesNotMatch(agentDockerfile, /apt_version_arg util-linux "\$UTIL_LINUX_VERSION_PREFIX"/);
+        assert.doesNotMatch(agentDockerfile, /setpriv --version/);
+        assert.doesNotMatch(agentDockerfile, /\bNOPASSWD\b/);
         assert.match(agentDockerfile, /FROM agent-base AS claude-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS codex-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS antigravity-cli/);

@@ -105,7 +105,7 @@ propr init
 cd .propr && npm install <package>
 ```
 
-The generated `.propr/setup.sh` runs before each implementation execution. Edit it to install system tools with commands such as `sudo apt-get update && sudo apt-get install -y --no-install-recommends jq`.
+The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
 
 ### Authentication
 

@@ -14,7 +14,7 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 - Agent credentials mounted from the configured host credential directory
 - GitHub credentials passed through `GH_TOKEN` and `GITHUB_TOKEN`
 - Agent, model, timeout, and task metadata passed as environment variables or CLI flags
-- `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network; the repository setup hook temporarily removes Docker's no-new-privileges flag so setup can use sudo, then re-applies the boundary with `setpriv`
+- `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
 - Structured stdout, stderr, exit code, duration, session ID, and token usage capture when the CLI exposes those fields
 
 All agents run from the unified Debian/glibc `propr/agent` image. Its internal base stage includes Node.js, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. Independent CLI build stages preserve Docker cache reuse when one configured version changes.
@@ -68,7 +68,7 @@ The runtime should preserve these boundaries:
 
 Agent images ship `scripts/init-firewall.sh`, an optional egress-restriction script. All current agent entrypoints skip it because applying those rules requires running the container with Docker's `--privileged` flag.
 
-Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted by default. When `.propr/setup.sh` runs, the launcher removes Docker's no-new-privileges flag only for setup and then execs the agent through `setpriv --no-new-privs`. Treat the firewall script as available hardening for deployments that can run privileged containers; in the default runtime it is inactive.
+Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted by default. The `.propr/setup.sh` hook runs under that same Docker privilege boundary and cannot use sudo to install system packages. Treat the firewall script as available hardening for deployments that can run privileged containers; in the default runtime it is inactive.
 
 Provider connectivity failures usually come from the host network, DNS, proxy settings, provider availability, or an external firewall; ProPR applies no network policy of its own in the default runtime. If you enable the firewall script in a privileged deployment, confirm its allowlist covers GitHub and the provider endpoints required by every enabled agent image.
 

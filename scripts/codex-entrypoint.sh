@@ -20,8 +20,8 @@ fi
 if [ -d "/home/node/.codex" ]; then
     echo "Codex config directory mounted"
 
-    # Fix ownership if running as root. The repo setup wrapper reapplies
-    # no_new_privs before this entrypoint, so do not rely on sudo here.
+    # Fix ownership if running as root. The container keeps Docker's
+    # no-new-privileges boundary for the entire run, so do not rely on sudo here.
     # This is crucial because Docker volume mounts often default to root ownership,
     # but Codex running as 'node' needs to read/write config files.
     if [ "$(id -u)" = "0" ]; then

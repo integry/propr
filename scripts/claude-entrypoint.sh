@@ -22,8 +22,8 @@ if [ -d "/home/node/.claude" ]; then
     echo "Contents of /home/node/.claude:"
     ls -la /home/node/.claude/
 
-    # Fix ownership if running as root. The repo setup wrapper reapplies
-    # no_new_privs before this entrypoint, so do not rely on sudo here.
+    # Fix ownership if running as root. The container keeps Docker's
+    # no-new-privileges boundary for the entire run, so do not rely on sudo here.
     if [ "$(id -u)" = "0" ]; then
         echo "Fixing ownership of Claude config files..."
         chown -R node:node /home/node/.claude 2>/dev/null || echo "Could not change ownership"

@@ -60,6 +60,17 @@ describe('agent runtime package profiles', () => {
         assert.doesNotMatch(dockerfile, /^\+/m);
     });
 
+    test('rejects package image builds when the base image does not declare a non-root user', () => {
+        assert.throws(
+            () => buildAgentRuntimeDockerfile('custom/agent:root-default', ['jq'], ''),
+            /must declare a non-root USER/
+        );
+        assert.throws(
+            () => buildAgentRuntimeDockerfile('custom/agent:root-user', ['jq'], '0:0'),
+            /must declare a non-root USER/
+        );
+    });
+
     test('runtime tags are stable and change with the base digest or packages', () => {
         const first = getAgentRuntimeImageTag('propr/agent:latest', 'sha256:one', ['chromium']);
         assert.equal(first, getAgentRuntimeImageTag('propr/agent:latest', 'sha256:one', ['chromium']));

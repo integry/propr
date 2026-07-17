@@ -152,9 +152,8 @@ export function buildAckFrame(
         };
     }
     if (disposition.evidence !== undefined && disposition.status === 'accepted') {
-        frame.evidence = {
-            triggerCommentIds: normalizeWorkEvidenceCommentIds(disposition.evidence.triggerCommentIds),
-        };
+        const triggerCommentIds = normalizeWorkEvidenceCommentIds(disposition.evidence.triggerCommentIds);
+        if (triggerCommentIds.length > 0) frame.evidence = { triggerCommentIds };
     }
     return frame;
 }

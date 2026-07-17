@@ -27,9 +27,7 @@ ARG IPTABLES_VERSION_PREFIX=1.8.9-2
 ARG PROCPS_VERSION_PREFIX=2:4.0.2-3
 ARG PYTHON3_VERSION_PREFIX=3.11.2-1
 ARG RIPGREP_VERSION_PREFIX=13.0.0-4
-ARG SUDO_VERSION_PREFIX=1.9.13p3-1+deb12u
 ARG TINI_VERSION_PREFIX=0.19.0-1
-ARG UTIL_LINUX_VERSION_PREFIX=2.38.1-5+deb12u
 ARG GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
 
 # GitHub publishes this keyring as a binary .gpg file; no dearmor step is needed.
@@ -64,21 +62,18 @@ RUN set -eu; \
     && apt-get install -y --allow-downgrades --no-install-recommends \
         "$(apt_version_arg bash "$BASH_VERSION_PREFIX")" \
         "$(apt_version_arg build-essential "$BUILD_ESSENTIAL_VERSION_PREFIX")" \
-        "$(apt_version_arg gh "$GH_VERSION_PREFIX" true)" \
+        "$(apt_version_arg gh "$GH_VERSION_PREFIX")" \
         "$(apt_version_arg git "$GIT_VERSION_PREFIX")" \
         "$(apt_version_arg gosu "$GOSU_VERSION_PREFIX")" \
         "$(apt_version_arg iptables "$IPTABLES_VERSION_PREFIX")" \
         "$(apt_version_arg procps "$PROCPS_VERSION_PREFIX")" \
         "$(apt_version_arg python3 "$PYTHON3_VERSION_PREFIX")" \
         "$(apt_version_arg ripgrep "$RIPGREP_VERSION_PREFIX")" \
-        "$(apt_version_arg sudo "$SUDO_VERSION_PREFIX")" \
         "$(apt_version_arg tini "$TINI_VERSION_PREFIX")" \
-        "$(apt_version_arg util-linux "$UTIL_LINUX_VERSION_PREFIX")" \
     && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
     && rm -rf /var/lib/apt/lists/*
 
-RUN echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers \
-    && mkdir -p /home/node/workspace \
+RUN mkdir -p /home/node/workspace \
     && chown -R node:node /home/node
 
 COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
@@ -218,8 +213,7 @@ RUN ln -sf ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/loc
     && codex --version \
     && opencode --version \
     && vibe --version \
-    && agy --version \
-    && setpriv --version
+    && agy --version
 
 USER node
 RUN git config --global user.name "ProPR Agent Bot" \

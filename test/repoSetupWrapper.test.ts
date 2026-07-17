@@ -22,16 +22,16 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
 
         const wrapperScript = wrapped[imageIndex + 2];
         assert.match(wrapperScript, /\.propr\/setup\.sh/);
-        assert.match(wrapperScript, /\[ "\$\(id -u\)" = "0" \][\s\S]*sudo -E -u node -H \/bin\/bash/);
+        assert.match(wrapperScript, /\[ "\$\(id -u\)" = "0" \][\s\S]*su-exec node env HOME=\/home\/node \/bin\/bash/);
         assert.match(wrapperScript, /<\/dev\/null >&2/);
         assert.match(wrapperScript, /ProPR repo setup hook failed with exit code/);
         assert.match(wrapperScript, /PROPR_REPO_SETUP_STRICT/);
         assert.match(wrapperScript, /Continuing so the agent can inspect and repair/);
-        assert.match(wrapperScript, /exec setpriv --no-new-privs "\$entrypoint" "\$@"/);
-        assert.ok(!wrapped.includes('no-new-privileges'));
+        assert.match(wrapperScript, /exec "\$entrypoint" "\$@"/);
+        assert.ok(wrapped.includes('no-new-privileges'));
     });
 
-    test('removes inline no-new-privileges before repo setup', () => {
+    test('preserves inline no-new-privileges before repo setup', () => {
         const wrapped = wrapDockerRunArgsWithRepoSetup([
             'run', '--rm',
             '--security-opt=no-new-privileges',
@@ -40,14 +40,14 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
             'codex', 'exec', '-'
         ], 'propr/agent:latest', 'codex');
 
-        assert.ok(!wrapped.includes('--security-opt=no-new-privileges'));
+        assert.ok(wrapped.includes('--security-opt=no-new-privileges'));
         assert.deepStrictEqual(
             wrapped.slice(wrapped.indexOf('--security-opt'), wrapped.indexOf('--security-opt') + 2),
             ['--security-opt', 'seccomp=unconfined']
         );
     });
 
-    test('removes docker boolean no-new-privileges forms before repo setup', () => {
+    test('preserves docker boolean no-new-privileges forms before repo setup', () => {
         const wrapped = wrapDockerRunArgsWithRepoSetup([
             'run', '--rm',
             '--security-opt', 'no-new-privileges:true',
@@ -57,11 +57,11 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
             'codex', 'exec', '-'
         ], 'propr/agent:latest', 'codex');
 
-        assert.ok(!wrapped.includes('no-new-privileges:true'));
-        assert.ok(!wrapped.includes('--security-opt=no-new-privileges:false'));
+        assert.ok(wrapped.includes('no-new-privileges:true'));
+        assert.ok(wrapped.includes('--security-opt=no-new-privileges:false'));
         assert.deepStrictEqual(
             wrapped.slice(wrapped.indexOf('--security-opt'), wrapped.indexOf('--security-opt') + 2),
-            ['--security-opt', 'seccomp=unconfined']
+            ['--security-opt', 'no-new-privileges:true']
         );
     });
 
@@ -101,7 +101,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         assert.deepStrictEqual(wrapped.slice(imageIndex + 4), ['vibe', '--prompt', 'Analyze the codebase']);
     });
 
-    test('agent entrypoints do not require sudo after no-new-privs is reapplied', () => {
+    test('agent entrypoints do not require sudo under Docker no-new-privileges', () => {
         for (const scriptPath of [
             'scripts/claude-entrypoint.sh',
             'scripts/codex-entrypoint.sh',

@@ -8,7 +8,7 @@ import { AntigravityAgent } from './impl/AntigravityAgent.js';
 import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
-import { ensureAgentBundleImage } from '../claude/docker/dockerExecutor.js';
+import { ensureAgentBundleImage, ensureAgentDockerImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
 import { computeContentHash, getAgentCliVersionMatrix, getDefaultAgentCliVersionMatrix } from './version/versionService.js';
@@ -324,6 +324,10 @@ export class AgentRegistry {
 
         if (process.env.AGENT_DOCKER_IMAGE) {
             try {
+                const available = await ensureAgentDockerImage(defaultConfig.type, process.env.AGENT_DOCKER_IMAGE);
+                if (!available) {
+                    logger.warn({ dockerImage: process.env.AGENT_DOCKER_IMAGE }, 'Configured default agent image is not available locally and could not be pulled or built');
+                }
                 defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE, { buildMissing: false });
             } catch (error) {
                 logger.error(

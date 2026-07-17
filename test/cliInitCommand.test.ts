@@ -40,7 +40,8 @@ describe("scaffoldProprDirectory", () => {
       assert.match(setup, /PROPR_WORKSPACE/);
       assert.match(setup, /PROPR_CACHE_DIR/);
       assert.match(setup, /npm ci/);
-      assert.match(setup, /sudo apt-get update && sudo apt-get install -y --no-install-recommends/);
+      assert.match(setup, /propr runtime packages/);
+      assert.doesNotMatch(setup, /sudo apt-get/);
 
       const setupMode = (await stat(path.join(proprDir, "setup.sh"))).mode & 0o777;
       assert.strictEqual(setupMode, 0o755);

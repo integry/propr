@@ -18,7 +18,6 @@ const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
 
 const WORKSPACE_PATH = '/home/node/workspace';
 const DEFAULT_CACHE_ROOT = '/tmp/git-processor/propr-cache';
-const NO_NEW_PRIVILEGES_SECURITY_OPT = /^no-new-privileges(?::(?:true|false))?$/;
 
 const REPO_SETUP_WRAPPER_SCRIPT = `
 set -e
@@ -35,9 +34,9 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
 
     echo "Running ProPR repo setup hook: $setup_script" >&2
     set +e
-    if [ "$(id -u)" = "0" ] && command -v sudo >/dev/null 2>&1 && id node >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
-        sudo -E -u node -H /bin/bash "$setup_script" </dev/null >&2
+        su-exec node env HOME=/home/node /bin/bash "$setup_script" </dev/null >&2
         setup_exit=$?
     else
         cd "$PROPR_WORKSPACE"
@@ -56,30 +55,8 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     fi
 fi
 
-if ! command -v setpriv >/dev/null 2>&1; then
-    echo "Cannot secure agent process: setpriv is not installed" >&2
-    exit 1
-fi
-
-exec setpriv --no-new-privs "$entrypoint" "$@"
+exec "$entrypoint" "$@"
 `.trim();
-
-function removeNoNewPrivilegesSecurityOpt(args: string[]): string[] {
-    const filtered: string[] = [];
-    for (let index = 0; index < args.length; index += 1) {
-        const arg = args[index];
-        if (arg === '--security-opt' && NO_NEW_PRIVILEGES_SECURITY_OPT.test(args[index + 1] || '')) {
-            index += 1;
-            continue;
-        }
-        if (arg.startsWith('--security-opt=')
-            && NO_NEW_PRIVILEGES_SECURITY_OPT.test(arg.slice('--security-opt='.length))) {
-            continue;
-        }
-        filtered.push(arg);
-    }
-    return filtered;
-}
 
 export function wrapDockerRunArgsWithRepoSetup(
     dockerArgs: string[],
@@ -91,9 +68,7 @@ export function wrapDockerRunArgsWithRepoSetup(
         throw new Error(`Cannot enable repo setup hook: Docker image '${dockerImage}' was not found in docker run arguments`);
     }
 
-    // Repo setup is the only phase allowed to elevate through sudo. Reapply
-    // no_new_privs inside the container before starting the agent process.
-    const beforeImage = removeNoNewPrivilegesSecurityOpt(dockerArgs.slice(0, imageIndex));
+    const beforeImage = dockerArgs.slice(0, imageIndex);
     const afterImage = dockerArgs.slice(imageIndex + 1);
     const cacheDir = `${DEFAULT_CACHE_ROOT}/${agentType}`;
     const gitIdentity = GIT_IDENTITIES[agentType];

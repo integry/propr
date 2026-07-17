@@ -52,8 +52,8 @@ if [ -f ".propr/package.json" ]; then
   fi
 fi
 
-# Example for the Debian-based agent image:
-# sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+# System packages are managed at the ProPR installation level with
+# propr runtime packages ..., not from repository setup.
 `;
 
 const PACKAGE_JSON = `{
@@ -81,7 +81,7 @@ Before each implementation execution, ProPR runs:
 \`\`\`
 
 Use \`.propr/package.json\` for npm packages that agents need while working in this repository.
-Use guarded \`sudo apt-get update && sudo apt-get install -y --no-install-recommends <package>\` commands in \`setup.sh\` for Debian system packages.
+Use ProPR runtime packages for Debian system packages that should be built into the agent image.
 
 Runtime caches and installed packages should stay out of commits.
 `;
@@ -149,8 +149,8 @@ function displayInitResult(result: InitCommandResult): void {
   console.log("Add npm packages with:");
   console.log("  cd .propr && npm install <package>");
   console.log("");
-  console.log("Add system packages by editing .propr/setup.sh:");
-  console.log("  sudo apt-get update && sudo apt-get install -y --no-install-recommends <package>");
+  console.log("Add system packages at the ProPR installation level:");
+  console.log("  propr runtime packages add <package> --wait");
 }
 
 async function runRepoScaffold(options: { force?: boolean; json?: boolean }): Promise<void> {
