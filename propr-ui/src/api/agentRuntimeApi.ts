@@ -11,7 +11,7 @@ export interface AgentRuntimePackageState {
     baseImage: string;
     baseImageId: string;
     image: string;
-    packageManager: 'apt' | 'apk';
+    packageManager: 'apt';
     builtAt: string;
   }>;
   error?: string;
@@ -20,7 +20,7 @@ export interface AgentRuntimePackageState {
 }
 
 export interface AgentRuntimePackageSource {
-  packageManager: 'apt' | 'apk';
+  packageManager: 'apt';
   osName: string;
   images: string[];
 }
@@ -34,7 +34,8 @@ export interface AgentRuntimePackageSearchResult {
 export interface AgentRuntimePackageValidationResult {
   valid: boolean;
   packages: string[];
-  errors: string[];
+  errors?: string[];
+  error?: string;
   availability?: Array<{ package: string; available: boolean; unavailableOn: string[] }>;
   sources?: AgentRuntimePackageSource[];
 }

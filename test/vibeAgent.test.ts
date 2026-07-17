@@ -346,7 +346,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(args.includes('VIBE_ACTIVE_MODEL=mistral-medium-3.5'));
             assert.ok(args.includes('VIBE_MAX_TURNS=5'));
             assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
-            assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
+            assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
 
             const imageIndex = args.indexOf('propr/agent:bundle-test');
             assert.deepStrictEqual(args.slice(imageIndex + 1), ['--output', 'json']);
@@ -481,7 +481,7 @@ describe('VibeAgent Docker args', () => {
     test('Vibe image provides a su-exec-compatible helper for no-new-privileges user switching', () => {
         const dockerfile = fs.readFileSync(path.resolve('Dockerfile.agent'), 'utf8');
 
-        assert.match(dockerfile, /apt-get install -y --no-install-recommends[\s\S]*\bgosu\b/);
+        assert.match(dockerfile, /apt-get install -y[\s\S]*--no-install-recommends[\s\S]*\bgosu\b/);
         assert.match(dockerfile, /ln -sf "\$\(command -v gosu\)" \/usr\/local\/bin\/su-exec/);
     });
 

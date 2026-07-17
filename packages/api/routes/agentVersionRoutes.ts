@@ -154,7 +154,6 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
                 res.status(400).json({ error: validation.error });
                 return;
             }
-            const type = validation.agentType;
             const agents = await versionService.loadAgents();
             const tagsInUse = new Set<string>();
             for (const agent of agents) {
@@ -164,7 +163,7 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
             tagsInUse.add(generateAgentBundleImageTag(getDefaultAgentCliVersionMatrix(), computeContentHash()).slice(`${AGENT_IMAGE_NAME}:`.length));
 
             // Perform cleanup
-            const deletedCount = await versionService.cleanupUnusedAgentImages(type, tagsInUse);
+            const deletedCount = await versionService.cleanupUnusedAgentImages(tagsInUse);
 
             res.json({
                 success: true,
@@ -191,12 +190,10 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
                 res.status(400).json({ error: validation.error });
                 return;
             }
-            const type = validation.agentType;
-
-            const tags = await versionService.listAgentImages(type);
+            const tags = await versionService.listAgentImages();
 
             res.json({
-                agentType: type,
+                agentType: validation.agentType,
                 images: tags.map((tag: string) => ({
                     tag,
                     fullName: `${AGENT_IMAGE_NAME}:${tag}`

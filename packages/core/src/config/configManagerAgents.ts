@@ -121,10 +121,10 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
         logger.info({ agentAlias: agent.alias, configPath: agent.configPath }, 'Added missing agent config path');
     }
 
-    if (!agent.dockerImage) {
+    if (agent.dockerImage !== defaults.dockerImage) {
         agent.dockerImage = defaults.dockerImage;
         migrated = true;
-        logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Added missing agent Docker image');
+        logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Normalized agent Docker image');
     }
 
     if (!agent.supportedModels || agent.supportedModels.length === 0) {

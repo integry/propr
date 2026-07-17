@@ -43,12 +43,12 @@ describe('agent config migration', () => {
         assert.strictEqual(migrated, true);
         assert.strictEqual(agent.cliVersionType, 'default');
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.claude);
-        assert.strictEqual(agent.dockerImage, 'claude-code-processor:latest');
+        assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
         assert.ok(agent.supportedModels.includes('claude-opus-4-6'));
         assert.ok(agent.supportedModels.includes('claude-sonnet-4-6'));
     });
 
-    test('preserves existing images while updating Codex defaults', () => {
+    test('normalizes legacy agent images while updating Codex defaults', () => {
         const gemini = createAgent({
             id: 'gemini-1',
             type: 'gemini',
@@ -65,12 +65,12 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(gemini), true);
         assert.strictEqual(migrateAgentConfig(codex), true);
         assert.strictEqual(gemini.dockerImage, 'propr-gemini:latest');
-        assert.strictEqual(codex.dockerImage, 'codex-code-processor:latest');
+        assert.strictEqual(codex.dockerImage, 'propr/agent:latest');
         assert.ok(codex.supportedModels.includes('gpt-5.5'));
         assert.strictEqual(codex.defaultModel, 'gpt-5.5');
     });
 
-    test('does not overwrite custom images during default CLI migration', () => {
+    test('normalizes custom images during default CLI migration', () => {
         const agent = createAgent({
             type: 'codex',
             dockerImage: 'local/codex-custom:latest',
@@ -80,7 +80,7 @@ describe('agent config migration', () => {
 
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.strictEqual(agent.cliVersionType, 'default');
-        assert.strictEqual(agent.dockerImage, 'local/codex-custom:latest');
+        assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
     });
 
     test('advances stale default CLI versions for every agent type', () => {

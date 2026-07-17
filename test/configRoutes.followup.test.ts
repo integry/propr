@@ -1084,8 +1084,7 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(ultrafixPauseMock.mock.calls.length, 1);
     });
 
-    test('applyAgentsUpdate preserves a submitted dockerImage when version resolution is not requested', async () => {
-        const contentHashMock = mock.method(configManager, 'computeContentHash', () => 'abc123');
+    test('applyAgentsUpdate replaces a submitted dockerImage with the managed bundle image', async () => {
         const registry = {
             refresh: mock.fn(async () => {}),
             setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
@@ -1114,9 +1113,7 @@ describe('config route follow-up helpers', () => {
         });
 
         assert.strictEqual(result.status, 200);
-        assert.strictEqual((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage, 'private.registry/propr/custom:1.2.3');
-        assert.strictEqual(contentHashMock.mock.calls.length, 0);
-        contentHashMock.mock.restore();
+        assert.match(String((result.body.agents as Array<Record<string, unknown>>)[0]?.dockerImage), /^propr\/agent:bundle-[0-9a-f]{12}-[0-9a-f]{6}$/);
     });
 
     test('normalizeAgentsConfig trims supportedModels entries', () => {

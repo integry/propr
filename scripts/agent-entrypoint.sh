@@ -5,10 +5,15 @@ set -e
 agent_type="${PROPR_AGENT_TYPE:-}"
 if [ -z "$agent_type" ] && [ "$#" -gt 0 ]; then
     case "$1" in
+        /home/node/claude-entrypoint.sh|/home/node/codex-entrypoint.sh|/home/node/antigravity-entrypoint.sh|/home/node/opencode-entrypoint.sh|/home/node/vibe-entrypoint.sh)
+            exec "$1" "${@:2}"
+            ;;
+    esac
+    case "$1" in
         claude) agent_type=claude ;;
         codex) agent_type=codex ;;
-        agy) agent_type=antigravity ;;
-        opencode) agent_type=opencode ;;
+        agy|antigravity) agent_type=antigravity ;;
+        opencode|opencode-run|/usr/local/bin/opencode-run) agent_type=opencode ;;
         vibe) agent_type=vibe ;;
     esac
 fi

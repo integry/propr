@@ -5,7 +5,6 @@ import {
     getAgentRuntimeImageTag,
     validateAgentRuntimePackages
 } from '../packages/core/src/agents/runtime/agentRuntimePackages.js';
-import { resolveConfiguredAgentBaseImage } from '../packages/core/src/agents/version/versionService.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 
 after(async () => closeConnection());
@@ -58,30 +57,6 @@ describe('agent runtime package profiles', () => {
         assert.match(dockerfile, /rm -rf \/var\/lib\/apt\/lists\/\*/);
         assert.match(dockerfile, /USER node\n$/);
         assert.doesNotMatch(dockerfile, /^\+/m);
-    });
-
-    test('generates an apk install layer for Alpine-based custom images', () => {
-        const dockerfile = buildAgentRuntimeDockerfile(
-            'custom/agent:alpine',
-            ['chromium', 'ffmpeg'],
-            'node',
-            'apk'
-        );
-
-        assert.match(dockerfile, /RUN apk add --no-cache chromium ffmpeg/);
-        assert.doesNotMatch(dockerfile, /apt-get/);
-        assert.match(dockerfile, /USER node\n$/);
-    });
-
-    test('preserves the configured unified bundle image', () => {
-        const resolved = resolveConfiguredAgentBaseImage({
-            type: 'claude',
-            dockerImage: 'propr/agent:bundle-test',
-            cliVersionType: 'default',
-            cliVersionResolved: '2.1.170'
-        }, process.cwd());
-
-        assert.equal(resolved, 'propr/agent:bundle-test');
     });
 
     test('runtime tags are stable and change with the base digest or packages', () => {

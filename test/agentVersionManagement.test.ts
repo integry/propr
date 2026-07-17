@@ -69,15 +69,26 @@ describe('agent version management', () => {
     test('uses Debian/glibc package management for the unified agent image', () => {
         const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
 
-        assert.match(agentDockerfile, /^FROM node:22-bookworm-slim AS agent-base$/m);
+        assert.match(agentDockerfile, /^ARG AGENT_PLATFORM=linux\/amd64$/m);
+        assert.match(agentDockerfile, /^FROM --platform=\$\{AGENT_PLATFORM\} node:22-bookworm-slim AS agent-base$/m);
         assert.match(agentDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
-        assert.match(agentDockerfile, /GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b/);
+        assert.match(agentDockerfile, /^ARG GITHUBCLI_KEYRING_SHA256=[0-9a-f]{64}$/m);
         assert.match(agentDockerfile, /FROM agent-base AS claude-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS codex-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS antigravity-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS opencode-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS vibe-cli/);
         assert.doesNotMatch(agentDockerfile, /\bapk add\b/);
+    });
+
+    test('shared agent entrypoint recognizes raw dispatcher commands', () => {
+        const entrypoint = fs.readFileSync('scripts/agent-entrypoint.sh', 'utf8');
+        const vibeAgent = fs.readFileSync('packages/core/src/agents/impl/VibeAgent.ts', 'utf8');
+
+        assert.match(entrypoint, /opencode-run\|\/usr\/local\/bin\/opencode-run\) agent_type=opencode/);
+        assert.match(entrypoint, /\/home\/node\/antigravity-entrypoint\.sh/);
+        assert.match(entrypoint, /exec "\$1" "\$\{@:2\}"/);
+        assert.match(vibeAgent, /PROPR_AGENT_TYPE=vibe/);
     });
 
     test('returns OpenCode package tags and default version metadata', async () => {

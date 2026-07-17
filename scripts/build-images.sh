@@ -228,6 +228,12 @@ build_image() {
   local -a tag_args=()
   while IFS= read -r t; do tag_args+=("-t" "$t"); done < <(tags_for "$name")
 
+  if [[ "$name" == "agent" && -n "$PLATFORM" && "$PLATFORM" != "linux/amd64" ]]; then
+    echo "Agent image builds are currently pinned to linux/amd64 because Debian package pins include amd64 binNMU suffixes." >&2
+    echo "Use --platform linux/amd64 for agent builds, or build app/ui/docs separately for other platforms." >&2
+    exit 1
+  fi
+
   local -a build_args=()
   if [[ -n "$PLATFORM" ]]; then
     build_args+=("--platform" "$PLATFORM")

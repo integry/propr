@@ -10,11 +10,12 @@ const PACKAGE_SPEC = /^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?(?:=[A-Za-z0-
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 const SAFE_USER = /^[A-Za-z0-9_.:-]+$/;
 const INSTALLATION_ID = /^[a-z0-9-]{1,64}$/;
-const ANSI_SGR_REGEX = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
+// eslint-disable-next-line no-control-regex
+const ANSI_SGR_REGEX = /\x1b\[[0-9;]*m/g;
 const baseImageInspectionCache = new Map<string, AgentRuntimeBaseImageInspection>();
 
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
-export type AgentRuntimePackageManager = 'apt' | 'apk';
+export type AgentRuntimePackageManager = 'apt';
 
 export interface AgentRuntimeBaseImageInspection {
     id: string;
@@ -173,24 +174,19 @@ export async function inspectAgentRuntimeBaseImage(baseImage: string): Promise<A
     const environment = await executeDockerCommand('docker', [
         'run', '--rm', '--user', 'root', '--entrypoint', 'sh', baseImage, '-c',
         `set -eu
-if command -v apt-get >/dev/null 2>&1; then
-  echo apt
-  cat /etc/os-release 2>/dev/null || true
-  cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
-elif command -v apk >/dev/null 2>&1; then
-  echo apk
-  cat /etc/os-release 2>/dev/null || true
-  cat /etc/apk/repositories 2>/dev/null || true
-else
+if ! command -v apt-get >/dev/null 2>&1; then
   echo unsupported
   exit 3
-fi`
+fi
+echo apt
+cat /etc/os-release 2>/dev/null || true
+cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true`
     ], { timeout: 30000 });
     if (environment.exitCode !== 0) {
-        throw new Error(`Agent image ${baseImage} does not provide a supported package manager (apt or apk)`);
+        throw new Error(`Agent image ${baseImage} does not provide the supported package manager (apt)`);
     }
     const [managerLine, ...metadataLines] = environment.stdout.trim().split('\n');
-    if (managerLine !== 'apt' && managerLine !== 'apk') {
+    if (managerLine !== 'apt') {
         throw new Error(`Agent image ${baseImage} reported an unsupported package manager: ${managerLine || 'unknown'}`);
     }
     const metadata = metadataLines.join('\n');
@@ -223,19 +219,8 @@ export function getAgentRuntimeImageTag(
 export function buildAgentRuntimeDockerfile(
     baseImage: string,
     packages: string[],
-    finalUser: string,
-    packageManager: AgentRuntimePackageManager = 'apt'
+    finalUser: string
 ): string {
-    if (packageManager === 'apk') {
-        const lines = [
-            `FROM ${baseImage}`,
-            'LABEL dev.propr.agent-runtime="true"',
-            'USER root',
-            `RUN apk add --no-cache ${packages.join(' ')}`
-        ];
-        if (finalUser) lines.push(`USER ${finalUser}`);
-        return `${lines.join('\n')}\n`;
-    }
     const packageLines = packages.map(packageSpec => `        ${packageSpec} \\`).join('\n');
     const restoreUser = finalUser ? `\nUSER ${finalUser}` : '';
     return `FROM ${baseImage}\nLABEL dev.propr.agent-runtime="true"\nUSER root\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends \\\n${packageLines}\n    && rm -rf /var/lib/apt/lists/*${restoreUser}\n`;
@@ -265,7 +250,7 @@ async function buildRuntimeImage(
         '-t', image, '-'
     ], {
         timeout: 20 * 60 * 1000,
-        stdinData: buildAgentRuntimeDockerfile(baseImage, packages, user, packageManager)
+        stdinData: buildAgentRuntimeDockerfile(baseImage, packages, user)
     });
     const log = `${result.stdout}\n${result.stderr}`.trim();
     if (result.exitCode !== 0) throw new Error(log || `Docker build exited with code ${result.exitCode}`);

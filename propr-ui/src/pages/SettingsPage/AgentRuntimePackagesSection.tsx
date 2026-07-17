@@ -240,7 +240,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
     try {
       const result = await validateAgentRuntimePackageSelection([...packages, value]);
       if (!result.valid) {
-        setError(result.errors.join('; ') || `${value} is unavailable for one or more agent runtimes`);
+        setError(result.errors?.join('; ') || result.error || `${value} is unavailable for one or more agent runtimes`);
         return;
       }
       setPackages(result.packages);

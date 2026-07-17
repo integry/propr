@@ -351,6 +351,7 @@ export class VibeAgent implements Agent {
         const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
         for (const envVar of forwardedEnvVars.skipped) logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         const envVars = forwardedEnvVars.dockerArgs;
+        envVars.push('-e', 'PROPR_AGENT_TYPE=vibe');
         if (cleanModelName) envVars.push('-e', `VIBE_ACTIVE_MODEL=${cleanModelName}`);
         envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
         if (runtimeHomePath) envVars.push('-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', '-e', 'HOME=/tmp/propr-vibe-home');

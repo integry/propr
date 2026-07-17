@@ -4,7 +4,6 @@ import {
     loadAgentRuntimePackageState,
     loadAgents,
     requestAgentRuntimePackageBuild,
-    resolveConfiguredAgentBaseImage,
     saveAgentRuntimePackageState,
     searchAgentRuntimePackages,
     validateAgentRuntimePackageAvailability,
@@ -45,7 +44,7 @@ function requireRuntimeAdmin(req: Request, res: Response): boolean {
 
 async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Promise<string[]> {
     const agents = await loadConfiguredAgents();
-    const images = agents.map(agent => resolveConfiguredAgentBaseImage(agent)).filter(Boolean);
+    const images = agents.map(agent => agent.dockerImage).filter(Boolean);
     if (images.length === 0) {
         images.push(process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest');
     }

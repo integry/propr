@@ -4,11 +4,18 @@
 # own stage so changing one version preserves the build cache for every other
 # agent. Only this final image is published.
 
+# The managed agent image is currently linux/amd64. Debian package pins below
+# include amd64 binNMU suffixes, so do not build this Dockerfile for arm64
+# until those pins are split per architecture.
+ARG AGENT_PLATFORM=linux/amd64
 ARG UV_VERSION=0.8.17
-FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+FROM --platform=${AGENT_PLATFORM} ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 
-FROM node:22-bookworm-slim AS agent-base
+FROM --platform=${AGENT_PLATFORM} node:22-bookworm-slim AS agent-base
 
+# These package versions intentionally pin the apt install set. When Debian or
+# the GitHub CLI apt repo removes an old revision, refresh these ARGs to the
+# current versions from the same base image before rebuilding.
 ARG BASH_VERSION=5.2.15-2+b13
 ARG BUILD_ESSENTIAL_VERSION=12.9
 ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
@@ -24,8 +31,9 @@ ARG SUDO_VERSION=1.9.13p3-1+deb12u4
 ARG TINI_VERSION=0.19.0-1+b3
 ARG GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
 
+# GitHub publishes this keyring as a binary .gpg file; no dearmor step is needed.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && apt-get install -y --allow-downgrades --no-install-recommends \
         ca-certificates="${CA_CERTIFICATES_VERSION}" \
         curl="${CURL_VERSION}" \
     && mkdir -p -m 755 /etc/apt/keyrings \
@@ -34,7 +42,7 @@ RUN apt-get update \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && apt-get install -y --allow-downgrades --no-install-recommends \
         bash="${BASH_VERSION}" \
         build-essential="${BUILD_ESSENTIAL_VERSION}" \
         gh="${GH_VERSION}" \

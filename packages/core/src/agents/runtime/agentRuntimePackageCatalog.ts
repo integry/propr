@@ -2,8 +2,7 @@ import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import {
     inspectAgentRuntimeBaseImage,
     validateAgentRuntimePackages,
-    type AgentRuntimeBaseImageInspection,
-    type AgentRuntimePackageManager
+    type AgentRuntimeBaseImageInspection
 } from './agentRuntimePackages.js';
 
 const SEARCH_QUERY = /^[a-z0-9+.-]{1,80}$/;
@@ -17,7 +16,7 @@ interface PackageEnvironment {
 }
 
 export interface AgentRuntimePackageSource {
-    packageManager: AgentRuntimePackageManager;
+    packageManager: 'apt';
     osName: string;
     images: string[];
 }
@@ -42,10 +41,7 @@ export interface AgentRuntimePackageAvailabilityResult {
     sources: AgentRuntimePackageSource[];
 }
 
-function catalogCommand(packageManager: AgentRuntimePackageManager): string {
-    if (packageManager === 'apk') {
-        return "apk update -q >/dev/null && apk search -q '*'";
-    }
+function catalogCommand(): string {
     return 'apt-get update -qq && apt-cache pkgnames';
 }
 
@@ -82,7 +78,7 @@ async function loadCatalog(environment: PackageEnvironment): Promise<Set<string>
     const loading = (async () => {
         const result = await executeDockerCommand('docker', [
             'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image,
-            '-c', catalogCommand(environment.inspection.packageManager)
+            '-c', catalogCommand()
         ], { timeout: 2 * 60 * 1000 });
         if (result.exitCode !== 0) {
             throw new Error(
@@ -122,9 +118,7 @@ function conciseCommandError(output: string): string {
 
 async function validatePinnedPackage(environment: PackageEnvironment, packageSpec: string): Promise<string | null> {
     if (!packageSpec.includes('=')) return null;
-    const command = environment.inspection.packageManager === 'apk'
-        ? `apk update -q >/dev/null && apk add --simulate ${packageSpec}`
-        : `apt-get update -qq && apt-get install --simulate -y --no-install-recommends ${packageSpec}`;
+    const command = `apt-get update -qq && apt-get install --simulate -y --no-install-recommends ${packageSpec}`;
     const result = await executeDockerCommand('docker', [
         'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c', command
     ], { timeout: 2 * 60 * 1000 });
@@ -188,10 +182,6 @@ export async function validateAgentRuntimePackageAvailability(
             .filter(catalog => !catalog.packages.has(packageName))
             .map(catalog => catalog.environment.inspection.osName);
         for (const environment of uniqueEnvironments) {
-            if (environment.inspection.packageManager === 'apk' && packageSpec.includes(':')) {
-                unavailableOn.push(`${environment.inspection.osName} (architecture qualifiers are unsupported)`);
-                continue;
-            }
             if (unavailableOn.includes(environment.inspection.osName)) continue;
             const versionError = await validatePinnedPackage(environment, packageSpec);
             if (versionError) unavailableOn.push(`${environment.inspection.osName}: ${versionError}`);

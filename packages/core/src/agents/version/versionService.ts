@@ -296,18 +296,6 @@ export function computeContentHash(_agentType?: AgentType, basePath: string = PR
     return fullHash.substring(0, 6);
 }
 
-/**
- * Resolves a managed versioned config to the tag produced by the current
- * Docker build inputs. Custom image references are returned unchanged.
- */
-export function resolveConfiguredAgentBaseImage(
-    config: Pick<AgentConfig, 'type' | 'dockerImage' | 'cliVersionType' | 'cliVersionResolved'>,
-    basePath: string = PROJECT_ROOT
-): string {
-    void basePath;
-    return config.dockerImage;
-}
-
 export function generateAgentBundleImageTag(
     versions: AgentCliVersionMatrix,
     contentHash: string

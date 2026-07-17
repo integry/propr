@@ -122,7 +122,7 @@ Run `propr init` from a repository root to scaffold `.propr/` setup files used i
 
 ## Agent Runtime Packages
 
-Installation-wide system packages are built into local derivatives of every configured agent image. ProPR validates names against each runtime's package catalog (`apt` or `apk`), and the previous profile remains active until every derived image builds successfully.
+Installation-wide system packages are built into local derivatives of the unified Debian agent image. ProPR validates names against the runtime's `apt` package catalog, and the previous profile remains active until every derived image builds successfully.
 
 ```bash
 propr runtime packages list

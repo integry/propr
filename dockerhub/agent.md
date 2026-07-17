@@ -14,6 +14,10 @@ image without another pull.
 
 The common Debian runtime is an internal Dockerfile stage, not a separately
 published image. Custom installation-level packages create one derivative of
-the selected bundle.
+the selected bundle. The base includes `build-essential` for native extension
+builds, so it is intentionally larger than the previous Alpine-based images.
+
+The published agent image is currently `linux/amd64`. It runs on Apple Silicon
+Docker Desktop through amd64 emulation.
 
 Source: https://github.com/integry/propr

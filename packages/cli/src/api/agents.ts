@@ -17,13 +17,7 @@ export type AgentType = "claude" | "codex" | "antigravity" | "opencode" | "vibe"
 export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "opencode", "vibe"] as const;
 
 // Keep in sync with the core unified agent image name.
-const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
-  claude: "propr/agent",
-  codex: "propr/agent",
-  antigravity: "propr/agent",
-  opencode: "propr/agent",
-  vibe: "propr/agent",
-};
+const AGENT_IMAGE_NAME = "propr/agent";
 
 /**
  * Configuration for a specific agent instance.
@@ -323,8 +317,8 @@ export async function setAgentEnabled(
  * @returns The default Docker image name.
  */
 function getDefaultDockerImage(type: AgentType): string {
-  const name = AGENT_IMAGE_NAMES[type];
-  return name ? `${name}:latest` : `${type}-code-processor:latest`;
+  void type;
+  return `${AGENT_IMAGE_NAME}:latest`;
 }
 
 /**
