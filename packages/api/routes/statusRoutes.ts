@@ -33,8 +33,18 @@ interface IndexingStatusQueue {
   getJobCounts(...statuses: Array<'active' | 'waiting' | 'delayed' | 'failed'>): Promise<Record<string, number>>;
 }
 
+interface AgentRegistryOperationalStatus {
+  unifiedAgentImage: {
+    status: 'ready' | 'unavailable';
+    imageTag?: string;
+    error?: string;
+    recordedAt?: string;
+  };
+}
+
 type StatusAgentRegistry = Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents' | 'getAgentById' | 'getAgentByAlias'> & {
   createAgentFromConfig(config: AgentConfig): Agent;
+  getOperationalStatus?: () => AgentRegistryOperationalStatus;
 };
 
 type ServiceStatus = 'connected' | 'disconnected' | 'active' | 'queued' | 'idle' | 'failed' | 'unknown';
@@ -155,7 +165,19 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         ? 'connected'
         : 'disconnected';
       status.indexing = await getIndexingStatus(getIndexingQueue);
-      status.warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
+      const warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
+      const agentRuntime = agentRegistry.getOperationalStatus?.();
+      if (agentRuntime) {
+        status.agentRuntime = agentRuntime;
+        const image = agentRuntime.unifiedAgentImage;
+        if (image.status === 'unavailable') {
+          warnings.push({
+            type: 'agent_runtime_unified_image_unavailable',
+            message: `Unified agent image is unavailable${image.imageTag ? ` (${image.imageTag})` : ''}: ${image.error || 'unknown error'}`
+          });
+        }
+      }
+      status.warnings = warnings;
 
       res.json(status);
     } catch (error) {

@@ -48,6 +48,12 @@ function requireRuntimeAdmin(req: Request, res: Response): boolean {
     return false;
 }
 
+function requireAuthenticatedRuntimeReader(req: Request, res: Response): boolean {
+    if (req.user?.username) return true;
+    res.status(401).json({ error: 'Authentication required' });
+    return false;
+}
+
 function runtimeStateResponse(state: AgentRuntimePackageState, req: Request): RuntimePackageStateResponse {
     const canManage = canManageRuntime(req);
     return { ...(canManage ? state : { ...state, buildLog: undefined, error: undefined }), canManage };
@@ -75,6 +81,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
     };
 
     async function getRuntimePackages(req: Request, res: Response): Promise<void> {
+        if (!requireAuthenticatedRuntimeReader(req, res)) return;
         try {
             res.json(runtimeStateResponse(await services.loadState(), req));
         } catch (error) {

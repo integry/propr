@@ -6,7 +6,8 @@ import {
   getAgentRuntimePackageState,
   searchAgentRuntimePackageCatalog,
   updateAgentRuntimePackageState,
-  validateAgentRuntimePackageSelection
+  validateAgentRuntimePackageSelection,
+  type AgentRuntimePackageState
 } from '../../api/agentRuntimeApi';
 
 vi.mock('../../api/agentRuntimeApi', () => ({
@@ -131,5 +132,26 @@ describe('AgentRuntimePackagesSection', () => {
 
     await waitFor(() => expect(screen.queryByLabelText('Package name')).not.toBeInTheDocument());
     expect(screen.queryByText('Agent Runtime Packages')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing until runtime package permissions load', async () => {
+    let resolveState: (state: AgentRuntimePackageState) => void = () => undefined;
+    getState.mockReturnValueOnce(new Promise<AgentRuntimePackageState>(resolve => { resolveState = resolve; }));
+
+    render(<AgentRuntimePackagesSection />);
+
+    expect(screen.queryByText('Agent Runtime Packages')).not.toBeInTheDocument();
+
+    resolveState({
+      installationId: 'test-installation',
+      packages: [],
+      activePackages: [],
+      status: 'disabled',
+      images: {},
+      canManage: false,
+      updatedAt: 'now'
+    });
+
+    await waitFor(() => expect(screen.queryByText('Agent Runtime Packages')).not.toBeInTheDocument());
   });
 });

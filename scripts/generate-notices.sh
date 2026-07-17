@@ -34,7 +34,7 @@ cat >> "$OUT" <<'EOF'
 
 The unified `propr/agent` image is based on `node:22-bookworm-slim` and
 installs system packages from Debian repositories,
-including bash, build-essential, git, curl, ca-certificates, sudo, iptables,
+including bash, build-essential, git, curl, ca-certificates, iptables,
 procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from
 the official GitHub CLI apt repository at cli.github.com.
 See the Debian package tracker for per-package licensing details:

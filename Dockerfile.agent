@@ -50,26 +50,38 @@ RUN set -eu; \
         printf '%s=%s\n' "$package" "$version"; \
     }; \
     apt-get update \
+    && ca_certificates_apt="$(apt_version_arg ca-certificates "$CA_CERTIFICATES_VERSION_PREFIX")" \
+    && curl_apt="$(apt_version_arg curl "$CURL_VERSION_PREFIX")" \
     && apt-get install -y --allow-downgrades --no-install-recommends \
-        "$(apt_version_arg ca-certificates "$CA_CERTIFICATES_VERSION_PREFIX")" \
-        "$(apt_version_arg curl "$CURL_VERSION_PREFIX")" \
+        "$ca_certificates_apt" \
+        "$curl_apt" \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && echo "${GITHUBCLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
+    && bash_apt="$(apt_version_arg bash "$BASH_VERSION_PREFIX")" \
+    && build_essential_apt="$(apt_version_arg build-essential "$BUILD_ESSENTIAL_VERSION_PREFIX")" \
+    && gh_apt="$(apt_version_arg gh "$GH_VERSION_PREFIX" true)" \
+    && git_apt="$(apt_version_arg git "$GIT_VERSION_PREFIX")" \
+    && gosu_apt="$(apt_version_arg gosu "$GOSU_VERSION_PREFIX")" \
+    && iptables_apt="$(apt_version_arg iptables "$IPTABLES_VERSION_PREFIX")" \
+    && procps_apt="$(apt_version_arg procps "$PROCPS_VERSION_PREFIX")" \
+    && python3_apt="$(apt_version_arg python3 "$PYTHON3_VERSION_PREFIX")" \
+    && ripgrep_apt="$(apt_version_arg ripgrep "$RIPGREP_VERSION_PREFIX")" \
+    && tini_apt="$(apt_version_arg tini "$TINI_VERSION_PREFIX")" \
     && apt-get install -y --allow-downgrades --no-install-recommends \
-        "$(apt_version_arg bash "$BASH_VERSION_PREFIX")" \
-        "$(apt_version_arg build-essential "$BUILD_ESSENTIAL_VERSION_PREFIX")" \
-        "$(apt_version_arg gh "$GH_VERSION_PREFIX")" \
-        "$(apt_version_arg git "$GIT_VERSION_PREFIX")" \
-        "$(apt_version_arg gosu "$GOSU_VERSION_PREFIX")" \
-        "$(apt_version_arg iptables "$IPTABLES_VERSION_PREFIX")" \
-        "$(apt_version_arg procps "$PROCPS_VERSION_PREFIX")" \
-        "$(apt_version_arg python3 "$PYTHON3_VERSION_PREFIX")" \
-        "$(apt_version_arg ripgrep "$RIPGREP_VERSION_PREFIX")" \
-        "$(apt_version_arg tini "$TINI_VERSION_PREFIX")" \
+        "$bash_apt" \
+        "$build_essential_apt" \
+        "$gh_apt" \
+        "$git_apt" \
+        "$gosu_apt" \
+        "$iptables_apt" \
+        "$procps_apt" \
+        "$python3_apt" \
+        "$ripgrep_apt" \
+        "$tini_apt" \
     && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
     && rm -rf /var/lib/apt/lists/*
 
@@ -197,9 +209,16 @@ COPY --chown=node:node \
     /home/node/
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
 COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
-RUN ln -sf ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude \
-    && ln -sf ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
-    && ln -sf ../lib/node_modules/opencode-ai/bin/opencode.exe /usr/local/bin/opencode \
+RUN set -eu; \
+    link_npm_bin() { \
+        package="$1"; \
+        bin_name="$2"; \
+        bin_path="$(node -e 'const [pkg, binName] = process.argv.slice(1); const meta = require(`/usr/local/lib/node_modules/${pkg}/package.json`); const bin = typeof meta.bin === "string" ? meta.bin : meta.bin?.[binName]; if (!bin) { console.error(`No bin named ${binName} in ${pkg}`); process.exit(1); } process.stdout.write(bin);' "$package" "$bin_name")"; \
+        ln -sf "../lib/node_modules/${package}/${bin_path}" "/usr/local/bin/${bin_name}"; \
+    }; \
+    link_npm_bin @anthropic-ai/claude-code claude \
+    && link_npm_bin @openai/codex codex \
+    && link_npm_bin opencode-ai opencode \
     && chmod +x \
         /home/node/agent-entrypoint.sh \
         /home/node/claude-entrypoint.sh \

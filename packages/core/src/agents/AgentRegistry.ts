@@ -27,7 +27,8 @@ export class AgentRegistry {
     private agentsByAlias: Map<string, Agent> = new Map(); // Map by Alias
     private defaultAgentAlias: string | null = null; // From settings.default_agent_alias
     private initialized = false;
-    private runtimePackagesUpdatedAt: string | null = null;
+    private runtimePackagesUpdatedAt: string | undefined;
+    private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -225,6 +226,25 @@ export class AgentRegistry {
         return this.initialized;
     }
 
+    getOperationalStatus(): {
+        unifiedAgentImage: {
+            status: 'ready' | 'unavailable';
+            imageTag?: string;
+            error?: string;
+            recordedAt?: string;
+        };
+    } {
+        if (this.unavailableUnifiedAgentImage) {
+            return {
+                unifiedAgentImage: {
+                    status: 'unavailable',
+                    ...this.unavailableUnifiedAgentImage
+                }
+            };
+        }
+        return { unifiedAgentImage: { status: 'ready' } };
+    }
+
     /**
      * Ensures the registry is initialized, refreshing if necessary.
      */
@@ -244,18 +264,18 @@ export class AgentRegistry {
             this.runtimePackagesUpdatedAt = (await loadAgentRuntimePackageState()).updatedAt;
         } catch (error) {
             logger.warn({ error: (error as Error).message }, 'Could not capture agent runtime package state version');
-            this.runtimePackagesUpdatedAt = null;
+            this.runtimePackagesUpdatedAt = undefined;
         }
     }
 
     private async hasRuntimePackageStateChanged(): Promise<boolean> {
-        if (this.runtimePackagesUpdatedAt === null) return false;
+        if (this.runtimePackagesUpdatedAt === undefined) return true;
         try {
             const state = await loadAgentRuntimePackageState();
             return state.updatedAt !== this.runtimePackagesUpdatedAt;
         } catch (error) {
             logger.warn({ error: (error as Error).message }, 'Could not check agent runtime package state version');
-            return false;
+            return true;
         }
     }
 
@@ -265,11 +285,23 @@ export class AgentRegistry {
             const result = await ensureAgentBundleImage(versions, computeContentHash());
             if (!result.success) {
                 logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure unified agent image');
+                this.unavailableUnifiedAgentImage = {
+                    imageTag: result.imageTag,
+                    error: result.error || 'Unified agent image is unavailable',
+                    recordedAt: new Date().toISOString()
+                };
                 return null;
             }
-            return resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
+            const image = await resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
+            this.unavailableUnifiedAgentImage = null;
+            return image;
         } catch (error) {
-            logger.error({ error: (error as Error).message }, 'Failed to resolve unified agent image');
+            const message = (error as Error).message;
+            logger.error({ error: message }, 'Failed to resolve unified agent image');
+            this.unavailableUnifiedAgentImage = {
+                error: message,
+                recordedAt: new Date().toISOString()
+            };
             return null;
         }
     }

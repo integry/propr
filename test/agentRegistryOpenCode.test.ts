@@ -107,6 +107,31 @@ test('AgentRegistry degrades without throwing when unified image is unavailable'
     assert.deepStrictEqual(registry.getAllAgents(), []);
 });
 
+test('AgentRegistry exposes unified image degraded status', async () => {
+    const registry = AgentRegistry.getInstance();
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string | null> }).ensureUnifiedAgentImage = async function fail(this: {
+        unavailableUnifiedAgentImage: { imageTag: string; error: string; recordedAt: string };
+    }) {
+        this.unavailableUnifiedAgentImage = {
+            imageTag: 'propr/agent:bundle-test',
+            error: 'pull failed',
+            recordedAt: '2026-07-17T00:00:00.000Z'
+        };
+        return null;
+    };
+
+    await registry.refresh();
+
+    assert.deepStrictEqual(registry.getOperationalStatus(), {
+        unifiedAgentImage: {
+            status: 'unavailable',
+            imageTag: 'propr/agent:bundle-test',
+            error: 'pull failed',
+            recordedAt: '2026-07-17T00:00:00.000Z'
+        }
+    });
+});
+
 test('AgentRegistry refreshes when runtime package state changes', async () => {
     const registry = AgentRegistry.getInstance();
     let image = 'propr/agent:first';
@@ -125,6 +150,21 @@ test('AgentRegistry refreshes when runtime package state changes', async () => {
         updatedAt: '2026-07-17T15:45:00.000Z'
     });
 
+    await registry.ensureInitialized();
+
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
+});
+
+test('AgentRegistry refreshes after runtime package state version capture fails', async () => {
+    const registry = AgentRegistry.getInstance();
+    let image = 'propr/agent:first';
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => image;
+
+    await registry.refresh();
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:first');
+
+    image = 'propr/agent:second';
+    (registry as unknown as { runtimePackagesUpdatedAt?: string }).runtimePackagesUpdatedAt = undefined;
     await registry.ensureInitialized();
 
     assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');

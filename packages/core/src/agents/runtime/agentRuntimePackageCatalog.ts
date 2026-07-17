@@ -7,7 +7,8 @@ import {
 
 const SEARCH_QUERY = /^[a-z0-9+.-]{1,80}$/;
 const CATALOG_PACKAGE = /^[a-z0-9][a-z0-9+.-]*$/;
-const PINNED_VALIDATION_CONCURRENCY = 8;
+const PINNED_VALIDATION_CONCURRENCY = 4;
+const PINNED_ENV_VALIDATION_CONCURRENCY = 2;
 const CACHE_LIMIT = 128;
 const catalogCache = new Map<string, Promise<Set<string>>>();
 const pinnedPackageValidationCache = new Map<string, Promise<string | null>>();
@@ -149,6 +150,30 @@ async function validatePinnedPackage(environment: PackageEnvironment, packageSpe
     }
 }
 
+async function validatePinnedPackageBatch(
+    environment: PackageEnvironment,
+    packageSpecs: string[]
+): Promise<Array<{ packageSpec: string; osName: string; versionError: string | null }>> {
+    const result = await executeDockerCommand('docker', [
+        'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c',
+        'apt-get update -qq && apt-get install --simulate -y --no-install-recommends "$@"',
+        'propr-apt-validate', ...packageSpecs
+    ], { timeout: 2 * 60 * 1000 });
+    if (result.exitCode === 0) {
+        return packageSpecs.map(packageSpec => ({
+            packageSpec,
+            osName: environment.inspection.osName,
+            versionError: null
+        }));
+    }
+    const batchError = conciseCommandError(`${result.stderr}\n${result.stdout}`);
+    return mapWithConcurrency(packageSpecs, PINNED_VALIDATION_CONCURRENCY, async packageSpec => ({
+        packageSpec,
+        osName: environment.inspection.osName,
+        versionError: await validatePinnedPackage(environment, packageSpec) || batchError
+    }));
+}
+
 async function mapWithConcurrency<T, R>(
     values: T[],
     concurrency: number,
@@ -223,24 +248,24 @@ export async function validateAgentRuntimePackageAvailability(
         return { package: packageSpec, available: unavailableOn.length === 0, unavailableOn };
     });
     const byPackage = new Map(availability.map(result => [result.package, result]));
-    const pinnedChecks: Array<{ packageSpec: string; environment: PackageEnvironment }> = [];
+    const pinnedChecksByEnvironment = new Map<string, { environment: PackageEnvironment; packageSpecs: string[] }>();
     for (const packageSpec of syntax.packages) {
+        if (!packageSpec.includes('=')) continue;
         const packageName = packageNameFromSpec(packageSpec);
         for (const environment of uniqueEnvironments) {
             const catalog = catalogs.find(candidate => candidate.environment.key === environment.key);
             if (!catalog?.packages.has(packageName)) continue;
-            pinnedChecks.push({ packageSpec, environment });
+            const checks = pinnedChecksByEnvironment.get(environment.key) || { environment, packageSpecs: [] };
+            checks.packageSpecs.push(packageSpec);
+            pinnedChecksByEnvironment.set(environment.key, checks);
         }
     }
-    const pinnedResults = await mapWithConcurrency(
-        pinnedChecks,
-        PINNED_VALIDATION_CONCURRENCY,
-        async ({ packageSpec, environment }) => ({
-            packageSpec,
-            osName: environment.inspection.osName,
-            versionError: await validatePinnedPackage(environment, packageSpec)
-        })
+    const pinnedResultGroups = await mapWithConcurrency(
+        [...pinnedChecksByEnvironment.values()],
+        PINNED_ENV_VALIDATION_CONCURRENCY,
+        async ({ environment, packageSpecs }) => validatePinnedPackageBatch(environment, packageSpecs)
     );
+    const pinnedResults = pinnedResultGroups.flat();
     for (const result of pinnedResults) {
         if (!result.versionError) continue;
         byPackage.get(result.packageSpec)?.unavailableOn.push(`${result.osName}: ${result.versionError}`);

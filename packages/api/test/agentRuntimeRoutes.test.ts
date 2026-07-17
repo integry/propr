@@ -215,6 +215,26 @@ describe('agent runtime package routes', () => {
         }
     });
 
+    test('requires authentication before returning runtime package state', async () => {
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: {} as never,
+            services: {
+                loadState: async () => ({
+                    ...initialState(),
+                    status: 'failed',
+                    error: 'private build error',
+                    buildLog: 'private build log'
+                })
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.getRuntimePackages({} as unknown as Request, response);
+
+        assert.equal(record.status, 401);
+        assert.deepEqual(record.body, { error: 'Authentication required' });
+    });
+
     test('resolves the runtime build queue lazily when queueing', async () => {
         let state = initialState();
         let queued: unknown;

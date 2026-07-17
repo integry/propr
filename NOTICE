@@ -57,7 +57,7 @@ Bundled third-party components
    Installed from the official distribution at cli.github.com.
 
 6. Debian Linux base image and system packages in the unified agent image
-   (bash, build-essential, git, curl, ca-certificates, sudo, iptables, procps,
+   (bash, build-essential, git, curl, ca-certificates, iptables, procps,
    tini, ripgrep, gosu, python3)
    Various open-source licenses. See the Debian package tracker for
    per-package details: https://tracker.debian.org/

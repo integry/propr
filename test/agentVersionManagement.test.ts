@@ -75,17 +75,30 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, /^ARG GITHUBCLI_KEYRING_SHA256=[0-9a-f]{64}$/m);
         assert.match(agentDockerfile, /^ARG CURL_VERSION_PREFIX=/m);
         assert.match(agentDockerfile, /apt_version_arg\(\) /);
-        assert.match(agentDockerfile, /apt_version_arg gh "\$GH_VERSION_PREFIX"/);
-        assert.doesNotMatch(agentDockerfile, /apt_version_arg gh "\$GH_VERSION_PREFIX" true/);
+        assert.match(agentDockerfile, /gh_apt="\$\(apt_version_arg gh "\$GH_VERSION_PREFIX" true\)"/);
         assert.doesNotMatch(agentDockerfile, /apt_version_arg util-linux "\$UTIL_LINUX_VERSION_PREFIX"/);
         assert.doesNotMatch(agentDockerfile, /setpriv --version/);
         assert.doesNotMatch(agentDockerfile, /\bNOPASSWD\b/);
+        assert.match(agentDockerfile, /link_npm_bin @anthropic-ai\/claude-code claude/);
+        assert.match(agentDockerfile, /link_npm_bin @openai\/codex codex/);
+        assert.match(agentDockerfile, /link_npm_bin opencode-ai opencode/);
         assert.match(agentDockerfile, /FROM agent-base AS claude-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS codex-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS antigravity-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS opencode-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS vibe-cli/);
         assert.doesNotMatch(agentDockerfile, /\bapk add\b/);
+    });
+
+    test('launches ownership-repairing agent entrypoints as root before dropping privileges', () => {
+        const claudeDockerArgs = fs.readFileSync('packages/core/src/agents/impl/utils/dockerArgsBuilder.ts', 'utf8');
+        const codexAgent = fs.readFileSync('packages/core/src/agents/impl/CodexAgent.ts', 'utf8');
+        const antigravityAgent = fs.readFileSync('packages/core/src/agents/impl/AntigravityAgent.ts', 'utf8');
+
+        for (const [name, source] of Object.entries({ claudeDockerArgs, codexAgent, antigravityAgent })) {
+            assert.match(source, /'--cap-add', 'CHOWN'/, `${name} should grant CHOWN for mounted config repair`);
+            assert.match(source, /'--user', '0:0'/, `${name} should start as root so the entrypoint can repair config ownership`);
+        }
     });
 
     test('shared agent entrypoint recognizes raw dispatcher commands', () => {

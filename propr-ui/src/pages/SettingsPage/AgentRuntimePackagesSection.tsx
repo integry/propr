@@ -233,7 +233,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
   const dirty = JSON.stringify(normalizedDesired) !== JSON.stringify([...state.packages].sort());
   const building = state.status === 'pending' || state.status === 'building';
 
-  if (!loading && state.canManage === false) return null;
+  if (loading || state.canManage === false) return null;
 
   const addPackage = async (candidate = input) => {
     const value = normalizePackageSpec(candidate);

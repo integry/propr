@@ -16,6 +16,7 @@ The common Debian runtime is an internal Dockerfile stage, not a separately
 published image. Custom installation-level packages create one derivative of
 the selected bundle. The base includes `build-essential` for native extension
 builds, so it is intentionally larger than the previous Alpine-based images.
+The image uses Node.js 22 because current agent CLI versions require it.
 
 The published agent image is currently `linux/amd64`. It runs on Apple Silicon
 Docker Desktop through amd64 emulation.

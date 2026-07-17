@@ -102,6 +102,11 @@ function scheduleBundleImageCleanup(imageTag: string): void {
                         tagsInUse.add(agent.dockerImage.slice(prefix.length));
                     }
                 }
+                // Cleanup runs after best-effort pull/build paths and keeps the
+                // tag this build just produced. Docker builds are serialized by
+                // the worker in normal operation; if an operator launches
+                // concurrent manual bundle builds, unconfigured tags may still
+                // be eligible for cleanup until a config references them.
                 await cleanupUnusedAgentImages(tagsInUse);
             })
             .catch(error => {
