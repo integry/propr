@@ -12,6 +12,8 @@ const SAFE_USER = /^[A-Za-z0-9_.:-]+$/;
 const INSTALLATION_ID = /^[a-z0-9-]{1,64}$/;
 // eslint-disable-next-line no-control-regex
 const ANSI_SGR_REGEX = /\x1b\[[0-9;]*m/g;
+const RESOLVE_RUNTIME_IMAGE_MAX_RETRIES = 3;
+const BASE_IMAGE_INSPECTION_CACHE_LIMIT = 128;
 const baseImageInspectionCache = new Map<string, AgentRuntimeBaseImageInspection>();
 
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
@@ -116,6 +118,11 @@ function normalizeState(value: unknown): AgentRuntimePackageState {
     };
 }
 
+function cacheBaseImageInspection(id: string, inspection: AgentRuntimeBaseImageInspection): void {
+    if (!baseImageInspectionCache.has(id) && baseImageInspectionCache.size >= BASE_IMAGE_INSPECTION_CACHE_LIMIT) baseImageInspectionCache.delete(baseImageInspectionCache.keys().next().value as string);
+    baseImageInspectionCache.set(id, inspection);
+}
+
 export async function loadAgentRuntimePackageState(): Promise<AgentRuntimePackageState> {
     const raw = await getConfig<unknown>(CONFIG_KEY, defaultState());
     const state = normalizeState(raw);
@@ -198,7 +205,7 @@ cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true`
         packageSourceFingerprint: crypto.createHash('sha256').update(`${managerLine}\n${metadata}`).digest('hex').slice(0, 16),
         osName: prettyName?.replace(/^"|"$/g, '') || managerLine
     };
-    baseImageInspectionCache.set(id, inspection);
+    cacheBaseImageInspection(id, inspection);
     return inspection;
 }
 
@@ -385,7 +392,8 @@ export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobD
 
 export async function resolveAgentRuntimeImage(
     baseImage: string,
-    options: { buildMissing?: boolean } = {}
+    options: { buildMissing?: boolean; maxRetries?: number } = {},
+    retryCount = 0
 ): Promise<string> {
     const state = await loadAgentRuntimePackageState();
     if (state.activePackages.length === 0) return baseImage;
@@ -405,7 +413,12 @@ export async function resolveAgentRuntimeImage(
     const latest = await loadAgentRuntimePackageState();
     if (latest.activePackages.join('\0') !== activePackages.join('\0')) {
         await cleanupRuntimeImages({ [baseImage]: built.record }, latest.images, state.installationId);
-        return resolveAgentRuntimeImage(baseImage, options);
+        const maxRetries = options.maxRetries ?? RESOLVE_RUNTIME_IMAGE_MAX_RETRIES;
+        if (retryCount >= maxRetries) {
+            logger.warn({ baseImage, retryCount, maxRetries }, 'Agent runtime packages changed repeatedly while resolving image; using the base image until the worker catches up');
+            return baseImage;
+        }
+        return resolveAgentRuntimeImage(baseImage, options, retryCount + 1);
     }
     await saveAgentRuntimePackageState({
         ...latest,

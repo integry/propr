@@ -115,4 +115,21 @@ describe('AgentRuntimePackagesSection', () => {
     expect(validateSelection).not.toHaveBeenCalled();
     expect(updateState).not.toHaveBeenCalled();
   });
+
+  it('hides runtime controls for non-admin users', async () => {
+    getState.mockResolvedValueOnce({
+      installationId: 'test-installation',
+      packages: ['jq'],
+      activePackages: ['jq'],
+      status: 'ready',
+      images: {},
+      canManage: false,
+      updatedAt: 'now'
+    });
+
+    render(<AgentRuntimePackagesSection />);
+
+    await waitFor(() => expect(screen.queryByLabelText('Package name')).not.toBeInTheDocument());
+    expect(screen.queryByText('Agent Runtime Packages')).not.toBeInTheDocument();
+  });
 });

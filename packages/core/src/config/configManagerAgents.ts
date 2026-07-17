@@ -95,6 +95,7 @@ const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     vibe: AGENT_DEFAULTS.vibe.defaultModels
 };
 const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
+const MANAGED_AGENT_IMAGE_PREFIX = 'propr/agent:';
 
 function migrateCliVersion(agent: AgentConfig): boolean {
     if (agent.cliVersionType) {
@@ -121,7 +122,7 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
         logger.info({ agentAlias: agent.alias, configPath: agent.configPath }, 'Added missing agent config path');
     }
 
-    if (agent.dockerImage !== defaults.dockerImage) {
+    if (agent.dockerImage !== defaults.dockerImage && !agent.dockerImage.startsWith(MANAGED_AGENT_IMAGE_PREFIX)) {
         agent.dockerImage = defaults.dockerImage;
         migrated = true;
         logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Normalized agent Docker image');

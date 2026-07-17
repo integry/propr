@@ -90,8 +90,20 @@ function scheduleBundleImageCleanup(imageTag: string): void {
         ? imageTag.slice(`${AGENT_IMAGE_NAME}:`.length)
         : imageTag;
     setImmediate(() => {
-        import('./dockerImageManager.js')
-            .then(({ cleanupUnusedAgentImages }) => cleanupUnusedAgentImages(new Set([tag])))
+        Promise.all([
+            import('./dockerImageManager.js'),
+            import('../../config/configManager.js')
+        ])
+            .then(async ([{ cleanupUnusedAgentImages }, { loadAgents }]) => {
+                const tagsInUse = new Set([tag]);
+                const prefix = `${AGENT_IMAGE_NAME}:`;
+                for (const agent of await loadAgents()) {
+                    if (agent.dockerImage.startsWith(prefix)) {
+                        tagsInUse.add(agent.dockerImage.slice(prefix.length));
+                    }
+                }
+                await cleanupUnusedAgentImages(tagsInUse);
+            })
             .catch(error => {
                 logger.debug({ imageTag, error: (error as Error).message }, 'Agent image cleanup after build failed');
             });

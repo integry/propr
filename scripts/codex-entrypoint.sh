@@ -20,25 +20,26 @@ fi
 if [ -d "/home/node/.codex" ]; then
     echo "Codex config directory mounted"
 
-    # Fix ownership if running with sudo capability
+    # Fix ownership if running as root. The repo setup wrapper reapplies
+    # no_new_privs before this entrypoint, so do not rely on sudo here.
     # This is crucial because Docker volume mounts often default to root ownership,
     # but Codex running as 'node' needs to read/write config files.
-    if command -v sudo >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ]; then
         echo "Fixing ownership of Codex config files..."
         # First try recursive chown
-        sudo chown -R node:node /home/node/.codex 2>/dev/null || true
+        chown -R node:node /home/node/.codex 2>/dev/null || true
         # Also fix permissions on files that might be 600 (root-only readable)
-        sudo chmod -R u+rw /home/node/.codex 2>/dev/null || true
+        chmod -R u+rw /home/node/.codex 2>/dev/null || true
 
         # For files that still aren't readable (e.g., on some volume mounts),
         # copy them with correct permissions
         for file in config.toml history.jsonl auth.json; do
-            if [ -f "/home/node/.codex/$file" ] && ! sudo -u node test -r "/home/node/.codex/$file" 2>/dev/null; then
+            if [ -f "/home/node/.codex/$file" ] && ! su-exec node test -r "/home/node/.codex/$file" 2>/dev/null; then
                 echo "Fixing permissions for $file..."
-                sudo cp "/home/node/.codex/$file" "/tmp/codex-$file"
-                sudo chown node:node "/tmp/codex-$file"
-                sudo chmod 644 "/tmp/codex-$file"
-                sudo mv "/tmp/codex-$file" "/home/node/.codex/$file"
+                cp "/home/node/.codex/$file" "/tmp/codex-$file"
+                chown node:node "/tmp/codex-$file"
+                chmod 644 "/tmp/codex-$file"
+                mv "/tmp/codex-$file" "/home/node/.codex/$file"
             fi
         done
     fi
@@ -109,11 +110,8 @@ if [ $# -gt 0 ]; then
     # If running as root, switch to node user after setup
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..."
-        # Switch to node user and execute the command
-        # -E preserves environment variables (including NODE_OPTIONS for memory limit)
-        # -H sets HOME to target user's home directory (/home/node)
         cd /home/node/workspace
-        exec sudo -E -u node -H "$@"
+        exec su-exec node env HOME=/home/node "$@"
     else
         exec "$@"
     fi

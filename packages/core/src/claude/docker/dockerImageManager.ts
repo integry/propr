@@ -51,12 +51,13 @@ export async function cleanupUnusedAgentImages(
         }
 
         // Always keep 'latest' tag
-        tagsInUse.add('latest');
+        const tagsToKeep = new Set(tagsInUse);
+        tagsToKeep.add('latest');
 
         let deletedCount = 0;
 
         for (const tag of allTags) {
-            if (tagsInUse.has(tag)) {
+            if (tagsToKeep.has(tag)) {
                 continue;
             }
 

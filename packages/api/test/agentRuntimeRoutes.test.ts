@@ -208,10 +208,39 @@ describe('agent runtime package routes', () => {
             assert.equal((record.body as AgentRuntimePackageState).status, 'failed');
             assert.equal((record.body as AgentRuntimePackageState).error, undefined);
             assert.equal((record.body as AgentRuntimePackageState).buildLog, undefined);
+            assert.equal((record.body as AgentRuntimePackageState & { canManage?: boolean }).canManage, false);
         } finally {
             if (previous === undefined) delete process.env.PROPR_ADMIN_USERS;
             else process.env.PROPR_ADMIN_USERS = previous;
         }
+    });
+
+    test('resolves the runtime build queue lazily when queueing', async () => {
+        let state = initialState();
+        let queued: unknown;
+        const queue = { add: async (_name: string, data: unknown) => { queued = data; } };
+        const routes = createAgentRuntimeRoutes({
+            getRuntimeBuildQueue: () => queue as never,
+            services: {
+                loadState: async () => state,
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                requestBuild: async (packages, baseImages) => {
+                    state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-lazy' };
+                    return { buildId: 'build-lazy', packages: packages as string[], baseImages };
+                },
+                validateAvailability: availablePackages
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' } } as unknown as Request, response);
+
+        assert.equal(record.status, 202);
+        assert.deepEqual(queued, {
+            buildId: 'build-lazy',
+            packages: ['jq'],
+            baseImages: ['propr/agent:bundle-test']
+        });
     });
 
     test('reports apply load failures through the route response', async () => {

@@ -22,10 +22,11 @@ if [ -d "/home/node/.claude" ]; then
     echo "Contents of /home/node/.claude:"
     ls -la /home/node/.claude/
 
-    # Fix ownership if running with sudo capability
-    if command -v sudo >/dev/null 2>&1; then
+    # Fix ownership if running as root. The repo setup wrapper reapplies
+    # no_new_privs before this entrypoint, so do not rely on sudo here.
+    if [ "$(id -u)" = "0" ]; then
         echo "Fixing ownership of Claude config files..."
-        sudo chown -R node:node /home/node/.claude 2>/dev/null || echo "Could not change ownership"
+        chown -R node:node /home/node/.claude 2>/dev/null || echo "Could not change ownership"
     fi
 
     # Ensure necessary subdirectories exist (they might not be in the mounted volume)
@@ -83,12 +84,7 @@ if [ -d "/home/node/workspace" ]; then
         fi
     else
         echo "Warning: Running as UID $current_uid instead of expected 1000"
-        # Try to ensure the user owns the workspace (skip if sudo fails in restricted container)
-        if sudo chown -R node:node /home/node/workspace 2>/dev/null; then
-            echo "Workspace permissions set"
-        else
-            echo "Workspace permissions already set (sudo not available in restricted container)"
-        fi
+        echo "Skipping workspace chown to avoid mutating host bind-mount ownership"
     fi
 fi
 
@@ -98,10 +94,8 @@ if [ $# -gt 0 ]; then
     # If running as root, switch to node user after setup
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..."
-        # Switch to node user and execute the command
-        # -E preserves environment variables (including NODE_OPTIONS for memory limit)
         cd /home/node/workspace
-        exec sudo -E -u node -H "$@"
+        exec su-exec node env HOME=/home/node "$@"
     else
         exec "$@"
     fi

@@ -50,6 +50,26 @@ function handleError(error: unknown): never {
   process.exit(1);
 }
 
+function normalizePackageSpec(value: string): string {
+  const trimmed = value.trim();
+  const separator = trimmed.indexOf('=');
+  if (separator === -1) return trimmed.toLowerCase();
+  return `${trimmed.slice(0, separator).toLowerCase()}=${trimmed.slice(separator + 1)}`;
+}
+
+function packageNameFromSpec(value: string): string {
+  return normalizePackageSpec(value).split('=', 1)[0].split(':', 1)[0];
+}
+
+export function filterRemovedRuntimePackages(currentPackages: string[], packagesToRemove: string[]): string[] {
+  const removeSpecs = new Set(packagesToRemove.map(normalizePackageSpec));
+  const removeNames = new Set(packagesToRemove.map(packageNameFromSpec));
+  return currentPackages.filter(value => {
+    const normalized = normalizePackageSpec(value);
+    return !removeSpecs.has(normalized) && !removeNames.has(packageNameFromSpec(normalized));
+  });
+}
+
 export function createRuntimeCommand(): Command {
   const runtime = new Command('runtime').description('Manage the installation agent runtime');
   const packages = new Command('packages').description('Manage installation-wide system packages');
@@ -80,9 +100,8 @@ export function createRuntimeCommand(): Command {
     .option('-j, --json', 'Output JSON')
     .action(async (values: string[], options: { wait?: boolean; json?: boolean }) => {
       try {
-        const remove = new Set(values.map(value => value.toLowerCase()));
         const current = await getAgentRuntimePackages();
-        await finishUpdate(await updateAgentRuntimePackages(current.packages.filter(value => !remove.has(value))), options);
+        await finishUpdate(await updateAgentRuntimePackages(filterRemovedRuntimePackages(current.packages, values)), options);
       } catch (error) { handleError(error); }
     });
 

@@ -13,9 +13,12 @@ import {
 } from '@propr/core';
 
 interface AgentRuntimeRoutesDeps {
-    runtimeBuildQueue: Queue<AgentRuntimeBuildJobData>;
+    runtimeBuildQueue?: Queue<AgentRuntimeBuildJobData>;
+    getRuntimeBuildQueue?: () => Queue<AgentRuntimeBuildJobData> | undefined;
     services?: Partial<AgentRuntimeRouteServices>;
 }
+
+type RuntimePackageStateResponse = AgentRuntimePackageState & { canManage: boolean };
 
 interface AgentRuntimeRouteServices {
     loadState: typeof loadAgentRuntimePackageState;
@@ -45,9 +48,9 @@ function requireRuntimeAdmin(req: Request, res: Response): boolean {
     return false;
 }
 
-function redactRuntimeStateForUser(state: AgentRuntimePackageState, req: Request): AgentRuntimePackageState {
-    if (canManageRuntime(req)) return state;
-    return { ...state, buildLog: undefined, error: undefined };
+function runtimeStateResponse(state: AgentRuntimePackageState, req: Request): RuntimePackageStateResponse {
+    const canManage = canManageRuntime(req);
+    return { ...(canManage ? state : { ...state, buildLog: undefined, error: undefined }), canManage };
 }
 
 async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Promise<string[]> {
@@ -59,7 +62,7 @@ async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Pr
     return [...new Set(images)].sort();
 }
 
-export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: overrides }: AgentRuntimeRoutesDeps) {
+export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQueue, services: overrides }: AgentRuntimeRoutesDeps) {
     const services: AgentRuntimeRouteServices = {
         loadState: loadAgentRuntimePackageState,
         loadAgents,
@@ -73,7 +76,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
 
     async function getRuntimePackages(req: Request, res: Response): Promise<void> {
         try {
-            res.json(redactRuntimeStateForUser(await services.loadState(), req));
+            res.json(runtimeStateResponse(await services.loadState(), req));
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
         }
@@ -122,7 +125,9 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
                 return;
             }
             jobData = await services.requestBuild(availability.packages, images);
-            await runtimeBuildQueue.add('build-agent-runtime', jobData, {
+            const queue = getRuntimeBuildQueue?.() || runtimeBuildQueue;
+            if (!queue) throw new Error('Agent runtime build queue is not initialized');
+            await queue.add('build-agent-runtime', jobData, {
                 jobId: jobData.buildId,
                 removeOnComplete: 20,
                 removeOnFail: 50
@@ -144,10 +149,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
                     /* Preserve the original queue/validation error response. */
                 }
             }
-            res.status(syntax?.valid === false ? 400 : 500).json({
-                error: (error as Error).message,
-                ...(syntax?.valid === false ? { errors: syntax.errors } : {})
-            });
+            res.status(500).json({ error: (error as Error).message });
         }
     }
 

@@ -17,6 +17,7 @@ export interface AgentRuntimePackageState {
   }>;
   error?: string;
   buildLog?: string;
+  canManage?: boolean;
   updatedAt: string;
 }
 

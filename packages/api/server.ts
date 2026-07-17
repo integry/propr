@@ -252,7 +252,7 @@ function setupRoutes(): void {
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
-  const agentRuntimeRoutes = createAgentRuntimeRoutes({ runtimeBuildQueue });
+  const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
   const register = (method: RouteMethod, path: string, ...handlers: RouteHandler[]): void => {
     app[method](path, ...handlers);
   };

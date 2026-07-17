@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
 import { wrapDockerRunArgsWithRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.js';
 
 describe('wrapDockerRunArgsWithRepoSetup', () => {
@@ -98,6 +99,22 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         const imageIndex = wrapped.indexOf('propr/agent:latest');
         assert.strictEqual(wrapped[imageIndex + 3], '/home/node/vibe-entrypoint.sh');
         assert.deepStrictEqual(wrapped.slice(imageIndex + 4), ['vibe', '--prompt', 'Analyze the codebase']);
+    });
+
+    test('agent entrypoints do not require sudo after no-new-privs is reapplied', () => {
+        for (const scriptPath of [
+            'scripts/claude-entrypoint.sh',
+            'scripts/codex-entrypoint.sh',
+            'scripts/antigravity-entrypoint.sh'
+        ]) {
+            const script = fs.readFileSync(scriptPath, 'utf8');
+            const executableLines = script
+                .split('\n')
+                .filter(line => !line.trim().startsWith('#'))
+                .join('\n');
+            assert.doesNotMatch(executableLines, /\bsudo\b/, `${scriptPath} should not invoke sudo`);
+            assert.match(script, /exec su-exec node env HOME=\/home\/node "\$@"/);
+        }
     });
 
     test('throws when the configured docker image cannot be found', () => {

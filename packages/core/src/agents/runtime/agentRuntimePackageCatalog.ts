@@ -8,6 +8,7 @@ import {
 const SEARCH_QUERY = /^[a-z0-9+.-]{1,80}$/;
 const CATALOG_PACKAGE = /^[a-z0-9][a-z0-9+.-]*$/;
 const PINNED_VALIDATION_CONCURRENCY = 8;
+const CACHE_LIMIT = 128;
 const catalogCache = new Map<string, Promise<Set<string>>>();
 const pinnedPackageValidationCache = new Map<string, Promise<string | null>>();
 
@@ -45,6 +46,13 @@ export interface AgentRuntimePackageAvailabilityResult {
 
 function catalogCommand(): string {
     return 'apt-get update -qq && apt-cache pkgnames';
+}
+
+function rememberCacheValue<K, V>(cache: Map<K, V>, key: K, value: V): void {
+    if (!cache.has(key) && cache.size >= CACHE_LIMIT) {
+        cache.delete(cache.keys().next().value as K);
+    }
+    cache.set(key, value);
 }
 
 async function inspectEnvironments(baseImages: string[]): Promise<PackageEnvironment[]> {
@@ -93,7 +101,7 @@ async function loadCatalog(environment: PackageEnvironment): Promise<Set<string>
             .map(value => value.trim().toLowerCase())
             .filter(value => CATALOG_PACKAGE.test(value)));
     })();
-    catalogCache.set(environment.key, loading);
+    rememberCacheValue(catalogCache, environment.key, loading);
     try {
         return await loading;
     } catch (error) {
@@ -123,15 +131,16 @@ async function validatePinnedPackage(environment: PackageEnvironment, packageSpe
     const cacheKey = `${environment.key}:${packageSpec}`;
     const cached = pinnedPackageValidationCache.get(cacheKey);
     if (cached) return cached;
-    const command = `apt-get update -qq && apt-get install --simulate -y --no-install-recommends ${packageSpec}`;
     const validation = (async () => {
         const result = await executeDockerCommand('docker', [
-            'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c', command
+            'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c',
+            'apt-get update -qq && apt-get install --simulate -y --no-install-recommends "$1"',
+            'propr-apt-validate', packageSpec
         ], { timeout: 2 * 60 * 1000 });
         if (result.exitCode === 0) return null;
         return conciseCommandError(`${result.stderr}\n${result.stdout}`);
     })();
-    pinnedPackageValidationCache.set(cacheKey, validation);
+    rememberCacheValue(pinnedPackageValidationCache, cacheKey, validation);
     try {
         return await validation;
     } catch (error) {

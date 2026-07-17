@@ -64,7 +64,7 @@ export function getAgentBundleVersionHash(versions: AgentCliVersionMatrix): stri
     return crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 12);
 }
 
-function validatePyPiCustomVersion(versionSpec: string, packageName: string): string | Promise<string> {
+async function validatePyPiCustomVersion(versionSpec: string, packageName: string): Promise<string> {
     const trimmedVersionSpec = versionSpec.trim();
     if (!trimmedVersionSpec) {
         throw new Error('Version spec required');
@@ -271,11 +271,10 @@ const PROJECT_ROOT = process.env.PROPR_ROOT
  * Computes a content hash for the Docker build files of an agent.
  * This hash changes when any of the Dockerfile or script files change.
  *
- * @param agentType - The agent type
  * @param basePath - Base path where Dockerfiles are located (defaults to project root)
  * @returns First 6 characters of SHA256 hash
  */
-export function computeContentHash(_agentType?: AgentType, basePath: string = PROJECT_ROOT): string {
+export function computeContentHash(basePath: string = PROJECT_ROOT): string {
     const files = AGENT_BUNDLE_CONTENT_FILES;
     const hash = crypto.createHash('sha256');
 

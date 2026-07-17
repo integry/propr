@@ -326,20 +326,24 @@ export class AgentRegistry {
             try {
                 defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE, { buildMissing: false });
             } catch (error) {
-                logger.error({ error: (error as Error).message }, 'Failed to resolve default Claude agent image');
-                return;
+                logger.error(
+                    { dockerImage: defaultConfig.dockerImage, error: (error as Error).message },
+                    'Failed to resolve default Claude agent runtime image; registering the configured image for degraded-mode health checks',
+                );
             }
         } else {
             try {
                 const result = await ensureAgentBundleImage(getDefaultAgentCliVersionMatrix(), computeContentHash());
                 if (!result.success) {
-                    logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure default agent image');
-                    return;
+                    logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure default agent image; registering fallback image for degraded-mode health checks');
+                } else {
+                    defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
                 }
-                defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
             } catch (error) {
-                logger.error({ error: (error as Error).message }, 'Failed to register default Claude agent image');
-                return;
+                logger.error(
+                    { dockerImage: defaultConfig.dockerImage, error: (error as Error).message },
+                    'Failed to resolve default Claude agent image; registering fallback image for degraded-mode health checks',
+                );
             }
         }
 

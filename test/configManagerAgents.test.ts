@@ -83,6 +83,20 @@ describe('agent config migration', () => {
         assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
     });
 
+    test('does not renormalize managed bundle image tags', () => {
+        const agent = createAgent({
+            type: 'opencode',
+            dockerImage: 'propr/agent:bundle-abc123-def456',
+            supportedModels: ['opencode-minimax-m3-free'],
+            defaultModel: 'opencode-minimax-m3-free',
+            cliVersionType: 'default',
+            cliVersionResolved: AGENT_DEFAULT_VERSIONS.opencode
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), false);
+        assert.strictEqual(agent.dockerImage, 'propr/agent:bundle-abc123-def456');
+    });
+
     test('advances stale default CLI versions for every agent type', () => {
         const agent = createAgent({
             type: 'opencode',
