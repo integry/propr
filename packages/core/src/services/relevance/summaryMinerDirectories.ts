@@ -10,7 +10,7 @@ import type { IndexingProgress } from './indexingCancellation.js';
 import type { SummarizationAgentConfig } from './summaryMinerHelpers.js';
 import {
   type DirectoryInfo, type DirectoryResult,
-  groupDirectoriesByDepth, extractDirectories, createDirectoryBatches,
+  groupDirectoriesByDepth, extractRepositoryDirectories, createDirectoryBatches,
 } from './summaryMinerDirectoryHelpers.js';
 import { processDirectoryBatch } from './summaryMinerDirectoryBatch.js';
 import { getSummarizationBatchLimitOverride } from './summaryMinerBatchLimits.js';
@@ -84,7 +84,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
     return { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   }
 
-  const directories = new Set(extractDirectories(fileSummaries.map(f => f.path)));
+  const directories = new Set(extractRepositoryDirectories(fileSummaries.map(f => f.path), fullName));
   const dirsByDepth = groupDirectoriesByDepth(Array.from(directories));
   const depths = Array.from(dirsByDepth.keys()).sort((a, b) => b - a);
 

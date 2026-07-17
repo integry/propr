@@ -63,6 +63,13 @@ export function extractDirectories(filePaths: string[]): string[] {
   return Array.from(dirs);
 }
 
+export function extractRepositoryDirectories(filePaths: string[], fullName: string): string[] {
+  const repositoryPrefix = `${fullName}/`;
+  return extractDirectories(filePaths).filter(dirPath =>
+    dirPath === fullName || dirPath.startsWith(repositoryPrefix)
+  );
+}
+
 export function createDirectoryBatches(directories: DirectoryInfo[], maxBatchTokens: number, maxDirsPerBatch: number, charsPerTokenEstimate: number): DirectoryInfo[][] {
   const batches: DirectoryInfo[][] = [];
   let currentBatch: DirectoryInfo[] = [];

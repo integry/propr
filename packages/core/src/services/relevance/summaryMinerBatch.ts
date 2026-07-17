@@ -177,8 +177,17 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
     // fallback model. Other failures (provider outages, agent bugs, malformed
     // prompts) must surface as-is instead of silently switching models.
     if (!isQuotaExhaustionError(primaryError)) {
-      if (isSummarizationInvalidResponseError(primaryError) && fallbackAgent && fallbackAgentAliasSetting) {
-        return analyzeBatchWithInvalidResponseFallback(primaryError, primaryAgentAlias, options);
+      if (isSummarizationInvalidResponseError(primaryError)) {
+        if (fallbackAgent && fallbackAgentAliasSetting) {
+          return analyzeBatchWithInvalidResponseFallback(primaryError, primaryAgentAlias, options);
+        }
+        await recordSummarizationCooldown({
+          repository: fullName,
+          branch,
+          primaryAgentAlias,
+          reason: 'Primary summarization model returned unusable output after retries and no fallback model is configured.'
+        });
+        throw new SummarizationCooldownRecordedError(primaryError);
       }
       throw primaryError;
     }
