@@ -3,11 +3,12 @@ import { createApiClient } from './client.js';
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
 
 export interface AgentRuntimePackageState {
+  installationId: string;
   packages: string[];
   activePackages: string[];
   status: AgentRuntimeBuildStatus;
   buildId?: string;
-  images: Record<string, { baseImage: string; baseImageId: string; image: string; builtAt: string }>;
+  images: Record<string, { baseImage: string; baseImageId: string; image: string; packageManager: 'apt'; builtAt: string }>;
   error?: string;
   buildLog?: string;
   updatedAt: string;

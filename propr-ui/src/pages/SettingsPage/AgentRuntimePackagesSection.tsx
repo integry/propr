@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, LoaderCircle, PackagePlus, RefreshCw, X } from 'lucide-react';
 import {
   getAgentRuntimePackageState,
@@ -9,6 +9,7 @@ import {
 } from '../../api/agentRuntimeApi';
 
 const EMPTY_STATE: AgentRuntimePackageState = {
+  installationId: '',
   packages: [],
   activePackages: [],
   status: 'disabled',
@@ -166,21 +167,25 @@ const AgentRuntimePackagesSection: React.FC = () => {
   const [validating, setValidating] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const initialLoad = useRef(true);
 
   const load = useCallback(async () => {
     try {
       const next = await getAgentRuntimePackageState();
       setState(next);
-      setPackages(current => loading ? next.packages : current);
+      if (initialLoad.current) {
+        setPackages(next.packages);
+        initialLoad.current = false;
+      }
       setError(null);
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [loading]);
+  }, []);
 
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (state.status !== 'pending' && state.status !== 'building') return;
     const timer = window.setInterval(async () => {

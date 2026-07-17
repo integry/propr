@@ -8,6 +8,7 @@ import {
 const SEARCH_QUERY = /^[a-z0-9+.-]{1,80}$/;
 const CATALOG_PACKAGE = /^[a-z0-9][a-z0-9+.-]*$/;
 const catalogCache = new Map<string, Promise<Set<string>>>();
+const pinnedPackageValidationCache = new Map<string, Promise<string | null>>();
 
 interface PackageEnvironment {
     image: string;
@@ -118,12 +119,24 @@ function conciseCommandError(output: string): string {
 
 async function validatePinnedPackage(environment: PackageEnvironment, packageSpec: string): Promise<string | null> {
     if (!packageSpec.includes('=')) return null;
+    const cacheKey = `${environment.key}:${packageSpec}`;
+    const cached = pinnedPackageValidationCache.get(cacheKey);
+    if (cached) return cached;
     const command = `apt-get update -qq && apt-get install --simulate -y --no-install-recommends ${packageSpec}`;
-    const result = await executeDockerCommand('docker', [
-        'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c', command
-    ], { timeout: 2 * 60 * 1000 });
-    if (result.exitCode === 0) return null;
-    return conciseCommandError(`${result.stderr}\n${result.stdout}`);
+    const validation = (async () => {
+        const result = await executeDockerCommand('docker', [
+            'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image, '-c', command
+        ], { timeout: 2 * 60 * 1000 });
+        if (result.exitCode === 0) return null;
+        return conciseCommandError(`${result.stderr}\n${result.stdout}`);
+    })();
+    pinnedPackageValidationCache.set(cacheKey, validation);
+    try {
+        return await validation;
+    } catch (error) {
+        pinnedPackageValidationCache.delete(cacheKey);
+        throw error;
+    }
 }
 
 export async function searchAgentRuntimePackages(
@@ -196,4 +209,5 @@ export async function validateAgentRuntimePackageAvailability(
 
 export function clearAgentRuntimePackageCatalogCache(): void {
     catalogCache.clear();
+    pinnedPackageValidationCache.clear();
 }

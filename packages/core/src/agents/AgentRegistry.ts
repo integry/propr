@@ -14,7 +14,7 @@ import { shutdownQueue } from '../queue/taskQueue.js';
 import { computeContentHash, getAgentCliVersionMatrix, getDefaultAgentCliVersionMatrix } from './version/versionService.js';
 import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
-import { resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
+import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -27,6 +27,7 @@ export class AgentRegistry {
     private agentsByAlias: Map<string, Agent> = new Map(); // Map by Alias
     private defaultAgentAlias: string | null = null; // From settings.default_agent_alias
     private initialized = false;
+    private runtimePackagesUpdatedAt: string | null = null;
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -71,11 +72,18 @@ export class AgentRegistry {
                 // Fallback: Create default Claude agent from ENV vars if no config exists
                 logger.info('No agents configured, creating default Claude agent from environment');
                 await this.registerDefaultAgent();
+                await this.captureRuntimePackageStateVersion();
                 this.initialized = true;
                 return;
             }
 
             const bundleImage = await this.ensureUnifiedAgentImage(configs);
+            if (!bundleImage) {
+                await this.captureRuntimePackageStateVersion();
+                this.initialized = true;
+                logger.warn('Agent registry initialized without agents because the unified agent image is unavailable');
+                return;
+            }
 
             for (const config of configs) {
                 if (!config.enabled) {
@@ -117,6 +125,7 @@ export class AgentRegistry {
                 }
             }
 
+            await this.captureRuntimePackageStateVersion();
             this.initialized = true;
             logger.info({
                 totalAgents: this.agents.size,
@@ -130,6 +139,7 @@ export class AgentRegistry {
             this.agents.clear();
             this.agentsByAlias.clear();
             await this.registerDefaultAgent();
+            await this.captureRuntimePackageStateVersion();
             this.initialized = true;
         }
     }
@@ -221,16 +231,47 @@ export class AgentRegistry {
     async ensureInitialized(): Promise<void> {
         if (!this.initialized) {
             await this.refresh();
+            return;
+        }
+        if (await this.hasRuntimePackageStateChanged()) {
+            logger.info('Refreshing agent registry because agent runtime package state changed');
+            await this.refresh();
         }
     }
 
-    private async ensureUnifiedAgentImage(configs: AgentConfig[]): Promise<string> {
-        const versions = getAgentCliVersionMatrix(configs);
-        const result = await ensureAgentBundleImage(versions, computeContentHash());
-        if (!result.success) {
-            throw new Error(result.error || `Failed to ensure unified agent image ${result.imageTag}`);
+    private async captureRuntimePackageStateVersion(): Promise<void> {
+        try {
+            this.runtimePackagesUpdatedAt = (await loadAgentRuntimePackageState()).updatedAt;
+        } catch (error) {
+            logger.warn({ error: (error as Error).message }, 'Could not capture agent runtime package state version');
+            this.runtimePackagesUpdatedAt = null;
         }
-        return resolveAgentRuntimeImage(result.imageTag);
+    }
+
+    private async hasRuntimePackageStateChanged(): Promise<boolean> {
+        if (this.runtimePackagesUpdatedAt === null) return false;
+        try {
+            const state = await loadAgentRuntimePackageState();
+            return state.updatedAt !== this.runtimePackagesUpdatedAt;
+        } catch (error) {
+            logger.warn({ error: (error as Error).message }, 'Could not check agent runtime package state version');
+            return false;
+        }
+    }
+
+    private async ensureUnifiedAgentImage(configs: AgentConfig[]): Promise<string | null> {
+        try {
+            const versions = getAgentCliVersionMatrix(configs);
+            const result = await ensureAgentBundleImage(versions, computeContentHash());
+            if (!result.success) {
+                logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure unified agent image');
+                return null;
+            }
+            return resolveAgentRuntimeImage(result.imageTag);
+        } catch (error) {
+            logger.error({ error: (error as Error).message }, 'Failed to resolve unified agent image');
+            return null;
+        }
     }
 
     /**
@@ -282,13 +323,24 @@ export class AgentRegistry {
         };
 
         if (process.env.AGENT_DOCKER_IMAGE) {
-            defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE);
-        } else {
-            const result = await ensureAgentBundleImage(getDefaultAgentCliVersionMatrix(), computeContentHash());
-            if (!result.success) {
-                throw new Error(result.error || `Failed to ensure unified agent image ${result.imageTag}`);
+            try {
+                defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE);
+            } catch (error) {
+                logger.error({ error: (error as Error).message }, 'Failed to resolve default Claude agent image');
+                return;
             }
-            defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag);
+        } else {
+            try {
+                const result = await ensureAgentBundleImage(getDefaultAgentCliVersionMatrix(), computeContentHash());
+                if (!result.success) {
+                    logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure default agent image');
+                    return;
+                }
+                defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag);
+            } catch (error) {
+                logger.error({ error: (error as Error).message }, 'Failed to register default Claude agent image');
+                return;
+            }
         }
 
         const agent = new ClaudeAgent(defaultConfig);

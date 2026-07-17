@@ -138,4 +138,48 @@ describe('agent runtime package routes', () => {
             else process.env.PROPR_ADMIN_USERS = previous;
         }
     });
+
+    test('redacts runtime build details for non-admin readers', async () => {
+        const previous = process.env.PROPR_ADMIN_USERS;
+        process.env.PROPR_ADMIN_USERS = 'owner';
+        try {
+            const routes = createAgentRuntimeRoutes({
+                runtimeBuildQueue: {} as never,
+                services: {
+                    loadState: async () => ({
+                        ...initialState(),
+                        status: 'failed',
+                        error: 'apt mirror exposed host details',
+                        buildLog: 'full build log'
+                    })
+                }
+            });
+            const { response, record } = responseRecorder();
+
+            await routes.getRuntimePackages({ user: { username: 'member' } } as unknown as Request, response);
+
+            assert.equal(record.status, 200);
+            assert.equal((record.body as AgentRuntimePackageState).status, 'failed');
+            assert.equal((record.body as AgentRuntimePackageState).error, undefined);
+            assert.equal((record.body as AgentRuntimePackageState).buildLog, undefined);
+        } finally {
+            if (previous === undefined) delete process.env.PROPR_ADMIN_USERS;
+            else process.env.PROPR_ADMIN_USERS = previous;
+        }
+    });
+
+    test('reports apply load failures through the route response', async () => {
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: {} as never,
+            services: {
+                loadState: async () => { throw new Error('state unavailable'); }
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.applyRuntimePackages({ user: { username: 'admin' } } as unknown as Request, response);
+
+        assert.equal(record.status, 500);
+        assert.equal((record.body as { error: string }).error, 'state unavailable');
+    });
 });

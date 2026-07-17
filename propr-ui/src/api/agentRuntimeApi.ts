@@ -3,6 +3,7 @@ import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
 
 export interface AgentRuntimePackageState {
+  installationId: string;
   packages: string[];
   activePackages: string[];
   status: AgentRuntimeBuildStatus;

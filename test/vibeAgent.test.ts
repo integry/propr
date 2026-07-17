@@ -483,6 +483,7 @@ describe('VibeAgent Docker args', () => {
 
         assert.match(dockerfile, /apt-get install -y[\s\S]*--no-install-recommends[\s\S]*\bgosu\b/);
         assert.match(dockerfile, /ln -sf "\$\(command -v gosu\)" \/usr\/local\/bin\/su-exec/);
+        assert.match(dockerfile, /if \[ ! -e \/usr\/local\/bin\/vibe-acp \]; then ln -s \/usr\/local\/bin\/vibe \/usr\/local\/bin\/vibe-acp; fi/);
     });
 
     test('propagates Mistral API key through the explicit credential path', () => {

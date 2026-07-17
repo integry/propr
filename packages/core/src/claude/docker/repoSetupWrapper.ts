@@ -18,6 +18,7 @@ const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
 
 const WORKSPACE_PATH = '/home/node/workspace';
 const DEFAULT_CACHE_ROOT = '/tmp/git-processor/propr-cache';
+const NO_NEW_PRIVILEGES_SECURITY_OPT = /^no-new-privileges(?::(?:true|false))?$/;
 
 const REPO_SETUP_WRAPPER_SCRIPT = `
 set -e
@@ -67,11 +68,14 @@ function removeNoNewPrivilegesSecurityOpt(args: string[]): string[] {
     const filtered: string[] = [];
     for (let index = 0; index < args.length; index += 1) {
         const arg = args[index];
-        if (arg === '--security-opt' && args[index + 1] === 'no-new-privileges') {
+        if (arg === '--security-opt' && NO_NEW_PRIVILEGES_SECURITY_OPT.test(args[index + 1] || '')) {
             index += 1;
             continue;
         }
-        if (arg === '--security-opt=no-new-privileges') continue;
+        if (arg.startsWith('--security-opt=')
+            && NO_NEW_PRIVILEGES_SECURITY_OPT.test(arg.slice('--security-opt='.length))) {
+            continue;
+        }
         filtered.push(arg);
     }
     return filtered;

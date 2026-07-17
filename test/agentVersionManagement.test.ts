@@ -73,6 +73,10 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, /^FROM --platform=\$\{AGENT_PLATFORM\} node:22-bookworm-slim AS agent-base$/m);
         assert.match(agentDockerfile, /https:\/\/cli\.github\.com\/packages stable main/);
         assert.match(agentDockerfile, /^ARG GITHUBCLI_KEYRING_SHA256=[0-9a-f]{64}$/m);
+        assert.match(agentDockerfile, /^ARG CURL_VERSION_PREFIX=/m);
+        assert.match(agentDockerfile, /apt_version_arg\(\) /);
+        assert.match(agentDockerfile, /apt_version_arg util-linux "\$UTIL_LINUX_VERSION_PREFIX"/);
+        assert.match(agentDockerfile, /setpriv --version/);
         assert.match(agentDockerfile, /FROM agent-base AS claude-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS codex-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS antigravity-cli/);
@@ -88,7 +92,15 @@ describe('agent version management', () => {
         assert.match(entrypoint, /opencode-run\|\/usr\/local\/bin\/opencode-run\) agent_type=opencode/);
         assert.match(entrypoint, /\/home\/node\/antigravity-entrypoint\.sh/);
         assert.match(entrypoint, /exec "\$1" "\$\{@:2\}"/);
+        assert.match(entrypoint, /bash\|sh\|\/bin\/bash\|\/bin\/sh/);
         assert.match(vibeAgent, /PROPR_AGENT_TYPE=vibe/);
+    });
+
+    test('records proprietary installer provenance in the unified agent image', () => {
+        const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+
+        assert.match(agentDockerfile, /antigravity-installer\.sha256/);
+        assert.match(agentDockerfile, /antigravity-cli\.version/);
     });
 
     test('returns OpenCode package tags and default version metadata', async () => {

@@ -13,29 +13,41 @@ FROM --platform=${AGENT_PLATFORM} ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 
 FROM --platform=${AGENT_PLATFORM} node:22-bookworm-slim AS agent-base
 
-# These package versions intentionally pin the apt install set. When Debian or
-# the GitHub CLI apt repo removes an old revision, refresh these ARGs to the
-# current versions from the same base image before rebuilding.
-ARG BASH_VERSION=5.2.15-2+b13
-ARG BUILD_ESSENTIAL_VERSION=12.9
-ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
-ARG CURL_VERSION=7.88.1-10+deb12u15
-ARG GH_VERSION=2.96.0
-ARG GIT_VERSION=1:2.39.5-0+deb12u3
-ARG GOSU_VERSION=1.14-1+b10
-ARG IPTABLES_VERSION=1.8.9-2
-ARG PROCPS_VERSION=2:4.0.2-3
-ARG PYTHON3_VERSION=3.11.2-1+b1
-ARG RIPGREP_VERSION=13.0.0-4+b2
-ARG SUDO_VERSION=1.9.13p3-1+deb12u4
-ARG TINI_VERSION=0.19.0-1+b3
+# These package prefixes intentionally constrain the apt install set while
+# allowing Debian security rebuild suffixes to move forward in the live archive.
+# Refresh these ARGs from the same base image when changing the package set.
+ARG BASH_VERSION_PREFIX=5.2.15-2
+ARG BUILD_ESSENTIAL_VERSION_PREFIX=12.
+ARG CA_CERTIFICATES_VERSION_PREFIX=20230311+deb12u
+ARG CURL_VERSION_PREFIX=7.88.1-10+deb12u
+ARG GH_VERSION_PREFIX=2.96.
+ARG GIT_VERSION_PREFIX=1:2.39.5-0+deb12u
+ARG GOSU_VERSION_PREFIX=1.14-1
+ARG IPTABLES_VERSION_PREFIX=1.8.9-2
+ARG PROCPS_VERSION_PREFIX=2:4.0.2-3
+ARG PYTHON3_VERSION_PREFIX=3.11.2-1
+ARG RIPGREP_VERSION_PREFIX=13.0.0-4
+ARG SUDO_VERSION_PREFIX=1.9.13p3-1+deb12u
+ARG TINI_VERSION_PREFIX=0.19.0-1
+ARG UTIL_LINUX_VERSION_PREFIX=2.38.1-5+deb12u
 ARG GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
 
 # GitHub publishes this keyring as a binary .gpg file; no dearmor step is needed.
-RUN apt-get update \
+RUN set -eu; \
+    apt_version_arg() { \
+        package="$1"; \
+        prefix="$2"; \
+        version="$(apt-cache madison "$package" | awk -v prefix="$prefix" 'index($3, prefix) == 1 { print $3; exit }')"; \
+        if [ -z "$version" ]; then \
+            echo "No apt version found for ${package} with prefix ${prefix}" >&2; \
+            exit 1; \
+        fi; \
+        printf '%s=%s\n' "$package" "$version"; \
+    }; \
+    apt-get update \
     && apt-get install -y --allow-downgrades --no-install-recommends \
-        ca-certificates="${CA_CERTIFICATES_VERSION}" \
-        curl="${CURL_VERSION}" \
+        "$(apt_version_arg ca-certificates "$CA_CERTIFICATES_VERSION_PREFIX")" \
+        "$(apt_version_arg curl "$CURL_VERSION_PREFIX")" \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && echo "${GITHUBCLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
@@ -43,17 +55,18 @@ RUN apt-get update \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y --allow-downgrades --no-install-recommends \
-        bash="${BASH_VERSION}" \
-        build-essential="${BUILD_ESSENTIAL_VERSION}" \
-        gh="${GH_VERSION}" \
-        git="${GIT_VERSION}" \
-        gosu="${GOSU_VERSION}" \
-        iptables="${IPTABLES_VERSION}" \
-        procps="${PROCPS_VERSION}" \
-        python3="${PYTHON3_VERSION}" \
-        ripgrep="${RIPGREP_VERSION}" \
-        sudo="${SUDO_VERSION}" \
-        tini="${TINI_VERSION}" \
+        "$(apt_version_arg bash "$BASH_VERSION_PREFIX")" \
+        "$(apt_version_arg build-essential "$BUILD_ESSENTIAL_VERSION_PREFIX")" \
+        "$(apt_version_arg gh "$GH_VERSION_PREFIX")" \
+        "$(apt_version_arg git "$GIT_VERSION_PREFIX")" \
+        "$(apt_version_arg gosu "$GOSU_VERSION_PREFIX")" \
+        "$(apt_version_arg iptables "$IPTABLES_VERSION_PREFIX")" \
+        "$(apt_version_arg procps "$PROCPS_VERSION_PREFIX")" \
+        "$(apt_version_arg python3 "$PYTHON3_VERSION_PREFIX")" \
+        "$(apt_version_arg ripgrep "$RIPGREP_VERSION_PREFIX")" \
+        "$(apt_version_arg sudo "$SUDO_VERSION_PREFIX")" \
+        "$(apt_version_arg tini "$TINI_VERSION_PREFIX")" \
+        "$(apt_version_arg util-linux "$UTIL_LINUX_VERSION_PREFIX")" \
     && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
     && rm -rf /var/lib/apt/lists/*
 
@@ -119,7 +132,8 @@ RUN case "${VIBE_CLI_VERSION}" in \
     && uv tool install "${vibe_install_spec}" \
     && chmod -R a+rX /opt/uv \
     && uv cache clean \
-    && vibe --version
+    && vibe --version \
+    && if [ ! -e /usr/local/bin/vibe-acp ]; then ln -s /usr/local/bin/vibe /usr/local/bin/vibe-acp; fi
 
 
 FROM agent-base AS antigravity-cli
@@ -132,10 +146,12 @@ RUN if [ "${ANTIGRAVITY_CLI_VERSION}" != "latest" ]; then \
     fi \
     && curl -fsSL -o /tmp/antigravity-install.sh https://antigravity.google/cli/install.sh \
     && test -s /tmp/antigravity-install.sh \
+    && mkdir -p /home/node/.local/share/propr \
+    && sha256sum /tmp/antigravity-install.sh > /home/node/.local/share/propr/antigravity-installer.sha256 \
     && bash -n /tmp/antigravity-install.sh \
     && bash /tmp/antigravity-install.sh \
     && rm -f /tmp/antigravity-install.sh \
-    && agy --version
+    && agy --version | tee /home/node/.local/share/propr/antigravity-cli.version
 
 
 FROM agent-base AS final
@@ -195,7 +211,8 @@ RUN ln -sf ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/loc
     && codex --version \
     && opencode --version \
     && vibe --version \
-    && agy --version
+    && agy --version \
+    && setpriv --version
 
 USER node
 RUN git config --global user.name "ProPR Agent Bot" \

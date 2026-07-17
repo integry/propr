@@ -16,6 +16,13 @@ if [ -z "$agent_type" ] && [ "$#" -gt 0 ]; then
         opencode|opencode-run|/usr/local/bin/opencode-run) agent_type=opencode ;;
         vibe) agent_type=vibe ;;
     esac
+    if [ -z "$agent_type" ]; then
+        case "$1" in
+            bash|sh|/bin/bash|/bin/sh)
+                exec "$@"
+                ;;
+        esac
+    fi
 fi
 
 case "$agent_type" in

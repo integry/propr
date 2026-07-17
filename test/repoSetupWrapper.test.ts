@@ -46,6 +46,24 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         );
     });
 
+    test('removes docker boolean no-new-privileges forms before repo setup', () => {
+        const wrapped = wrapDockerRunArgsWithRepoSetup([
+            'run', '--rm',
+            '--security-opt', 'no-new-privileges:true',
+            '--security-opt=no-new-privileges:false',
+            '--security-opt', 'seccomp=unconfined',
+            'propr/agent:latest',
+            'codex', 'exec', '-'
+        ], 'propr/agent:latest', 'codex');
+
+        assert.ok(!wrapped.includes('no-new-privileges:true'));
+        assert.ok(!wrapped.includes('--security-opt=no-new-privileges:false'));
+        assert.deepStrictEqual(
+            wrapped.slice(wrapped.indexOf('--security-opt'), wrapped.indexOf('--security-opt') + 2),
+            ['--security-opt', 'seccomp=unconfined']
+        );
+    });
+
     test('adds setup environment for the selected agent type', () => {
         const wrapped = wrapDockerRunArgsWithRepoSetup([
             'run', '--rm',

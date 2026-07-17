@@ -8,7 +8,8 @@ import {
     searchAgentRuntimePackages,
     validateAgentRuntimePackageAvailability,
     validateAgentRuntimePackages,
-    type AgentRuntimeBuildJobData
+    type AgentRuntimeBuildJobData,
+    type AgentRuntimePackageState
 } from '@propr/core';
 
 interface AgentRuntimeRoutesDeps {
@@ -42,6 +43,11 @@ function requireRuntimeAdmin(req: Request, res: Response): boolean {
     return false;
 }
 
+function redactRuntimeStateForUser(state: AgentRuntimePackageState, req: Request): AgentRuntimePackageState {
+    if (canManageRuntime(req)) return state;
+    return { ...state, buildLog: undefined, error: undefined };
+}
+
 async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Promise<string[]> {
     const agents = await loadConfiguredAgents();
     const images = agents.map(agent => agent.dockerImage).filter(Boolean);
@@ -63,9 +69,9 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
         ...overrides
     };
 
-    async function getRuntimePackages(_req: Request, res: Response): Promise<void> {
+    async function getRuntimePackages(req: Request, res: Response): Promise<void> {
         try {
-            res.json(await services.loadState());
+            res.json(redactRuntimeStateForUser(await services.loadState(), req));
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
         }
@@ -121,14 +127,18 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
             res.status(202).json(await services.loadState());
         } catch (error) {
             if (jobData) {
-                const state = await services.loadState();
-                if (state.buildId === jobData.buildId) {
-                    await services.saveState({
-                        ...state,
-                        status: 'failed',
-                        error: (error as Error).message,
-                        updatedAt: new Date().toISOString()
-                    });
+                try {
+                    const state = await services.loadState();
+                    if (state.buildId === jobData.buildId) {
+                        await services.saveState({
+                            ...state,
+                            status: 'failed',
+                            error: (error as Error).message,
+                            updatedAt: new Date().toISOString()
+                        });
+                    }
+                } catch {
+                    /* Preserve the original queue/validation error response. */
                 }
             }
             const validation = services.validate(packages);
@@ -146,8 +156,12 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, services: override
 
     async function applyRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireRuntimeAdmin(req, res)) return;
-        const state = await services.loadState();
-        await queueBuild(state.packages, res);
+        try {
+            const state = await services.loadState();
+            await queueBuild(state.packages, res);
+        } catch (error) {
+            res.status(500).json({ error: (error as Error).message });
+        }
     }
 
     return {

@@ -3,7 +3,7 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default [
-  { ignores: ['node_modules', 'dist', 'coverage'] },
+  { ignores: ['node_modules', '**/dist', 'coverage'] },
   {
     files: ['src/**/*.js', 'src/**/*.ts'],
     languageOptions: {
