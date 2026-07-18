@@ -14,7 +14,7 @@ import {
   loadAgents as loadAgentConfigs,
   loadSummarizationRuntimeState
 } from '@propr/core';
-import type { Agent, AgentConfig } from '@propr/core';
+import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -31,15 +31,6 @@ interface StatusRoutesDeps {
 
 interface IndexingStatusQueue {
   getJobCounts(...statuses: Array<'active' | 'waiting' | 'delayed' | 'failed'>): Promise<Record<string, number>>;
-}
-
-interface AgentRegistryOperationalStatus {
-  unifiedAgentImage: {
-    status: 'ready' | 'unavailable';
-    imageTag?: string;
-    error?: string;
-    recordedAt?: string;
-  };
 }
 
 type StatusAgentRegistry = Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents' | 'getAgentById' | 'getAgentByAlias'> & {

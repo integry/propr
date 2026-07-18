@@ -19,6 +19,14 @@ interface AgentRuntimeRoutesDeps {
 }
 
 type RuntimePackageStateResponse = AgentRuntimePackageState & { canManage: boolean };
+const DEFAULT_RUNTIME_PACKAGE_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+
+class RuntimePackageRequestTimeoutError extends Error {
+    constructor(operation: string, timeoutMs: number) {
+        super(`${operation} timed out after ${timeoutMs}ms`);
+        this.name = 'RuntimePackageRequestTimeoutError';
+    }
+}
 
 interface AgentRuntimeRouteServices {
     loadState: typeof loadAgentRuntimePackageState;
@@ -57,6 +65,34 @@ function requireAuthenticatedRuntimeReader(req: Request, res: Response): boolean
 function runtimeStateResponse(state: AgentRuntimePackageState, req: Request): RuntimePackageStateResponse {
     const canManage = canManageRuntime(req);
     return { ...(canManage ? state : { ...state, buildLog: undefined, error: undefined }), canManage };
+}
+
+function runtimePackageRequestTimeoutMs(): number {
+    const parsed = Number.parseInt(process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS || '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RUNTIME_PACKAGE_REQUEST_TIMEOUT_MS;
+}
+
+async function withRuntimePackageRequestTimeout<T>(operation: string, promise: Promise<T>): Promise<T> {
+    const timeoutMs = runtimePackageRequestTimeoutMs();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise<never>((_resolve, reject) => {
+                timeoutHandle = setTimeout(() => reject(new RuntimePackageRequestTimeoutError(operation, timeoutMs)), timeoutMs);
+            })
+        ]);
+    } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+}
+
+function sendRuntimePackageError(error: unknown, res: Response): void {
+    if (error instanceof RuntimePackageRequestTimeoutError) {
+        res.status(504).json({ error: error.message });
+        return;
+    }
+    res.status(500).json({ error: (error as Error).message });
 }
 
 async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Promise<string[]> {
@@ -98,10 +134,13 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 return;
             }
             const images = await configuredBaseImages(services.loadAgents);
-            const result = await services.validateAvailability(syntax.packages, images);
+            const result = await withRuntimePackageRequestTimeout(
+                'Agent runtime package availability validation',
+                services.validateAvailability(syntax.packages, images)
+            );
             res.status(result.valid ? 200 : 400).json(result);
         } catch (error) {
-            res.status(500).json({ error: (error as Error).message });
+            sendRuntimePackageError(error, res);
         }
     }
 
@@ -110,13 +149,16 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         try {
             const query = typeof req.query.q === 'string' ? req.query.q : '';
             const images = await configuredBaseImages(services.loadAgents);
-            res.json(await services.search(query, images));
+            res.json(await withRuntimePackageRequestTimeout(
+                'Agent runtime package search',
+                services.search(query, images)
+            ));
         } catch (error) {
-            res.status(500).json({ error: (error as Error).message });
+            sendRuntimePackageError(error, res);
         }
     }
 
-    async function queueBuild(packages: unknown, res: Response): Promise<void> {
+    async function queueBuild(packages: unknown, req: Request, res: Response): Promise<void> {
         let jobData: AgentRuntimeBuildJobData | undefined;
         let syntax: ReturnType<AgentRuntimeRouteServices['validate']> | undefined;
         try {
@@ -126,7 +168,10 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 return;
             }
             const images = await configuredBaseImages(services.loadAgents);
-            const availability = await services.validateAvailability(syntax.packages, images);
+            const availability = await withRuntimePackageRequestTimeout(
+                'Agent runtime package availability validation',
+                services.validateAvailability(syntax.packages, images)
+            );
             if (!availability.valid) {
                 res.status(400).json({ error: availability.errors.join('; '), ...availability });
                 return;
@@ -139,7 +184,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 removeOnComplete: 20,
                 removeOnFail: 50
             });
-            res.status(202).json(await services.loadState());
+            res.status(202).json(runtimeStateResponse(await services.loadState(), req));
         } catch (error) {
             if (jobData) {
                 try {
@@ -156,20 +201,20 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                     /* Preserve the original queue/validation error response. */
                 }
             }
-            res.status(500).json({ error: (error as Error).message });
+            sendRuntimePackageError(error, res);
         }
     }
 
     async function putRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireRuntimeAdmin(req, res)) return;
-        await queueBuild(req.body?.packages, res);
+        await queueBuild(req.body?.packages, req, res);
     }
 
     async function applyRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireRuntimeAdmin(req, res)) return;
         try {
             const state = await services.loadState();
-            await queueBuild(state.packages, res);
+            await queueBuild(state.packages, req, res);
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
         }

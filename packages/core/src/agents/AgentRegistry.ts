@@ -16,6 +16,17 @@ import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 
+export interface AgentRegistryOperationalStatus {
+    unifiedAgentImage: {
+        status: 'ready' | 'unavailable';
+        imageTag?: string;
+        error?: string;
+        recordedAt?: string;
+    };
+}
+
+const RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS = 5000;
+
 /**
  * AgentRegistry manages the lifecycle of agent instances.
  * It follows the Singleton pattern to ensure a single source of truth
@@ -28,6 +39,8 @@ export class AgentRegistry {
     private defaultAgentAlias: string | null = null; // From settings.default_agent_alias
     private initialized = false;
     private runtimePackagesUpdatedAt: string | undefined;
+    private runtimePackageStateCheckAfter = 0;
+    private runtimePackageStateUnavailable = false;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
 
     private constructor() {
@@ -226,14 +239,7 @@ export class AgentRegistry {
         return this.initialized;
     }
 
-    getOperationalStatus(): {
-        unifiedAgentImage: {
-            status: 'ready' | 'unavailable';
-            imageTag?: string;
-            error?: string;
-            recordedAt?: string;
-        };
-    } {
+    getOperationalStatus(): AgentRegistryOperationalStatus {
         if (this.unavailableUnifiedAgentImage) {
             return {
                 unifiedAgentImage: {
@@ -253,6 +259,9 @@ export class AgentRegistry {
             await this.refresh();
             return;
         }
+        const now = Date.now();
+        if (now < this.runtimePackageStateCheckAfter) return;
+        this.runtimePackageStateCheckAfter = now + RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS;
         if (await this.hasRuntimePackageStateChanged()) {
             logger.info('Refreshing agent registry because agent runtime package state changed');
             await this.refresh();
@@ -262,20 +271,24 @@ export class AgentRegistry {
     private async captureRuntimePackageStateVersion(): Promise<void> {
         try {
             this.runtimePackagesUpdatedAt = (await loadAgentRuntimePackageState()).updatedAt;
+            this.runtimePackageStateUnavailable = false;
         } catch (error) {
             logger.warn({ error: (error as Error).message }, 'Could not capture agent runtime package state version');
             this.runtimePackagesUpdatedAt = undefined;
+            this.runtimePackageStateUnavailable = true;
         }
     }
 
     private async hasRuntimePackageStateChanged(): Promise<boolean> {
-        if (this.runtimePackagesUpdatedAt === undefined) return true;
+        if (this.runtimePackagesUpdatedAt === undefined && !this.runtimePackageStateUnavailable) return true;
         try {
             const state = await loadAgentRuntimePackageState();
+            this.runtimePackageStateUnavailable = false;
             return state.updatedAt !== this.runtimePackagesUpdatedAt;
         } catch (error) {
             logger.warn({ error: (error as Error).message }, 'Could not check agent runtime package state version');
-            return true;
+            this.runtimePackageStateUnavailable = true;
+            return false;
         }
     }
 

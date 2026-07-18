@@ -170,6 +170,24 @@ test('AgentRegistry refreshes after runtime package state version capture fails'
     assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
 });
 
+test('AgentRegistry throttles runtime package state checks on repeated initialization guards', async () => {
+    const registry = AgentRegistry.getInstance();
+    skipImageChecks(registry);
+
+    await registry.refresh();
+
+    let checks = 0;
+    (registry as unknown as { hasRuntimePackageStateChanged: () => Promise<boolean> }).hasRuntimePackageStateChanged = async () => {
+        checks += 1;
+        return false;
+    };
+
+    await registry.ensureInitialized();
+    await registry.ensureInitialized();
+
+    assert.strictEqual(checks, 1);
+});
+
 test('AgentRegistry prefixes dynamic OpenCode provider models during migration', async () => {
     await saveAgents([{
         ...opencodeConfig,

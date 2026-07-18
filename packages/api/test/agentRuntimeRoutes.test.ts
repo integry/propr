@@ -8,6 +8,7 @@ after(async () => closeConnection());
 
 const originalAdminUsers = process.env.PROPR_ADMIN_USERS;
 const originalAdminAnyUser = process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
+const originalRuntimeRequestTimeoutMs = process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
 
 beforeEach(() => {
     process.env.PROPR_ADMIN_USERS = 'admin';
@@ -19,6 +20,8 @@ afterEach(() => {
     else process.env.PROPR_ADMIN_USERS = originalAdminUsers;
     if (originalAdminAnyUser === undefined) delete process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
     else process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER = originalAdminAnyUser;
+    if (originalRuntimeRequestTimeoutMs === undefined) delete process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
+    else process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS = originalRuntimeRequestTimeoutMs;
 });
 
 const initialState = (): AgentRuntimePackageState => ({
@@ -78,6 +81,7 @@ describe('agent runtime package routes', () => {
             baseImages: ['propr/agent:bundle-test']
         });
         assert.equal((record.body as AgentRuntimePackageState).status, 'pending');
+        assert.equal((record.body as AgentRuntimePackageState & { canManage?: boolean }).canManage, true);
     });
 
     test('persists a failed state when queue submission fails', async () => {
@@ -123,6 +127,25 @@ describe('agent runtime package routes', () => {
         assert.equal(record.status, 400);
         assert.equal(queued, false);
         assert.match((record.body as { error: string }).error, /unavailable on Debian 12/);
+    });
+
+    test('times out slow runtime package validation before queueing', async () => {
+        process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS = '5';
+        let queued = false;
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: { add: async () => { queued = true; } } as never,
+            services: {
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                validateAvailability: () => new Promise<never>(() => undefined)
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' } } as unknown as Request, response);
+
+        assert.equal(record.status, 504);
+        assert.equal(queued, false);
+        assert.match((record.body as { error: string }).error, /availability validation timed out/);
     });
 
     test('returns package suggestions from configured runtimes', async () => {

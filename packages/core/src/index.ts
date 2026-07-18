@@ -285,6 +285,7 @@ export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 
 // Agent abstraction exports
 export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
+export type { AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { AntigravityAgent } from './agents/impl/AntigravityAgent.js';
