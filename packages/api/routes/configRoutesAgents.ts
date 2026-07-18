@@ -7,6 +7,7 @@ import {
     computeContentHash,
     generateAgentBundleImageTag,
     getAgentCliVersionMatrix,
+    findAgentCliVersionConflicts,
     AGENT_DEFAULT_VERSIONS
 } from '@propr/core';
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
@@ -105,6 +106,17 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
     }
 
     processedAgents.push(processedAgent);
+  }
+
+  const versionConflicts = findAgentCliVersionConflicts(processedAgents);
+  if (versionConflicts.length > 0) {
+    const details = versionConflicts
+      .map(conflict => `${conflict.agentType} (${conflict.aliases.join(', ')}: ${conflict.versions.join(' vs ')})`)
+      .join('; ');
+    return {
+      error: `Conflicting CLI versions for the unified agent image: ${details}. Enabled agents of the same type must use the same CLI version.`,
+      status: 400
+    };
   }
 
   try {

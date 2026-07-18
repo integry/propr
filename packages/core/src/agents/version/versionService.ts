@@ -59,6 +59,34 @@ export function getAgentCliVersionMatrix(
     return versions;
 }
 
+export interface AgentCliVersionConflict {
+    agentType: AgentType;
+    aliases: string[];
+    versions: string[];
+}
+
+/**
+ * Finds enabled agents of the same type configured with different resolved CLI
+ * versions. The unified agent image bakes one CLI version per agent type, so
+ * such configurations cannot be honored and should be rejected before saving.
+ */
+export function findAgentCliVersionConflicts(
+    agents: Array<Pick<AgentConfig, 'type' | 'cliVersionResolved'> & Partial<Pick<AgentConfig, 'enabled' | 'alias'>>>
+): AgentCliVersionConflict[] {
+    const byType = new Map<AgentType, { aliases: string[]; versions: Set<string> }>();
+    for (const agent of agents) {
+        if (agent.enabled === false) continue;
+        const version = agent.cliVersionResolved || AGENT_DEFAULT_VERSIONS[agent.type];
+        const entry = byType.get(agent.type) || { aliases: [], versions: new Set<string>() };
+        entry.aliases.push(agent.alias || agent.type);
+        entry.versions.add(version);
+        byType.set(agent.type, entry);
+    }
+    return [...byType.entries()]
+        .filter(([, entry]) => entry.versions.size > 1)
+        .map(([agentType, entry]) => ({ agentType, aliases: entry.aliases, versions: [...entry.versions] }));
+}
+
 export function getAgentBundleVersionHash(versions: AgentCliVersionMatrix): string {
     const serialized = AGENT_TYPES.map(type => `${type}=${versions[type]}`).join('\n');
     return crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 12);

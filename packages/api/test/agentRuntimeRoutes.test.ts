@@ -258,6 +258,46 @@ describe('agent runtime package routes', () => {
         assert.deepEqual(record.body, { error: 'Authentication required' });
     });
 
+    test('warms the package catalog when an admin loads runtime package state', async () => {
+        let warmedImages: string[] | undefined;
+        let resolveWarmed: (() => void) | undefined;
+        const warmedPromise = new Promise<void>(resolve => { resolveWarmed = resolve; });
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: {} as never,
+            services: {
+                loadState: async () => initialState(),
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                warmCatalog: images => { warmedImages = images; resolveWarmed?.(); }
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.getRuntimePackages({ user: { username: 'admin' } } as unknown as Request, response);
+        await warmedPromise;
+
+        assert.equal(record.status, 200);
+        assert.deepEqual(warmedImages, ['propr/agent:bundle-test']);
+    });
+
+    test('does not warm the package catalog for non-admin readers', async () => {
+        let warmCalled = false;
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: {} as never,
+            services: {
+                loadState: async () => initialState(),
+                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                warmCatalog: () => { warmCalled = true; }
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.getRuntimePackages({ user: { username: 'member' } } as unknown as Request, response);
+        await new Promise(resolve => setImmediate(resolve));
+
+        assert.equal(record.status, 200);
+        assert.equal(warmCalled, false);
+    });
+
     test('resolves the runtime build queue lazily when queueing', async () => {
         let state = initialState();
         let queued: unknown;

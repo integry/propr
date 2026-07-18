@@ -151,6 +151,7 @@ test('AgentRegistry refreshes when runtime package state changes', async () => {
     });
 
     await registry.ensureInitialized();
+    await registry.waitForPendingRefresh();
 
     assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
 });
@@ -166,6 +167,7 @@ test('AgentRegistry refreshes after runtime package state version capture fails'
     image = 'propr/agent:second';
     (registry as unknown as { runtimePackagesUpdatedAt?: string }).runtimePackagesUpdatedAt = undefined;
     await registry.ensureInitialized();
+    await registry.waitForPendingRefresh();
 
     assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
 });

@@ -179,7 +179,9 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
 
     /**
      * GET /api/agents/:agentType/images
-     * Lists all Docker images for an agent type.
+     * Lists the unified agent image tags. All agent types share the single
+     * `propr/agent` image, so every valid `agentType` returns the same tag
+     * list; the path parameter is validated and echoed for API consistency.
      */
     async function listImages(req: Request, res: Response): Promise<void> {
         try {

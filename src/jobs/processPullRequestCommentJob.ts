@@ -40,7 +40,7 @@ import {
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
-import { buildWorkEvidenceMarker } from '../shared/workEvidenceMarker.js';
+import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -211,8 +211,7 @@ function getWebUiUrl(): string {
 }
 
 function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
-    // Filter out ultrafix synthetic comments (id: 0) from the displayed comment IDs
-    const realComments = unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
+    const realComments = filterRealComments(unprocessedComments);
     const plural = unprocessedComments.length > 1 ? 's' : '';
     const commentIdsSuffix = realComments.length > 0
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id) + '✓').join(', ')}_`

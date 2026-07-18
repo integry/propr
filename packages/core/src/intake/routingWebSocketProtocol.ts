@@ -108,6 +108,18 @@ export interface DeliveryDisposition {
 /** Shared "processed, no billing/policy signal" disposition — the default ACK. */
 export const ACCEPTED_DISPOSITION: DeliveryDisposition = Object.freeze({ status: 'accepted' });
 
+/**
+ * Shared "processed, explicitly seat-free" disposition. On the wire this is
+ * equivalent to {@link ACCEPTED_DISPOSITION}: the relay only bills when an
+ * accepted ACK carries `seatConsumed: true`, so omitted billing and an explicit
+ * `false` are treated the same. The explicit form exists to make seat-free
+ * processing auditable in the relay's delivery history.
+ */
+export const ACCEPTED_NO_SEAT_DISPOSITION: DeliveryDisposition = Object.freeze({
+    status: 'accepted',
+    billing: Object.freeze({ seatConsumed: false }),
+});
+
 /** Shared disposition for an event ProPR cannot or will not handle. */
 export const IGNORED_UNSUPPORTED_DISPOSITION: DeliveryDisposition = Object.freeze({
     status: 'ignored',

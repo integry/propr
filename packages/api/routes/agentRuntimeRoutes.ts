@@ -8,6 +8,7 @@ import {
     searchAgentRuntimePackages,
     validateAgentRuntimePackageAvailability,
     validateAgentRuntimePackages,
+    warmAgentRuntimePackageCatalog,
     type AgentRuntimeBuildJobData,
     type AgentRuntimePackageState
 } from '@propr/core';
@@ -36,6 +37,7 @@ interface AgentRuntimeRouteServices {
     search: typeof searchAgentRuntimePackages;
     validate: typeof validateAgentRuntimePackages;
     validateAvailability: typeof validateAgentRuntimePackageAvailability;
+    warmCatalog: typeof warmAgentRuntimePackageCatalog;
 }
 
 function canManageRuntime(req: Request): boolean {
@@ -113,12 +115,21 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         search: searchAgentRuntimePackages,
         validate: validateAgentRuntimePackages,
         validateAvailability: validateAgentRuntimePackageAvailability,
+        warmCatalog: warmAgentRuntimePackageCatalog,
         ...overrides
     };
 
     async function getRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireAuthenticatedRuntimeReader(req, res)) return;
         try {
+            if (canManageRuntime(req)) {
+                // An admin loading the runtime state is about to search/validate
+                // packages; warm the catalog off the request path so their first
+                // search does not wait on a container running apt-get update.
+                void configuredBaseImages(services.loadAgents)
+                    .then(images => services.warmCatalog(images))
+                    .catch(() => { /* Best-effort warm-up only. */ });
+            }
             res.json(runtimeStateResponse(await services.loadState(), req));
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });

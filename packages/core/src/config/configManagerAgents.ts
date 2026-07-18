@@ -122,7 +122,7 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
         logger.info({ agentAlias: agent.alias, configPath: agent.configPath }, 'Added missing agent config path');
     }
 
-    if (agent.dockerImage !== defaults.dockerImage && !agent.dockerImage.startsWith(MANAGED_AGENT_IMAGE_PREFIX)) {
+    if (!agent.dockerImage || (agent.dockerImage !== defaults.dockerImage && !agent.dockerImage.startsWith(MANAGED_AGENT_IMAGE_PREFIX))) {
         agent.dockerImage = defaults.dockerImage;
         migrated = true;
         logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Normalized agent Docker image');

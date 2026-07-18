@@ -83,6 +83,18 @@ describe('agent config migration', () => {
         assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
     });
 
+    test('fills in a missing Docker image instead of crashing', () => {
+        const agent = createAgent({
+            type: 'claude',
+            dockerImage: undefined as unknown as string,
+            supportedModels: ['claude-sonnet-4-6'],
+            defaultModel: 'claude-sonnet-4-6'
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
+    });
+
     test('does not renormalize managed bundle image tags', () => {
         const agent = createAgent({
             type: 'opencode',

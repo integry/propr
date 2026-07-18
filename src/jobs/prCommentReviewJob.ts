@@ -27,7 +27,7 @@ import {
     resolvePrTaskWorkflow,
 } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
-import { buildWorkEvidenceMarker } from '../shared/workEvidenceMarker.js';
+import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -266,9 +266,7 @@ async function updateReviewCompletionComment(
             : `Posted ${successCount} review${successCount > 1 ? 's' : ''}, ${failCount} failed`;
         const completedEvidence = buildWorkEvidenceMarker(
             reviewResults.length > 0 && failCount === reviewResults.length ? 'failed' : 'completed',
-            state.unprocessedComments
-                .filter(comment => comment.author !== 'propr-ultrafix' && comment.id !== 0)
-                .map(comment => comment.id),
+            filterRealComments(state.unprocessedComments).map(comment => comment.id),
         );
 
         await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
@@ -342,8 +340,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, models: assignments.map(a => a.model), correlationId, correlatedLogger }
     );
 
-    // Filter out ultrafix synthetic comments (id: 0) from displayed IDs
-    const realComments = state.unprocessedComments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
+    const realComments = filterRealComments(state.unprocessedComments);
     const commentIdsSuffix = realComments.length > 0
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
         : '';

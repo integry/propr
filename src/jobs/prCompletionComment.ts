@@ -2,18 +2,19 @@ import type { ClaudeCodeResponse } from '@propr/core';
 import type { UnprocessedComment } from '@propr/core';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
-import { buildWorkEvidenceMarker } from '../shared/workEvidenceMarker.js';
-
-/** Filter out ultrafix synthetic comments (author='propr-ultrafix' or id=0) */
-function filterRealComments(comments: UnprocessedComment[]): UnprocessedComment[] {
-    return comments.filter(c => c.author !== 'propr-ultrafix' && c.id !== 0);
-}
+import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
     const real = filterRealComments(comments);
     if (real.length === 0) return '';
     return `_Processing comment ID${real.length > 1 ? 's' : ''}: ${real.map(c => String(c.id) + '✓').join(', ')}_`;
+}
+
+/** Comment IDs suffix plus the completed work-evidence marker shared by both completion branches */
+function buildCompletionFooter(comments: UnprocessedComment[]): string {
+    const completedEvidence = buildWorkEvidenceMarker('completed', filterRealComments(comments).map(comment => comment.id));
+    return buildCommentIdsSuffix(comments) + (completedEvidence ? `\n${completedEvidence}` : '');
 }
 
 export interface CommentContext {
@@ -184,9 +185,7 @@ export async function buildCompletionComment(
         prCommentBody += `\n\n---\n`;
         prCommentBody += buildSlashCommandsBlock();
         prCommentBody += `${buildAttributionLine()}\n`;
-        prCommentBody += buildCommentIdsSuffix(unprocessedComments);
-        const completedEvidence = buildWorkEvidenceMarker('completed', filterRealComments(unprocessedComments).map(comment => comment.id));
-        if (completedEvidence) prCommentBody += `\n${completedEvidence}`;
+        prCommentBody += buildCompletionFooter(unprocessedComments);
 
         return prCommentBody;
     } else {
@@ -206,9 +205,7 @@ export async function buildCompletionComment(
         noChangesBody += `\n\n---\n`;
         noChangesBody += buildSlashCommandsBlock();
         noChangesBody += `${buildAttributionLine()}\n`;
-        noChangesBody += buildCommentIdsSuffix(unprocessedComments);
-        const completedEvidence = buildWorkEvidenceMarker('completed', filterRealComments(unprocessedComments).map(comment => comment.id));
-        if (completedEvidence) noChangesBody += `\n${completedEvidence}`;
+        noChangesBody += buildCompletionFooter(unprocessedComments);
 
         return noChangesBody;
     }

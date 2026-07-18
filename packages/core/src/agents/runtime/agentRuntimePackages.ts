@@ -223,11 +223,12 @@ export function buildAgentRuntimeDockerfile(
     packages: string[],
     finalUser: string
 ): string {
+    if (packages.length === 0) throw new Error(`Refusing to build a runtime image for ${baseImage} without any packages`);
+    const validation = validateAgentRuntimePackages(packages);
+    if (!validation.valid) throw new Error(`Refusing to build a runtime image for ${baseImage}: ${validation.errors.join('; ')}`);
     const normalizedFinalUser = finalUser.trim();
     const userName = normalizedFinalUser.split(':')[0];
-    if (!normalizedFinalUser || userName === '0' || userName === 'root') {
-        throw new Error(`Agent image ${baseImage} must declare a non-root USER before runtime packages can be applied`);
-    }
+    if (!normalizedFinalUser || userName === '0' || userName === 'root') throw new Error(`Agent image ${baseImage} must declare a non-root USER before runtime packages can be applied`);
     const packageLines = packages.map(packageSpec => `        ${packageSpec} \\`).join('\n');
     return `FROM ${baseImage}\nLABEL dev.propr.agent-runtime="true"\nUSER root\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends \\\n${packageLines}\n    && rm -rf /var/lib/apt/lists/*\nUSER ${normalizedFinalUser}\n`;
 }

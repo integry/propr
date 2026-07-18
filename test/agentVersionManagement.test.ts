@@ -5,7 +5,7 @@ import { AGENT_DEFAULTS } from '@propr/shared';
 import { AGENT_IMAGE_NAME, AGENT_TYPES, DEFAULT_AGENT_DOCKER_IMAGES } from '../packages/core/src/agents/constants.js';
 import { CONTAINER_CONFIG_PATHS } from '../packages/core/src/agents/types.js';
 import { AGENT_CLI_PACKAGES, AGENT_CLI_TAGS, AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
-import { generateAgentBundleImageTag, getAvailableVersions, getDefaultAgentCliVersionMatrix, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
+import { findAgentCliVersionConflicts, generateAgentBundleImageTag, getAvailableVersions, getDefaultAgentCliVersionMatrix, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
 import { clearNpmCache } from '../packages/core/src/agents/version/npmClient.js';
 
 const originalFetch = globalThis.fetch;
@@ -48,6 +48,27 @@ describe('agent version management', () => {
 
         assert.strictEqual(resolved, '9.8.7');
         assert.match(fetchedUrl, /\/opencode-ai$/);
+    });
+
+    test('reports conflicting CLI versions among enabled aliases of one agent type', () => {
+        const conflicts = findAgentCliVersionConflicts([
+            { type: 'claude', alias: 'claude-stable', cliVersionResolved: '2.1.211', enabled: true },
+            { type: 'claude', alias: 'claude-next', cliVersionResolved: '2.2.0', enabled: true },
+            { type: 'codex', alias: 'codex', cliVersionResolved: '1.0.0', enabled: true }
+        ]);
+
+        assert.strictEqual(conflicts.length, 1);
+        assert.strictEqual(conflicts[0].agentType, 'claude');
+        assert.deepStrictEqual(conflicts[0].aliases, ['claude-stable', 'claude-next']);
+        assert.deepStrictEqual([...conflicts[0].versions].sort(), ['2.1.211', '2.2.0']);
+    });
+
+    test('ignores disabled aliases and matching versions when detecting conflicts', () => {
+        assert.deepStrictEqual(findAgentCliVersionConflicts([
+            { type: 'claude', alias: 'claude-stable', cliVersionResolved: '2.1.211', enabled: true },
+            { type: 'claude', alias: 'claude-old', cliVersionResolved: '2.0.0', enabled: false },
+            { type: 'claude', alias: 'claude-copy', cliVersionResolved: '2.1.211', enabled: true }
+        ]), []);
     });
 
     test('generates unified bundle image tags', () => {

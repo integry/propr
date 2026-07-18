@@ -41,6 +41,7 @@ export class AgentRegistry {
     private runtimePackagesUpdatedAt: string | undefined;
     private runtimePackageStateCheckAfter = 0;
     private runtimePackageStateUnavailable = false;
+    private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
 
     private constructor() {
@@ -253,6 +254,11 @@ export class AgentRegistry {
 
     /**
      * Ensures the registry is initialized, refreshing if necessary.
+     *
+     * When a runtime package state change is detected on an already-initialized
+     * registry, the refresh runs in the background: a refresh may pull or build
+     * the bundle image (minutes), and callers sit on request-serving paths, so
+     * they keep using the current agents until the refresh completes.
      */
     async ensureInitialized(): Promise<void> {
         if (!this.initialized) {
@@ -262,10 +268,23 @@ export class AgentRegistry {
         const now = Date.now();
         if (now < this.runtimePackageStateCheckAfter) return;
         this.runtimePackageStateCheckAfter = now + RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS;
-        if (await this.hasRuntimePackageStateChanged()) {
-            logger.info('Refreshing agent registry because agent runtime package state changed');
-            await this.refresh();
-        }
+        if (this.pendingBackgroundRefresh || !(await this.hasRuntimePackageStateChanged())) return;
+        logger.info('Refreshing agent registry in the background because agent runtime package state changed');
+        this.pendingBackgroundRefresh = this.refresh()
+            .catch(error => {
+                logger.error({ error: (error as Error).message }, 'Background agent registry refresh failed');
+            })
+            .finally(() => {
+                this.pendingBackgroundRefresh = null;
+            });
+    }
+
+    /**
+     * Resolves once any in-flight background refresh has completed.
+     * Primarily for shutdown paths and tests that need a settled registry.
+     */
+    async waitForPendingRefresh(): Promise<void> {
+        await this.pendingBackgroundRefresh;
     }
 
     private async captureRuntimePackageStateVersion(): Promise<void> {

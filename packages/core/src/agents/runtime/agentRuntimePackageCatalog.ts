@@ -279,6 +279,21 @@ export async function validateAgentRuntimePackageAvailability(
     return { valid: errors.length === 0, packages: syntax.packages, errors, availability, sources };
 }
 
+/**
+ * Best-effort, fire-and-forget catalog cache warm-up. Loading a cold catalog
+ * spawns a container running `apt-get update` (up to minutes), so callers that
+ * know a search is likely (e.g. an admin opening the runtime packages settings)
+ * can start the load early instead of paying for it on the first search request.
+ */
+export function warmAgentRuntimePackageCatalog(baseImages: string[]): void {
+    void (async () => {
+        const environments = await inspectEnvironments(baseImages);
+        await uniqueCatalogs(environments);
+    })().catch(() => {
+        /* Warming is best-effort; searches load the catalog on demand. */
+    });
+}
+
 export function clearAgentRuntimePackageCatalogCache(): void {
     catalogCache.clear();
     pinnedPackageValidationCache.clear();

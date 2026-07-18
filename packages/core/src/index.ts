@@ -250,7 +250,8 @@ export type {
 export {
     clearAgentRuntimePackageCatalogCache,
     searchAgentRuntimePackages,
-    validateAgentRuntimePackageAvailability
+    validateAgentRuntimePackageAvailability,
+    warmAgentRuntimePackageCatalog
 } from './agents/runtime/agentRuntimePackageCatalog.js';
 export type {
     AgentRuntimePackageAvailability,
