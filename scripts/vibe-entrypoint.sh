@@ -315,9 +315,9 @@ if [ $# -gt 0 ]; then
         echo "Switching to node user..." >&2
         if command -v su-exec >/dev/null 2>&1; then
             if [ -n "$VIBE_PROMPT_FILE_TO_INJECT" ]; then
-                exec su-exec node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" PROPR_VIBE_PROMPT_FILE="$VIBE_PROMPT_FILE_TO_INJECT" "$@"
+                exec su-exec node env HOME="$RUNTIME_VIBE_HOME" USER=node LOGNAME=node VIBE_HOME="$RUNTIME_VIBE_HOME" PROPR_VIBE_PROMPT_FILE="$VIBE_PROMPT_FILE_TO_INJECT" "$@"
             fi
-            exec su-exec node env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
+            exec su-exec node env HOME="$RUNTIME_VIBE_HOME" USER=node LOGNAME=node VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
         if command -v sudo >/dev/null 2>&1; then
             if [ -n "$VIBE_PROMPT_FILE_TO_INJECT" ]; then

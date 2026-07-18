@@ -6,8 +6,13 @@
 #   scripts/build-images.sh --push             # build + push to Docker Hub + GHCR
 #   scripts/build-images.sh --push --dockerhub # push to Docker Hub only
 #   scripts/build-images.sh --push --ghcr      # push to GHCR only
-#   scripts/build-images.sh --platform linux/amd64,linux/arm64 --push  # multi-arch
+#   scripts/build-images.sh --platform linux/amd64,linux/arm64 --push  # multi-arch (app/ui/docs only)
 #   scripts/build-images.sh --only app,agent   # build a subset
+#
+# Note: the agent image is pinned to linux/amd64 (Debian package pins include
+# amd64 binNMU suffixes), so a multi-arch --platform value cannot build the full
+# image set. Build the agent with --platform linux/amd64 (or natively) and use
+# multi-arch platforms only for app/ui/docs.
 #
 # Tags produced per image:
 #   <registry>/<name>:<version>   — exact version from package.json

@@ -38,6 +38,15 @@ After the upgrade, the API's public `/api/compatibility` endpoint reports the st
 
 The unified agent image replaces the older per-agent image families. After confirming the upgraded worker is healthy, reclaim disk used by stale local agent images with `docker image ls 'propr/*agent*'` and remove only obsolete per-agent repositories that are no longer referenced by your running containers or configuration.
 
+### Refreshing agent image package pins
+
+`Dockerfile.agent` pins its Debian packages with `*_VERSION_PREFIX` build args and verifies the GitHub CLI apt keyring against `GITHUBCLI_KEYRING_SHA256`. Two external events can break the base-stage build (which surfaces as a failed local build fallback when the registry image is unavailable):
+
+- Debian moves a package beyond a pinned prefix. The build fails with `No apt version found for <package> with prefix <prefix>`. Refresh the affected `*_VERSION_PREFIX` args from the current `node:22-bookworm-slim` archive (`docker run --rm node:22-bookworm-slim sh -c 'apt-get update -qq && apt-cache madison <package>'`) and rebuild.
+- GitHub rotates the CLI keyring. The `sha256sum -c` step fails. Re-download `https://cli.github.com/packages/githubcli-archive-keyring.gpg`, verify it out of band, and update `GITHUBCLI_KEYRING_SHA256`.
+
+Only `gh` has a latest-version fallback (its repo drops old releases); every other pin fails the build hard, so treat a failing agent-image build in CI as a signal to refresh pins rather than a transient error.
+
 **Rollback:** re-pin the previous version (`npm install -g propr-cli@<previous>`, or the previous launcher image) and restart from the runtime directory. Treat database migrations as forward-only in practice: the Knex migrations define `down` steps, but no packaged command runs them — `npm run db:migrate` only applies `migrate:latest` — so the reliable way to roll back the database is restoring the SQLite backup taken in step 1.
 
 ## Database Migrations

@@ -136,6 +136,8 @@ Use runtime packages for Debian system tools needed across repositories or by a 
 
 The Settings package field searches the configured runtime catalogs and validates availability across every agent image before a build is queued. The first search after an API restart may take a few seconds while package indexes are refreshed.
 
+Package search and validation inspect the unified agent image with the local Docker daemon, so the image must be present locally (pulled by the launcher/worker or built with `scripts/build-images.sh`) before the package UI or these CLI commands can be used. A remote-only registry reference is not enough.
+
 ## Plans
 
 ```bash

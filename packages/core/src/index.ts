@@ -316,7 +316,7 @@ export type {
     AnalyzeOptions
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
-export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, migrateAgentConfigs } from './config/configManager.js';
+export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, loadEffectiveAgentBaseImages, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management
 export * from './agents/version/index.js';

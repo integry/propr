@@ -5,6 +5,7 @@ import { DEFAULT_AGENT_DOCKER_IMAGES } from '../../agents/constants.js';
 import {
     type AgentCliVersionMatrix,
     AGENT_IMAGE_NAME,
+    computeContentHash,
     generateAgentBundleImageTag,
     getDefaultAgentCliVersionMatrix
 } from '../../agents/version/versionService.js';
@@ -97,6 +98,10 @@ function scheduleBundleImageCleanup(imageTag: string): void {
             .then(async ([{ cleanupUnusedAgentImages }, { loadAgents }]) => {
                 const tagsInUse = new Set([tag]);
                 const prefix = `${AGENT_IMAGE_NAME}:`;
+                // The default-agent bundle (used when no agents are configured)
+                // is never referenced by a config, so keep it explicitly.
+                const defaultBundleTag = generateAgentBundleImageTag(getDefaultAgentCliVersionMatrix(), computeContentHash());
+                tagsInUse.add(defaultBundleTag.slice(prefix.length));
                 for (const agent of await loadAgents()) {
                     if (agent.dockerImage.startsWith(prefix)) {
                         tagsInUse.add(agent.dockerImage.slice(prefix.length));

@@ -51,7 +51,7 @@ async function main() {
             process.exit(1);
         }
         console.warn(`\nWARNING: ${failedAgentImages.length} agent image(s) could not be pulled (strict mode disabled):\n${list}`);
-        console.warn('  Jobs using these agents will fail until images are available.\n');
+        console.warn('  Agent jobs will fail until the unified agent image is available.\n');
     }
 
     process.on('SIGTERM', () => shutdown(0));

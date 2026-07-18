@@ -45,9 +45,7 @@ export interface AgentRuntimePackageAvailabilityResult {
     sources: AgentRuntimePackageSource[];
 }
 
-function catalogCommand(): string {
-    return 'apt-get update -qq && apt-cache pkgnames';
-}
+const CATALOG_COMMAND = 'apt-get update -qq && apt-cache pkgnames';
 
 function rememberCacheValue<K, V>(cache: Map<K, V>, key: K, value: V): void {
     if (!cache.has(key) && cache.size >= CACHE_LIMIT) {
@@ -89,7 +87,7 @@ async function loadCatalog(environment: PackageEnvironment): Promise<Set<string>
     const loading = (async () => {
         const result = await executeDockerCommand('docker', [
             'run', '--rm', '--user', 'root', '--entrypoint', 'sh', environment.image,
-            '-c', catalogCommand()
+            '-c', CATALOG_COMMAND
         ], { timeout: 2 * 60 * 1000 });
         if (result.exitCode !== 0) {
             throw new Error(

@@ -51,7 +51,7 @@ describe('agent runtime package profiles', () => {
         assert.match(dockerfile, /^FROM propr\/agent:bundle-test/m);
         assert.match(dockerfile, /LABEL dev\.propr\.agent-runtime="true"/);
         assert.match(dockerfile, /USER root/);
-        assert.match(dockerfile, /apt-get install -y --no-install-recommends/);
+        assert.match(dockerfile, /apt-get install -y --allow-downgrades --no-install-recommends/);
         assert.match(dockerfile, /chromium/);
         assert.match(dockerfile, /ffmpeg/);
         assert.match(dockerfile, /rm -rf \/var\/lib\/apt\/lists\/\*/);

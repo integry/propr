@@ -138,7 +138,16 @@ Examples:
 `);
 }
 
-async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData, JobResult>> {
+type MainWorker = Worker<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData, JobResult>;
+
+export interface StartedWorker {
+    worker: MainWorker;
+    runtimeBuildWorker: Worker<AgentRuntimeBuildJobData>;
+    /** Closes both BullMQ workers and the worker's Redis connections. */
+    close(): Promise<void>;
+}
+
+async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
     const workerId = `worker:${generateCorrelationId()}`;
     let workerConcurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
     let aiPrimaryTag = 'AI';
@@ -341,29 +350,28 @@ async function startWorker(options: WorkerOptions = {}): Promise<Worker<IssueJob
         logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
     });
 
-    process.on('SIGINT', async () => {
-        logger.info('Worker received SIGINT, shutting down gracefully...');
+    const close = async (): Promise<void> => {
         await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await worker.close();
         await runtimeBuildWorker.close();
+    };
+
+    process.on('SIGINT', async () => {
+        logger.info('Worker received SIGINT, shutting down gracefully...');
+        await close();
         process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
         logger.info('Worker received SIGTERM, shutting down gracefully...');
-        await heartbeatRedis.srem('system:status:workers', workerId);
-        clearInterval(heartbeatInterval);
-        await subscriberRedis.quit();
-        await heartbeatRedis.quit();
-        await worker.close();
-        await runtimeBuildWorker.close();
+        await close();
         process.exit(0);
     });
 
-    return worker;
+    return { worker, runtimeBuildWorker, close };
 }
 
 export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, processMergeConflictJob, startWorker };

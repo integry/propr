@@ -58,11 +58,11 @@ describe('agent runtime package routes', () => {
             runtimeBuildQueue: { add: async (_name: string, data: unknown) => { queued = data; } } as never,
             services: {
                 loadState: async () => state,
-                loadAgents: async () => [
-                    { dockerImage: 'propr/agent:bundle-test' },
-                    { dockerImage: 'propr/agent:bundle-test' },
-                    { dockerImage: 'propr/agent:bundle-test' }
-                ] as never,
+                loadBaseImages: async () => [
+                    'propr/agent:bundle-test',
+                    'propr/agent:bundle-test',
+                    'propr/agent:bundle-test'
+                ],
                 requestBuild: async (packages, baseImages) => {
                     state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-1' };
                     return { buildId: 'build-1', packages: packages as string[], baseImages };
@@ -90,7 +90,7 @@ describe('agent runtime package routes', () => {
             runtimeBuildQueue: { add: async () => { throw new Error('redis unavailable'); } } as never,
             services: {
                 loadState: async () => state,
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 requestBuild: async (_packages, baseImages) => ({ buildId: 'build-2', packages: ['jq'], baseImages }),
                 saveState: async next => { state = next; },
                 validateAvailability: availablePackages
@@ -110,7 +110,7 @@ describe('agent runtime package routes', () => {
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: { add: async () => { queued = true; } } as never,
             services: {
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 validateAvailability: async packages => ({
                     valid: false,
                     packages: packages as string[],
@@ -135,7 +135,7 @@ describe('agent runtime package routes', () => {
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: { add: async () => { queued = true; } } as never,
             services: {
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 validateAvailability: () => new Promise<never>(() => undefined)
             }
         });
@@ -152,7 +152,7 @@ describe('agent runtime package routes', () => {
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: {} as never,
             services: {
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 search: async query => ({ query, suggestions: ['chromium'], sources: [] })
             }
         });
@@ -195,7 +195,7 @@ describe('agent runtime package routes', () => {
             runtimeBuildQueue: { add: async () => { queued = true; } } as never,
             services: {
                 loadState: async () => ({ ...initialState(), packages: ['jq'], status: 'pending', buildId: 'build-any' }),
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 requestBuild: async (packages, baseImages) => ({ buildId: 'build-any', packages: packages as string[], baseImages }),
                 validateAvailability: availablePackages
             }
@@ -266,7 +266,7 @@ describe('agent runtime package routes', () => {
             runtimeBuildQueue: {} as never,
             services: {
                 loadState: async () => initialState(),
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 warmCatalog: images => { warmedImages = images; resolveWarmed?.(); }
             }
         });
@@ -285,7 +285,7 @@ describe('agent runtime package routes', () => {
             runtimeBuildQueue: {} as never,
             services: {
                 loadState: async () => initialState(),
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 warmCatalog: () => { warmCalled = true; }
             }
         });
@@ -306,7 +306,7 @@ describe('agent runtime package routes', () => {
             getRuntimeBuildQueue: () => queue as never,
             services: {
                 loadState: async () => state,
-                loadAgents: async () => [{ dockerImage: 'propr/agent:bundle-test' }] as never,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
                 requestBuild: async (packages, baseImages) => {
                     state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-lazy' };
                     return { buildId: 'build-lazy', packages: packages as string[], baseImages };

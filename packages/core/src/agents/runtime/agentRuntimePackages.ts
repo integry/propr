@@ -174,7 +174,7 @@ export async function inspectAgentRuntimeBaseImage(baseImage: string): Promise<A
     if (cached) return { ...cached, user };
 
     const environment = await executeDockerCommand('docker', [
-        'run', '--rm', '--user', 'root', '--entrypoint', 'sh', baseImage, '-c',
+        'run', '--rm', '--network', 'none', '--user', 'root', '--entrypoint', 'sh', baseImage, '-c',
         `set -eu
 if ! command -v apt-get >/dev/null 2>&1; then
   echo unsupported
@@ -230,7 +230,10 @@ export function buildAgentRuntimeDockerfile(
     const userName = normalizedFinalUser.split(':')[0];
     if (!normalizedFinalUser || userName === '0' || userName === 'root') throw new Error(`Agent image ${baseImage} must declare a non-root USER before runtime packages can be applied`);
     const packageLines = packages.map(packageSpec => `        ${packageSpec} \\`).join('\n');
-    return `FROM ${baseImage}\nLABEL dev.propr.agent-runtime="true"\nUSER root\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends \\\n${packageLines}\n    && rm -rf /var/lib/apt/lists/*\nUSER ${normalizedFinalUser}\n`;
+    // --allow-downgrades matches the base Dockerfile.agent install flags: a
+    // pinned spec may request a version older than one already in the base
+    // image, which plain apt-get install rejects with a confusing error.
+    return `FROM ${baseImage}\nLABEL dev.propr.agent-runtime="true"\nUSER root\nRUN apt-get update \\\n    && apt-get install -y --allow-downgrades --no-install-recommends \\\n${packageLines}\n    && rm -rf /var/lib/apt/lists/*\nUSER ${normalizedFinalUser}\n`;
 }
 
 async function imageExists(image: string): Promise<boolean> {

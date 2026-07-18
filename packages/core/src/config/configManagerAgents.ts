@@ -71,6 +71,24 @@ export async function loadAgents(): Promise<AgentConfig[]> {
 }
 
 /**
+ * Computes the unified agent base image(s) the registry will actually run.
+ *
+ * Saved agent configs may carry a stale dockerImage (the registry recomputes
+ * and rewrites the bundle tag on every refresh), so runtime package
+ * validation and builds must target the freshly computed tag rather than the
+ * persisted values.
+ */
+export async function loadEffectiveAgentBaseImages(): Promise<string[]> {
+    const agents = await getConfig<AgentConfig[]>('agents', []);
+    if (agents.length === 0 && process.env.AGENT_DOCKER_IMAGE) {
+        // With no configured agents the registry registers the default agent
+        // on AGENT_DOCKER_IMAGE when set.
+        return [process.env.AGENT_DOCKER_IMAGE];
+    }
+    return [generateAgentBundleImageTag(getAgentCliVersionMatrix(agents), computeContentHash())];
+}
+
+/**
  * Saves agent configurations to the database.
  */
 export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {

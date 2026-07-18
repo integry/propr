@@ -229,6 +229,7 @@ export {
     resolveConfigPath,
     getDefaultConfigPath,
     loadAgents,
+    loadEffectiveAgentBaseImages,
     saveAgents,
     migrateAgentConfigs,
     type AgentTankSettings,

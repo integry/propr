@@ -36,7 +36,7 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     set +e
     if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
-        su-exec node env HOME=/home/node /bin/bash "$setup_script" </dev/null >&2
+        su-exec node env HOME=/home/node USER=node LOGNAME=node /bin/bash "$setup_script" </dev/null >&2
         setup_exit=$?
     else
         cd "$PROPR_WORKSPACE"

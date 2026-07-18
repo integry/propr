@@ -20,6 +20,10 @@ ARG BASH_VERSION_PREFIX=5.2.15-2
 ARG BUILD_ESSENTIAL_VERSION_PREFIX=12.
 ARG CA_CERTIFICATES_VERSION_PREFIX=20230311+deb12u
 ARG CURL_VERSION_PREFIX=7.88.1-10+deb12u
+# gh comes from GitHub's own apt repo, which only serves recent releases, so its
+# install falls back to the latest available version when this prefix no longer
+# matches. That trades strict reproducibility for not breaking every build on a
+# gh release; the fallback logs a note to stderr when it triggers.
 ARG GH_VERSION_PREFIX=2.96.
 ARG GIT_VERSION_PREFIX=1:2.39.5-0+deb12u
 ARG GOSU_VERSION_PREFIX=1.14-1

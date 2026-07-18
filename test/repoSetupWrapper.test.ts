@@ -22,7 +22,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
 
         const wrapperScript = wrapped[imageIndex + 2];
         assert.match(wrapperScript, /\.propr\/setup\.sh/);
-        assert.match(wrapperScript, /\[ "\$\(id -u\)" = "0" \][\s\S]*su-exec node env HOME=\/home\/node \/bin\/bash/);
+        assert.match(wrapperScript, /\[ "\$\(id -u\)" = "0" \][\s\S]*su-exec node env HOME=\/home\/node USER=node LOGNAME=node \/bin\/bash/);
         assert.match(wrapperScript, /<\/dev\/null >&2/);
         assert.match(wrapperScript, /ProPR repo setup hook failed with exit code/);
         assert.match(wrapperScript, /PROPR_REPO_SETUP_STRICT/);
@@ -113,7 +113,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
                 .filter(line => !line.trim().startsWith('#'))
                 .join('\n');
             assert.doesNotMatch(executableLines, /\bsudo\b/, `${scriptPath} should not invoke sudo`);
-            assert.match(script, /exec su-exec node env HOME=\/home\/node "\$@"/);
+            assert.match(script, /exec su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
         }
     });
 

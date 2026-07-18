@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import type { Queue } from 'bullmq';
 import {
     loadAgentRuntimePackageState,
-    loadAgents,
+    loadEffectiveAgentBaseImages,
     requestAgentRuntimePackageBuild,
     saveAgentRuntimePackageState,
     searchAgentRuntimePackages,
@@ -31,7 +31,7 @@ class RuntimePackageRequestTimeoutError extends Error {
 
 interface AgentRuntimeRouteServices {
     loadState: typeof loadAgentRuntimePackageState;
-    loadAgents: typeof loadAgents;
+    loadBaseImages: typeof loadEffectiveAgentBaseImages;
     requestBuild: typeof requestAgentRuntimePackageBuild;
     saveState: typeof saveAgentRuntimePackageState;
     search: typeof searchAgentRuntimePackages;
@@ -97,9 +97,12 @@ function sendRuntimePackageError(error: unknown, res: Response): void {
     res.status(500).json({ error: (error as Error).message });
 }
 
-async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Promise<string[]> {
-    const agents = await loadConfiguredAgents();
-    const images = agents.map(agent => agent.dockerImage).filter(Boolean);
+// The effective images are computed the same way the registry computes them
+// (bundle tag from CLI versions + content hash) rather than read from saved
+// agent configs, which can hold stale dockerImage values the registry would
+// overwrite on its next refresh.
+async function configuredBaseImages(loadBaseImages: typeof loadEffectiveAgentBaseImages): Promise<string[]> {
+    const images = (await loadBaseImages()).filter(Boolean);
     if (images.length === 0) {
         images.push(process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest');
     }
@@ -109,7 +112,7 @@ async function configuredBaseImages(loadConfiguredAgents: typeof loadAgents): Pr
 export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQueue, services: overrides }: AgentRuntimeRoutesDeps) {
     const services: AgentRuntimeRouteServices = {
         loadState: loadAgentRuntimePackageState,
-        loadAgents,
+        loadBaseImages: loadEffectiveAgentBaseImages,
         requestBuild: requestAgentRuntimePackageBuild,
         saveState: saveAgentRuntimePackageState,
         search: searchAgentRuntimePackages,
@@ -126,7 +129,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 // An admin loading the runtime state is about to search/validate
                 // packages; warm the catalog off the request path so their first
                 // search does not wait on a container running apt-get update.
-                void configuredBaseImages(services.loadAgents)
+                void configuredBaseImages(services.loadBaseImages)
                     .then(images => services.warmCatalog(images))
                     .catch(() => { /* Best-effort warm-up only. */ });
             }
@@ -144,7 +147,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 res.status(400).json(syntax);
                 return;
             }
-            const images = await configuredBaseImages(services.loadAgents);
+            const images = await configuredBaseImages(services.loadBaseImages);
             const result = await withRuntimePackageRequestTimeout(
                 'Agent runtime package availability validation',
                 services.validateAvailability(syntax.packages, images)
@@ -159,7 +162,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         if (!requireRuntimeAdmin(req, res)) return;
         try {
             const query = typeof req.query.q === 'string' ? req.query.q : '';
-            const images = await configuredBaseImages(services.loadAgents);
+            const images = await configuredBaseImages(services.loadBaseImages);
             res.json(await withRuntimePackageRequestTimeout(
                 'Agent runtime package search',
                 services.search(query, images)
@@ -178,7 +181,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 res.status(400).json({ error: syntax.errors.join('; '), errors: syntax.errors });
                 return;
             }
-            const images = await configuredBaseImages(services.loadAgents);
+            const images = await configuredBaseImages(services.loadBaseImages);
             const availability = await withRuntimePackageRequestTimeout(
                 'Agent runtime package availability validation',
                 services.validateAvailability(syntax.packages, images)
