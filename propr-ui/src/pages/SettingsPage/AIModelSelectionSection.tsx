@@ -78,6 +78,31 @@ const reasoningLevelLabels: Record<string, string> = {
   auto: 'Auto (Claude only)',
 };
 
+type ReasoningLevel = typeof REASONING_LEVELS[number];
+
+function buildReasoningLevelSelectState(
+  enabledAgents: AgentConfig[],
+  defaultAgentAlias: string,
+  selectedReasoningLevel: string
+): {
+  compatibleReasoningLevels: readonly ReasoningLevel[];
+  reasoningLevelOptions: readonly string[];
+} {
+  const selectedImplementationAgent = enabledAgents.find(a => a.alias === defaultAgentAlias) ?? enabledAgents[0];
+  const compatibleReasoningLevels = selectedImplementationAgent
+    ? getReasoningLevelsForAgentType(selectedImplementationAgent.type)
+    : REASONING_LEVELS;
+
+  if (!selectedReasoningLevel || compatibleReasoningLevels.includes(selectedReasoningLevel as ReasoningLevel)) {
+    return { compatibleReasoningLevels, reasoningLevelOptions: compatibleReasoningLevels };
+  }
+
+  return {
+    compatibleReasoningLevels,
+    reasoningLevelOptions: [...compatibleReasoningLevels, selectedReasoningLevel]
+  };
+}
+
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
   summarizationSettings,
@@ -105,14 +130,11 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
   const prReviewOptions = buildPrReviewOptions(enabledAgents);
   const implementationAgentOptions = buildImplementationAgentOptions(enabledAgents);
-  const selectedImplementationAgent = enabledAgents.find(a => a.alias === settings.default_agent_alias) ?? enabledAgents[0];
-  const compatibleReasoningLevels = selectedImplementationAgent
-    ? getReasoningLevelsForAgentType(selectedImplementationAgent.type)
-    : REASONING_LEVELS;
-  const reasoningLevelOptions = settings.model_reasoning_level &&
-    !compatibleReasoningLevels.includes(settings.model_reasoning_level as typeof REASONING_LEVELS[number])
-    ? [...compatibleReasoningLevels, settings.model_reasoning_level]
-    : compatibleReasoningLevels;
+  const { compatibleReasoningLevels, reasoningLevelOptions } = buildReasoningLevelSelectState(
+    enabledAgents,
+    settings.default_agent_alias,
+    settings.model_reasoning_level
+  );
 
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
@@ -170,7 +192,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                   <option
                     key={level}
                     value={level}
-                    disabled={!compatibleReasoningLevels.includes(level as typeof REASONING_LEVELS[number])}
+                    disabled={!compatibleReasoningLevels.includes(level as ReasoningLevel)}
                   >
                     {reasoningLevelLabels[level]}
                   </option>
