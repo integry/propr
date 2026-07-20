@@ -200,6 +200,14 @@ export {
     saveUltrafixPauseSeconds
 } from './configManagerUltrafix.js';
 
+export {
+    loadModelReasoningLevel,
+    saveModelReasoningLevel,
+    normalizeModelReasoningLevel,
+    validateModelReasoningLevel,
+    type ModelReasoningLevel
+} from './configManagerReasoning.js';
+
 export { validatePrReviewModelValue, type PrReviewModelValidationResult } from './prReviewModelValidator.js';
 export { getConfig, saveConfig } from './configStore.js';
 export {

@@ -1,7 +1,7 @@
 import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
-import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
+import { DEFAULT_REVIEW_GUIDANCE, REASONING_LEVELS } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import {
   buildAllModelOptions,
@@ -17,6 +17,7 @@ interface AIModelSelectionSettings {
   planner_context_model: string;
   planner_generation_model: string;
   default_agent_alias: string;
+  model_reasoning_level: string;
   pr_review_model: string;
   pr_review_prompt: string;
 }
@@ -65,6 +66,17 @@ const SettingRow = ({
     </div>
   </div>
 );
+
+const reasoningLevelLabels: Record<string, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'XHigh',
+  max: 'Max',
+  ultra: 'Ultra (Codex only)',
+  ultracode: 'Ultracode (Claude only)',
+  auto: 'Auto (Claude only)',
+};
 
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
@@ -131,6 +143,27 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               ) : (
                 <NoAgentsMessage label="enabled agents" />
               )}
+            </SettingRow>
+
+            <SettingRow
+              label="Reasoning Level"
+              htmlFor="model_reasoning_level"
+              helperText="System-wide reasoning effort for supported GPT and Claude agents."
+            >
+              <select
+                id="model_reasoning_level"
+                name="model_reasoning_level"
+                value={settings.model_reasoning_level}
+                onChange={onSettingChange}
+                className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
+              >
+                <option value="">Agent default</option>
+                {REASONING_LEVELS.map(level => (
+                  <option key={level} value={level}>
+                    {reasoningLevelLabels[level]}
+                  </option>
+                ))}
+              </select>
             </SettingRow>
           </div>
         </div>

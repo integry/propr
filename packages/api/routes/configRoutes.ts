@@ -242,10 +242,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
+      const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, modelReasoningLevel, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
         configManager.loadSettings(),
         configManager.loadAutoFollowupScoreThreshold(),
         configManager.loadAutoResolveMergeConflicts(),
+        configManager.loadModelReasoningLevel(),
         configManager.loadPrReviewModel(),
         configManager.loadUltrafixRatingGoal(),
         configManager.loadUltrafixMaxCycles(),
@@ -273,6 +274,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         pr_review_prompt: typeof settings.pr_review_prompt === 'string' ? settings.pr_review_prompt : '',
         auto_followup_score_threshold: autoFollowup.value,
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
+        model_reasoning_level: modelReasoningLevel,
         pr_review_model: prReviewModel,
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,

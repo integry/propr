@@ -17,6 +17,7 @@ const SETTINGS: SystemSettings = {
   planner_generation_model: "generation-model",
   auto_followup_score_threshold: 7,
   auto_resolve_merge_conflicts: true,
+  model_reasoning_level: "",
   pr_review_model: "",
   pr_review_prompt: "",
   ultrafix_rating_goal: 8,

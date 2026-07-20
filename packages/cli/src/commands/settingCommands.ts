@@ -53,6 +53,7 @@ function getSettingDescription(key: SettingKey): string {
     planner_generation_model: "Model for planner generation",
     auto_followup_score_threshold: "Score threshold (0-9) for auto-followup",
     auto_resolve_merge_conflicts: "Automatically resolve merge conflicts",
+    model_reasoning_level: "Reasoning level for GPT and Claude agents (empty = agent default)",
     pr_review_model: "Model for full PR reviews",
     pr_review_prompt: "Override for the PR review prompt guidance (empty = built-in default)",
     ultrafix_rating_goal: "Target quality rating for ultrafix cycles",

@@ -146,6 +146,7 @@ export async function saveSettingsWithRollback({
   const {
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
+    model_reasoning_level,
     pr_review_model,
     ultrafix_rating_goal,
     ultrafix_max_cycles,
@@ -156,6 +157,7 @@ export async function saveSettingsWithRollback({
   const extracted = await extractSettingSaves({
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
+    model_reasoning_level,
     pr_review_model,
     ultrafix_rating_goal,
     ultrafix_max_cycles,
