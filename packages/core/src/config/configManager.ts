@@ -210,6 +210,8 @@ export {
     validateModelReasoningLevelForAgentType,
     resolveRuntimeModelReasoningLevel,
     type ModelReasoningLevel,
+    type ClaudeRuntimeReasoningLevel,
+    type CodexRuntimeReasoningLevel,
     type RuntimeReasoningLevel
 } from './configManagerReasoning.js';
 

@@ -121,7 +121,7 @@ describe('core model_reasoning_level validation', () => {
     assert.equal(resolveRuntimeModelReasoningLevel('codex', 'ultracode'), 'ultra');
     assert.equal(resolveRuntimeModelReasoningLevel('claude', 'ultracode'), 'ultracode');
     assert.equal(resolveRuntimeModelReasoningLevel('claude', 'ultra'), 'max');
-    assert.equal(resolveRuntimeModelReasoningLevel('claude', 'auto'), 'auto');
+    assert.equal(resolveRuntimeModelReasoningLevel('claude', 'auto'), null);
     assert.equal(resolveRuntimeModelReasoningLevel('opencode', 'high'), null);
   });
 
@@ -129,7 +129,7 @@ describe('core model_reasoning_level validation', () => {
     assert.equal(resolveCodexReasoningLevel('ultracode'), 'ultra');
     assert.equal(resolveCodexReasoningLevel('auto'), null);
     assert.equal(resolveClaudeReasoningLevel('ultra'), 'max');
-    assert.equal(resolveClaudeReasoningLevel('auto'), 'auto');
+    assert.equal(resolveClaudeReasoningLevel('auto'), null);
   });
 });
 

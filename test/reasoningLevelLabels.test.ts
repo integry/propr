@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   REASONING_LEVELS,
+  isReasoningLevelLabel,
   parseReasoningLevelFromLabels,
 } from '@propr/shared';
 import {
@@ -39,8 +40,17 @@ describe('parseReasoningLevelFromLabels', () => {
     assert.equal(parseReasoningLevelFromLabels(['some-level-high']), undefined);
   });
 
-  test('returns the first matching level', () => {
-    assert.equal(parseReasoningLevelFromLabels(['level-low', 'level-max']), 'low');
+  test('selects the highest-priority matching level deterministically', () => {
+    assert.equal(parseReasoningLevelFromLabels(['level-low', 'level-max']), 'max');
+    assert.equal(parseReasoningLevelFromLabels(['level-auto', 'level-high']), 'high');
+    assert.equal(parseReasoningLevelFromLabels(['level-ultra', 'level-ultracode']), 'ultracode');
+  });
+
+  test('detects valid reasoning labels', () => {
+    assert.equal(isReasoningLevelLabel('level-xhigh'), true);
+    assert.equal(isReasoningLevelLabel({ name: 'LEVEL-AUTO' }), true);
+    assert.equal(isReasoningLevelLabel('level-extreme'), false);
+    assert.equal(isReasoningLevelLabel({ name: null }), false);
   });
 });
 
@@ -50,8 +60,8 @@ describe('reasoning level runtime clamping', () => {
     assert.equal(resolveCodexReasoningLevel('auto'), null);
   });
 
-  test('clamps Codex-only ultra to Claude max and passes Claude auto through', () => {
+  test('clamps Codex-only ultra to Claude max and omits Claude auto', () => {
     assert.equal(resolveClaudeReasoningLevel('ultra'), 'max');
-    assert.equal(resolveClaudeReasoningLevel('auto'), 'auto');
+    assert.equal(resolveClaudeReasoningLevel('auto'), null);
   });
 });

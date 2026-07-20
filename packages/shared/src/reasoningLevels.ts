@@ -39,6 +39,16 @@ export function isReasoningLevel(value: string): value is ReasoningLevel {
 export type ReasoningLevelLabel = string | { name?: string | null } | null | undefined;
 
 const REASONING_LEVEL_LABEL_PATTERN = /^level-(low|medium|high|xhigh|max|ultra|ultracode|auto)$/i;
+const REASONING_LEVEL_LABEL_PRIORITY = [
+  'ultracode',
+  'ultra',
+  'max',
+  'xhigh',
+  'high',
+  'medium',
+  'low',
+  'auto',
+] as const satisfies readonly ReasoningLevel[];
 
 function getLabelName(label: ReasoningLevelLabel): string | null {
   if (typeof label === 'string') return label;
@@ -46,16 +56,23 @@ function getLabelName(label: ReasoningLevelLabel): string | null {
   return null;
 }
 
+export function isReasoningLevelLabel(label: ReasoningLevelLabel): boolean {
+  const labelName = getLabelName(label);
+  return labelName !== null && REASONING_LEVEL_LABEL_PATTERN.test(labelName);
+}
+
 export function parseReasoningLevelFromLabels(labels: readonly ReasoningLevelLabel[]): ReasoningLevel | undefined {
+  const matchedLevels = new Set<ReasoningLevel>();
+
   for (const label of labels) {
     const labelName = getLabelName(label);
     if (!labelName) continue;
 
     const match = labelName.match(REASONING_LEVEL_LABEL_PATTERN);
-    if (match) return match[1].toLowerCase() as ReasoningLevel;
+    if (match) matchedLevels.add(match[1].toLowerCase() as ReasoningLevel);
   }
 
-  return undefined;
+  return REASONING_LEVEL_LABEL_PRIORITY.find(level => matchedLevels.has(level));
 }
 
 export function getReasoningLevelsForAgentType(agentType: AgentType): readonly ReasoningLevel[] {

@@ -15,7 +15,7 @@ import {
     parseCodexStreamOutput,
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
-import { loadModelReasoningLevel, resolveConfigPath, resolveRuntimeModelReasoningLevel, type ModelReasoningLevel } from '../../config/configManager.js';
+import { loadModelReasoningLevel, resolveCodexReasoningLevel, resolveConfigPath, type CodexRuntimeReasoningLevel, type ModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -326,9 +326,9 @@ export class CodexAgent implements Agent {
         };
     }
 
-    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<ModelReasoningLevel> {
+    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<CodexRuntimeReasoningLevel | ''> {
         const configuredLevel = reasoningLevel === undefined ? await loadModelReasoningLevel() : reasoningLevel;
-        return resolveRuntimeModelReasoningLevel(this.config.type, configuredLevel) ?? '';
+        return resolveCodexReasoningLevel(configuredLevel) ?? '';
     }
 
     async healthCheck(): Promise<boolean> {
@@ -358,7 +358,7 @@ export class CodexAgent implements Agent {
         environment?: Record<string, string>;
         taskId?: string;
         executionType?: string;
-        reasoningLevel?: ModelReasoningLevel;
+        reasoningLevel?: CodexRuntimeReasoningLevel | '';
     }): string[] {
         const {
             worktreePath,

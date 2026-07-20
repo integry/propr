@@ -145,6 +145,7 @@ export {
   getReasoningLevelsForAgentType,
   isReasoningLevelSupportedByAgentType,
   isReasoningLevel,
+  isReasoningLevelLabel,
   parseReasoningLevelFromLabels,
   type ReasoningLevel,
   type ReasoningLevelLabel,

@@ -9,7 +9,9 @@ import { getConfig, saveConfig } from './configStore.js';
 
 export type ModelReasoningLevel = ReasoningLevel | '';
 
-export type RuntimeReasoningLevel = ReasoningLevel;
+export type CodexRuntimeReasoningLevel = Exclude<ReasoningLevel, 'auto' | 'ultracode'>;
+export type ClaudeRuntimeReasoningLevel = Exclude<ReasoningLevel, 'auto' | 'ultra'>;
+export type RuntimeReasoningLevel = CodexRuntimeReasoningLevel | ClaudeRuntimeReasoningLevel;
 
 export function normalizeModelReasoningLevel(raw: string): ModelReasoningLevel | null {
     const trimmed = raw.trim();
@@ -45,14 +47,14 @@ export function validateModelReasoningLevelForAgentType(
     return result;
 }
 
-export function resolveCodexReasoningLevel(level: ModelReasoningLevel): RuntimeReasoningLevel | null {
+export function resolveCodexReasoningLevel(level: ModelReasoningLevel): CodexRuntimeReasoningLevel | null {
     if (level === '' || level === 'auto') return null;
     if (level === 'ultracode') return 'ultra';
     return level;
 }
 
-export function resolveClaudeReasoningLevel(level: ModelReasoningLevel): RuntimeReasoningLevel | null {
-    if (level === '') return null;
+export function resolveClaudeReasoningLevel(level: ModelReasoningLevel): ClaudeRuntimeReasoningLevel | null {
+    if (level === '' || level === 'auto') return null;
     if (level === 'ultra') return 'max';
     return level;
 }

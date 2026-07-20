@@ -21,7 +21,7 @@ import {
     type ClaudeOutput
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
-import { loadModelReasoningLevel, resolveRuntimeModelReasoningLevel, type ModelReasoningLevel } from '../../config/configManager.js';
+import { loadModelReasoningLevel, resolveClaudeReasoningLevel, type ClaudeRuntimeReasoningLevel, type ModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -226,9 +226,9 @@ export class ClaudeAgent implements Agent {
     }
 
     /** Loads the configured reasoning level when it is supported by this agent runtime. */
-    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<ModelReasoningLevel> {
+    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<ClaudeRuntimeReasoningLevel | ''> {
         const configuredLevel = reasoningLevel === undefined ? await loadModelReasoningLevel() : reasoningLevel;
-        return resolveRuntimeModelReasoningLevel(this.config.type, configuredLevel) ?? '';
+        return resolveClaudeReasoningLevel(configuredLevel) ?? '';
     }
 
     /** Verifies the agent is ready by checking if the Docker image exists. */
