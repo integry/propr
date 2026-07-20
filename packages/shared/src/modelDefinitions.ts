@@ -14,7 +14,7 @@ export interface ModelInfo {
   contextWindow: string;  // Display badge value (e.g., "200K", "1M")
   maxTokens: number;      // Numeric limit for calculations
   openRouterId: string;   // OpenRouter model ID for pricing lookups (e.g., "anthropic/claude-opus-4.5")
-  minAgentVersion?: string; // Minimum Claude Code version that supports this model (e.g., "2.1.45")
+  minAgentVersion?: string; // Minimum agent CLI version that supports this model (e.g., "2.1.45")
 }
 
 export interface AgentDisplayInfo {
@@ -41,8 +41,11 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 ];
 
 // Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
-// Recommended: gpt-5.5 (default), gpt-5.4-mini/nano (fast/subagents), gpt-5.3-codex (agentic coding)
+// Recommended: gpt-5.6-sol (default), gpt-5.6-terra (balanced), gpt-5.6-luna (fast/low-cost)
 export const CODEX_MODELS: ModelInfo[] = [
+  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', shortName: 'GPT-5.6 Sol', shortAlias: 'gpt56-sol', githubLabel: 'llm-codex-gpt56-sol', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-5.6-sol', minAgentVersion: '0.144.0' },
+  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', shortName: 'GPT-5.6 Terra', shortAlias: 'gpt56-terra', githubLabel: 'llm-codex-gpt56-terra', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.6-terra', minAgentVersion: '0.144.0' },
+  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', shortName: 'GPT-5.6 Luna', shortAlias: 'gpt56-luna', githubLabel: 'llm-codex-gpt56-luna', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.6-luna', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.5', name: 'GPT-5.5', shortName: 'GPT-5.5', shortAlias: 'gpt55', githubLabel: 'llm-codex-gpt55', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.5' },
   { id: 'gpt-5.5-pro', name: 'GPT-5.5 Pro', shortName: 'GPT-5.5 Pro', shortAlias: 'gpt55-pro', githubLabel: 'llm-codex-gpt55-pro', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.5-pro' },
   { id: 'gpt-5.4', name: 'GPT-5.4', shortName: 'GPT-5.4', shortAlias: 'gpt54', githubLabel: 'llm-codex-gpt54', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.4' },

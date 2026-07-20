@@ -66,8 +66,11 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(codex), true);
         assert.strictEqual(gemini.dockerImage, 'propr-gemini:latest');
         assert.strictEqual(codex.dockerImage, 'propr/agent:latest');
+        assert.ok(codex.supportedModels.includes('gpt-5.6-sol'));
+        assert.ok(codex.supportedModels.includes('gpt-5.6-terra'));
+        assert.ok(codex.supportedModels.includes('gpt-5.6-luna'));
         assert.ok(codex.supportedModels.includes('gpt-5.5'));
-        assert.strictEqual(codex.defaultModel, 'gpt-5.5');
+        assert.strictEqual(codex.defaultModel, 'gpt-5.6-sol');
     });
 
     test('normalizes custom images during default CLI migration', () => {
@@ -81,6 +84,25 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.strictEqual(agent.cliVersionType, 'default');
         assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
+        assert.strictEqual(agent.defaultModel, 'gpt-5.6-sol');
+        assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.codex);
+    });
+
+    test('updates Codex agents defaulting to GPT-5.5 and stale default CLI versions', () => {
+        const agent = createAgent({
+            type: 'codex',
+            supportedModels: ['gpt-5.5'],
+            defaultModel: 'gpt-5.5',
+            cliVersionType: 'default',
+            cliVersionResolved: '0.143.0'
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        assert.ok(agent.supportedModels.includes('gpt-5.6-sol'));
+        assert.ok(agent.supportedModels.includes('gpt-5.6-terra'));
+        assert.ok(agent.supportedModels.includes('gpt-5.6-luna'));
+        assert.strictEqual(agent.defaultModel, 'gpt-5.6-sol');
+        assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.codex);
     });
 
     test('fills in a missing Docker image instead of crashing', () => {
