@@ -1,7 +1,7 @@
 import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
-import { DEFAULT_REVIEW_GUIDANCE, REASONING_LEVELS } from '@propr/shared';
+import { DEFAULT_REVIEW_GUIDANCE, REASONING_LEVELS, getReasoningLevelsForAgentType } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import {
   buildAllModelOptions,
@@ -105,6 +105,14 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
   const prReviewOptions = buildPrReviewOptions(enabledAgents);
   const implementationAgentOptions = buildImplementationAgentOptions(enabledAgents);
+  const selectedImplementationAgent = enabledAgents.find(a => a.alias === settings.default_agent_alias) ?? enabledAgents[0];
+  const compatibleReasoningLevels = selectedImplementationAgent
+    ? getReasoningLevelsForAgentType(selectedImplementationAgent.type)
+    : REASONING_LEVELS;
+  const reasoningLevelOptions = settings.model_reasoning_level &&
+    !compatibleReasoningLevels.includes(settings.model_reasoning_level as typeof REASONING_LEVELS[number])
+    ? [...compatibleReasoningLevels, settings.model_reasoning_level]
+    : compatibleReasoningLevels;
 
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
@@ -158,8 +166,12 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
               >
                 <option value="">Agent default</option>
-                {REASONING_LEVELS.map(level => (
-                  <option key={level} value={level}>
+                {reasoningLevelOptions.map(level => (
+                  <option
+                    key={level}
+                    value={level}
+                    disabled={!compatibleReasoningLevels.includes(level as typeof REASONING_LEVELS[number])}
+                  >
                     {reasoningLevelLabels[level]}
                   </option>
                 ))}

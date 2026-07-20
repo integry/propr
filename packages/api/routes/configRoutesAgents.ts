@@ -51,6 +51,15 @@ function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault
   if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) return enabledAgents[0].alias;
   return currentDefault;
 }
+async function loadReasoningLevelForAgentUpdate(configStore: AgentConfigStore): Promise<unknown> {
+  if (configStore.loadModelReasoningLevel) return configStore.loadModelReasoningLevel();
+  if (configStore.loadSettingsRecord) {
+    const settingsRecord = await configStore.loadSettingsRecord();
+    if (typeof settingsRecord.model_reasoning_level === 'string') return settingsRecord.model_reasoning_level;
+  }
+  if (configStore === configManager) return configManager.loadModelReasoningLevel();
+  return '';
+}
 function requiresExplicitVersionSpec(versionType: CliVersionType): boolean {
   return versionType === 'tag' || versionType === 'specific' || versionType === 'custom';
 }
@@ -278,6 +287,20 @@ export async function applyAgentsUpdate({
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
   const newDefault = resolveDefaultAgentAlias(processedAgents, currentDefault);
   const defaultChanged = newDefault !== currentDefault;
+  const modelReasoningLevel = await loadReasoningLevelForAgentUpdate(configStore);
+  if (modelReasoningLevel !== '') {
+    const effectiveDefaultAgent = processedAgents.find(agent => agent.enabled && agent.alias === newDefault);
+    if (!effectiveDefaultAgent) {
+      return {
+        status: 400,
+        body: { error: 'model_reasoning_level can only be set when the default implementation agent supports reasoning levels' }
+      };
+    }
+    const reasoningValidation = configManager.validateModelReasoningLevelForAgentType(modelReasoningLevel, effectiveDefaultAgent.type);
+    if (!reasoningValidation.valid) {
+      return { status: 400, body: { error: reasoningValidation.error } };
+    }
+  }
 
   try {
     const { settingsWereUpdated } = await persistAgentConfigurationAtomically({

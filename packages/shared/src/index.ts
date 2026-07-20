@@ -142,6 +142,8 @@ export {
   REASONING_LEVELS,
   CODEX_REASONING_LEVELS,
   CLAUDE_REASONING_LEVELS,
+  getReasoningLevelsForAgentType,
+  isReasoningLevelSupportedByAgentType,
   isReasoningLevel,
   type ReasoningLevel,
 } from './reasoningLevels.js';

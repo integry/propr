@@ -17,5 +17,7 @@ export async function up(knex) {
 }
 
 export async function down(knex) {
-  await knex('system_configs').where({ key: 'model_reasoning_level' }).delete();
+  // This migration only seeds an operator-editable setting. Rolling it back
+  // must not delete a value that may have been customized after deployment.
+  void knex;
 }

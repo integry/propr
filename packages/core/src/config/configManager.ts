@@ -205,6 +205,8 @@ export {
     saveModelReasoningLevel,
     normalizeModelReasoningLevel,
     validateModelReasoningLevel,
+    validateModelReasoningLevelForAgentType,
+    resolveRuntimeModelReasoningLevel,
     type ModelReasoningLevel
 } from './configManagerReasoning.js';
 

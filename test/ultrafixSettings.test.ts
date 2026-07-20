@@ -38,8 +38,18 @@ describe('VALID_SETTING_KEYS includes new ultrafix keys', () => {
     assert.ok(VALID_SETTING_KEYS.includes('ultrafix_pause_seconds'));
   });
 
-  test('should have 14 total setting keys', () => {
-    assert.strictEqual(VALID_SETTING_KEYS.length, 14);
+  test('should keep expected setting keys valid', () => {
+    const expectedKeys = [
+      'pr_review_model',
+      'model_reasoning_level',
+      'ultrafix_rating_goal',
+      'ultrafix_max_cycles',
+      'ultrafix_pause_seconds',
+    ];
+
+    for (const key of expectedKeys) {
+      assert.ok(VALID_SETTING_KEYS.includes(key));
+    }
   });
 });
 

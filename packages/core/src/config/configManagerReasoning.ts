@@ -1,12 +1,20 @@
 import {
+    CLAUDE_REASONING_LEVELS,
+    CODEX_REASONING_LEVELS,
     REASONING_LEVELS,
+    getReasoningLevelsForAgentType,
+    isReasoningLevelSupportedByAgentType,
     isReasoningLevel,
+    type AgentType,
     type ReasoningLevel
 } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 
 export type ModelReasoningLevel = ReasoningLevel | '';
+
+const CODEX_RUNTIME_REASONING_LEVELS: readonly ReasoningLevel[] = CODEX_REASONING_LEVELS;
+const CLAUDE_RUNTIME_REASONING_LEVELS: readonly ReasoningLevel[] = CLAUDE_REASONING_LEVELS.filter(level => level !== 'auto');
 
 export function normalizeModelReasoningLevel(raw: string): ModelReasoningLevel | null {
     const trimmed = raw.trim();
@@ -28,6 +36,34 @@ export function validateModelReasoningLevel(raw: unknown): { valid: true; value:
         return { valid: false, error: `model_reasoning_level must be one of: ${values}, or an empty string` };
     }
     return { valid: true, value: normalized };
+}
+
+export function validateModelReasoningLevelForAgentType(
+    raw: unknown,
+    agentType: AgentType
+): { valid: true; value: ModelReasoningLevel } | { valid: false; error: string } {
+    const result = validateModelReasoningLevel(raw);
+    if (!result.valid || result.value === '') return result;
+    if (isReasoningLevelSupportedByAgentType(agentType, result.value)) return result;
+
+    const values = getReasoningLevelsForAgentType(agentType).join(', ');
+    const supportedText = values ? `${values}, or an empty string` : 'an empty string';
+    return {
+        valid: false,
+        error: `model_reasoning_level "${result.value}" is not supported by ${agentType} agents; use ${supportedText}`
+    };
+}
+
+export function resolveRuntimeModelReasoningLevel(
+    agentType: AgentType,
+    level: ModelReasoningLevel
+): ReasoningLevel | null {
+    if (level === '') return null;
+    if (agentType === 'codex' && CODEX_RUNTIME_REASONING_LEVELS.includes(level)) return level;
+    if (agentType === 'claude' && CLAUDE_RUNTIME_REASONING_LEVELS.includes(level)) return level;
+
+    logger.warn({ agentType, model_reasoning_level: level }, 'Ignoring unsupported model reasoning level for agent runtime');
+    return null;
 }
 
 export async function loadModelReasoningLevel(): Promise<ModelReasoningLevel> {
