@@ -48,7 +48,7 @@ export class CodexAgent implements Agent {
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
+            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -68,7 +68,7 @@ export class CodexAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
-                reasoningLevel: await this.loadRuntimeReasoningLevel()
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -223,7 +223,7 @@ export class CodexAgent implements Agent {
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0, jsonOutput: true, taskId, executionType,
-                reasoningLevel: await this.loadRuntimeReasoningLevel()
+                reasoningLevel: await this.resolveEffectiveReasoningLevel()
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -326,8 +326,9 @@ export class CodexAgent implements Agent {
         };
     }
 
-    private async loadRuntimeReasoningLevel(): Promise<ModelReasoningLevel> {
-        return resolveRuntimeModelReasoningLevel(this.config.type, await loadModelReasoningLevel()) ?? '';
+    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<ModelReasoningLevel> {
+        const configuredLevel = reasoningLevel === undefined ? await loadModelReasoningLevel() : reasoningLevel;
+        return resolveRuntimeModelReasoningLevel(this.config.type, configuredLevel) ?? '';
     }
 
     async healthCheck(): Promise<boolean> {

@@ -11,6 +11,7 @@ type RepoValidation = RepoValidationResult;
 import { issueQueue, type IssueJobData, type JobResult } from '@propr/core';
 import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels, NoDefaultModelConfiguredError } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
+import { parseReasoningLevelFromLabels } from '@propr/shared';
 
 interface CurrentIssueData {
     data: {
@@ -95,6 +96,15 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
 
         const baseLabels = labels.filter(l => l.startsWith('base-'));
         const llmLabels = labels.filter(l => l.startsWith('llm-'));
+        const reasoningLevel = parseReasoningLevelFromLabels(currentIssueData.data.labels);
+        const reasoningLevelLabels = labels.filter(l => /^level-(low|medium|high|xhigh|max|ultra|ultracode|auto)$/i.test(l));
+        if (reasoningLevelLabels.length > 1) {
+            correlatedLogger.warn({
+                issue: issueRef.number,
+                reasoningLevel,
+                labels: reasoningLevelLabels
+            }, 'Multiple reasoning level labels found; using first matching label');
+        }
 
         // Get all configured custom labels from agents
         const customLabels = await getAllCustomLabels();
@@ -173,6 +183,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                     agentAlias: agentModel.agentAlias,
                     modelName: agentModel.model,
                     modelLabel: agentModel.label,
+                    reasoningLevel,
                     isChildJob: true,
                     issuePayload: currentIssueData.data as unknown as Record<string, unknown>,
                     repoPayload: repoValidation.repoData as unknown as Record<string, unknown>
@@ -194,7 +205,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                     issue: issueRef.number,
                     base: base.branch,
                     agent: agentModel.agentAlias,
-                    model: agentModel.model
+                    model: agentModel.model,
+                    reasoningLevel
                 }, 'Enqueued child job');
             }
         }

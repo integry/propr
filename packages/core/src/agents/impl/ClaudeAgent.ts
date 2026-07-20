@@ -69,7 +69,7 @@ export class ClaudeAgent implements Agent {
         const {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber
+            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel
         } = options;
 
         const startTime = Date.now();
@@ -93,7 +93,7 @@ export class ClaudeAgent implements Agent {
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
-                reasoningLevel: await this.loadRuntimeReasoningLevel()
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -167,7 +167,7 @@ export class ClaudeAgent implements Agent {
                 worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: '', taskId, executionType,
-                reasoningLevel: await this.loadRuntimeReasoningLevel()
+                reasoningLevel: await this.resolveEffectiveReasoningLevel()
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -226,8 +226,9 @@ export class ClaudeAgent implements Agent {
     }
 
     /** Loads the configured reasoning level when it is supported by this agent runtime. */
-    private async loadRuntimeReasoningLevel(): Promise<ModelReasoningLevel> {
-        return resolveRuntimeModelReasoningLevel(this.config.type, await loadModelReasoningLevel()) ?? '';
+    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<ModelReasoningLevel> {
+        const configuredLevel = reasoningLevel === undefined ? await loadModelReasoningLevel() : reasoningLevel;
+        return resolveRuntimeModelReasoningLevel(this.config.type, configuredLevel) ?? '';
     }
 
     /** Verifies the agent is ready by checking if the Docker image exists. */

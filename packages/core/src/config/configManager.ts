@@ -204,10 +204,13 @@ export {
     loadModelReasoningLevel,
     saveModelReasoningLevel,
     normalizeModelReasoningLevel,
+    resolveClaudeReasoningLevel,
+    resolveCodexReasoningLevel,
     validateModelReasoningLevel,
     validateModelReasoningLevelForAgentType,
     resolveRuntimeModelReasoningLevel,
-    type ModelReasoningLevel
+    type ModelReasoningLevel,
+    type RuntimeReasoningLevel
 } from './configManagerReasoning.js';
 
 export { validatePrReviewModelValue, type PrReviewModelValidationResult } from './prReviewModelValidator.js';

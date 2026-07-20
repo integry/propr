@@ -17,13 +17,14 @@ process.env.PROPR_DEMO_MODE = 'true';
 
 const { closeConnection } = await import('../packages/core/src/db/connection.ts');
 const {
+  resolveClaudeReasoningLevel,
+  resolveCodexReasoningLevel,
   resolveRuntimeModelReasoningLevel,
   validateModelReasoningLevel,
   validateModelReasoningLevelForAgentType
 } = await import('../packages/core/src/config/configManagerReasoning.ts');
 const { extractSettingSaves } = await import('../packages/api/routes/configSettings.ts');
 const { saveSettingsWithRollback } = await import('../packages/api/routes/configRoutesSettings.ts');
-const { applyAgentsUpdate } = await import('../packages/api/routes/configRoutesAgents.ts');
 
 after(async () => {
   await closeConnection();
@@ -107,20 +108,28 @@ describe('core model_reasoning_level validation', () => {
     assert.match((whitespaceResult as { valid: false; error: string }).error, /whitespace-only/);
   });
 
-  test('validates values against agent-compatible subsets', () => {
+  test('allows cross-agent values because runtime execution clamps or ignores them', () => {
     assert.deepEqual(validateModelReasoningLevelForAgentType('ultra', 'codex'), { valid: true, value: 'ultra' });
     assert.deepEqual(validateModelReasoningLevelForAgentType('ultracode', 'claude'), { valid: true, value: 'ultracode' });
-    assert.equal(validateModelReasoningLevelForAgentType('ultracode', 'codex').valid, false);
-    assert.equal(validateModelReasoningLevelForAgentType('ultra', 'claude').valid, false);
-    assert.equal(validateModelReasoningLevelForAgentType('high', 'opencode').valid, false);
+    assert.deepEqual(validateModelReasoningLevelForAgentType('ultracode', 'codex'), { valid: true, value: 'ultracode' });
+    assert.deepEqual(validateModelReasoningLevelForAgentType('ultra', 'claude'), { valid: true, value: 'ultra' });
+    assert.deepEqual(validateModelReasoningLevelForAgentType('high', 'opencode'), { valid: true, value: 'high' });
   });
 
-  test('filters runtime-only values instead of passing unsupported flags', () => {
+  test('clamps runtime-only values instead of passing unsupported flags', () => {
     assert.equal(resolveRuntimeModelReasoningLevel('codex', 'ultra'), 'ultra');
-    assert.equal(resolveRuntimeModelReasoningLevel('codex', 'ultracode'), null);
+    assert.equal(resolveRuntimeModelReasoningLevel('codex', 'ultracode'), 'ultra');
     assert.equal(resolveRuntimeModelReasoningLevel('claude', 'ultracode'), 'ultracode');
-    assert.equal(resolveRuntimeModelReasoningLevel('claude', 'auto'), null);
+    assert.equal(resolveRuntimeModelReasoningLevel('claude', 'ultra'), 'max');
+    assert.equal(resolveRuntimeModelReasoningLevel('claude', 'auto'), 'auto');
     assert.equal(resolveRuntimeModelReasoningLevel('opencode', 'high'), null);
+  });
+
+  test('exposes per-agent clamping helpers', () => {
+    assert.equal(resolveCodexReasoningLevel('ultracode'), 'ultra');
+    assert.equal(resolveCodexReasoningLevel('auto'), null);
+    assert.equal(resolveClaudeReasoningLevel('ultra'), 'max');
+    assert.equal(resolveClaudeReasoningLevel('auto'), 'auto');
   });
 });
 
@@ -142,64 +151,9 @@ describe('settings save rollback path for model_reasoning_level', () => {
     assert.equal(published, false);
   });
 
-  test('rejects reasoning levels incompatible with the default implementation agent', async () => {
-    const result = await saveSettingsWithRollback({
-      settings: {
-        default_agent_alias: 'codex',
-        model_reasoning_level: 'ultracode',
-      },
-      configStore: {
-        handleSettingsSaveSideEffects: () => undefined,
-        loadSettings: async () => ({ default_agent_alias: 'codex' }),
-        loadSettingsRecord: async () => ({ default_agent_alias: 'codex' }),
-        loadAgents: async () => [{
-          id: 'codex',
-          type: 'codex',
-          alias: 'codex',
-          enabled: true,
-          dockerImage: 'propr/agent:latest',
-          configPath: '~/.codex',
-          supportedModels: ['gpt-5.5'],
-          defaultModel: 'gpt-5.5',
-        }],
-      },
-      publishConfigUpdate: async () => undefined,
-    });
-
-    assert.equal(result.status, 400);
-    assert.match(String(result.body.error), /not supported by codex agents/);
-  });
-
-  test('rejects agent default changes that would make the saved reasoning level incompatible', async () => {
-    const agents = [{
-      id: 'claude',
-      type: 'claude',
-      alias: 'claude',
-      enabled: true,
-      dockerImage: 'propr/agent:latest',
-      configPath: '~/.claude',
-      supportedModels: ['claude-opus-4-6'],
-      defaultModel: 'claude-opus-4-6',
-    }] as AgentConfig[];
-    const result = await applyAgentsUpdate({
-      agents,
-      processedAgents: agents,
-      configStore: {
-        handleSettingsSaveSideEffects: () => undefined,
-        loadAgents: async () => [],
-        loadSettings: async () => ({ default_agent_alias: 'claude' }),
-        loadModelReasoningLevel: async () => 'ultra',
-      },
-      registry: {
-        refresh: async () => undefined,
-        setDefaultAgentAlias: () => undefined,
-      },
-      publishConfigUpdate: async () => undefined,
-      logActivityHelper: async () => undefined,
-    });
-
-    assert.equal(result.status, 400);
-    assert.match(String(result.body.error), /not supported by claude agents/);
+  test('does not reject cross-agent values during compatibility validation', () => {
+    assert.equal(validateModelReasoningLevelForAgentType('ultracode', 'codex').valid, true);
+    assert.equal(validateModelReasoningLevelForAgentType('ultra', 'claude').valid, true);
   });
 });
 
