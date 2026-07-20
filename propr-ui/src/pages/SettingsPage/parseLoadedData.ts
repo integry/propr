@@ -20,6 +20,7 @@ interface SettingsApiData {
   github_user_whitelist?: string[];
   auto_followup_score_threshold?: number;
   auto_resolve_merge_conflicts?: boolean;
+  model_reasoning_level?: string;
   pr_review_model?: string;
   pr_review_prompt?: string;
   ultrafix_rating_goal?: number;
@@ -36,6 +37,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
     auto_followup_score_threshold: settingsData.auto_followup_score_threshold ?? 4,
     auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
+    model_reasoning_level: settingsData.model_reasoning_level || '',
     pr_review_model: settingsData.pr_review_model || '',
     pr_review_prompt: settingsData.pr_review_prompt || '',
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,

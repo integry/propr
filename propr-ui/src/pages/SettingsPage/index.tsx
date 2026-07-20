@@ -95,6 +95,7 @@ const SettingsPage: React.FC = () => {
                 planner_context_model: settings.planner_context_model,
                 planner_generation_model: settings.planner_generation_model,
                 default_agent_alias: settings.default_agent_alias,
+                model_reasoning_level: settings.model_reasoning_level,
                 pr_review_model: settings.pr_review_model,
                 pr_review_prompt: settings.pr_review_prompt
               }}

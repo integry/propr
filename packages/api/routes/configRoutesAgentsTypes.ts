@@ -23,6 +23,7 @@ export interface AgentsRoutesDeps {
 export interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
   loadSettings: typeof configManager.loadSettings;
+  loadModelReasoningLevel?: typeof configManager.loadModelReasoningLevel;
   loadSettingsRecord?: () => Promise<Record<string, unknown>>;
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
 }

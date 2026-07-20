@@ -21,6 +21,7 @@ import {
     type ClaudeOutput
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { loadModelReasoningLevel, resolveRuntimeModelReasoningLevel, type ModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -91,7 +92,8 @@ export class ClaudeAgent implements Agent {
 
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
-                systemPrompt, tools, environment, taskId
+                systemPrompt, tools, environment, taskId,
+                reasoningLevel: await this.loadRuntimeReasoningLevel()
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -164,7 +166,8 @@ export class ClaudeAgent implements Agent {
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
-                tools: '', taskId, executionType
+                tools: '', taskId, executionType,
+                reasoningLevel: await this.loadRuntimeReasoningLevel()
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -220,6 +223,11 @@ export class ClaudeAgent implements Agent {
                 response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: (error as Error).message
             };
         }
+    }
+
+    /** Loads the configured reasoning level when it is supported by this agent runtime. */
+    private async loadRuntimeReasoningLevel(): Promise<ModelReasoningLevel> {
+        return resolveRuntimeModelReasoningLevel(this.config.type, await loadModelReasoningLevel()) ?? '';
     }
 
     /** Verifies the agent is ready by checking if the Docker image exists. */

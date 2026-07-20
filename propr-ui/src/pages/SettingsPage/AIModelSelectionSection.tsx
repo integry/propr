@@ -1,7 +1,7 @@
 import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
-import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
+import { DEFAULT_REVIEW_GUIDANCE, REASONING_LEVELS, getReasoningLevelsForAgentType } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import {
   buildAllModelOptions,
@@ -17,6 +17,7 @@ interface AIModelSelectionSettings {
   planner_context_model: string;
   planner_generation_model: string;
   default_agent_alias: string;
+  model_reasoning_level: string;
   pr_review_model: string;
   pr_review_prompt: string;
 }
@@ -66,6 +67,42 @@ const SettingRow = ({
   </div>
 );
 
+const reasoningLevelLabels: Record<string, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'XHigh',
+  max: 'Max',
+  ultra: 'Ultra (Codex only)',
+  ultracode: 'Ultracode (Claude only)',
+  auto: 'Auto (Claude only)',
+};
+
+type ReasoningLevel = typeof REASONING_LEVELS[number];
+
+function buildReasoningLevelSelectState(
+  enabledAgents: AgentConfig[],
+  defaultAgentAlias: string,
+  selectedReasoningLevel: string
+): {
+  compatibleReasoningLevels: readonly ReasoningLevel[];
+  reasoningLevelOptions: readonly string[];
+} {
+  const selectedImplementationAgent = enabledAgents.find(a => a.alias === defaultAgentAlias) ?? enabledAgents[0];
+  const compatibleReasoningLevels = selectedImplementationAgent
+    ? getReasoningLevelsForAgentType(selectedImplementationAgent.type)
+    : REASONING_LEVELS;
+
+  if (!selectedReasoningLevel || compatibleReasoningLevels.includes(selectedReasoningLevel as ReasoningLevel)) {
+    return { compatibleReasoningLevels, reasoningLevelOptions: compatibleReasoningLevels };
+  }
+
+  return {
+    compatibleReasoningLevels,
+    reasoningLevelOptions: [...compatibleReasoningLevels, selectedReasoningLevel]
+  };
+}
+
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
   summarizationSettings,
@@ -93,6 +130,11 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
   const prReviewOptions = buildPrReviewOptions(enabledAgents);
   const implementationAgentOptions = buildImplementationAgentOptions(enabledAgents);
+  const { compatibleReasoningLevels, reasoningLevelOptions } = buildReasoningLevelSelectState(
+    enabledAgents,
+    settings.default_agent_alias,
+    settings.model_reasoning_level
+  );
 
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;
@@ -131,6 +173,31 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               ) : (
                 <NoAgentsMessage label="enabled agents" />
               )}
+            </SettingRow>
+
+            <SettingRow
+              label="Reasoning Level"
+              htmlFor="model_reasoning_level"
+              helperText="System-wide reasoning effort for supported GPT and Claude agents."
+            >
+              <select
+                id="model_reasoning_level"
+                name="model_reasoning_level"
+                value={settings.model_reasoning_level}
+                onChange={onSettingChange}
+                className="w-full rounded border-gray-300 focus:border-primary-500 focus:ring-primary-500 text-sm px-2.5 py-1.5 border"
+              >
+                <option value="">Agent default</option>
+                {reasoningLevelOptions.map(level => (
+                  <option
+                    key={level}
+                    value={level}
+                    disabled={!compatibleReasoningLevels.includes(level as ReasoningLevel)}
+                  >
+                    {reasoningLevelLabels[level]}
+                  </option>
+                ))}
+              </select>
             </SettingRow>
           </div>
         </div>

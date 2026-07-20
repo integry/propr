@@ -137,3 +137,13 @@ export { DEFAULT_REVIEW_GUIDANCE } from './reviewPrompt.js';
 export { parseProjectSlug } from './projectSlug.js';
 
 export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';
+
+export {
+  REASONING_LEVELS,
+  CODEX_REASONING_LEVELS,
+  CLAUDE_REASONING_LEVELS,
+  getReasoningLevelsForAgentType,
+  isReasoningLevelSupportedByAgentType,
+  isReasoningLevel,
+  type ReasoningLevel,
+} from './reasoningLevels.js';

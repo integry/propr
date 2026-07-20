@@ -19,6 +19,7 @@ describe('Settings UI contract for ultrafix fields', () => {
     planner_generation_model: '',
     auto_followup_score_threshold: 4,
     auto_resolve_merge_conflicts: false,
+    model_reasoning_level: 'xhigh',
     pr_review_model: 'claude:claude-opus-4-6',
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
@@ -28,6 +29,11 @@ describe('Settings UI contract for ultrafix fields', () => {
   test('API response includes pr_review_model', () => {
     assert.ok('pr_review_model' in mockApiResponse);
     assert.strictEqual(typeof mockApiResponse.pr_review_model, 'string');
+  });
+
+  test('API response includes model_reasoning_level', () => {
+    assert.ok('model_reasoning_level' in mockApiResponse);
+    assert.strictEqual(typeof mockApiResponse.model_reasoning_level, 'string');
   });
 
   test('API response includes ultrafix_rating_goal', () => {
@@ -58,6 +64,7 @@ describe('Settings UI contract for ultrafix fields', () => {
       default_agent_alias: 'claude',
       auto_followup_score_threshold: 4,
       auto_resolve_merge_conflicts: false,
+      model_reasoning_level: mockApiResponse.model_reasoning_level,
       pr_review_model: mockApiResponse.pr_review_model,
       ultrafix_rating_goal: mockApiResponse.ultrafix_rating_goal,
       ultrafix_max_cycles: mockApiResponse.ultrafix_max_cycles,
@@ -65,6 +72,7 @@ describe('Settings UI contract for ultrafix fields', () => {
     };
 
     assert.ok('pr_review_model' in savePayload);
+    assert.ok('model_reasoning_level' in savePayload);
     assert.ok('ultrafix_rating_goal' in savePayload);
     assert.ok('ultrafix_max_cycles' in savePayload);
     assert.ok('ultrafix_pause_seconds' in savePayload);
@@ -74,12 +82,14 @@ describe('Settings UI contract for ultrafix fields', () => {
     // These must match configManagerUltrafix.ts defaults
     const frontendDefaults = {
       pr_review_model: '',
+      model_reasoning_level: '',
       ultrafix_rating_goal: 7,
       ultrafix_max_cycles: 5,
       ultrafix_pause_seconds: 60
     };
 
     assert.strictEqual(frontendDefaults.pr_review_model, '');
+    assert.strictEqual(frontendDefaults.model_reasoning_level, '');
     assert.strictEqual(frontendDefaults.ultrafix_rating_goal, 7);
     assert.strictEqual(frontendDefaults.ultrafix_max_cycles, 5);
     assert.strictEqual(frontendDefaults.ultrafix_pause_seconds, 60);

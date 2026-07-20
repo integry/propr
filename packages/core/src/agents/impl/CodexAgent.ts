@@ -15,7 +15,7 @@ import {
     parseCodexStreamOutput,
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
-import { resolveConfigPath } from '../../config/configManager.js';
+import { loadModelReasoningLevel, resolveConfigPath, resolveRuntimeModelReasoningLevel, type ModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -67,7 +67,8 @@ export class CodexAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
-                issueNumber: issueRef.number, environment, taskId
+                issueNumber: issueRef.number, environment, taskId,
+                reasoningLevel: await this.loadRuntimeReasoningLevel()
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -221,7 +222,8 @@ export class CodexAgent implements Agent {
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
-                issueNumber: 0, jsonOutput: true, taskId, executionType
+                issueNumber: 0, jsonOutput: true, taskId, executionType,
+                reasoningLevel: await this.loadRuntimeReasoningLevel()
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -324,6 +326,10 @@ export class CodexAgent implements Agent {
         };
     }
 
+    private async loadRuntimeReasoningLevel(): Promise<ModelReasoningLevel> {
+        return resolveRuntimeModelReasoningLevel(this.config.type, await loadModelReasoningLevel()) ?? '';
+    }
+
     async healthCheck(): Promise<boolean> {
         const { alias: agentAlias } = this.config;
         const dockerImage = this.config.dockerImage;
@@ -351,6 +357,7 @@ export class CodexAgent implements Agent {
         environment?: Record<string, string>;
         taskId?: string;
         executionType?: string;
+        reasoningLevel?: ModelReasoningLevel;
     }): string[] {
         const {
             worktreePath,
@@ -360,7 +367,8 @@ export class CodexAgent implements Agent {
             jsonOutput = true,
             environment,
             taskId,
-            executionType
+            executionType,
+            reasoningLevel
         } = params;
 
         const dockerImage = this.config.dockerImage;
@@ -415,6 +423,7 @@ export class CodexAgent implements Agent {
             ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
             '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
             '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host
+            ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
             '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
             '--cd', '/home/node/workspace', // Set working directory
             '-'                          // Read prompt from stdin

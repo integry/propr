@@ -1,12 +1,15 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import type { AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
 
 interface SettingsStore {
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
   loadSettings: typeof configManager.loadSettings;
   loadSettingsRecord?: () => Promise<Record<string, unknown>>;
+  loadModelReasoningLevel?: typeof configManager.loadModelReasoningLevel;
+  loadAgents?: typeof configManager.loadAgents;
 }
 
 interface SaveSettingsRequest {
@@ -130,6 +133,50 @@ function isPlainSettingsObject(value: unknown): value is Record<string, unknown>
   return prototype === Object.prototype || prototype === null;
 }
 
+function resolveEffectiveDefaultAgent(agents: AgentConfig[], defaultAgentAlias: unknown): AgentConfig | null {
+  const enabledAgents = agents.filter(agent => agent.enabled);
+  const configuredAlias = typeof defaultAgentAlias === 'string' ? defaultAgentAlias.trim() : '';
+  if (configuredAlias) {
+    const configuredAgent = enabledAgents.find(agent => agent.alias === configuredAlias);
+    if (configuredAgent) return configuredAgent;
+  }
+  return enabledAgents.find(agent => agent.alias === 'default') ?? enabledAgents[0] ?? null;
+}
+
+async function loadReasoningLevelFromStore(configStore: SettingsStore, settingsRecord: Record<string, unknown>): Promise<unknown> {
+  if (configStore.loadModelReasoningLevel) return configStore.loadModelReasoningLevel();
+  if (typeof settingsRecord.model_reasoning_level === 'string') return settingsRecord.model_reasoning_level;
+  if (configStore === configManager) return configManager.loadModelReasoningLevel();
+  return '';
+}
+
+async function validateReasoningLevelForDefaultAgent({
+  configStore,
+  existingSettings,
+  otherSettings,
+  modelReasoningLevel
+}: {
+  configStore: SettingsStore;
+  existingSettings: Record<string, unknown>;
+  otherSettings: Record<string, unknown>;
+  modelReasoningLevel: unknown;
+}): Promise<string | null> {
+  if (modelReasoningLevel === undefined && otherSettings.default_agent_alias === undefined) return null;
+  const effectiveReasoningLevel = modelReasoningLevel === undefined
+    ? await loadReasoningLevelFromStore(configStore, existingSettings)
+    : modelReasoningLevel;
+  if (effectiveReasoningLevel === '') return null;
+
+  const agents = configStore.loadAgents ? await configStore.loadAgents() : await configManager.loadAgents();
+  const defaultAgent = agents.length > 0
+    ? resolveEffectiveDefaultAgent(agents, otherSettings.default_agent_alias ?? existingSettings.default_agent_alias)
+    : { type: 'claude' as const };
+  if (!defaultAgent) return 'model_reasoning_level can only be set when the default implementation agent supports reasoning levels';
+
+  const result = configManager.validateModelReasoningLevelForAgentType(effectiveReasoningLevel, defaultAgent.type);
+  return result.valid ? null : result.error;
+}
+
 export async function saveSettingsWithRollback({
   settings,
   publishConfigUpdate,
@@ -146,6 +193,7 @@ export async function saveSettingsWithRollback({
   const {
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
+    model_reasoning_level,
     pr_review_model,
     ultrafix_rating_goal,
     ultrafix_max_cycles,
@@ -156,6 +204,7 @@ export async function saveSettingsWithRollback({
   const extracted = await extractSettingSaves({
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
+    model_reasoning_level,
     pr_review_model,
     ultrafix_rating_goal,
     ultrafix_max_cycles,
@@ -164,6 +213,17 @@ export async function saveSettingsWithRollback({
 
   if (extracted.error) {
     return { status: 400, body: { error: extracted.error } };
+  }
+
+  const existingSettings = await loadPersistedSettingsRecord(configStore);
+  const compatibilityError = await validateReasoningLevelForDefaultAgent({
+    configStore,
+    existingSettings,
+    otherSettings,
+    modelReasoningLevel: extracted.normalized.model_reasoning_level
+  });
+  if (compatibilityError) {
+    return { status: 400, body: { error: compatibilityError } };
   }
 
   try {
