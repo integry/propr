@@ -29,6 +29,31 @@ See NOTICE for a higher-level summary and end-user obligations.
 
 EOF
 
+cat >> "$OUT" <<'EOF'
+## Debian base image and system packages
+
+The unified `propr/agent` image is based on `node:22-bookworm-slim` and
+installs system packages from Debian repositories,
+including bash, build-essential, git, curl, ca-certificates, iptables,
+procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from
+the official GitHub CLI apt repository at cli.github.com.
+See the Debian package tracker for per-package licensing details:
+https://tracker.debian.org/
+
+---
+
+## Alpine base image and system packages
+
+The `propr/app` and `propr/launcher` images still use Alpine Linux base images
+and install Alpine system packages including git, curl, jq, sudo, docker-cli,
+tini, python3, make, and g++. See Alpine package metadata for per-package
+licensing details:
+https://pkgs.alpinelinux.org/packages
+
+---
+
+EOF
+
 # --- AI CLIs (proprietary / Apache) — full text ----------------------------
 for entry in \
   "@anthropic-ai/claude-code|node_modules/@anthropic-ai/claude-code/LICENSE.md" \
@@ -50,26 +75,26 @@ for entry in \
 done
 
 # @openai/codex, Antigravity CLI, opencode-ai, and mistral-vibe are installed
-# only in agent images (not in root node_modules). Reference their licenses.
+# only in the agent image (not in root node_modules). Reference their licenses.
 cat >> "$OUT" <<'EOF'
-## @openai/codex (installed in propr/agent-codex image)
+## @openai/codex (installed in propr/agent image)
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/openai/codex
 
-## Antigravity CLI (installed in propr/agent-antigravity image)
+## Antigravity CLI (installed in propr/agent image)
 
 Licensed under Google Terms of Service for Google Products and Antigravity
 supplemental terms.
 Source: https://codeassist.google/
 
-## opencode-ai (installed in propr/agent-opencode image)
+## opencode-ai (installed in propr/agent image)
 
 Licensed under the MIT License (verified from the published npm package metadata).
 Source: https://github.com/sst/opencode
 
 
-## mistral-vibe (installed in propr/agent-vibe image)
+## mistral-vibe (installed in propr/agent image)
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/mistralai/mistral-vibe

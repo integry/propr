@@ -47,7 +47,7 @@ Bundled third-party components
    Provider:   Google Antigravity
    Installed via the official Antigravity CLI installer. The installer does
    not publish a separate license, historical version artifact, or checksum in
-   the ProPR build inputs. ProPR Antigravity agent images therefore install the
+   the ProPR build inputs. The ProPR agent image therefore installs the
    current upstream CLI at image build time and cannot be reproduced from a
    pinned Antigravity CLI version.
 
@@ -56,12 +56,18 @@ Bundled third-party components
    Upstream:   https://github.com/cli/cli
    Installed from the official distribution at cli.github.com.
 
-6. Alpine Linux base image and system packages (git, curl, jq, sudo,
-   docker-cli, tini, ca-certificates, iptables, procps, python3, make, g++)
-   Various open-source licenses. See the Alpine packages database for
-   per-package details: https://pkgs.alpinelinux.org/
+6. Debian Linux base image and system packages in the unified agent image
+   (bash, build-essential, git, curl, ca-certificates, iptables, procps,
+   tini, ripgrep, gosu, python3)
+   Various open-source licenses. See the Debian package tracker for
+   per-package details: https://tracker.debian.org/
 
-7. Node.js 20 runtime
+7. Alpine Linux base image and system packages in the Propr app and launcher
+   images (git, curl, jq, sudo, docker-cli, tini, python3, make, g++)
+   Various open-source licenses. See Alpine package metadata for per-package
+   details: https://pkgs.alpinelinux.org/packages
+
+8. Node.js 22 runtime
    License:    MIT (Node.js itself) plus various licenses for bundled
                components (V8, libuv, OpenSSL, etc.)
    Upstream:   https://nodejs.org/

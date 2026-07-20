@@ -199,6 +199,30 @@ test('buildAckFrame always carries a status and includes reason/billing only whe
         buildAckFrame(8, 'd4', { status: 'ignored', reason: 'user_not_allowed', billing: { seatConsumed: true } }),
         { type: 'ack', sequence: 8, deliveryId: 'd4', status: 'ignored', reason: 'user_not_allowed', billing: { seatConsumed: false } },
     );
+    // Exact trigger evidence is accepted-only, deduplicated, and bounded to
+    // valid GitHub comment IDs before crossing the routing trust boundary.
+    assert.deepEqual(
+        buildAckFrame(9, 'd5', {
+            status: 'accepted',
+            billing: { seatConsumed: true },
+            evidence: { triggerCommentIds: [4992520130, 4992520130, -1] },
+        }),
+        {
+            type: 'ack',
+            sequence: 9,
+            deliveryId: 'd5',
+            status: 'accepted',
+            billing: { seatConsumed: true },
+            evidence: { triggerCommentIds: [4992520130] },
+        },
+    );
+    assert.deepEqual(
+        buildAckFrame(10, 'd6', {
+            status: 'accepted',
+            evidence: { triggerCommentIds: [-1, 0, Number.NaN] },
+        }),
+        { type: 'ack', sequence: 10, deliveryId: 'd6', status: 'accepted' },
+    );
 });
 
 test('normalizeDisposition maps void/garbage to accepted and honors a valid disposition', () => {

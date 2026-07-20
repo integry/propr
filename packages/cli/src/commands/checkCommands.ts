@@ -61,6 +61,7 @@ interface RemediationResult {
 
 interface AgentDescriptor {
   type: string;
+  runtimeType?: string;
   hostDirKey: keyof OrchestratorConfig;
   envKey: string;
   defaultDir: string;
@@ -71,12 +72,12 @@ interface AgentDescriptor {
 function agentDescriptors(): AgentDescriptor[] {
   const home = homedir();
   return [
-    { type: "claude", hostDirKey: "hostClaudeDir", envKey: "HOST_CLAUDE_DIR", defaultDir: join(home, ".claude"), imageKey: "agent-claude", bin: "claude" },
-    { type: "codex", hostDirKey: "hostCodexDir", envKey: "HOST_CODEX_DIR", defaultDir: join(home, ".codex"), imageKey: "agent-codex", bin: "codex" },
-    { type: "antigravity", hostDirKey: "hostAntigravityDir", envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini"), imageKey: "agent-antigravity", bin: "agy" },
-    { type: "opencode", hostDirKey: "hostOpencodeXdgDir", envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
-    { type: "opencode-data", hostDirKey: "hostOpencodeDataDir", envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent-opencode", bin: "opencode" },
-    { type: "vibe", hostDirKey: "hostVibeDir", envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe"), imageKey: "agent-vibe", bin: "vibe" },
+    { type: "claude", hostDirKey: "hostClaudeDir", envKey: "HOST_CLAUDE_DIR", defaultDir: join(home, ".claude"), imageKey: "agent", bin: "claude" },
+    { type: "codex", hostDirKey: "hostCodexDir", envKey: "HOST_CODEX_DIR", defaultDir: join(home, ".codex"), imageKey: "agent", bin: "codex" },
+    { type: "antigravity", hostDirKey: "hostAntigravityDir", envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini"), imageKey: "agent", bin: "agy" },
+    { type: "opencode", hostDirKey: "hostOpencodeXdgDir", envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode"), imageKey: "agent", bin: "opencode" },
+    { type: "opencode-data", runtimeType: "opencode", hostDirKey: "hostOpencodeDataDir", envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent", bin: "opencode" },
+    { type: "vibe", hostDirKey: "hostVibeDir", envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe"), imageKey: "agent", bin: "vibe" },
   ];
 }
 
@@ -260,7 +261,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       status: "warn",
       detail: `${tag} not present locally`,
       group: "Images",
-      fix: key.startsWith("agent-")
+      fix: key === "agent"
         ? "Jobs using this agent fail until the image is pulled. Run `propr images pull`, `propr start`, or build with scripts/build-images.sh."
         : "Run `propr images pull`, or let `propr start` pull it automatically.",
       remediation: { kind: "pull-image", imageKey: key, tag },
@@ -420,7 +421,12 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const selected = options.agents && options.agents.length
       ? agentDescriptors().filter((a) => options.agents!.includes(a.type))
       : agentDescriptors();
+    const verifiedCliKeys = new Set<string>();
     for (const agent of selected) {
+      const runtimeType = agent.runtimeType || agent.type;
+      const cliKey = `${agent.imageKey}:${runtimeType}:${agent.bin}`;
+      if (verifiedCliKeys.has(cliKey)) continue;
+      verifiedCliKeys.add(cliKey);
       const tag = cfg.images[agent.imageKey];
       if (!tag || !imagePresent(orch, tag)) {
         emit({
@@ -431,7 +437,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
         });
         continue;
       }
-      const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000 });
+      const run = spawnSync("docker", ["run", "--rm", "--network=none", "--memory=512m", "-e", `PROPR_AGENT_TYPE=${runtimeType}`, tag, agent.bin, "--version"], { encoding: "utf-8", timeout: 60000 });
       if (run.status === 0) {
         emit({ name: `Verify: ${agent.type}`, status: "ok", detail: `image runs (${(run.stdout || "").trim().split("\n")[0]})`, group: "Agents" });
       } else {

@@ -32,6 +32,13 @@ export type {
   ApiResponse,
 } from "./types.js";
 
+export {
+  applyAgentRuntimePackages,
+  getAgentRuntimePackages,
+  updateAgentRuntimePackages,
+} from './agentRuntime.js';
+export type { AgentRuntimeBuildStatus, AgentRuntimePackageState } from './agentRuntime.js';
+
 // Plan Management API
 export {
   listPlans,

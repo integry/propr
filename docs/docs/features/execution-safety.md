@@ -48,7 +48,7 @@ Branch names include the model identifier, so concurrent multi-model runs never 
 
 ## Containerized Agent Runs
 
-Each agent run starts a dedicated container from the matching agent image (`propr/agent-claude`, `propr/agent-codex`, `propr/agent-antigravity`, `propr/agent-opencode`, `propr/agent-vibe`). The container gets:
+Each agent run starts a dedicated container from the unified `propr/agent` image. The container gets:
 
 - The task worktree mounted as its working directory
 - The agent credential directories mounted read-write from the host at their original paths (for example `~/.claude`, `~/.codex`, `~/.gemini`) so CLIs can refresh auth state; only the `.env` file is mounted read-only
@@ -58,7 +58,7 @@ The image-based install starts service and agent containers from published image
 
 ## Network Firewall (Optional, Off By Default)
 
-The agent images ship `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, SSH, and HTTPS to provider and GitHub endpoints (for example `api.anthropic.com`, `api.github.com`, `github.com`, `objects.githubusercontent.com`).
+The unified agent image ships `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, SSH, and HTTPS to provider and GitHub endpoints (for example `api.anthropic.com`, `api.github.com`, `github.com`, `objects.githubusercontent.com`).
 
 The script is **not executed by default**. Every agent entrypoint (`scripts/claude-entrypoint.sh`, `codex-entrypoint.sh`, `antigravity-entrypoint.sh`, `opencode-entrypoint.sh`, `vibe-entrypoint.sh`) currently skips it and logs:
 

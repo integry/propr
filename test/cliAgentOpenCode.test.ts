@@ -23,7 +23,8 @@ describe("CLI OpenCode agent support", () => {
     const addCommand = agentCommand.commands.find((command) => command.name() === "add");
 
     assert.ok(addCommand);
-    assert.match(addCommand.helpInformation(), /Agent type \(claude, codex, antigravity,\s+opencode, vibe\)/);
+    const normalizedHelp = addCommand.helpInformation().replace(/\s+/g, " ");
+    assert.match(normalizedHelp, /Agent type \(claude, codex, antigravity, opencode, vibe\)/);
   });
 
   test("addAgent applies OpenCode Docker image and config path defaults", async () => {
@@ -63,7 +64,7 @@ describe("CLI OpenCode agent support", () => {
         type: "opencode",
         alias: "opencode",
         enabled: true,
-        dockerImage: "propr/agent-opencode:latest",
+        dockerImage: "propr/agent:latest",
         configPath: "/root/.config/opencode",
         supportedModels: ["opencode-minimax-m3-free"],
         defaultModel: "opencode-minimax-m3-free",

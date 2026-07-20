@@ -1,0 +1,248 @@
+# Unified ProPR coding-agent image.
+#
+# The common Debian runtime is an internal stage. Each CLI is installed in its
+# own stage so changing one version preserves the build cache for every other
+# agent. Only this final image is published.
+
+# The managed agent image is currently linux/amd64. Debian package pins below
+# include amd64 binNMU suffixes, so do not build this Dockerfile for arm64
+# until those pins are split per architecture.
+ARG AGENT_PLATFORM=linux/amd64
+ARG UV_VERSION=0.8.17
+FROM --platform=${AGENT_PLATFORM} ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+
+FROM --platform=${AGENT_PLATFORM} node:22-bookworm-slim AS agent-base
+
+# These package prefixes intentionally constrain the apt install set while
+# allowing Debian security rebuild suffixes to move forward in the live archive.
+# Refresh these ARGs from the same base image when changing the package set.
+ARG BASH_VERSION_PREFIX=5.2.15-2
+ARG BUILD_ESSENTIAL_VERSION_PREFIX=12.
+ARG CA_CERTIFICATES_VERSION_PREFIX=20230311+deb12u
+ARG CURL_VERSION_PREFIX=7.88.1-10+deb12u
+# gh comes from GitHub's own apt repo, which only serves recent releases, so its
+# install falls back to the latest available version when this prefix no longer
+# matches. That trades strict reproducibility for not breaking every build on a
+# gh release; the fallback logs a note to stderr when it triggers.
+ARG GH_VERSION_PREFIX=2.96.
+ARG GIT_VERSION_PREFIX=1:2.39.5-0+deb12u
+ARG GOSU_VERSION_PREFIX=1.14-1
+ARG IPTABLES_VERSION_PREFIX=1.8.9-2
+ARG PROCPS_VERSION_PREFIX=2:4.0.2-3
+ARG PYTHON3_VERSION_PREFIX=3.11.2-1
+ARG RIPGREP_VERSION_PREFIX=13.0.0-4
+ARG TINI_VERSION_PREFIX=0.19.0-1
+ARG GITHUBCLI_KEYRING_SHA256=6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
+
+# GitHub publishes this keyring as a binary .gpg file; no dearmor step is needed.
+RUN set -eu; \
+    apt_version_arg() { \
+        package="$1"; \
+        prefix="$2"; \
+        fallback_latest="${3:-false}"; \
+        version="$(apt-cache madison "$package" | awk -v prefix="$prefix" 'index($3, prefix) == 1 { print $3; exit }')"; \
+        if [ -z "$version" ] && [ "$fallback_latest" = "true" ]; then \
+            version="$(apt-cache madison "$package" | awk 'NF >= 3 { print $3; exit }')"; \
+            if [ -n "$version" ]; then \
+                echo "No apt version found for ${package} with prefix ${prefix}; falling back to ${version}" >&2; \
+            fi; \
+        fi; \
+        if [ -z "$version" ]; then \
+            echo "No apt version found for ${package} with prefix ${prefix}" >&2; \
+            exit 1; \
+        fi; \
+        printf '%s=%s\n' "$package" "$version"; \
+    }; \
+    apt-get update \
+    && ca_certificates_apt="$(apt_version_arg ca-certificates "$CA_CERTIFICATES_VERSION_PREFIX")" \
+    && curl_apt="$(apt_version_arg curl "$CURL_VERSION_PREFIX")" \
+    && apt-get install -y --allow-downgrades --no-install-recommends \
+        "$ca_certificates_apt" \
+        "$curl_apt" \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && echo "${GITHUBCLI_KEYRING_SHA256}  /etc/apt/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c - \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && bash_apt="$(apt_version_arg bash "$BASH_VERSION_PREFIX")" \
+    && build_essential_apt="$(apt_version_arg build-essential "$BUILD_ESSENTIAL_VERSION_PREFIX")" \
+    && gh_apt="$(apt_version_arg gh "$GH_VERSION_PREFIX" true)" \
+    && git_apt="$(apt_version_arg git "$GIT_VERSION_PREFIX")" \
+    && gosu_apt="$(apt_version_arg gosu "$GOSU_VERSION_PREFIX")" \
+    && iptables_apt="$(apt_version_arg iptables "$IPTABLES_VERSION_PREFIX")" \
+    && procps_apt="$(apt_version_arg procps "$PROCPS_VERSION_PREFIX")" \
+    && python3_apt="$(apt_version_arg python3 "$PYTHON3_VERSION_PREFIX")" \
+    && ripgrep_apt="$(apt_version_arg ripgrep "$RIPGREP_VERSION_PREFIX")" \
+    && tini_apt="$(apt_version_arg tini "$TINI_VERSION_PREFIX")" \
+    && apt-get install -y --allow-downgrades --no-install-recommends \
+        "$bash_apt" \
+        "$build_essential_apt" \
+        "$gh_apt" \
+        "$git_apt" \
+        "$gosu_apt" \
+        "$iptables_apt" \
+        "$procps_apt" \
+        "$python3_apt" \
+        "$ripgrep_apt" \
+        "$tini_apt" \
+    && ln -sf "$(command -v gosu)" /usr/local/bin/su-exec \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /home/node/workspace \
+    && chown -R node:node /home/node
+
+COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/gh-wrapper
+
+COPY NOTICE /usr/share/licenses/propr/NOTICE
+COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md
+
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+USER node
+WORKDIR /home/node/workspace
+
+
+FROM agent-base AS claude-cli
+ARG CLAUDE_CLI_VERSION=2.1.211
+USER root
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && claude --version
+
+
+FROM agent-base AS codex-cli
+ARG CODEX_CLI_VERSION=0.144.5
+USER root
+RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && codex --version
+
+
+FROM agent-base AS opencode-cli
+ARG OPENCODE_CLI_VERSION=1.18.2
+USER root
+RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && opencode --version \
+    && opencode run --help 2>&1 | tee /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--file([=[:space:],]|$)' /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--format([=[:space:],]|$)' /tmp/opencode-help \
+    && grep -qE '(^|[[:space:],])--model([=[:space:],]|$)' /tmp/opencode-help \
+    && rm -f /tmp/opencode-help
+
+
+FROM agent-base AS vibe-cli
+ARG VIBE_CLI_VERSION=2.20.0
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+ENV UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python
+USER root
+RUN case "${VIBE_CLI_VERSION}" in \
+        *"@"*|*"://"*|*.whl|*.tar.gz) vibe_install_spec="${VIBE_CLI_VERSION}" ;; \
+        *) vibe_install_spec="mistral-vibe==${VIBE_CLI_VERSION}" ;; \
+    esac \
+    && uv tool install "${vibe_install_spec}" \
+    && chmod -R a+rX /opt/uv \
+    && uv cache clean \
+    && vibe --version \
+    && if [ ! -e /usr/local/bin/vibe-acp ]; then ln -s /usr/local/bin/vibe /usr/local/bin/vibe-acp; fi
+
+
+FROM agent-base AS antigravity-cli
+ARG ANTIGRAVITY_CLI_VERSION=latest
+ENV PATH="/home/node/.local/bin:${PATH}" \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true
+RUN if [ "${ANTIGRAVITY_CLI_VERSION}" != "latest" ]; then \
+        echo "Antigravity only supports version 'latest'; got ${ANTIGRAVITY_CLI_VERSION}" >&2; \
+        exit 1; \
+    fi \
+    && curl -fsSL -o /tmp/antigravity-install.sh https://antigravity.google/cli/install.sh \
+    && test -s /tmp/antigravity-install.sh \
+    && mkdir -p /home/node/.local/share/propr \
+    && sha256sum /tmp/antigravity-install.sh > /home/node/.local/share/propr/antigravity-installer.sha256 \
+    && bash -n /tmp/antigravity-install.sh \
+    && bash /tmp/antigravity-install.sh \
+    && rm -f /tmp/antigravity-install.sh \
+    && agy --version | tee /home/node/.local/share/propr/antigravity-cli.version
+
+
+FROM agent-base AS final
+ARG CLAUDE_CLI_VERSION=2.1.211
+ARG CODEX_CLI_VERSION=0.144.5
+ARG ANTIGRAVITY_CLI_VERSION=latest
+ARG OPENCODE_CLI_VERSION=1.18.2
+ARG VIBE_CLI_VERSION=2.20.0
+
+LABEL dev.propr.agent-bundle="true" \
+      dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \
+      dev.propr.agent.codex.version="${CODEX_CLI_VERSION}" \
+      dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
+      dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
+      dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}"
+
+USER root
+COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
+COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
+COPY --from=opencode-cli /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=vibe-cli /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=vibe-cli /usr/local/bin/uvx /usr/local/bin/uvx
+COPY --from=vibe-cli /usr/local/bin/vibe /usr/local/bin/vibe
+COPY --from=vibe-cli /usr/local/bin/vibe-acp /usr/local/bin/vibe-acp
+COPY --from=vibe-cli /opt/uv /opt/uv
+COPY --from=antigravity-cli --chown=node:node /home/node/.local /home/node/.local
+
+ENV UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    PATH="/home/node/.local/bin:${PATH}" \
+    AGY_CLI_DISABLE_AUTO_UPDATE=true
+
+COPY --chown=node:node \
+    scripts/agent-entrypoint.sh \
+    scripts/claude-entrypoint.sh \
+    scripts/codex-entrypoint.sh \
+    scripts/antigravity-entrypoint.sh \
+    scripts/opencode-entrypoint.sh \
+    scripts/vibe-entrypoint.sh \
+    /home/node/
+COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
+COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
+RUN set -eu; \
+    link_npm_bin() { \
+        package="$1"; \
+        bin_name="$2"; \
+        bin_path="$(node -e 'const [pkg, binName] = process.argv.slice(1); const meta = require(`/usr/local/lib/node_modules/${pkg}/package.json`); const bin = typeof meta.bin === "string" ? meta.bin : meta.bin?.[binName]; if (!bin) { console.error(`No bin named ${binName} in ${pkg}`); process.exit(1); } process.stdout.write(bin);' "$package" "$bin_name")"; \
+        ln -sf "../lib/node_modules/${package}/${bin_path}" "/usr/local/bin/${bin_name}"; \
+    }; \
+    link_npm_bin @anthropic-ai/claude-code claude \
+    && link_npm_bin @openai/codex codex \
+    && link_npm_bin opencode-ai opencode \
+    && chmod +x \
+        /home/node/agent-entrypoint.sh \
+        /home/node/claude-entrypoint.sh \
+        /home/node/codex-entrypoint.sh \
+        /home/node/antigravity-entrypoint.sh \
+        /home/node/opencode-entrypoint.sh \
+        /home/node/vibe-entrypoint.sh \
+        /usr/local/bin/opencode-run \
+        /usr/local/bin/propr-vibe-prompt-file \
+    && claude --version \
+    && codex --version \
+    && opencode --version \
+    && vibe --version \
+    && agy --version
+
+USER node
+RUN git config --global user.name "ProPR Agent Bot" \
+    && git config --global user.email "agent-bot@propr.dev" \
+    && git config --global init.defaultBranch main \
+    && git config --global --add safe.directory '*'
+
+WORKDIR /home/node/workspace
+ENTRYPOINT ["/usr/bin/tini", "--", "/home/node/agent-entrypoint.sh"]

@@ -3,7 +3,7 @@ import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS, type AgentType } from '@pr
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
-import { computeContentHash, generateImageTag } from '../agents/version/versionService.js';
+import { computeContentHash, generateAgentBundleImageTag, getAgentCliVersionMatrix } from '../agents/version/versionService.js';
 import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 
 /**
@@ -71,6 +71,24 @@ export async function loadAgents(): Promise<AgentConfig[]> {
 }
 
 /**
+ * Computes the unified agent base image(s) the registry will actually run.
+ *
+ * Saved agent configs may carry a stale dockerImage (the registry recomputes
+ * and rewrites the bundle tag on every refresh), so runtime package
+ * validation and builds must target the freshly computed tag rather than the
+ * persisted values.
+ */
+export async function loadEffectiveAgentBaseImages(): Promise<string[]> {
+    const agents = await getConfig<AgentConfig[]>('agents', []);
+    if (agents.length === 0 && process.env.AGENT_DOCKER_IMAGE) {
+        // With no configured agents the registry registers the default agent
+        // on AGENT_DOCKER_IMAGE when set.
+        return [process.env.AGENT_DOCKER_IMAGE];
+    }
+    return [generateAgentBundleImageTag(getAgentCliVersionMatrix(agents), computeContentHash())];
+}
+
+/**
  * Saves agent configurations to the database.
  */
 export async function saveAgents(agents: AgentConfig[]): Promise<boolean> {
@@ -95,6 +113,7 @@ const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     vibe: AGENT_DEFAULTS.vibe.defaultModels
 };
 const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
+const MANAGED_AGENT_IMAGE_PREFIX = 'propr/agent:';
 
 function migrateCliVersion(agent: AgentConfig): boolean {
     if (agent.cliVersionType) {
@@ -121,10 +140,10 @@ function applyDefaultAgentFields(agent: AgentConfig): boolean {
         logger.info({ agentAlias: agent.alias, configPath: agent.configPath }, 'Added missing agent config path');
     }
 
-    if (!agent.dockerImage) {
+    if (!agent.dockerImage || (agent.dockerImage !== defaults.dockerImage && !agent.dockerImage.startsWith(MANAGED_AGENT_IMAGE_PREFIX))) {
         agent.dockerImage = defaults.dockerImage;
         migrated = true;
-        logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Added missing agent Docker image');
+        logger.info({ agentAlias: agent.alias, dockerImage: agent.dockerImage }, 'Normalized agent Docker image');
     }
 
     if (!agent.supportedModels || agent.supportedModels.length === 0) {
@@ -170,13 +189,24 @@ function updateCodexDefaults(agent: AgentConfig): boolean {
         logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Updated Codex default model');
     }
 
-    if (agent.cliVersionType === 'default' && agent.cliVersionResolved !== AGENT_DEFAULT_VERSIONS.codex) {
-        agent.cliVersionResolved = AGENT_DEFAULT_VERSIONS.codex;
-        agent.dockerImage = generateImageTag('codex', agent.cliVersionResolved, computeContentHash('codex'));
-        migrated = true;
-        logger.info({ agentAlias: agent.alias, cliVersion: agent.cliVersionResolved, dockerImage: agent.dockerImage }, 'Updated Codex default CLI version and Docker image');
-    }
+    return migrated;
+}
 
+function updateDefaultCliVersion(agent: AgentConfig): boolean {
+    if (agent.cliVersionType !== 'default') return false;
+    const defaultVersion = AGENT_DEFAULT_VERSIONS[agent.type];
+    let migrated = false;
+    if (agent.cliVersionResolved !== defaultVersion) {
+        agent.cliVersionResolved = defaultVersion;
+        migrated = true;
+    }
+    if (agent.cliVersion !== undefined) {
+        delete agent.cliVersion;
+        migrated = true;
+    }
+    if (migrated) {
+        logger.info({ agentAlias: agent.alias, type: agent.type, cliVersion: defaultVersion }, 'Updated default agent CLI version');
+    }
     return migrated;
 }
 
@@ -269,6 +299,7 @@ export function migrateAgentConfig(agent: AgentConfig): boolean {
         migrated = addMissingModels(agent, VIBE_CURRENT_MODELS, 'Added current Mistral Vibe models to agent') || migrated;
     }
     migrated = updateCodexDefaults(agent) || migrated;
+    migrated = updateDefaultCliVersion(agent) || migrated;
     migrated = updateAntigravityDefaults(agent) || migrated;
     migrated = normalizeOpenCodeModelIds(agent) || migrated;
     migrated = removeDeprecatedModels(agent) || migrated;
@@ -282,6 +313,14 @@ export async function migrateAgentConfigs(): Promise<boolean> {
 
         for (const agent of agents) {
             migrated = migrateAgentConfig(agent) || migrated;
+        }
+
+        const bundleImage = generateAgentBundleImageTag(getAgentCliVersionMatrix(agents), computeContentHash());
+        for (const agent of agents) {
+            if (agent.dockerImage !== bundleImage) {
+                agent.dockerImage = bundleImage;
+                migrated = true;
+            }
         }
 
         if (migrated) {

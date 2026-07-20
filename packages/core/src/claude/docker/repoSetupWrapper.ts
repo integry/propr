@@ -8,6 +8,14 @@ const ENTRYPOINT_PATHS: Record<AgentType, string> = {
     vibe: '/home/node/vibe-entrypoint.sh'
 };
 
+const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
+    claude: { name: 'ProPR Claude Bot', email: 'claude-bot@propr.dev' },
+    codex: { name: 'ProPR Codex Bot', email: 'codex-bot@propr.dev' },
+    antigravity: { name: 'ProPR Antigravity Bot', email: 'antigravity-bot@propr.dev' },
+    opencode: { name: 'ProPR OpenCode Bot', email: 'opencode-bot@propr.dev' },
+    vibe: { name: 'ProPR Vibe Bot', email: 'vibe-bot@propr.dev' }
+};
+
 const WORKSPACE_PATH = '/home/node/workspace';
 const DEFAULT_CACHE_ROOT = '/tmp/git-processor/propr-cache';
 
@@ -26,9 +34,9 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
 
     echo "Running ProPR repo setup hook: $setup_script" >&2
     set +e
-    if [ "$(id -u)" = "0" ] && command -v sudo >/dev/null 2>&1 && id node >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
-        sudo -E -u node -H /bin/bash "$setup_script" </dev/null >&2
+        su-exec node env HOME=/home/node USER=node LOGNAME=node /bin/bash "$setup_script" </dev/null >&2
         setup_exit=$?
     else
         cd "$PROPR_WORKSPACE"
@@ -63,10 +71,15 @@ export function wrapDockerRunArgsWithRepoSetup(
     const beforeImage = dockerArgs.slice(0, imageIndex);
     const afterImage = dockerArgs.slice(imageIndex + 1);
     const cacheDir = `${DEFAULT_CACHE_ROOT}/${agentType}`;
+    const gitIdentity = GIT_IDENTITIES[agentType];
     const setupEnv = [
         '-e', `PROPR_AGENT_TYPE=${agentType}`,
         '-e', `PROPR_WORKSPACE=${WORKSPACE_PATH}`,
-        '-e', `PROPR_CACHE_DIR=${cacheDir}`
+        '-e', `PROPR_CACHE_DIR=${cacheDir}`,
+        '-e', `GIT_AUTHOR_NAME=${gitIdentity.name}`,
+        '-e', `GIT_AUTHOR_EMAIL=${gitIdentity.email}`,
+        '-e', `GIT_COMMITTER_NAME=${gitIdentity.name}`,
+        '-e', `GIT_COMMITTER_EMAIL=${gitIdentity.email}`
     ];
     const beforeImageWithSetupEnv = beforeImage[0] === 'run'
         ? [beforeImage[0], ...setupEnv, ...beforeImage.slice(1)]

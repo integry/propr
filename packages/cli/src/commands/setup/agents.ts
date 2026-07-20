@@ -220,8 +220,8 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager): A
       try {
         const { plan, error } = planAgentLogin(type, cfg, workspaceDir, orch.validateDockerBindPath);
         if (error || !plan) return { available: false, success: false, detail: error };
-        // The image must be present locally; setup pulls selected agent images
-        // earlier, but a failed pull would leave it absent.
+        // The image must be present locally; setup pulls the unified agent image
+        // when any agent is selected, but a failed pull would leave it absent.
         if (orch.docker(["images", "-q", plan.image], { capture: true }).stdout.trim().length === 0) {
           return { available: true, success: false, detail: `image ${plan.image} not present locally — run \`propr images pull\`` };
         }

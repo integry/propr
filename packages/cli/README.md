@@ -105,7 +105,7 @@ propr init
 cd .propr && npm install <package>
 ```
 
-The generated `.propr/setup.sh` runs before each implementation execution. Edit it to install system tools with commands such as `sudo apk add --no-cache jq`.
+The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
 
 ### Authentication
 
@@ -277,7 +277,7 @@ Dynamic OpenCode GitHub labels use the format `llm-<agent-alias>~<propr-opencode
   "type": "opencode",
   "models": ["opencode-minimax-m3-free"],
   "defaultModel": "opencode-minimax-m3-free",
-  "dockerImage": "propr/agent-opencode:latest",
+  "dockerImage": "propr/agent:latest",
   "configPath": "/home/your-user/.config/opencode",
   "enabled": true,
   "envVars": {

@@ -513,7 +513,7 @@ function latestTagFor(imageTag) {
 }
 
 export function tagAgentLatest(key, imageTag) {
-    if (!key.startsWith('agent-')) return;
+    if (key !== 'agent') return;
     const latestTag = latestTagFor(imageTag);
     if (!latestTag || latestTag === imageTag) return;
     const res = docker(['tag', imageTag, latestTag], { capture: true });
@@ -1558,7 +1558,7 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
         // bare manifest tag so an override isn't pulled twice (here + on demand).
         const tag = key === 'cloudflared' ? cfg.cloudflaredImage : manifestTag;
 
-        if (key.startsWith('agent-') && skipAgentPull) {
+        if (key === 'agent' && skipAgentPull) {
             if (imagePresentLocally(tag)) {
                 onLog(`  · ${tag} (local, pull skipped via PROPR_SKIP_AGENT_PULL)`);
                 tagAgentLatest(key, tag);
@@ -1598,8 +1598,8 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
         } else if (!(freshness.status === 'unknown' && freshness.localOnly)) {
             onLog(`  · ${tag}`);
         }
-        const pulled = docker(['pull', tag], { capture: key.startsWith('agent-') });
-        if (key.startsWith('agent-') && pulled.status !== 0) {
+        const pulled = docker(['pull', tag], { capture: key === 'agent' });
+        if (key === 'agent' && pulled.status !== 0) {
             failedAgentImages.push(tag);
             onLog(`  · ${tag} (pull failed — jobs using this agent will fail until the image is available)`);
             continue;

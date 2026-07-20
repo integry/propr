@@ -45,7 +45,7 @@ describe('OpenCode API routes', () => {
             const [agent] = params.processedAgents ?? [];
             assert.equal(agent?.type, 'opencode');
             assert.equal(agent?.cliVersionType, 'default');
-            assert.equal(agent?.cliVersionResolved, '1.17.10');
+            assert.equal(agent?.cliVersionResolved, '1.18.2');
             return { status: 200, body: { success: true, agents: params.processedAgents } };
         });
         const routes = createAgentsRoutes({
@@ -63,7 +63,7 @@ describe('OpenCode API routes', () => {
                     type: 'opencode',
                     alias: 'opencode',
                     enabled: true,
-                    dockerImage: 'propr/agent-opencode:latest',
+                    dockerImage: 'propr/agent:latest',
                     configPath: '~/.config/opencode',
                     supportedModels: ['opencode-minimax-m3-free', 'openai/gpt-5.5'],
                     defaultModel: 'openai/gpt-5.5'
@@ -100,7 +100,7 @@ describe('OpenCode API routes', () => {
                     type: 'opencode',
                     alias: 'opencode',
                     enabled: true,
-                    dockerImage: 'propr/agent-opencode:latest',
+                    dockerImage: 'propr/agent:latest',
                     configPath: '~/.config/opencode',
                     supportedModels: ['opencode-minimax-m3-free'],
                     defaultModel: 'opencode-minimax-m3-free',
@@ -141,7 +141,7 @@ describe('OpenCode API routes', () => {
         });
     });
 
-    test('GET /api/agents/opencode/images uses the OpenCode image name', async () => {
+    test('GET /api/agents/opencode/images uses the unified image name', async () => {
         const routes = createAgentVersionRoutes({
             listAgentImages: async agentType => {
                 assert.equal(agentType, 'opencode');
@@ -157,7 +157,7 @@ describe('OpenCode API routes', () => {
             agentType: 'opencode',
             images: [{
                 tag: '1.17.10-abc123',
-                fullName: 'propr-opencode:1.17.10-abc123'
+                fullName: 'propr/agent:1.17.10-abc123'
             }]
         });
     });

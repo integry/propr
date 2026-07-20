@@ -8,7 +8,7 @@ project context.
 > ProPR installs, configures, and invokes the Vibe CLI. It is **not**
 > authoritative upstream documentation. Settings and config paths below were
 > observed against `mistral-vibe==2.12.1` (the version pinned in
-> `Dockerfile.vibe`) and may differ in other releases. Always verify against
+> `Dockerfile.agent`) and may differ in other releases. Always verify against
 > your installed version with `vibe --help`.
 
 > **Verified behavior:** Install, auth sub-commands, model selection, and
@@ -162,7 +162,7 @@ propr agent add vibe-prod -t vibe -m mistral-medium-3.5,devstral-2512 -d mistral
 
 ### Docker Configuration
 
-The default Docker image is `propr/agent-vibe:latest`. The container mounts
+The default Docker image is `propr/agent:latest`. The container mounts
 `~/.vibe` from the host for credential access.
 
 ### Environment Variables
@@ -176,5 +176,5 @@ MISTRAL_API_KEY=your-api-key
 Or mount the credentials directory:
 
 ```bash
-docker run -v ~/.vibe:/home/node/.vibe propr/agent-vibe:latest
+docker run -e PROPR_AGENT_TYPE=vibe -v ~/.vibe:/home/node/.vibe propr/agent:latest
 ```

@@ -229,6 +229,63 @@ test('falls back to the 5-minute default when the env override is invalid', asyn
     }
 });
 
+test('keeps the routing socket alive when a transport pong arrives before the deadline', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({ pingIntervalMs: 100, pongTimeoutMs: 50 }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        mock.timers.tick(100);
+        assert.equal(socket.pings, 1);
+        mock.timers.tick(49);
+        socket.emit('pong');
+        mock.timers.tick(1);
+
+        assert.equal(socket.terminated, false, 'a timely pong clears the stale-socket deadline');
+        assert.equal(service.getStatus().connected, true);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
+test('terminates and reconnects a half-open routing socket that misses its pong deadline', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({
+            pingIntervalMs: 100,
+            pongTimeoutMs: 50,
+            reconnectDelayMs: 25,
+            maxReconnectDelayMs: 25,
+        }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        mock.timers.tick(100);
+        assert.equal(socket.pings, 1);
+        mock.timers.tick(50);
+
+        assert.equal(socket.terminated, true, 'an unanswered ping terminates the stale socket');
+        assert.equal(service.getStatus().connected, false, 'status changes immediately at the pong deadline');
+
+        // Real `ws.terminate()` emits close. Drive the fake's close event and
+        // verify that the existing reconnect path opens a replacement socket.
+        socket.emit('close', 1006, Buffer.from('pong timeout'));
+        mock.timers.tick(24);
+        assert.equal(FakeWebSocket.instances.length, 1);
+        mock.timers.tick(1);
+        assert.equal(FakeWebSocket.instances.length, 2);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
 test('processes an event frame with inline payload and ACKs only after processing', async () => {
     // Hold dispatch open with a deferred promise so we can assert the ACK is
     // withheld while processing is still pending, then released once it resolves.

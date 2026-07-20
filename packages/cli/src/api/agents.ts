@@ -16,14 +16,8 @@ export type AgentType = "claude" | "codex" | "antigravity" | "opencode" | "vibe"
 
 export const AGENT_TYPES: readonly AgentType[] = ["claude", "codex", "antigravity", "opencode", "vibe"] as const;
 
-// Keep in sync with packages/core/src/agents/version/types.ts AGENT_IMAGE_NAMES
-const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
-  claude: "propr/agent-claude",
-  codex: "propr/agent-codex",
-  antigravity: "propr/agent-antigravity",
-  opencode: "propr/agent-opencode",
-  vibe: "propr/agent-vibe",
-};
+// Keep in sync with the core unified agent image name.
+const AGENT_IMAGE_NAME = "propr/agent";
 
 /**
  * Configuration for a specific agent instance.
@@ -50,7 +44,7 @@ export interface AgentConfig {
   enabled: boolean;
 
   /**
-   * Docker image for the agent (e.g., 'propr/agent-claude:latest').
+   * Docker image for the agent (e.g., 'propr/agent:latest').
    */
   dockerImage: string;
 
@@ -212,7 +206,7 @@ export async function addAgent(
     type: options.type,
     alias: options.alias,
     enabled: options.enabled !== undefined ? options.enabled : true,
-    dockerImage: options.dockerImage || getDefaultDockerImage(options.type),
+    dockerImage: options.dockerImage || getDefaultDockerImage(),
     configPath,
     supportedModels: options.models,
     defaultModel: options.defaultModel || options.models[0],
@@ -317,14 +311,12 @@ export async function setAgentEnabled(
 }
 
 /**
- * Gets the default Docker image for an agent type.
+ * Gets the default unified Docker image.
  *
- * @param type - The agent type.
  * @returns The default Docker image name.
  */
-function getDefaultDockerImage(type: AgentType): string {
-  const name = AGENT_IMAGE_NAMES[type];
-  return name ? `${name}:latest` : `${type}-code-processor:latest`;
+function getDefaultDockerImage(): string {
+  return `${AGENT_IMAGE_NAME}:latest`;
 }
 
 /**

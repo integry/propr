@@ -53,11 +53,7 @@ The launcher starts these images, pinned to the release version in its manifest:
 | `propr/app` | Server image; the start command selects the role (daemon, worker, analysis worker, indexing worker, API) |
 | `propr/ui` | Web UI static bundle |
 | `propr/docs` | Documentation site (started only with `DOCS_ENABLED=true`) |
-| `propr/agent-claude` | Claude Code execution container |
-| `propr/agent-codex` | Codex execution container |
-| `propr/agent-antigravity` | Antigravity execution container |
-| `propr/agent-opencode` | OpenCode execution container |
-| `propr/agent-vibe` | Mistral Vibe execution container |
+| `propr/agent` | Unified Claude, Codex, Antigravity, OpenCode, and Vibe execution container |
 | `redis:7-alpine` | Queue and cache state |
 
 Images are published to Docker Hub under the `propr/` namespace and mirrored to GHCR under `ghcr.io/proprdev/*` (the namespace is set by `GHCR_NS` in `scripts/build-images.sh`).
@@ -276,7 +272,7 @@ The SQLite database in `data/` is the primary application state; `.env` and the 
 ### CLI update path
 
 Update the CLI package, then restart the stack. The CLI manifest pins exact
-image versions; the new version pulls the matching service and agent images:
+image versions; the new version pulls the matching service images and unified agent image:
 
 ```bash
 sudo npm update -g propr-cli
@@ -304,7 +300,7 @@ Pull the newer launcher image:
 docker pull propr/launcher:latest
 ```
 
-Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service and agent images on startup.
+Stop the running launcher (Ctrl-C, or stop its container — it stops and removes the stack containers on shutdown), then start it again with the same `docker run` command. The new launcher pulls the newer pinned service images and unified agent image on startup.
 
 ---
 

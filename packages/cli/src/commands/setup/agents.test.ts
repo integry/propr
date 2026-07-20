@@ -21,7 +21,7 @@ function agent(type: AgentConfig["type"], alias: string, enabled = true): AgentC
     type,
     alias,
     enabled,
-    dockerImage: `propr/agent-${type}:latest`,
+    dockerImage: "propr/agent:latest",
     configPath: `/home/u/.${type}`,
     supportedModels: ["m1"],
   };

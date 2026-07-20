@@ -14,7 +14,7 @@ const opencodeConfig: AgentConfig = {
     type: 'opencode',
     alias: 'opencode',
     enabled: true,
-    dockerImage: 'propr/agent-opencode:latest',
+    dockerImage: 'propr/agent:latest',
     configPath: '~/.config/opencode',
     supportedModels: ['opencode-minimax-m3-free'],
     defaultModel: 'opencode-minimax-m3-free'
@@ -28,6 +28,7 @@ let closeConnection: typeof import('../packages/core/src/db/connection.js').clos
 let saveAgents: typeof import('../packages/core/src/config/configManager.js').saveAgents;
 let loadAgents: typeof import('../packages/core/src/config/configManager.js').loadAgents;
 let saveSettings: typeof import('../packages/core/src/config/configManager.js').saveSettings;
+let saveAgentRuntimePackageState: typeof import('../packages/core/src/agents/runtime/agentRuntimePackages.js').saveAgentRuntimePackageState;
 
 before(async () => {
     ({ AgentRegistry } = await import('../packages/core/src/agents/AgentRegistry.js'));
@@ -35,6 +36,7 @@ before(async () => {
     ({ ClaudeAgent } = await import('../packages/core/src/agents/impl/ClaudeAgent.js'));
     ({ runMigrations, closeConnection } = await import('../packages/core/src/db/connection.js'));
     ({ saveAgents, loadAgents, saveSettings } = await import('../packages/core/src/config/configManager.js'));
+    ({ saveAgentRuntimePackageState } = await import('../packages/core/src/agents/runtime/agentRuntimePackages.js'));
     await runMigrations();
 });
 
@@ -51,7 +53,11 @@ after(async () => {
 });
 
 function skipImageChecks(registry: InstanceType<typeof AgentRegistry>): void {
-    (registry as unknown as { ensureAgentImage: () => Promise<boolean> }).ensureAgentImage = async () => true;
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => 'propr/agent:latest';
+}
+
+function failImageChecks(registry: InstanceType<typeof AgentRegistry>): void {
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string | null> }).ensureUnifiedAgentImage = async () => null;
 }
 
 function stubDefaultClaudeRegistration(registry: InstanceType<typeof AgentRegistry>): void {
@@ -64,7 +70,7 @@ function stubDefaultClaudeRegistration(registry: InstanceType<typeof AgentRegist
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: 'propr/agent-claude:latest',
+            dockerImage: 'propr/agent:latest',
             configPath: '~/.claude',
             supportedModels: ['claude-sonnet-4-6'],
             defaultModel: undefined
@@ -89,6 +95,99 @@ test('AgentRegistry registers enabled OpenCode configs by alias', async () => {
         registry.getAllAgents().some(registeredAgent => registeredAgent instanceof OpenCodeAgent),
         'AgentRegistry factory should construct an OpenCodeAgent from an OpenCode config'
     );
+});
+
+test('AgentRegistry degrades without throwing when unified image is unavailable', async () => {
+    const registry = AgentRegistry.getInstance();
+    failImageChecks(registry);
+
+    await registry.refresh();
+
+    assert.strictEqual(registry.isInitialized(), true);
+    assert.deepStrictEqual(registry.getAllAgents(), []);
+});
+
+test('AgentRegistry exposes unified image degraded status', async () => {
+    const registry = AgentRegistry.getInstance();
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string | null> }).ensureUnifiedAgentImage = async function fail(this: {
+        unavailableUnifiedAgentImage: { imageTag: string; error: string; recordedAt: string };
+    }) {
+        this.unavailableUnifiedAgentImage = {
+            imageTag: 'propr/agent:bundle-test',
+            error: 'pull failed',
+            recordedAt: '2026-07-17T00:00:00.000Z'
+        };
+        return null;
+    };
+
+    await registry.refresh();
+
+    assert.deepStrictEqual(registry.getOperationalStatus(), {
+        unifiedAgentImage: {
+            status: 'unavailable',
+            imageTag: 'propr/agent:bundle-test',
+            error: 'pull failed',
+            recordedAt: '2026-07-17T00:00:00.000Z'
+        }
+    });
+});
+
+test('AgentRegistry refreshes when runtime package state changes', async () => {
+    const registry = AgentRegistry.getInstance();
+    let image = 'propr/agent:first';
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => image;
+
+    await registry.refresh();
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:first');
+
+    image = 'propr/agent:second';
+    await saveAgentRuntimePackageState({
+        installationId: 'test-runtime',
+        packages: [],
+        activePackages: [],
+        status: 'disabled',
+        images: {},
+        updatedAt: '2026-07-17T15:45:00.000Z'
+    });
+
+    await registry.ensureInitialized();
+    await registry.waitForPendingRefresh();
+
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
+});
+
+test('AgentRegistry refreshes after runtime package state version capture fails', async () => {
+    const registry = AgentRegistry.getInstance();
+    let image = 'propr/agent:first';
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => image;
+
+    await registry.refresh();
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:first');
+
+    image = 'propr/agent:second';
+    (registry as unknown as { runtimePackagesUpdatedAt?: string }).runtimePackagesUpdatedAt = undefined;
+    await registry.ensureInitialized();
+    await registry.waitForPendingRefresh();
+
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
+});
+
+test('AgentRegistry throttles runtime package state checks on repeated initialization guards', async () => {
+    const registry = AgentRegistry.getInstance();
+    skipImageChecks(registry);
+
+    await registry.refresh();
+
+    let checks = 0;
+    (registry as unknown as { hasRuntimePackageStateChanged: () => Promise<boolean> }).hasRuntimePackageStateChanged = async () => {
+        checks += 1;
+        return false;
+    };
+
+    await registry.ensureInitialized();
+    await registry.ensureInitialized();
+
+    assert.strictEqual(checks, 1);
 });
 
 test('AgentRegistry prefixes dynamic OpenCode provider models during migration', async () => {

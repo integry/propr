@@ -1,10 +1,15 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert';
 
-process.env.CLAUDE_DOCKER_IMAGE = 'claude-code-processor:test';
+process.env.AGENT_DOCKER_IMAGE = 'propr/agent:test';
 process.env.CLAUDE_CONFIG_PATH = '/tmp/test-claude-config';
 process.env.CLAUDE_MAX_TURNS = '5';
 process.env.CLAUDE_TIMEOUT_MS = '60000';
+
+after(async () => {
+    const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+    await closeConnection();
+});
 
 interface TestIssue {
     number: number;
@@ -139,16 +144,16 @@ test('Claude output parsing handles various formats', () => {
 
 test('Environment configuration has valid defaults', () => {
     const defaultConfig = {
-        CLAUDE_DOCKER_IMAGE: process.env.CLAUDE_DOCKER_IMAGE || 'claude-code-processor:latest',
+        AGENT_DOCKER_IMAGE: process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest',
         CLAUDE_MAX_TURNS: parseInt(process.env.CLAUDE_MAX_TURNS || '10', 10),
         CLAUDE_TIMEOUT_MS: parseInt(process.env.CLAUDE_TIMEOUT_MS || '300000', 10)
     };
     
-    assert.strictEqual(defaultConfig.CLAUDE_DOCKER_IMAGE, 'claude-code-processor:test');
+    assert.strictEqual(defaultConfig.AGENT_DOCKER_IMAGE, 'propr/agent:test');
     assert.strictEqual(defaultConfig.CLAUDE_MAX_TURNS, 5);
     assert.strictEqual(defaultConfig.CLAUDE_TIMEOUT_MS, 60000);
     
-    assert.strictEqual(typeof defaultConfig.CLAUDE_DOCKER_IMAGE, 'string');
+    assert.strictEqual(typeof defaultConfig.AGENT_DOCKER_IMAGE, 'string');
     assert.strictEqual(typeof defaultConfig.CLAUDE_MAX_TURNS, 'number');
     assert.strictEqual(typeof defaultConfig.CLAUDE_TIMEOUT_MS, 'number');
     

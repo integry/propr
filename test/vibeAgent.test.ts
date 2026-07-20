@@ -37,7 +37,7 @@ function createAgent(overrides: Partial<AgentConfig> = {}): VibeAgent {
         type: 'vibe',
         alias: 'vibe-test',
         enabled: true,
-        dockerImage: 'propr/agent-vibe:2.12.1-abcdef',
+        dockerImage: 'propr/agent:bundle-test',
         configPath: '/tmp/missing-vibe-config',
         supportedModels: ['mistral-medium-3.5'],
         defaultModel: 'mistral-medium-3.5',
@@ -346,9 +346,9 @@ describe('VibeAgent Docker args', () => {
             assert.ok(args.includes('VIBE_ACTIVE_MODEL=mistral-medium-3.5'));
             assert.ok(args.includes('VIBE_MAX_TURNS=5'));
             assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
-            assert.ok(!args.includes('PROPR_AGENT_TYPE=vibe'));
+            assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
 
-            const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
+            const imageIndex = args.indexOf('propr/agent:bundle-test');
             assert.deepStrictEqual(args.slice(imageIndex + 1), ['--output', 'json']);
         } finally {
             fs.rmSync(configPath, { recursive: true, force: true });
@@ -411,7 +411,7 @@ describe('VibeAgent Docker args', () => {
             assert.ok(args.includes('VIBE_MAX_TURNS=12'));
             assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
 
-            const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
+            const imageIndex = args.indexOf('propr/agent:bundle-test');
             assert.deepStrictEqual(args.slice(imageIndex + 4), ['vibe', '--plain', '--output', 'json', 'two words']);
         });
     });
@@ -478,10 +478,12 @@ describe('VibeAgent Docker args', () => {
         assert.doesNotMatch(script, /sudo -E -u node -H/);
     });
 
-    test('Vibe image installs su-exec for no-new-privileges user switching', () => {
-        const dockerfile = fs.readFileSync(path.resolve('Dockerfile.vibe'), 'utf8');
+    test('Vibe image provides a su-exec-compatible helper for no-new-privileges user switching', () => {
+        const dockerfile = fs.readFileSync(path.resolve('Dockerfile.agent'), 'utf8');
 
-        assert.match(dockerfile, /apk add --no-cache[^\n]*su-exec/);
+        assert.match(dockerfile, /apt-get install -y[\s\S]*--no-install-recommends[\s\S]*\bgosu\b/);
+        assert.match(dockerfile, /ln -sf "\$\(command -v gosu\)" \/usr\/local\/bin\/su-exec/);
+        assert.match(dockerfile, /if \[ ! -e \/usr\/local\/bin\/vibe-acp \]; then ln -s \/usr\/local\/bin\/vibe \/usr\/local\/bin\/vibe-acp; fi/);
     });
 
     test('propagates Mistral API key through the explicit credential path', () => {
@@ -518,7 +520,7 @@ describe('VibeAgent Docker args', () => {
             process.env.MISTRAL_API_KEY = 'test-key';
             const args = buildArgs(createAgent(), { maxTurns: 12 });
 
-            const imageIndex = args.indexOf('propr/agent-vibe:2.12.1-abcdef');
+            const imageIndex = args.indexOf('propr/agent:bundle-test');
             assert.deepStrictEqual(
                 args.slice(imageIndex + 4),
                 ['--output', 'json']

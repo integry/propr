@@ -80,7 +80,7 @@ npm run images:build:push   # build and push to registries
 npm run images:smoke        # smoke-test built images
 ```
 
-The build script produces `app`, `ui`, `docs`, `agent-base`, the five agent images, and the launcher, and writes the launcher's pinned image manifest. Publishing requires registry login (Docker Hub `propr/`, GHCR `ghcr.io/proprdev/`) and should follow the release process.
+The build script produces `app`, `ui`, `docs`, the unified `agent` image, and the launcher, and writes the launcher's pinned image manifest. Publishing requires registry login (Docker Hub `propr/`, GHCR `ghcr.io/proprdev/`) and should follow the release process.
 
 ## Maintenance Helpers
 

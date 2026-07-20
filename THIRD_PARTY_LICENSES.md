@@ -4,12 +4,34 @@ Third-Party Licenses
 This file lists every third-party package bundled in the Propr Docker images,
 its license, and (where required) the full license text.
 
-Generated: 2026-06-30
+Generated: 2026-07-16
 See NOTICE for a higher-level summary and end-user obligations.
 
 ---
 
-## @anthropic-ai/claude-code@2.1.191
+## Debian base image and system packages
+
+The unified `propr/agent` image is based on `node:22-bookworm-slim` and
+installs system packages from Debian repositories,
+including bash, build-essential, git, curl, ca-certificates, iptables,
+procps, tini, ripgrep, gosu, and python3. GitHub CLI (`gh`) is installed from
+the official GitHub CLI apt repository at cli.github.com.
+See the Debian package tracker for per-package licensing details:
+https://tracker.debian.org/
+
+---
+
+## Alpine base image and system packages
+
+The `propr/app` and `propr/launcher` images still use Alpine Linux base images
+and install Alpine system packages including git, curl, jq, sudo, docker-cli,
+tini, python3, make, and g++. See Alpine package metadata for per-package
+licensing details:
+https://pkgs.alpinelinux.org/packages
+
+---
+
+## @anthropic-ai/claude-code@2.1.211
 
 ```
 © Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.
@@ -28,24 +50,24 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ```
 
-## @openai/codex (installed in propr/agent-codex image)
+## @openai/codex (installed in propr/agent image)
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/openai/codex
 
-## Antigravity CLI (installed in propr/agent-antigravity image)
+## Antigravity CLI (installed in propr/agent image)
 
 Licensed under Google Terms of Service for Google Products and Antigravity
 supplemental terms.
 Source: https://codeassist.google/
 
-## opencode-ai (installed in propr/agent-opencode image)
+## opencode-ai (installed in propr/agent image)
 
 Licensed under the MIT License (verified from the published npm package metadata).
 Source: https://github.com/sst/opencode
 
 
-## mistral-vibe (installed in propr/agent-vibe image)
+## mistral-vibe (installed in propr/agent image)
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/mistralai/mistral-vibe
@@ -270,8 +292,8 @@ below is bundled in the propr/app image under the stated license.
 ├─ ISC: 14
 ├─ Apache-2.0: 7
 ├─ BSD-3-Clause: 4
-├─ Custom: https://www.npmjs.com/package/: 2
-├─ Custom: https://img.shields.io/badge/Node.js-18: 1
+├─ Custom: https://www.npmjs.com/package/: 1
+├─ Custom: https://img.shields.io/badge/Node.js-22: 1
 ├─ UNKNOWN: 1
 ├─ BSD-2-Clause: 1
 ├─ (MIT OR WTFPL): 1
@@ -286,9 +308,8 @@ below is bundled in the propr/app image under the stated license.
 
 ```
 "module name","license","repository"
-"@anthropic-ai/claude-code-linux-x64-musl@2.1.191","Custom: https://www.npmjs.com/package/",""
-"@anthropic-ai/claude-code-linux-x64@2.1.191","Custom: https://www.npmjs.com/package/",""
-"@anthropic-ai/claude-code@2.1.191","Custom: https://img.shields.io/badge/Node.js-18",""
+"@anthropic-ai/claude-code-linux-x64@2.1.211","Custom: https://www.npmjs.com/package/",""
+"@anthropic-ai/claude-code@2.1.211","Custom: https://img.shields.io/badge/Node.js-22",""
 "@anthropic-ai/sdk@0.71.2","MIT","https://github.com/anthropics/anthropic-sdk-typescript"
 "@babel/runtime@7.28.4","MIT","https://github.com/babel/babel"
 "@dnd-kit/accessibility@3.1.1","MIT","https://github.com/clauderic/dnd-kit"

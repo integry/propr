@@ -8,12 +8,24 @@ import { AntigravityAgent } from './impl/AntigravityAgent.js';
 import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
-import { ensureAgentDockerImage, ensureVersionedAgentImage } from '../claude/docker/dockerExecutor.js';
+import { ensureAgentBundleImage, ensureAgentDockerImage } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
-import { computeContentHash, generateImageTag, getDockerTagComponent } from './version/versionService.js';
-import { AGENT_DEFAULT_VERSIONS, AGENT_IMAGE_NAMES } from './version/types.js';
+import { computeContentHash, getAgentCliVersionMatrix, getDefaultAgentCliVersionMatrix } from './version/versionService.js';
+import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
+import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
+
+export interface AgentRegistryOperationalStatus {
+    unifiedAgentImage: {
+        status: 'ready' | 'unavailable';
+        imageTag?: string;
+        error?: string;
+        recordedAt?: string;
+    };
+}
+
+const RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS = 5000;
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -26,6 +38,11 @@ export class AgentRegistry {
     private agentsByAlias: Map<string, Agent> = new Map(); // Map by Alias
     private defaultAgentAlias: string | null = null; // From settings.default_agent_alias
     private initialized = false;
+    private runtimePackagesUpdatedAt: string | undefined;
+    private runtimePackageStateCheckAfter = 0;
+    private runtimePackageStateUnavailable = false;
+    private pendingBackgroundRefresh: Promise<void> | null = null;
+    private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -70,7 +87,16 @@ export class AgentRegistry {
                 // Fallback: Create default Claude agent from ENV vars if no config exists
                 logger.info('No agents configured, creating default Claude agent from environment');
                 await this.registerDefaultAgent();
+                await this.captureRuntimePackageStateVersion();
                 this.initialized = true;
+                return;
+            }
+
+            const bundleImage = await this.ensureUnifiedAgentImage(configs);
+            if (!bundleImage) {
+                await this.captureRuntimePackageStateVersion();
+                this.initialized = true;
+                logger.warn('Agent registry initialized without agents because the unified agent image is unavailable');
                 return;
             }
 
@@ -91,17 +117,7 @@ export class AgentRegistry {
                         continue;
                     }
 
-                    // Ensure Docker image exists before registering agent
-                    const imageReady = await this.ensureAgentImage(config);
-
-                    if (!imageReady) {
-                        logger.error({
-                            agentAlias: config.alias,
-                            agentType: config.type,
-                            dockerImage: config.dockerImage
-                        }, 'Failed to ensure Docker image, skipping agent registration');
-                        continue;
-                    }
+                    config.dockerImage = bundleImage;
 
                     const agent = this.createAgentFromConfig(config);
                     this.agents.set(config.id, agent);
@@ -124,6 +140,7 @@ export class AgentRegistry {
                 }
             }
 
+            await this.captureRuntimePackageStateVersion();
             this.initialized = true;
             logger.info({
                 totalAgents: this.agents.size,
@@ -137,6 +154,7 @@ export class AgentRegistry {
             this.agents.clear();
             this.agentsByAlias.clear();
             await this.registerDefaultAgent();
+            await this.captureRuntimePackageStateVersion();
             this.initialized = true;
         }
     }
@@ -222,73 +240,102 @@ export class AgentRegistry {
         return this.initialized;
     }
 
+    getOperationalStatus(): AgentRegistryOperationalStatus {
+        if (this.unavailableUnifiedAgentImage) {
+            return {
+                unifiedAgentImage: {
+                    status: 'unavailable',
+                    ...this.unavailableUnifiedAgentImage
+                }
+            };
+        }
+        return { unifiedAgentImage: { status: 'ready' } };
+    }
+
     /**
      * Ensures the registry is initialized, refreshing if necessary.
+     *
+     * When a runtime package state change is detected on an already-initialized
+     * registry, the refresh runs in the background: a refresh may pull or build
+     * the bundle image (minutes), and callers sit on request-serving paths, so
+     * they keep using the current agents until the refresh completes.
      */
     async ensureInitialized(): Promise<void> {
         if (!this.initialized) {
             await this.refresh();
+            return;
         }
+        const now = Date.now();
+        if (now < this.runtimePackageStateCheckAfter) return;
+        this.runtimePackageStateCheckAfter = now + RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS;
+        if (this.pendingBackgroundRefresh || !(await this.hasRuntimePackageStateChanged())) return;
+        logger.info('Refreshing agent registry in the background because agent runtime package state changed');
+        this.pendingBackgroundRefresh = this.refresh()
+            .catch(error => {
+                logger.error({ error: (error as Error).message }, 'Background agent registry refresh failed');
+            })
+            .finally(() => {
+                this.pendingBackgroundRefresh = null;
+            });
     }
 
     /**
-     * Ensures the Docker image for an agent config is ready.
-     * Uses versioned image if version config is present, otherwise uses default.
+     * Resolves once any in-flight background refresh has completed.
+     * Primarily for shutdown paths and tests that need a settled registry.
      */
-    private async ensureAgentImage(config: AgentConfig): Promise<boolean> {
-        if (config.type === 'antigravity') {
-            if (config.cliVersionType === 'default') {
-                delete config.cliVersion;
-            } else {
-                config.cliVersion = 'latest';
-            }
-            config.cliVersionResolved = AGENT_DEFAULT_VERSIONS.antigravity;
-        }
-        const cliVersionResolved = config.cliVersionResolved;
-        if (this.isManagedVersionedImage(config, cliVersionResolved)) {
-            const contentHash = computeContentHash(config.type);
-            const expectedImageTag = generateImageTag(config.type, cliVersionResolved!, contentHash);
-            const result = await ensureVersionedAgentImage(
-                config.type,
-                cliVersionResolved!,
-                contentHash
-            );
-            if (result.success) {
-                config.dockerImage = result.imageTag || expectedImageTag;
-            }
-            return result.success;
-        }
-
-        // Prefer the user-configured dockerImage (pull-first, build fallback).
-        // This matters for production images like propr/agent-claude:latest.
-        // The versioned-build path below only works when Dockerfiles are present.
-        if (config.dockerImage && await ensureAgentDockerImage(config.type, config.dockerImage)) {
-            return true;
-        }
-
-        // Fallback: versioned build (dev flow) — requires Dockerfile on disk.
-        if (config.cliVersionType && config.cliVersionResolved) {
-            const contentHash = computeContentHash(config.type);
-            const result = await ensureVersionedAgentImage(
-                config.type,
-                cliVersionResolved!,
-                contentHash
-            );
-            if (result.success && result.imageTag !== config.dockerImage) {
-                config.dockerImage = result.imageTag;
-            }
-            return result.success;
-        }
-        return false;
+    async waitForPendingRefresh(): Promise<void> {
+        await this.pendingBackgroundRefresh;
     }
 
-    private isManagedVersionedImage(config: AgentConfig, cliVersionResolved = config.cliVersionResolved): boolean {
-        if (!config.cliVersionType || !cliVersionResolved) return false;
-        const managedImageName = AGENT_IMAGE_NAMES[config.type];
-        if (!managedImageName || !config.dockerImage?.startsWith(`${managedImageName}:`)) return false;
-        const tag = config.dockerImage.slice(managedImageName.length + 1);
-        const versionTag = getDockerTagComponent(cliVersionResolved);
-        return tag.startsWith(`${versionTag}-`) && /-[0-9a-f]{6}$/i.test(tag);
+    private async captureRuntimePackageStateVersion(): Promise<void> {
+        try {
+            this.runtimePackagesUpdatedAt = (await loadAgentRuntimePackageState()).updatedAt;
+            this.runtimePackageStateUnavailable = false;
+        } catch (error) {
+            logger.warn({ error: (error as Error).message }, 'Could not capture agent runtime package state version');
+            this.runtimePackagesUpdatedAt = undefined;
+            this.runtimePackageStateUnavailable = true;
+        }
+    }
+
+    private async hasRuntimePackageStateChanged(): Promise<boolean> {
+        if (this.runtimePackagesUpdatedAt === undefined && !this.runtimePackageStateUnavailable) return true;
+        try {
+            const state = await loadAgentRuntimePackageState();
+            this.runtimePackageStateUnavailable = false;
+            return state.updatedAt !== this.runtimePackagesUpdatedAt;
+        } catch (error) {
+            logger.warn({ error: (error as Error).message }, 'Could not check agent runtime package state version');
+            this.runtimePackageStateUnavailable = true;
+            return false;
+        }
+    }
+
+    private async ensureUnifiedAgentImage(configs: AgentConfig[]): Promise<string | null> {
+        try {
+            const versions = getAgentCliVersionMatrix(configs);
+            const result = await ensureAgentBundleImage(versions, computeContentHash());
+            if (!result.success) {
+                logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure unified agent image');
+                this.unavailableUnifiedAgentImage = {
+                    imageTag: result.imageTag,
+                    error: result.error || 'Unified agent image is unavailable',
+                    recordedAt: new Date().toISOString()
+                };
+                return null;
+            }
+            const image = await resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
+            this.unavailableUnifiedAgentImage = null;
+            return image;
+        } catch (error) {
+            const message = (error as Error).message;
+            logger.error({ error: message }, 'Failed to resolve unified agent image');
+            this.unavailableUnifiedAgentImage = {
+                error: message,
+                recordedAt: new Date().toISOString()
+            };
+            return null;
+        }
     }
 
     /**
@@ -322,7 +369,7 @@ export class AgentRegistry {
             type: 'claude',
             alias: 'default',
             enabled: true,
-            dockerImage: process.env.CLAUDE_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
+            dockerImage: process.env.AGENT_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
             supportedModels: [
                 'claude-fable-5',
@@ -334,16 +381,38 @@ export class AgentRegistry {
                 'claude-sonnet-4-5-20250929',
                 'claude-haiku-4-5-20251001'
             ],
-            defaultModel: process.env.CLAUDE_MODEL || undefined
+            defaultModel: process.env.CLAUDE_MODEL || undefined,
+            cliVersionType: 'default',
+            cliVersionResolved: AGENT_DEFAULT_VERSIONS.claude
         };
 
-        // Ensure Docker image exists before registering
-        const imageReady = await ensureAgentDockerImage(defaultConfig.type, defaultConfig.dockerImage);
-        if (!imageReady) {
-            logger.error({
-                agentType: defaultConfig.type,
-                dockerImage: defaultConfig.dockerImage
-            }, 'Failed to ensure Docker image for default agent');
+        if (process.env.AGENT_DOCKER_IMAGE) {
+            try {
+                const available = await ensureAgentDockerImage(defaultConfig.type, process.env.AGENT_DOCKER_IMAGE);
+                if (!available) {
+                    logger.warn({ dockerImage: process.env.AGENT_DOCKER_IMAGE }, 'Configured default agent image is not available locally and could not be pulled or built');
+                }
+                defaultConfig.dockerImage = await resolveAgentRuntimeImage(process.env.AGENT_DOCKER_IMAGE, { buildMissing: false });
+            } catch (error) {
+                logger.error(
+                    { dockerImage: defaultConfig.dockerImage, error: (error as Error).message },
+                    'Failed to resolve default Claude agent runtime image; registering the configured image for degraded-mode health checks',
+                );
+            }
+        } else {
+            try {
+                const result = await ensureAgentBundleImage(getDefaultAgentCliVersionMatrix(), computeContentHash());
+                if (!result.success) {
+                    logger.error({ error: result.error, imageTag: result.imageTag }, 'Failed to ensure default agent image; registering fallback image for degraded-mode health checks');
+                } else {
+                    defaultConfig.dockerImage = await resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
+                }
+            } catch (error) {
+                logger.error(
+                    { dockerImage: defaultConfig.dockerImage, error: (error as Error).message },
+                    'Failed to resolve default Claude agent image; registering fallback image for degraded-mode health checks',
+                );
+            }
         }
 
         const agent = new ClaudeAgent(defaultConfig);

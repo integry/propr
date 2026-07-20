@@ -6,7 +6,7 @@
 # Requires:
 #   - propr/launcher:latest and propr/app:latest built locally
 #     (npm run images:build)
-#   - Agent images pulled or built locally (propr/agent-{vibe,antigravity,opencode})
+#   - Unified agent image pulled or built locally (`propr/agent:latest`)
 #   - `gh auth login` or PROPR_E2E_TOKEN
 #   - Mounted agent credentials on the host ($HOME/.vibe, /.gemini,
 #     and /.config/opencode as applicable for the tests being run)
@@ -72,7 +72,7 @@ chmod 644 "$DATA_DIR/data/gh-app.pem"
 # Compose the test .env: base = dev .env with test-overrides appended. Bash
 # processes the file top-to-bottom, so later duplicates of a key win.
 {
-  grep -v -E '^(CONFIG_REPO|DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|ENABLE_GITHUB_WEBHOOKS|ENABLE_PR_COMMENT_POLLING|POLLING_INTERVAL_MS|CLAUDE_DOCKER_IMAGE|CODEX_DOCKER_IMAGE|ANTIGRAVITY_DOCKER_IMAGE|OPENCODE_DOCKER_IMAGE|VIBE_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL)=' "$REPO_ROOT/.env"
+  grep -v -E '^(CONFIG_REPO|DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|ENABLE_GITHUB_WEBHOOKS|ENABLE_PR_COMMENT_POLLING|POLLING_INTERVAL_MS|AGENT_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL)=' "$REPO_ROOT/.env"
   cat <<EOF
 NODE_ENV=production
 LOG_LEVEL=warn
@@ -88,11 +88,7 @@ API_PUBLIC_URL=http://localhost:${API_PORT}
 FRONTEND_URL=http://localhost:5173
 GH_OAUTH_CALLBACK_URL=http://localhost:${API_PORT}/api/auth/github/callback
 ENABLE_BEARER_TOKEN_AUTH=true
-CLAUDE_DOCKER_IMAGE=propr/agent-claude:latest
-CODEX_DOCKER_IMAGE=propr/agent-codex:latest
-ANTIGRAVITY_DOCKER_IMAGE=propr/agent-antigravity:latest
-OPENCODE_DOCKER_IMAGE=propr/agent-opencode:latest
-VIBE_DOCKER_IMAGE=propr/agent-vibe:latest
+AGENT_DOCKER_IMAGE=propr/agent:latest
 VIBE_ANALYSIS_TIMEOUT_MS=420000
 SESSION_SECRET=itest-not-secret
 GH_OAUTH_CLIENT_ID=itest
@@ -255,7 +251,7 @@ if [ -n "$OPENCODE_CFG" ]; then
   OPENCODE_AGENT_JSON=$(cat <<JSON
 ,
   {"id":"itest-opencode","type":"opencode","alias":"opencode","enabled":true,
-   "dockerImage":"propr/agent-opencode:latest","configPath":"${OPENCODE_CFG}",
+   "dockerImage":"propr/agent:latest","configPath":"${OPENCODE_CFG}",
    "supportedModels":${OPENCODE_MODELS_JSON},
    "defaultModel":"${OPENCODE_DEFAULT_MODEL}"}
 JSON
@@ -264,11 +260,11 @@ fi
 agents_payload=$(cat <<JSON
 {"agents":[
   {"id":"itest-vibe","type":"vibe","alias":"vibe","enabled":true,
-   "dockerImage":"propr/agent-vibe:latest","configPath":"${VIBE_CFG}",
+   "dockerImage":"propr/agent:latest","configPath":"${VIBE_CFG}",
    "supportedModels":${VIBE_MODELS_JSON},
    "defaultModel":"${VIBE_DEFAULT_MODEL}"},
   {"id":"itest-antigravity","type":"antigravity","alias":"antigravity","enabled":true,
-   "dockerImage":"propr/agent-antigravity:latest","configPath":"${ANTIGRAVITY_CFG}",
+   "dockerImage":"propr/agent:latest","configPath":"${ANTIGRAVITY_CFG}",
    "supportedModels":${ANTIGRAVITY_MODELS_JSON},
    "defaultModel":"${ANTIGRAVITY_DEFAULT_MODEL}"}${OPENCODE_AGENT_JSON}
 ]}

@@ -167,6 +167,38 @@ describe('summary miner batch fallback', () => {
     assert.equal(state.warning?.mode, 'fallback_degraded');
   });
 
+  test('records cooldown after unusable file output when no fallback is configured', async () => {
+    let primaryCalls = 0;
+    const primaryAgent = createAgent('primary', 'primary-model', async () => {
+      primaryCalls++;
+      return {
+        success: true,
+        response: '',
+        modelUsed: 'primary-model',
+        executionTimeMs: 1
+      };
+    });
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      branch: 'main'
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.stopProcessing, true);
+    assert.equal(primaryCalls, 3);
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(Object.keys(state.cooldowns).length, 1);
+    assert.equal(state.warning?.mode, 'cooldown');
+    assert.match(state.warning?.message || '', /unusable output/);
+  });
+
   test('caps the fallback model to a single attempt on transient failure', async () => {
     let fallbackCalls = 0;
     const primaryAgent = createAgent('primary', 'primary-model', async () => ({
@@ -301,6 +333,43 @@ describe('summary miner batch fallback', () => {
     assert.equal(Object.keys(state.cooldowns).length, 0);
     assert.equal(state.primary_quota_failures, 0);
     assert.equal(state.warning?.mode, 'fallback_degraded');
+  });
+
+  test('records cooldown after unusable directory output when no fallback is configured', async () => {
+    let primaryCalls = 0;
+    const primaryAgent = createAgent('primary', 'primary-model', async () => {
+      primaryCalls++;
+      return {
+        success: true,
+        response: '',
+        modelUsed: 'primary-model',
+        executionTimeMs: 1
+      };
+    });
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: primaryAgent as never,
+      log: log as never,
+      modelUsed: 'primary-model',
+      primaryAgentAliasSetting: 'primary',
+      fullName: 'integry/propr',
+      branch: 'main'
+    });
+
+    assert.equal(result.fallbackUsed, false);
+    assert.equal(result.stopProcessing, true);
+    assert.equal(primaryCalls, 3);
+
+    const state = await loadSummarizationRuntimeState();
+    assert.equal(Object.keys(state.cooldowns).length, 1);
+    assert.equal(state.warning?.mode, 'cooldown');
+    assert.match(state.warning?.message || '', /unusable output/);
   });
 
   test('passes custom prompt into file batch prompt', async () => {

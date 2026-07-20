@@ -23,7 +23,7 @@ function createAgent(): OpenCodeAgent {
         type: 'opencode',
         alias: 'open/code test',
         enabled: true,
-        dockerImage: 'propr/agent-opencode:latest',
+        dockerImage: 'propr/agent:latest',
         configPath: '/tmp/opencode-config',
         supportedModels: ['opencode-minimax-m3-free'],
         defaultModel: 'opencode-minimax-m3-free'
@@ -334,7 +334,7 @@ describe('OpenCodeAgent Docker args', () => {
 
     test('uses opencode-run wrapper and JSON output mode', () => {
         const args = buildDockerArgs(createAgent(), 'opencode-minimax-m3-free');
-        const imageIndex = args.indexOf('propr/agent-opencode:latest');
+        const imageIndex = args.indexOf('propr/agent:latest');
 
         assert.ok(imageIndex > -1);
         assert.ok(args.includes('opencode-run'));

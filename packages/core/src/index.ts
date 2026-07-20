@@ -123,7 +123,7 @@ export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltra
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
-export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
+export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckEvidence, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
 // DeliveryTracker, URL/payload/token helpers) are internal to the intake service
 // and are intentionally NOT part of the package's public API. Tests import them
@@ -205,7 +205,7 @@ export {
     runLightweightLLMAnalysis,
     UsageLimitError
 } from './claude/claudeService.js';
-export { AGENT_TYPES, AGENT_IMAGE_NAMES, VERSIONED_AGENT_IMAGE_NAMES, DEFAULT_AGENT_DOCKER_IMAGES, validateAgentType } from './agents/constants.js';
+export { AGENT_TYPES, AGENT_IMAGE_NAME, DEFAULT_AGENT_DOCKER_IMAGES, validateAgentType } from './agents/constants.js';
 export type { AgentTypeValidationResult } from './agents/constants.js';
 export type {
     ExecuteClaudeCodeOptions,
@@ -225,9 +225,40 @@ export {
     buildClaudePrompt
 } from './claude/claudeHelpers.js';
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
-export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError, ensureVersionedAgentImage } from './claude/docker/dockerExecutor.js';
+export { executeDockerCommand, stopDockerContainer, ExecutionAbortedError, ensureAgentBundleImage } from './claude/docker/dockerExecutor.js';
 export { cleanupUnusedAgentImages, listAgentImages } from './claude/docker/dockerImageManager.js';
 export type { VersionedImageBuildResult } from './claude/docker/dockerExecutor.js';
+export {
+    AGENT_RUNTIME_BUILD_QUEUE_NAME,
+    buildAgentRuntimePackageProfile,
+    inspectAgentRuntimeBaseImage,
+    loadAgentRuntimePackageState,
+    requestAgentRuntimePackageBuild,
+    resolveAgentRuntimeImage,
+    saveAgentRuntimePackageState,
+    validateAgentRuntimePackages
+} from './agents/runtime/agentRuntimePackages.js';
+export type {
+    AgentRuntimeBuildJobData,
+    AgentRuntimeBuildStatus,
+    AgentRuntimeBaseImageInspection,
+    AgentRuntimeImageRecord,
+    AgentRuntimePackageManager,
+    AgentRuntimePackageState,
+    RuntimePackageValidation
+} from './agents/runtime/agentRuntimePackages.js';
+export {
+    clearAgentRuntimePackageCatalogCache,
+    searchAgentRuntimePackages,
+    validateAgentRuntimePackageAvailability,
+    warmAgentRuntimePackageCatalog
+} from './agents/runtime/agentRuntimePackageCatalog.js';
+export type {
+    AgentRuntimePackageAvailability,
+    AgentRuntimePackageAvailabilityResult,
+    AgentRuntimePackageSearchResult,
+    AgentRuntimePackageSource
+} from './agents/runtime/agentRuntimePackageCatalog.js';
 export { generateExecutionAnalysisPrompt, generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
@@ -255,6 +286,7 @@ export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 
 // Agent abstraction exports
 export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
+export type { AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { AntigravityAgent } from './agents/impl/AntigravityAgent.js';
@@ -284,7 +316,7 @@ export type {
     AnalyzeOptions
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
-export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, migrateAgentConfigs } from './config/configManager.js';
+export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, loadEffectiveAgentBaseImages, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management
 export * from './agents/version/index.js';

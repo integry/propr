@@ -175,9 +175,18 @@ async function handlePrimaryDirectoryFailure(
   // fallback model. Other failures (transient outages, agent bugs, malformed
   // prompts) propagate.
   if (!isQuotaExhaustionError(primaryError)) {
-    if (isSummarizationInvalidResponseError(primaryError) && fallbackAgent && fallbackAgentAliasSetting) {
-      await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, false);
-      return;
+    if (isSummarizationInvalidResponseError(primaryError)) {
+      if (fallbackAgent && fallbackAgentAliasSetting) {
+        await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, false);
+        return;
+      }
+      await recordSummarizationCooldown({
+        repository: fullName,
+        branch,
+        primaryAgentAlias,
+        reason: 'Primary directory summarization model returned unusable output after retries and no fallback model is configured.'
+      });
+      throw new SummarizationCooldownRecordedError(primaryError);
     }
     throw primaryError;
   }

@@ -1,16 +1,12 @@
 {
   "version": "0.8.6",
-  "git_sha": "e628898d",
+  "git_sha": "1dcc325a",
   "registry": "propr",
   "images": {
     "app": "propr/app:0.8.6",
     "ui": "propr/ui:0.8.6",
     "docs": "propr/docs:0.8.6",
-    "agent-claude": "propr/agent-claude:0.8.6",
-    "agent-codex": "propr/agent-codex:0.8.6",
-    "agent-antigravity": "propr/agent-antigravity:0.8.6",
-    "agent-opencode": "propr/agent-opencode:0.8.6",
-    "agent-vibe": "propr/agent-vibe:0.8.6",
+    "agent": "propr/agent:0.8.6",
     "redis": "redis:7-alpine",
     "cloudflared": "cloudflare/cloudflared:2024.12.2"
   }

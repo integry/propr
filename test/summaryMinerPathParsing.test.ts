@@ -6,6 +6,7 @@ process.env.NODE_ENV = 'test';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import { parseBatchResponse } from '../packages/core/src/services/relevance/summaryMinerBatch.js';
 import {
+  extractRepositoryDirectories,
   normalizeSummaryPath,
   parseBatchDirectoryResponse,
   resolveExpectedSummaryPath
@@ -21,6 +22,22 @@ describe('summary miner path parsing', () => {
       normalizeSummaryPath('/home/node/workspace/integry/agent-tank-website/packages/website'),
       'integry/agent-tank-website/packages/website'
     );
+  });
+
+  test('keeps directory aggregation inside each repository boundary', () => {
+    const digvinDirectories = extractRepositoryDirectories([
+      'integry/digvin/README.md',
+      'integry/digvin/docs/PLAN.md'
+    ], 'integry/digvin');
+    const proprDirectories = extractRepositoryDirectories([
+      'integry/propr/README.md',
+      'integry/propr/packages/core/index.ts'
+    ], 'integry/propr');
+
+    assert.deepEqual(digvinDirectories, ['integry/digvin', 'integry/digvin/docs']);
+    assert.deepEqual(proprDirectories, ['integry/propr', 'integry/propr/packages', 'integry/propr/packages/core']);
+    assert.ok(!digvinDirectories.includes('integry'));
+    assert.ok(!proprDirectories.includes('integry'));
   });
 
   test('resolves absolute directory paths to expected canonical paths', () => {

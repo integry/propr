@@ -2,6 +2,7 @@
  * Version management types and constants for agent CLI tools.
  */
 
+import { AGENT_IMAGE_NAME } from '../constants.js';
 import type { AgentType } from '../types.js';
 
 // Re-export CliVersionType from configManager for convenience
@@ -36,61 +37,35 @@ export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
  * These are used when cliVersionType is 'default'.
  */
 export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
-    claude: '2.1.191',
-    codex: '0.142.1',
+    claude: '2.1.211',
+    codex: '0.144.5',
     antigravity: 'latest',
-    opencode: '1.17.10',
-    vibe: '2.17.1'
+    opencode: '1.18.2',
+    vibe: '2.20.0'
 };
 
-/**
- * Docker repositories used for versioned agent images.
- */
-export const AGENT_IMAGE_NAMES: Record<AgentType, string> = {
-    claude: 'propr/agent-claude',
-    codex: 'propr/agent-codex',
-    antigravity: 'propr/agent-antigravity',
-    opencode: 'propr/agent-opencode',
-    vibe: 'propr/agent-vibe'
-};
+/** The single repository used for every managed agent execution. */
+export { AGENT_IMAGE_NAME };
 
 /**
  * Files that contribute to the Docker image content hash.
  * When any of these files change, a new image should be built.
  */
-export const DOCKER_CONTENT_FILES: Record<AgentType, string[]> = {
-    claude: [
-        'Dockerfile.claude',
-        'scripts/claude-entrypoint.sh',
-        'scripts/init-firewall.sh',
-        'scripts/gh-wrapper.sh'
-    ],
-    codex: [
-        'Dockerfile.codex',
-        'scripts/codex-entrypoint.sh',
-        'scripts/init-firewall.sh',
-        'scripts/gh-wrapper.sh'
-    ],
-    antigravity: [
-        'Dockerfile.antigravity',
-        'scripts/antigravity-entrypoint.sh',
-        'scripts/init-firewall.sh',
-        'scripts/gh-wrapper.sh'
-    ],
-    opencode: [
-        'Dockerfile.opencode',
-        'scripts/opencode-entrypoint.sh',
-        'scripts/opencode-run.sh',
-        'scripts/init-firewall.sh',
-        'scripts/gh-wrapper.sh'
-    ],
-    vibe: [
-        'Dockerfile.vibe',
-        'scripts/vibe-entrypoint.sh',
-        'scripts/init-firewall.sh',
-        'scripts/gh-wrapper.sh'
-    ]
-};
+export const AGENT_BUNDLE_CONTENT_FILES = [
+    'Dockerfile.agent',
+    'scripts/agent-entrypoint.sh',
+    'scripts/claude-entrypoint.sh',
+    'scripts/codex-entrypoint.sh',
+    'scripts/antigravity-entrypoint.sh',
+    'scripts/opencode-entrypoint.sh',
+    'scripts/opencode-run.sh',
+    'scripts/vibe-entrypoint.sh',
+    'scripts/vibe-prompt-file-runner.py',
+    'scripts/init-firewall.sh',
+    'scripts/gh-wrapper.sh',
+    'NOTICE',
+    'THIRD_PARTY_LICENSES.md'
+] as const;
 
 /**
  * NPM package info response from registry.

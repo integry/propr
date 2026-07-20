@@ -12,7 +12,7 @@ For launcher-based installs, pull the newer launcher image and restart the stack
 docker pull propr/launcher:latest
 ```
 
-Stop the running launcher (Ctrl-C, or stop its container — it tears down the stack containers on shutdown), then start it again with your usual `docker run` command from [Production Deployment](./deployment.md). The launcher's manifest pins exact image versions, so the newer launcher pulls the newer service and agent images.
+Stop the running launcher (Ctrl-C, or stop its container — it tears down the stack containers on shutdown), then start it again with your usual `docker run` command from [Production Deployment](./deployment.md). The launcher's manifest pins exact image versions, so the newer launcher pulls the newer service images and unified agent image.
 
 For source-based Compose deployments:
 
@@ -26,7 +26,7 @@ npm run compose:up
 
 ### Upgrading Safely
 
-Service and agent images are pinned to the release version of the control plane that starts them: the CLI and launcher manifests pin exact image versions, so choosing the control-plane version chooses the whole stack version. `propr/launcher:latest` and a plain `npm update -g propr-cli` track the newest release; to pin, install an exact CLI version (`npm install -g propr-cli@<version>`) and update deliberately.
+Service images and the unified agent image are pinned to the release version of the control plane that starts them: the CLI and launcher manifests pin exact image versions, so choosing the control-plane version chooses the whole stack version. `propr/launcher:latest` and a plain `npm update -g propr-cli` track the newest release; to pin, install an exact CLI version (`npm install -g propr-cli@<version>`) and update deliberately.
 
 A safe upgrade, in order:
 
@@ -35,6 +35,17 @@ A safe upgrade, in order:
 3. From a source checkout, apply pending [database migrations](#database-migrations) with `npm run db:migrate`.
 
 After the upgrade, the API's public `/api/compatibility` endpoint reports the stack version and the API/UI compatibility contract — the hosted UI checks it before login and stops at a clear version-mismatch screen rather than running against an incompatible stack. `/api/status` includes the same metadata for authenticated diagnostics.
+
+The unified agent image replaces the older per-agent image families. After confirming the upgraded worker is healthy, reclaim disk used by stale local agent images with `docker image ls 'propr/*agent*'` and remove only obsolete per-agent repositories that are no longer referenced by your running containers or configuration.
+
+### Refreshing agent image package pins
+
+`Dockerfile.agent` pins its Debian packages with `*_VERSION_PREFIX` build args and verifies the GitHub CLI apt keyring against `GITHUBCLI_KEYRING_SHA256`. Two external events can break the base-stage build (which surfaces as a failed local build fallback when the registry image is unavailable):
+
+- Debian moves a package beyond a pinned prefix. The build fails with `No apt version found for <package> with prefix <prefix>`. Refresh the affected `*_VERSION_PREFIX` args from the current `node:22-bookworm-slim` archive (`docker run --rm node:22-bookworm-slim sh -c 'apt-get update -qq && apt-cache madison <package>'`) and rebuild.
+- GitHub rotates the CLI keyring. The `sha256sum -c` step fails. Re-download `https://cli.github.com/packages/githubcli-archive-keyring.gpg`, verify it out of band, and update `GITHUBCLI_KEYRING_SHA256`.
+
+Only `gh` has a latest-version fallback (its repo drops old releases); every other pin fails the build hard, so treat a failing agent-image build in CI as a signal to refresh pins rather than a transient error.
 
 **Rollback:** re-pin the previous version (`npm install -g propr-cli@<previous>`, or the previous launcher image) and restart from the runtime directory. Treat database migrations as forward-only in practice: the Knex migrations define `down` steps, but no packaged command runs them — `npm run db:migrate` only applies `migrate:latest` — so the reliable way to roll back the database is restoring the SQLite backup taken in step 1.
 

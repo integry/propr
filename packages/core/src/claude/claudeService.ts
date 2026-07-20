@@ -28,7 +28,7 @@ import { DEFAULT_AGENT_DOCKER_IMAGES } from '../agents/constants.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
-const CLAUDE_DOCKER_IMAGE: string = process.env.CLAUDE_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude;
+const CLAUDE_DOCKER_IMAGE: string = process.env.AGENT_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude;
 const CLAUDE_CONFIG_PATH: string = process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude');
 const CLAUDE_MAX_TURNS: number = parseInt(process.env.CLAUDE_MAX_TURNS || '1000', 10);
 const CLAUDE_TIMEOUT_MS: number = parseInt(process.env.CLAUDE_TIMEOUT_MS || '300000', 10);

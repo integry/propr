@@ -8,11 +8,12 @@ import {
     getAvailableVersions,
     resolveVersion,
     computeContentHash,
-    generateImageTag,
-    AGENT_DEFAULT_VERSIONS,
-    VERSIONED_AGENT_IMAGE_NAMES,
+    generateAgentBundleImageTag,
+    getAgentCliVersionMatrix,
+    getDefaultAgentCliVersionMatrix,
+    AGENT_IMAGE_NAME,
     validateAgentType,
-    ensureVersionedAgentImage,
+    ensureAgentBundleImage,
     cleanupUnusedAgentImages,
     listAgentImages,
     loadAgents,
@@ -28,7 +29,7 @@ function isValidCliVersionType(versionType: unknown): versionType is CliVersionT
 interface AgentVersionRouteDeps {
     getAvailableVersions: typeof getAvailableVersions;
     resolveVersion: typeof resolveVersion;
-    ensureVersionedAgentImage: typeof ensureVersionedAgentImage;
+    ensureAgentBundleImage: typeof ensureAgentBundleImage;
     cleanupUnusedAgentImages: typeof cleanupUnusedAgentImages;
     listAgentImages: typeof listAgentImages;
     loadAgents: typeof loadAgents;
@@ -44,7 +45,7 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
     const versionService = {
         getAvailableVersions,
         resolveVersion,
-        ensureVersionedAgentImage,
+        ensureAgentBundleImage,
         cleanupUnusedAgentImages,
         listAgentImages,
         loadAgents,
@@ -112,11 +113,12 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
                 return;
             }
 
-            // Compute content hash
-            const contentHash = computeContentHash(agentType);
+            const versions = getAgentCliVersionMatrix(agents);
+            versions[agentType] = resolvedVersion;
+            const contentHash = computeContentHash();
 
             // Build the image
-            const result = await versionService.ensureVersionedAgentImage(agentType, resolvedVersion, contentHash);
+            const result = await versionService.ensureAgentBundleImage(versions, contentHash);
 
             if (result.success) {
                 res.json({
@@ -152,29 +154,21 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
                 res.status(400).json({ error: validation.error });
                 return;
             }
-            const type = validation.agentType;
-
-            // Get all agent configs to determine which versions are in use
             const agents = await versionService.loadAgents();
-            const versionsInUse = new Set<string>();
-
-            // Add default version
-            versionsInUse.add(AGENT_DEFAULT_VERSIONS[type]);
-
-            // Add resolved versions from configs
+            const tagsInUse = new Set<string>();
             for (const agent of agents) {
-                if (agent.type === type && agent.cliVersionResolved) {
-                    versionsInUse.add(agent.cliVersionResolved);
-                }
+                const prefix = `${AGENT_IMAGE_NAME}:`;
+                if (agent.dockerImage.startsWith(prefix)) tagsInUse.add(agent.dockerImage.slice(prefix.length));
             }
+            tagsInUse.add(generateAgentBundleImageTag(getDefaultAgentCliVersionMatrix(), computeContentHash()).slice(`${AGENT_IMAGE_NAME}:`.length));
 
             // Perform cleanup
-            const deletedCount = await versionService.cleanupUnusedAgentImages(type, versionsInUse);
+            const deletedCount = await versionService.cleanupUnusedAgentImages(tagsInUse);
 
             res.json({
                 success: true,
                 deletedCount,
-                versionsKept: Array.from(versionsInUse)
+                tagsKept: Array.from(tagsInUse)
             });
         } catch (error) {
             const err = error as Error;
@@ -185,7 +179,9 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
 
     /**
      * GET /api/agents/:agentType/images
-     * Lists all Docker images for an agent type.
+     * Lists the unified agent image tags. All agent types share the single
+     * `propr/agent` image, so every valid `agentType` returns the same tag
+     * list; the path parameter is validated and echoed for API consistency.
      */
     async function listImages(req: Request, res: Response): Promise<void> {
         try {
@@ -196,15 +192,13 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
                 res.status(400).json({ error: validation.error });
                 return;
             }
-            const type = validation.agentType;
-
-            const tags = await versionService.listAgentImages(type);
+            const tags = await versionService.listAgentImages();
 
             res.json({
-                agentType: type,
+                agentType: validation.agentType,
                 images: tags.map((tag: string) => ({
                     tag,
-                    fullName: `${getImageName(type)}:${tag}`
+                    fullName: `${AGENT_IMAGE_NAME}:${tag}`
                 }))
             });
         } catch (error) {
@@ -277,11 +271,11 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
             // Resolve version
             const resolved = await versionService.resolveVersion(type, effectiveVersionType, versionSpec as string);
 
-            // Compute content hash
-            const contentHash = computeContentHash(type);
-
-            // Generate tag
-            const imageTag = generateImageTag(type, resolved, contentHash);
+            const agents = await versionService.loadAgents();
+            const versions = getAgentCliVersionMatrix(agents);
+            versions[type] = resolved;
+            const contentHash = computeContentHash();
+            const imageTag = generateAgentBundleImageTag(versions, contentHash);
 
             res.json({
                 agentType: type,
@@ -305,9 +299,4 @@ export function createAgentVersionRoutes(deps: Partial<AgentVersionRouteDeps> = 
         resolveVersionEndpoint,
         getImageTag
     };
-}
-
-
-function getImageName(agentType: AgentType): string {
-    return VERSIONED_AGENT_IMAGE_NAMES[agentType];
 }

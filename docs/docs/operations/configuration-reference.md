@@ -43,6 +43,7 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `GITHUB_EVENT_INTAKE_MODE` | `routing_websocket` | Selects the intake path: `routing_websocket`, `polling`, or `direct_webhook`. Unset also means `routing_websocket`. | Set explicitly to keep polling/webhook behavior on installs that run their own GitHub App. |
 | `PROPR_ROUTING_URL` | Hosted `wss://webhook.propr.dev` when unset | Routing WebSocket origin (`wss://`; `ws://` only for localhost). | Self-hosted relay only. |
 | `PROPR_ROUTING_WS_PING_INTERVAL_MS` | `300000` (5 minutes) | Transport keepalive interval. Lower it only if a network path closes otherwise-healthy WebSockets. | Optional. |
+| `PROPR_ROUTING_WS_PONG_TIMEOUT_MS` | `30000` (30 seconds) | Maximum wait for a transport pong before the stale socket is terminated and reconnected. | Optional. |
 | `POLLING_INTERVAL_MS` | `60000` | Poll period when pulling events from the GitHub API. | Polling mode only. |
 | `GH_WEBHOOK_SECRET` | Unset | Shared secret GitHub signs webhook deliveries with. | Direct webhook mode. |
 | `GITHUB_REPOS_TO_MONITOR` | Placeholder (`owner/repo1,owner/repo2`) | Comma-separated repositories the daemon watches. | Always. |
@@ -51,16 +52,18 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PR_LABEL` | `propr` | Label applied to PRs ProPR creates. | Optional. |
 | `GITHUB_BOT_USERNAME` | Placeholder / code falls back to `propr-dev[bot]` | The bot identity, used to filter its own comments out of triggers. | Optional. |
 | `GITHUB_USER_WHITELIST` / `GITHUB_USER_BLACKLIST` | Empty | Comma-separated allow/deny lists for who can trigger processing. | Optional. |
+| `PROPR_ADMIN_USERS` | Empty | Comma-separated authenticated GitHub usernames allowed to change installation-level agent runtime packages. Empty denies changes unless `PROPR_AGENT_RUNTIME_ADMIN_ANY_USER=true` is set. | Optional. |
+| `PROPR_AGENT_RUNTIME_ADMIN_ANY_USER` | `false` | Explicit opt-in that lets any authenticated ProPR user change installation-level agent runtime packages when `PROPR_ADMIN_USERS` is empty. **Warning:** runtime packages are installed as root into the trusted agent image, so enabling this grants every logged-in user root-equivalent control over the environment all agent jobs run in. Prefer listing specific admins in `PROPR_ADMIN_USERS`. | Optional. |
 | `PR_FOLLOWUP_TRIGGER_KEYWORDS` | `!propr` | Keywords in PR comments that trigger follow-up work. See [PR Follow-up](../features/pr-followup.md). | Optional. |
 | `LABEL_APPLIER_TIMELINE_MAX_PAGES` | `5` | With a whitelist set, polling resolves who applied the trigger label from the issue timeline (page 1 + the most recent N pages). Raise it if long-lived issues are skipped with "Could not determine label applier". | Optional. |
 
 ## Agents & Timeouts
 
-Per-agent images, credential paths, and execution limits. `ANTIGRAVITY_TIMEOUT_MS` and `CLAUDE_MAX_TURNS` are the two places the shipped value and the code fallback diverge most — deleting the line does not restore the shipped behavior.
+Unified image selection, per-agent credential paths, and execution limits. `ANTIGRAVITY_TIMEOUT_MS` and `CLAUDE_MAX_TURNS` are the two places the shipped value and the code fallback diverge most — deleting the line does not restore the shipped behavior.
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
-| `CLAUDE_DOCKER_IMAGE` | `propr/agent-claude:latest` | Image used for Claude Code agent containers. | Optional. |
+| `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. | Optional. |
 | `CLAUDE_CONFIG_PATH` | Empty | Absolute path to your `~/.claude` directory. `~` and `${HOME}` are **not** expanded in `.env` files or Docker bind mounts. | Running Claude Code. |
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Claude run timeout. | Optional. |

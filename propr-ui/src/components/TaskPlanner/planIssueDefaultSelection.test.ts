@@ -32,7 +32,7 @@ describe('resolvePlanIssueDefaultSelection', () => {
       type: 'vibe' as const,
       alias: 'vibe-prod',
       enabled: true,
-      dockerImage: 'propr/agent-vibe:latest',
+      dockerImage: 'propr/agent:latest',
       configPath: '~/.vibe',
       supportedModels: ['mistral-medium-3.5', 'devstral-2512'],
       defaultModel: 'mistral-medium-3.5'

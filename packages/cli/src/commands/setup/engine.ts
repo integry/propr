@@ -28,7 +28,7 @@
  *   - `.env` is never overwritten wholesale; edits go through the non-destructive
  *     {@link applyEnvSelection} (per-key, never blanks an existing value).
  *   - No step deletes user data; a running stack is reused, not recreated.
- *   - Core images pull by default; agent images pull only for selected agents.
+ *   - Core images pull by default; the agent image pulls when an agent is selected.
  */
 
 import { existsSync } from "node:fs";
@@ -82,7 +82,7 @@ import type { SetupState, SetupStep, SetupStepId, SetupStepPatch } from "./types
  */
 interface AgentDescriptor {
   type: string;
-  /** Manifest image key, e.g. "agent-claude". */
+  /** Unified agent manifest image key. */
   imageKey: string;
   /** Host credential dirs mounted into the agent container. */
   credentials: { envKey: string; defaultDir: string }[];
@@ -91,18 +91,18 @@ interface AgentDescriptor {
 function agentCatalog(): AgentDescriptor[] {
   const home = homedir();
   return [
-    { type: "claude", imageKey: "agent-claude", credentials: [{ envKey: "HOST_CLAUDE_DIR", defaultDir: join(home, ".claude") }] },
-    { type: "codex", imageKey: "agent-codex", credentials: [{ envKey: "HOST_CODEX_DIR", defaultDir: join(home, ".codex") }] },
-    { type: "antigravity", imageKey: "agent-antigravity", credentials: [{ envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini") }] },
+    { type: "claude", imageKey: "agent", credentials: [{ envKey: "HOST_CLAUDE_DIR", defaultDir: join(home, ".claude") }] },
+    { type: "codex", imageKey: "agent", credentials: [{ envKey: "HOST_CODEX_DIR", defaultDir: join(home, ".codex") }] },
+    { type: "antigravity", imageKey: "agent", credentials: [{ envKey: "HOST_ANTIGRAVITY_DIR", defaultDir: join(home, ".gemini") }] },
     {
       type: "opencode",
-      imageKey: "agent-opencode",
+      imageKey: "agent",
       credentials: [
         { envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode") },
         { envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode") },
       ],
     },
-    { type: "vibe", imageKey: "agent-vibe", credentials: [{ envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe") }] },
+    { type: "vibe", imageKey: "agent", credentials: [{ envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe") }] },
   ];
 }
 
@@ -396,10 +396,10 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
 
       for (const [key, tag] of Object.entries(cfg.images)) {
         if (key === "docs" && !cfg.docsEnabled) continue;
-        const isAgent = key.startsWith("agent-");
-        // Only pull agent images for the agents the user selected; core images
+        const isAgent = key === "agent";
+        // Pull the shared agent image when the user selected any agent; core images
         // (api/worker/daemon/redis/…) always pull.
-        if (isAgent && !selected.has(key.slice("agent-".length))) continue;
+        if (isAgent && selected.size === 0) continue;
 
         onLog?.(`pulling ${tag}…`);
         // Async exec keeps the event loop free so the wizard's Ink spinner keeps
@@ -751,8 +751,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     return finish();
   }
 
-  // 3. Pull images — core images by default, agent images only for the agents
-  //    the user selects (defaulting to the ones detected on this host).
+  // 3. Pull images — core images by default, plus the shared agent image when
+  //    the user selects an agent (defaulting to those detected on this host).
   begin("pull-images");
   const detected = detectInstalledAgents(catalog);
   try {

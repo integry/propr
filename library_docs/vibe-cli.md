@@ -3,7 +3,7 @@
 Mistral Vibe CLI options and commands for agentic code generation.
 
 > **Note:** This reference was written against `mistral-vibe==2.12.1` (pinned in
-> `Dockerfile.vibe`). Flags and commands may change between releases. Always
+> `Dockerfile.agent`). Flags and commands may change between releases. Always
 > verify against your installed version with `vibe --help` before treating this
 > as authoritative. ProPR allows overriding the default CLI invocation via the
 > `VIBE_CLI_ARGS` environment variable.

@@ -9,7 +9,6 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
-import { DEFAULT_AGENT_DOCKER_IMAGES } from '../constants.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
@@ -329,7 +328,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     private async buildDockerArgs(params: Omit<OpenCodeDockerArgsParams, 'config' | 'ensureConfigPath'>): Promise<string[]> {
-        const dockerImage = await this.resolveRuntimeDockerImage();
+        const dockerImage = this.resolveRuntimeDockerImage();
         return buildOpenCodeDockerArgs({
             ...params,
             config: { ...this.config, dockerImage },
@@ -337,21 +336,9 @@ export class OpenCodeAgent implements Agent {
         });
     }
 
-    private async resolveRuntimeDockerImage(): Promise<string> {
-        if (process.env.OPENCODE_DOCKER_IMAGE) return process.env.OPENCODE_DOCKER_IMAGE;
-        const configuredImage = this.config.dockerImage;
-        if (!configuredImage || configuredImage === DEFAULT_AGENT_DOCKER_IMAGES.opencode) {
-            return DEFAULT_AGENT_DOCKER_IMAGES.opencode;
-        }
-        try {
-            const result = await executeDockerCommand('docker', ['image', 'inspect', configuredImage], { timeout: 10000 });
-            if (result.exitCode === 0 && result.stdout.trim()) {
-                return configuredImage;
-            }
-        } catch (error) {
-            logger.warn({ agentAlias: this.config.alias, dockerImage: configuredImage, error: (error as Error).message }, 'Configured OpenCode image not available locally, falling back to latest image');
-        }
-        return DEFAULT_AGENT_DOCKER_IMAGES.opencode;
+    private resolveRuntimeDockerImage(): string {
+        if (process.env.AGENT_DOCKER_IMAGE) return process.env.AGENT_DOCKER_IMAGE;
+        return this.config.dockerImage;
     }
 
     private ensureHostConfigPath(configPath: string): void {

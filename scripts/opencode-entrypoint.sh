@@ -58,7 +58,7 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2
         cd /home/node/workspace
-        exec su-exec node "$@"
+        exec su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
     else
         exec "$@"
     fi

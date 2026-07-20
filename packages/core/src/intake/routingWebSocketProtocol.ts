@@ -6,7 +6,10 @@
  * stays focused on connection lifecycle and dispatch.
  */
 
-import { validateRoutingUrl as validateRoutingUrlPolicy } from '@propr/shared';
+import {
+    normalizeWorkEvidenceCommentIds,
+    validateRoutingUrl as validateRoutingUrlPolicy
+} from '@propr/shared';
 
 import { SUPPORTED_WEBHOOK_EVENTS, type WebhookEventType } from '../webhook/webhookHandler.js';
 import { parseWebhookPayload } from './webhookPayload.js';
@@ -77,6 +80,11 @@ export interface DeliveryAckBilling {
     seatConsumed: boolean;
 }
 
+export interface DeliveryAckEvidence {
+    /** GitHub comment IDs whose contents caused this delivery to start work. */
+    triggerCommentIds: number[];
+}
+
 /**
  * The disposition ProPR attaches to an ACK. Returned by the webhook dispatcher so
  * the intake service can ACK with an explicit, authoritative status/reason instead
@@ -94,10 +102,23 @@ export interface DeliveryDisposition {
      */
     reason?: string;
     billing?: DeliveryAckBilling;
+    evidence?: DeliveryAckEvidence;
 }
 
 /** Shared "processed, no billing/policy signal" disposition — the default ACK. */
 export const ACCEPTED_DISPOSITION: DeliveryDisposition = Object.freeze({ status: 'accepted' });
+
+/**
+ * Shared "processed, explicitly seat-free" disposition. On the wire this is
+ * equivalent to {@link ACCEPTED_DISPOSITION}: the relay only bills when an
+ * accepted ACK carries `seatConsumed: true`, so omitted billing and an explicit
+ * `false` are treated the same. The explicit form exists to make seat-free
+ * processing auditable in the relay's delivery history.
+ */
+export const ACCEPTED_NO_SEAT_DISPOSITION: DeliveryDisposition = Object.freeze({
+    status: 'accepted',
+    billing: Object.freeze({ seatConsumed: false }),
+});
 
 /** Shared disposition for an event ProPR cannot or will not handle. */
 export const IGNORED_UNSUPPORTED_DISPOSITION: DeliveryDisposition = Object.freeze({
@@ -141,6 +162,10 @@ export function buildAckFrame(
         frame.billing = {
             seatConsumed: disposition.status === 'accepted' ? disposition.billing.seatConsumed : false,
         };
+    }
+    if (disposition.evidence !== undefined && disposition.status === 'accepted') {
+        const triggerCommentIds = normalizeWorkEvidenceCommentIds(disposition.evidence.triggerCommentIds);
+        if (triggerCommentIds.length > 0) frame.evidence = { triggerCommentIds };
     }
     return frame;
 }
@@ -681,6 +706,11 @@ export interface RoutingWebSocketIntakeServiceOptions {
     maxReconnectDelayMs?: number;
     /** Keepalive ping interval in ms. */
     pingIntervalMs?: number;
+    /**
+     * Maximum time to wait for a WebSocket pong after each transport ping before
+     * terminating the stale socket so the normal reconnect path can take over.
+     */
+    pongTimeoutMs?: number;
     /** Maximum number of delivery ids retained for deduplication. */
     maxDedupeEntries?: number;
     /** Maximum number of installation tokens cached from `token` frames. */

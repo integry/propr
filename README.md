@@ -80,11 +80,11 @@ See the [Local Setup tutorial](https://docs.propr.dev/docs/tutorials/setup-local
 
 | Agent | Type | Provider | Execution image |
 |---|---|---|---|
-| Claude Code | `claude` | Anthropic | `propr/agent-claude` |
-| Codex | `codex` | OpenAI | `propr/agent-codex` |
-| Antigravity | `antigravity` | Google (multi-model) | `propr/agent-antigravity` |
-| OpenCode | `opencode` | OpenCode (multi-provider) | `propr/agent-opencode` |
-| Mistral Vibe | `vibe` | Mistral | `propr/agent-vibe` |
+| Claude Code | `claude` | Anthropic | `propr/agent` |
+| Codex | `codex` | OpenAI | `propr/agent` |
+| Antigravity | `antigravity` | Google (multi-model) | `propr/agent` |
+| OpenCode | `opencode` | OpenCode (multi-provider) | `propr/agent` |
+| Mistral Vibe | `vibe` | Mistral | `propr/agent` |
 
 You supply your own provider credentials. The full model catalog, per-agent credential setup, and label formats live in [Agents & Models](https://docs.propr.dev/docs/features/agents-and-models).
 
@@ -152,8 +152,7 @@ ProPR ships as a set of prebuilt images orchestrated by the `propr/launcher` umb
 | `propr/app` | Server — daemon / workers / API (role selected at launch) |
 | `propr/ui` | Web UI static bundle |
 | `propr/docs` | Docusaurus documentation site (optional) |
-| `propr/agent-base` | Shared base for agent images |
-| `propr/agent-{claude,codex,antigravity,opencode,vibe}` | Per-agent execution containers |
+| `propr/agent` | Unified execution container for every supported coding agent |
 
 End users must supply their own provider API credentials and accept those providers' terms. Bundled third-party attributions are preserved at `/usr/share/licenses/propr/` in each image; offline copies are in [`NOTICE`](NOTICE) and [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
@@ -191,7 +190,7 @@ propr/
 │   └── shared/     # Shared model catalog and types
 ├── propr-ui/       # Web UI (React + Vite)
 ├── docs/           # Docusaurus documentation site
-├── docker/         # Launcher and agent-base images
+├── docker/         # Launcher and production app images
 ├── scripts/        # Agent entrypoints, build/compose/release helpers
 └── docker-compose*.yml
 ```

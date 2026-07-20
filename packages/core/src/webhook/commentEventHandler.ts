@@ -511,6 +511,14 @@ function commentSeatConsumed(commentAuthor: string, userType: string | null | un
     return userType !== 'Bot' && !configuredBotUsernames.has(commentAuthor) && !/\[bot\]$/i.test(commentAuthor);
 }
 
+function acceptedCommentDisposition(commentId: number, seatConsumed: boolean): DeliveryDisposition {
+    return {
+        status: 'accepted',
+        billing: { seatConsumed },
+        evidence: { triggerCommentIds: [commentId] },
+    };
+}
+
 export async function processCommentEvent(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<DeliveryDisposition> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -559,7 +567,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             await redisClient.del(slashCommentTrackingKey);
             throw error;
         }
-        return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
+        return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
     }
 
     // Fetch PR labels early to check for processing label
@@ -588,11 +596,11 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     if (existingJob) {
         await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config as StoreCommentConfig);
         correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId: comment.id }, 'A job for this PR is already active or waiting, stored comment for batch processing');
-        return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
+        return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
     }
 
     await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId });
-    return { status: 'accepted', billing: { seatConsumed: commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames) } };
+    return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
 }
 
 async function checkExistingJob(prNumber: number, owner: string, repo: string): Promise<boolean> {

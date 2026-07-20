@@ -6,7 +6,7 @@
 #   docker build -f docker/Dockerfile.app.prod -t propr/app .
 
 # --- Stage 1: builder ---------------------------------------------------------
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /build
 
@@ -44,7 +44,7 @@ RUN npm prune --omit=dev
 
 
 # --- Stage 2: runtime ---------------------------------------------------------
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 WORKDIR /usr/src/app
 
@@ -68,6 +68,22 @@ COPY --from=builder /build/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /build/packages/core/package.json ./packages/core/
 COPY --from=builder /build/packages/core/dist ./packages/core/dist
 COPY --from=builder /build/packages/api/package.json ./packages/api/
+
+# Unified agent image build context. The API builds custom CLI version bundles
+# through the mounted Docker socket, using /usr/src/app as the Docker context.
+COPY Dockerfile.agent ./Dockerfile.agent
+COPY scripts/agent-entrypoint.sh ./scripts/agent-entrypoint.sh
+COPY scripts/claude-entrypoint.sh ./scripts/claude-entrypoint.sh
+COPY scripts/codex-entrypoint.sh ./scripts/codex-entrypoint.sh
+COPY scripts/antigravity-entrypoint.sh ./scripts/antigravity-entrypoint.sh
+COPY scripts/opencode-entrypoint.sh ./scripts/opencode-entrypoint.sh
+COPY scripts/opencode-run.sh ./scripts/opencode-run.sh
+COPY scripts/vibe-entrypoint.sh ./scripts/vibe-entrypoint.sh
+COPY scripts/vibe-prompt-file-runner.py ./scripts/vibe-prompt-file-runner.py
+COPY scripts/init-firewall.sh ./scripts/init-firewall.sh
+COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
+COPY NOTICE ./NOTICE
+COPY THIRD_PARTY_LICENSES.md ./THIRD_PARTY_LICENSES.md
 
 # Third-party notices (required by bundled Apache-2.0 and proprietary components).
 COPY NOTICE /usr/share/licenses/propr/NOTICE

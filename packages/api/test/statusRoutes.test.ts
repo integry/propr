@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import assert from 'node:assert/strict';
 import { after, afterEach, test } from 'node:test';
 import type { Request, Response as ExpressResponse } from 'express';
@@ -27,6 +28,14 @@ type StatusAgentRegistry = {
   getAgentById(id: string): Agent | undefined;
   getAgentByAlias(alias: string): Agent | undefined;
   createAgentFromConfig(config: AgentConfig): Agent;
+  getOperationalStatus?(): {
+    unifiedAgentImage: {
+      status: 'ready' | 'unavailable';
+      imageTag?: string;
+      error?: string;
+      recordedAt?: string;
+    };
+  };
 };
 
 // Env vars that influence the resolved auth mode, intake mode, and legacy
@@ -88,7 +97,7 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     type: 'codex',
     alias: 'codex-prod',
     enabled: true,
-    dockerImage: 'propr/agent-codex:latest',
+    dockerImage: 'propr/agent:latest',
     configPath: '/tmp/codex',
     supportedModels: ['gpt-5.5'],
     ...overrides,
@@ -108,13 +117,14 @@ function createAgent(config: AgentConfig, healthCheck: () => Promise<boolean>): 
   };
 }
 
-function createRegistry(agents: Agent[] = []): StatusAgentRegistry {
+function createRegistry(agents: Agent[] = [], overrides: Partial<StatusAgentRegistry> = {}): StatusAgentRegistry {
   return {
     ensureInitialized: async () => undefined,
     getAllAgents: () => agents,
     getAgentById: (id: string) => agents.find(agent => agent.config.id === id),
     getAgentByAlias: (alias: string) => agents.find(agent => agent.config.alias === alias),
     createAgentFromConfig: (config: AgentConfig) => createAgent(config, async () => true),
+    ...overrides,
   };
 }
 
@@ -202,6 +212,39 @@ test('/api/status returns default Claude fallback when no agents are configured'
     type: 'claude',
     alias: 'default',
     status: 'disconnected',
+  }]);
+});
+
+test('/api/status surfaces unified agent image outages', async () => {
+  const body = await readStatus({
+    agentRegistry: createRegistry([], {
+      getOperationalStatus: () => ({
+        unifiedAgentImage: {
+          status: 'unavailable',
+          imageTag: 'propr/agent:bundle-test',
+          error: 'pull failed',
+          recordedAt: '2026-07-17T00:00:00.000Z',
+        },
+      }),
+    }),
+    loadSummarizationRuntimeState: async () => ({
+      primary_quota_failures: 0,
+      primary_quota_failures_by_alias: {},
+      cooldowns: {},
+    }),
+  });
+
+  assert.deepEqual(body.agentRuntime, {
+    unifiedAgentImage: {
+      status: 'unavailable',
+      imageTag: 'propr/agent:bundle-test',
+      error: 'pull failed',
+      recordedAt: '2026-07-17T00:00:00.000Z',
+    },
+  });
+  assert.deepEqual(body.warnings, [{
+    type: 'agent_runtime_unified_image_unavailable',
+    message: 'Unified agent image is unavailable (propr/agent:bundle-test): pull failed',
   }]);
 });
 

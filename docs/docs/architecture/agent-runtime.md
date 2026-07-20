@@ -14,24 +14,24 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 - Agent credentials mounted from the configured host credential directory
 - GitHub credentials passed through `GH_TOKEN` and `GITHUB_TOKEN`
 - Agent, model, timeout, and task metadata passed as environment variables or CLI flags
-- `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network
+- `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
 - Structured stdout, stderr, exit code, duration, session ID, and token usage capture when the CLI exposes those fields
 
-Most agent images build on the shared `propr/agent-base` image, which includes Node.js, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. Antigravity currently uses a Debian slim base because its installer requires glibc, but it keeps the same workspace, credential, GitHub token, entrypoint, and logging contract.
+All agents run from the unified Debian/glibc `propr/agent` image. Its internal base stage includes Node.js 22, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. The image uses Node.js 22 to satisfy current agent CLI engine requirements. Independent CLI build stages preserve Docker cache reuse when one configured version changes.
 
-This table is the canonical mapping of agent images, Dockerfiles, entrypoints, and credential mounts; other pages link here instead of repeating it.
+This table maps each agent type to the unified image, its type-specific entrypoint, and its credential mount; other pages link here instead of repeating it.
 
 | Agent | Image | Dockerfile | Entrypoint | Host credential mount | Container credential path |
 | --- | --- | --- | --- | --- | --- |
-| Claude Code | `propr/agent-claude` | `Dockerfile.claude` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) | `/home/node/.claude` |
-| Codex | `propr/agent-codex` | `Dockerfile.codex` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) | `/home/node/.codex` |
-| Antigravity | `propr/agent-antigravity` | `Dockerfile.antigravity` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) | `/home/node/.gemini` |
-| OpenCode | `propr/agent-opencode` | `Dockerfile.opencode` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
-| Mistral Vibe | `propr/agent-vibe` | `Dockerfile.vibe` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
+| Claude Code | `propr/agent` | `Dockerfile.agent` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) | `/home/node/.claude` |
+| Codex | `propr/agent` | `Dockerfile.agent` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) | `/home/node/.codex` |
+| Antigravity | `propr/agent` | `Dockerfile.agent` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) | `/home/node/.gemini` |
+| OpenCode | `propr/agent` | `Dockerfile.agent` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
+| Mistral Vibe | `propr/agent` | `Dockerfile.agent` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
 
 ## Container Configuration
 
-The worker launches the selected agent image with a prepared worktree, a generated container name, the configured credential mount, and any agent-level environment variables. Containers are removed after execution with `--rm`, run with stdin enabled, and use `/home/node/workspace` as the working directory.
+The worker launches the unified agent image with a prepared worktree, a generated container name, the selected type's credential mount, and any agent-level environment variables. Containers are removed after execution with `--rm`, run with stdin enabled, and use `/home/node/workspace` as the working directory.
 
 Most entrypoints start as root so they can prepare runtime directories or fix container-local ownership, then drop to the `node` user before running the CLI. Entrypoints also mark Git directories as safe, install the `gh` wrapper when present, and emit diagnostics that are captured with the task logs.
 
@@ -68,7 +68,7 @@ The runtime should preserve these boundaries:
 
 Agent images ship `scripts/init-firewall.sh`, an optional egress-restriction script. All current agent entrypoints skip it because applying those rules requires running the container with Docker's `--privileged` flag.
 
-Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted by default. Treat the firewall script as available hardening for deployments that can run privileged containers; in the default runtime it is inactive.
+Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted by default. The `.propr/setup.sh` hook runs under that same Docker privilege boundary and cannot use sudo to install system packages. Treat the firewall script as available hardening for deployments that can run privileged containers; in the default runtime it is inactive.
 
 Provider connectivity failures usually come from the host network, DNS, proxy settings, provider availability, or an external firewall; ProPR applies no network policy of its own in the default runtime. If you enable the firewall script in a privileged deployment, confirm its allowlist covers GitHub and the provider endpoints required by every enabled agent image.
 
@@ -113,12 +113,12 @@ Check worker logs, task logs, provider latency, and model routing before increas
 
 ### Claude Code
 
-Claude Code uses `Dockerfile.claude`, `scripts/claude-entrypoint.sh`, and the `propr/agent-claude` image. The host credential directory is configured with `CLAUDE_CONFIG_PATH` or the agent config path and is mounted at `/home/node/.claude`.
+Claude Code uses `Dockerfile.agent`, `scripts/claude-entrypoint.sh`, and the `propr/agent` image. The host credential directory is configured with `CLAUDE_CONFIG_PATH` or the agent config path and is mounted at `/home/node/.claude`.
 
 Common settings:
 
 ```bash
-CLAUDE_DOCKER_IMAGE=propr/agent-claude:latest
+AGENT_DOCKER_IMAGE=propr/agent:latest
 CLAUDE_CONFIG_PATH=/home/your-user/.claude
 CLAUDE_MAX_TURNS=1000
 CLAUDE_TIMEOUT_MS=300000
@@ -136,7 +136,7 @@ claude -p - [--model <id>] --max-turns N --output-format stream-json --verbose -
 
 ### Codex
 
-Codex uses `Dockerfile.codex`, `scripts/codex-entrypoint.sh`, and the `propr/agent-codex` image. The host credential directory is configured with the agent config path, commonly from `HOST_CODEX_DIR`, and is mounted at `/home/node/.codex`.
+Codex uses `Dockerfile.agent`, `scripts/codex-entrypoint.sh`, and the `propr/agent` image. The host credential directory is configured with the agent config path, commonly from `HOST_CODEX_DIR`, and is mounted at `/home/node/.codex`.
 
 Common settings:
 
@@ -156,7 +156,7 @@ When a model is selected, ProPR adds `--model <id>`. Codex emits NDJSON events t
 
 ### Antigravity
 
-Antigravity uses `Dockerfile.antigravity`, `scripts/antigravity-entrypoint.sh`, and the `propr/agent-antigravity` image. The runtime resolves `ANTIGRAVITY_CONFIG_PATH` or the agent config path and mounts the selected host directory at `/home/node/.gemini`. If the configured path ends in `.antigravity` and a sibling `.gemini` directory exists, ProPR uses that `.gemini` directory for credentials.
+Antigravity uses `Dockerfile.agent`, `scripts/antigravity-entrypoint.sh`, and the `propr/agent` image. The runtime resolves `ANTIGRAVITY_CONFIG_PATH` or the agent config path and mounts the selected host directory at `/home/node/.gemini`. If the configured path ends in `.antigravity` and a sibling `.gemini` directory exists, ProPR uses that `.gemini` directory for credentials.
 
 Common settings:
 
@@ -170,7 +170,7 @@ The entrypoint prepares Antigravity runtime directories under the mounted config
 
 ### OpenCode
 
-OpenCode uses `Dockerfile.opencode`, `scripts/opencode-entrypoint.sh`, and the `propr/agent-opencode` image. The primary config mount is commonly `HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode`, mounted at `/home/node/.config/opencode`.
+OpenCode uses `Dockerfile.agent`, `scripts/opencode-entrypoint.sh`, and the `propr/agent` image. The primary config mount is commonly `HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode`, mounted at `/home/node/.config/opencode`.
 
 Common settings:
 
@@ -178,7 +178,7 @@ Common settings:
 HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode
 HOST_OPENCODE_DATA_DIR=/home/your-user/.local/share/opencode
 OPENCODE_TIMEOUT_MS=3600000
-OPENCODE_DOCKER_IMAGE=propr/agent-opencode:latest
+AGENT_DOCKER_IMAGE=propr/agent:latest
 ```
 
 The entrypoint sets `OPENCODE_CONFIG_DIR=/home/node/.config/opencode` and prepares XDG data and state directories. OpenCode runs in JSON mode through the OpenCode adapter (`scripts/opencode-run.sh` with `--format json`). ProPR passes the selected model with `--model <id>` and parses OpenCode responses back into the shared agent result shape.
@@ -219,7 +219,7 @@ ProPR catalog IDs for OpenCode carry the `opencode-` prefix, for example `openco
 
 ### Mistral Vibe
 
-Mistral Vibe uses `Dockerfile.vibe`, `scripts/vibe-entrypoint.sh`, and the `propr/agent-vibe` image. The host config directory is configured with `VIBE_CONFIG_PATH` or the agent config path, commonly from `HOST_VIBE_DIR`, and is mounted at `/home/node/.vibe` when usable.
+Mistral Vibe uses `Dockerfile.agent`, `scripts/vibe-entrypoint.sh`, and the `propr/agent` image. The host config directory is configured with `VIBE_CONFIG_PATH` or the agent config path, commonly from `HOST_VIBE_DIR`, and is mounted at `/home/node/.vibe` when usable.
 
 Common settings:
 

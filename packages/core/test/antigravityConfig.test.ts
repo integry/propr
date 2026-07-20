@@ -29,7 +29,7 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
         type: 'antigravity',
         alias: 'antigravity',
         enabled: true,
-        dockerImage: 'propr/agent-antigravity:latest',
+        dockerImage: 'propr/agent:latest',
         configPath: '~/.gemini',
         supportedModels: ['antigravity-gemini-3.5-flash-medium', 'antigravity-claude-opus-4.6-thinking'],
         defaultModel: 'antigravity-gemini-3.5-flash-medium',
@@ -89,7 +89,7 @@ test('Antigravity is the canonical selectable agent type', () => {
     assert.equal(AGENT_TYPES.includes('gemini' as never), false);
     assert.equal(AGENT_DEFAULTS.antigravity.defaultAlias, 'antigravity');
     assert.equal(AGENT_DEFAULTS.antigravity.configPath, '~/.gemini');
-    assert.equal(AGENT_DEFAULTS.antigravity.dockerImage, 'propr/agent-antigravity:latest');
+    assert.equal(AGENT_DEFAULTS.antigravity.dockerImage, 'propr/agent:latest');
     assert.equal(AGENT_MODELS.antigravity, ANTIGRAVITY_MODELS);
 });
 
@@ -110,7 +110,7 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
     withAntigravityEnv({}, () => {
         const agent = new AntigravityAgent(createAntigravityConfig());
         const args = buildDockerArgs(agent, { modelName: 'antigravity:antigravity-gemini-3.1-pro-high' });
-        const imageIndex = args.indexOf('propr/agent-antigravity:latest');
+        const imageIndex = args.indexOf('propr/agent:latest');
         const entrypointIndex = args.indexOf('/home/node/antigravity-entrypoint.sh');
 
         assert.ok(imageIndex > -1);
@@ -118,14 +118,14 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
         assert.equal(args[entrypointIndex + 1], '/bin/bash');
         assert.equal(args[entrypointIndex + 2], '-lc');
         assert.match(args[entrypointIndex + 3], /--dangerously-skip-permissions/);
-        assert.match(args[entrypointIndex + 3], /--print "\$@"/);
+        assert.match(args[entrypointIndex + 3], /--print - "\$@"/);
         assert.doesNotMatch(args[entrypointIndex + 3], /prompt="\$\(cat\)"/);
         assert.equal(args[entrypointIndex + 4], 'propr-antigravity');
         assert.ok(!args.includes('--output-format'));
         assert.ok(!args.includes('--yolo'));
         assert.ok(!args.includes('--skip-trust'));
         assert.ok(args.includes('--model'));
-        assert.equal(args[args.indexOf('--model') + 1], 'antigravity-gemini-3.1-pro-high');
+        assert.equal(args[args.indexOf('--model') + 1], 'Gemini 3.1 Pro (High)');
     });
 });
 
