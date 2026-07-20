@@ -1,9 +1,5 @@
 import {
-    CLAUDE_REASONING_LEVELS,
-    CODEX_REASONING_LEVELS,
     REASONING_LEVELS,
-    getReasoningLevelsForAgentType,
-    isReasoningLevelSupportedByAgentType,
     isReasoningLevel,
     type AgentType,
     type ReasoningLevel
@@ -13,8 +9,9 @@ import { getConfig, saveConfig } from './configStore.js';
 
 export type ModelReasoningLevel = ReasoningLevel | '';
 
-const CODEX_RUNTIME_REASONING_LEVELS: readonly ReasoningLevel[] = CODEX_REASONING_LEVELS;
-const CLAUDE_RUNTIME_REASONING_LEVELS: readonly ReasoningLevel[] = CLAUDE_REASONING_LEVELS.filter(level => level !== 'auto');
+export type CodexRuntimeReasoningLevel = Exclude<ReasoningLevel, 'auto' | 'ultracode'>;
+export type ClaudeRuntimeReasoningLevel = Exclude<ReasoningLevel, 'auto' | 'ultra'>;
+export type RuntimeReasoningLevel = CodexRuntimeReasoningLevel | ClaudeRuntimeReasoningLevel;
 
 export function normalizeModelReasoningLevel(raw: string): ModelReasoningLevel | null {
     const trimmed = raw.trim();
@@ -43,26 +40,31 @@ export function validateModelReasoningLevelForAgentType(
     agentType: AgentType
 ): { valid: true; value: ModelReasoningLevel } | { valid: false; error: string } {
     const result = validateModelReasoningLevel(raw);
-    if (!result.valid || result.value === '') return result;
-    if (isReasoningLevelSupportedByAgentType(agentType, result.value)) return result;
+    if (!result.valid) return result;
+    if (agentType !== 'claude' && agentType !== 'codex' && result.value !== '') {
+        logger.debug({ agentType, model_reasoning_level: result.value }, 'Reasoning level setting will be ignored by this agent type');
+    }
+    return result;
+}
 
-    const values = getReasoningLevelsForAgentType(agentType).join(', ');
-    const supportedText = values ? `${values}, or an empty string` : 'an empty string';
-    return {
-        valid: false,
-        error: `model_reasoning_level "${result.value}" is not supported by ${agentType} agents; use ${supportedText}`
-    };
+export function resolveCodexReasoningLevel(level: ModelReasoningLevel): CodexRuntimeReasoningLevel | null {
+    if (level === '' || level === 'auto') return null;
+    if (level === 'ultracode') return 'ultra';
+    return level;
+}
+
+export function resolveClaudeReasoningLevel(level: ModelReasoningLevel): ClaudeRuntimeReasoningLevel | null {
+    if (level === '' || level === 'auto') return null;
+    if (level === 'ultra') return 'max';
+    return level;
 }
 
 export function resolveRuntimeModelReasoningLevel(
     agentType: AgentType,
     level: ModelReasoningLevel
-): ReasoningLevel | null {
-    if (level === '') return null;
-    if (agentType === 'codex' && CODEX_RUNTIME_REASONING_LEVELS.includes(level)) return level;
-    if (agentType === 'claude' && CLAUDE_RUNTIME_REASONING_LEVELS.includes(level)) return level;
-
-    logger.warn({ agentType, model_reasoning_level: level }, 'Ignoring unsupported model reasoning level for agent runtime');
+): RuntimeReasoningLevel | null {
+    if (agentType === 'codex') return resolveCodexReasoningLevel(level);
+    if (agentType === 'claude') return resolveClaudeReasoningLevel(level);
     return null;
 }
 

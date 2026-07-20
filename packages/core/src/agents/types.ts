@@ -1,7 +1,7 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
-import type { AgentType as SharedAgentType } from '@propr/shared';
+import type { AgentType as SharedAgentType, ReasoningLevel } from '@propr/shared';
 
 export { AGENT_TYPES } from '@propr/shared';
 
@@ -60,6 +60,8 @@ export interface AgentTaskOptions {
 
     // Additional options
     tools?: string;
+    /** Optional per-task reasoning level override. Omitted means use the global setting. */
+    reasoningLevel?: ReasoningLevel;
     /** Per-execution environment variables to inject into the agent container. */
     environment?: Record<string, string>;
 

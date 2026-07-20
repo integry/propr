@@ -10,7 +10,7 @@ import os from 'os';
 import fs from 'fs';
 import logger from '../../../utils/logger.js';
 import { AgentConfig } from '../../types.js';
-import { resolveConfigPath, type ModelReasoningLevel } from '../../../config/configManager.js';
+import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 
 /**
@@ -36,7 +36,7 @@ export interface DockerArgsParams {
     /** Optional execution type for container naming (e.g., 'plan-generation', 'context-analysis') */
     executionType?: string;
     /** Optional reasoning effort for Claude Code. Empty or omitted means CLI default. */
-    reasoningLevel?: ModelReasoningLevel;
+    reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
 }
 
 /**

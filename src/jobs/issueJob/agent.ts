@@ -67,7 +67,8 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     agentAlias,
     agentType: agent.config.type,
     modelName,
-    issueNumber: issueRef.number
+    issueNumber: issueRef.number,
+    reasoningLevel: issueRef.reasoningLevel
   }, 'Executing task with agent');
 
   // Localize remote images in issue body and comments
@@ -119,6 +120,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       model: modelName,
       githubToken: githubToken.token,
       branchName: worktreeInfo.branchName,
+      reasoningLevel: issueRef.reasoningLevel,
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId
