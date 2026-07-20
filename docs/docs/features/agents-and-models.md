@@ -61,7 +61,7 @@ Adding **several** model labels to one issue fans the work out into one job per 
 ```text
 AI
 llm-claude-opus48
-llm-codex-gpt55
+llm-codex-gpt56-sol
 ```
 
 This issue produces two tasks and two pull requests — one per model.
@@ -70,8 +70,8 @@ The same aliases work in PR comments (the `llm-` prefix is optional; the raw cat
 
 ```
 /switch claude-opus48     # future follow-ups on this PR use this model
-/use codex-gpt55            # one follow-up with this model
-/review claude-opus48 codex-gpt55   # independent reviews from two models
+/use codex-gpt56-sol      # one follow-up with this model
+/review claude-opus48 codex-gpt56-sol   # independent reviews from two models
 ```
 
 See [PR Slash Commands](./pr-commands.md) for full command syntax.
@@ -93,10 +93,13 @@ Some models require a minimum agent CLI version (for example, Fable 5 requires C
 
 ## Codex Models
 
-GPT-5.5 is the recommended default. GPT-5.4 Mini/Nano suit fast or subagent passes; GPT-5.3 Codex targets agentic coding.
+GPT-5.6 Sol is the recommended default for complex implementation, research, and security work. GPT-5.6 Terra balances capability, speed, and cost for everyday work; GPT-5.6 Luna is the fastest and lowest-cost GPT-5.6 option. GPT-5.6 models require Codex CLI >= 0.144.0.
 
 | Model | Label | Context |
 |-------|-------|---------|
+| GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1M |
+| GPT-5.6 Terra | `llm-codex-gpt56-terra` | 400K |
+| GPT-5.6 Luna | `llm-codex-gpt56-luna` | 400K |
 | GPT-5.5 | `llm-codex-gpt55` | 1M |
 | GPT-5.5 Pro | `llm-codex-gpt55-pro` | 1M |
 | GPT-5.4 | `llm-codex-gpt54` | 1M |

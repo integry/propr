@@ -183,8 +183,8 @@ function updateCodexDefaults(agent: AgentConfig): boolean {
         return false;
     }
 
-    if (!agent.defaultModel || agent.defaultModel === 'gpt-5.4') {
-        agent.defaultModel = 'gpt-5.5';
+    if (!agent.defaultModel || agent.defaultModel === 'gpt-5.5' || agent.defaultModel === 'gpt-5.4') {
+        agent.defaultModel = AGENT_DEFAULTS.codex.defaultModels[0];
         migrated = true;
         logger.info({ agentAlias: agent.alias, defaultModel: agent.defaultModel }, 'Updated Codex default model');
     }
