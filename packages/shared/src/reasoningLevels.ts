@@ -46,7 +46,11 @@ export function normalizeModelReasoningLevel(raw: string): ModelReasoningLevel |
 
 export type ReasoningLevelLabel = string | { name?: string | null } | null | undefined;
 
-const REASONING_LEVEL_LABEL_PATTERN = new RegExp(`^level-(${REASONING_LEVELS.join('|')})$`, 'i');
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const REASONING_LEVEL_LABEL_PATTERN = new RegExp(`^level-(${REASONING_LEVELS.map(escapeRegExp).join('|')})$`, 'i');
 const REASONING_LEVEL_LABEL_PRIORITY = [
   'ultracode',
   'ultra',

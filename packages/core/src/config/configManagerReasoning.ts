@@ -21,6 +21,7 @@ const REASONING_LEVEL_MIN_CLI_VERSION: Partial<Record<AgentType, string>> = {
 };
 
 function parseSemverParts(version: string): [number, number, number] | null {
+    // The gate only needs the semver core; prerelease/build suffixes are ignored deliberately.
     const match = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
     if (!match) return null;
     return [Number(match[1]), Number(match[2]), Number(match[3])];

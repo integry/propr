@@ -155,7 +155,7 @@ export class ClaudeAgent implements Agent {
 
     /** Runs a lightweight, read-only analysis for planning, summarization, and PR reviews. */
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, suppressLlmLog } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -174,7 +174,7 @@ export class ClaudeAgent implements Agent {
                 worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: '', taskId, executionType,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel()
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(

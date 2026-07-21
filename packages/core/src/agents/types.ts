@@ -119,6 +119,8 @@ export interface AnalyzeOptions {
     timeoutMs?: number;
     /** Expected response format. Defaults to plain text analysis. */
     responseFormat?: 'text' | 'json';
+    /** Optional per-analysis reasoning level override. Omitted means use the global setting. */
+    reasoningLevel?: ReasoningLevel;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
 }

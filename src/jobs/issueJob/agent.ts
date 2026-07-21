@@ -70,6 +70,12 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     issueNumber: issueRef.number,
     reasoningLevel: issueRef.reasoningLevel
   }, 'Executing task with agent');
+  const agentIssueRef = {
+    number: issueRef.number,
+    repoOwner: issueRef.repoOwner,
+    repoName: issueRef.repoName,
+    reasoningLevel: issueRef.reasoningLevel
+  };
 
   // Localize remote images in issue body and comments
   const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
@@ -86,7 +92,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
 
   // Build prompt for the agent
   const prompt = generateClaudePrompt({
-    issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+    issueRef: agentIssueRef,
     branchName: worktreeInfo.branchName,
     modelName,
     issueDetails: {
@@ -115,7 +121,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   try {
     agentResult = await agent.executeTask({
       worktreePath: worktreeInfo.worktreePath,
-      issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+      issueRef: agentIssueRef,
       prompt,
       model: modelName,
       githubToken: githubToken.token,
