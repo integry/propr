@@ -52,6 +52,14 @@ The model IDs you enable here become the durable names used by labels and slash 
 
 {/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the agent configuration modal open for a Claude agent: agent type, alias, enable toggle, supported models checklist with one default model selected, and the config path field. */}
 
+## Reasoning Levels
+
+The system setting `model_reasoning_level` applies to Claude and Codex agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Leave it empty to use each CLI's default.
+
+Valid values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR accepts the union of the Claude and Codex vocabularies, then adapts it per runtime: Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode.
+
+Reasoning flags require Claude Code >= 2.1.68 and Codex CLI >= 0.144.0. If an enabled Claude or Codex agent is pinned below those versions and a reasoning override would be passed, ProPR fails the run before starting the CLI with a version-specific error.
+
 ## Model Labels
 
 Every model has a GitHub label of the form `llm-<agent>-<model-alias>`. Add one to an issue (together with your trigger label, such as `AI`) to route that issue to the model. The same identity follows the run through the system: task records show the selected agent and model, and branch names include the model identifier for traceability.

@@ -12,6 +12,7 @@ export const REASONING_LEVELS = [
 ] as const;
 
 export type ReasoningLevel = typeof REASONING_LEVELS[number];
+export type ModelReasoningLevel = ReasoningLevel | '';
 
 export const CODEX_REASONING_LEVELS = [
   'low',
@@ -36,9 +37,16 @@ export function isReasoningLevel(value: string): value is ReasoningLevel {
   return (REASONING_LEVELS as readonly string[]).includes(value);
 }
 
+export function normalizeModelReasoningLevel(raw: string): ModelReasoningLevel | null {
+  const trimmed = raw.trim();
+  if (trimmed === '') return raw.length === 0 ? '' : null;
+  const normalized = trimmed.toLowerCase();
+  return isReasoningLevel(normalized) ? normalized : null;
+}
+
 export type ReasoningLevelLabel = string | { name?: string | null } | null | undefined;
 
-const REASONING_LEVEL_LABEL_PATTERN = /^level-(low|medium|high|xhigh|max|ultra|ultracode|auto)$/i;
+const REASONING_LEVEL_LABEL_PATTERN = new RegExp(`^level-(${REASONING_LEVELS.join('|')})$`, 'i');
 const REASONING_LEVEL_LABEL_PRIORITY = [
   'ultracode',
   'ultra',

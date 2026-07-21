@@ -1,23 +1,40 @@
 import {
     REASONING_LEVELS,
-    isReasoningLevel,
+    normalizeModelReasoningLevel,
     type AgentType,
+    type ModelReasoningLevel,
     type ReasoningLevel
 } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 
-export type ModelReasoningLevel = ReasoningLevel | '';
+export { normalizeModelReasoningLevel };
+export type { ModelReasoningLevel };
 
 export type CodexRuntimeReasoningLevel = Exclude<ReasoningLevel, 'auto' | 'ultracode'>;
-export type ClaudeRuntimeReasoningLevel = Exclude<ReasoningLevel, 'auto' | 'ultra'>;
+export type ClaudeRuntimeReasoningLevel = Exclude<ReasoningLevel, 'ultra'>;
 export type RuntimeReasoningLevel = CodexRuntimeReasoningLevel | ClaudeRuntimeReasoningLevel;
 
-export function normalizeModelReasoningLevel(raw: string): ModelReasoningLevel | null {
-    const trimmed = raw.trim();
-    if (trimmed === '') return raw.length === 0 ? '' : null;
-    const normalized = trimmed.toLowerCase();
-    return isReasoningLevel(normalized) ? normalized : null;
+const REASONING_LEVEL_MIN_CLI_VERSION: Partial<Record<AgentType, string>> = {
+    claude: '2.1.68',
+    codex: '0.144.0'
+};
+
+function parseSemverParts(version: string): [number, number, number] | null {
+    const match = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+    if (!match) return null;
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemverish(left: string, right: string): number | null {
+    const leftParts = parseSemverParts(left);
+    const rightParts = parseSemverParts(right);
+    if (!leftParts || !rightParts) return null;
+    for (let index = 0; index < leftParts.length; index += 1) {
+        const diff = leftParts[index] - rightParts[index];
+        if (diff !== 0) return diff;
+    }
+    return 0;
 }
 
 export function validateModelReasoningLevel(raw: unknown): { valid: true; value: ModelReasoningLevel } | { valid: false; error: string } {
@@ -35,18 +52,6 @@ export function validateModelReasoningLevel(raw: unknown): { valid: true; value:
     return { valid: true, value: normalized };
 }
 
-export function validateModelReasoningLevelForAgentType(
-    raw: unknown,
-    agentType: AgentType
-): { valid: true; value: ModelReasoningLevel } | { valid: false; error: string } {
-    const result = validateModelReasoningLevel(raw);
-    if (!result.valid) return result;
-    if (agentType !== 'claude' && agentType !== 'codex' && result.value !== '') {
-        logger.debug({ agentType, model_reasoning_level: result.value }, 'Reasoning level setting will be ignored by this agent type');
-    }
-    return result;
-}
-
 export function resolveCodexReasoningLevel(level: ModelReasoningLevel): CodexRuntimeReasoningLevel | null {
     if (level === '' || level === 'auto') return null;
     if (level === 'ultracode') return 'ultra';
@@ -54,7 +59,7 @@ export function resolveCodexReasoningLevel(level: ModelReasoningLevel): CodexRun
 }
 
 export function resolveClaudeReasoningLevel(level: ModelReasoningLevel): ClaudeRuntimeReasoningLevel | null {
-    if (level === '' || level === 'auto') return null;
+    if (level === '') return null;
     if (level === 'ultra') return 'max';
     return level;
 }
@@ -68,6 +73,31 @@ export function resolveRuntimeModelReasoningLevel(
     return null;
 }
 
+export function assertReasoningLevelCliVersionSupported({
+    agentType,
+    agentAlias,
+    cliVersion,
+    reasoningLevel
+}: {
+    agentType: AgentType;
+    agentAlias?: string;
+    cliVersion?: string;
+    reasoningLevel: RuntimeReasoningLevel | '';
+}): void {
+    if (!reasoningLevel) return;
+    const minimumVersion = REASONING_LEVEL_MIN_CLI_VERSION[agentType];
+    if (!minimumVersion || !cliVersion) return;
+
+    const comparison = compareSemverish(cliVersion, minimumVersion);
+    if (comparison === null || comparison >= 0) return;
+
+    const aliasText = agentAlias ? ` '${agentAlias}'` : '';
+    throw new Error(
+        `${agentType} agent${aliasText} is pinned to CLI ${cliVersion}, but model_reasoning_level requires ` +
+        `${agentType} CLI ${minimumVersion} or newer. Update the agent CLI version or clear model_reasoning_level.`
+    );
+}
+
 export async function loadModelReasoningLevel(): Promise<ModelReasoningLevel> {
     const level = await getConfig<unknown>('model_reasoning_level', '');
     const result = validateModelReasoningLevel(level);
@@ -75,7 +105,7 @@ export async function loadModelReasoningLevel(): Promise<ModelReasoningLevel> {
         logger.warn({ stored_value: level, reason: result.error }, 'Invalid model_reasoning_level in DB, using agent default');
         return '';
     }
-    logger.info({ model_reasoning_level: result.value }, 'Successfully loaded model reasoning level');
+    logger.debug({ model_reasoning_level: result.value }, 'Successfully loaded model reasoning level');
     return result.value;
 }
 

@@ -145,8 +145,10 @@ export {
   getReasoningLevelsForAgentType,
   isReasoningLevelSupportedByAgentType,
   isReasoningLevel,
+  normalizeModelReasoningLevel,
   isReasoningLevelLabel,
   parseReasoningLevelFromLabels,
   type ReasoningLevel,
+  type ModelReasoningLevel,
   type ReasoningLevelLabel,
 } from './reasoningLevels.js';

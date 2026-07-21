@@ -1,4 +1,4 @@
-import { after, test, describe } from 'node:test';
+import { after, test, describe, mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -15,13 +15,15 @@ import type { AgentConfig } from '../packages/core/src/agents/types.ts';
 
 process.env.PROPR_DEMO_MODE = 'true';
 
+const { db } = await import('../packages/core/src/db/connection.ts');
 const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+const { applyAgentsUpdate } = await import('../packages/api/routes/configRoutesAgents.ts');
 const {
   resolveClaudeReasoningLevel,
   resolveCodexReasoningLevel,
   resolveRuntimeModelReasoningLevel,
   validateModelReasoningLevel,
-  validateModelReasoningLevelForAgentType
+  assertReasoningLevelCliVersionSupported
 } = await import('../packages/core/src/config/configManagerReasoning.ts');
 const { extractSettingSaves } = await import('../packages/api/routes/configSettings.ts');
 const { saveSettingsWithRollback } = await import('../packages/api/routes/configRoutesSettings.ts');
@@ -108,20 +110,12 @@ describe('core model_reasoning_level validation', () => {
     assert.match((whitespaceResult as { valid: false; error: string }).error, /whitespace-only/);
   });
 
-  test('allows cross-agent values because runtime execution clamps or ignores them', () => {
-    assert.deepEqual(validateModelReasoningLevelForAgentType('ultra', 'codex'), { valid: true, value: 'ultra' });
-    assert.deepEqual(validateModelReasoningLevelForAgentType('ultracode', 'claude'), { valid: true, value: 'ultracode' });
-    assert.deepEqual(validateModelReasoningLevelForAgentType('ultracode', 'codex'), { valid: true, value: 'ultracode' });
-    assert.deepEqual(validateModelReasoningLevelForAgentType('ultra', 'claude'), { valid: true, value: 'ultra' });
-    assert.deepEqual(validateModelReasoningLevelForAgentType('high', 'opencode'), { valid: true, value: 'high' });
-  });
-
   test('clamps runtime-only values instead of passing unsupported flags', () => {
     assert.equal(resolveRuntimeModelReasoningLevel('codex', 'ultra'), 'ultra');
     assert.equal(resolveRuntimeModelReasoningLevel('codex', 'ultracode'), 'ultra');
     assert.equal(resolveRuntimeModelReasoningLevel('claude', 'ultracode'), 'ultracode');
     assert.equal(resolveRuntimeModelReasoningLevel('claude', 'ultra'), 'max');
-    assert.equal(resolveRuntimeModelReasoningLevel('claude', 'auto'), null);
+    assert.equal(resolveRuntimeModelReasoningLevel('claude', 'auto'), 'auto');
     assert.equal(resolveRuntimeModelReasoningLevel('opencode', 'high'), null);
   });
 
@@ -129,7 +123,33 @@ describe('core model_reasoning_level validation', () => {
     assert.equal(resolveCodexReasoningLevel('ultracode'), 'ultra');
     assert.equal(resolveCodexReasoningLevel('auto'), null);
     assert.equal(resolveClaudeReasoningLevel('ultra'), 'max');
-    assert.equal(resolveClaudeReasoningLevel('auto'), null);
+    assert.equal(resolveClaudeReasoningLevel('auto'), 'auto');
+  });
+
+  test('rejects reasoning flags for known unsupported CLI versions', () => {
+    assert.throws(
+      () => assertReasoningLevelCliVersionSupported({
+        agentType: 'claude',
+        agentAlias: 'old-claude',
+        cliVersion: '2.1.67',
+        reasoningLevel: 'auto',
+      }),
+      /requires claude CLI 2\.1\.68 or newer/
+    );
+    assert.throws(
+      () => assertReasoningLevelCliVersionSupported({
+        agentType: 'codex',
+        agentAlias: 'old-codex',
+        cliVersion: '0.143.9',
+        reasoningLevel: 'xhigh',
+      }),
+      /requires codex CLI 0\.144\.0 or newer/
+    );
+    assert.doesNotThrow(() => assertReasoningLevelCliVersionSupported({
+      agentType: 'codex',
+      cliVersion: 'latest',
+      reasoningLevel: 'xhigh',
+    }));
   });
 });
 
@@ -151,9 +171,67 @@ describe('settings save rollback path for model_reasoning_level', () => {
     assert.equal(published, false);
   });
 
-  test('does not reject cross-agent values during compatibility validation', () => {
-    assert.equal(validateModelReasoningLevelForAgentType('ultracode', 'codex').valid, true);
-    assert.equal(validateModelReasoningLevelForAgentType('ultra', 'claude').valid, true);
+  test('accepts cross-agent values during extraction because runtime clamps them', async () => {
+    const result = await extractSettingSaves({ model_reasoning_level: 'ultracode' });
+    assert.equal(result.error, undefined);
+    assert.equal(result.normalized.model_reasoning_level, 'ultracode');
+  });
+
+  test('agent updates allow disabling all agents while model_reasoning_level is set', async () => {
+    const writes = new Map<string, unknown>();
+    const trx = Object.assign(
+      ((table: string) => ({
+        insert: (row: { key: string; value: string }) => ({
+          onConflict: (_column: string) => ({
+            merge: async () => {
+              assert.equal(table, 'system_configs');
+              writes.set(row.key, JSON.parse(row.value));
+            }
+          })
+        })
+      })) as unknown as typeof db,
+      {
+        commit: async () => {},
+        rollback: async () => {}
+      }
+    );
+    const transactionMock = mock.method(db, 'transaction', async () => trx as never);
+
+    try {
+      const result = await applyAgentsUpdate({
+        agents: [
+          {
+            id: 'old-agent',
+            alias: 'old-default',
+            type: 'claude',
+            enabled: false,
+            configPath: '/tmp/claude',
+            supportedModels: []
+          }
+        ],
+        publishConfigUpdate: async () => {},
+        logActivityHelper: async () => {},
+        configStore: {
+          loadAgents: async () => [],
+          loadSettings: async () => ({
+            default_agent_alias: 'old-default',
+            keep: 'unchanged',
+            model_reasoning_level: 'max'
+          }),
+          handleSettingsSaveSideEffects: async () => {}
+        },
+        registry: {
+          refresh: async () => {},
+          setDefaultAgentAlias: (_alias: string | null) => {}
+        }
+      });
+
+      assert.equal(result.status, 200);
+      assert.deepEqual(writes.get('settings'), { keep: 'unchanged' });
+      assert.equal((writes.get('agents') as Array<{ enabled: boolean }>)[0]?.enabled, false);
+    } finally {
+      transactionMock.mock.restore();
+    }
   });
 });
 
@@ -212,5 +290,17 @@ describe('agent runtime reasoning level wiring', () => {
     });
 
     assert.equal(args[args.indexOf('--effort') + 1], 'ultracode');
+  });
+
+  test('passes Claude auto through --effort', () => {
+    const args = buildClaudeDockerArgs(claudeConfig, 1000, {
+      worktreePath: '/tmp/worktree',
+      githubToken: '',
+      modelName: 'claude:claude-opus-4-6',
+      issueNumber: 42,
+      reasoningLevel: 'auto',
+    });
+
+    assert.equal(args[args.indexOf('--effort') + 1], 'auto');
   });
 });

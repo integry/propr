@@ -15,7 +15,15 @@ import {
     parseCodexStreamOutput,
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
-import { loadModelReasoningLevel, resolveCodexReasoningLevel, resolveConfigPath, type CodexRuntimeReasoningLevel, type ModelReasoningLevel } from '../../config/configManager.js';
+import {
+    assertReasoningLevelCliVersionSupported,
+    loadModelReasoningLevel,
+    resolveCodexReasoningLevel,
+    resolveConfigPath,
+    type CodexRuntimeReasoningLevel,
+    type ModelReasoningLevel
+} from '../../config/configManager.js';
+import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -328,7 +336,14 @@ export class CodexAgent implements Agent {
 
     private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<CodexRuntimeReasoningLevel | ''> {
         const configuredLevel = reasoningLevel === undefined ? await loadModelReasoningLevel() : reasoningLevel;
-        return resolveCodexReasoningLevel(configuredLevel) ?? '';
+        const runtimeLevel = resolveCodexReasoningLevel(configuredLevel) ?? '';
+        assertReasoningLevelCliVersionSupported({
+            agentType: 'codex',
+            agentAlias: this.config.alias,
+            cliVersion: this.config.cliVersionResolved ?? AGENT_DEFAULT_VERSIONS.codex,
+            reasoningLevel: runtimeLevel
+        });
+        return runtimeLevel;
     }
 
     async healthCheck(): Promise<boolean> {

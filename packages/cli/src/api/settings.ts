@@ -7,7 +7,7 @@
  */
 
 import { ApiClient, createApiClient } from "./client.js";
-import { REASONING_LEVELS, isReasoningLevel } from "@propr/shared";
+import { REASONING_LEVELS, normalizeModelReasoningLevel } from "@propr/shared";
 
 /**
  * Maximum allowed length for the free-form `pr_review_prompt` setting.
@@ -321,13 +321,11 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return lower === "true";
     }
     case "model_reasoning_level": {
-      const trimmed = value.trim();
-      if (trimmed === "") {
-        if (value.length === 0) return "";
-        throw new Error(`Invalid value for ${key}: must not be whitespace-only; use an empty string to clear`);
-      }
-      const normalized = trimmed.toLowerCase();
-      if (!isReasoningLevel(normalized)) {
+      const normalized = normalizeModelReasoningLevel(value);
+      if (normalized === null) {
+        if (value.trim() === "") {
+          throw new Error(`Invalid value for ${key}: must not be whitespace-only; use an empty string to clear`);
+        }
         throw new Error(`Invalid value for ${key}: must be one of: ${REASONING_LEVELS.join(", ")}, or an empty string`);
       }
       return normalized;

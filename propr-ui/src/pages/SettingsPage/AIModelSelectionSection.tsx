@@ -194,7 +194,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                     value={level}
                     disabled={!compatibleReasoningLevels.includes(level as ReasoningLevel)}
                   >
-                    {reasoningLevelLabels[level]}
+                    {reasoningLevelLabels[level] ?? level}
                   </option>
                 ))}
               </select>

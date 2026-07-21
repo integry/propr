@@ -60,8 +60,8 @@ describe('reasoning level runtime clamping', () => {
     assert.equal(resolveCodexReasoningLevel('auto'), null);
   });
 
-  test('clamps Codex-only ultra to Claude max and omits Claude auto', () => {
+  test('clamps Codex-only ultra to Claude max and passes Claude auto', () => {
     assert.equal(resolveClaudeReasoningLevel('ultra'), 'max');
-    assert.equal(resolveClaudeReasoningLevel('auto'), null);
+    assert.equal(resolveClaudeReasoningLevel('auto'), 'auto');
   });
 });
