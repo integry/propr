@@ -7,6 +7,8 @@ import type { WorkerStateManager } from '@propr/core';
 import { db } from '@propr/core';
 import { filterCommentByAuthor } from '@propr/core';
 import type { UnprocessedComment, CommentJobData } from '@propr/core';
+import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
+import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
 
 interface ValidationComment {
     id: number;
@@ -138,6 +140,44 @@ export interface LinkedIssueResult {
     context: string;
     linkedIssueNumber: number | null;
     bodyHtml?: string;  // HTML with signed image URLs
+    linkedIssueLabels: ReasoningLevelLabel[];
+}
+
+function getLabelName(label: ReasoningLevelLabel): string | null {
+    if (typeof label === 'string') return label;
+    if (label && typeof label.name === 'string') return label.name;
+    return null;
+}
+
+export function resolvePrReasoningLevelOverride(
+    prLabels: readonly ReasoningLevelLabel[],
+    linkedIssueLabels: readonly ReasoningLevelLabel[],
+    options: RepoContext & { correlatedLogger: Logger }
+): ReasoningLevel | undefined {
+    const labels = [...prLabels, ...linkedIssueLabels];
+    const reasoningLabels = labels.filter(isReasoningLevelLabel);
+    const reasoningLevel = parseReasoningLevelFromLabels(labels);
+
+    if (reasoningLabels.length > 1) {
+        options.correlatedLogger.warn({
+            pullRequestNumber: options.pullRequestNumber,
+            reasoningLevel,
+            labels: reasoningLabels.map(getLabelName).filter(Boolean),
+        }, 'Multiple PR follow-up reasoning level labels found; using priority order');
+    }
+
+    if (reasoningLevel) {
+        options.correlatedLogger.info({
+            pullRequestNumber: options.pullRequestNumber,
+            repoOwner: options.repoOwner,
+            repoName: options.repoName,
+            reasoningLevel,
+            prReasoningLabels: prLabels.filter(isReasoningLevelLabel).map(getLabelName).filter(Boolean),
+            linkedIssueReasoningLabels: linkedIssueLabels.filter(isReasoningLevelLabel).map(getLabelName).filter(Boolean),
+        }, 'Resolved PR follow-up reasoning level override from labels');
+    }
+
+    return reasoningLevel;
 }
 
 export async function fetchLinkedIssueContext(
@@ -196,18 +236,22 @@ export async function fetchLinkedIssueContext(
     }
 
     const linkedIssueNumber = linkedIssueNumbers[0] ?? null;
-    if (linkedIssueNumbers.length === 0) return { context: originalTaskSpec, linkedIssueNumber: null };
+    if (linkedIssueNumbers.length === 0) return { context: originalTaskSpec, linkedIssueNumber: null, linkedIssueLabels: [] };
 
     originalTaskSpec += linkedIssueNumbers.length > 1
         ? `Here are the linked issue specifications for this pull request:\n\n`
         : `Here is the linked issue specification for this pull request:\n\n`;
 
+    const linkedIssueLabels: ReasoningLevelLabel[] = [];
     for (const issueNumber of linkedIssueNumbers) {
         try {
-            const linkedIssueData = await octokit.request<{ data: { title: string; body: string; body_html?: string; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+            const linkedIssueData = await octokit.request<{ data: { title: string; body: string; body_html?: string; labels?: ReasoningLevelLabel[]; user: { login: string } } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: repoOwner, repo: repoName, issue_number: issueNumber,
                 mediaType: { format: 'full' }  // Get body_html with signed image URLs
             });
+            if (Array.isArray(linkedIssueData.data.labels)) {
+                linkedIssueLabels.push(...linkedIssueData.data.labels);
+            }
             if (linkedIssueData.data.body_html) {
                 bodyHtmlParts.push(linkedIssueData.data.body_html);
             }
@@ -240,7 +284,7 @@ export async function fetchLinkedIssueContext(
     }
 
     const bodyHtml = bodyHtmlParts.length > 0 ? bodyHtmlParts.join('\n') : undefined;
-    return { context: originalTaskSpec, linkedIssueNumber, bodyHtml };
+    return { context: originalTaskSpec, linkedIssueNumber, bodyHtml, linkedIssueLabels };
 }
 
 export function formatCommentForPrompt(body: string | null): string {

@@ -9,7 +9,7 @@ import type { AnalysisResult } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { loadPrReviewModel, loadSettings } from '@propr/core';
-import { updateTaskTitleForPR } from './prCommentJobHelpers.js';
+import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment } from './prCommentJobUtils.js';
 import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
@@ -28,6 +28,7 @@ import {
 } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import type { ReasoningLevel } from '@propr/shared';
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -165,6 +166,7 @@ interface RunReviewsContext {
     omittedDiffFiles: string[];
     fileContents: string;
     reviewPromptOverride: string;
+    reasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger;
 }
 
@@ -190,7 +192,7 @@ async function runSingleReview(
     });
 
     try {
-        const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, prNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`, executionType: 'pr-review' });
+        const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, prNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`, executionType: 'pr-review', reasoningLevel: ctx.reasoningLevel });
         correlatedLogger.info({
             pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
             executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
@@ -339,6 +341,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents } = await fetchReviewContext(
         state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, models: assignments.map(a => a.model), correlationId, correlatedLogger }
     );
+    job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
+        repoOwner,
+        repoName,
+        pullRequestNumber,
+        correlatedLogger,
+    });
 
     const realComments = filterRealComments(state.unprocessedComments);
     const commentIdsSuffix = realComments.length > 0
@@ -360,6 +368,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 githubToken,
                 pullRequestNumber, prTitle: prData!.data.title, workflowLabel: getPrTaskWorkflowLabel(workflow),
                 repoOwner, repoName, correlationId, taskId, correlatedLogger,
+                reasoningLevel: job.data.reasoningLevel,
             });
         } catch (titleError) {
             correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to generate review task subtitle');
@@ -397,6 +406,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         omittedDiffFiles,
         fileContents,
         reviewPromptOverride,
+        reasoningLevel: job.data.reasoningLevel,
         correlatedLogger,
     };
 

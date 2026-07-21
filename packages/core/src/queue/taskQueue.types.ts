@@ -63,6 +63,8 @@ export interface CommentJobData {
     commandInstructions?: string;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
+    /** Reasoning level override resolved from PR or linked issue level-* labels. */
+    reasoningLevel?: ReasoningLevel;
 }
 
 export interface UnprocessedComment {

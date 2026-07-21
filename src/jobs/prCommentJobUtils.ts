@@ -12,6 +12,7 @@ import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import type { ReasoningLevel } from '@propr/shared';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -281,11 +282,12 @@ export interface CleanupOptions {
     localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
     repoOwner: string; repoName: string; pullRequestNumber: number;
     jobBranchName: string | undefined; jobLlm: string | null | undefined;
+    jobReasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger; redisClient: Redis;
 }
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
-    const { lockKey, correlationId, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, correlatedLogger, redisClient } = options;
+    const { lockKey, correlationId, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
     const lockOwner = await redisClient.get(lockKey);
     if (lockOwner === correlationId) {
         await redisClient.del(lockKey);
@@ -310,6 +312,7 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             await issueQueue.add('processPullRequestComment', {
                 pullRequestNumber, comments: [], repoOwner, repoName,
                 branchName: jobBranchName, llm: jobLlm, correlationId: generateCorrelationId(),
+                reasoningLevel: jobReasoningLevel,
             }, { jobId: followUpJobId, delay: 3000 });
 
             correlatedLogger.info({ jobId: followUpJobId, pullRequestNumber }, 'Queued follow-up job for pending comments');
