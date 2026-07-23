@@ -74,10 +74,11 @@ export class CodexAgent implements Agent {
             });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel)
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -96,12 +97,11 @@ export class CodexAgent implements Agent {
 
             const executionTime = Date.now() - startTime;
             const parsedOutput = parseCodexStreamOutput(result.stdout);
-            const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
 
-            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics });
+            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics });
 
             await this.persistTaskLog({
-                response, parsedOutput, executionTime, modelUsed, prompt, usageMetrics,
+                response, parsedOutput, executionTime, modelUsed: response.modelUsed, prompt, usageMetrics,
                 issueRef, repo, taskId, prNumber, isRetry, retryReason
             });
 
@@ -119,20 +119,20 @@ export class CodexAgent implements Agent {
     private buildTaskExecutionResult(params: {
         parsedOutput: CodexParsedOutput;
         result: CodexExecutionOutput;
-        effectiveModel?: string;
+        effectiveModel?: string; effectiveReasoningLevel: CodexRuntimeReasoningLevel | '';
         executionTime: number;
         prompt: string;
         usageMetrics: CodexUsageMetrics;
     }): AgentExecutionResult {
-        const { parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics } = params;
-        const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
+        const { parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics } = params;
         return {
             success: parsedOutput.success && result.exitCode === 0,
             executionTimeMs: executionTime,
             logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
             exitCode: result.exitCode,
             rawOutput: result.stdout,
-            modelUsed,
+            modelUsed: parsedOutput.model || effectiveModel || 'unknown',
+            ...(effectiveReasoningLevel && { reasoningLevel: effectiveReasoningLevel }),
             sessionId: parsedOutput.sessionId,
             conversationId: parsedOutput.conversationId,
             conversationLog: parsedOutput.conversationLog,

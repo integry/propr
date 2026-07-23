@@ -33,6 +33,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
   return {
     success: result.success,
     model: result.modelUsed,
+    ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
     executionTime: result.executionTimeMs,
     output: null,
     sessionId: result.sessionId || null,

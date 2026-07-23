@@ -179,6 +179,7 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
                 return {
                     success: true,
                     modelUsed: 'claude-sonnet-test',
+                    reasoningLevel: 'ultracode',
                     executionTimeMs: 12,
                     summary: 'done',
                     conversationLog: [],
@@ -213,6 +214,7 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
         });
 
         assert.strictEqual(result.claudeResult.success, true);
+        assert.strictEqual(result.claudeResult.reasoningLevel, 'ultracode');
         assert.strictEqual(capturedReasoningLevel, 'ultracode');
         assert.deepStrictEqual(capturedIssueRef, {
             number: 1705,

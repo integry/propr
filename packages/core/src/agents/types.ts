@@ -139,6 +139,8 @@ export interface AgentExecutionResult {
 
     // Metadata
     modelUsed: string;
+    /** Effective reasoning level passed to the agent runtime, when configured. */
+    reasoningLevel?: ReasoningLevel;
     sessionId?: string;
     conversationId?: string;
     executionTimeMs: number;

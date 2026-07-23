@@ -83,6 +83,7 @@ export class ClaudeAgent implements Agent {
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+        let effectiveReasoningLevel: ClaudeRuntimeReasoningLevel | '' = '';
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
         logger.info({
@@ -98,10 +99,11 @@ export class ClaudeAgent implements Agent {
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
+            effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel)
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -121,6 +123,7 @@ export class ClaudeAgent implements Agent {
             }, 'Claude agent execution completed');
 
             const { response, correctedTokenUsage, modelUsed } = processDockerResult(result, prompt, effectiveModel, executionTime);
+            if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
 
             await this.persistExecutionLogs({
                 result, prompt, issueRef, modelUsed, isRetry, retryReason,
@@ -149,7 +152,8 @@ export class ClaudeAgent implements Agent {
                 success: false, error: (error as Error).message, executionTimeMs: executionTime,
                 logs: (error as { stderr?: string }).stderr || (error as Error).message,
                 modifiedFiles: [], commitMessage: null, summary: undefined,
-                modelUsed: this.config.defaultModel || 'unknown'
+                modelUsed: this.config.defaultModel || 'unknown',
+                ...(effectiveReasoningLevel && { reasoningLevel: effectiveReasoningLevel })
             };
         }
     }

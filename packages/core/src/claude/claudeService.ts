@@ -63,6 +63,8 @@ export interface ClaudeCodeResponse {
     sessionId?: string | null;
     conversationId?: string;
     model?: string;
+    /** Effective reasoning level passed to the agent runtime, when configured. */
+    reasoningLevel?: ReasoningLevel;
     finalResult?: ClaudeOutputResult | null;
     modifiedFiles: string[];
     commitMessage: string | null;
