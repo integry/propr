@@ -129,7 +129,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
                   <option value="">System default</option>
                   {reasoningLevelOptions.map(level => (
                     <option key={level} value={level}>
-                      {formatReasoningLevelOption(level)}
+                      {formatReasoningLevelOption(level, agentType)}
                     </option>
                   ))}
                 </select>

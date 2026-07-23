@@ -86,14 +86,14 @@ Model labels route work to configured models. They are matched against `MODEL_LA
 
 ```text
 llm-claude-opus48
-llm-codex-gpt55
+llm-codex-gpt56-sol
 llm-antigravity-pro-high
 llm-antigravity-opus46-thinking
 ```
 
 If an issue carries a trigger label but no model label, the daemon falls back to the deployment default model (`DEFAULT_MODEL_NAME`). The exact model labels available in a deployment come from AI Agents in the Web UI.
 
-Reasoning level labels override the global `model_reasoning_level` setting for one issue. They match `level-low`, `level-medium`, `level-high`, `level-xhigh`, `level-max`, `level-ultra`, `level-ultracode`, or `level-auto`, case-insensitively. If multiple valid reasoning labels are present, ProPR chooses the highest-priority level in this order: `ultracode`, `ultra`, `max`, `xhigh`, `high`, `medium`, `low`, `auto`; additional valid reasoning labels are logged as a warning. Reasoning labels do not expand the job matrix, so an issue with multiple `base-*` or `llm-*` labels still creates the same number of jobs, with the selected reasoning level stamped onto each child job.
+Reasoning level labels override the global `model_reasoning_level` setting for one issue. They match `level-low`, `level-medium`, `level-high`, `level-xhigh`, `level-max`, `level-ultra`, `level-ultracode`, or `level-auto`, case-insensitively. If multiple valid reasoning labels are present on the same item, ProPR chooses the highest-priority level in this order: `ultracode`, `ultra`, `max`, `xhigh`, `high`, `medium`, `low`, `auto`; additional valid reasoning labels are logged as a warning. For PR follow-ups, a reasoning label directly on the PR takes precedence over any reasoning label on its linked issue. Reasoning labels do not expand the job matrix, so an issue with multiple `base-*` or `llm-*` labels still creates the same number of jobs, with the selected reasoning level stamped onto each child job.
 
 ## Job Creation
 

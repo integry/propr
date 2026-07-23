@@ -78,6 +78,7 @@ describe('generateSummaryTitle fallback behavior', () => {
         let taskKind: unknown;
         let timeoutMs: unknown;
         let reasoningLevel: unknown;
+        let useGlobalReasoningLevel: unknown;
         const title = await generateSummaryTitle(baseOptions({
             workflowLabel: 'Ultrafix',
             titleContext: 'Review feedback to address:\nKeep iterating on lint failures.',
@@ -87,6 +88,7 @@ describe('generateSummaryTitle fallback behavior', () => {
                 taskKind = options.metadata?.taskKind;
                 timeoutMs = options.timeoutMs;
                 reasoningLevel = options.reasoningLevel;
+                useGlobalReasoningLevel = options.useGlobalReasoningLevel;
                 return 'Resolve lint failures';
             },
         }));
@@ -95,6 +97,7 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(taskKind, 'pr-ultrafix-title-generation');
         assert.strictEqual(timeoutMs, 1234);
         assert.strictEqual(reasoningLevel, 'xhigh');
+        assert.strictEqual(useGlobalReasoningLevel, false);
     });
 
     test('removes surrounding quotes from generated subtitles', async () => {
@@ -215,7 +218,6 @@ describe('resolveAndExecuteAgent reasoning levels', () => {
             number: 1705,
             repoOwner: 'integry',
             repoName: 'propr',
-            reasoningLevel: 'ultracode',
         });
     });
 });

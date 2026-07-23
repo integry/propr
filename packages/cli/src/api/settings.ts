@@ -219,6 +219,11 @@ export interface UpdateSettingsResponse {
    * The updated settings object.
    */
   settings: UpdateSettingsOptions;
+
+  /**
+   * Non-blocking compatibility warnings detected after the settings were saved.
+   */
+  warnings?: string[];
 }
 
 /**

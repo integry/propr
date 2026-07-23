@@ -28,7 +28,7 @@ Environment variables and CLI commands are mostly for install and development wo
 1. Create or choose a GitHub issue.
 2. Make sure the issue is clear enough for implementation.
 3. Add your configured processing label, such as `AI` or `propr`.
-4. Optionally add a model label, such as `llm-claude-fable` or `llm-codex-gpt55`.
+4. Optionally add a model label, such as `llm-claude-fable` or `llm-codex-gpt56-sol`.
 5. Watch the task in the Web UI.
 6. Review the pull request ProPR creates. The PR body links the issue with `Closes #N`, so merging it closes the issue.
 
@@ -40,9 +40,9 @@ The exact labels and model IDs come from your repository and AI Agent settings.
 
 - **Trigger/processing labels** (configurable, e.g. `AI`, `propr`) start a run. "Trigger label" and "processing label" refer to the same label you add yourself.
 - **State labels** are applied automatically as the run progresses: `<trigger>-processing`, `<trigger>-done`, and `<trigger>-failed-*` variants on failure (for example `AI-processing`, `AI-done`).
-- **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-opus48`, `llm-codex-gpt55`, `llm-antigravity-pro-high`, `llm-opencode-minimax-m3-free`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
+- **Model labels** (`llm-...`) select the agent and model, for example `llm-claude-opus48`, `llm-codex-gpt56-sol`, `llm-antigravity-pro-high`, `llm-opencode-minimax-m3-free`, `llm-vibe-mistral`. Adding several model labels to one issue produces one run, branch, and PR per model, so you can compare results.
 - **`base-<branch>`** targets a non-default base branch, for example `base-develop`.
-- **`level-<level>`** overrides the configured reasoning level for that issue, for example `level-xhigh` or `level-max`. Valid levels are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. Claude receives `auto` as adaptive effort; Codex omits the override for `auto` and uses its own default selection. Unlike model labels, adding a reasoning level does not fan out extra runs; if multiple reasoning labels are present, the highest-priority valid level applies to every run created for the issue.
+- **`level-<level>`** overrides the configured reasoning level for that issue, for example `level-xhigh` or `level-max`. Valid levels are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. Claude receives `auto` as adaptive effort; Codex omits the override for `auto` and uses its own default selection. Unlike model labels, adding a reasoning level does not fan out extra runs; if multiple reasoning labels are present, the highest-priority valid level applies to every run created for the issue. For PR follow-ups, a level label directly on the PR takes precedence over labels inherited from its linked issue.
 
 Throughout these docs, "processing label" means the configured trigger label you add yourself (for example `AI` or `propr`). The `<trigger>-processing` state label is a separate label that ProPR applies automatically while a run is in progress.
 

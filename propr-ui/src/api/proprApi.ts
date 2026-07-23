@@ -241,7 +241,13 @@ export const getSettings = async (): Promise<SystemSettings> => {
   return response.json();
 };
 
-export const updateSettings = async (settings: Record<string, unknown>): Promise<unknown> => {
+export interface ConfigUpdateResponse {
+  success: boolean;
+  settings?: Record<string, unknown>;
+  warnings?: string[];
+}
+
+export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ settings }), credentials: 'include'
@@ -396,12 +402,19 @@ export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
   return response.json();
 };
 
-export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
+export interface SaveAgentsResponse {
+  success: boolean;
+  agents: AgentConfig[];
+  warnings?: string[];
+}
+
+export const saveAgents = async (agents: AgentConfig[]): Promise<SaveAgentsResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agents }), credentials: 'include'
   });
   await handleApiResponse(response);
+  return response.json();
 };
 
 export const getOpenCodeModels = async (agentId?: string): Promise<{ models: string[] }> => {

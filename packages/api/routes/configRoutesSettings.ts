@@ -7,6 +7,7 @@ interface SettingsStore {
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
   loadSettings: typeof configManager.loadSettings;
   loadSettingsRecord?: () => Promise<Record<string, unknown>>;
+  loadAgents?: typeof configManager.loadAgents;
 }
 
 interface SaveSettingsRequest {
@@ -206,5 +207,28 @@ export async function saveSettingsWithRollback({
     };
   }
 
-  return { status: 200, body: { success: true, settings: { ...otherSettings, ...extracted.normalized } } };
+  let warnings: string[] = [];
+  const savedReasoningLevel = extracted.normalized.model_reasoning_level;
+  if (typeof savedReasoningLevel === 'string' && configStore.loadAgents) {
+    try {
+      const validatedLevel = configManager.validateModelReasoningLevel(savedReasoningLevel);
+      if (validatedLevel.valid) {
+        warnings = configManager.findReasoningLevelCliVersionWarnings(
+          await configStore.loadAgents(),
+          validatedLevel.value
+        );
+      }
+    } catch (warningError) {
+      console.warn('Could not evaluate reasoning-level CLI compatibility after settings save:', warningError);
+    }
+  }
+
+  return {
+    status: 200,
+    body: {
+      success: true,
+      settings: { ...otherSettings, ...extracted.normalized },
+      ...(warnings.length > 0 ? { warnings } : {})
+    }
+  };
 }

@@ -131,4 +131,31 @@ describe('AgentConfigModal', () => {
       modelReasoningLevels: { [model.id]: 'xhigh' },
     }));
   });
+
+  it('marks a legacy cross-agent reasoning value as unsupported', () => {
+    const model = AGENT_MODELS.codex[0];
+
+    render(
+      <AgentConfigModal
+        agent={{
+          id: 'agent-codex',
+          type: 'codex',
+          alias: 'codex',
+          enabled: true,
+          dockerImage: AGENT_DEFAULTS.codex.dockerImage,
+          configPath: AGENT_DEFAULTS.codex.configPath,
+          supportedModels: [model.id],
+          defaultModel: model.id,
+          modelReasoningLevels: { [model.id]: 'ultracode' },
+        }}
+        existingAliases={['codex']}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('combobox', {
+      name: `Reasoning level for ${model.name}`,
+    })).toHaveDisplayValue('Ultracode (unsupported for Codex) — GitHub: level-ultracode');
+  });
 });

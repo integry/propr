@@ -1,5 +1,5 @@
 import { AGENT_TYPES, toProprOpenCodeModelId, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
-import { isReasoningLevel } from '@propr/shared';
+import { getReasoningLevelsForAgentType, isReasoningLevel } from '@propr/shared';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
@@ -95,9 +95,15 @@ function validateAgentModelReasoningLevels(agent: AgentConfig): string | null {
   if (!isAgentRecord(agent.modelReasoningLevels) || Array.isArray(agent.modelReasoningLevels)) {
     return `Agent '${agent.id}' has invalid modelReasoningLevels. Must be an object`;
   }
+  const supportedLevels = getReasoningLevelsForAgentType(agent.type);
   for (const [model, level] of Object.entries(agent.modelReasoningLevels)) {
-    if (!model.trim() || !isReasoningLevel(String(level))) {
+    const normalizedLevel = typeof level === 'string' ? level : String(level);
+    if (!model.trim() || !isReasoningLevel(normalizedLevel)) {
       return `Agent '${agent.id}' has invalid reasoning level '${String(level)}' for model '${model}'`;
+    }
+    if (!supportedLevels.includes(normalizedLevel)) {
+      const supportedText = supportedLevels.length > 0 ? supportedLevels.join(', ') : 'none';
+      return `Agent '${agent.id}' reasoning level '${normalizedLevel}' for model '${model}' is not supported by ${agent.type}. Supported levels: ${supportedText}`;
     }
   }
   return null;

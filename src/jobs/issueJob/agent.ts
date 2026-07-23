@@ -73,8 +73,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   const agentIssueRef = {
     number: issueRef.number,
     repoOwner: issueRef.repoOwner,
-    repoName: issueRef.repoName,
-    reasoningLevel: issueRef.reasoningLevel
+    repoName: issueRef.repoName
   };
 
   // Localize remote images in issue body and comments

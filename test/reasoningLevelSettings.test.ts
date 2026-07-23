@@ -9,6 +9,7 @@ import {
   isReasoningLevelSupportedByAgentType,
 } from '@propr/shared';
 import { parseSettingValue } from '../packages/cli/src/api/settings.ts';
+import { ClaudeAgent } from '../packages/core/src/agents/impl/ClaudeAgent.ts';
 import { CodexAgent } from '../packages/core/src/agents/impl/CodexAgent.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
 import type { AgentConfig } from '../packages/core/src/agents/types.ts';
@@ -24,7 +25,8 @@ const {
   resolveAgentModelReasoningLevel,
   resolveRuntimeModelReasoningLevel,
   validateModelReasoningLevel,
-  assertReasoningLevelCliVersionSupported
+  assertReasoningLevelCliVersionSupported,
+  findReasoningLevelCliVersionWarnings
 } = await import('../packages/core/src/config/configManagerReasoning.ts');
 const { extractSettingSaves } = await import('../packages/api/routes/configSettings.ts');
 const { normalizeAgentsConfig, validateAgentsConfig } = await import('../packages/api/routes/configAgentValidation.ts');
@@ -160,6 +162,43 @@ describe('core model_reasoning_level validation', () => {
       reasoningLevel: 'xhigh',
     }));
   });
+
+  test('builds save-time warnings only for enabled agents that would pass a reasoning flag', () => {
+    assert.deepEqual(findReasoningLevelCliVersionWarnings([
+      {
+        type: 'claude',
+        alias: 'old-claude',
+        enabled: true,
+        cliVersionResolved: '2.1.67',
+      },
+      {
+        type: 'codex',
+        alias: 'old-codex',
+        enabled: true,
+        cliVersionResolved: '0.143.9',
+      },
+      {
+        type: 'claude',
+        alias: 'disabled-claude',
+        enabled: false,
+        cliVersionResolved: '2.1.1',
+      },
+    ], 'auto'), [
+      "claude agent 'old-claude' is pinned to CLI 2.1.67, but reasoning-level support requires claude CLI 2.1.68 or newer. Update the agent CLI version or clear the configured reasoning level.",
+    ]);
+
+    assert.deepEqual(findReasoningLevelCliVersionWarnings([
+      {
+        type: 'codex',
+        alias: 'old-codex',
+        enabled: true,
+        cliVersionResolved: '0.143.9',
+        modelReasoningLevels: { 'gpt-5.6-sol': 'high' },
+      },
+    ], ''), [
+      "codex agent 'old-codex' is pinned to CLI 0.143.9, but reasoning-level support requires codex CLI 0.144.0 or newer. Update the agent CLI version or clear the configured reasoning level.",
+    ]);
+  });
 });
 
 describe('agent model reasoning level configuration', () => {
@@ -193,6 +232,16 @@ describe('agent model reasoning level configuration', () => {
     assert.match(error ?? '', /invalid reasoning level 'extreme'/);
   });
 
+  test('rejects per-model reasoning levels unsupported by the agent type', () => {
+    const error = validateAgentsConfig([{
+      ...baseAgent,
+      modelReasoningLevels: { 'gpt-5.6-sol': 'ultracode' },
+    }]);
+
+    assert.match(error ?? '', /reasoning level 'ultracode'.*not supported by codex/);
+    assert.match(error ?? '', /Supported levels: low, medium, high, xhigh, max, ultra/);
+  });
+
   test('task labels override per-model agent reasoning levels', async () => {
     const agent = new CodexAgent({
       ...baseAgent,
@@ -200,11 +249,13 @@ describe('agent model reasoning level configuration', () => {
     }) as unknown as {
       resolveEffectiveReasoningLevel(
         reasoningLevel: '' | typeof REASONING_LEVELS[number] | undefined,
-        model: string | undefined
+        model: string | undefined,
+        useGlobalReasoningLevel?: boolean
       ): Promise<string>;
     };
 
     assert.equal(await agent.resolveEffectiveReasoningLevel(undefined, 'codex:gpt-5.6-sol'), 'xhigh');
+    assert.equal(await agent.resolveEffectiveReasoningLevel(undefined, 'codex:gpt-5.6-sol', false), 'xhigh');
     assert.equal(await agent.resolveEffectiveReasoningLevel('low', 'codex:gpt-5.6-sol'), 'low');
   });
 });
@@ -231,6 +282,108 @@ describe('settings save rollback path for model_reasoning_level', () => {
     const result = await extractSettingSaves({ model_reasoning_level: 'ultracode' });
     assert.equal(result.error, undefined);
     assert.equal(result.normalized.model_reasoning_level, 'ultracode');
+  });
+
+  test('settings saves return a warning for an incompatible enabled agent CLI', async () => {
+    const trx = Object.assign(
+      ((_table: string) => ({
+        insert: () => ({
+          onConflict: () => ({
+            merge: async () => {},
+          }),
+        }),
+      })) as unknown as typeof db,
+      {
+        commit: async () => {},
+        rollback: async () => {},
+      }
+    );
+    const transactionMock = mock.method(db, 'transaction', async () => trx as never);
+
+    try {
+      const result = await saveSettingsWithRollback({
+        settings: { model_reasoning_level: 'high' },
+        publishConfigUpdate: async () => {},
+        configStore: {
+          loadSettings: async () => ({}),
+          loadAgents: async () => [{
+            id: 'old-codex',
+            type: 'codex',
+            alias: 'old-codex',
+            enabled: true,
+            dockerImage: 'propr/agent:latest',
+            configPath: '~/.codex',
+            supportedModels: ['gpt-5.6-sol'],
+            cliVersionResolved: '0.143.9',
+          }],
+          handleSettingsSaveSideEffects: async () => {},
+        },
+      });
+
+      assert.equal(result.status, 200);
+      assert.equal((result.body.warnings as string[])?.length, 1);
+      assert.match((result.body.warnings as string[])[0], /old-codex.*requires codex CLI 0\.144\.0/);
+    } finally {
+      transactionMock.mock.restore();
+    }
+  });
+
+  test('agent saves return a warning when configured reasoning uses an incompatible CLI', async () => {
+    const trx = Object.assign(
+      ((_table: string) => ({
+        insert: () => ({
+          onConflict: () => ({
+            merge: async () => {},
+          }),
+        }),
+      })) as unknown as typeof db,
+      {
+        commit: async () => {},
+        rollback: async () => {},
+      }
+    );
+    const transactionMock = mock.method(db, 'transaction', async () => trx as never);
+    const oldClaude: AgentConfig = {
+      id: 'old-claude',
+      type: 'claude',
+      alias: 'old-claude',
+      enabled: true,
+      dockerImage: 'propr/agent:latest',
+      configPath: '~/.claude',
+      supportedModels: ['claude-opus-4-8'],
+      defaultModel: 'claude-opus-4-8',
+      cliVersionResolved: '2.1.67',
+      modelReasoningLevels: { 'claude-opus-4-8': 'xhigh' },
+    };
+
+    try {
+      const result = await applyAgentsUpdate({
+        agents: [oldClaude],
+        processedAgents: [oldClaude],
+        publishConfigUpdate: async () => {},
+        logActivityHelper: async () => {},
+        configStore: {
+          loadAgents: async () => [],
+          loadSettings: async () => ({ default_agent_alias: 'old-claude' }),
+          loadModelReasoningLevel: async () => '',
+          handleSettingsSaveSideEffects: async () => {},
+        },
+        registry: {
+          refresh: async () => {},
+          setDefaultAgentAlias: () => {},
+        },
+      });
+
+      assert.equal(result.status, 200);
+      assert.equal(result.body.success, true);
+      assert.equal(result.body.success && result.body.warnings?.length, 1);
+      assert.match(
+        result.body.success ? result.body.warnings?.[0] ?? '' : '',
+        /old-claude.*requires claude CLI 2\.1\.68/
+      );
+    } finally {
+      transactionMock.mock.restore();
+    }
   });
 
   test('agent updates allow disabling all agents while model_reasoning_level is set', async () => {
@@ -312,6 +465,26 @@ describe('agent runtime reasoning level wiring', () => {
     supportedModels: ['claude-opus-4-6'],
     defaultModel: 'claude-opus-4-6',
   };
+
+  test('can bypass only the global reasoning fallback for trivial analysis', async () => {
+    const codexAgent = new CodexAgent(codexConfig) as unknown as {
+      resolveEffectiveReasoningLevel(
+        reasoningLevel: undefined,
+        model: string,
+        useGlobalReasoningLevel: boolean
+      ): Promise<string>;
+    };
+    const claudeAgent = new ClaudeAgent(claudeConfig) as unknown as {
+      resolveEffectiveReasoningLevel(
+        reasoningLevel: undefined,
+        model: string,
+        useGlobalReasoningLevel: boolean
+      ): Promise<string>;
+    };
+
+    assert.equal(await codexAgent.resolveEffectiveReasoningLevel(undefined, 'gpt-5.5', false), '');
+    assert.equal(await claudeAgent.resolveEffectiveReasoningLevel(undefined, 'claude-opus-4-6', false), '');
+  });
 
   test('passes Codex reasoning level through model_reasoning_effort config', () => {
     const args = (new CodexAgent(codexConfig) as unknown as {

@@ -48,7 +48,7 @@ function buildReindexAllSkipMessage(result: TriggerReindexAllResponse): string {
 
 export function useSettingsState() {
   const [loading, setLoading] = useState(true);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'warning' | 'error'>('idle');
   const [globalError, setGlobalError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const summarizationSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -93,7 +93,12 @@ export function useSettingsState() {
     setGlobalError(null);
   }, []);
 
-  const completeSave = useCallback(() => {
+  const completeSave = useCallback((warnings: string[] = []) => {
+    if (warnings.length > 0) {
+      setSaveStatus('warning');
+      setGlobalError(warnings.join(' '));
+      return;
+    }
     setSaveStatus('saved');
     saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
   }, []);
@@ -110,7 +115,7 @@ export function useSettingsState() {
       if (settingsToSave.worker_concurrency && isNaN(concurrency)) {
         throw new Error('Worker concurrency must be a number');
       }
-      await updateSettings({
+      const result = await updateSettings({
         worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
         analysis_model_fast: settingsToSave.analysis_model_fast,
         planner_context_model: settingsToSave.planner_context_model,
@@ -125,7 +130,7 @@ export function useSettingsState() {
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
       });
-      completeSave();
+      completeSave(result.warnings);
     } catch (err) {
       failSave(err, 'Failed to save settings');
     }

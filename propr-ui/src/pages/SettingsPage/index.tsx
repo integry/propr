@@ -252,6 +252,12 @@ const SettingsPage: React.FC = () => {
                 {globalError}
               </span>
             )}
+            {saveStatus === 'warning' && globalError && (
+              <span className="flex items-center gap-1.5 text-xs text-amber-700 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                Saved with warning: {globalError}
+              </span>
+            )}
             {saveStatus === 'idle' && (
               <span className="flex items-center gap-1.5 text-xs text-gray-400 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-gray-300"></span>

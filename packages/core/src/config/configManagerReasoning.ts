@@ -1,5 +1,6 @@
 import {
     REASONING_LEVELS,
+    isReasoningLevel,
     normalizeModelReasoningLevel,
     type AgentType,
     type ModelReasoningLevel,
@@ -104,18 +105,83 @@ export function assertReasoningLevelCliVersionSupported({
     cliVersion?: string;
     reasoningLevel: RuntimeReasoningLevel | '';
 }): void {
-    if (!reasoningLevel) return;
+    const error = getReasoningLevelCliVersionError({
+        agentType,
+        agentAlias,
+        cliVersion,
+        reasoningLevel
+    });
+    if (error) throw new Error(error);
+}
+
+export function getReasoningLevelCliVersionError({
+    agentType,
+    agentAlias,
+    cliVersion,
+    reasoningLevel
+}: {
+    agentType: AgentType;
+    agentAlias?: string;
+    cliVersion?: string;
+    reasoningLevel: RuntimeReasoningLevel | '';
+}): string | null {
+    if (!reasoningLevel) return null;
     const minimumVersion = REASONING_LEVEL_MIN_CLI_VERSION[agentType];
-    if (!minimumVersion || !cliVersion) return;
+    if (!minimumVersion || !cliVersion) return null;
 
     const comparison = compareSemverish(cliVersion, minimumVersion);
-    if (comparison === null || comparison >= 0) return;
+    if (comparison === null || comparison >= 0) return null;
 
     const aliasText = agentAlias ? ` '${agentAlias}'` : '';
-    throw new Error(
-        `${agentType} agent${aliasText} is pinned to CLI ${cliVersion}, but model_reasoning_level requires ` +
-        `${agentType} CLI ${minimumVersion} or newer. Update the agent CLI version or clear model_reasoning_level.`
+    return (
+        `${agentType} agent${aliasText} is pinned to CLI ${cliVersion}, but reasoning-level support requires ` +
+        `${agentType} CLI ${minimumVersion} or newer. Update the agent CLI version or clear the configured reasoning level.`
     );
+}
+
+interface ReasoningLevelConfiguredAgent {
+    type: AgentType;
+    alias: string;
+    enabled: boolean;
+    cliVersionResolved?: string;
+    modelReasoningLevels?: Record<string, ReasoningLevel>;
+}
+
+/**
+ * Returns non-blocking save-time warnings for enabled agents whose configured
+ * reasoning levels cannot be passed to their pinned CLI version.
+ */
+export function findReasoningLevelCliVersionWarnings(
+    agents: readonly ReasoningLevelConfiguredAgent[],
+    globalReasoningLevel: ModelReasoningLevel
+): string[] {
+    const warnings: string[] = [];
+
+    for (const agent of agents) {
+        if (!agent.enabled) continue;
+
+        const configuredLevels: ModelReasoningLevel[] = [globalReasoningLevel];
+        for (const level of Object.values(agent.modelReasoningLevels ?? {})) {
+            if (typeof level === 'string' && isReasoningLevel(level)) {
+                configuredLevels.push(level);
+            }
+        }
+
+        const runtimeLevel = configuredLevels
+            .map(level => resolveRuntimeModelReasoningLevel(agent.type, level))
+            .find((level): level is RuntimeReasoningLevel => level !== null);
+        if (!runtimeLevel) continue;
+
+        const warning = getReasoningLevelCliVersionError({
+            agentType: agent.type,
+            agentAlias: agent.alias,
+            cliVersion: agent.cliVersionResolved,
+            reasoningLevel: runtimeLevel
+        });
+        if (warning) warnings.push(warning);
+    }
+
+    return warnings;
 }
 
 export async function loadModelReasoningLevel(): Promise<ModelReasoningLevel> {

@@ -210,6 +210,8 @@ export {
     validateModelReasoningLevel,
     resolveRuntimeModelReasoningLevel,
     assertReasoningLevelCliVersionSupported,
+    getReasoningLevelCliVersionError,
+    findReasoningLevelCliVersionWarnings,
     type ModelReasoningLevel,
     type ClaudeRuntimeReasoningLevel,
     type CodexRuntimeReasoningLevel,

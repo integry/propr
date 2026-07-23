@@ -124,6 +124,8 @@ export interface AnalyzeOptions {
     responseFormat?: 'text' | 'json';
     /** Optional per-analysis reasoning level override. Omitted means use the global setting. */
     reasoningLevel?: ReasoningLevel;
+    /** Whether an omitted reasoning level should fall back to the global setting. Defaults to true. */
+    useGlobalReasoningLevel?: boolean;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
 }

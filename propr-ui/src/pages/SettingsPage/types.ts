@@ -17,5 +17,5 @@ export interface Settings {
 
 export interface AlertProps {
   message: string;
-  type: 'error' | 'success';
+  type: 'error' | 'success' | 'warning';
 }

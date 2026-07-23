@@ -1,5 +1,3 @@
-import type { ReasoningLevel } from '@propr/shared';
-
 export interface IssueLabel {
     name: string;
 }
@@ -29,7 +27,6 @@ export interface IssueRef {
     number: number;
     repoOwner: string;
     repoName: string;
-    reasoningLevel?: ReasoningLevel;
 }
 
 export interface ConversationLogEntry {

@@ -43,14 +43,14 @@ describe('PR comment reasoning level labels', () => {
         assert.equal(reasoningLevel, 'max');
     });
 
-    test('keeps deterministic priority when PR and linked issue labels conflict', () => {
+    test('prefers a PR label over a conflicting linked-issue label', () => {
         const reasoningLevel = resolvePrReasoningLevelOverride(
             [{ name: 'level-low' }],
             [{ name: 'Level-UltraCode' }],
             context,
         );
 
-        assert.equal(reasoningLevel, 'ultracode');
+        assert.equal(reasoningLevel, 'low');
     });
 
     test('returns undefined when no PR or linked issue level label is present', () => {

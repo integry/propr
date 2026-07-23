@@ -121,7 +121,8 @@ async function runWorktreeFreeTitleAnalysis(options: TitleAnalysisOptions, corre
         repository,
         metadata: options.metadata,
         timeoutMs: options.timeoutMs,
-        reasoningLevel: options.reasoningLevel ?? options.issueRef.reasoningLevel,
+        reasoningLevel: options.reasoningLevel,
+        useGlobalReasoningLevel: options.useGlobalReasoningLevel,
     });
 
     if (!result.success) {
@@ -175,7 +176,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             model,
             correlationId,
             githubToken: githubToken.token,
-            issueRef: { number: pullRequestNumber, repoOwner, repoName, reasoningLevel: options.reasoningLevel },
+            issueRef: { number: pullRequestNumber, repoOwner, repoName },
             taskId,
             prNumber: pullRequestNumber,
             executionType: 'title-generation',
@@ -185,6 +186,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             },
             timeoutMs,
             reasoningLevel: options.reasoningLevel,
+            useGlobalReasoningLevel: false,
         };
         const titlePromise = runTitleAnalysis({
             analysisOptions,
@@ -310,7 +312,7 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
 
     const agentResult = await agent.executeTask({
         worktreePath,
-        issueRef: { number: pullRequestNumber, repoOwner, repoName, reasoningLevel },
+        issueRef: { number: pullRequestNumber, repoOwner, repoName },
         prompt,
         model: modelToUse,
         githubToken,

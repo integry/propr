@@ -19,6 +19,7 @@ import {
   SystemSettings,
   SettingKey,
   NamedConfigEndpoint,
+  UpdateSettingsResponse,
 } from "../api/index.js";
 import {
   printOutput,
@@ -382,6 +383,12 @@ Examples:
           console.log("");
           console.log(`Successfully updated setting: ${key}`);
           console.log(`  New value: ${formatValue(parsedValue)}`);
+          const warnings = isExtraConfigKey(key)
+            ? []
+            : (result as UpdateSettingsResponse).warnings ?? [];
+          for (const warning of warnings) {
+            console.warn(`Warning: ${warning}`);
+          }
         } else {
           console.error("Failed to update setting.");
           process.exit(1);

@@ -154,16 +154,20 @@ export function resolvePrReasoningLevelOverride(
     linkedIssueLabels: readonly ReasoningLevelLabel[],
     options: RepoContext & { correlatedLogger: Logger }
 ): ReasoningLevel | undefined {
-    const labels = [...prLabels, ...linkedIssueLabels];
-    const reasoningLabels = labels.filter(isReasoningLevelLabel);
-    const reasoningLevel = parseReasoningLevelFromLabels(labels);
+    const prReasoningLabels = prLabels.filter(isReasoningLevelLabel);
+    const linkedIssueReasoningLabels = linkedIssueLabels.filter(isReasoningLevelLabel);
+    const reasoningLabels = [...prReasoningLabels, ...linkedIssueReasoningLabels];
+    const prReasoningLevel = parseReasoningLevelFromLabels(prLabels);
+    const linkedIssueReasoningLevel = parseReasoningLevelFromLabels(linkedIssueLabels);
+    const reasoningLevel = prReasoningLevel ?? linkedIssueReasoningLevel;
 
     if (reasoningLabels.length > 1) {
         options.correlatedLogger.warn({
             pullRequestNumber: options.pullRequestNumber,
             reasoningLevel,
+            source: prReasoningLevel ? 'pull_request' : 'linked_issue',
             labels: reasoningLabels.map(getLabelName).filter(Boolean),
-        }, 'Multiple PR follow-up reasoning level labels found; using priority order');
+        }, 'Multiple PR follow-up reasoning level labels found; preferring pull request labels, then priority order');
     }
 
     if (reasoningLevel) {
@@ -172,8 +176,9 @@ export function resolvePrReasoningLevelOverride(
             repoOwner: options.repoOwner,
             repoName: options.repoName,
             reasoningLevel,
-            prReasoningLabels: prLabels.filter(isReasoningLevelLabel).map(getLabelName).filter(Boolean),
-            linkedIssueReasoningLabels: linkedIssueLabels.filter(isReasoningLevelLabel).map(getLabelName).filter(Boolean),
+            source: prReasoningLevel ? 'pull_request' : 'linked_issue',
+            prReasoningLabels: prReasoningLabels.map(getLabelName).filter(Boolean),
+            linkedIssueReasoningLabels: linkedIssueReasoningLabels.map(getLabelName).filter(Boolean),
         }, 'Resolved PR follow-up reasoning level override from labels');
     }
 
