@@ -30,6 +30,9 @@ export interface AgentConfig {
     // e.g., { 'claude-opus-4-5-20251101': 'my-opus-bot', 'claude-sonnet-4-5-20251101': 'my-sonnet-bot' }
     modelCustomLabels?: Record<string, string>;
 
+    // Per-model reasoning levels. These override the system setting when no task label overrides them.
+    modelReasoningLevels?: Record<string, ReasoningLevel>;
+
     // CLI Version Configuration
     cliVersionType?: CliVersionType;  // How the version is specified (default, tag, specific, custom)
     cliVersion?: string;              // User-specified version (e.g., "2.1.84", "stable", "latest")

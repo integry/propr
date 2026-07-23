@@ -1,3 +1,5 @@
+import type { ReasoningLevel } from '@propr/shared';
+
 export interface SystemAgentStatus {
   id: string;
   type: 'claude' | 'codex' | 'antigravity' | 'vibe' | string;
@@ -116,6 +118,7 @@ export interface AgentConfig {
   defaultModel?: string;
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
+  modelReasoningLevels?: Record<string, ReasoningLevel>;
 }
 
 export interface SystemSettings {

@@ -21,11 +21,13 @@ const { applyAgentsUpdate } = await import('../packages/api/routes/configRoutesA
 const {
   resolveClaudeReasoningLevel,
   resolveCodexReasoningLevel,
+  resolveAgentModelReasoningLevel,
   resolveRuntimeModelReasoningLevel,
   validateModelReasoningLevel,
   assertReasoningLevelCliVersionSupported
 } = await import('../packages/core/src/config/configManagerReasoning.ts');
 const { extractSettingSaves } = await import('../packages/api/routes/configSettings.ts');
+const { normalizeAgentsConfig, validateAgentsConfig } = await import('../packages/api/routes/configAgentValidation.ts');
 const { saveSettingsWithRollback } = await import('../packages/api/routes/configRoutesSettings.ts');
 
 after(async () => {
@@ -126,6 +128,13 @@ describe('core model_reasoning_level validation', () => {
     assert.equal(resolveClaudeReasoningLevel('auto'), 'auto');
   });
 
+  test('resolves per-model agent overrides for plain and agent-prefixed model IDs', () => {
+    const modelReasoningLevels = { 'gpt-5.6-sol': 'xhigh' } as const;
+    assert.equal(resolveAgentModelReasoningLevel(modelReasoningLevels, 'gpt-5.6-sol'), 'xhigh');
+    assert.equal(resolveAgentModelReasoningLevel(modelReasoningLevels, 'codex:gpt-5.6-sol'), 'xhigh');
+    assert.equal(resolveAgentModelReasoningLevel(modelReasoningLevels, 'gpt-5.6-terra'), undefined);
+  });
+
   test('rejects reasoning flags for known unsupported CLI versions', () => {
     assert.throws(
       () => assertReasoningLevelCliVersionSupported({
@@ -150,6 +159,53 @@ describe('core model_reasoning_level validation', () => {
       cliVersion: 'latest',
       reasoningLevel: 'xhigh',
     }));
+  });
+});
+
+describe('agent model reasoning level configuration', () => {
+  const baseAgent: AgentConfig = {
+    id: 'codex',
+    type: 'codex',
+    alias: 'codex',
+    enabled: true,
+    dockerImage: 'propr/agent:latest',
+    configPath: '~/.codex',
+    supportedModels: ['gpt-5.6-sol'],
+    defaultModel: 'gpt-5.6-sol',
+  };
+
+  test('normalizes per-model reasoning levels from the agents API', () => {
+    const [normalized] = normalizeAgentsConfig([{
+      ...baseAgent,
+      modelReasoningLevels: { 'gpt-5.6-sol': 'XHIGH' as never },
+    }]);
+
+    assert.deepEqual(normalized.modelReasoningLevels, { 'gpt-5.6-sol': 'xhigh' });
+    assert.equal(validateAgentsConfig([normalized]), null);
+  });
+
+  test('rejects invalid per-model reasoning levels from the agents API', () => {
+    const error = validateAgentsConfig([{
+      ...baseAgent,
+      modelReasoningLevels: { 'gpt-5.6-sol': 'extreme' as never },
+    }]);
+
+    assert.match(error ?? '', /invalid reasoning level 'extreme'/);
+  });
+
+  test('task labels override per-model agent reasoning levels', async () => {
+    const agent = new CodexAgent({
+      ...baseAgent,
+      modelReasoningLevels: { 'gpt-5.6-sol': 'xhigh' },
+    }) as unknown as {
+      resolveEffectiveReasoningLevel(
+        reasoningLevel: '' | typeof REASONING_LEVELS[number] | undefined,
+        model: string | undefined
+      ): Promise<string>;
+    };
+
+    assert.equal(await agent.resolveEffectiveReasoningLevel(undefined, 'codex:gpt-5.6-sol'), 'xhigh');
+    assert.equal(await agent.resolveEffectiveReasoningLevel('low', 'codex:gpt-5.6-sol'), 'low');
   });
 });
 

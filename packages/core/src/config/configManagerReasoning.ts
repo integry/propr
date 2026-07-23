@@ -74,6 +74,25 @@ export function resolveRuntimeModelReasoningLevel(
     return null;
 }
 
+/**
+ * Resolves an agent's per-model reasoning override.
+ *
+ * Runtime callers may provide a model with its agent prefix (for example
+ * "codex:gpt-5.6-sol"), while agent configs store the underlying model ID.
+ */
+export function resolveAgentModelReasoningLevel(
+    modelReasoningLevels: Record<string, ReasoningLevel> | undefined,
+    model: string | undefined
+): ReasoningLevel | undefined {
+    if (!modelReasoningLevels || !model) return undefined;
+    const directMatch = modelReasoningLevels[model];
+    if (directMatch) return directMatch;
+
+    const prefixSeparator = model.indexOf(':');
+    if (prefixSeparator < 0) return undefined;
+    return modelReasoningLevels[model.slice(prefixSeparator + 1)];
+}
+
 export function assertReasoningLevelCliVersionSupported({
     agentType,
     agentAlias,

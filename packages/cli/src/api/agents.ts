@@ -8,6 +8,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ApiClient, createApiClient } from "./index.js";
+import type { ReasoningLevel } from "@propr/shared";
 
 /**
  * Agent type identifier.
@@ -72,6 +73,11 @@ export interface AgentConfig {
    * Custom GitHub labels per model.
    */
   modelCustomLabels?: Record<string, string>;
+
+  /**
+   * Per-model reasoning levels that override the system setting.
+   */
+  modelReasoningLevels?: Record<string, ReasoningLevel>;
 }
 
 /**

@@ -1,6 +1,6 @@
 // API for fetching system data from backend
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import type { AgentType } from '../config/modelDefinitions';
+import type { AgentType, ReasoningLevel } from '@propr/shared';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
 export const API_BASE_URL = getApiBaseUrl();
@@ -383,6 +383,7 @@ export interface AgentConfig {
   defaultModel?: string;
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
+  modelReasoningLevels?: Record<string, ReasoningLevel>;
   // CLI Version Configuration
   cliVersionType?: CliVersionType;
   cliVersion?: string;

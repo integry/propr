@@ -206,6 +206,7 @@ export {
     normalizeModelReasoningLevel,
     resolveClaudeReasoningLevel,
     resolveCodexReasoningLevel,
+    resolveAgentModelReasoningLevel,
     validateModelReasoningLevel,
     resolveRuntimeModelReasoningLevel,
     assertReasoningLevelCliVersionSupported,

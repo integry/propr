@@ -1,6 +1,8 @@
 import React from 'react';
+import { getReasoningLevelsForAgentType, type ReasoningLevel } from '@propr/shared';
 import { AgentType } from '../../config/modelDefinitions';
 import { buildSelectableModels } from './modelSelectionHelpers';
+import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -15,19 +17,23 @@ interface ModelSelectorProps {
   defaultModel?: string;
   availableModelIds?: string[];
   modelCustomLabels?: Record<string, string>;
+  modelReasoningLevels?: Record<string, ReasoningLevel>;
   errors: Record<string, string>;
   onModelToggle: (modelId: string) => void;
   onDefaultModelChange: (modelId: string) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
   onCustomLabelChange: (modelId: string, label: string) => void;
+  onReasoningLevelChange: (modelId: string, level: ReasoningLevel | '') => void;
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({
-  agentType, supportedModels, defaultModel, availableModelIds = [], modelCustomLabels,
-  errors, onModelToggle, onDefaultModelChange, onSelectAll, onDeselectAll, onCustomLabelChange
+  agentType, supportedModels, defaultModel, availableModelIds = [], modelCustomLabels, modelReasoningLevels,
+  errors, onModelToggle, onDefaultModelChange, onSelectAll, onDeselectAll, onCustomLabelChange,
+  onReasoningLevelChange
 }) => {
   const models = buildSelectableModels(agentType, [...availableModelIds, ...supportedModels, ...(defaultModel ? [defaultModel] : [])]);
+  const supportedReasoningLevels = getReasoningLevelsForAgentType(agentType);
 
   return <div>
     <div className="flex justify-between items-center mb-1.5">
@@ -51,6 +57,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         const isSupported = supportedModels.includes(model.id);
         const isDefault = defaultModel === model.id;
         const modelCustomLabel = modelCustomLabels?.[model.id] || '';
+        const modelReasoningLevel = modelReasoningLevels?.[model.id] || '';
+        const reasoningLevelOptions = buildReasoningLevelSelectOptions(modelReasoningLevel, supportedReasoningLevels);
 
         return (
           <div key={model.id} className="py-2 px-2 hover:bg-gray-100 rounded">
@@ -100,6 +108,33 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
                 )}
               </div>
             </div>
+            {isSupported && supportedReasoningLevels.length > 0 && (
+              <div className="mt-2 ml-14 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
+                <label
+                  className="text-xs font-medium text-gray-600"
+                  htmlFor={`reasoning-level-${model.id}`}
+                >
+                  Reasoning
+                </label>
+                <select
+                  id={`reasoning-level-${model.id}`}
+                  aria-label={`Reasoning level for ${model.name}`}
+                  value={modelReasoningLevel}
+                  onChange={(event) => onReasoningLevelChange(
+                    model.id,
+                    event.target.value as ReasoningLevel | ''
+                  )}
+                  className="min-w-0 rounded border-gray-300 bg-white px-2 py-1 text-xs focus:border-primary-500 focus:ring-primary-500"
+                >
+                  <option value="">System default</option>
+                  {reasoningLevelOptions.map(level => (
+                    <option key={level} value={level}>
+                      {formatReasoningLevelOption(level)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         );
       })}
@@ -107,6 +142,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     {errors.supportedModels && <p className="mt-1 text-xs text-red-600">{errors.supportedModels}</p>}
     <p className="mt-1 text-xs text-gray-500">
       Checkboxes enable models, radio buttons select the default. Custom labels allow alternative trigger names.
+      Reasoning overrides take precedence over the system setting.
     </p>
   </div>
 };

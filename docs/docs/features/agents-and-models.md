@@ -54,7 +54,7 @@ The model IDs you enable here become the durable names used by labels and slash 
 
 ## Reasoning Levels
 
-The system setting `model_reasoning_level` applies to Claude and Codex agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Leave it empty to use each CLI's default.
+The system setting `model_reasoning_level` applies to Claude and Codex agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Leave it empty to use each CLI's default. Each supported model can also set a reasoning level in its agent configuration; that model-specific value overrides the system setting. An issue or PR `level-*` label has the highest precedence and overrides both.
 
 Valid values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR accepts the union of the Claude and Codex vocabularies, then adapts it per runtime: Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode.
 

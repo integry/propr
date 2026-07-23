@@ -24,6 +24,7 @@ import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/m
 import {
     assertReasoningLevelCliVersionSupported,
     loadModelReasoningLevel,
+    resolveAgentModelReasoningLevel,
     resolveClaudeReasoningLevel,
     type ClaudeRuntimeReasoningLevel,
     type ModelReasoningLevel
@@ -100,7 +101,7 @@ export class ClaudeAgent implements Agent {
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel)
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -174,7 +175,7 @@ export class ClaudeAgent implements Agent {
                 worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: '', taskId, executionType,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel)
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -233,8 +234,13 @@ export class ClaudeAgent implements Agent {
     }
 
     /** Loads the configured reasoning level when it is supported by this agent runtime. */
-    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<ClaudeRuntimeReasoningLevel | ''> {
-        const configuredLevel = reasoningLevel === undefined ? await loadModelReasoningLevel() : reasoningLevel;
+    private async resolveEffectiveReasoningLevel(
+        reasoningLevel: ModelReasoningLevel | undefined,
+        model: string
+    ): Promise<ClaudeRuntimeReasoningLevel | ''> {
+        const configuredLevel = reasoningLevel
+            ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model)
+            ?? await loadModelReasoningLevel();
         const runtimeLevel = resolveClaudeReasoningLevel(configuredLevel) ?? '';
         assertReasoningLevelCliVersionSupported({
             agentType: 'claude',

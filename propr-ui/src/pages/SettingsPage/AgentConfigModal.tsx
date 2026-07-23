@@ -32,6 +32,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     supportedModels: AGENT_DEFAULTS.claude.defaultModels,
     defaultModel: AGENT_DEFAULTS.claude.defaultModels[0],
     modelCustomLabels: {},
+    modelReasoningLevels: {},
     envVars: {},
     cliVersionType: 'default',
     cliVersion: undefined,
@@ -97,6 +98,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         supportedModels: agent.supportedModels,
         defaultModel: agent.defaultModel || agent.supportedModels[0],
         modelCustomLabels: agent.modelCustomLabels || {},
+        modelReasoningLevels: agent.modelReasoningLevels || {},
         envVars: agent.envVars || {},
         cliVersionType: agent.cliVersionType || 'default',
         cliVersion: (agent.cliVersionType || 'default') === 'default' ? undefined : agent.cliVersion,
@@ -224,6 +226,11 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       }
     }
 
+    const cleanedModelReasoningLevels = Object.fromEntries(
+      Object.entries(formData.modelReasoningLevels || {})
+        .filter(([modelId, level]) => level && formData.supportedModels.includes(modelId))
+    );
+
     // Clean envVars - remove empty values
     const cleanedEnvVars: Record<string, string> = {};
     if (formData.envVars) {
@@ -246,6 +253,9 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       supportedModels: formData.supportedModels,
       defaultModel: formData.defaultModel,
       modelCustomLabels: Object.keys(cleanedModelCustomLabels).length > 0 ? cleanedModelCustomLabels : undefined,
+      modelReasoningLevels: Object.keys(cleanedModelReasoningLevels).length > 0
+        ? cleanedModelReasoningLevels
+        : undefined,
       envVars: Object.keys(cleanedEnvVars).length > 0 ? cleanedEnvVars : undefined,
       cliVersionType,
       cliVersion: cliVersionType === 'default' ? undefined : formData.cliVersion,
@@ -390,6 +400,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             defaultModel={formData.defaultModel}
             availableModelIds={formData.type === 'opencode' ? discoveredOpenCodeModels : undefined}
             modelCustomLabels={formData.modelCustomLabels}
+            modelReasoningLevels={formData.modelReasoningLevels}
             errors={errors}
             onModelToggle={handleModelToggle}
             onDefaultModelChange={handleDefaultModelChange}
@@ -398,6 +409,10 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             onCustomLabelChange={(modelId, label) => setFormData(prev => ({
               ...prev,
               modelCustomLabels: { ...prev.modelCustomLabels, [modelId]: label }
+            }))}
+            onReasoningLevelChange={(modelId, level) => setFormData(prev => ({
+              ...prev,
+              modelReasoningLevels: { ...prev.modelReasoningLevels, [modelId]: level }
             }))}
           />
 

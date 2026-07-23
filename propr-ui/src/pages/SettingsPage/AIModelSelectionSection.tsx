@@ -1,7 +1,7 @@
 import React from 'react';
 // CI trigger
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
-import { DEFAULT_REVIEW_GUIDANCE, REASONING_LEVELS, type ReasoningLevel } from '@propr/shared';
+import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import {
   buildAllModelOptions,
@@ -11,6 +11,7 @@ import {
   buildPrReviewOptions,
   buildImplementationAgentOptions
 } from './modelSelectionHelpers';
+import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
 
 interface AIModelSelectionSettings {
   analysis_model_fast: string;
@@ -67,37 +68,6 @@ const SettingRow = ({
   </div>
 );
 
-const reasoningLevelLabels: Record<string, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'XHigh',
-  max: 'Max',
-  ultra: 'Ultra (Codex only)',
-  ultracode: 'Ultracode (Claude only)',
-  auto: 'Auto (Claude only)',
-};
-
-function formatReasoningLevelOption(level: string): string {
-  const displayLabel = reasoningLevelLabels[level] ?? level;
-  if (!(REASONING_LEVELS as readonly string[]).includes(level)) return displayLabel;
-  return `${displayLabel} — GitHub: level-${level}`;
-}
-
-function buildReasoningLevelSelectState(
-  selectedReasoningLevel: string
-): {
-  reasoningLevelOptions: readonly (ReasoningLevel | string)[];
-} {
-  if (!selectedReasoningLevel || (REASONING_LEVELS as readonly string[]).includes(selectedReasoningLevel)) {
-    return { reasoningLevelOptions: REASONING_LEVELS };
-  }
-
-  return {
-    reasoningLevelOptions: [...REASONING_LEVELS, selectedReasoningLevel]
-  };
-}
-
 const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
   summarizationSettings,
@@ -125,7 +95,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
   const prReviewOptions = buildPrReviewOptions(enabledAgents);
   const implementationAgentOptions = buildImplementationAgentOptions(enabledAgents);
-  const { reasoningLevelOptions } = buildReasoningLevelSelectState(settings.model_reasoning_level);
+  const reasoningLevelOptions = buildReasoningLevelSelectOptions(settings.model_reasoning_level);
 
   const hasAgents = agents.length > 0;
   const hasEnabledAgents = enabledAgents.length > 0;

@@ -18,6 +18,7 @@ import {
 import {
     assertReasoningLevelCliVersionSupported,
     loadModelReasoningLevel,
+    resolveAgentModelReasoningLevel,
     resolveCodexReasoningLevel,
     resolveConfigPath,
     type CodexRuntimeReasoningLevel,
@@ -76,7 +77,7 @@ export class CodexAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel)
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -231,7 +232,7 @@ export class CodexAgent implements Agent {
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0, jsonOutput: true, taskId, executionType,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel)
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -334,8 +335,13 @@ export class CodexAgent implements Agent {
         };
     }
 
-    private async resolveEffectiveReasoningLevel(reasoningLevel?: ModelReasoningLevel): Promise<CodexRuntimeReasoningLevel | ''> {
-        const configuredLevel = reasoningLevel === undefined ? await loadModelReasoningLevel() : reasoningLevel;
+    private async resolveEffectiveReasoningLevel(
+        reasoningLevel: ModelReasoningLevel | undefined,
+        model: string | undefined
+    ): Promise<CodexRuntimeReasoningLevel | ''> {
+        const configuredLevel = reasoningLevel
+            ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model)
+            ?? await loadModelReasoningLevel();
         const runtimeLevel = resolveCodexReasoningLevel(configuredLevel) ?? '';
         assertReasoningLevelCliVersionSupported({
             agentType: 'codex',

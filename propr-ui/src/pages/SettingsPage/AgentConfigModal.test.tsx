@@ -96,4 +96,39 @@ describe('AgentConfigModal', () => {
     expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
     expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
   });
+
+  it('saves a model-specific reasoning level for Codex agents', () => {
+    const onSave = vi.fn();
+    const model = AGENT_MODELS.codex[0];
+
+    render(
+      <AgentConfigModal
+        agent={{
+          id: 'agent-codex',
+          type: 'codex',
+          alias: 'codex',
+          enabled: true,
+          dockerImage: AGENT_DEFAULTS.codex.dockerImage,
+          configPath: AGENT_DEFAULTS.codex.configPath,
+          supportedModels: [model.id],
+          defaultModel: model.id,
+        }}
+        existingAliases={['codex']}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />
+    );
+
+    const reasoningSelect = screen.getByRole('combobox', {
+      name: `Reasoning level for ${model.name}`,
+    });
+    expect(reasoningSelect).toHaveDisplayValue('System default');
+
+    fireEvent.change(reasoningSelect, { target: { value: 'xhigh' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      modelReasoningLevels: { [model.id]: 'xhigh' },
+    }));
+  });
 });

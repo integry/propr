@@ -1,5 +1,5 @@
 import path from 'path';
-import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS, type AgentType } from '@propr/shared';
+import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS, type AgentType, type ReasoningLevel } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
@@ -26,6 +26,8 @@ export interface AgentConfig {
     defaultModel?: string;
     envVars?: Record<string, string>;
     modelCustomLabels?: Record<string, string>;
+    /** Per-model reasoning levels. Values override the system setting for this agent/model. */
+    modelReasoningLevels?: Record<string, ReasoningLevel>;
     cliVersionType?: CliVersionType;
     cliVersion?: string;
     cliVersionResolved?: string;
