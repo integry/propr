@@ -78,6 +78,12 @@ const reasoningLevelLabels: Record<string, string> = {
   auto: 'Auto (Claude only)',
 };
 
+function formatReasoningLevelOption(level: string): string {
+  const displayLabel = reasoningLevelLabels[level] ?? level;
+  if (!(REASONING_LEVELS as readonly string[]).includes(level)) return displayLabel;
+  return `${displayLabel} — GitHub: level-${level}`;
+}
+
 function buildReasoningLevelSelectState(
   selectedReasoningLevel: string
 ): {
@@ -175,7 +181,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 <option value="">Agent default</option>
                 {reasoningLevelOptions.map(level => (
                   <option key={level} value={level}>
-                    {reasoningLevelLabels[level] ?? level}
+                    {formatReasoningLevelOption(level)}
                   </option>
                 ))}
               </select>
