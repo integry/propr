@@ -10,7 +10,7 @@
  *     implementation-completion comments.
  */
 
-import type { AnalysisResult } from '@propr/core';
+import { getModelName, type AnalysisResult } from '@propr/core';
 import type { ReviewAssignment } from './prCommentReviewJob.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */
@@ -68,13 +68,14 @@ export function buildReviewComment(
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
 
     const effectiveModel = modelUsed || model;
+    const modelDisplayName = getModelName(effectiveModel);
 
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
     comment += response;
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
-    comment += `* **Model:** ${effectiveModel}\n`;
+    comment += `* **Model:** ${modelDisplayName}\n`;
     comment += `* **Time:** ${formatDuration(executionTimeMs)}\n`;
     if (tokenUsage) {
         const input = (tokenUsage.input_tokens || 0)
