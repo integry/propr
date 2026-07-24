@@ -332,7 +332,27 @@ export async function applyAgentsUpdate({
   if (publishResult) {
     return publishResult;
   }
-  return { status: 200, body: { success: true, agents: processedAgents } };
+
+  let warnings: string[] = [];
+  if (configStore.loadModelReasoningLevel) {
+    try {
+      warnings = configManager.findReasoningLevelCliVersionWarnings(
+        processedAgents,
+        await configStore.loadModelReasoningLevel()
+      );
+    } catch (warningError) {
+      console.warn('Could not evaluate reasoning-level CLI compatibility after agents save:', warningError);
+    }
+  }
+
+  return {
+    status: 200,
+    body: {
+      success: true,
+      agents: processedAgents,
+      ...(warnings.length > 0 ? { warnings } : {})
+    }
+  };
 }
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {

@@ -19,6 +19,7 @@ import {
   SystemSettings,
   SettingKey,
   NamedConfigEndpoint,
+  UpdateSettingsResponse,
 } from "../api/index.js";
 import {
   printOutput,
@@ -53,6 +54,7 @@ function getSettingDescription(key: SettingKey): string {
     planner_generation_model: "Model for planner generation",
     auto_followup_score_threshold: "Score threshold (0-9) for auto-followup",
     auto_resolve_merge_conflicts: "Automatically resolve merge conflicts",
+    model_reasoning_level: "Reasoning level for GPT and Claude agents (empty = agent default)",
     pr_review_model: "Model for full PR reviews",
     pr_review_prompt: "Override for the PR review prompt guidance (empty = built-in default)",
     ultrafix_rating_goal: "Target quality rating for ultrafix cycles",
@@ -381,6 +383,12 @@ Examples:
           console.log("");
           console.log(`Successfully updated setting: ${key}`);
           console.log(`  New value: ${formatValue(parsedValue)}`);
+          const warnings = isExtraConfigKey(key)
+            ? []
+            : (result as UpdateSettingsResponse).warnings ?? [];
+          for (const warning of warnings) {
+            console.warn(`Warning: ${warning}`);
+          }
         } else {
           console.error("Failed to update setting.");
           process.exit(1);

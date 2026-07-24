@@ -1,6 +1,6 @@
 // API for fetching system data from backend
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import type { AgentType } from '../config/modelDefinitions';
+import type { AgentType, ReasoningLevel } from '@propr/shared';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
 export const API_BASE_URL = getApiBaseUrl();
@@ -241,7 +241,13 @@ export const getSettings = async (): Promise<SystemSettings> => {
   return response.json();
 };
 
-export const updateSettings = async (settings: Record<string, unknown>): Promise<unknown> => {
+export interface ConfigUpdateResponse {
+  success: boolean;
+  settings?: Record<string, unknown>;
+  warnings?: string[];
+}
+
+export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ settings }), credentials: 'include'
@@ -383,6 +389,7 @@ export interface AgentConfig {
   defaultModel?: string;
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
+  modelReasoningLevels?: Record<string, ReasoningLevel>;
   // CLI Version Configuration
   cliVersionType?: CliVersionType;
   cliVersion?: string;
@@ -395,12 +402,19 @@ export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
   return response.json();
 };
 
-export const saveAgents = async (agents: AgentConfig[]): Promise<void> => {
+export interface SaveAgentsResponse {
+  success: boolean;
+  agents: AgentConfig[];
+  warnings?: string[];
+}
+
+export const saveAgents = async (agents: AgentConfig[]): Promise<SaveAgentsResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agents }), credentials: 'include'
   });
   await handleApiResponse(response);
+  return response.json();
 };
 
 export const getOpenCodeModels = async (agentId?: string): Promise<{ models: string[] }> => {

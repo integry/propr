@@ -41,6 +41,8 @@ describe('buildReviewComment', () => {
             { costUsd: 0.8037945 },
         );
 
+        assert.ok(comment.includes('* **Model:** Claude Opus 4.8\n'));
+        assert.ok(comment.includes('<!-- propr:ai-review model="claude-opus-4-8" -->'));
         assert.ok(comment.includes('**Tokens:** 113,016 (100,787 in / 12,229 out)'));
         assert.ok(comment.includes('**Cost:** $0.80'));
     });

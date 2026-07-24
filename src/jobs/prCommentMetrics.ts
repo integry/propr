@@ -41,6 +41,7 @@ export async function buildMetricsSection(
 ): Promise<string> {
     const modelId = claudeResult.model || llm || getDefaultModel() || 'unknown';
     const modelDisplayName = getModelName(modelId);
+    const reasoningLevelSuffix = claudeResult.reasoningLevel ? ` (${claudeResult.reasoningLevel})` : '';
     const executionTime = claudeResult.executionTime ? formatDuration(claudeResult.executionTime) : null;
     const numTurns = (claudeResult.finalResult as { num_turns?: number } | null)?.num_turns;
 
@@ -55,7 +56,7 @@ export async function buildMetricsSection(
     let section = `\n---\n`;
     section += `### 🤖 ${isAnalysis ? 'Analysis' : 'Implementation'} Details\n\n`;
 
-    section += `* **Model:** ${modelDisplayName}\n`;
+    section += `* **Model:** ${modelDisplayName}${reasoningLevelSuffix}\n`;
     if (!isAnalysis) section += `* **Requested By:** ${authorsText}\n`;
     if (numTurns) section += `* **Turns:** ${numTurns}\n`;
     if (executionTime) section += `* **Time:** ${executionTime}\n`;

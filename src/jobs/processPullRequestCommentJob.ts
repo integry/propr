@@ -17,7 +17,7 @@ import { Redis } from 'ioredis';
 import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
-    buildCommentHistory, updateTaskTitleForPR
+    buildCommentHistory, updateTaskTitleForPR, resolvePrReasoningLevelOverride
 } from './prCommentJobHelpers.js';
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
@@ -244,6 +244,12 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = [...allComments].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
+    job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
+        repoOwner,
+        repoName,
+        pullRequestNumber,
+        correlatedLogger,
+    });
     const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
 
     // Gather unprocessed AI review comments only for /fix mode
@@ -308,6 +314,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         correlationId,
         taskId,
         correlatedLogger,
+        reasoningLevel: job.data.reasoningLevel,
     });
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = summaryTitle;
@@ -320,7 +327,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
         llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
-        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient
+        pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
+        reasoningLevel: job.data.reasoningLevel,
     });
     state.claudeResult = claudeResult;
 
@@ -387,6 +395,6 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         if (!(error instanceof UsageLimitError)) throw error;
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
-        await cleanupJob({ stateManager, lockKey, correlationId, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, correlatedLogger, redisClient });
+        await cleanupJob({ stateManager, lockKey, correlationId, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
     }
 }

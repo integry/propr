@@ -19,6 +19,7 @@ const AiAgentsPage: React.FC = () => {
   const [agentsSaving, setAgentsSaving] = useState<boolean>(false);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
+  const [agentsWarning, setAgentsWarning] = useState<string | null>(null);
 
   // Mobile tab state: 'config' or 'playground'
   const [mobileTab, setMobileTab] = useState<'config' | 'playground'>('playground');
@@ -48,8 +49,10 @@ const AiAgentsPage: React.FC = () => {
       setAgentsSaving(true);
       setAgentsError(null);
       setAgentsSuccess(null);
-      await saveAgents(updatedAgents);
-      setAgents(updatedAgents);
+      setAgentsWarning(null);
+      const result = await saveAgents(updatedAgents);
+      setAgents(result.agents || updatedAgents);
+      setAgentsWarning(result.warnings?.join(' ') || null);
       setAgentsSuccess('Agents updated successfully! Changes are applied immediately.');
     } catch (err) {
       setAgentsError((err as Error).message || 'Failed to update agents');
@@ -137,6 +140,7 @@ const AiAgentsPage: React.FC = () => {
                 saving={agentsSaving}
                 error={agentsError}
                 success={agentsSuccess}
+                warning={agentsWarning}
                 onSaveAgents={handleSaveAgents}
                 showAddModal={showAddModal}
                 onCloseAddModal={handleCloseModal}
@@ -199,6 +203,7 @@ const AiAgentsPage: React.FC = () => {
                   saving={agentsSaving}
                   error={agentsError}
                   success={agentsSuccess}
+                  warning={agentsWarning}
                   onSaveAgents={handleSaveAgents}
                   showAddModal={showAddModal}
                   onCloseAddModal={handleCloseModal}

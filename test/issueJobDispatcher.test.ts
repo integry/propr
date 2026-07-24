@@ -1,5 +1,6 @@
 import { test, describe, mock } from 'node:test';
 import assert from 'node:assert';
+import type { ReasoningLevel } from '@propr/shared';
 
 /**
  * Unit tests for handleDispatch in issueJobDispatcher.ts
@@ -28,6 +29,7 @@ interface IssueJobData {
     baseBranch?: string;
     baseLabel?: string | null;
     modelLabel?: string | null;
+    reasoningLevel?: ReasoningLevel;
     isChildJob?: boolean;
     issuePayload?: Record<string, unknown>;
     repoPayload?: Record<string, unknown>;
@@ -481,7 +483,8 @@ describe('issueJobDispatcher - handleDispatch Core Logic', () => {
                 repoName: 'repo',
                 number: 100,
                 correlationId: 'corr-123',
-                triggeringLabel: 'AI'
+                triggeringLabel: 'AI',
+                reasoningLevel: 'high'
             };
             const base: BaseToProcess = { branch: 'develop', label: 'base-develop' };
             const agentModel: AgentModelToProcess = {
@@ -494,8 +497,30 @@ describe('issueJobDispatcher - handleDispatch Core Logic', () => {
 
             assert.strictEqual(childJobData.correlationId, 'corr-123');
             assert.strictEqual(childJobData.triggeringLabel, 'AI');
+            assert.strictEqual(childJobData.reasoningLevel, 'high');
             assert.strictEqual(childJobData.baseBranch, 'develop');
             assert.strictEqual(childJobData.baseLabel, 'base-develop');
+        });
+
+        test('stamps the same reasoning level onto every matrix child', () => {
+            const issueRef: IssueJobData = {
+                repoOwner: 'org',
+                repoName: 'repo',
+                number: 1701,
+                reasoningLevel: 'high'
+            };
+            const bases: BaseToProcess[] = [{ branch: 'develop', label: 'base-develop' }];
+            const agents: AgentModelToProcess[] = [
+                { agentAlias: 'codex', model: 'codex:gpt-5.5', label: 'llm-codex-gpt55' },
+                { agentAlias: 'claude', model: 'claude-opus-4-6', label: 'llm-claude-opus46' }
+            ];
+
+            const children = bases.flatMap(base =>
+                agents.map(agent => buildChildJobData(issueRef, base, agent, {}, {}))
+            );
+
+            assert.strictEqual(children.length, 2);
+            assert.deepStrictEqual(children.map(child => child.reasoningLevel), ['high', 'high']);
         });
     });
 

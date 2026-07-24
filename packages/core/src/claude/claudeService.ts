@@ -25,6 +25,7 @@ import { persistLlmLog, createLlmLogFromAnalysis } from '../utils/llmLogger.js';
 import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from '../agents/impl/utils/index.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from '../agents/constants.js';
+import type { ReasoningLevel } from '@propr/shared';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -62,6 +63,8 @@ export interface ClaudeCodeResponse {
     sessionId?: string | null;
     conversationId?: string;
     model?: string;
+    /** Effective reasoning level passed to the agent runtime, when configured. */
+    reasoningLevel?: ReasoningLevel;
     finalResult?: ClaudeOutputResult | null;
     modifiedFiles: string[];
     commitMessage: string | null;
@@ -93,6 +96,9 @@ export interface RunLightweightLLMAnalysisOptions {
     executionType?: ExecutionType;
     metadata?: Record<string, unknown>;
     timeoutMs?: number;
+    reasoningLevel?: ReasoningLevel;
+    /** Whether an omitted reasoning level should use the global setting. Defaults to true. */
+    useGlobalReasoningLevel?: boolean;
 }
 
 /** @deprecated Use AgentRegistry.getDefaultAgent().executeTask() instead. */
@@ -274,11 +280,13 @@ interface AgentExecutionParams {
     repository?: string;
     metadata?: Record<string, unknown>;
     timeoutMs?: number;
+    reasoningLevel?: ReasoningLevel;
+    useGlobalReasoningLevel?: boolean;
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -290,7 +298,7 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs });
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel });
 }
 
 function buildWorkRef(opts: {
@@ -358,7 +366,7 @@ async function executeClaudeAnalysis(
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata, timeoutMs } = options;
+    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
@@ -370,7 +378,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             // Pass all logging fields to agent - agent handles persistence internally
             const analysisResult = await tryExecuteWithAgent({
                 agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType,
-                correlationId, repository, metadata, timeoutMs, correlatedLogger
+                correlationId, repository, metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel, correlatedLogger
             });
             if (analysisResult !== null) {
                 if (!analysisResult.success) {

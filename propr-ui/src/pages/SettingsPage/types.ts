@@ -6,6 +6,7 @@ export interface Settings {
   default_agent_alias: string;
   auto_followup_score_threshold: number;
   auto_resolve_merge_conflicts: boolean;
+  model_reasoning_level: string;
   pr_review_model: string;
   pr_review_prompt: string;
   ultrafix_rating_goal: number;
@@ -16,5 +17,5 @@ export interface Settings {
 
 export interface AlertProps {
   message: string;
-  type: 'error' | 'success';
+  type: 'error' | 'success' | 'warning';
 }

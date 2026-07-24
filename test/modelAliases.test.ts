@@ -108,8 +108,8 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
-                defaultModel: 'gpt-5.5'
+                supportedModels: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
+                defaultModel: 'gpt-5.6-sol'
             }
         },
         {
@@ -169,6 +169,12 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         const result = await resolveLlmLabel('codex-gpt54');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         assert.strictEqual(result.model, 'gpt-5.4', 'Should resolve to correct codex model');
+    });
+
+    await t.test('Step 3: resolves exact githubLabel for GPT-5.6 Sol', async () => {
+        const result = await resolveLlmLabel('codex-gpt56-sol');
+        assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
+        assert.strictEqual(result.model, 'gpt-5.6-sol', 'Should resolve to GPT-5.6 Sol');
     });
 
     await t.test('static Claude aliases resolve to Claude even when default agent is Codex', async () => {
@@ -259,7 +265,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     await t.test('Step 4: resolves codex alias to default model', async () => {
         const result = await resolveLlmLabel('codex');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
-        assert.strictEqual(result.model, 'gpt-5.5', 'Should use codex default model');
+        assert.strictEqual(result.model, 'gpt-5.6-sol', 'Should use codex default model');
     });
 
     await t.test('Step 4: resolves opencode alias to preferred model', async () => {
@@ -656,8 +662,8 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
-                defaultModel: 'gpt-5.5'
+                supportedModels: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
+                defaultModel: 'gpt-5.6-sol'
             }
         },
         {
@@ -796,7 +802,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         // codex -> default enabled Codex agent/model
         const codexResults = await resolveReviewModels(['codex']);
         assert.strictEqual(codexResults[0].agentAlias, 'codex');
-        assert.strictEqual(codexResults[0].model, 'gpt-5.5');
+        assert.strictEqual(codexResults[0].model, 'gpt-5.6-sol');
 
         // opencode -> preferred enabled OpenCode agent/model
         const opencodeResults = await resolveReviewModels(['opencode']);

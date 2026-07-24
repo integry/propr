@@ -10,7 +10,7 @@ import os from 'os';
 import fs from 'fs';
 import logger from '../../../utils/logger.js';
 import { AgentConfig } from '../../types.js';
-import { resolveConfigPath } from '../../../config/configManager.js';
+import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 
 /**
@@ -35,6 +35,8 @@ export interface DockerArgsParams {
     taskId?: string;
     /** Optional execution type for container naming (e.g., 'plan-generation', 'context-analysis') */
     executionType?: string;
+    /** Optional reasoning effort for Claude Code. Empty or omitted means CLI default. */
+    reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
 }
 
 /**
@@ -56,7 +58,7 @@ export function buildDockerArgs(
     maxTurns: number,
     params: DockerArgsParams
 ): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType } = params;
+    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType, reasoningLevel } = params;
     const configPath = resolveConfigPath(config.configPath);
 
     // Build environment variable arguments
@@ -111,6 +113,7 @@ export function buildDockerArgs(
         '--max-turns', maxTurns.toString(),
         '--output-format', 'stream-json',
         '--verbose',
+        ...(reasoningLevel ? ['--effort', reasoningLevel] : []),
         '--dangerously-skip-permissions'
     ];
 
@@ -156,6 +159,7 @@ export function buildDockerArgs(
         issueNumber,
         hasSystemPrompt: systemPrompt !== undefined,
         hasTools: tools !== undefined,
+        hasReasoningLevel: !!reasoningLevel,
         agentAlias: config.alias
     }, 'Docker args built for Claude agent');
 

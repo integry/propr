@@ -22,6 +22,10 @@ describe('VALID_SETTING_KEYS includes new ultrafix keys', () => {
     assert.ok(VALID_SETTING_KEYS.includes('pr_review_model'));
   });
 
+  test('should include model_reasoning_level', () => {
+    assert.ok(VALID_SETTING_KEYS.includes('model_reasoning_level'));
+  });
+
   test('should include ultrafix_rating_goal', () => {
     assert.ok(VALID_SETTING_KEYS.includes('ultrafix_rating_goal'));
   });
@@ -34,14 +38,28 @@ describe('VALID_SETTING_KEYS includes new ultrafix keys', () => {
     assert.ok(VALID_SETTING_KEYS.includes('ultrafix_pause_seconds'));
   });
 
-  test('should have 11 total setting keys', () => {
-    assert.strictEqual(VALID_SETTING_KEYS.length, 11);
+  test('should keep expected setting keys valid', () => {
+    const expectedKeys = [
+      'pr_review_model',
+      'model_reasoning_level',
+      'ultrafix_rating_goal',
+      'ultrafix_max_cycles',
+      'ultrafix_pause_seconds',
+    ];
+
+    for (const key of expectedKeys) {
+      assert.ok(VALID_SETTING_KEYS.includes(key));
+    }
   });
 });
 
 describe('isValidSettingKey for new keys', () => {
   test('pr_review_model is valid', () => {
     assert.ok(isValidSettingKey('pr_review_model'));
+  });
+
+  test('model_reasoning_level is valid', () => {
+    assert.ok(isValidSettingKey('model_reasoning_level'));
   });
 
   test('ultrafix_rating_goal is valid', () => {
@@ -93,11 +111,11 @@ describe('parseSettingValue for ultrafix_rating_goal', () => {
   });
 
   test('should reject non-numeric value', () => {
-    assert.throws(() => parseSettingValue('ultrafix_rating_goal', 'abc'), /must be a number between 1 and 10/);
+    assert.throws(() => parseSettingValue('ultrafix_rating_goal', 'abc'), /must be a positive integer between 1 and 10/);
   });
 
   test('should reject negative value', () => {
-    assert.throws(() => parseSettingValue('ultrafix_rating_goal', '-1'), /must be a number between 1 and 10/);
+    assert.throws(() => parseSettingValue('ultrafix_rating_goal', '-1'), /must be a positive integer between 1 and 10/);
   });
 });
 

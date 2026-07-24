@@ -95,6 +95,7 @@ const SettingsPage: React.FC = () => {
                 planner_context_model: settings.planner_context_model,
                 planner_generation_model: settings.planner_generation_model,
                 default_agent_alias: settings.default_agent_alias,
+                model_reasoning_level: settings.model_reasoning_level,
                 pr_review_model: settings.pr_review_model,
                 pr_review_prompt: settings.pr_review_prompt
               }}
@@ -249,6 +250,12 @@ const SettingsPage: React.FC = () => {
               <span className="flex items-center gap-1.5 text-xs text-red-600 font-mono">
                 <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
                 {globalError}
+              </span>
+            )}
+            {saveStatus === 'warning' && globalError && (
+              <span className="flex items-center gap-1.5 text-xs text-amber-700 font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                Saved with warning: {globalError}
               </span>
             )}
             {saveStatus === 'idle' && (

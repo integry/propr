@@ -1,8 +1,9 @@
-import { validatePrReviewModelValue } from '@propr/core';
+import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
   auto_followup_score_threshold?: unknown;
   auto_resolve_merge_conflicts?: unknown;
+  model_reasoning_level?: unknown;
   pr_review_model?: unknown;
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
@@ -12,6 +13,7 @@ interface SettingFields {
 export type SettingSaveName =
   | 'auto_followup_score_threshold'
   | 'auto_resolve_merge_conflicts'
+  | 'model_reasoning_level'
   | 'pr_review_model'
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
@@ -55,6 +57,13 @@ export async function extractSettingSaves(fields: SettingFields): Promise<{ erro
     if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [], normalized };
     normalized.auto_resolve_merge_conflicts = fields.auto_resolve_merge_conflicts;
     saves.push({ name: 'auto_resolve_merge_conflicts' });
+  }
+
+  if (fields.model_reasoning_level !== undefined) {
+    const result = validateModelReasoningLevel(fields.model_reasoning_level);
+    if (!result.valid) return { error: result.error, saves: [], normalized };
+    normalized.model_reasoning_level = result.value;
+    saves.push({ name: 'model_reasoning_level' });
   }
 
   if (fields.pr_review_model !== undefined) {

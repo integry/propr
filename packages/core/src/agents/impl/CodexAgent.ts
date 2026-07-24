@@ -15,7 +15,16 @@ import {
     parseCodexStreamOutput,
     storeCodexPromptInRedis
 } from '../../codex/codexHelpers.js';
-import { resolveConfigPath } from '../../config/configManager.js';
+import {
+    assertReasoningLevelCliVersionSupported,
+    loadModelReasoningLevel,
+    resolveAgentModelReasoningLevel,
+    resolveCodexReasoningLevel,
+    resolveConfigPath,
+    type CodexRuntimeReasoningLevel,
+    type ModelReasoningLevel
+} from '../../config/configManager.js';
+import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -48,7 +57,7 @@ export class CodexAgent implements Agent {
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
+            onSessionId, onContainerId, githubToken, environment, taskId, prNumber, reasoningLevel } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -65,9 +74,11 @@ export class CodexAgent implements Agent {
             });
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, modelName: effectiveModel,
-                issueNumber: issueRef.number, environment, taskId
+                issueNumber: issueRef.number, environment, taskId,
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -86,12 +97,11 @@ export class CodexAgent implements Agent {
 
             const executionTime = Date.now() - startTime;
             const parsedOutput = parseCodexStreamOutput(result.stdout);
-            const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
 
-            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics });
+            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics });
 
             await this.persistTaskLog({
-                response, parsedOutput, executionTime, modelUsed, prompt, usageMetrics,
+                response, parsedOutput, executionTime, modelUsed: response.modelUsed, prompt, usageMetrics,
                 issueRef, repo, taskId, prNumber, isRetry, retryReason
             });
 
@@ -109,20 +119,20 @@ export class CodexAgent implements Agent {
     private buildTaskExecutionResult(params: {
         parsedOutput: CodexParsedOutput;
         result: CodexExecutionOutput;
-        effectiveModel?: string;
+        effectiveModel?: string; effectiveReasoningLevel: CodexRuntimeReasoningLevel | '';
         executionTime: number;
         prompt: string;
         usageMetrics: CodexUsageMetrics;
     }): AgentExecutionResult {
-        const { parsedOutput, result, effectiveModel, executionTime, prompt, usageMetrics } = params;
-        const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
+        const { parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics } = params;
         return {
             success: parsedOutput.success && result.exitCode === 0,
             executionTimeMs: executionTime,
             logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
             exitCode: result.exitCode,
             rawOutput: result.stdout,
-            modelUsed,
+            modelUsed: parsedOutput.model || effectiveModel || 'unknown',
+            ...(effectiveReasoningLevel && { reasoningLevel: effectiveReasoningLevel }),
             sessionId: parsedOutput.sessionId,
             conversationId: parsedOutput.conversationId,
             conversationLog: parsedOutput.conversationLog,
@@ -201,7 +211,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useGlobalReasoningLevel = true, suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -221,7 +231,8 @@ export class CodexAgent implements Agent {
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
-                issueNumber: 0, jsonOutput: true, taskId, executionType
+                issueNumber: 0, jsonOutput: true, taskId, executionType,
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useGlobalReasoningLevel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -324,6 +335,24 @@ export class CodexAgent implements Agent {
         };
     }
 
+    private async resolveEffectiveReasoningLevel(
+        reasoningLevel: ModelReasoningLevel | undefined,
+        model: string | undefined,
+        useGlobalReasoningLevel = true
+    ): Promise<CodexRuntimeReasoningLevel | ''> {
+        const configuredLevel = reasoningLevel
+            ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model)
+            ?? (useGlobalReasoningLevel ? await loadModelReasoningLevel() : '');
+        const runtimeLevel = resolveCodexReasoningLevel(configuredLevel) ?? '';
+        assertReasoningLevelCliVersionSupported({
+            agentType: 'codex',
+            agentAlias: this.config.alias,
+            cliVersion: this.config.cliVersionResolved ?? AGENT_DEFAULT_VERSIONS.codex,
+            reasoningLevel: runtimeLevel
+        });
+        return runtimeLevel;
+    }
+
     async healthCheck(): Promise<boolean> {
         const { alias: agentAlias } = this.config;
         const dockerImage = this.config.dockerImage;
@@ -351,6 +380,7 @@ export class CodexAgent implements Agent {
         environment?: Record<string, string>;
         taskId?: string;
         executionType?: string;
+        reasoningLevel?: CodexRuntimeReasoningLevel | '';
     }): string[] {
         const {
             worktreePath,
@@ -360,7 +390,8 @@ export class CodexAgent implements Agent {
             jsonOutput = true,
             environment,
             taskId,
-            executionType
+            executionType,
+            reasoningLevel
         } = params;
 
         const dockerImage = this.config.dockerImage;
@@ -415,6 +446,7 @@ export class CodexAgent implements Agent {
             ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
             '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
             '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host
+            ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
             '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
             '--cd', '/home/node/workspace', // Set working directory
             '-'                          // Read prompt from stdin

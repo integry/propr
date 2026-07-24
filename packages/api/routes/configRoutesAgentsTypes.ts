@@ -4,7 +4,7 @@ import type { AgentConfig } from '@propr/core';
 import type { ConfigLockContext } from './configHelpers.js';
 
 export type ApplyAgentsUpdateBody =
-  | { success: true; agents: AgentConfig[]; warning?: string; committed?: boolean; out_of_sync?: boolean }
+  | { success: true; agents: AgentConfig[]; warning?: string; warnings?: string[]; committed?: boolean; out_of_sync?: boolean }
   | { error: string; success?: never; agents?: never; committed?: boolean; out_of_sync?: boolean };
 
 export interface ApplyAgentsUpdateResult {
@@ -24,6 +24,7 @@ export interface AgentConfigStore {
   loadAgents: typeof configManager.loadAgents;
   loadSettings: typeof configManager.loadSettings;
   loadSettingsRecord?: () => Promise<Record<string, unknown>>;
+  loadModelReasoningLevel?: typeof configManager.loadModelReasoningLevel;
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
 }
 

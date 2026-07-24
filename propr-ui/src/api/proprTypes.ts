@@ -1,3 +1,5 @@
+import type { ReasoningLevel } from '@propr/shared';
+
 export interface SystemAgentStatus {
   id: string;
   type: 'claude' | 'codex' | 'antigravity' | 'vibe' | string;
@@ -116,6 +118,7 @@ export interface AgentConfig {
   defaultModel?: string;
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
+  modelReasoningLevels?: Record<string, ReasoningLevel>;
 }
 
 export interface SystemSettings {
@@ -127,6 +130,7 @@ export interface SystemSettings {
   planner_generation_model?: string;
   auto_followup_score_threshold?: number;
   auto_resolve_merge_conflicts?: boolean;
+  model_reasoning_level?: string;
   pr_review_model?: string;
   pr_review_prompt?: string;
   ultrafix_rating_goal?: number;

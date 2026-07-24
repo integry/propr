@@ -3,6 +3,7 @@ import type { Job } from 'bullmq';
 import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js';
 import type { SubscriptionUsageMetrics } from '../utils/github/formatSubscriptionUsage.js';
 import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandParser.js';
+import type { ReasoningLevel } from '@propr/shared';
 
 export interface IssueJobData {
     repoOwner: string;
@@ -16,6 +17,8 @@ export interface IssueJobData {
     baseBranch?: string;
     baseLabel?: string | null;
     modelLabel?: string | null;
+    /** Per-issue reasoning level override from a level-* label. */
+    reasoningLevel?: ReasoningLevel;
     isChildJob?: boolean;
     issuePayload?: Record<string, unknown>;
     repoPayload?: Record<string, unknown>;
@@ -60,6 +63,8 @@ export interface CommentJobData {
     commandInstructions?: string;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
+    /** Reasoning level override resolved from PR or linked issue level-* labels. */
+    reasoningLevel?: ReasoningLevel;
 }
 
 export interface UnprocessedComment {

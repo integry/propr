@@ -1,7 +1,7 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
-import type { AgentType as SharedAgentType } from '@propr/shared';
+import type { AgentType as SharedAgentType, ReasoningLevel } from '@propr/shared';
 
 export { AGENT_TYPES } from '@propr/shared';
 
@@ -29,6 +29,9 @@ export interface AgentConfig {
     // Custom GitHub labels per model (maps model ID to custom label)
     // e.g., { 'claude-opus-4-5-20251101': 'my-opus-bot', 'claude-sonnet-4-5-20251101': 'my-sonnet-bot' }
     modelCustomLabels?: Record<string, string>;
+
+    // Per-model reasoning levels. These override the system setting when no task label overrides them.
+    modelReasoningLevels?: Record<string, ReasoningLevel>;
 
     // CLI Version Configuration
     cliVersionType?: CliVersionType;  // How the version is specified (default, tag, specific, custom)
@@ -60,6 +63,8 @@ export interface AgentTaskOptions {
 
     // Additional options
     tools?: string;
+    /** Optional per-task reasoning level override. Omitted means use the global setting. */
+    reasoningLevel?: ReasoningLevel;
     /** Per-execution environment variables to inject into the agent container. */
     environment?: Record<string, string>;
 
@@ -117,6 +122,10 @@ export interface AnalyzeOptions {
     timeoutMs?: number;
     /** Expected response format. Defaults to plain text analysis. */
     responseFormat?: 'text' | 'json';
+    /** Optional per-analysis reasoning level override. Omitted means use the global setting. */
+    reasoningLevel?: ReasoningLevel;
+    /** Whether an omitted reasoning level should fall back to the global setting. Defaults to true. */
+    useGlobalReasoningLevel?: boolean;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
 }
@@ -130,6 +139,8 @@ export interface AgentExecutionResult {
 
     // Metadata
     modelUsed: string;
+    /** Effective reasoning level passed to the agent runtime, when configured. */
+    reasoningLevel?: ReasoningLevel;
     sessionId?: string;
     conversationId?: string;
     executionTimeMs: number;

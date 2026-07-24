@@ -83,6 +83,7 @@ interface AgentsListSectionProps {
   saving: boolean;
   error: string | null;
   success: string | null;
+  warning: string | null;
   onSaveAgents: (agents: AgentConfig[]) => void;
   showAddModal?: boolean;
   onCloseAddModal?: () => void;
@@ -251,6 +252,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   saving,
   error,
   success,
+  warning,
   onSaveAgents,
   showAddModal = false,
   onCloseAddModal,
@@ -317,6 +319,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
         </div>
       )}
       {error && <Alert message={error} type="error" />}
+      {warning && <Alert message={warning} type="warning" />}
       {success && <Alert message={success} type="success" />}
 
       {loading ? (

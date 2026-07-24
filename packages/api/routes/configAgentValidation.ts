@@ -1,4 +1,5 @@
 import { AGENT_TYPES, toProprOpenCodeModelId, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
+import { getReasoningLevelsForAgentType, isReasoningLevel } from '@propr/shared';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
@@ -23,11 +24,18 @@ export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
       return agent;
     }
     const cliVersionType = typeof agent.cliVersionType === 'string' ? agent.cliVersionType : undefined;
+    const modelReasoningLevels = isAgentRecord(agent.modelReasoningLevels) && !Array.isArray(agent.modelReasoningLevels)
+      ? Object.fromEntries(Object.entries(agent.modelReasoningLevels).map(([model, level]) => [
+          normalizeSupportedModel(agent.type, model),
+          typeof level === 'string' ? level.trim().toLowerCase() : level
+        ])) as AgentConfig['modelReasoningLevels']
+      : agent.modelReasoningLevels;
     return {
       ...agent,
       alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
       cliVersion: cliVersionType === 'default' ? undefined : (typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion),
       defaultModel: typeof agent.defaultModel === 'string' ? normalizeSupportedModel(agent.type, agent.defaultModel) : agent.defaultModel,
+      modelReasoningLevels,
       supportedModels: Array.isArray(agent.supportedModels)
         ? agent.supportedModels.map(model => typeof model === 'string' ? normalizeSupportedModel(agent.type, model) : model)
         : agent.supportedModels
@@ -82,6 +90,25 @@ function validateAgentCliVersion(agent: AgentConfig): string | null {
   return null;
 }
 
+function validateAgentModelReasoningLevels(agent: AgentConfig): string | null {
+  if (agent.modelReasoningLevels === undefined) return null;
+  if (!isAgentRecord(agent.modelReasoningLevels) || Array.isArray(agent.modelReasoningLevels)) {
+    return `Agent '${agent.id}' has invalid modelReasoningLevels. Must be an object`;
+  }
+  const supportedLevels = getReasoningLevelsForAgentType(agent.type);
+  for (const [model, level] of Object.entries(agent.modelReasoningLevels)) {
+    const normalizedLevel = typeof level === 'string' ? level : String(level);
+    if (!model.trim() || !isReasoningLevel(normalizedLevel)) {
+      return `Agent '${agent.id}' has invalid reasoning level '${String(level)}' for model '${model}'`;
+    }
+    if (!supportedLevels.includes(normalizedLevel)) {
+      const supportedText = supportedLevels.length > 0 ? supportedLevels.join(', ') : 'none';
+      return `Agent '${agent.id}' reasoning level '${normalizedLevel}' for model '${model}' is not supported by ${agent.type}. Supported levels: ${supportedText}`;
+    }
+  }
+  return null;
+}
+
 function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): string | null {
   if (!isAgentRecord(agent)) {
     return 'Each agent must be an object';
@@ -95,6 +122,8 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   if (baseFieldError) return baseFieldError;
   const cliVersionError = validateAgentCliVersion(agent);
   if (cliVersionError) return cliVersionError;
+  const reasoningLevelError = validateAgentModelReasoningLevels(agent);
+  if (reasoningLevelError) return reasoningLevelError;
   if (seenAliases.has(normalizedAlias)) return `Duplicate agent alias '${normalizedAlias}' found`;
   return null;
 }

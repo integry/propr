@@ -9,6 +9,7 @@ import { agentResultToClaudeResponse } from './prCommentJobUtils.js';
 import { isGenericPrTitleText, selectFallbackSummaryLine } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 import type { GitHubToken } from './githubTypes.js';
+import type { ReasoningLevel } from '@propr/shared';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
@@ -33,6 +34,7 @@ interface SummaryTitleOptions {
     analysisRunner?: typeof runLightweightLLMAnalysis;
     summarizationSettingsLoader?: typeof loadSummarizationSettings;
     titleGenerationTimeoutMs?: number;
+    reasoningLevel?: ReasoningLevel;
 }
 
 type TitleAnalysisOptions = Parameters<typeof runLightweightLLMAnalysis>[0];
@@ -119,6 +121,8 @@ async function runWorktreeFreeTitleAnalysis(options: TitleAnalysisOptions, corre
         repository,
         metadata: options.metadata,
         timeoutMs: options.timeoutMs,
+        reasoningLevel: options.reasoningLevel,
+        useGlobalReasoningLevel: options.useGlobalReasoningLevel,
     });
 
     if (!result.success) {
@@ -181,6 +185,8 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
                 configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
             },
             timeoutMs,
+            reasoningLevel: options.reasoningLevel,
+            useGlobalReasoningLevel: false,
         };
         const titlePromise = runTitleAnalysis({
             analysisOptions,
@@ -268,10 +274,11 @@ export interface AgentExecutionParams {
     correlatedLogger: Logger;
     githubToken: string;
     redisClient: Redis;
+    reasoningLevel?: ReasoningLevel;
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
-    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient } = params;
+    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
@@ -299,7 +306,8 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         agentAlias,
         agentType: agent.config.type,
         model: modelToUse,
-        pullRequestNumber
+        pullRequestNumber,
+        reasoningLevel,
     }, 'Executing PR comment task with agent');
 
     const agentResult = await agent.executeTask({
@@ -312,7 +320,8 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
         onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
         taskId,
-        prNumber: pullRequestNumber
+        prNumber: pullRequestNumber,
+        reasoningLevel,
     });
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };

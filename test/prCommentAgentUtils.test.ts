@@ -10,7 +10,8 @@ const privateKeyPath = join(tmpdir(), 'propr-test-private-key.pem');
 writeFileSync(privateKeyPath, '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n');
 process.env.GH_PRIVATE_KEY_PATH ||= privateKeyPath;
 process.env.DEFAULT_CLAUDE_MODEL ||= 'haiku';
-const { generateSummaryTitle } = await import('../src/jobs/prCommentAgentUtils.js');
+const { generateSummaryTitle, resolveAndExecuteAgent } = await import('../src/jobs/prCommentAgentUtils.js');
+const { AgentRegistry } = await import('@propr/core');
 const { db } = await import('@propr/core');
 
 after(async () => {
@@ -18,6 +19,7 @@ after(async () => {
 });
 
 const logger = {
+    debug: () => undefined,
     info: () => undefined,
     warn: () => undefined,
 };
@@ -75,13 +77,18 @@ describe('generateSummaryTitle fallback behavior', () => {
     test('records workflow-specific title generation metadata', async () => {
         let taskKind: unknown;
         let timeoutMs: unknown;
+        let reasoningLevel: unknown;
+        let useGlobalReasoningLevel: unknown;
         const title = await generateSummaryTitle(baseOptions({
             workflowLabel: 'Ultrafix',
             titleContext: 'Review feedback to address:\nKeep iterating on lint failures.',
             titleGenerationTimeoutMs: 1234,
+            reasoningLevel: 'xhigh',
             analysisRunner: async options => {
                 taskKind = options.metadata?.taskKind;
                 timeoutMs = options.timeoutMs;
+                reasoningLevel = options.reasoningLevel;
+                useGlobalReasoningLevel = options.useGlobalReasoningLevel;
                 return 'Resolve lint failures';
             },
         }));
@@ -89,6 +96,8 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(title, 'Resolve lint failures');
         assert.strictEqual(taskKind, 'pr-ultrafix-title-generation');
         assert.strictEqual(timeoutMs, 1234);
+        assert.strictEqual(reasoningLevel, 'xhigh');
+        assert.strictEqual(useGlobalReasoningLevel, false);
     });
 
     test('removes surrounding quotes from generated subtitles', async () => {
@@ -154,5 +163,63 @@ describe('generateSummaryTitle fallback behavior', () => {
         }));
 
         assert.strictEqual(title, 'Fix broken auth refresh handling.');
+    });
+});
+
+describe('resolveAndExecuteAgent reasoning levels', () => {
+    test('passes PR follow-up reasoning level to the selected agent', async (t) => {
+        const registry = AgentRegistry.getInstance();
+        let capturedIssueRef: unknown;
+        let capturedReasoningLevel: unknown;
+        const agent = {
+            config: { alias: 'claude', type: 'claude', enabled: true, defaultModel: 'claude-sonnet-test' },
+            executeTask: async (options: { issueRef: unknown; reasoningLevel?: string }) => {
+                capturedIssueRef = options.issueRef;
+                capturedReasoningLevel = options.reasoningLevel;
+                return {
+                    success: true,
+                    modelUsed: 'claude-sonnet-test',
+                    reasoningLevel: 'ultracode',
+                    executionTimeMs: 12,
+                    summary: 'done',
+                    conversationLog: [],
+                };
+            },
+        };
+
+        t.mock.method(registry, 'ensureInitialized', async () => undefined);
+        t.mock.method(registry, 'getDefaultAgent', () => agent);
+        t.mock.method(registry, 'getAgentByAlias', () => agent);
+
+        const stateManager = {
+            updateTaskState: async () => undefined,
+            updateHistoryMetadata: async () => undefined,
+            getTaskState: async () => null,
+        };
+
+        const result = await resolveAndExecuteAgent({
+            llm: null,
+            worktreePath: '/tmp/worktree',
+            branchName: 'feature',
+            prompt: 'Fix the PR',
+            pullRequestNumber: 1705,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            taskId: 'task-pr-followup',
+            stateManager: stateManager as never,
+            correlatedLogger: logger as never,
+            githubToken: 'token',
+            redisClient: { set: async () => undefined } as never,
+            reasoningLevel: 'ultracode',
+        });
+
+        assert.strictEqual(result.claudeResult.success, true);
+        assert.strictEqual(result.claudeResult.reasoningLevel, 'ultracode');
+        assert.strictEqual(capturedReasoningLevel, 'ultracode');
+        assert.deepStrictEqual(capturedIssueRef, {
+            number: 1705,
+            repoOwner: 'integry',
+            repoName: 'propr',
+        });
     });
 });

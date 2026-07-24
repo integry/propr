@@ -7,6 +7,7 @@
  */
 
 import { ApiClient, createApiClient } from "./client.js";
+import { REASONING_LEVELS, normalizeModelReasoningLevel } from "@propr/shared";
 
 /**
  * Maximum allowed length for the free-form `pr_review_prompt` setting.
@@ -59,6 +60,12 @@ export interface SystemSettings {
    * contributor branches and ask an agent to resolve any conflicts.
    */
   auto_resolve_merge_conflicts: boolean;
+
+  /**
+   * Global reasoning effort/level for supported GPT and Claude agents.
+   * Empty string means use the selected agent CLI's built-in default.
+   */
+  model_reasoning_level: string;
 
   /**
    * Model identifier used for full PR reviews.
@@ -166,6 +173,12 @@ export interface UpdateSettingsOptions {
   auto_resolve_merge_conflicts?: boolean;
 
   /**
+   * Global reasoning effort/level for supported GPT and Claude agents.
+   * Empty string means use the selected agent CLI's built-in default.
+   */
+  model_reasoning_level?: string;
+
+  /**
    * Model identifier used for full PR reviews.
    * Empty string means use the default agent model.
    */
@@ -206,6 +219,11 @@ export interface UpdateSettingsResponse {
    * The updated settings object.
    */
   settings: UpdateSettingsOptions;
+
+  /**
+   * Non-blocking compatibility warnings detected after the settings were saved.
+   */
+  warnings?: string[];
 }
 
 /**
@@ -225,6 +243,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "planner_generation_model",
   "auto_followup_score_threshold",
   "auto_resolve_merge_conflicts",
+  "model_reasoning_level",
   "pr_review_model",
   "pr_review_prompt",
   "ultrafix_rating_goal",
@@ -305,6 +324,16 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be "true" or "false"`);
       }
       return lower === "true";
+    }
+    case "model_reasoning_level": {
+      const normalized = normalizeModelReasoningLevel(value);
+      if (normalized === null) {
+        if (value.trim() === "") {
+          throw new Error(`Invalid value for ${key}: must not be whitespace-only; use an empty string to clear`);
+        }
+        throw new Error(`Invalid value for ${key}: must be one of: ${REASONING_LEVELS.join(", ")}, or an empty string`);
+      }
+      return normalized;
     }
     case "github_user_whitelist":
       // Parse comma-separated list

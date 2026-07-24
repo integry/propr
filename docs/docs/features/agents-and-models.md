@@ -52,6 +52,14 @@ The model IDs you enable here become the durable names used by labels and slash 
 
 {/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the agent configuration modal open for a Claude agent: agent type, alias, enable toggle, supported models checklist with one default model selected, and the config path field. */}
 
+## Reasoning Levels
+
+The system setting `model_reasoning_level` applies to Claude and Codex agent invocations, including implementation runs and lightweight analysis runs such as planning context, plan generation, and PR review. Short task-title generation does not inherit the system setting, avoiding high-cost reasoning for a trivial summary; a model-specific reasoning override or `level-*` label still applies. Leave the setting empty to use each CLI's default. Each supported model can also set one of its agent runtime's native reasoning levels in the agent configuration; that model-specific value overrides the system setting. An issue or PR `level-*` label has the highest precedence and overrides both.
+
+Valid values are `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, `ultracode`, and `auto`. ProPR accepts the union of the Claude and Codex vocabularies, then adapts it per runtime: Codex maps `ultracode` to `ultra` and omits `auto`; Claude maps `ultra` to `max` and passes `auto` through as Claude Code's adaptive effort mode.
+
+Reasoning flags require Claude Code >= 2.1.68 and Codex CLI >= 0.144.0. Saving a global or model-specific reasoning level surfaces a non-blocking warning for enabled agents pinned below those versions. If the mismatch remains, ProPR also fails an affected run before starting the CLI with a version-specific error.
+
 ## Model Labels
 
 Every model has a GitHub label of the form `llm-<agent>-<model-alias>`. Add one to an issue (together with your trigger label, such as `AI`) to route that issue to the model. The same identity follows the run through the system: task records show the selected agent and model, and branch names include the model identifier for traceability.
@@ -61,7 +69,7 @@ Adding **several** model labels to one issue fans the work out into one job per 
 ```text
 AI
 llm-claude-opus48
-llm-codex-gpt55
+llm-codex-gpt56-sol
 ```
 
 This issue produces two tasks and two pull requests — one per model.
@@ -70,8 +78,8 @@ The same aliases work in PR comments (the `llm-` prefix is optional; the raw cat
 
 ```
 /switch claude-opus48     # future follow-ups on this PR use this model
-/use codex-gpt55            # one follow-up with this model
-/review claude-opus48 codex-gpt55   # independent reviews from two models
+/use codex-gpt56-sol      # one follow-up with this model
+/review claude-opus48 codex-gpt56-sol   # independent reviews from two models
 ```
 
 See [PR Slash Commands](./pr-commands.md) for full command syntax.
@@ -93,10 +101,13 @@ Some models require a minimum agent CLI version (for example, Fable 5 requires C
 
 ## Codex Models
 
-GPT-5.5 is the recommended default. GPT-5.4 Mini/Nano suit fast or subagent passes; GPT-5.3 Codex targets agentic coding.
+GPT-5.6 Sol is the recommended default for complex implementation, research, and security work. GPT-5.6 Terra balances capability, speed, and cost for everyday work; GPT-5.6 Luna is the fastest and lowest-cost GPT-5.6 option. GPT-5.6 models require Codex CLI >= 0.144.0.
 
 | Model | Label | Context |
 |-------|-------|---------|
+| GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1M |
+| GPT-5.6 Terra | `llm-codex-gpt56-terra` | 400K |
+| GPT-5.6 Luna | `llm-codex-gpt56-luna` | 400K |
 | GPT-5.5 | `llm-codex-gpt55` | 1M |
 | GPT-5.5 Pro | `llm-codex-gpt55-pro` | 1M |
 | GPT-5.4 | `llm-codex-gpt54` | 1M |

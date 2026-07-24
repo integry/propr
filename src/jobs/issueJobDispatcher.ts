@@ -11,6 +11,7 @@ type RepoValidation = RepoValidationResult;
 import { issueQueue, type IssueJobData, type JobResult } from '@propr/core';
 import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels, NoDefaultModelConfiguredError } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
+import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
 
 interface CurrentIssueData {
     data: {
@@ -27,6 +28,21 @@ interface AgentModelToProcess {
     agentAlias: string;
     model: string;
     label: string | null;
+}
+
+type IssueQueueAdd = typeof issueQueue.add;
+
+interface DispatcherDeps {
+    getAuthenticatedOctokit: typeof getAuthenticatedOctokit;
+    withRetry: typeof withRetry;
+    retryConfigs: typeof retryConfigs;
+    validateRepositoryInfo: typeof validateRepositoryInfo;
+    issueQueue: { add: IssueQueueAdd };
+    getDefaultModel: typeof getDefaultModel;
+    resolveLlmLabel: typeof resolveLlmLabel;
+    resolveCustomLabel: typeof resolveCustomLabel;
+    getAllCustomLabels: typeof getAllCustomLabels;
+    resolveDefaultAgentForDispatcher: typeof resolveDefaultAgentForDispatcher;
 }
 
 async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promise<{ agentAlias: string; modelToUse: string | undefined }> {
@@ -58,6 +74,21 @@ async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promi
 }
 
 export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult> {
+    return handleDispatchWithDeps(job, {
+        getAuthenticatedOctokit,
+        withRetry,
+        retryConfigs,
+        validateRepositoryInfo,
+        issueQueue,
+        getDefaultModel,
+        resolveLlmLabel,
+        resolveCustomLabel,
+        getAllCustomLabels,
+        resolveDefaultAgentForDispatcher,
+    });
+}
+
+export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const correlationId = issueRef.correlationId || generateCorrelationId();
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
@@ -68,23 +99,23 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
     let repoValidation: RepoValidation;
 
     try {
-        octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi, correlationId },
+        octokit = await deps.withRetry(
+            () => deps.getAuthenticatedOctokit(),
+            { ...deps.retryConfigs.githubApi, correlationId },
             'get_authenticated_octokit_dispatcher'
         );
 
-        currentIssueData = await withRetry(
+        currentIssueData = await deps.withRetry(
             () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: issueRef.repoOwner,
                 repo: issueRef.repoName,
                 issue_number: issueRef.number,
             }),
-            { ...retryConfigs.githubApi, correlationId },
+            { ...deps.retryConfigs.githubApi, correlationId },
             `get_issue_${issueRef.number}_dispatcher`
         ) as CurrentIssueData;
 
-        repoValidation = await validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
+        repoValidation = await deps.validateRepositoryInfo({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number }, octokit, correlationId);
         if (!repoValidation.isValid) {
             const errorMessage = repoValidation.error || 'Repository validation failed';
             throw new Error(errorMessage);
@@ -95,9 +126,18 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
 
         const baseLabels = labels.filter(l => l.startsWith('base-'));
         const llmLabels = labels.filter(l => l.startsWith('llm-'));
+        const reasoningLevel = parseReasoningLevelFromLabels(currentIssueData.data.labels);
+        const reasoningLevelLabels = labels.filter(isReasoningLevelLabel);
+        if (reasoningLevelLabels.length > 1) {
+            correlatedLogger.warn({
+                issue: issueRef.number,
+                reasoningLevel,
+                labels: reasoningLevelLabels
+            }, 'Multiple reasoning level labels found; using highest-priority label');
+        }
 
         // Get all configured custom labels from agents
-        const customLabels = await getAllCustomLabels();
+        const customLabels = await deps.getAllCustomLabels();
         const customLabelMatches = labels.filter(l =>
             customLabels.some(cl => cl.toLowerCase() === l.toLowerCase())
         );
@@ -113,7 +153,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         if (llmLabels.length > 0) {
             for (const label of llmLabels) {
                 const llmPart = label.substring('llm-'.length);
-                const resolution = await resolveLlmLabel(llmPart);
+                const resolution = await deps.resolveLlmLabel(llmPart);
                 agentModelsToProcess.push({
                     agentAlias: resolution.agentAlias,
                     model: resolution.model,
@@ -130,7 +170,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         // Then, process custom labels (that don't overlap with llm- labels)
         if (customLabelMatches.length > 0) {
             for (const label of customLabelMatches) {
-                const resolution = await resolveCustomLabel(label);
+                const resolution = await deps.resolveCustomLabel(label);
                 if (resolution) {
                     agentModelsToProcess.push({
                         agentAlias: resolution.agentAlias,
@@ -149,8 +189,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         // If no LLM or custom labels found, use the default agent
         if (agentModelsToProcess.length === 0) {
             // No LLM or custom labels - use default agent from settings
-            const { agentAlias, modelToUse } = await resolveDefaultAgentForDispatcher(correlatedLogger);
-            const resolvedModel = modelToUse || process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel();
+            const { agentAlias, modelToUse } = await deps.resolveDefaultAgentForDispatcher(correlatedLogger);
+            const resolvedModel = modelToUse || process.env.DEFAULT_CLAUDE_MODEL || deps.getDefaultModel();
 
             if (!resolvedModel) {
                 throw new NoDefaultModelConfiguredError();
@@ -173,6 +213,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                     agentAlias: agentModel.agentAlias,
                     modelName: agentModel.model,
                     modelLabel: agentModel.label,
+                    reasoningLevel,
                     isChildJob: true,
                     issuePayload: currentIssueData.data as unknown as Record<string, unknown>,
                     repoPayload: repoValidation.repoData as unknown as Record<string, unknown>
@@ -182,7 +223,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                 // when multiple webhook events trigger the dispatcher for the same issue
                 const childJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentModel.agentAlias}-${agentModel.model}-${base.branch}`;
 
-                await issueQueue.add(jobName, newJobData, {
+                await deps.issueQueue.add(jobName, newJobData, {
                     jobId: childJobId,
                     removeOnComplete: true,
                     removeOnFail: true,
@@ -194,7 +235,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
                     issue: issueRef.number,
                     base: base.branch,
                     agent: agentModel.agentAlias,
-                    model: agentModel.model
+                    model: agentModel.model,
+                    reasoningLevel
                 }, 'Enqueued child job');
             }
         }

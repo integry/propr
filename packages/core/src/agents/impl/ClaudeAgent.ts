@@ -21,6 +21,15 @@ import {
     type ClaudeOutput
 } from '../../claude/claudeHelpers.js';
 import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import {
+    assertReasoningLevelCliVersionSupported,
+    loadModelReasoningLevel,
+    resolveAgentModelReasoningLevel,
+    resolveClaudeReasoningLevel,
+    type ClaudeRuntimeReasoningLevel,
+    type ModelReasoningLevel
+} from '../../config/configManager.js';
+import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -68,12 +77,13 @@ export class ClaudeAgent implements Agent {
         const {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
-            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber
+            onSessionId, onContainerId, githubToken, tools, environment, taskId, prNumber, reasoningLevel
         } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+        let effectiveReasoningLevel: ClaudeRuntimeReasoningLevel | '' = '';
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
         logger.info({
@@ -89,9 +99,11 @@ export class ClaudeAgent implements Agent {
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
+            effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number,
-                systemPrompt, tools, environment, taskId
+                systemPrompt, tools, environment, taskId,
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -111,6 +123,7 @@ export class ClaudeAgent implements Agent {
             }, 'Claude agent execution completed');
 
             const { response, correctedTokenUsage, modelUsed } = processDockerResult(result, prompt, effectiveModel, executionTime);
+            if (effectiveReasoningLevel) response.reasoningLevel = effectiveReasoningLevel;
 
             await this.persistExecutionLogs({
                 result, prompt, issueRef, modelUsed, isRetry, retryReason,
@@ -139,14 +152,15 @@ export class ClaudeAgent implements Agent {
                 success: false, error: (error as Error).message, executionTimeMs: executionTime,
                 logs: (error as { stderr?: string }).stderr || (error as Error).message,
                 modifiedFiles: [], commitMessage: null, summary: undefined,
-                modelUsed: this.config.defaultModel || 'unknown'
+                modelUsed: this.config.defaultModel || 'unknown',
+                ...(effectiveReasoningLevel && { reasoningLevel: effectiveReasoningLevel })
             };
         }
     }
 
     /** Runs a lightweight, read-only analysis for planning, summarization, and PR reviews. */
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useGlobalReasoningLevel = true, suppressLlmLog } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -164,7 +178,8 @@ export class ClaudeAgent implements Agent {
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
-                tools: '', taskId, executionType
+                tools: '', taskId, executionType,
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useGlobalReasoningLevel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -220,6 +235,25 @@ export class ClaudeAgent implements Agent {
                 response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: (error as Error).message
             };
         }
+    }
+
+    /** Loads the configured reasoning level when it is supported by this agent runtime. */
+    private async resolveEffectiveReasoningLevel(
+        reasoningLevel: ModelReasoningLevel | undefined,
+        model: string,
+        useGlobalReasoningLevel = true
+    ): Promise<ClaudeRuntimeReasoningLevel | ''> {
+        const configuredLevel = reasoningLevel
+            ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model)
+            ?? (useGlobalReasoningLevel ? await loadModelReasoningLevel() : '');
+        const runtimeLevel = resolveClaudeReasoningLevel(configuredLevel) ?? '';
+        assertReasoningLevelCliVersionSupported({
+            agentType: 'claude',
+            agentAlias: this.config.alias,
+            cliVersion: this.config.cliVersionResolved ?? AGENT_DEFAULT_VERSIONS.claude,
+            reasoningLevel: runtimeLevel
+        });
+        return runtimeLevel;
     }
 
     /** Verifies the agent is ready by checking if the Docker image exists. */

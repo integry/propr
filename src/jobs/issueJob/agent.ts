@@ -33,6 +33,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
   return {
     success: result.success,
     model: result.modelUsed,
+    ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
     executionTime: result.executionTimeMs,
     output: null,
     sessionId: result.sessionId || null,
@@ -67,8 +68,14 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     agentAlias,
     agentType: agent.config.type,
     modelName,
-    issueNumber: issueRef.number
+    issueNumber: issueRef.number,
+    reasoningLevel: issueRef.reasoningLevel
   }, 'Executing task with agent');
+  const agentIssueRef = {
+    number: issueRef.number,
+    repoOwner: issueRef.repoOwner,
+    repoName: issueRef.repoName
+  };
 
   // Localize remote images in issue body and comments
   const issueBodyHtml = (currentIssueData.data as { body_html?: string }).body_html;
@@ -85,7 +92,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
 
   // Build prompt for the agent
   const prompt = generateClaudePrompt({
-    issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+    issueRef: agentIssueRef,
     branchName: worktreeInfo.branchName,
     modelName,
     issueDetails: {
@@ -114,11 +121,12 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   try {
     agentResult = await agent.executeTask({
       worktreePath: worktreeInfo.worktreePath,
-      issueRef: { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+      issueRef: agentIssueRef,
       prompt,
       model: modelName,
       githubToken: githubToken.token,
       branchName: worktreeInfo.branchName,
+      reasoningLevel: issueRef.reasoningLevel,
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId
