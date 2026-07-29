@@ -15,6 +15,7 @@ const {
     findMatchingModel,
     getModelShortName,
     resolveReviewModels,
+    extractLlmFromLabels,
     validatePrReviewModelValue,
     ReviewModelResolutionError,
     NoDefaultModelConfiguredError,
@@ -177,6 +178,32 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         const result = await resolveLlmLabel('codex-gpt56-sol');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         assert.strictEqual(result.model, 'gpt-5.6-sol', 'Should resolve to GPT-5.6 Sol');
+    });
+
+    await t.test('routes an alias-aware GPT-5.6 Sol label to the selected Codex agent', async () => {
+        const codex2Agent = {
+            config: {
+                ...mockAgentConfigs[2].config,
+                id: 'codex-agent-2',
+                alias: 'codex2'
+            }
+        };
+        mockAgentConfigs.push(codex2Agent);
+        try {
+            const modelLabel = extractLlmFromLabels(
+                [{ name: 'llm-codex2-gpt56-sol' }],
+                '^llm-(.+)$',
+                1710,
+                { debug: () => undefined } as never
+            );
+            assert.strictEqual(modelLabel, 'codex2-gpt56-sol');
+
+            const result = await resolveLlmLabel(modelLabel);
+            assert.strictEqual(result.agentAlias, 'codex2');
+            assert.strictEqual(result.model, 'gpt-5.6-sol');
+        } finally {
+            mockAgentConfigs.pop();
+        }
     });
 
     await t.test('static Claude aliases resolve to Claude even when default agent is Codex', async () => {
