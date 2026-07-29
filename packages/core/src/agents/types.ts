@@ -122,10 +122,14 @@ export interface AnalyzeOptions {
     timeoutMs?: number;
     /** Expected response format. Defaults to plain text analysis. */
     responseFormat?: 'text' | 'json';
-    /** Optional per-analysis reasoning level override. Omitted means use the global setting. */
+    /** Optional per-analysis reasoning level override. */
     reasoningLevel?: ReasoningLevel;
-    /** Whether an omitted reasoning level should fall back to the global setting. Defaults to true. */
-    useGlobalReasoningLevel?: boolean;
+    /**
+     * Whether an omitted reasoning level may inherit the configured levels meant for
+     * implementation runs (the agent's per-model config, then the global setting).
+     * Defaults to false so lightweight analysis runs use the model's default effort.
+     */
+    useConfiguredReasoningLevel?: boolean;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
 }

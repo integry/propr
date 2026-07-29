@@ -368,7 +368,6 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 githubToken,
                 pullRequestNumber, prTitle: prData!.data.title, workflowLabel: getPrTaskWorkflowLabel(workflow),
                 repoOwner, repoName, correlationId, taskId, correlatedLogger,
-                reasoningLevel: job.data.reasoningLevel,
             });
         } catch (titleError) {
             correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to generate review task subtitle');

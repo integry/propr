@@ -74,21 +74,20 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(title, 'Fix: Handle null refresh tokens in src/auth.ts before calling persistSession().');
     });
 
-    test('records workflow-specific title generation metadata', async () => {
+    test('records workflow-specific title generation metadata without a reasoning level', async () => {
         let taskKind: unknown;
         let timeoutMs: unknown;
         let reasoningLevel: unknown;
-        let useGlobalReasoningLevel: unknown;
+        let useConfiguredReasoningLevel: unknown;
         const title = await generateSummaryTitle(baseOptions({
             workflowLabel: 'Ultrafix',
             titleContext: 'Review feedback to address:\nKeep iterating on lint failures.',
             titleGenerationTimeoutMs: 1234,
-            reasoningLevel: 'xhigh',
             analysisRunner: async options => {
                 taskKind = options.metadata?.taskKind;
                 timeoutMs = options.timeoutMs;
                 reasoningLevel = options.reasoningLevel;
-                useGlobalReasoningLevel = options.useGlobalReasoningLevel;
+                useConfiguredReasoningLevel = options.useConfiguredReasoningLevel;
                 return 'Resolve lint failures';
             },
         }));
@@ -96,8 +95,8 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(title, 'Resolve lint failures');
         assert.strictEqual(taskKind, 'pr-ultrafix-title-generation');
         assert.strictEqual(timeoutMs, 1234);
-        assert.strictEqual(reasoningLevel, 'xhigh');
-        assert.strictEqual(useGlobalReasoningLevel, false);
+        assert.strictEqual(reasoningLevel, undefined);
+        assert.strictEqual(useConfiguredReasoningLevel, undefined);
     });
 
     test('removes surrounding quotes from generated subtitles', async () => {

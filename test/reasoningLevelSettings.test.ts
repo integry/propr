@@ -250,13 +250,29 @@ describe('agent model reasoning level configuration', () => {
       resolveEffectiveReasoningLevel(
         reasoningLevel: '' | typeof REASONING_LEVELS[number] | undefined,
         model: string | undefined,
-        useGlobalReasoningLevel?: boolean
+        useConfiguredReasoningLevel?: boolean
       ): Promise<string>;
     };
 
     assert.equal(await agent.resolveEffectiveReasoningLevel(undefined, 'codex:gpt-5.6-sol'), 'xhigh');
-    assert.equal(await agent.resolveEffectiveReasoningLevel(undefined, 'codex:gpt-5.6-sol', false), 'xhigh');
     assert.equal(await agent.resolveEffectiveReasoningLevel('low', 'codex:gpt-5.6-sol'), 'low');
+  });
+
+  test('lightweight analysis ignores per-model reasoning levels unless opted in', async () => {
+    const agent = new CodexAgent({
+      ...baseAgent,
+      modelReasoningLevels: { 'gpt-5.6-sol': 'max' },
+    }) as unknown as {
+      resolveEffectiveReasoningLevel(
+        reasoningLevel: '' | typeof REASONING_LEVELS[number] | undefined,
+        model: string | undefined,
+        useConfiguredReasoningLevel?: boolean
+      ): Promise<string>;
+    };
+
+    assert.equal(await agent.resolveEffectiveReasoningLevel(undefined, 'codex:gpt-5.6-sol', false), '');
+    assert.equal(await agent.resolveEffectiveReasoningLevel(undefined, 'codex:gpt-5.6-sol', true), 'max');
+    assert.equal(await agent.resolveEffectiveReasoningLevel('low', 'codex:gpt-5.6-sol', false), 'low');
   });
 });
 
@@ -466,19 +482,19 @@ describe('agent runtime reasoning level wiring', () => {
     defaultModel: 'claude-opus-4-6',
   };
 
-  test('can bypass only the global reasoning fallback for trivial analysis', async () => {
+  test('can bypass the configured reasoning fallbacks for trivial analysis', async () => {
     const codexAgent = new CodexAgent(codexConfig) as unknown as {
       resolveEffectiveReasoningLevel(
         reasoningLevel: undefined,
         model: string,
-        useGlobalReasoningLevel: boolean
+        useConfiguredReasoningLevel: boolean
       ): Promise<string>;
     };
     const claudeAgent = new ClaudeAgent(claudeConfig) as unknown as {
       resolveEffectiveReasoningLevel(
         reasoningLevel: undefined,
         model: string,
-        useGlobalReasoningLevel: boolean
+        useConfiguredReasoningLevel: boolean
       ): Promise<string>;
     };
 

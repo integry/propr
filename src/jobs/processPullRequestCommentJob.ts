@@ -314,7 +314,6 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         correlationId,
         taskId,
         correlatedLogger,
-        reasoningLevel: job.data.reasoningLevel,
     });
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = summaryTitle;

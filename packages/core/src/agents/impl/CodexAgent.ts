@@ -211,7 +211,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useGlobalReasoningLevel = true, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -232,7 +232,7 @@ export class CodexAgent implements Agent {
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0, jsonOutput: true, taskId, executionType,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useGlobalReasoningLevel)
+                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel)
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -338,11 +338,11 @@ export class CodexAgent implements Agent {
     private async resolveEffectiveReasoningLevel(
         reasoningLevel: ModelReasoningLevel | undefined,
         model: string | undefined,
-        useGlobalReasoningLevel = true
+        useConfiguredReasoningLevel = true
     ): Promise<CodexRuntimeReasoningLevel | ''> {
-        const configuredLevel = reasoningLevel
-            ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model)
-            ?? (useGlobalReasoningLevel ? await loadModelReasoningLevel() : '');
+        const configuredLevel = reasoningLevel ?? (useConfiguredReasoningLevel
+            ? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model) ?? await loadModelReasoningLevel()
+            : '');
         const runtimeLevel = resolveCodexReasoningLevel(configuredLevel) ?? '';
         assertReasoningLevelCliVersionSupported({
             agentType: 'codex',

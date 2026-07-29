@@ -34,7 +34,6 @@ interface SummaryTitleOptions {
     analysisRunner?: typeof runLightweightLLMAnalysis;
     summarizationSettingsLoader?: typeof loadSummarizationSettings;
     titleGenerationTimeoutMs?: number;
-    reasoningLevel?: ReasoningLevel;
 }
 
 type TitleAnalysisOptions = Parameters<typeof runLightweightLLMAnalysis>[0];
@@ -122,7 +121,7 @@ async function runWorktreeFreeTitleAnalysis(options: TitleAnalysisOptions, corre
         metadata: options.metadata,
         timeoutMs: options.timeoutMs,
         reasoningLevel: options.reasoningLevel,
-        useGlobalReasoningLevel: options.useGlobalReasoningLevel,
+        useConfiguredReasoningLevel: options.useConfiguredReasoningLevel,
     });
 
     if (!result.success) {
@@ -185,8 +184,6 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
                 configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
             },
             timeoutMs,
-            reasoningLevel: options.reasoningLevel,
-            useGlobalReasoningLevel: false,
         };
         const titlePromise = runTitleAnalysis({
             analysisOptions,

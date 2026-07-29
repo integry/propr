@@ -97,8 +97,8 @@ export interface RunLightweightLLMAnalysisOptions {
     metadata?: Record<string, unknown>;
     timeoutMs?: number;
     reasoningLevel?: ReasoningLevel;
-    /** Whether an omitted reasoning level should use the global setting. Defaults to true. */
-    useGlobalReasoningLevel?: boolean;
+    /** Whether an omitted reasoning level may inherit the configured per-model/global levels. Defaults to false. */
+    useConfiguredReasoningLevel?: boolean;
 }
 
 /** @deprecated Use AgentRegistry.getDefaultAgent().executeTask() instead. */
@@ -281,12 +281,12 @@ interface AgentExecutionParams {
     metadata?: Record<string, unknown>;
     timeoutMs?: number;
     reasoningLevel?: ReasoningLevel;
-    useGlobalReasoningLevel?: boolean;
+    useConfiguredReasoningLevel?: boolean;
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
 }
 
 async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<AnalysisResult | null> {
-    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel, correlatedLogger } = params;
+    const { agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel, correlatedLogger } = params;
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
@@ -298,7 +298,7 @@ async function tryExecuteWithAgent(params: AgentExecutionParams): Promise<Analys
 
     const resolvedModel = modelOverride ? resolveModelAlias(modelOverride) : agent.config.defaultModel;
     correlatedLogger.info({ agentAlias, resolvedModel, taskId, executionType }, 'Using agent-specific lightweight LLM analysis');
-    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel });
+    return await agent.analyze(prompt, { model: resolvedModel, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel });
 }
 
 function buildWorkRef(opts: {
@@ -366,7 +366,7 @@ async function executeClaudeAnalysis(
 }
 
 export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalysisOptions): Promise<string> {
-    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel } = options;
+    const { prompt, model, correlationId, taskId, prNumber, issueRef, executionType = 'other', metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { agentAlias, modelOverride, effectiveModel } = parseAgentModelFormat(model, correlatedLogger);
@@ -378,7 +378,7 @@ export async function runLightweightLLMAnalysis(options: RunLightweightLLMAnalys
             // Pass all logging fields to agent - agent handles persistence internally
             const analysisResult = await tryExecuteWithAgent({
                 agentAlias, modelOverride, prompt, taskId, taskNumber, prNumber, executionType,
-                correlationId, repository, metadata, timeoutMs, reasoningLevel, useGlobalReasoningLevel, correlatedLogger
+                correlationId, repository, metadata, timeoutMs, reasoningLevel, useConfiguredReasoningLevel, correlatedLogger
             });
             if (analysisResult !== null) {
                 if (!analysisResult.success) {
