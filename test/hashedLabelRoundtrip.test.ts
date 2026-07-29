@@ -15,7 +15,7 @@ test('hashed dynamic labels round-trip through resolveLlmLabel', async () => {
   const longModel = 'opencode-provider-with-an-extremely-long-name/model-with-an-extremely-long-name';
   const mockAgentConfigs = [
     { config: { id: 'claude-agent-1', type: 'claude' as const, alias: 'claude', enabled: true, supportedModels: ['claude-sonnet-4-6'], defaultModel: 'claude-sonnet-4-6' } },
-    { config: { id: 'opencode-agent-1', type: 'opencode' as const, alias: 'opencode', enabled: true, supportedModels: ['opencode-minimax-m3-free', 'opencode-openai/gpt-5.5', longModel] } }
+    { config: { id: 'opencode-agent-1', type: 'opencode' as const, alias: 'opencode', enabled: true, supportedModels: ['opencode-deepseek-v4-flash-free', 'opencode-openai/gpt-5.5', longModel] } }
   ];
 
   const originalGetAllAgents = registry.getAllAgents.bind(registry);

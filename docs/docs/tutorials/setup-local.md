@@ -160,7 +160,7 @@ Open `http://localhost:5173`, sign in with GitHub, and confirm the dashboard loa
 propr remote http://localhost:4000
 propr login                      # reuses your gh CLI session, or pass a PAT
 propr repo add owner/repo -b main
-propr agent add my-claude -t claude -m opus48 -d opus48
+propr agent add my-claude -t claude -m opus5 -d opus5
 propr use owner/repo
 propr remote-status              # verify daemon, workers, Redis, GitHub auth
 ```

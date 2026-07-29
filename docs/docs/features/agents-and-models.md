@@ -72,7 +72,7 @@ Adding **several** model labels to one issue fans the work out into one job per 
 
 ```text
 AI
-llm-claude-opus48
+llm-claude-opus5
 llm-codex-gpt56-sol
 ```
 
@@ -81,9 +81,9 @@ This issue produces two tasks and two pull requests — one per model.
 The same aliases work in PR comments (the `llm-` prefix is optional; the raw catalog model ids are accepted too):
 
 ```
-/switch claude-opus48     # future follow-ups on this PR use this model
+/switch claude-opus5      # future follow-ups on this PR use this model
 /use codex-gpt56-sol      # one follow-up with this model
-/review claude-opus48 codex-gpt56-sol   # independent reviews from two models
+/review claude-opus5 codex-gpt56-sol   # independent reviews from two models
 ```
 
 See [PR Slash Commands](./pr-commands.md) for full command syntax.
@@ -93,6 +93,8 @@ See [PR Slash Commands](./pr-commands.md) for full command syntax.
 | Model | Label | Context |
 |-------|-------|---------|
 | Claude Fable 5 | `llm-claude-fable` | 1M |
+| Claude Opus 5 | `llm-claude-opus5` | 1M |
+| Claude Sonnet 5 | `llm-claude-sonnet5` | 1M |
 | Claude Opus 4.8 | `llm-claude-opus48` | 1M |
 | Claude Opus 4.7 | `llm-claude-opus47` | 1M |
 | Claude Opus 4.6 | `llm-claude-opus46` | 1M |
@@ -101,7 +103,7 @@ See [PR Slash Commands](./pr-commands.md) for full command syntax.
 | Claude Sonnet 4.5 | `llm-claude-sonnet45` | 200K |
 | Claude Haiku 4.5 | `llm-claude-haiku` | 200K |
 
-Some models require a minimum agent CLI version (for example, Fable 5 requires Claude Code ≥ 2.1.170); ProPR records this in the catalog and the agent image is kept current.
+Some models require a minimum agent CLI version (for example, Opus 5 requires Claude Code ≥ 2.1.219); ProPR records this in the catalog and the agent image is kept current.
 
 ## Codex Models
 
@@ -109,9 +111,9 @@ GPT-5.6 Sol is the recommended default for complex implementation, research, and
 
 | Model | Label | Context |
 |-------|-------|---------|
-| GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1M |
-| GPT-5.6 Terra | `llm-codex-gpt56-terra` | 400K |
-| GPT-5.6 Luna | `llm-codex-gpt56-luna` | 400K |
+| GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1.05M |
+| GPT-5.6 Terra | `llm-codex-gpt56-terra` | 1.05M |
+| GPT-5.6 Luna | `llm-codex-gpt56-luna` | 1.05M |
 | GPT-5.5 | `llm-codex-gpt55` | 1M |
 | GPT-5.5 Pro | `llm-codex-gpt55-pro` | 1M |
 | GPT-5.4 | `llm-codex-gpt54` | 1M |
@@ -130,6 +132,7 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 
 | Model | Label |
 |-------|-------|
+| Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
 | Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
 | Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |
 | Claude Sonnet 4.6 Thinking | `llm-antigravity-sonnet46-thinking` |
@@ -142,9 +145,11 @@ Built-in free models:
 
 | Model | Label | Context |
 |-------|-------|---------|
-| MiniMax M3 Free | `llm-opencode-minimax-m3-free` | 200K |
 | DeepSeek V4 Flash Free | `llm-opencode-deepseek-v4-flash-free` | 200K |
 | MiMo V2.5 Free | `llm-opencode-mimo-v25-free` | 200K |
+| Laguna S 2.1 Free | `llm-opencode-laguna-s21-free` | 256K |
+| Ling 3.0 Flash Free | `llm-opencode-ling30-flash-free` | 262K |
+| North Mini Code Free | `llm-opencode-north-mini-code-free` | 256K |
 | Nemotron 3 Ultra Free | `llm-opencode-nemotron-3-ultra-free` | 1M |
 | Big Pickle | `llm-opencode-big-pickle` | 200K |
 

@@ -11,7 +11,7 @@ after(async () => {
 });
 
 test('getLlmLabel returns static model labels unchanged', async () => {
-  assert.strictEqual(await getLlmLabel('opencode-minimax-m3-free'), 'llm-opencode-minimax-m3-free');
+  assert.strictEqual(await getLlmLabel('opencode-deepseek-v4-flash-free'), 'llm-opencode-deepseek-v4-flash-free');
 });
 
 test('getLlmLabel emits explicit dynamic labels for configured OpenCode provider models', async () => {
@@ -27,7 +27,7 @@ test('getLlmLabel emits explicit dynamic labels for configured OpenCode provider
         dockerImage: 'propr/agent:latest',
         configPath: '~/.config/opencode',
         supportedModels: ['opencode-openai/gpt-5.5', 'opencode-go/qwen3.7-max'],
-        defaultModel: 'opencode-minimax-m3-free'
+        defaultModel: 'opencode-deepseek-v4-flash-free'
       }
     }
   ]);
@@ -56,7 +56,7 @@ test('getLlmLabel hashes long dynamic labels to fit GitHub limits', async () => 
         dockerImage: 'propr/agent:latest',
         configPath: '~/.config/opencode',
         supportedModels: [longModel],
-        defaultModel: 'opencode-minimax-m3-free'
+        defaultModel: 'opencode-deepseek-v4-flash-free'
       }
     }
   ]);

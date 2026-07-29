@@ -30,6 +30,7 @@ import {
     type ModelReasoningLevel
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
+import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -37,7 +38,6 @@ import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 export { UsageLimitError };
 
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
-const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 type AnalysisOutcome = { isSuccess: true } | { isSuccess: false; errorDetail: string };
@@ -69,7 +69,7 @@ export class ClaudeAgent implements Agent {
     constructor(config: AgentConfig) {
         this.config = config;
         this.maxTurns = parseInt(process.env.CLAUDE_MAX_TURNS || String(DEFAULT_CLAUDE_MAX_TURNS), 10);
-        this.timeoutMs = parseInt(process.env.CLAUDE_TIMEOUT_MS || String(DEFAULT_CLAUDE_TIMEOUT_MS), 10);
+        this.timeoutMs = parseInt(process.env.CLAUDE_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
     /** Executes a task that modifies files in the worktree. */

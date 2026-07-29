@@ -146,7 +146,7 @@ test('Environment configuration has valid defaults', () => {
     const defaultConfig = {
         AGENT_DOCKER_IMAGE: process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest',
         CLAUDE_MAX_TURNS: parseInt(process.env.CLAUDE_MAX_TURNS || '10', 10),
-        CLAUDE_TIMEOUT_MS: parseInt(process.env.CLAUDE_TIMEOUT_MS || '300000', 10)
+        CLAUDE_TIMEOUT_MS: parseInt(process.env.CLAUDE_TIMEOUT_MS || '86400000', 10)
     };
     
     assert.strictEqual(defaultConfig.AGENT_DOCKER_IMAGE, 'propr/agent:test');

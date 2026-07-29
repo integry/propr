@@ -25,8 +25,8 @@ function createAgent(): OpenCodeAgent {
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath: '/tmp/opencode-config',
-        supportedModels: ['opencode-minimax-m3-free'],
-        defaultModel: 'opencode-minimax-m3-free'
+        supportedModels: ['opencode-deepseek-v4-flash-free'],
+        defaultModel: 'opencode-deepseek-v4-flash-free'
     };
     return new OpenCodeAgent(config);
 }
@@ -56,24 +56,24 @@ describe('OpenCodeAgent JSONL parsing', () => {
 
     test('collects text from original text part events', () => {
         const parsed = parseOutput([
-            JSON.stringify({ type: 'text', sessionID: 'session-a', model: 'opencode/minimax-m3-free', part: { type: 'text', text: 'hello ' } }),
+            JSON.stringify({ type: 'text', sessionID: 'session-a', model: 'opencode/deepseek-v4-flash-free', part: { type: 'text', text: 'hello ' } }),
             JSON.stringify({ type: 'text', part: { type: 'text', text: 'world' } })
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'hello world');
         assert.strictEqual(parsed.sessionId, 'session-a');
-        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-deepseek-v4-flash-free');
     });
 
     test('prefers assistant message text over unrelated delta shapes', () => {
         const parsed = parseOutput([
-            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode/minimax-m3-free', content: 'first ' } }),
+            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode/deepseek-v4-flash-free', content: 'first ' } }),
             JSON.stringify({ type: 'delta', delta: 'second' }),
             JSON.stringify({ type: 'message', message: { role: 'user', content: 'ignored' } })
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'first');
-        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-deepseek-v4-flash-free');
     });
 
     test('does not duplicate text when message and event-level content match', () => {
@@ -117,11 +117,11 @@ describe('OpenCodeAgent JSONL parsing', () => {
         const parsed = parseOutput([
             JSON.stringify({ type: 'delta', delta: 'hello ' }),
             JSON.stringify({ type: 'delta', delta: 'world' }),
-            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode/minimax-m3-free', content: 'hello world' } })
+            JSON.stringify({ type: 'message', message: { role: 'assistant', model: 'opencode/deepseek-v4-flash-free', content: 'hello world' } })
         ].join('\n'));
 
         assert.strictEqual(parsed.summary, 'hello world');
-        assert.strictEqual(parsed.modelUsed, 'opencode-minimax-m3-free');
+        assert.strictEqual(parsed.modelUsed, 'opencode-deepseek-v4-flash-free');
     });
 
     test('preserves repeated stream text from separate events', () => {
@@ -283,7 +283,7 @@ describe('toOpenCodeGoOpenRouterId', () => {
     });
 
     test('returns null for non-opencode-go ids and unknown providers', () => {
-        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-minimax-m3-free'), null);
+        assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-deepseek-v4-flash-free'), null);
         assert.strictEqual(toOpenCodeGoOpenRouterId('claude-opus-4-8'), null);
         assert.strictEqual(toOpenCodeGoOpenRouterId('opencode-go/unknownprovider-1'), null);
     });
@@ -311,20 +311,20 @@ describe('OpenCodeAgent Docker args', () => {
         const routedArgs = buildDockerArgs(agent, 'opencode:provider:model');
         const openAiArgs = buildDockerArgs(agent, 'openai/gpt-5.5');
         const goArgs = buildDockerArgs(agent, 'opencode-go/qwen3.7-max');
-        const freeArgs = buildDockerArgs(agent, 'opencode-minimax-m3-free');
+        const freeArgs = buildDockerArgs(agent, 'opencode-deepseek-v4-flash-free');
 
         assert.strictEqual(routedArgs[routedArgs.indexOf('--model') + 1], 'provider:model');
         assert.strictEqual(openAiArgs[openAiArgs.indexOf('--model') + 1], 'openai/gpt-5.5');
         assert.strictEqual(goArgs[goArgs.indexOf('--model') + 1], 'opencode-go/qwen3.7-max');
-        assert.strictEqual(freeArgs[freeArgs.indexOf('--model') + 1], 'opencode/minimax-m3-free');
+        assert.strictEqual(freeArgs[freeArgs.indexOf('--model') + 1], 'opencode/deepseek-v4-flash-free');
         assert.strictEqual(normalizeOpenCodeCliModelName('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
         assert.strictEqual(normalizeOpenCodeCliModelName('opencode:openai/gpt-5.5'), 'openai/gpt-5.5');
         assert.strictEqual(toProprOpenCodeModelId('openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
-        assert.strictEqual(toProprOpenCodeModelId('opencode/minimax-m3-free'), 'opencode-minimax-m3-free');
+        assert.strictEqual(toProprOpenCodeModelId('opencode/deepseek-v4-flash-free'), 'opencode-deepseek-v4-flash-free');
         assert.strictEqual(toProprOpenCodeModelId('opencode-go/qwen3.7-max'), 'opencode-go/qwen3.7-max');
         assert.strictEqual(toProprOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
         assert.strictEqual(toOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
-        assert.strictEqual(toOpenCodeExternalModelId('opencode-minimax-m3-free'), 'opencode/minimax-m3-free');
+        assert.strictEqual(toOpenCodeExternalModelId('opencode-deepseek-v4-flash-free'), 'opencode/deepseek-v4-flash-free');
         assert.ok(routedArgs.includes('--name'));
         assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-opencode-provider-model-12345678$/);
         assert.match(openAiArgs[openAiArgs.indexOf('--name') + 1], /openai-gpt-5.5-12345678$/);
@@ -333,7 +333,7 @@ describe('OpenCodeAgent Docker args', () => {
     });
 
     test('uses opencode-run wrapper and JSON output mode', () => {
-        const args = buildDockerArgs(createAgent(), 'opencode-minimax-m3-free');
+        const args = buildDockerArgs(createAgent(), 'opencode-deepseek-v4-flash-free');
         const imageIndex = args.indexOf('propr/agent:latest');
 
         assert.ok(imageIndex > -1);
@@ -402,7 +402,7 @@ describe('OpenCodeAgent Docker args', () => {
         const agent = createAgent();
         agent.config.configPath = configPath;
 
-        const args = buildDockerArgs(agent, 'opencode-minimax-m3-free');
+        const args = buildDockerArgs(agent, 'opencode-deepseek-v4-flash-free');
 
         assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode:rw`));
         assert.strictEqual(args[args.lastIndexOf('-e') + 1], 'XDG_DATA_HOME=/home/node/.local/share');
@@ -509,10 +509,10 @@ describe('OpenCodeAgent Docker args', () => {
 
     test('prevents duplicate opencode- prefix on round-trip conversions', () => {
         assert.strictEqual(toProprOpenCodeModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
-        assert.strictEqual(toProprOpenCodeModelId('opencode-minimax-m3-free'), 'opencode-minimax-m3-free');
+        assert.strictEqual(toProprOpenCodeModelId('opencode-deepseek-v4-flash-free'), 'opencode-deepseek-v4-flash-free');
         assert.strictEqual(toProprOpenCodeModelId('opencode:opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
         assert.strictEqual(toProprOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'opencode-openai/gpt-5.5');
-        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-minimax-m3-free'), 'opencode-minimax-m3-free');
+        assert.strictEqual(toProprOpenCodeExternalModelId('opencode-deepseek-v4-flash-free'), 'opencode-deepseek-v4-flash-free');
 
         // Repeated normalization should be idempotent
         const once = toProprOpenCodeModelId('openai/gpt-5.5');

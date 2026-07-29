@@ -40,7 +40,7 @@ The contract keeps deterministic ProPR responsibilities outside the agent. Agent
 
 Enabled agents are stored as normal ProPR agent configs with a type, alias, Docker image, credential path, supported models, default model, and optional environment variables. The registry uses those configs to create the implementation class for the selected agent type.
 
-Routing happens before the worker starts the runtime. Labels such as `llm-claude-sonnet46`, `llm-codex-gpt55`, `llm-opencode-minimax-m3-free`, or dynamic slash-command selections resolve to a concrete agent and model. The worker then passes that model to the selected implementation, while the implementation translates ProPR model IDs into whatever the underlying CLI expects.
+Routing happens before the worker starts the runtime. Labels such as `llm-claude-sonnet46`, `llm-codex-gpt55`, `llm-opencode-deepseek-v4-flash-free`, or dynamic slash-command selections resolve to a concrete agent and model. The worker then passes that model to the selected implementation, while the implementation translates ProPR model IDs into whatever the underlying CLI expects.
 
 See [Agents and Models](../features/agents-and-models.md) for label formats, aliases, defaults, and multi-model work splitting.
 

@@ -25,6 +25,7 @@ import {
     type ModelReasoningLevel
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
+import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -33,7 +34,6 @@ import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 export { UsageLimitError };
 
 const DEFAULT_CODEX_MAX_TURNS = 1000;
-const DEFAULT_CODEX_TIMEOUT_MS = 3600000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 // Container path for Codex config
@@ -51,7 +51,7 @@ export class CodexAgent implements Agent {
     constructor(config: AgentConfig) {
         this.config = config;
         this.maxTurns = parseInt(process.env.CODEX_MAX_TURNS || String(DEFAULT_CODEX_MAX_TURNS), 10);
-        this.timeoutMs = parseInt(process.env.CODEX_TIMEOUT_MS || String(DEFAULT_CODEX_TIMEOUT_MS), 10);
+        this.timeoutMs = parseInt(process.env.CODEX_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {

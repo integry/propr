@@ -25,8 +25,8 @@ test('Model Aliases Configuration', async (t) => {
     await t.test('should resolve known aliases to full model IDs', () => {
         // Default aliases point to the latest tier models
         assert.strictEqual(resolveModelAlias('fable'), 'claude-fable-5');
-        assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-4-8');
-        assert.strictEqual(resolveModelAlias('sonnet'), 'claude-sonnet-4-6');
+        assert.strictEqual(resolveModelAlias('opus'), 'claude-opus-5');
+        assert.strictEqual(resolveModelAlias('sonnet'), 'claude-sonnet-5');
         // Explicit 4.5 aliases
         assert.strictEqual(resolveModelAlias('opus45'), 'claude-opus-4-5-20251101');
         assert.strictEqual(resolveModelAlias('sonnet45'), 'claude-sonnet-4-5-20250929');
@@ -34,8 +34,8 @@ test('Model Aliases Configuration', async (t) => {
     });
 
     await t.test('should handle case-insensitive aliases', () => {
-        assert.strictEqual(resolveModelAlias('OPUS'), 'claude-opus-4-8');
-        assert.strictEqual(resolveModelAlias('Sonnet'), 'claude-sonnet-4-6');
+        assert.strictEqual(resolveModelAlias('OPUS'), 'claude-opus-5');
+        assert.strictEqual(resolveModelAlias('Sonnet'), 'claude-sonnet-5');
         assert.strictEqual(resolveModelAlias('HAIKU'), 'claude-haiku-4-5-20251001');
     });
 
@@ -66,7 +66,9 @@ test('Model Aliases Configuration', async (t) => {
         assert.strictEqual(resolveModelAlias('fable5'), 'claude-fable-5');
         assert.strictEqual(resolveModelAlias('fable-5'), 'claude-fable-5');
         assert.strictEqual(resolveModelAlias('claude-fable-5'), 'claude-fable-5');
-        // 4.8/4.7/4.6 aliases
+        // 5/4.8/4.7/4.6 aliases
+        assert.strictEqual(resolveModelAlias('opus5'), 'claude-opus-5');
+        assert.strictEqual(resolveModelAlias('sonnet5'), 'claude-sonnet-5');
         assert.strictEqual(resolveModelAlias('opus48'), 'claude-opus-4-8');
         assert.strictEqual(resolveModelAlias('opus47'), 'claude-opus-4-7');
         assert.strictEqual(resolveModelAlias('opus46'), 'claude-opus-4-6');
@@ -88,7 +90,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'claude' as const,
                 alias: 'claude',
                 enabled: true,
-                supportedModels: ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+                supportedModels: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
                 defaultModel: 'claude-sonnet-4-6'
             }
         },
@@ -118,7 +120,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'opencode' as const,
                 alias: 'opencode',
                 enabled: true,
-                supportedModels: ['opencode-minimax-m3-free', 'opencode-openai/gpt-5.5', 'opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode-kimi-k2.6']
+                supportedModels: ['opencode-deepseek-v4-flash-free', 'opencode-openai/gpt-5.5', 'opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode-kimi-k2.6']
             }
         },
         {
@@ -189,9 +191,9 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     });
 
     await t.test('Step 3: resolves exact githubLabel for OpenCode models', async () => {
-        const result = await resolveLlmLabel('opencode-minimax-m3-free');
+        const result = await resolveLlmLabel('opencode-deepseek-v4-flash-free');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
-        assert.strictEqual(result.model, 'opencode-minimax-m3-free', 'Should resolve to correct OpenCode model');
+        assert.strictEqual(result.model, 'opencode-deepseek-v4-flash-free', 'Should resolve to correct OpenCode model');
     });
 
     await t.test('Step 1: resolves prefixed OpenCode provider model IDs', async () => {
@@ -271,7 +273,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     await t.test('Step 4: resolves opencode alias to preferred model', async () => {
         const result = await resolveLlmLabel('opencode');
         assert.strictEqual(result.agentAlias, 'opencode', 'Should resolve to OpenCode agent');
-        assert.strictEqual(result.model, 'opencode-minimax-m3-free', 'Should use preferred OpenCode model');
+        assert.strictEqual(result.model, 'opencode-deepseek-v4-flash-free', 'Should use preferred OpenCode model');
     });
 
     await t.test('Step 2: resolves vibe alias to default model', async () => {
@@ -303,13 +305,13 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
     await t.test('Step 6: resolves static MODEL_ALIASES for backwards compatibility (opus)', async () => {
         const result = await resolveLlmLabel('opus');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default (claude) agent');
-        assert.strictEqual(result.model, 'claude-opus-4-8', 'Should resolve to claude-opus-4-8 from static aliases');
+        assert.strictEqual(result.model, 'claude-opus-5', 'Should resolve to claude-opus-5 from static aliases');
     });
 
     await t.test('Step 6: resolves static MODEL_ALIASES for sonnet', async () => {
         const result = await resolveLlmLabel('sonnet');
         assert.strictEqual(result.agentAlias, 'claude', 'Should resolve to default agent');
-        assert.strictEqual(result.model, 'claude-sonnet-4-6', 'Should resolve to claude-sonnet-4-6');
+        assert.strictEqual(result.model, 'claude-sonnet-5', 'Should resolve to claude-sonnet-5');
     });
 
     await t.test('Step 6: resolves static MODEL_ALIASES for haiku', async () => {
@@ -576,7 +578,7 @@ test('getModelShortName - returns short display names for PR titles', async (t) 
     });
 
     await t.test('returns correct short name for OpenCode models', () => {
-        assert.strictEqual(getModelShortName('opencode-minimax-m3-free'), 'MiniMax M3 Free');
+        assert.strictEqual(getModelShortName('opencode-deepseek-v4-flash-free'), 'DeepSeek V4 Flash Free');
         assert.strictEqual(getModelShortName('opencode-big-pickle'), 'Big Pickle');
     });
 
@@ -672,7 +674,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
                 type: 'opencode' as const,
                 alias: 'opencode',
                 enabled: true,
-                supportedModels: ['opencode-minimax-m3-free', 'opencode-openai/gpt-5.5', 'opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode-kimi-k2.6']
+                supportedModels: ['opencode-deepseek-v4-flash-free', 'opencode-openai/gpt-5.5', 'opencode-go/glm-5.1', 'opencode-go/kimi-k2.6', 'opencode-kimi-k2.6']
             }
         },
         {
@@ -807,7 +809,7 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
         // opencode -> preferred enabled OpenCode agent/model
         const opencodeResults = await resolveReviewModels(['opencode']);
         assert.strictEqual(opencodeResults[0].agentAlias, 'opencode');
-        assert.strictEqual(opencodeResults[0].model, 'opencode-minimax-m3-free');
+        assert.strictEqual(opencodeResults[0].model, 'opencode-deepseek-v4-flash-free');
 
         // vibe -> default enabled Vibe agent/model
         const vibeResults = await resolveReviewModels(['vibe']);
@@ -816,11 +818,11 @@ test('resolveReviewModels - multi-model /review resolution', async (t) => {
     });
 
     await t.test('OpenCode labels resolve to configured OpenCode agent models', async () => {
-        const results = await resolveReviewModels(['opencode-minimax-m3-free']);
+        const results = await resolveReviewModels(['opencode-deepseek-v4-flash-free']);
         assert.strictEqual(results.length, 1);
         assert.strictEqual(results[0].agentAlias, 'opencode');
-        assert.strictEqual(results[0].model, 'opencode-minimax-m3-free');
-        assert.strictEqual(results[0].displayLabel, 'MiniMax M3 Free');
+        assert.strictEqual(results[0].model, 'opencode-deepseek-v4-flash-free');
+        assert.strictEqual(results[0].displayLabel, 'DeepSeek V4 Flash Free');
     });
 
     await t.test('dynamic OpenCode provider model IDs resolve through /review validation', async () => {

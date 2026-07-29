@@ -74,7 +74,7 @@ async function enqueueIssueImplementationJob(params: {
 
 /**
  * Gets the default model from the configured default agent.
- * Falls back to 'claude-sonnet-4-6' if no default agent is configured.
+ * Falls back to the latest Claude Sonnet model if no default agent is configured.
  */
 async function getConfiguredDefaultModel(): Promise<string> {
   try {
@@ -94,7 +94,7 @@ async function getConfiguredDefaultModel(): Promise<string> {
     logger.warn({ error: (err as Error).message }, 'Failed to get configured default model, using fallback');
   }
 
-  return 'claude-sonnet-4-6'; // Fallback
+  return 'claude-sonnet-5'; // Fallback
 }
 
 /**
