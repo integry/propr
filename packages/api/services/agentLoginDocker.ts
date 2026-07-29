@@ -132,9 +132,9 @@ export function buildAgentLoginCreateArgs(
   agent: AgentConfig,
   descriptor: AgentLoginDescriptor,
   credentialPath: string,
-  containerName: string,
-  scope = 'propr',
+  ...container: [containerName: string, scope?: string]
 ): string[] {
+  const [containerName, scope = 'propr'] = container;
   const image = resolveAgentLoginImage(agent);
   if (!/^[a-zA-Z0-9_.-]{1,128}$/.test(scope)) {
     throw new AgentLoginInputError('Agent login container scope is not configured correctly');

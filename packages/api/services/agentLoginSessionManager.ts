@@ -21,28 +21,24 @@ const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_LENGTH = 128 * 1024;
 const MAX_INPUT_LENGTH = 4096;
 
+type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
+  | 'control_string' | 'control_string_escape';
+type EscapeSequenceState = Exclude<TerminalEscapeState, 'text'>;
+
+export type AgentLoginSessionStatus = 'starting' | 'running' | 'succeeded'
+  | 'failed' | 'cancelled' | 'timed_out';
+
 const TERMINAL_STATUSES = new Set<AgentLoginSessionStatus>([
   'succeeded',
   'failed',
   'cancelled',
   'timed_out',
 ]);
-
-type TerminalEscapeState =
-  | 'text'
-  | 'escape'
-  | 'escape_intermediate'
-  | 'csi'
-  | 'control_string'
-  | 'control_string_escape';
-
-export type AgentLoginSessionStatus =
-  | 'starting'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'cancelled'
-  | 'timed_out';
+const CONTROL_STRING_STARTS = new Set([']', 'P', 'X', '^', '_']);
+const C1_CONTROL_STRING_STARTS = new Set(['\u0090', '\u0098', '\u009d', '\u009e', '\u009f']);
+const CSI_FINAL_CHARACTER = /[\u0040-\u007e]/u;
+const ESCAPE_INTERMEDIATE_CHARACTER = /[\u0020-\u002f]/u;
+const UNSAFE_CONTROL_RANGES = [[0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1a], [0x1c, 0x1f], [0x7f, 0x9f]];
 
 export interface AgentLoginSessionSnapshot {
   id: string;
@@ -133,41 +129,67 @@ function normalizeScope(value: string): string {
   return normalized || 'propr';
 }
 
-function isCsiFinalCharacter(value: string): boolean {
-  const code = value.charCodeAt(0);
-  return code >= 0x40 && code <= 0x7e;
-}
+const ESCAPE_TRANSITIONS: Record<
+  EscapeSequenceState,
+  (value: string) => TerminalEscapeState
+> = {
+  escape: value => {
+    if (value === '[') return 'csi';
+    if (CONTROL_STRING_STARTS.has(value)) return 'control_string';
+    return ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text';
+  },
+  escape_intermediate: value => (
+    ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text'
+  ),
+  csi: value => CSI_FINAL_CHARACTER.test(value) ? 'text' : 'csi',
+  control_string: value => {
+    if (value === '\u0007' || value === '\u009c') return 'text';
+    return value === '\u001b' ? 'control_string_escape' : 'control_string';
+  },
+  control_string_escape: value => {
+    if (value === '\\' || value === '\u009c') return 'text';
+    return value === '\u001b' ? 'control_string_escape' : 'control_string';
+  },
+};
 
-function isEscapeIntermediateCharacter(value: string): boolean {
-  const code = value.charCodeAt(0);
-  return code >= 0x20 && code <= 0x2f;
-}
-
-function isControlStringStart(value: string): boolean {
-  return value === ']'
-    || value === 'P'
-    || value === 'X'
-    || value === '^'
-    || value === '_';
-}
-
-function isC1ControlStringStart(value: string): boolean {
-  return value === '\u0090'
-    || value === '\u0098'
-    || value === '\u009d'
-    || value === '\u009e'
-    || value === '\u009f';
+function startEscapeSequence(value: string): EscapeSequenceState | undefined {
+  if (value === '\u001b') return 'escape';
+  if (value === '\u009b') return 'csi';
+  if (C1_CONTROL_STRING_STARTS.has(value)) return 'control_string';
+  return undefined;
 }
 
 function isUnsafeControlCharacter(value: string): boolean {
   const code = value.charCodeAt(0);
-  return (code >= 0x00 && code <= 0x08)
-    || code === 0x0b
-    || code === 0x0c
-    || (code >= 0x0e && code <= 0x1a)
-    || (code >= 0x1c && code <= 0x1f)
-    || code === 0x7f
-    || (code >= 0x80 && code <= 0x9f);
+  return UNSAFE_CONTROL_RANGES.some(([start, end]) => code >= start && code <= end);
+}
+
+function sanitizeTerminalChunk(session: AgentLoginSession, chunk: string): string {
+  let sanitized = '';
+  for (const value of chunk) {
+    const state = session.escapeState;
+    if (state !== 'text') {
+      session.escapeState = ESCAPE_TRANSITIONS[state](value);
+      continue;
+    }
+    const escapeState = startEscapeSequence(value);
+    if (escapeState) {
+      session.escapeState = escapeState;
+      continue;
+    }
+    if (value === '\r') {
+      sanitized += '\n';
+      session.outputEndedWithCarriageReturn = true;
+      continue;
+    }
+    if (value === '\n' && session.outputEndedWithCarriageReturn) {
+      session.outputEndedWithCarriageReturn = false;
+      continue;
+    }
+    session.outputEndedWithCarriageReturn = false;
+    if (!isUnsafeControlCharacter(value)) sanitized += value;
+  }
+  return sanitized;
 }
 
 export class AgentLoginSessionManager {
@@ -382,70 +404,7 @@ export class AgentLoginSessionManager {
   }
 
   private appendOutput(session: AgentLoginSession, chunk: string): void {
-    let sanitized = '';
-    const appendTextCharacter = (value: string): void => {
-      if (value === '\r') {
-        sanitized += '\n';
-        session.outputEndedWithCarriageReturn = true;
-        return;
-      }
-      if (value === '\n' && session.outputEndedWithCarriageReturn) {
-        session.outputEndedWithCarriageReturn = false;
-        return;
-      }
-      session.outputEndedWithCarriageReturn = false;
-      if (!isUnsafeControlCharacter(value)) sanitized += value;
-    };
-
-    for (const value of chunk) {
-      switch (session.escapeState) {
-        case 'text':
-          if (value === '\u001b') {
-            session.escapeState = 'escape';
-          } else if (value === '\u009b') {
-            session.escapeState = 'csi';
-          } else if (isC1ControlStringStart(value)) {
-            session.escapeState = 'control_string';
-          } else {
-            appendTextCharacter(value);
-          }
-          break;
-        case 'escape':
-          if (value === '[') {
-            session.escapeState = 'csi';
-          } else if (isControlStringStart(value)) {
-            session.escapeState = 'control_string';
-          } else if (isEscapeIntermediateCharacter(value)) {
-            session.escapeState = 'escape_intermediate';
-          } else {
-            // A complete two-byte escape or malformed escape is discarded.
-            session.escapeState = 'text';
-          }
-          break;
-        case 'escape_intermediate':
-          if (!isEscapeIntermediateCharacter(value)) session.escapeState = 'text';
-          break;
-        case 'csi':
-          if (isCsiFinalCharacter(value)) session.escapeState = 'text';
-          break;
-        case 'control_string':
-          if (value === '\u0007' || value === '\u009c') {
-            session.escapeState = 'text';
-          } else if (value === '\u001b') {
-            session.escapeState = 'control_string_escape';
-          }
-          break;
-        case 'control_string_escape':
-          if (value === '\\' || value === '\u009c') {
-            session.escapeState = 'text';
-          } else if (value !== '\u001b') {
-            session.escapeState = 'control_string';
-          }
-          break;
-      }
-    }
-
-    const next = `${session.output}${sanitized}`;
+    const next = `${session.output}${sanitizeTerminalChunk(session, chunk)}`;
     session.output = next.length > MAX_OUTPUT_LENGTH
       ? `[Earlier output removed]\n${next.slice(next.length - MAX_OUTPUT_LENGTH)}`
       : next;
@@ -482,27 +441,10 @@ export class AgentLoginSessionManager {
   }
 
   private snapshot(session: AgentLoginSession): AgentLoginSessionSnapshot {
-    const {
-      id,
-      agentId,
-      agentType,
-      status,
-      output,
-      createdAt,
-      updatedAt,
-      expiresAt,
-      exitCode,
-      error,
-    } = session;
+    const { id, agentId, agentType, status, output, createdAt, updatedAt, expiresAt, exitCode, error } = session;
     return {
-      id,
-      agentId,
-      agentType,
-      status,
-      output,
-      createdAt,
-      updatedAt,
-      expiresAt,
+      id, agentId, agentType, status, output,
+      createdAt, updatedAt, expiresAt,
       ...(exitCode === undefined ? {} : { exitCode }),
       ...(error === undefined ? {} : { error }),
     };
