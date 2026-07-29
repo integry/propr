@@ -139,6 +139,15 @@ export { parseProjectSlug } from './projectSlug.js';
 export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';
 
 export {
+  AGENT_LOGIN_DESCRIPTORS,
+  LOGINABLE_AGENT_TYPES,
+  getAgentLoginDescriptor,
+  isAgentLoginSupported,
+  type AgentLoginDescriptor,
+  type LoginableAgentType,
+} from './agentLogin.js';
+
+export {
   REASONING_LEVELS,
   CODEX_REASONING_LEVELS,
   CLAUDE_REASONING_LEVELS,

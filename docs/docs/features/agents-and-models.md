@@ -31,7 +31,9 @@ Use routing when you want to:
 | OpenCode | `opencode` | `propr/agent` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
 | Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
 
-Authenticate each agent's CLI on the host first; the launcher and compose files mount the credential directories into agent containers at their host paths. These mounts are read-write — worker containers may refresh auth state (the launcher mounts the OpenCode data directory read-write for workers and read-only elsewhere); only the `.env` file is mounted read-only. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
+Authenticate each agent's CLI on the host, run `propr agent login <type>`, or use **Log in** on the Web UI's **Coding Agents** page. The CLI and Web UI login actions both run the configured agent image and write the resulting credentials to its mounted host directory, avoiding host/image CLI version drift. The web dialog supports Claude, Codex, Antigravity, and OpenCode authorization-link and confirmation-code flows; Vibe uses `MISTRAL_API_KEY` or a pre-populated config.
+
+The launcher and compose files mount credential directories into agent containers at their host paths. These mounts are read-write — worker containers may refresh auth state (the launcher mounts the OpenCode data directory read-write for workers and read-only elsewhere); only the `.env` file is mounted read-only. Web login requires the configured credential path to resolve to an absolute host path; the standard `HOST_*`/`*_CONFIG_PATH` settings provide that mapping for default `~` paths. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
 
 ## Agent Configuration
 
@@ -49,6 +51,8 @@ The Web UI includes an AI Agents page for configuring coding agents. Each agent 
 - The agent CLI version (default or a pinned custom version)
 
 The model IDs you enable here become the durable names used by labels and slash commands.
+
+For an interactive login, select **Log in** on an agent entry, open the authorization URL shown in the dialog, and send a confirmation code or requested response when prompted. Login sessions are private to the dashboard user who started them, permit only one writer per credential directory, expire after ten minutes, and are not persisted in task or LLM logs.
 
 {/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the agent configuration modal open for a Claude agent: agent type, alias, enable toggle, supported models checklist with one default model selected, and the config path field. */}
 

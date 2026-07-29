@@ -22,7 +22,7 @@ Worker containers run each coding agent from credential directories mounted off 
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-claude login
+claude auth login
 ```
 
 For Antigravity, install the official CLI and complete a login on the host:

@@ -218,7 +218,7 @@ root) so the credential directory lives under `/home/you` where the stack expect
 it. For example:
 
 ```bash
-claude login        # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-code)
+claude auth login   # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-code)
 # or: agy login     # Antigravity  -> ~/.gemini  (curl -fsSL https://antigravity.google/cli/install.sh | bash)
 ```
 

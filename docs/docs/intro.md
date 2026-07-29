@@ -12,7 +12,7 @@ ProPR connects to your GitHub repositories and keeps the pull request as the cen
 
 ## First 15 Minutes
 
-You need a Docker-capable Linux host, Node.js 22+, and a login for at least one coding agent — reuse one already on the host (Claude Code's `claude login`, Antigravity's `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
+You need a Docker-capable Linux host, Node.js 22+, and a login for at least one coding agent — reuse one already on the host (Claude Code's `claude auth login`, Antigravity's `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
 
 ```bash
 npm install -g propr-cli

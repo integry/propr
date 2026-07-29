@@ -46,6 +46,9 @@ services:
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
     volumes:
       - propr-sqlite-data:/app/data
+      # The API starts short-lived sibling containers for agent image builds,
+      # model discovery, and interactive Coding Agents logins.
+      - /var/run/docker.sock:/var/run/docker.sock
       # Add agent credential mounts with a deployment-specific override file.
       # Keeping them out of the base production compose file avoids Docker
       # creating missing host credential directories as root-owned folders.

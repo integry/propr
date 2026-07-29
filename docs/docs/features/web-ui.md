@@ -56,7 +56,7 @@ See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration]
 
 ## Coding Agents
 
-**Coding Agents** (`/ai-agents`) is a split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. See [Agents And Models](./agents-and-models.md).
+**Coding Agents** (`/ai-agents`) is a split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. Claude, Codex, Antigravity, and OpenCode entries include a **Log in** action. It starts the configured agent image, displays the CLI's authorization link and instructions, and accepts requested confirmation codes or terminal menu input without requiring the agent CLI on the host. The dialog includes Up, Down, and Enter controls for provider and login-method menus. Closing it cancels the temporary login container. Vibe uses an API key or pre-populated config instead of this interactive flow. See [Agents And Models](./agents-and-models.md).
 
 ## LLM Log
 

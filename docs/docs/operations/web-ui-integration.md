@@ -47,6 +47,7 @@ The UI is not served by the API container. In both the launcher stack and the de
 The frontend uses the dashboard API rather than a mock layer. Common integration points include:
 
 - `GET /api/status` for daemon, worker, Redis, GitHub auth, agent health, and indexing state
+- `/api/agents/:agentId/login-sessions/*` for short-lived Docker-backed coding-agent login output, input, status, and cancellation
 - `GET /api/queue/stats` for queue depth and throughput
 - `GET /api/tasks` and the `/api/task/:taskId/...` detail endpoints for execution history, live details, file changes, and Docker logs
 - `GET /api/stats/tasks`, `/api/stats/repositories`, and `/api/stats/overview` for dashboard statistics

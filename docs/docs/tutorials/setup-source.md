@@ -33,7 +33,7 @@ Create the credential and cache directories that agent containers mount, before 
 mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe "/tmp/propr-vibe-prompts-$(id -u)"
 ```
 
-Log in to each agent you plan to run (for example `claude login` for Claude Code, `agy login` for Antigravity) so its credential directory holds real auth state.
+Log in to each agent you plan to run (for example `claude auth login` for Claude Code, `agy login` for Antigravity) so its credential directory holds real auth state.
 
 ## 3. Configure `.env`
 
