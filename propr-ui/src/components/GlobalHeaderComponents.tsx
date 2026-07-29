@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket } from 'lucide-react';
+import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket, ExternalLink } from 'lucide-react';
 import { HeaderStats } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
 import { getStatusBadgeStyle } from './headerUtils';
@@ -303,40 +303,45 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
     return 'text-red-500';
   };
   const renderStatusRow = (label: string, status?: string) => (
-    <div className="flex items-center gap-2 text-sm text-gray-700">
-      <span className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
-      <span>{label}:</span>
-      <span className="ml-auto font-medium">{status || 'Unknown'}</span>
+    <div className="flex justify-between items-center gap-4 whitespace-nowrap text-sm">
+      <span className="flex items-center gap-2 text-slate-700">
+        <span className={`w-2 h-2 flex-shrink-0 rounded-full ${getStatusColor(status)}`} />
+        <span>{label}</span>
+      </span>
+      <span className="flex-shrink-0 font-medium text-slate-500">{status || 'Unknown'}</span>
     </div>
   );
   // The intake method is a name rather than a status, so its indicator dot is
   // colored by the separate intake status while the row still shows the method.
   // The ProPR Connect intake path links out to its hosted service page.
   const renderIntakeMethodRow = (label: string, method: string, status: string) => (
-    <div className="flex items-center gap-2 text-sm text-gray-700">
-      <span className={`w-2 h-2 rounded-full ${getStatusColor(status)}`} />
-      <span>{label}:</span>
-      <span className="ml-auto font-medium">
-        {method === 'ProPR Connect' ? (
-          <a
-            href="https://connect.propr.dev"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-600 hover:underline"
-          >
-            {method}
-          </a>
-        ) : (
-          method || 'Unknown'
-        )}
+    <div className="flex justify-between items-center gap-4 whitespace-nowrap text-sm">
+      <span className="flex items-center gap-2 text-slate-700">
+        <span className={`w-2 h-2 flex-shrink-0 rounded-full ${getStatusColor(status)}`} />
+        <span>{label}</span>
       </span>
+      {method === 'ProPR Connect' ? (
+        <a
+          href="https://connect.propr.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex flex-shrink-0 items-center gap-1 font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 transition-colors hover:text-slate-700"
+        >
+          <span>{method}</span>
+          <ExternalLink className="w-3 h-3 flex-shrink-0" aria-hidden="true" />
+        </a>
+      ) : (
+        <span className="flex-shrink-0 font-medium text-slate-500">{method || 'Unknown'}</span>
+      )}
     </div>
   );
   const renderAgentStatusRow = (agent: HeaderStats['systemHealth']['agents'][number]) => (
-    <div className="flex items-center gap-2 text-sm text-gray-700">
-      <ProviderLogo provider={agent.type || agent.alias} className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />
-      <span>{formatAgentLabel(agent, systemHealth.agents)}:</span>
-      <span className="ml-auto font-medium">{agent.status || 'Unknown'}</span>
+    <div className="flex justify-between items-center gap-4 whitespace-nowrap text-sm">
+      <span className="flex items-center gap-2 text-slate-700">
+        <ProviderLogo provider={agent.type || agent.alias} className={`w-3.5 h-3.5 flex-shrink-0 ${getStatusTextColor(agent.status)}`} />
+        <span>{formatAgentLabel(agent, systemHealth.agents)}</span>
+      </span>
+      <span className="flex-shrink-0 font-medium text-slate-500">{agent.status || 'Unknown'}</span>
     </div>
   );
   const hasAgents = systemHealth.agents.length > 0;
@@ -359,18 +364,13 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 min-w-[240px] z-[100]">
-          {/* Header section matching other dropdowns */}
+        <div className="absolute right-0 top-full w-[288px] bg-white border border-slate-200 border-t-0 shadow-xl ring-1 ring-black/5 z-[100]">
           <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              SYSTEM STATUS
+              Services
             </span>
           </div>
-          {/* Content */}
           <div className="px-4 py-3 space-y-2">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              Services
-            </div>
             {renderStatusRow('Daemon', systemHealth.daemon)}
             {renderStatusRow('Workers', systemHealth.workers)}
             {renderStatusRow('Redis', systemHealth.redis)}
