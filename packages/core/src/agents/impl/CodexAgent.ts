@@ -4,24 +4,11 @@ import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
-import {
-    verifyWorktreeStructure,
-    verifyWorktreePostExecution,
-    setWorktreeOwnership,
-    UsageLimitError
-} from '../../claude/claudeHelpers.js';
-import {
-    buildCodexPrompt,
-    parseCodexStreamOutput,
-    storeCodexPromptInRedis
-} from '../../codex/codexHelpers.js';
+import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from '../../codex/codexHelpers.js';
 import {
     assertReasoningLevelCliVersionSupported,
-    loadModelReasoningLevel,
-    resolveAgentModelReasoningLevel,
-    resolveCodexReasoningLevel,
-    resolveConfigPath,
-    type CodexRuntimeReasoningLevel,
+    loadModelReasoningLevel, resolveAgentModelReasoningLevel, resolveCodexReasoningLevel, resolveConfigPath, type CodexRuntimeReasoningLevel,
     type ModelReasoningLevel
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
@@ -372,14 +359,9 @@ export class CodexAgent implements Agent {
      * Builds Docker arguments for running Codex in a container.
      */
     private buildDockerArgs(params: {
-        worktreePath: string;
-        githubToken: string;
-        modelName?: string;
-        issueNumber: number;
-        jsonOutput?: boolean;
-        environment?: Record<string, string>;
-        taskId?: string;
-        executionType?: string;
+        worktreePath: string; githubToken: string; modelName?: string;
+        issueNumber: number; jsonOutput?: boolean; environment?: Record<string, string>;
+        taskId?: string; executionType?: string;
         reasoningLevel?: CodexRuntimeReasoningLevel | '';
     }): string[] {
         const {
