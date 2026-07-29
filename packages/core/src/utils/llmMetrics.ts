@@ -4,7 +4,7 @@ import { db } from '../db/connection.js';
 import { getAnalysisQueue } from '../queue/taskQueue.js';
 import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
-import { getCachePricingMultipliers } from './tokenCalculation.js';
+import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, HighCostAlert, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -60,18 +60,20 @@ async function calculateCost(model: string, tokens: CumulativeTokenUsage, claude
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
     const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = tokens;
-    const { cacheReadMultiplier, cacheCreationMultiplier } = getCachePricingMultipliers(model);
-    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens,
-        cacheReadMultiplier, cacheCreationMultiplier }, 'Cost calculation: looking up pricing');
+    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens },
+        'Cost calculation: looking up pricing');
     const hasTokens = inputTokens > 0 || outputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0;
     let calculatedCostUsd = 0;
     if (pricing && hasTokens) {
-        const inputCost = inputTokens * pricing.prompt, outputCost = outputTokens * pricing.completion;
-        const cacheCreationCost = cacheCreationTokens * pricing.prompt * cacheCreationMultiplier;
-        const cacheReadCost = cacheReadTokens * pricing.prompt * cacheReadMultiplier;
-        calculatedCostUsd = inputCost + cacheCreationCost + cacheReadCost + outputCost;
-        logger.info({ model, openRouterId, calculatedCostUsd, breakdown: { inputCost, cacheCreationCost, cacheReadCost, outputCost } },
-            'Calculated dynamic cost with cache pricing');
+        calculatedCostUsd = calculateCostWithCachePricing(model, {
+            inputTokens,
+            outputTokens,
+            cacheCreationTokens,
+            cacheReadTokens,
+            totalInputWithCache: tokens.totalInputWithCache,
+            totalTokens: tokens.totalInputWithCache + outputTokens
+        }, pricing);
+        logger.info({ model, openRouterId, calculatedCostUsd }, 'Calculated dynamic cost with cache pricing');
     } else if (!pricing) { logger.warn({ model, openRouterId }, 'No pricing found for model - cost will be 0 or fallback'); }
     else { logger.warn({ model, inputTokens, outputTokens }, 'No token data available - cost will be 0 or fallback'); }
     return calculatedCostUsd > 0 ? calculatedCostUsd : (claudeResult?.finalResult?.cost_usd ?? claudeResult?.finalResult?.total_cost_usd ?? 0);

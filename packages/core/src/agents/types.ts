@@ -80,6 +80,8 @@ export interface TokenUsage {
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
+    /** Informational subset of output_tokens; never bill separately. */
+    reasoning_output_tokens?: number;
 }
 
 /**

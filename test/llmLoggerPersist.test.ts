@@ -8,10 +8,15 @@
  *
  * Tests import the real buildLlmLogRow function to catch regressions directly.
  */
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert';
 import type { LlmLogEntry } from '../packages/core/src/utils/llmLogger.js';
 import { buildLlmLogRow } from '../packages/core/src/utils/llmLogger.js';
+
+after(async () => {
+  const { db } = await import('../packages/core/src/db/connection.js');
+  await db.destroy();
+});
 
 /** All work-reference DB columns that the migration adds. */
 const WORK_REF_COLUMNS = ['work_type', 'task_id', 'task_number', 'pr_number', 'plan_draft_id', 'plan_issue_id', 'work_repository'] as const;

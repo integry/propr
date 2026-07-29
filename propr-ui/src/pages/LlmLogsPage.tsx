@@ -395,7 +395,12 @@ const LlmLogsPage: React.FC = () => {
                         </td>
                         <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
                           <UsageBadge
-                            tokens={(log.inputTokens || 0) + (log.outputTokens || 0)}
+                            tokens={
+                              (log.inputTokens || 0)
+                              + (log.outputTokens || 0)
+                              + (log.cacheCreationInputTokens || 0)
+                              + (log.cacheReadInputTokens || 0)
+                            }
                             cost={log.costUsd ?? undefined}
                             usageMetricRecords={log.usageMetricRecords}
                           />

@@ -73,6 +73,10 @@ The API also aggregates run metrics in Redis, available at `GET /api/llm-metrics
 
 ProPR estimates the cost of every LLM call from its token counts (input, output, cache creation, and cache read) and per-model pricing, then stores the estimate with the call. All cost figures in the UI come from these per-call records: the LLM Log shows cost per call, and the dashboard's Total Cost is their sum.
 
+For directly supported Claude and OpenAI models, ProPR uses the providers' published standard API rates. Other models fall back to the OpenRouter model feed. Cache reads and cache creation are priced separately when the provider or feed publishes those rates; Claude cache creation uses the default 5-minute write rate. The token total shown beside each call includes ordinary input, output, cache creation, and cache reads, so it reconciles with the cost estimate. Provider options that change the rate but are not reported by the CLI, such as regional routing or fast mode, are not included.
+
+Reasoning effort changes how many thinking/output tokens a model uses; it does not apply a separate price multiplier. Provider usage reports already include reasoning tokens in `output_tokens`, so ProPR bills that output once and records the effective reasoning level in the expanded log details. Codex also reports the reasoning-token subset there when available. A higher effort setting can therefore cost more because it produces more billed output, not because each token has a different rate.
+
 When a single run crosses the cost threshold (`LLM_COST_THRESHOLD_USD`, default `10.00`), ProPR records a high-cost alert; the 10 most recent appear in the aggregated metrics summary. Investigate when:
 
 - A single run exceeds the expected cost

@@ -101,6 +101,13 @@ const WorkReferenceSection: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
 
 // Expanded row detail component
 export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
+  const reasoningLevel = typeof log.metadata?.reasoningLevel === 'string'
+    ? log.metadata.reasoningLevel
+    : null;
+  const reasoningOutputTokens = typeof log.metadata?.reasoningOutputTokens === 'number'
+    ? log.metadata.reasoningOutputTokens
+    : null;
+
   return (
     <tr className="bg-gray-50">
       <td colSpan={8} className="px-4 py-4">
@@ -187,6 +194,30 @@ export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
                     <span className="font-mono text-gray-800">{log.cacheReadInputTokens.toLocaleString()}</span>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Reasoning Info Section (if available) */}
+          {(reasoningLevel || reasoningOutputTokens) && (
+            <div className="col-span-2 space-y-2">
+              <h4 className="font-medium text-gray-700">Reasoning Statistics</h4>
+              <div className="bg-white p-3 rounded border border-gray-200 flex flex-wrap gap-6">
+                {reasoningLevel && (
+                  <div>
+                    <span className="text-gray-500">Effort:</span>{' '}
+                    <span className="font-mono text-gray-800">{reasoningLevel}</span>
+                  </div>
+                )}
+                {reasoningOutputTokens !== null && (
+                  <div>
+                    <span className="text-gray-500">Reasoning Output Tokens:</span>{' '}
+                    <span className="font-mono text-gray-800">{reasoningOutputTokens.toLocaleString()}</span>
+                  </div>
+                )}
+                <span className="text-gray-500">
+                  Reasoning tokens are already included in output tokens and are not billed twice.
+                </span>
               </div>
             </div>
           )}

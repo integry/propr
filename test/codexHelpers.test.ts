@@ -312,7 +312,7 @@ describe('parseCodexStreamOutput', () => {
             });
         });
 
-        test('includes cached_input_tokens in total', () => {
+        test('separates cached_input_tokens from the inclusive input total', () => {
             const event = {
                 type: 'turn.completed',
                 usage: {
@@ -326,8 +326,29 @@ describe('parseCodexStreamOutput', () => {
             const result = parseCodexStreamOutput(stdout);
 
             assert.deepStrictEqual(result.tokenUsage, {
-                input_tokens: 150,
-                output_tokens: 25
+                input_tokens: 50,
+                output_tokens: 25,
+                cache_read_input_tokens: 50
+            });
+        });
+
+        test('captures reasoning tokens without adding them to output tokens', () => {
+            const event = {
+                type: 'turn.completed',
+                usage: {
+                    input_tokens: 100,
+                    output_tokens: 25,
+                    reasoning_output_tokens: 10
+                }
+            };
+            const stdout = JSON.stringify(event);
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.deepStrictEqual(result.tokenUsage, {
+                input_tokens: 100,
+                output_tokens: 25,
+                reasoning_output_tokens: 10
             });
         });
 

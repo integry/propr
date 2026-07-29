@@ -163,6 +163,7 @@ export class CodexAgent implements Agent {
             sessionId: parsedOutput.sessionId, draftId: taskId,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
             agentAlias: this.config.alias,
+            reasoningLevel: response.reasoningLevel,
             metadata: { isRetry, retryReason, conversationId: parsedOutput.conversationId },
             ...this.formatUsageMetrics(usageMetrics),
             workRef: buildTaskWorkRef(taskId, issueRef.number, repo, prNumber),
@@ -227,12 +228,17 @@ export class CodexAgent implements Agent {
         const analysisWorkspace = this.ensureAnalysisWorkspace();
 
         try {
+            const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(
+                reasoningLevel,
+                effectiveModel,
+                useConfiguredReasoningLevel
+            );
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0, jsonOutput: true, taskId, executionType,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel)
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -247,7 +253,11 @@ export class CodexAgent implements Agent {
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
             if (result.exitCode === 0 || parsedOutput.result) {
-                return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata, suppressLlmLog });
+                return this.buildAnalysisSuccess({
+                    parsedOutput, effectiveModel, effectiveReasoningLevel, executionTimeMs,
+                    usageMetrics, executionType, taskId, taskNumber, prNumber,
+                    correlationId, repository, metadata, suppressLlmLog
+                });
             }
 
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
@@ -284,13 +294,18 @@ export class CodexAgent implements Agent {
      */
     private async buildAnalysisSuccess(opts: {
         parsedOutput: ReturnType<typeof parseCodexStreamOutput>;
-        effectiveModel: string; executionTimeMs: number;
+        effectiveModel: string; effectiveReasoningLevel: CodexRuntimeReasoningLevel | '';
+        executionTimeMs: number;
         usageMetrics: Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
         executionType?: string; taskId?: string; taskNumber?: number; prNumber?: number;
         correlationId?: string; repository?: string; metadata?: Record<string, unknown>;
         suppressLlmLog?: boolean;
     }): Promise<AnalysisResult> {
-        const { parsedOutput, effectiveModel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata, suppressLlmLog } = opts;
+        const {
+            parsedOutput, effectiveModel, effectiveReasoningLevel, executionTimeMs,
+            usageMetrics, executionType, taskId, taskNumber, prNumber,
+            correlationId, repository, metadata, suppressLlmLog
+        } = opts;
         const analysisText = (parsedOutput.result || '').trim();
         logger.info({
             agentAlias: this.config.alias, responseLength: analysisText.length,
@@ -308,6 +323,7 @@ export class CodexAgent implements Agent {
                 sessionId: parsedOutput.sessionId, draftId: taskId,
                 correlationId, repository, metadata,
                 agentAlias: this.config.alias,
+                reasoningLevel: effectiveReasoningLevel || undefined,
                 ...this.formatUsageMetrics(usageMetrics),
                 workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
             }));

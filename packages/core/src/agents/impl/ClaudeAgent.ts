@@ -127,7 +127,8 @@ export class ClaudeAgent implements Agent {
 
             await this.persistExecutionLogs({
                 result, prompt, issueRef, modelUsed, isRetry, retryReason,
-                executionTime, correctedTokenUsage, taskId, prNumber, usageMetrics
+                executionTime, correctedTokenUsage, taskId, prNumber,
+                reasoningLevel: effectiveReasoningLevel || undefined, usageMetrics
             });
 
             if (!response.success) {
@@ -175,11 +176,16 @@ export class ClaudeAgent implements Agent {
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
 
         try {
+            const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(
+                reasoningLevel,
+                effectiveModel,
+                useConfiguredReasoningLevel
+            );
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: '', taskId, executionType,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel)
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -212,6 +218,7 @@ export class ClaudeAgent implements Agent {
                         modelUsed: claudeOutput.model || effectiveModel, executionTimeMs, success: true,
                         tokenUsage: correctedTokenUsage, sessionId: claudeOutput.sessionId ?? undefined,
                         draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
+                        reasoningLevel: effectiveReasoningLevel || undefined,
                         usageMetrics: usage.metrics, usageMetricRecords: usage.records,
                         workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
                     }));
@@ -275,7 +282,10 @@ export class ClaudeAgent implements Agent {
 
     /** Persists execution logs to Redis and the LLM log store. */
     private async persistExecutionLogs(params: PersistLogsParams): Promise<void> {
-        const { result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime, correctedTokenUsage, taskId, prNumber, usageMetrics } = params;
+        const {
+            result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime,
+            correctedTokenUsage, taskId, prNumber, reasoningLevel, usageMetrics
+        } = params;
         const claudeOutput = parseStreamJsonOutput(result);
 
         await storePromptInRedis({ claudeOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
@@ -288,6 +298,7 @@ export class ClaudeAgent implements Agent {
             error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'),
             sessionId: claudeOutput.sessionId ?? undefined, draftId: taskId, repository,
             agentAlias: this.config.alias,
+            reasoningLevel,
             metadata: { isRetry, retryReason, conversationId: claudeOutput.conversationId },
             usageMetrics: usageMetrics ? {
                 preCall: usageMetrics.preCall, postCall: usageMetrics.postCall,
