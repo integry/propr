@@ -61,7 +61,7 @@ export { resolvePlanIssueDefaultSelection } from './config/planIssueDefaults.js'
 export type { PlanIssueDefaultSelection } from './config/planIssueDefaultSelection.js';
 export { getPlanIssueDefaultSelection } from './config/planIssueDefaultSelection.js';
 export type { PlanIssueSelectionAgent } from './config/planIssueDefaultSelection.js';
-export { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, resolveLlmLabel, getOpenRouterId, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from './config/modelAliases.js';
+export { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, resolveLlmLabel, getOpenRouterId, getAgentTypeFromModel, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from './config/modelAliases.js';
 export type { LlmLabelResolution, ReviewAssignment } from './config/modelAliases.js';
 export { CLAUDE_MODELS, CODEX_MODELS, ANTIGRAVITY_MODELS, OPENCODE_MODELS, VIBE_MODELS, ALL_MODELS, AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
 export type { AgentType as ModelAgentType, AgentDisplayInfo, ModelInfo } from './config/modelDefinitions.js';
@@ -292,7 +292,7 @@ export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { AntigravityAgent } from './agents/impl/AntigravityAgent.js';
 export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
 export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId } from './agents/impl/openCodeUtils.js';
-export { shortHash, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';
+export { shortHash, buildDynamicLlmLabel, buildAgentModelLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
 export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
 

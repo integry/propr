@@ -14,6 +14,35 @@ test('getLlmLabel returns static model labels unchanged', async () => {
   assert.strictEqual(await getLlmLabel('opencode-deepseek-v4-flash-free'), 'llm-opencode-deepseek-v4-flash-free');
 });
 
+test('getLlmLabel uses the configured agent alias for static model labels', async () => {
+  const registry = AgentRegistry.getInstance();
+  const ensureInitialized = mock.method(registry, 'ensureInitialized', async () => undefined);
+  const getAgentByAlias = mock.method(registry, 'getAgentByAlias', (alias: string) => alias === 'codex2'
+    ? {
+        config: {
+          id: 'codex-agent-2',
+          type: 'codex',
+          alias: 'codex2',
+          enabled: true,
+          dockerImage: 'propr/codex:latest',
+          configPath: '~/.codex',
+          supportedModels: ['gpt-5.6-sol'],
+          defaultModel: 'gpt-5.6-sol'
+        }
+      }
+    : undefined);
+
+  try {
+    assert.strictEqual(
+      await getLlmLabel('gpt-5.6-sol', 'codex2'),
+      'llm-codex2-gpt56-sol'
+    );
+  } finally {
+    ensureInitialized.mock.restore();
+    getAgentByAlias.mock.restore();
+  }
+});
+
 test('getLlmLabel emits explicit dynamic labels for configured OpenCode provider models', async () => {
   const registry = AgentRegistry.getInstance();
   const ensureInitialized = mock.method(registry, 'ensureInitialized', async () => undefined);

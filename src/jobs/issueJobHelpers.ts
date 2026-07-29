@@ -6,6 +6,8 @@ import {
     withRetry,
     retryConfigs,
     MODEL_INFO_MAP,
+    buildAgentModelLlmLabel,
+    getAgentTypeFromModel,
     isEpicBranch
 } from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
@@ -50,6 +52,22 @@ interface CreatePROptions {
     PR_LABEL: string;
     correlatedLogger: Logger;
     issueTitle: string;
+}
+
+export function getPullRequestModelLabel(
+    issueRef: Pick<IssueJobData, 'agentAlias' | 'modelLabel'>,
+    modelName: string
+): string | null {
+    const modelInfo = MODEL_INFO_MAP[modelName];
+    if (modelInfo && issueRef.agentAlias) {
+        return buildAgentModelLlmLabel(
+            getAgentTypeFromModel(modelName),
+            issueRef.agentAlias,
+            modelInfo
+        );
+    }
+    if (issueRef.modelLabel?.startsWith('llm-')) return issueRef.modelLabel;
+    return modelInfo?.githubLabel || null;
 }
 
 export async function updateTaskTitleInStorage(
@@ -186,7 +204,7 @@ Comment on this PR to request refinements — the AI agent monitors comments and
         }, 'PR created successfully');
 
         // Add PR label and model label (for followup comments to use the same model)
-        const modelLabel = MODEL_INFO_MAP[modelName]?.githubLabel;
+        const modelLabel = getPullRequestModelLabel(issueRef, modelName);
         const labelsToAdd = modelLabel ? [PR_LABEL, modelLabel] : [PR_LABEL];
         try {
             await withRetry(
@@ -261,7 +279,7 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
             }
 
             // Add PR label and model label (for followup comments to use the same model)
-            const modelLabel = MODEL_INFO_MAP[modelName]?.githubLabel;
+            const modelLabel = getPullRequestModelLabel(issueRef, modelName);
             const labelsToAdd = modelLabel ? [PR_LABEL, modelLabel] : [PR_LABEL];
             try {
                 await withRetry(

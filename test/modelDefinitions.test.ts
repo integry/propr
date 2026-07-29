@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { AGENT_DEFAULTS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
 
 test('Mistral Medium uses the OpenRouter pricing model ID', () => {
@@ -56,4 +57,29 @@ test('GPT-5.6 Sol is the preferred Codex default and Codex CLI pin supports it',
         AGENT_DEFAULT_VERSIONS.codex.localeCompare('0.144.0', undefined, { numeric: true }) >= 0,
         `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} should be >= 0.144.0`
     );
+});
+
+test('long model labels use the configured agent alias', () => {
+    const codexModel = MODEL_INFO_MAP['gpt-5.6-sol'];
+    assert.ok(codexModel);
+    assert.strictEqual(
+        buildAgentModelLlmLabel('codex', 'codex2', codexModel),
+        'llm-codex2-gpt56-sol'
+    );
+
+    assert.strictEqual(
+        buildAgentModelLlmLabel('opencode', 'opencode2', {
+            id: 'opencode-openai/gpt-5.5',
+            githubLabel: 'llm-opencode~opencode-openai/gpt-5.5',
+        }),
+        'llm-opencode2~opencode-openai/gpt-5.5'
+    );
+
+    const longAliasLabel = buildAgentModelLlmLabel(
+        'codex',
+        'codex-account-with-an-alias-that-exceeds-githubs-label-limit',
+        codexModel
+    );
+    assert.ok(longAliasLabel.length <= 50);
+    assert.match(longAliasLabel, /^llm-codex-account.*~/);
 });

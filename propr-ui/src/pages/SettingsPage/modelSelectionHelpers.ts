@@ -1,5 +1,12 @@
 import { AgentConfig } from '../../api/proprApi';
-import { AgentType, AGENT_MODELS, MODEL_INFO_MAP, ModelInfo, buildDynamicLlmLabel } from '../../config/modelDefinitions';
+import {
+  AgentType,
+  AGENT_MODELS,
+  MODEL_INFO_MAP,
+  ModelInfo,
+  buildDynamicLlmLabel,
+  MAX_GITHUB_LABEL_LENGTH,
+} from '../../config/modelDefinitions';
 
 export interface ModelOption {
   value: string;
@@ -52,7 +59,10 @@ export function getModelGithubLabel(agentType: AgentType, agentAlias: string, mo
 
   const staticPrefix = `llm-${agentType}-`;
   if (model.githubLabel.startsWith(staticPrefix)) {
-    return `llm-${effectiveAlias}-${model.githubLabel.slice(staticPrefix.length)}`;
+    const staticLabel = `llm-${effectiveAlias}-${model.githubLabel.slice(staticPrefix.length)}`;
+    return staticLabel.length <= MAX_GITHUB_LABEL_LENGTH
+      ? staticLabel
+      : buildDynamicLlmLabel(effectiveAlias, model.id);
   }
 
   return model.githubLabel;
