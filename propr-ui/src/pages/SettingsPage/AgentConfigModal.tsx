@@ -401,7 +401,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           />
 
           <ModelSelector
-            agentType={formData.type}
+            agentType={formData.type} agentAlias={formData.alias}
             supportedModels={formData.supportedModels}
             defaultModel={formData.defaultModel}
             availableModelIds={formData.type === 'opencode' ? discoveredOpenCodeModels : undefined}

@@ -99,6 +99,39 @@ describe('AgentConfigModal', () => {
     expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
     expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
     expect(screen.getByText('llm-opencode~opencode-openai/gpt-5.5')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'opencode2' } });
+
+    expect(screen.getByText('llm-opencode2~opencode-openai/gpt-5.5')).toBeInTheDocument();
+  });
+
+  it('uses the agent alias in long model labels', () => {
+    const model = AGENT_MODELS.codex[0];
+
+    render(
+      <AgentConfigModal
+        agent={{
+          id: 'agent-codex-2',
+          type: 'codex',
+          alias: 'codex2',
+          enabled: true,
+          dockerImage: AGENT_DEFAULTS.codex.dockerImage,
+          configPath: AGENT_DEFAULTS.codex.configPath,
+          supportedModels: [model.id],
+          defaultModel: model.id,
+        }}
+        existingAliases={['codex2']}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(`llm-codex2-${model.githubLabel.slice('llm-codex-'.length)}`)).toBeInTheDocument();
+    expect(screen.queryByText(model.githubLabel)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'codex3' } });
+
+    expect(screen.getByText(`llm-codex3-${model.githubLabel.slice('llm-codex-'.length)}`)).toBeInTheDocument();
   });
 
   it('shows OpenCode models already saved on an agent even when they are not static defaults', async () => {

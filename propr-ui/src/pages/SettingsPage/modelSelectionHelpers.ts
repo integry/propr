@@ -43,6 +43,21 @@ export function getModelLabel(agentAlias: string, modelId: string): string {
   return `${agentAlias} - ${info?.name || formatFallbackModelName(modelId)}`;
 }
 
+export function getModelGithubLabel(agentType: AgentType, agentAlias: string, model: ModelInfo): string {
+  const effectiveAlias = agentAlias || agentType;
+  const dynamicPrefix = `llm-${agentType}~`;
+  if (model.githubLabel.startsWith(dynamicPrefix)) {
+    return buildDynamicLlmLabel(effectiveAlias, model.id);
+  }
+
+  const staticPrefix = `llm-${agentType}-`;
+  if (model.githubLabel.startsWith(staticPrefix)) {
+    return `llm-${effectiveAlias}-${model.githubLabel.slice(staticPrefix.length)}`;
+  }
+
+  return model.githubLabel;
+}
+
 function isRecommendedFor(modelId: string, aliases: string[]): boolean {
   const info = MODEL_INFO_MAP[modelId];
   return !!info && aliases.includes(info.shortAlias);
