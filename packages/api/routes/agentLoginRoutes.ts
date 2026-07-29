@@ -53,6 +53,12 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
   const sessions = deps.sessionManager ?? agentLoginSessionManager;
   const resolveAgent = deps.resolveAgent ?? defaultResolveAgent;
 
+  const matchesAgent = async (agentIdOrAlias: string, canonicalAgentId: string): Promise<boolean> => {
+    if (agentIdOrAlias === canonicalAgentId) return true;
+    const agent = await resolveAgent(agentIdOrAlias);
+    return agent?.id === canonicalAgentId;
+  };
+
   const startLogin = async (req: Request, res: Response): Promise<void> => {
     const owner = username(req, res);
     if (!owner) return;
@@ -62,6 +68,8 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
         res.status(404).json({ error: 'Agent not found' });
         return;
       }
+      // Disabled agents may be authenticated intentionally before they are
+      // enabled, so login resolution does not filter on agent.enabled.
       const session = await sessions.start(agent, owner);
       res.status(202).json(session);
     } catch (error) {
@@ -69,12 +77,12 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     }
   };
 
-  const getLogin = (req: Request, res: Response): void => {
+  const getLogin = async (req: Request, res: Response): Promise<void> => {
     const owner = username(req, res);
     if (!owner) return;
     try {
       const session = sessions.get(req.params.sessionId, owner);
-      if (session.agentId !== req.params.agentId) {
+      if (!(await matchesAgent(req.params.agentId, session.agentId))) {
         res.status(404).json({ error: 'Agent login session not found' });
         return;
       }
@@ -84,7 +92,7 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     }
   };
 
-  const sendInput = (req: Request, res: Response): void => {
+  const sendInput = async (req: Request, res: Response): Promise<void> => {
     const owner = username(req, res);
     if (!owner) return;
     try {
@@ -94,7 +102,7 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
         return;
       }
       const current = sessions.get(req.params.sessionId, owner);
-      if (current.agentId !== req.params.agentId) {
+      if (!(await matchesAgent(req.params.agentId, current.agentId))) {
         res.status(404).json({ error: 'Agent login session not found' });
         return;
       }
@@ -109,7 +117,7 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     if (!owner) return;
     try {
       const current = sessions.get(req.params.sessionId, owner);
-      if (current.agentId !== req.params.agentId) {
+      if (!(await matchesAgent(req.params.agentId, current.agentId))) {
         res.status(404).json({ error: 'Agent login session not found' });
         return;
       }

@@ -44,11 +44,19 @@ services:
       DB_FILENAME: /app/data/propr.sqlite
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
+      PROPR_MANAGED_CREDENTIALS_DIR: ${HOME:?HOME must be set}/.propr/agent-credentials
+      PROPR_CONTAINERIZED: "1"
+      PROPR_STACK: ${PROPR_STACK:-propr}
     volumes:
       - propr-sqlite-data:/app/data
       # The API starts short-lived sibling containers for agent image builds,
-      # model discovery, and interactive Coding Agents logins.
+      # model discovery, and interactive Coding Agents logins. Docker-socket
+      # access is root-equivalent host access; do not expose this API to
+      # untrusted users and restrict access to the socket on the host.
       - /var/run/docker.sock:/var/run/docker.sock
+      # ProPR-managed per-agent credentials. HOST:HOST keeps the path valid for
+      # sibling containers started through the host Docker daemon.
+      - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       # Add agent credential mounts with a deployment-specific override file.
       # Keeping them out of the base production compose file avoids Docker
       # creating missing host credential directories as root-owned folders.
@@ -116,10 +124,13 @@ services:
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /usr/src/app/data/propr.sqlite
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
+      PROPR_MANAGED_CREDENTIALS_DIR: ${HOME:?HOME must be set}/.propr/agent-credentials
+      PROPR_CONTAINERIZED: "1"
     volumes:
       - ./logs:/usr/src/app/logs
       - ./repos:/usr/src/app/repos
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - propr-sqlite-data:/usr/src/app/data
       # Add Claude/Codex/Gemini/OpenCode credential mounts with a deployment-
       # specific override file. The launcher conditionally mounts HOST_*

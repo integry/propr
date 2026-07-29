@@ -11,7 +11,7 @@ This is the canonical runtime reference for ProPR coding agents. It covers the s
 Every coding agent runs in a Docker container so ProPR can control runtime dependencies, workspace mounts, credential mounts, timeouts, logging, and resource boundaries. The agent implementation changes the CLI command, image, credential directory, and output parser, but the container shape is shared:
 
 - A task worktree mounted at `/home/node/workspace`
-- Agent credentials mounted from the configured host credential directory
+- Agent credentials mounted from a ProPR-managed per-agent directory or a configured existing host directory
 - GitHub credentials passed through `GH_TOKEN` and `GITHUB_TOKEN`
 - Agent, model, timeout, and task metadata passed as environment variables or CLI flags
 - `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
@@ -21,7 +21,7 @@ All agents run from the unified Debian/glibc `propr/agent` image. Its internal b
 
 This table maps each agent type to the unified image, its type-specific entrypoint, and its credential mount; other pages link here instead of repeating it.
 
-| Agent | Image | Dockerfile | Entrypoint | Host credential mount | Container credential path |
+| Agent | Image | Dockerfile | Entrypoint | Existing host credential mount | Container credential path |
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | `propr/agent` | `Dockerfile.agent` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) | `/home/node/.claude` |
 | Codex | `propr/agent` | `Dockerfile.agent` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) | `/home/node/.codex` |
@@ -35,7 +35,7 @@ The worker launches the unified agent image with a prepared worktree, a generate
 
 Most entrypoints start as root so they can prepare runtime directories or fix container-local ownership, then drop to the `node` user before running the CLI. Entrypoints also mark Git directories as safe, install the `gh` wrapper when present, and emit diagnostics that are captured with the task logs.
 
-Credential and launcher paths must be absolute host paths. Shell shortcuts such as `~` and `$HOME` are not expanded by the runtime configuration parser.
+Existing-account credential and launcher paths must be absolute host paths. Shell shortcuts such as `~` and `$HOME` are not expanded by launcher configuration. Direct-login accounts instead save a portable `~/.propr/agent-credentials/<agent-id>/…` path that ProPR maps to its managed host root automatically.
 
 ## Timeouts And Loop Limits
 
@@ -95,7 +95,7 @@ docker inspect <container>
 
 ### Authentication Issues
 
-Check that the CLI is authenticated on the host and that the expected host credential directory is mounted into the container path for that agent. For example, Claude Code expects the host Claude directory mounted at `/home/node/.claude`, while Codex expects the Codex directory mounted at `/home/node/.codex`.
+For a direct-login account, check that the managed credential root is mounted and that the agent's generated path is still `~/.propr/agent-credentials/<agent-id>/…`. For reused host credentials, check that the CLI is authenticated and the expected directory is mounted into the agent's container path. For example, Claude Code expects its selected directory at `/home/node/.claude`, while Codex expects its selected directory at `/home/node/.codex`.
 
 ### Docker Permission Issues
 

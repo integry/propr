@@ -60,7 +60,7 @@ ProPR is a set of stages you can adopt independently — use one or all:
 
 ## Quick start (recommended: CLI)
 
-You need a Docker-capable Linux host, **Node.js 22+**, and a login for at least one coding agent — reuse one already on the host (`claude auth login`, `agy login`, …) or create it through the agent's image with `propr agent login <agent>`.
+You need a Docker-capable Linux host, **Node.js 22+**, and a provider account for at least one coding agent. Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
 
 ```bash
 npm install -g propr-cli

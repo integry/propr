@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentConfig } from '../../api/proprApi';
 import {
   cancelAgentLogin,
@@ -12,6 +12,14 @@ import { ProviderLogo } from '../../components/ui/ProviderLogo';
 const POLL_INTERVAL_MS = 750;
 const URL_RE = /(https?:\/\/[^\s<>"']+)/g;
 const ACTIVE_STATUSES = new Set(['starting', 'running']);
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
 interface AgentLoginModalProps {
   agent: AgentConfig;
@@ -92,23 +100,57 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
   const [sending, setSending] = useState(false);
   const sessionRef = useRef<AgentLoginSession>();
   const startPromiseRef = useRef<Promise<AgentLoginSession>>();
-  const cancelTimerRef = useRef<number>();
+  const startAgentIdRef = useRef<string>();
+  const cancelTimerRef = useRef<{ id: number; agentId: string }>();
+  const cancelledSessionIdsRef = useRef(new Set<string>());
+  const closingRef = useRef(false);
   const outputRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const sessionId = session?.id;
   const sessionStatus = session?.status;
+
+  const close = useCallback(async () => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    const current = sessionRef.current;
+    if (current && isActive(current)) {
+      try {
+        sessionRef.current = await cancelAgentLogin(agent.id, current.id);
+        cancelledSessionIdsRef.current.add(current.id);
+      } catch {
+        // The session may have completed between the last poll and dismissal.
+      }
+    }
+    onClose();
+  }, [agent.id, onClose]);
 
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
 
   useEffect(() => {
-    if (cancelTimerRef.current !== undefined) {
-      window.clearTimeout(cancelTimerRef.current);
+    const cancelledSessionIds = cancelledSessionIdsRef.current;
+    if (cancelTimerRef.current?.agentId === agent.id) {
+      window.clearTimeout(cancelTimerRef.current.id);
       cancelTimerRef.current = undefined;
     }
+    const agentChanged = startAgentIdRef.current !== undefined
+      && startAgentIdRef.current !== agent.id;
+    if (agentChanged) {
+      startPromiseRef.current = undefined;
+      sessionRef.current = undefined;
+      setSession(undefined);
+      setInput('');
+      setRequestError(undefined);
+      closingRef.current = false;
+    }
+    startAgentIdRef.current = agent.id;
+
     let disposed = false;
     startPromiseRef.current ??= startAgentLogin(agent.id);
-    void startPromiseRef.current
+    const startPromise = startPromiseRef.current;
+    void startPromise
       .then(next => {
         sessionRef.current = next;
         if (!disposed) {
@@ -124,16 +166,26 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
       // React StrictMode immediately re-runs effects in development. Deferring
       // cancellation lets that second setup clear this timer, while a real
       // dialog unmount still cleans up the remote session.
-      cancelTimerRef.current = window.setTimeout(() => {
-        void startPromiseRef.current
-          ?.then(current => {
-            sessionRef.current = current;
-            return isActive(current)
-              ? cancelAgentLogin(agent.id, current.id)
-              : undefined;
+      const timerId = window.setTimeout(() => {
+        void startPromise
+          .then(current => {
+            const latest = sessionRef.current;
+            const alreadyFinished = latest?.id === current.id && !isActive(latest);
+            if (
+              !isActive(current)
+              || alreadyFinished
+              || cancelledSessionIds.has(current.id)
+            ) {
+              return undefined;
+            }
+            return cancelAgentLogin(agent.id, current.id).then(cancelled => {
+              cancelledSessionIds.add(current.id);
+              return cancelled;
+            });
           })
           .catch(() => undefined);
       }, 0);
+      cancelTimerRef.current = { id: timerId, agentId: agent.id };
     };
   }, [agent.id]);
 
@@ -172,6 +224,43 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
     }
   }, [session?.output]);
 
+  useEffect(() => {
+    if (sessionStatus === 'running') inputRef.current?.focus();
+  }, [sessionStatus]);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        void close();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
+        .filter(element => !element.hasAttribute('disabled'));
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!dialogRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [close]);
+
   const sendTerminalInput = async (value: string, clearTextInput = false) => {
     if (!session || session.status !== 'running') return;
     setSending(true);
@@ -192,24 +281,20 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
     void sendTerminalInput(`${input}\n`, true);
   };
 
-  const close = async () => {
-    const current = sessionRef.current;
-    if (current && isActive(current)) {
-      try {
-        await cancelAgentLogin(agent.id, current.id);
-      } catch {
-        // The session may have completed between the last poll and this click.
-      }
-    }
-    onClose();
-  };
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div
+      data-testid="agent-login-backdrop"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) void close();
+      }}
+    >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-login-title"
+        tabIndex={-1}
         className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
       >
         <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
@@ -257,6 +342,7 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
           <form onSubmit={submitInput} className="flex gap-2">
             <label htmlFor="agent-login-input" className="sr-only">Login response or confirmation code</label>
             <input
+              ref={inputRef}
               id="agent-login-input"
               value={input}
               onChange={event => setInput(event.target.value)}

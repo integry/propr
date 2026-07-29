@@ -11,7 +11,7 @@ You need:
 - Docker
 - A runtime directory such as `/srv/propr`
 - GitHub backend access — your own GitHub App and private key (`HOST_GH_PRIVATE_KEY` bind-mounts it from any host path), or a shared App via the token relay; see [GitHub Authentication](./github-auth.md) for the three `GH_AUTH_MODE`s
-- Agent credentials for at least one agent (for example Claude Code state in `~/.claude`, Codex state in `~/.codex`, or Antigravity CLI state in `~/.gemini`)
+- A provider account for at least one agent; reuse host credentials or log in directly after adding the agent in the Web UI
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
 
@@ -92,7 +92,7 @@ GIT_WORKTREES_BASE_PATH=/app/repos/worktrees
 
 All `HOST_*_DIR` values and launcher path variables must be absolute host paths. `.env` parsing does not expand `~` or `$HOME`.
 
-Manage repositories, labels, branches, and agents in the Web UI after startup.
+Manage repositories, labels, branches, and agents in the Web UI after startup. Direct-login agent accounts need no `HOST_*` path: native installs store them below `~/.propr/agent-credentials`, while the launcher derives an isolated root below `PROPR_DATA_DIR`.
 
 For Antigravity agents, install the CLI on the host and authenticate before launching the stack:
 
@@ -258,12 +258,12 @@ The full picture — architecture, provisioning, the `FRONTEND_URL` / `API_PUBLI
 
 ## Backups
 
-The SQLite database in `data/` is the primary application state; `.env` and the GitHub App private key complete a restorable set. The full backup checklist — including live-database snapshots and what to skip — is in [Maintenance → Backups](./maintenance.md#backups).
+The SQLite database in `data/` is the primary application state; `.env`, the GitHub App private key, and any managed agent credential root complete a restorable set. The full backup checklist — including live-database snapshots and what to skip — is in [Maintenance → Backups](./maintenance.md#backups).
 
 ## Security
 
-- Restrict access to the Docker socket. Any process that can reach `/var/run/docker.sock` controls the host's Docker daemon; limit shell access on the server accordingly.
-- Restrict the mounted credential directories (`~/.claude`, `~/.codex`, `~/.gemini`, and so on). They contain provider login state and are mounted into worker and agent containers.
+- Restrict access to the Docker socket. Any process that can reach `/var/run/docker.sock` has root-equivalent control of the host. The production API receives this socket to create authenticated agent-login containers, so protect dashboard access and treat the API as trusted control-plane code.
+- Restrict the managed credential root and any reused host credential directories (`~/.claude`, `~/.codex`, `~/.gemini`, and so on). They contain provider login state and are mounted into worker and agent containers.
 - Keep the GitHub App private key at mode `600`.
 - Use a strong `SESSION_SECRET` and HTTPS-only public URLs.
 

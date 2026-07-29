@@ -141,8 +141,12 @@ export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';
 export {
   AGENT_LOGIN_DESCRIPTORS,
   LOGINABLE_AGENT_TYPES,
+  MANAGED_AGENT_CREDENTIALS_PREFIX,
   getAgentLoginDescriptor,
+  getManagedAgentConfigPath,
+  getManagedAgentConfigRelativePath,
   isAgentLoginSupported,
+  isManagedAgentConfigPath,
   type AgentLoginDescriptor,
   type LoginableAgentType,
 } from './agentLogin.js';

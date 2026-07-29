@@ -1,4 +1,5 @@
 import logger from '../../utils/logger.js';
+import { isManagedAgentConfigPath } from '@propr/shared';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
@@ -54,7 +55,13 @@ export class AntigravityAgent implements Agent {
     }
 
     private getHostConfigPath(): string {
-        const configuredPath = resolveConfigPath(process.env.ANTIGRAVITY_CONFIG_PATH || this.config.configPath);
+        // Provider-wide environment overrides remain the compatibility path for
+        // existing host credentials. ProPR-managed paths are per-agent and must
+        // win so multiple Antigravity accounts do not collapse onto one mount.
+        const configPath = isManagedAgentConfigPath(this.config.configPath)
+            ? this.config.configPath
+            : process.env.ANTIGRAVITY_CONFIG_PATH || this.config.configPath;
+        const configuredPath = resolveConfigPath(configPath);
         if (configuredPath.endsWith(`${path.sep}.antigravity`)) {
             const geminiPath = path.join(path.dirname(configuredPath), '.gemini');
             if (fs.existsSync(geminiPath)) {

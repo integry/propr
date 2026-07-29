@@ -211,11 +211,12 @@ Running `propr init stack` or agent logins as root places credentials and
 files under `/root`, where the stack cannot find them.
 :::
 
-Each coding agent runs from credentials mounted off the host. **Install the CLI
-for each agent you intend to use first** (only `propr-cli`, Docker, and Node were
-installed above — the agent CLIs are separate), then log in **as `you`** (not
-root) so the credential directory lives under `/home/you` where the stack expects
-it. For example:
+If you want to reuse credentials already on this host, **install the CLI for
+each such agent first** (only `propr-cli`, Docker, and Node were installed above
+— the agent CLIs are separate), then log in **as `you`** (not root) so the
+credential directory lives under `/home/you`. You can skip host CLI installation
+for Claude, Codex, Antigravity, and OpenCode and choose **Log in to a new
+account** after adding the agent in the Web UI instead. For an existing account:
 
 ```bash
 claude auth login   # Claude Code  -> ~/.claude  (npm i -g @anthropic-ai/claude-code)
@@ -250,12 +251,11 @@ install command, login step, and credential directory — including the OpenCode
 `XDG_DATA_HOME` requirement for file-based auth, and the full Codex and Vibe
 install/login steps not shown inline above.
 
-:::warning[Finish agent setup before continuing]
-This is a branch point: `propr check` in step 11 validates the credentials of
-every agent you intend to run. Install **and** log in to each agent — completing
-the linked agent-specific setup for any (such as Codex or Vibe) that are not
-shown inline here — before moving on, or `propr check` will report missing agent
-CLIs or credentials.
+:::warning[Finish existing-account setup before continuing]
+`propr check` in step 11 validates configured host credential mounts. Finish the
+linked agent-specific setup now for every existing account you intend to reuse.
+Accounts that you will create through direct Web login can be added after the
+stack starts and do not need a provider CLI or `HOST_*` path on the host.
 :::
 
 ## 6. Scaffold The Stack

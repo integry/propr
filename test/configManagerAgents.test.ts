@@ -1,16 +1,17 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert';
-import { AGENT_DEFAULTS } from '@propr/shared';
+import { AGENT_DEFAULTS, getManagedAgentConfigPath } from '@propr/shared';
 import type { AgentConfig } from '../packages/core/src/config/configManagerAgents.js';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
 
 process.env.NODE_ENV = 'test';
 
 let migrateAgentConfig: typeof import('../packages/core/src/config/configManagerAgents.js').migrateAgentConfig;
+let resolveConfigPath: typeof import('../packages/core/src/config/configManagerAgents.js').resolveConfigPath;
 let closeConnection: typeof import('../packages/core/src/db/connection.js').closeConnection;
 
 before(async () => {
-    ({ migrateAgentConfig } = await import('../packages/core/src/config/configManagerAgents.js'));
+    ({ migrateAgentConfig, resolveConfigPath } = await import('../packages/core/src/config/configManagerAgents.js'));
     ({ closeConnection } = await import('../packages/core/src/db/connection.js'));
 });
 
@@ -32,6 +33,20 @@ function createAgent(overrides: Partial<AgentConfig>): AgentConfig {
 }
 
 describe('agent config migration', () => {
+    test('resolves portable managed credentials through the deployment root', () => {
+        const previous = process.env.PROPR_MANAGED_CREDENTIALS_DIR;
+        try {
+            process.env.PROPR_MANAGED_CREDENTIALS_DIR = '/srv/propr-managed';
+            assert.strictEqual(
+                resolveConfigPath(getManagedAgentConfigPath('codex-1', 'codex')),
+                '/srv/propr-managed/codex-1/.codex'
+            );
+        } finally {
+            if (previous === undefined) delete process.env.PROPR_MANAGED_CREDENTIALS_DIR;
+            else process.env.PROPR_MANAGED_CREDENTIALS_DIR = previous;
+        }
+    });
+
     test('adds Claude CLI defaults when CLI version fields are missing', () => {
         const agent = createAgent({
             type: 'claude',

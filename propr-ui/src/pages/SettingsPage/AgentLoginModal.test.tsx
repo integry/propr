@@ -53,6 +53,7 @@ describe('AgentLoginModal', () => {
 
     const link = await screen.findByRole('link', { name: 'https://example.test/device' });
     expect(link).toHaveAttribute('target', '_blank');
+    expect(screen.getByLabelText('Login response or confirmation code')).toHaveFocus();
 
     fireEvent.change(screen.getByLabelText('Login response or confirmation code'), {
       target: { value: 'ABCD-1234' },
@@ -75,6 +76,23 @@ describe('AgentLoginModal', () => {
       expect(cancelAgentLogin).toHaveBeenCalledWith(agent.id, runningSession.id);
       expect(onClose).toHaveBeenCalledOnce();
     });
+  });
+
+  it('cancels and closes on Escape or a backdrop click', async () => {
+    const onClose = vi.fn();
+    const first = render(<AgentLoginModal agent={agent} onClose={onClose} />);
+    await screen.findByText('Waiting for login');
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    first.unmount();
+
+    onClose.mockClear();
+    vi.mocked(cancelAgentLogin).mockClear();
+    render(<AgentLoginModal agent={agent} onClose={onClose} />);
+    await screen.findByText('Waiting for login');
+    fireEvent.mouseDown(screen.getByTestId('agent-login-backdrop'));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
   it('starts only one remote login session under React StrictMode', async () => {
@@ -123,5 +141,54 @@ describe('AgentLoginModal', () => {
     await waitFor(() => {
       expect(cancelAgentLogin).toHaveBeenCalledWith(agent.id, runningSession.id);
     });
+  });
+
+  it('cancels a session that finishes starting after the user dismisses the dialog', async () => {
+    let resolveStart!: (session: typeof runningSession) => void;
+    vi.mocked(startAgentLogin).mockReturnValue(new Promise(resolve => {
+      resolveStart = resolve;
+    }));
+    const Harness = () => {
+      const [open, setOpen] = React.useState(true);
+      return open ? <AgentLoginModal agent={agent} onClose={() => setOpen(false)} /> : null;
+    };
+    render(<Harness />);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    resolveStart(runningSession);
+
+    await waitFor(() => {
+      expect(cancelAgentLogin).toHaveBeenCalledWith(agent.id, runningSession.id);
+    });
+  });
+
+  it('cancels the old session and starts a new one when the agent changes in place', async () => {
+    const nextAgent = {
+      ...agent,
+      id: 'codex-2',
+      alias: 'codex-second',
+      configPath: '/home/propr/.codex-second',
+    };
+    const nextSession = {
+      ...runningSession,
+      id: 'login-2',
+      agentId: nextAgent.id,
+    };
+    vi.mocked(startAgentLogin)
+      .mockResolvedValueOnce(runningSession)
+      .mockResolvedValueOnce(nextSession);
+
+    const { rerender } = render(<AgentLoginModal agent={agent} onClose={vi.fn()} />);
+    await screen.findByText('Waiting for login');
+    rerender(<AgentLoginModal agent={nextAgent} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(startAgentLogin).toHaveBeenNthCalledWith(2, nextAgent.id);
+      expect(cancelAgentLogin).toHaveBeenCalledWith(agent.id, runningSession.id);
+    });
+    expect(screen.getByRole('heading', { name: 'Log in to codex-second' })).toBeInTheDocument();
   });
 });

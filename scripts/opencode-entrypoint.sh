@@ -23,7 +23,14 @@ if [ -d "$opencode_config_dir" ]; then
     if [ "$(id -u)" = "0" ]; then
         chown -R node:node "$xdg_data_home" "$xdg_state_home" 2>/dev/null || true
         chmod -R u+rwX "$xdg_data_home" "$xdg_state_home" 2>/dev/null || true
-        echo "Skipping OpenCode config ownership changes to avoid mutating host bind mounts" >&2
+        if [ "${PROPR_MANAGED_CREDENTIALS:-}" = "1" ]; then
+            # This directory belongs to this ProPR agent, so it is safe to
+            # normalize ownership before dropping privileges to the node user.
+            chown -R node:node "$opencode_config_dir" 2>/dev/null || true
+            chmod -R u+rwX "$opencode_config_dir" 2>/dev/null || true
+        else
+            echo "Skipping OpenCode config ownership changes to avoid mutating host bind mounts" >&2
+        fi
     fi
 else
     echo "WARNING: OpenCode config directory not mounted at $opencode_config_dir" >&2

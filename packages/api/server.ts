@@ -294,8 +294,10 @@ function setupRoutes(): void {
     ['post', '/api/agent-runtime/packages/validate', agentRuntimeRoutes.validateRuntimePackages],
     ['put', '/api/agent-runtime/packages', agentRuntimeRoutes.putRuntimePackages],
     ['post', '/api/agent-runtime/packages/apply', agentRuntimeRoutes.applyRuntimePackages],
-    ['post', '/api/agents/:agentId/login-sessions', agentLoginRoutes.startLogin], ['get', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.getLogin],
-    ['post', '/api/agents/:agentId/login-sessions/:sessionId/input', agentLoginRoutes.sendInput], ['delete', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.cancelLogin],
+    ['post', '/api/agents/:agentId/login-sessions', agentLoginRoutes.startLogin],
+    ['get', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.getLogin],
+    ['post', '/api/agents/:agentId/login-sessions/:sessionId/input', agentLoginRoutes.sendInput],
+    ['delete', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.cancelLogin],
   ];
   assertNoDuplicateRoutes(routes);
   routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
@@ -408,6 +410,14 @@ async function start(): Promise<void> {
     await initRedis();
     if (!demoMode) {
       try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+      try {
+        const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
+        if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
+      } catch (error) {
+        // Docker-backed features surface their own errors when invoked; a
+        // best-effort orphan sweep must not make the rest of the API unavailable.
+        console.warn('Could not sweep orphaned agent login containers:', (error as Error).message);
+      }
     } else {
       console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
     }

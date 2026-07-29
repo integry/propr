@@ -1,8 +1,9 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import {
-  AGENT_DEFAULTS,
   getAgentLoginDescriptor,
+  isManagedAgentConfigPath,
   type AgentType,
 } from '@propr/shared';
 import type { AgentConfig } from '@propr/core';
@@ -10,6 +11,7 @@ import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
   resolveAgentLoginConfigPath,
+  resolveAgentLoginImage,
 } from './agentLoginDocker.js';
 
 export { AgentLoginInputError } from './agentLoginDocker.js';
@@ -26,16 +28,13 @@ const TERMINAL_STATUSES = new Set<AgentLoginSessionStatus>([
   'timed_out',
 ]);
 
-// OSC, CSI, and the remaining single-character ANSI escape sequences. The UI
-// needs readable text and links, not terminal control instructions.
-// eslint-disable-next-line no-control-regex
-const ANSI_OSC_RE = /\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g;
-// eslint-disable-next-line no-control-regex
-const ANSI_CSI_RE = /(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]/g;
-// eslint-disable-next-line no-control-regex
-const ANSI_SINGLE_RE = /\u001B[@-_]/g;
-// eslint-disable-next-line no-control-regex
-const UNSAFE_CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F]/g;
+type TerminalEscapeState =
+  | 'text'
+  | 'escape'
+  | 'escape_intermediate'
+  | 'csi'
+  | 'control_string'
+  | 'control_string_escape';
 
 export type AgentLoginSessionStatus =
   | 'starting'
@@ -66,6 +65,8 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   timeout?: ReturnType<typeof setTimeout>;
   retentionTimeout?: ReturnType<typeof setTimeout>;
   cleanupStarted?: boolean;
+  escapeState: TerminalEscapeState;
+  outputEndedWithCarriageReturn?: boolean;
 }
 
 export interface DockerCommandResult {
@@ -80,6 +81,7 @@ export interface AgentLoginSessionManagerDeps {
   id?: () => string;
   sessionTimeoutMs?: number;
   sessionRetentionMs?: number;
+  scope?: string;
 }
 
 export class AgentLoginConflictError extends Error {
@@ -98,7 +100,8 @@ export class AgentLoginSessionNotFoundError extends Error {
 
 function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
   return new Promise((resolve, reject) => {
-    execFile('docker', args, { timeout: 30_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const timeout = args[0] === 'pull' ? 5 * 60_000 : 30_000;
+    execFile('docker', args, { timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error((stderr || stdout || error.message).trim()));
         return;
@@ -112,8 +115,8 @@ function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
   const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
   const command = ['docker', ...args].map(shellQuote).join(' ');
   // Docker refuses to attach a container TTY when its own stdin is a pipe.
-  // util-linux script(1) supplies the controlling PTY while keeping Node's
-  // stdin/stdout pipeable for the browser session.
+  // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
+  // pipeable for the browser session.
   return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
@@ -125,14 +128,46 @@ function isTerminal(status: AgentLoginSessionStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-function sanitizeOutput(value: string): string {
-  return value
-    .replace(ANSI_OSC_RE, '')
-    .replace(ANSI_CSI_RE, '')
-    .replace(ANSI_SINGLE_RE, '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(UNSAFE_CONTROL_RE, '');
+function normalizeScope(value: string): string {
+  const normalized = value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 128);
+  return normalized || 'propr';
+}
+
+function isCsiFinalCharacter(value: string): boolean {
+  const code = value.charCodeAt(0);
+  return code >= 0x40 && code <= 0x7e;
+}
+
+function isEscapeIntermediateCharacter(value: string): boolean {
+  const code = value.charCodeAt(0);
+  return code >= 0x20 && code <= 0x2f;
+}
+
+function isControlStringStart(value: string): boolean {
+  return value === ']'
+    || value === 'P'
+    || value === 'X'
+    || value === '^'
+    || value === '_';
+}
+
+function isC1ControlStringStart(value: string): boolean {
+  return value === '\u0090'
+    || value === '\u0098'
+    || value === '\u009d'
+    || value === '\u009e'
+    || value === '\u009f';
+}
+
+function isUnsafeControlCharacter(value: string): boolean {
+  const code = value.charCodeAt(0);
+  return (code >= 0x00 && code <= 0x08)
+    || code === 0x0b
+    || code === 0x0c
+    || (code >= 0x0e && code <= 0x1a)
+    || (code >= 0x1c && code <= 0x1f)
+    || code === 0x7f
+    || (code >= 0x80 && code <= 0x9f);
 }
 
 export class AgentLoginSessionManager {
@@ -144,6 +179,7 @@ export class AgentLoginSessionManager {
   private readonly id: NonNullable<AgentLoginSessionManagerDeps['id']>;
   private readonly sessionTimeoutMs: number;
   private readonly sessionRetentionMs: number;
+  private readonly scope: string;
 
   constructor(deps: AgentLoginSessionManagerDeps = {}) {
     this.runDocker = deps.runDocker ?? defaultRunDocker;
@@ -152,6 +188,28 @@ export class AgentLoginSessionManager {
     this.id = deps.id ?? randomUUID;
     this.sessionTimeoutMs = deps.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.sessionRetentionMs = deps.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS;
+    this.scope = normalizeScope(deps.scope ?? process.env.PROPR_STACK ?? 'propr');
+  }
+
+  /**
+   * Remove login containers left behind by an API crash. The stack-scoped
+   * label avoids interrupting an active login owned by another ProPR stack on
+   * the same Docker daemon.
+   */
+  async cleanupOrphanedContainers(): Promise<number> {
+    const { stdout } = await this.runDocker([
+      'ps',
+      '-aq',
+      '--filter', 'label=propr.agent-login=true',
+      '--filter', `label=propr.agent-login.scope=${this.scope}`,
+    ]);
+    const containerIds = stdout
+      .split(/\s+/)
+      .map(value => value.trim())
+      .filter(value => /^[a-fA-F0-9]{12,64}$/.test(value));
+    if (containerIds.length === 0) return 0;
+    await this.runDocker(['rm', '-f', ...containerIds]);
+    return containerIds.length;
   }
 
   async start(agent: AgentConfig, owner: string): Promise<AgentLoginSessionSnapshot> {
@@ -174,26 +232,47 @@ export class AgentLoginSessionManager {
       containerName,
       status: 'starting',
       output: '',
+      escapeState: 'text',
       createdAt: new Date(timestamp).toISOString(),
       updatedAt: new Date(timestamp).toISOString(),
       expiresAt: new Date(timestamp + this.sessionTimeoutMs).toISOString(),
     };
     this.sessions.set(id, session);
     this.activeCredentialPaths.add(credentialPath);
-    session.timeout = setTimeout(() => {
-      void this.timeoutSession(session);
-    }, this.sessionTimeoutMs);
-    unrefTimer(session.timeout);
+    this.scheduleTimeout(session, timestamp);
 
     try {
-      const image = agent.dockerImage || AGENT_DEFAULTS[agent.type].dockerImage;
-      await this.runDocker(['image', 'inspect', image]);
-      const createArgs = buildAgentLoginCreateArgs(agent, descriptor, credentialPath, containerName);
+      if (isManagedAgentConfigPath(agent.configPath)) {
+        // Materialize the isolated bind source explicitly. The provider
+        // entrypoint then normalizes ownership of the mounted leaf before
+        // dropping privileges and writing credential files.
+        mkdirSync(credentialPath, { recursive: true, mode: 0o755 });
+      }
+      const image = resolveAgentLoginImage(agent);
+      const createArgs = buildAgentLoginCreateArgs(
+        agent,
+        descriptor,
+        credentialPath,
+        containerName,
+        this.scope,
+      );
+      try {
+        await this.runDocker(['image', 'inspect', image]);
+      } catch {
+        this.appendOutput(session, `Agent image ${image} is not available locally; pulling it now…\n`);
+        try {
+          await this.runDocker(['pull', image]);
+        } catch (pullError) {
+          throw new AgentLoginInputError(
+            `Agent image "${image}" is unavailable and could not be pulled: ${(pullError as Error).message}`,
+          );
+        }
+      }
       await this.runDocker(createArgs);
       this.attach(session);
     } catch (error) {
       this.appendOutput(session, `${(error as Error).message}\n`);
-      this.finish(session, 'failed', undefined, 'Could not start the agent login container');
+      this.finish(session, 'failed', undefined, (error as Error).message || 'Could not start the agent login container');
       await this.cleanupContainer(session);
     }
 
@@ -213,7 +292,9 @@ export class AgentLoginSessionManager {
       throw new AgentLoginInputError(`Input must contain between 1 and ${MAX_INPUT_LENGTH} characters`);
     }
     session.process.stdin.write(input);
-    this.touch(session);
+    const timestamp = this.now();
+    this.touch(session, timestamp);
+    this.scheduleTimeout(session, timestamp);
     return this.snapshot(session);
   }
 
@@ -301,15 +382,87 @@ export class AgentLoginSessionManager {
   }
 
   private appendOutput(session: AgentLoginSession, chunk: string): void {
-    const next = `${session.output}${sanitizeOutput(chunk)}`;
+    let sanitized = '';
+    const appendTextCharacter = (value: string): void => {
+      if (value === '\r') {
+        sanitized += '\n';
+        session.outputEndedWithCarriageReturn = true;
+        return;
+      }
+      if (value === '\n' && session.outputEndedWithCarriageReturn) {
+        session.outputEndedWithCarriageReturn = false;
+        return;
+      }
+      session.outputEndedWithCarriageReturn = false;
+      if (!isUnsafeControlCharacter(value)) sanitized += value;
+    };
+
+    for (const value of chunk) {
+      switch (session.escapeState) {
+        case 'text':
+          if (value === '\u001b') {
+            session.escapeState = 'escape';
+          } else if (value === '\u009b') {
+            session.escapeState = 'csi';
+          } else if (isC1ControlStringStart(value)) {
+            session.escapeState = 'control_string';
+          } else {
+            appendTextCharacter(value);
+          }
+          break;
+        case 'escape':
+          if (value === '[') {
+            session.escapeState = 'csi';
+          } else if (isControlStringStart(value)) {
+            session.escapeState = 'control_string';
+          } else if (isEscapeIntermediateCharacter(value)) {
+            session.escapeState = 'escape_intermediate';
+          } else {
+            // A complete two-byte escape or malformed escape is discarded.
+            session.escapeState = 'text';
+          }
+          break;
+        case 'escape_intermediate':
+          if (!isEscapeIntermediateCharacter(value)) session.escapeState = 'text';
+          break;
+        case 'csi':
+          if (isCsiFinalCharacter(value)) session.escapeState = 'text';
+          break;
+        case 'control_string':
+          if (value === '\u0007' || value === '\u009c') {
+            session.escapeState = 'text';
+          } else if (value === '\u001b') {
+            session.escapeState = 'control_string_escape';
+          }
+          break;
+        case 'control_string_escape':
+          if (value === '\\' || value === '\u009c') {
+            session.escapeState = 'text';
+          } else if (value !== '\u001b') {
+            session.escapeState = 'control_string';
+          }
+          break;
+      }
+    }
+
+    const next = `${session.output}${sanitized}`;
     session.output = next.length > MAX_OUTPUT_LENGTH
       ? `[Earlier output removed]\n${next.slice(next.length - MAX_OUTPUT_LENGTH)}`
       : next;
     this.touch(session);
   }
 
-  private touch(session: AgentLoginSession): void {
-    session.updatedAt = new Date(this.now()).toISOString();
+  private touch(session: AgentLoginSession, timestamp = this.now()): void {
+    session.updatedAt = new Date(timestamp).toISOString();
+  }
+
+  private scheduleTimeout(session: AgentLoginSession, timestamp = this.now()): void {
+    if (session.timeout) clearTimeout(session.timeout);
+    session.expiresAt = new Date(timestamp + this.sessionTimeoutMs).toISOString();
+    session.timeout = setTimeout(() => {
+      void this.timeoutSession(session);
+    }, this.sessionTimeoutMs);
+    unrefTimer(session.timeout);
   }
 
   private requireSession(sessionId: string, owner: string): AgentLoginSession {

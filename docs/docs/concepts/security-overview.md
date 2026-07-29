@@ -24,6 +24,8 @@ Every implementation task runs in its own Docker container and its own Git workt
 
 Outbound network access from agent containers is **unrestricted by default**. An optional allowlist firewall (model provider, GitHub, DNS only) ships in the unified agent image but is off by default because it requires privileged containers — do not assume network sandboxing unless you enabled it.
 
+The API and worker use the host Docker socket to launch task containers; the API also uses it for authenticated agent-login sessions. Docker-socket access is root-equivalent control of the host. Treat the API container as part of the trusted control plane, restrict dashboard access, and do not expose the socket to unrelated containers. Login sessions run only the provider-specific allowlisted command in the configured agent image, keep output in memory, and remove their temporary container on completion, cancellation, timeout, graceful shutdown, or the next API startup after a crash.
+
 ## Network Surface
 
 - **Inbound: none required.** The default event intake is an outbound WebSocket to the routing service, so a stack behind NAT or a firewall works without exposing any port. The API (4000) and Web UI (5173) bind locally; expose them deliberately (reverse proxy, VPN, or the managed [hosted UI tunnel](../operations/deployment.md#hosted-ui-tunnel)).
@@ -46,10 +48,10 @@ Configuration lives in the Web UI settings and `.env` — see [GitHub Authentica
 ## Secrets And Credentials
 
 - **`.env` in the stack root** holds deployment secrets; it is mounted read-only into containers.
-- **Agent credentials** (`~/.claude`, `~/.codex`, `~/.gemini`, …) are mounted read-write at their host paths so agent CLIs can refresh their own auth state.
+- **Agent credentials** are mounted read-write so agent CLIs can refresh their own auth state. Direct-login accounts are isolated by agent ID below ProPR's managed credential root (`~/.propr/agent-credentials` for native/Compose installs or the launcher data directory); reused host accounts keep their configured paths (`~/.claude`, `~/.codex`, `~/.gemini`, …).
 - **GitHub access**: on the default relay path your stack holds a revocable relay token and mints short-lived installation tokens — no GitHub App private key on disk. On the own-App path, the private key stays on your host.
 - **Tunnel token**: `PROPR_UI_TUNNEL_TOKEN` is a live Cloudflare credential — keep it in `.env` only.
 
 ## Data At Rest
 
-Everything operational lives in the stack directory on your host: the database and application state under `data/`, logs under `logs/`, repository clones and worktrees under `repos/`, and queue state in the Redis volume. Removing a deployment removes the data — see [Teardown](../operations/maintenance.md#teardown).
+Application state lives in the stack directory on your host: the database under `data/`, logs under `logs/`, repository clones and worktrees under `repos/`, and queue state in the Redis volume. Direct-login credentials live in the managed credential root, which is below `~/.propr` for native/Compose installs or below the launcher data directory. Treat that root as persistent secret data when backing up or removing a deployment — see [Teardown](../operations/maintenance.md#teardown).

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { isManagedAgentConfigPath } from '@propr/shared';
 import logger from '../../utils/logger.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
@@ -17,7 +18,12 @@ const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
 // contract (newlines/NUL).
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const BLOCKED_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
-const RESERVED_ENV_NAMES = new Set(['OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']);
+const RESERVED_ENV_NAMES = new Set([
+    'OPENCODE_CONFIG_DIR',
+    'PROPR_MANAGED_CREDENTIALS',
+    'XDG_CONFIG_HOME',
+    'XDG_DATA_HOME'
+]);
 const GITHUB_CREDENTIAL_NAME_PATTERN = /^GITHUB_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
@@ -59,9 +65,10 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
     const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, dataPath, ensureConfigPath = ensureDirectory } = params;
     const configPath = params.configPath || resolveConfigPath(config.configPath);
+    const managedCredentials = isManagedAgentConfigPath(config.configPath);
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
-    const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, dataPath);
+    const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, dataPath, managedCredentials);
     const timestamp = Date.now().toString(36);
     const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
@@ -81,7 +88,8 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
         '-v', `${worktreePath}:/home/node/workspace:${workspaceMode}`, '-v', '/tmp/git-processor:/tmp/git-processor:rw',
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
-        '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share', ...envVars,
+        '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share',
+        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars,
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
     ];
     appendOpenCodeDataMount(dockerArgs, dataMount);
@@ -109,9 +117,14 @@ function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMo
     );
 }
 
-function resolveOpenCodeDataMount(configPath: string, envVars: AgentConfig['envVars'], explicitHostDataPath?: string): OpenCodeDataMount | null {
+function resolveOpenCodeDataMount(
+    configPath: string,
+    envVars: AgentConfig['envVars'],
+    explicitHostDataPath?: string,
+    managedCredentials = false
+): OpenCodeDataMount | null {
     const configuredHostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
-    if (configuredHostDataPath) return { hostPath: configuredHostDataPath, mode: 'rw' };
+    if (configuredHostDataPath && !managedCredentials) return { hostPath: configuredHostDataPath, mode: 'rw' };
     if (explicitHostDataPath) return { hostPath: explicitHostDataPath, mode: 'rw' };
     if (envVars?.XDG_DATA_HOME && shouldForwardEnvVar('XDG_DATA_HOME', envVars.XDG_DATA_HOME)) return null;
     const inferredHostDataPath = inferOpenCodeDataPath(configPath);

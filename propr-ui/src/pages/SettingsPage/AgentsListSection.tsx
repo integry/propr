@@ -86,7 +86,7 @@ interface AgentsListSectionProps {
   error: string | null;
   success: string | null;
   warning: string | null;
-  onSaveAgents: (agents: AgentConfig[]) => void;
+  onSaveAgents: (agents: AgentConfig[]) => Promise<AgentConfig[] | undefined>;
   showAddModal?: boolean;
   onCloseAddModal?: () => void;
   onAddClick?: () => void;
@@ -308,7 +308,10 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
     onSaveAgents(updatedAgents);
   };
 
-  const handleSaveAgent = (agent: AgentConfig) => {
+  const handleSaveAgent = async (
+    agent: AgentConfig,
+    options?: { loginAfterSave: boolean },
+  ) => {
     let updatedAgents: AgentConfig[];
     const existingIndex = agents.findIndex(a => a.id === agent.id);
 
@@ -321,9 +324,14 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
       updatedAgents = [...agents, agent];
     }
 
-    onSaveAgents(updatedAgents);
+    const savedAgents = await onSaveAgents(updatedAgents);
+    if (!savedAgents) return;
     setShowModal(false);
     setEditingAgent(null);
+    onCloseAddModal?.();
+    if (options?.loginAfterSave) {
+      setLoginAgent(savedAgents.find(saved => saved.id === agent.id) ?? agent);
+    }
   };
 
   const existingAliases = agents
@@ -394,11 +402,13 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
             onCloseAddModal?.();
           }}
           onSave={handleSaveAgent}
+          saving={saving}
         />
       )}
 
       {loginAgent && (
         <AgentLoginModal
+          key={loginAgent.id}
           agent={loginAgent}
           onClose={() => setLoginAgent(null)}
         />

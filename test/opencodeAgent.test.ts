@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getManagedAgentConfigPath } from '@propr/shared';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, shouldForwardEnvVar, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
@@ -15,6 +16,7 @@ after(async () => {
 
 afterEach(() => {
     delete process.env.HOST_OPENCODE_DATA_DIR;
+    delete process.env.PROPR_MANAGED_CREDENTIALS_DIR;
 });
 
 function createAgent(): OpenCodeAgent {
@@ -424,6 +426,29 @@ describe('OpenCodeAgent Docker args', () => {
         assert.ok(args.includes('/host/opencode-data:/home/node/.local/share/opencode:rw'));
     });
 
+    test('keeps managed OpenCode accounts isolated from provider-wide data overrides', () => {
+        const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-managed-'));
+        const managedDataPath = path.join(managedRoot, 'opencode-test', '.local/share/opencode');
+        fs.mkdirSync(managedDataPath, { recursive: true });
+        process.env.PROPR_MANAGED_CREDENTIALS_DIR = managedRoot;
+        process.env.HOST_OPENCODE_DATA_DIR = '/host/shared-opencode-data';
+        const config = createAgent().config;
+        config.configPath = getManagedAgentConfigPath(config.id, 'opencode');
+
+        const args = buildOpenCodeDockerArgs({
+            config,
+            worktreePath: '/tmp/worktree',
+            githubToken: 'token',
+            issueNumber: 42,
+            ensureConfigPath: () => undefined
+        });
+
+        assert.ok(args.includes(`${managedDataPath}:/home/node/.local/share/opencode:rw`));
+        assert.ok(!args.some(value => value.includes('/host/shared-opencode-data')));
+        assert.ok(args.includes('PROPR_MANAGED_CREDENTIALS=1'));
+        fs.rmSync(managedRoot, { recursive: true, force: true });
+    });
+
     test('opencode-run keeps prompt attachment separate from the final message', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
@@ -492,6 +517,7 @@ describe('OpenCodeAgent Docker args', () => {
         assert.ok(!shouldForwardEnvVar('GITHUB_TOKEN', 'x'));
         assert.ok(!shouldForwardEnvVar('GITHUB_PAT', 'x'));
         assert.ok(!shouldForwardEnvVar('GITHUB_APP_PRIVATE_KEY', 'x'));
+        assert.ok(!shouldForwardEnvVar('PROPR_MANAGED_CREDENTIALS', '0'));
         assert.ok(!shouldForwardEnvVar('XDG_DATA_HOME', '/tmp/data'));
         assert.ok(!shouldForwardEnvVar('1INVALID', 'x'));
         assert.ok(!shouldForwardEnvVar('has space', 'x'));
