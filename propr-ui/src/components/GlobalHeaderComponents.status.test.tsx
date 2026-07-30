@@ -29,20 +29,22 @@ describe('SystemHealth dropdown', () => {
     fireEvent.mouseEnter(screen.getByLabelText('System Status'));
 
     expect(screen.getByText('Services')).toBeInTheDocument();
+    expect(screen.queryByText('SYSTEM STATUS')).not.toBeInTheDocument();
     expect(screen.getByText('Coding agents')).toBeInTheDocument();
-    expect(screen.getByText('Daemon:')).toBeInTheDocument();
-    expect(screen.getByText('Workers:')).toBeInTheDocument();
-    expect(screen.getByText('Redis:')).toBeInTheDocument();
-    expect(screen.getByText('GitHub:')).toBeInTheDocument();
-    expect(screen.getByText('GitHub Intake:')).toBeInTheDocument();
+    expect(screen.getByText('Daemon')).toBeInTheDocument();
+    expect(screen.getByText('Workers')).toBeInTheDocument();
+    expect(screen.getByText('Redis')).toBeInTheDocument();
+    expect(screen.getByText('GitHub')).toBeInTheDocument();
+    expect(screen.getByText('GitHub Intake')).toBeInTheDocument();
     expect(screen.getByText('ProPR Connect')).toBeInTheDocument();
-    expect(screen.getByText('Intake Status:')).toBeInTheDocument();
-    expect(screen.getByText('Indexing:')).toBeInTheDocument();
-    expect(screen.getByText('Codex:')).toBeInTheDocument();
-    expect(screen.getByText('Antigravity:')).toBeInTheDocument();
-    expect(screen.queryByText('Codex (codex-prod):')).not.toBeInTheDocument();
-    expect(screen.queryByText('Antigravity (antigravity-prod):')).not.toBeInTheDocument();
-    expect(screen.queryByText('Claude:')).not.toBeInTheDocument();
+    expect(screen.getByText('Intake Status')).toBeInTheDocument();
+    expect(screen.getByText('Indexing')).toBeInTheDocument();
+    expect(screen.getByText('Codex')).toBeInTheDocument();
+    expect(screen.getByText('Antigravity')).toBeInTheDocument();
+    expect(screen.queryByText('Codex (codex-prod)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Antigravity (antigravity-prod)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Claude')).not.toBeInTheDocument();
+    expect(screen.queryByText(/:$/)).not.toBeInTheDocument();
     expect(container.querySelectorAll('span.rounded-full')).toHaveLength(8);
   });
 
@@ -57,9 +59,28 @@ describe('SystemHealth dropdown', () => {
 
     fireEvent.mouseEnter(screen.getByLabelText('System Status'));
 
-    expect(screen.getByText('Codex (codex-prod):')).toBeInTheDocument();
-    expect(screen.getByText('Codex (codex-canary):')).toBeInTheDocument();
-    expect(screen.getByText('Antigravity:')).toBeInTheDocument();
+    expect(screen.getByText('Codex (codex-prod)')).toBeInTheDocument();
+    expect(screen.getByText('Codex (codex-canary)')).toBeInTheDocument();
+    expect(screen.getByText('Antigravity')).toBeInTheDocument();
+  });
+
+  it('uses fixed-width, no-wrap key-value rows and a slate external link', () => {
+    render(<SystemHealth systemHealth={makeSystemHealth()} />);
+
+    fireEvent.mouseEnter(screen.getByLabelText('System Status'));
+
+    const dropdown = screen.getByText('Services').parentElement?.parentElement;
+    const daemonLabel = screen.getByText('Daemon');
+    const daemonRow = daemonLabel.parentElement?.parentElement;
+    const connectLink = screen.getByRole('link', { name: 'ProPR Connect' });
+
+    expect(dropdown).toHaveClass('w-[288px]');
+    expect(daemonRow).toHaveClass('flex', 'justify-between', 'items-center', 'whitespace-nowrap');
+    expect(daemonLabel.parentElement).toHaveClass('text-slate-700', 'items-center');
+    expect(daemonRow?.lastElementChild).toHaveClass('text-slate-500');
+    expect(connectLink).toHaveClass('text-slate-500', 'underline');
+    expect(connectLink).not.toHaveClass('text-blue-600');
+    expect(connectLink.querySelector('svg')).toHaveClass('w-3', 'h-3');
   });
 
   it('marks the overall indicator red when an enabled dynamic agent fails', () => {
@@ -78,7 +99,7 @@ describe('SystemHealth dropdown', () => {
 
     fireEvent.mouseEnter(screen.getByLabelText('System Status'));
 
-    expect(screen.getByText('Intake Status:')).toBeInTheDocument();
+    expect(screen.getByText('Intake Status')).toBeInTheDocument();
     expect(screen.getByText('Disconnected')).toBeInTheDocument();
     const indicator = container.querySelector('button[aria-label="System Status"] span.bg-red-500');
     expect(indicator).toBeInTheDocument();

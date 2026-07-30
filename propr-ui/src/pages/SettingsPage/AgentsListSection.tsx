@@ -90,6 +90,7 @@ interface AgentsListSectionProps {
   showAddModal?: boolean;
   onCloseAddModal?: () => void;
   onAddClick?: () => void;
+  onSelectModel?: (agentId: string, modelId: string) => void;
   readOnly?: boolean;
 }
 
@@ -118,23 +119,42 @@ const ModelRow: React.FC<{
   modelInfo: typeof MODEL_INFO_MAP[string] | undefined;
   isDefault: boolean;
   customLabel?: string;
-}> = ({ modelId, modelInfo, isDefault, customLabel }) => (
+  agentAlias: string;
+  onSelect?: () => void;
+  selectionDisabled?: boolean;
+}> = ({
+  modelId,
+  modelInfo,
+  isDefault,
+  customLabel,
+  agentAlias,
+  onSelect,
+  selectionDisabled = false
+}) => (
   <div className="flex flex-wrap sm:flex-nowrap items-center py-1 px-2 hover:bg-slate-50 transition-colors text-sm">
     {/* Name + Badge column */}
     <div className="flex items-center gap-1.5 flex-1 min-w-0">
-      <span className={`truncate text-[13px] ${isDefault ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
-        {getModelDisplayName(modelId, modelInfo)}
-      </span>
-      {customLabel && (
-        <span className="px-1 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] rounded font-medium flex-shrink-0">
-          {customLabel}
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={selectionDisabled || !onSelect}
+        aria-label={`Select ${getModelDisplayName(modelId, modelInfo)}${customLabel ? ` (${customLabel})` : ''} from ${agentAlias} in Playground`}
+        className="flex min-w-0 items-center gap-1.5 rounded-sm text-left enabled:cursor-pointer enabled:hover:text-teal-700 enabled:focus-visible:outline-none enabled:focus-visible:ring-2 enabled:focus-visible:ring-teal-500 disabled:cursor-default"
+      >
+        <span className={`truncate text-[13px] ${isDefault ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
+          {getModelDisplayName(modelId, modelInfo)}
         </span>
-      )}
-      {isDefault && (
-        <span className="px-1 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[8px] rounded uppercase font-semibold tracking-wide flex-shrink-0">
-          Default
-        </span>
-      )}
+        {customLabel && (
+          <span className="px-1 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] rounded font-medium flex-shrink-0">
+            {customLabel}
+          </span>
+        )}
+        {isDefault && (
+          <span className="px-1 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 text-[8px] rounded uppercase font-semibold tracking-wide flex-shrink-0">
+            Default
+          </span>
+        )}
+      </button>
     </div>
 
     {/* Context Limit column - fixed width for alignment, hidden on mobile */}
@@ -166,8 +186,9 @@ const AgentCard: React.FC<{
   onEdit: () => void;
   onDelete: () => void;
   onToggle: () => void;
+  onSelectModel?: (agentId: string, modelId: string) => void;
   readOnly?: boolean;
-}> = ({ agent, onLogin, onEdit, onDelete, onToggle, readOnly = false }) => {
+}> = ({ agent, onLogin, onEdit, onDelete, onToggle, onSelectModel, readOnly = false }) => {
   return (
     <div className="border-b border-slate-100 py-4 first:pt-0">
       {/* --- Agent Header: [Icon] [Bold Name] [Brand Badge] ... [Toggle] [Edit] --- */}
@@ -256,6 +277,9 @@ const AgentCard: React.FC<{
               modelInfo={modelInfo}
               isDefault={isDefault}
               customLabel={modelCustomLabel}
+              agentAlias={agent.alias}
+              onSelect={() => onSelectModel?.(agent.id, modelId)}
+              selectionDisabled={!agent.enabled || !onSelectModel}
             />
           );
         })}
@@ -275,6 +299,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   showAddModal = false,
   onCloseAddModal,
   onAddClick,
+  onSelectModel,
   readOnly = false
 }) => {
   const [showModal, setShowModal] = useState(false);
@@ -361,6 +386,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
               onEdit={() => handleEditAgent(agent)}
               onDelete={() => handleDeleteAgent(agent)}
               onToggle={() => handleToggleAgent(agent)}
+              onSelectModel={onSelectModel}
               readOnly={readOnly}
             />
           ))}
