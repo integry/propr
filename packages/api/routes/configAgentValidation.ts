@@ -1,5 +1,11 @@
 import { AGENT_TYPES, toProprOpenCodeModelId, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
-import { getReasoningLevelsForAgentType, isReasoningLevel } from '@propr/shared';
+import {
+  MANAGED_AGENT_CREDENTIALS_PREFIX,
+  getManagedAgentConfigPath,
+  getReasoningLevelsForAgentType,
+  isAgentLoginSupported,
+  isReasoningLevel,
+} from '@propr/shared';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
 const VALID_CLI_VERSION_TYPES: CliVersionType[] = ['default', 'tag', 'specific', 'custom'];
@@ -64,6 +70,23 @@ function validateAgentBaseFields(agent: AgentConfig, normalizedAlias: string): s
   if (typeof agent.enabled !== 'boolean') return `Agent '${agent.id}' missing required 'enabled' field`;
   if (agent.dockerImage !== undefined && typeof agent.dockerImage !== 'string') return `Agent '${agent.id}' has invalid 'dockerImage'. Must be a string`;
   if (!agent.configPath || typeof agent.configPath !== 'string') return `Agent '${agent.id}' missing required 'configPath' field`;
+  if (
+    agent.configPath === MANAGED_AGENT_CREDENTIALS_PREFIX
+    || agent.configPath.startsWith(`${MANAGED_AGENT_CREDENTIALS_PREFIX}/`)
+  ) {
+    if (!isAgentLoginSupported(agent.type)) {
+      return `Agent '${agent.id}' type '${agent.type}' does not support ProPR-managed login credentials`;
+    }
+    let expectedPath: string;
+    try {
+      expectedPath = getManagedAgentConfigPath(agent.id, agent.type);
+    } catch {
+      return `Agent '${agent.id}' has an invalid id for a ProPR-managed credential path`;
+    }
+    if (agent.configPath !== expectedPath) {
+      return `Agent '${agent.id}' has an invalid ProPR-managed credential path`;
+    }
+  }
   if (!Array.isArray(agent.supportedModels)) return `Agent '${agent.id}' missing required 'supportedModels' field`;
   if (!agent.supportedModels.every(model => typeof model === 'string' && model.trim().length > 0)) {
     return `Agent '${agent.id}' has invalid 'supportedModels'. Each supported model must be a non-empty string`;

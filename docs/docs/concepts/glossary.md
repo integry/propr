@@ -17,7 +17,7 @@ title: Glossary
 
 **Intake mode** — how GitHub events reach the stack: `routing_websocket` (default, outbound connection via the relay), `polling`, or `direct_webhook`. See [Deployment](../operations/deployment.md#issue-intake-modes).
 
-**`llm-*` label** — a GitHub issue label that routes work to a specific agent and model, e.g. `llm-claude-opus48`. Several on one issue produce one run, branch, and PR per model.
+**`llm-*` label** — a GitHub issue label that routes work to a specific agent and model, e.g. `llm-claude-opus5`. Several on one issue produce one run, branch, and PR per model.
 
 **Planner Studio** — the planning surface: draft, context preview, generated task breakdown, refinement, and approval. See [Planner Studio](../tutorials/planner-studio.md).
 

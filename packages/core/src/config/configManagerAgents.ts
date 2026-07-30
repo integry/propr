@@ -1,5 +1,13 @@
 import path from 'path';
-import { AGENT_DEFAULTS, MODEL_INFO_MAP, VIBE_MODELS, type AgentType, type ReasoningLevel } from '@propr/shared';
+import {
+    AGENT_DEFAULTS,
+    MODEL_INFO_MAP,
+    OPENCODE_MODELS,
+    VIBE_MODELS,
+    getManagedAgentConfigRelativePath,
+    type AgentType,
+    type ReasoningLevel
+} from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configStore.js';
 import { AGENT_DEFAULT_VERSIONS } from '../agents/version/types.js';
@@ -48,6 +56,13 @@ export const DEFAULT_CONFIG_PATHS: Record<AgentConfig['type'], string> = {
  * Resolves a config path, expanding ~ to the home directory.
  */
 export function resolveConfigPath(configPath: string): string {
+    const managedRelativePath = getManagedAgentConfigRelativePath(configPath);
+    if (managedRelativePath) {
+        const homeDir = process.env.HOME || process.env.USERPROFILE || '/root';
+        const managedRoot = process.env.PROPR_MANAGED_CREDENTIALS_DIR
+            || path.join(homeDir, '.propr', 'agent-credentials');
+        return path.join(managedRoot, managedRelativePath);
+    }
     if (configPath.startsWith('~')) {
         const homeDir = process.env.HOME || process.env.USERPROFILE || '/root';
         return path.join(homeDir, configPath.slice(1));
@@ -115,6 +130,10 @@ const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     vibe: AGENT_DEFAULTS.vibe.defaultModels
 };
 const VIBE_CURRENT_MODELS = VIBE_MODELS.map(model => model.id);
+const OPENCODE_CURRENT_MODELS = OPENCODE_MODELS.map(model => model.id);
+const RETIRED_OPENCODE_DEFAULT_MODELS = new Set([
+    'opencode-minimax-m3-free'
+]);
 const MANAGED_AGENT_IMAGE_PREFIX = 'propr/agent:';
 
 function migrateCliVersion(agent: AgentConfig): boolean {
@@ -265,6 +284,36 @@ function normalizeOpenCodeModelIds(agent: AgentConfig): boolean {
     return true;
 }
 
+function updateOpenCodeDefaultModels(agent: AgentConfig): boolean {
+    if (agent.type !== 'opencode' || !agent.supportedModels) {
+        return false;
+    }
+
+    const retiredModels = agent.supportedModels.filter(model => RETIRED_OPENCODE_DEFAULT_MODELS.has(model));
+    const retainedModels = agent.supportedModels.filter(model => !RETIRED_OPENCODE_DEFAULT_MODELS.has(model));
+    const missingModels = OPENCODE_CURRENT_MODELS.filter(model => !retainedModels.includes(model));
+    const nextModels = [...missingModels, ...retainedModels];
+    let migrated = retiredModels.length > 0 || missingModels.length > 0;
+
+    if (migrated) {
+        agent.supportedModels = nextModels;
+    }
+
+    if (!agent.defaultModel || RETIRED_OPENCODE_DEFAULT_MODELS.has(agent.defaultModel)) {
+        agent.defaultModel = nextModels[0];
+        migrated = true;
+    }
+
+    if (migrated) {
+        logger.info(
+            { agentAlias: agent.alias, addedModels: missingModels, removedModels: retiredModels, defaultModel: agent.defaultModel },
+            'Updated built-in OpenCode models'
+        );
+    }
+
+    return migrated;
+}
+
 function removeDeprecatedModels(agent: AgentConfig): boolean {
     if (!agent.supportedModels) {
         return false;
@@ -304,6 +353,7 @@ export function migrateAgentConfig(agent: AgentConfig): boolean {
     migrated = updateDefaultCliVersion(agent) || migrated;
     migrated = updateAntigravityDefaults(agent) || migrated;
     migrated = normalizeOpenCodeModelIds(agent) || migrated;
+    migrated = updateOpenCodeDefaultModels(agent) || migrated;
     migrated = removeDeprecatedModels(agent) || migrated;
     return migrated;
 }

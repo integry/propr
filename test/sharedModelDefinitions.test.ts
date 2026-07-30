@@ -15,7 +15,7 @@ describe('shared model definitions', () => {
         assert.strictEqual(AGENT_DEFAULTS.opencode.dockerImage, 'propr/agent:latest');
         assert.strictEqual(AGENT_DEFAULTS.opencode.configPath, '~/.config/opencode');
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.18.2');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.18.9');
     });
 
     test('every default agent model is present in the shared model catalog', () => {
@@ -31,7 +31,7 @@ describe('shared model definitions', () => {
 
     test('OpenCode defaults use namespaced unauthenticated OpenCode free model ids', () => {
         const modelIds = new Set(OPENCODE_MODELS.map(model => model.id));
-        assert.ok(modelIds.has('opencode-minimax-m3-free'));
+        assert.ok(modelIds.has('opencode-deepseek-v4-flash-free'));
         for (const modelId of AGENT_DEFAULTS.opencode.defaultModels) {
             assert.ok(modelId.startsWith('opencode-'), `${modelId} should use the ProPR OpenCode prefix`);
             assert.ok(modelId.includes('free') || modelId === 'opencode-big-pickle', `${modelId} should be usable without provider login`);

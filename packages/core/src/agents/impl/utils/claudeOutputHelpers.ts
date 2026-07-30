@@ -49,5 +49,6 @@ export interface PersistLogsParams {
     correctedTokenUsage: TokenUsage | undefined;
     taskId?: string;
     prNumber?: number;
+    reasoningLevel?: string;
     usageMetrics?: UsageTrackingMetrics | null;
 }

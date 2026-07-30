@@ -4,7 +4,7 @@ Third-Party Licenses
 This file lists every third-party package bundled in the Propr Docker images,
 its license, and (where required) the full license text.
 
-Generated: 2026-07-16
+Generated: 2026-07-29
 See NOTICE for a higher-level summary and end-user obligations.
 
 ---
@@ -31,7 +31,7 @@ https://pkgs.alpinelinux.org/packages
 
 ---
 
-## @anthropic-ai/claude-code@2.1.211
+## @anthropic-ai/claude-code@2.1.220
 
 ```
 © Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.
@@ -308,8 +308,8 @@ below is bundled in the propr/app image under the stated license.
 
 ```
 "module name","license","repository"
-"@anthropic-ai/claude-code-linux-x64@2.1.211","Custom: https://www.npmjs.com/package/",""
-"@anthropic-ai/claude-code@2.1.211","Custom: https://img.shields.io/badge/Node.js-22",""
+"@anthropic-ai/claude-code-linux-x64@2.1.220","Custom: https://www.npmjs.com/package/",""
+"@anthropic-ai/claude-code@2.1.220","Custom: https://img.shields.io/badge/Node.js-22",""
 "@anthropic-ai/sdk@0.71.2","MIT","https://github.com/anthropics/anthropic-sdk-typescript"
 "@babel/runtime@7.28.4","MIT","https://github.com/babel/babel"
 "@dnd-kit/accessibility@3.1.1","MIT","https://github.com/clauderic/dnd-kit"

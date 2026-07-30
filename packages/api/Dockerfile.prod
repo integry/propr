@@ -52,9 +52,9 @@ COPY --from=builder /app/packages/api/package.json ./packages/api/
 # Copy built dist directory (contains src, packages/api output)
 COPY --from=builder /app/dist ./dist
 
-# Install build tools, compile native modules, then remove build tools in a
-# single layer so the intermediate build-tool files do not inflate the image.
-RUN apk add --no-cache python3 make g++ \
+# Keep docker-cli and script(1) for sibling agent containers and interactive
+# browser logins. Remove only the native-module build toolchain after install.
+RUN apk add --no-cache docker-cli util-linux-misc python3 make g++ \
     && npm ci --production \
     && apk del python3 make g++
 

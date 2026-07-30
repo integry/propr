@@ -12,17 +12,17 @@ The end state: ProPR runs from the prebuilt images on your Linux workstation, th
 
 - A Linux host with Docker. The stack bind-mounts host paths and the Docker socket directly, so under Docker Desktop on macOS or Windows use the Compose-based [Source Development Setup](./setup-source.md).
 - GitHub access for the backend. By default ProPR uses the shared, hosted ProPR GitHub App through the token relay, and running your own GitHub App is the advanced alternative — see [GitHub Authentication](../operations/github-auth.md).
-- Credentials for at least one coding agent — prepared below, or created through the agent image with `propr agent login <agent>` once the CLI is installed
+- A provider account for at least one coding agent — reuse host credentials, run `propr agent login <agent>`, or log in directly while adding the agent in the Web UI
 - Node.js 22+ for the recommended CLI path (the launcher-container alternative needs no Node.js)
 - Disk space for data, logs, and repository workspaces
 
-## Prepare Agent Credentials
+## Prepare Existing Agent Credentials (Optional)
 
-Worker containers run each coding agent from credential directories mounted off the host, so authenticate the agents you plan to enable **before starting the stack**. For Claude Code:
+Skip this section if you will choose **Log in to a new account** while adding the agent in the Web UI; ProPR creates and maps an isolated credential directory automatically. To reuse a CLI account already on this host, authenticate it before starting the stack. For Claude Code:
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-claude login
+claude auth login
 ```
 
 For Antigravity, install the official CLI and complete a login on the host:
@@ -160,7 +160,7 @@ Open `http://localhost:5173`, sign in with GitHub, and confirm the dashboard loa
 propr remote http://localhost:4000
 propr login                      # reuses your gh CLI session, or pass a PAT
 propr repo add owner/repo -b main
-propr agent add my-claude -t claude -m opus48 -d opus48
+propr agent add my-claude -t claude -m opus5 -d opus5
 propr use owner/repo
 propr remote-status              # verify daemon, workers, Redis, GitHub auth
 ```

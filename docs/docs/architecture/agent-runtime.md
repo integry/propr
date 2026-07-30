@@ -11,7 +11,7 @@ This is the canonical runtime reference for ProPR coding agents. It covers the s
 Every coding agent runs in a Docker container so ProPR can control runtime dependencies, workspace mounts, credential mounts, timeouts, logging, and resource boundaries. The agent implementation changes the CLI command, image, credential directory, and output parser, but the container shape is shared:
 
 - A task worktree mounted at `/home/node/workspace`
-- Agent credentials mounted from the configured host credential directory
+- Agent credentials mounted from a ProPR-managed per-agent directory or a configured existing host directory
 - GitHub credentials passed through `GH_TOKEN` and `GITHUB_TOKEN`
 - Agent, model, timeout, and task metadata passed as environment variables or CLI flags
 - `--security-opt no-new-privileges`, `--cap-add CHOWN`, and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
@@ -21,7 +21,7 @@ All agents run from the unified Debian/glibc `propr/agent` image. Its internal b
 
 This table maps each agent type to the unified image, its type-specific entrypoint, and its credential mount; other pages link here instead of repeating it.
 
-| Agent | Image | Dockerfile | Entrypoint | Host credential mount | Container credential path |
+| Agent | Image | Dockerfile | Entrypoint | Existing host credential mount | Container credential path |
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | `propr/agent` | `Dockerfile.agent` | `scripts/claude-entrypoint.sh` | `HOST_CLAUDE_DIR` (`~/.claude`) | `/home/node/.claude` |
 | Codex | `propr/agent` | `Dockerfile.agent` | `scripts/codex-entrypoint.sh` | `HOST_CODEX_DIR` (`~/.codex`) | `/home/node/.codex` |
@@ -35,7 +35,7 @@ The worker launches the unified agent image with a prepared worktree, a generate
 
 Most entrypoints start as root so they can prepare runtime directories or fix container-local ownership, then drop to the `node` user before running the CLI. Entrypoints also mark Git directories as safe, install the `gh` wrapper when present, and emit diagnostics that are captured with the task logs.
 
-Credential and launcher paths must be absolute host paths. Shell shortcuts such as `~` and `$HOME` are not expanded by the runtime configuration parser.
+Existing-account credential and launcher paths must be absolute host paths. Shell shortcuts such as `~` and `$HOME` are not expanded by launcher configuration. Direct-login accounts instead save a portable `~/.propr/agent-credentials/<agent-id>/…` path that ProPR maps to its managed host root automatically.
 
 ## Timeouts And Loop Limits
 
@@ -43,13 +43,13 @@ Timeouts prevent runaway jobs and make failures visible in task state. Defaults 
 
 | Agent | Timeout variable | Default | Loop variable | Default |
 | --- | --- | ---: | --- | ---: |
-| Claude Code | `CLAUDE_TIMEOUT_MS` | `300000` | `CLAUDE_MAX_TURNS` | `1000` |
-| Codex | `CODEX_TIMEOUT_MS` | `3600000` | `CODEX_MAX_TURNS` | `1000` |
-| Antigravity | `ANTIGRAVITY_TIMEOUT_MS` | `3600000` | Not used | N/A |
-| OpenCode | `OPENCODE_TIMEOUT_MS` | `3600000` | Not used | N/A |
-| Mistral Vibe | `VIBE_TIMEOUT_MS` | `3600000` | `VIBE_MAX_TURNS` | `1000` |
+| Claude Code | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | `CLAUDE_MAX_TURNS` | `1000` |
+| Codex | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | `CODEX_MAX_TURNS` | `1000` |
+| Antigravity | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
+| OpenCode | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
+| Mistral Vibe | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | `VIBE_MAX_TURNS` | `1000` |
 
-These are the code defaults. The shipped `.env.example` sets `ANTIGRAVITY_TIMEOUT_MS=300000`, so deployments that keep that line run Antigravity with a 5-minute timeout; every other `.env.example` timeout matches its code default.
+These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Analysis calls use separate, shorter timeouts.
 
 When tuning these values, consider repository size, task complexity, provider rate limits, worker concurrency, and host CPU and memory. Increase timeouts only after checking task and worker logs; a timeout may indicate missing context, provider slowness, a task that should be split, or an agent loop.
 
@@ -95,7 +95,7 @@ docker inspect <container>
 
 ### Authentication Issues
 
-Check that the CLI is authenticated on the host and that the expected host credential directory is mounted into the container path for that agent. For example, Claude Code expects the host Claude directory mounted at `/home/node/.claude`, while Codex expects the Codex directory mounted at `/home/node/.codex`.
+For a direct-login account, check that the managed credential root is mounted and that the agent's generated path is still `~/.propr/agent-credentials/<agent-id>/…`. For reused host credentials, check that the CLI is authenticated and the expected directory is mounted into the agent's container path. For example, Claude Code expects its selected directory at `/home/node/.claude`, while Codex expects its selected directory at `/home/node/.codex`.
 
 ### Docker Permission Issues
 
@@ -121,7 +121,7 @@ Common settings:
 AGENT_DOCKER_IMAGE=propr/agent:latest
 CLAUDE_CONFIG_PATH=/home/your-user/.claude
 CLAUDE_MAX_TURNS=1000
-CLAUDE_TIMEOUT_MS=300000
+CLAUDE_TIMEOUT_MS=86400000
 ```
 
 The entrypoint checks for `/home/node/.claude/.credentials.json`, creates expected Claude subdirectories such as `todos`, `projects`, `shell-snapshots`, and `statsig`, and prepares `/home/node/.claude/projects/home-node-workspace` for the mounted workspace.
@@ -142,7 +142,7 @@ Common settings:
 
 ```bash
 HOST_CODEX_DIR=/home/your-user/.codex
-CODEX_TIMEOUT_MS=3600000
+CODEX_TIMEOUT_MS=86400000
 CODEX_MAX_TURNS=1000
 ```
 
@@ -163,7 +163,7 @@ Common settings:
 ```bash
 HOST_ANTIGRAVITY_DIR=/home/your-user/.gemini
 ANTIGRAVITY_CONFIG_PATH=/home/your-user/.gemini
-ANTIGRAVITY_TIMEOUT_MS=3600000
+ANTIGRAVITY_TIMEOUT_MS=86400000
 ```
 
 The entrypoint prepares Antigravity runtime directories under the mounted config path and looks for auth, OAuth, credential, or token files. The agent CLI is `agy`; ProPR passes the selected model with `--model <id>` after translating ProPR model IDs into Antigravity CLI model IDs.
@@ -177,7 +177,7 @@ Common settings:
 ```bash
 HOST_OPENCODE_XDG_DIR=/home/your-user/.config/opencode
 HOST_OPENCODE_DATA_DIR=/home/your-user/.local/share/opencode
-OPENCODE_TIMEOUT_MS=3600000
+OPENCODE_TIMEOUT_MS=86400000
 AGENT_DOCKER_IMAGE=propr/agent:latest
 ```
 
@@ -215,7 +215,7 @@ By default the container receives `XDG_CONFIG_HOME=/home/node/.config` and `XDG_
 
 #### Model-ID Translation
 
-ProPR catalog IDs for OpenCode carry the `opencode-` prefix, for example `opencode-minimax-m3-free`. ProPR converts these back to OpenCode's native `provider/model` syntax at execution time (`opencode-minimax-m3-free` becomes `minimax/minimax-m3`) and strips only the internal `opencode:` routing prefix, so provider-qualified model IDs remain intact. The OpenCode model list is dynamic: run `opencode models` on the host after changing auth providers, then register any desired authenticated provider IDs (for example `opencode-openai/gpt-5.5`) on the agent's supported models. ProPR keeps only the built-in free OpenCode models as defaults and does not add authenticated provider models automatically. See [Agents and Models](../features/agents-and-models.md) for the catalog and label formats.
+ProPR catalog IDs for OpenCode carry the `opencode-` prefix, for example `opencode-deepseek-v4-flash-free`. ProPR converts these back to OpenCode's native `provider/model` syntax at execution time (`opencode-deepseek-v4-flash-free` becomes `opencode/deepseek-v4-flash-free`) and strips only the internal `opencode:` routing prefix, so provider-qualified model IDs remain intact. The OpenCode model list is dynamic: run `opencode models` on the host after changing auth providers, then register any desired authenticated provider IDs (for example `opencode-openai/gpt-5.5`) on the agent's supported models. ProPR keeps only the built-in free OpenCode models as defaults and does not add authenticated provider models automatically. See [Agents and Models](../features/agents-and-models.md) for the catalog and label formats.
 
 ### Mistral Vibe
 
@@ -226,7 +226,7 @@ Common settings:
 ```bash
 HOST_VIBE_DIR=/home/your-user/.vibe
 VIBE_CONFIG_PATH=/home/your-user/.vibe
-VIBE_TIMEOUT_MS=3600000
+VIBE_TIMEOUT_MS=86400000
 VIBE_MAX_TURNS=1000
 VIBE_ANALYSIS_TIMEOUT_MS=1800000
 MISTRAL_API_KEY=...

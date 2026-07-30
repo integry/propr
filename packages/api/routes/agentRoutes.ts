@@ -3,8 +3,16 @@ import { execFile } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
-import { getAgentRegistry, loadAgents, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, type Agent, type AgentRegistry } from '@propr/core';
-import { AGENT_DEFAULTS } from '@propr/shared';
+import {
+  getAgentRegistry,
+  loadAgents,
+  resolveConfigPath,
+  toProprOpenCodeExternalModelId,
+  toProprOpenCodeModelId,
+  type Agent,
+  type AgentRegistry,
+} from '@propr/core';
+import { AGENT_DEFAULTS, isManagedAgentConfigPath } from '@propr/shared';
 import { requireManageAgents } from '../permissionGuards.js';
 
 const execFileAsync = promisify(execFile);
@@ -35,9 +43,13 @@ function resolveHostPath(configPath: string): string {
   return path.resolve(configPath);
 }
 
-function inferOpenCodeDataPath(configPath: string): string {
-  if (process.env.HOST_OPENCODE_DATA_DIR) return resolveHostPath(process.env.HOST_OPENCODE_DATA_DIR);
-  if (process.env.OPENCODE_DATA_PATH) return resolveHostPath(process.env.OPENCODE_DATA_PATH);
+function inferOpenCodeDataPath(configPath: string, managedCredentials = false): string {
+  if (!managedCredentials && process.env.HOST_OPENCODE_DATA_DIR) {
+    return resolveHostPath(process.env.HOST_OPENCODE_DATA_DIR);
+  }
+  if (!managedCredentials && process.env.OPENCODE_DATA_PATH) {
+    return resolveHostPath(process.env.OPENCODE_DATA_PATH);
+  }
   const normalized = path.normalize(configPath);
   if (normalized.endsWith(path.join('.config', 'opencode'))) {
     return path.join(path.dirname(path.dirname(normalized)), '.local', 'share', 'opencode');
@@ -48,14 +60,23 @@ function inferOpenCodeDataPath(configPath: string): string {
 async function discoverOpenCodeModels(agentId?: string): Promise<string[]> {
   const agents = await loadAgents();
   const savedAgent = agents.find(agent => agent.type === 'opencode' && (agentId ? agent.id === agentId : true));
-  const configPath = resolveHostPath(process.env.OPENCODE_CONFIG_PATH || savedAgent?.configPath || AGENT_DEFAULTS.opencode.configPath);
-  const dataPath = inferOpenCodeDataPath(configPath);
+  const managedCredentials = Boolean(
+    savedAgent && isManagedAgentConfigPath(savedAgent.configPath),
+  );
+  const configuredPath = managedCredentials
+    ? savedAgent!.configPath
+    : process.env.OPENCODE_CONFIG_PATH || savedAgent?.configPath || AGENT_DEFAULTS.opencode.configPath;
+  const configPath = managedCredentials
+    ? resolveConfigPath(configuredPath)
+    : resolveHostPath(configuredPath);
+  const dataPath = inferOpenCodeDataPath(configPath, managedCredentials);
   const dockerImage = await resolveOpenCodeDiscoveryImage(savedAgent?.dockerImage);
 
   const args = [
     'run', '--rm', '--user', '0:0',
     '-v', `${configPath}:/home/node/.config/opencode:rw`,
     '-v', `${dataPath}:/home/node/.local/share/opencode:rw`,
+    ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []),
     '-v', '/tmp:/home/node/workspace:ro',
     '-w', '/home/node/workspace',
     dockerImage,

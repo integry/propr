@@ -111,7 +111,7 @@ Configure GitHub auth in `.env` before `propr check`: by default the shared, hos
 
 Use the same launcher command as local setup, but run it from `/srv/propr` or your chosen server directory. All `PROPR_*` and `HOST_*` paths must be absolute; the launcher does not expand `~`.
 
-Authenticate Antigravity on the host first with `agy login`; the launcher mounts `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` for Antigravity agent runs. For OpenCode and Mistral Vibe credential preparation (including the host prompt cache directory, `/tmp/propr-vibe-prompts-$(id -u)` by default), see [Local Setup](./setup-local.md#prepare-agent-credentials).
+To reuse an existing Antigravity account, authenticate on the host with `agy login`; the launcher mounts `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` for its runs. Alternatively, omit that provider host path and choose **Log in to a new account** after adding Antigravity in the Web UI. For existing OpenCode credentials and Mistral Vibe preparation (including the host prompt cache directory, `/tmp/propr-vibe-prompts-$(id -u)` by default), see [Local Setup](./setup-local.md#prepare-existing-agent-credentials-optional).
 
 ```bash
 docker run --rm \
@@ -151,7 +151,7 @@ npm install -g propr-cli
 propr remote https://propr.example.com   # the API origin behind your proxy
 propr login <personal-access-token>
 propr repo add owner/repo
-propr agent add my-claude -t claude -m opus48 -d opus48
+propr agent add my-claude -t claude -m opus5 -d opus5
 propr remote-status
 ```
 

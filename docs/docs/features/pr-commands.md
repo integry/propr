@@ -29,13 +29,13 @@ To **take over an existing PR** for ongoing work (so that natural follow-up comm
 ## Syntax Rules
 
 - The slash command must be on the first line of the PR comment. A comment with leading blank lines or text before the command is treated as a normal follow-up comment.
-- Arguments go on the same line as the command (for example `/review llm-claude-opus48` or `/ultrafix goal=8 max=10`).
+- Arguments go on the same line as the command (for example `/review llm-claude-opus5` or `/ultrafix goal=8 max=10`).
 - Lines below the command become extra instructions for the run.
 - Both top-level PR comments and line-level review comments are processed; line-level comments carry their file, line, and diff context to the agent.
 
 ## Model IDs
 
-Commands that take a model accept the model IDs configured in AI Agents. The `llm-` prefix is optional in command arguments — `/switch claude-opus48` and `/switch llm-claude-opus48` are equivalent. Unrecognized models are rejected. The built-in catalog is listed in [Agents and Models](./agents-and-models.md).
+Commands that take a model accept the model IDs configured in AI Agents. The `llm-` prefix is optional in command arguments — `/switch claude-opus5` and `/switch llm-claude-opus5` are equivalent. Unrecognized models are rejected. The built-in catalog is listed in [Agents and Models](./agents-and-models.md).
 
 ## Who Can Trigger Commands
 
@@ -65,7 +65,7 @@ Post:
 Or request specific models (one review comment per model):
 
 ```text
-/review llm-claude-opus48 llm-codex-gpt55
+/review llm-claude-opus5 llm-codex-gpt55
 ```
 
 Without arguments, `/review` uses the PR review model configured in Settings.
@@ -162,7 +162,7 @@ ProPR replaces the PR's `llm-*` label with the new model's label. Later comments
 If you include instructions on the lines below the command, ProPR switches the label and also queues one follow-up run with the new model using those instructions:
 
 ```text
-/switch llm-claude-opus48
+/switch llm-claude-opus5
 Re-check the concurrency handling after switching.
 ```
 
@@ -222,7 +222,7 @@ Post:
 Or configure the loop:
 
 ```text
-/ultrafix goal=8 max=10 pause=120 model=llm-claude-opus48
+/ultrafix goal=8 max=10 pause=120 model=llm-claude-opus5
 ```
 
 `/ultrafix` alternates review and fix cycles until the latest review score reaches the goal or the maximum cycle count is exhausted.

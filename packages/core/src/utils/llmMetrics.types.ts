@@ -12,6 +12,8 @@ export interface TokenUsage {
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
+    /** Informational subset of output_tokens; never bill separately. */
+    reasoning_output_tokens?: number;
 }
 
 export interface Message {
@@ -82,6 +84,8 @@ export interface RecordMetricsOptions {
 export interface ModelPricing {
     prompt: number;
     completion: number;
+    cacheRead?: number;
+    cacheCreation?: number;
 }
 
 export interface ExtractedMetrics {

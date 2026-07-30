@@ -15,6 +15,7 @@ import { computeContentHash, getAgentCliVersionMatrix, getDefaultAgentCliVersion
 import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
+import { AGENT_DEFAULTS } from '../config/modelDefinitions.js';
 
 export interface AgentRegistryOperationalStatus {
     unifiedAgentImage: {
@@ -371,16 +372,7 @@ export class AgentRegistry {
             enabled: true,
             dockerImage: process.env.AGENT_DOCKER_IMAGE || DEFAULT_AGENT_DOCKER_IMAGES.claude,
             configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
-            supportedModels: [
-                'claude-fable-5',
-                'claude-opus-4-8',
-                'claude-opus-4-7',
-                'claude-opus-4-6',
-                'claude-sonnet-4-6',
-                'claude-opus-4-5-20251101',
-                'claude-sonnet-4-5-20250929',
-                'claude-haiku-4-5-20251001'
-            ],
+            supportedModels: [...AGENT_DEFAULTS.claude.defaultModels],
             defaultModel: process.env.CLAUDE_MODEL || undefined,
             cliVersionType: 'default',
             cliVersionResolved: AGENT_DEFAULT_VERSIONS.claude

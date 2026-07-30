@@ -302,6 +302,8 @@ export function createLlmLogFromAnalysis(params: {
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
+    /** Informational subset of output_tokens; never bill separately. */
+    reasoning_output_tokens?: number;
   };
   /** Calculated token count from prompt - more reliable than agent-reported for single-turn */
   estimatedInputTokens?: number;
@@ -311,6 +313,8 @@ export function createLlmLogFromAnalysis(params: {
   draftId?: string;
   repository?: string;
   agentAlias?: string;
+  /** Effective effort setting used for this call. */
+  reasoningLevel?: string;
   metadata?: Record<string, unknown>;
   usageMetrics?: Record<string, unknown>;
   usageMetricRecords?: UsageMetricRecordEntry[];
@@ -318,6 +322,15 @@ export function createLlmLogFromAnalysis(params: {
 }): LlmLogEntry {
   const now = new Date();
   const startTime = new Date(now.getTime() - params.executionTimeMs);
+  const reasoningOutputTokens = params.tokenUsage?.reasoning_output_tokens;
+  const hasReasoningMetadata = Boolean(params.reasoningLevel) || (reasoningOutputTokens ?? 0) > 0;
+  const metadata = hasReasoningMetadata
+    ? {
+        ...params.metadata,
+        ...(params.reasoningLevel && { reasoningLevel: params.reasoningLevel }),
+        ...((reasoningOutputTokens ?? 0) > 0 && { reasoningOutputTokens }),
+      }
+    : params.metadata;
 
   return {
     executionType: params.executionType,
@@ -337,7 +350,7 @@ export function createLlmLogFromAnalysis(params: {
     draftId: params.draftId,
     repository: params.repository,
     agentAlias: params.agentAlias,
-    metadata: params.metadata,
+    metadata,
     usageMetrics: params.usageMetrics,
     usageMetricRecords: params.usageMetricRecords,
     workRef: params.workRef,

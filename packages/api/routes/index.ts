@@ -14,6 +14,7 @@ export { createPlannerRoutes, attachmentUpload } from './plannerRoutes.js';
 export { createRelevanceRoutes } from './relevanceRoutes.js';
 export { createAgentRoutes } from './agentRoutes.js';
 export { createInstanceCatalogRoutes } from './instanceCatalogRoutes.js';
+export { createAgentLoginRoutes } from './agentLoginRoutes.js';
 export { createAgentVersionRoutes } from './agentVersionRoutes.js';
 export { createStatsRoutes } from './statsRoutes.js';
 export { createSummaryBrowserRoutes } from './summaryBrowserRoutes.js';

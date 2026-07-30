@@ -1,8 +1,8 @@
 import type { Logger } from 'pino';
 import { resolveModelAlias } from '../config/modelAliases.js';
-import type { Label } from '@octokit/webhooks-types';
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
+type ModelLabel = string | { name: string };
 
 const DEFAULT_MODEL_LABEL_PATTERN = '^llm-(.+)$';
 
@@ -78,7 +78,7 @@ export function modelLabelPrefix(pattern: string): { prefix: string; derived: bo
 }
 
 export function extractLlmFromLabels(
-    prLabels: Label[],
+    prLabels: ModelLabel[],
     modelLabelPattern: string,
     prNumber: number,
     correlatedLogger: Logger
@@ -88,9 +88,9 @@ export function extractLlmFromLabels(
         const labelName = typeof label === 'string' ? label : label.name;
         const match = labelName.match(modelLabelRegex);
         if (match) {
-            const resolved = resolveModelAlias(match[1]);
-            correlatedLogger.debug({ pullRequestNumber: prNumber, label: labelName, resolvedModel: resolved }, 'Extracted model from PR label (webhook)');
-            return resolved;
+            const modelLabel = match[1];
+            correlatedLogger.debug({ pullRequestNumber: prNumber, label: labelName, modelLabel }, 'Extracted model routing token from PR label');
+            return modelLabel;
         }
     }
     return null;

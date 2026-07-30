@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-agent Web login**: adding Claude, Codex, Antigravity, or OpenCode can
+  now create and authenticate an isolated account directly, without entering a
+  host path. Managed credentials live below ProPR's credential root and allow
+  multiple accounts from the same provider; existing host config remains an
+  explicit alternative.
 - **Documentation**: security overview (trust boundaries, isolation, network
   surface, user-whitelist gating), evaluator FAQ, glossary, consolidated
   configuration reference (shipped vs code defaults), and a symptom-organized
@@ -24,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs/config drift**: `.env.example` tunnel hostnames updated to
   `t-<id>.propr.dev`; Node.js 22+ requirement stated consistently; stale
   OpenCode `CLI_VERSION` and `WORKER_CONCURRENCY` default corrected.
+- **Agent login reliability**: normalize managed credential ownership, remove
+  stack-scoped orphan login containers on startup, pull missing agent images,
+  preserve split terminal escape sequences, accept agent aliases consistently,
+  renew active sessions, and harden dialog lifecycle and keyboard behavior.
+
+### Security
+
+- The production API now mounts the Docker socket to create short-lived,
+  authenticated agent-login containers. Docker-socket access is root-equivalent
+  host access; deployment and security documentation now call out this trust
+  boundary explicitly.
 
 ## [0.8.5] - 2026-06-30
 

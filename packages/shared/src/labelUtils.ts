@@ -31,3 +31,31 @@ export function buildDynamicLlmLabel(agentKey: string, modelId: string): string 
         .replace(/[^a-zA-Z0-9]+$/, '');
     return `llm-${labelAlias}~${modelPrefix || fallbackPrefix}-${hash}`;
 }
+
+/**
+ * Builds the long GitHub label for a model as exposed by a configured agent.
+ * Static catalog labels retain their short model suffix while replacing the
+ * built-in agent type with the configured alias. Dynamic labels are rebuilt so
+ * their length and hash account for the alias as well.
+ */
+export function buildAgentModelLlmLabel(
+    agentType: string,
+    agentAlias: string,
+    model: { id: string; githubLabel: string }
+): string {
+    const effectiveAlias = agentAlias || agentType;
+    const dynamicPrefix = `llm-${agentType}~`;
+    if (model.githubLabel.startsWith(dynamicPrefix)) {
+        return buildDynamicLlmLabel(effectiveAlias, model.id);
+    }
+
+    const staticPrefix = `llm-${agentType}-`;
+    if (model.githubLabel.startsWith(staticPrefix)) {
+        const staticLabel = `llm-${effectiveAlias}-${model.githubLabel.slice(staticPrefix.length)}`;
+        return staticLabel.length <= MAX_GITHUB_LABEL_LENGTH
+            ? staticLabel
+            : buildDynamicLlmLabel(effectiveAlias, model.id);
+    }
+
+    return model.githubLabel;
+}

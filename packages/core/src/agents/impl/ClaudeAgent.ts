@@ -30,6 +30,7 @@ import {
     type ModelReasoningLevel
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
+import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -37,7 +38,6 @@ import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 export { UsageLimitError };
 
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
-const DEFAULT_CLAUDE_TIMEOUT_MS = 300000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 type AnalysisOutcome = { isSuccess: true } | { isSuccess: false; errorDetail: string };
@@ -69,7 +69,7 @@ export class ClaudeAgent implements Agent {
     constructor(config: AgentConfig) {
         this.config = config;
         this.maxTurns = parseInt(process.env.CLAUDE_MAX_TURNS || String(DEFAULT_CLAUDE_MAX_TURNS), 10);
-        this.timeoutMs = parseInt(process.env.CLAUDE_TIMEOUT_MS || String(DEFAULT_CLAUDE_TIMEOUT_MS), 10);
+        this.timeoutMs = parseInt(process.env.CLAUDE_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
     /** Executes a task that modifies files in the worktree. */
@@ -127,7 +127,8 @@ export class ClaudeAgent implements Agent {
 
             await this.persistExecutionLogs({
                 result, prompt, issueRef, modelUsed, isRetry, retryReason,
-                executionTime, correctedTokenUsage, taskId, prNumber, usageMetrics
+                executionTime, correctedTokenUsage, taskId, prNumber,
+                reasoningLevel: effectiveReasoningLevel || undefined, usageMetrics
             });
 
             if (!response.success) {
@@ -175,11 +176,16 @@ export class ClaudeAgent implements Agent {
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
 
         try {
+            const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(
+                reasoningLevel,
+                effectiveModel,
+                useConfiguredReasoningLevel
+            );
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
                 worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: '', taskId, executionType,
-                reasoningLevel: await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel)
+                reasoningLevel: effectiveReasoningLevel
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -212,6 +218,7 @@ export class ClaudeAgent implements Agent {
                         modelUsed: claudeOutput.model || effectiveModel, executionTimeMs, success: true,
                         tokenUsage: correctedTokenUsage, sessionId: claudeOutput.sessionId ?? undefined,
                         draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
+                        reasoningLevel: effectiveReasoningLevel || undefined,
                         usageMetrics: usage.metrics, usageMetricRecords: usage.records,
                         workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
                     }));
@@ -275,7 +282,10 @@ export class ClaudeAgent implements Agent {
 
     /** Persists execution logs to Redis and the LLM log store. */
     private async persistExecutionLogs(params: PersistLogsParams): Promise<void> {
-        const { result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime, correctedTokenUsage, taskId, prNumber, usageMetrics } = params;
+        const {
+            result, prompt, issueRef, modelUsed, isRetry, retryReason, executionTime,
+            correctedTokenUsage, taskId, prNumber, reasoningLevel, usageMetrics
+        } = params;
         const claudeOutput = parseStreamJsonOutput(result);
 
         await storePromptInRedis({ claudeOutput, prompt, issueRef, model: modelUsed, isRetry, retryReason });
@@ -288,6 +298,7 @@ export class ClaudeAgent implements Agent {
             error: claudeOutput.success ? undefined : (result.stderr || 'Execution failed'),
             sessionId: claudeOutput.sessionId ?? undefined, draftId: taskId, repository,
             agentAlias: this.config.alias,
+            reasoningLevel,
             metadata: { isRetry, retryReason, conversationId: claudeOutput.conversationId },
             usageMetrics: usageMetrics ? {
                 preCall: usageMetrics.preCall, postCall: usageMetrics.postCall,

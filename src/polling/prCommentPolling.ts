@@ -3,7 +3,7 @@ import { generateCorrelationId } from '@propr/core';
 import { handleError } from '@propr/core';
 import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
-import { resolveModelAlias } from '@propr/core';
+import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { loadPrimaryProcessingLabels } from '@propr/core';
 import type { Redis } from 'ioredis';
 
@@ -199,17 +199,7 @@ async function processPullRequestComments(
 function extractModelFromPRLabels(pr: PullRequest, modelLabelPattern: string, correlationId: string): string | null {
     if (!pr.labels || !Array.isArray(pr.labels)) return null;
     const correlatedLogger = logger.withCorrelation(correlationId);
-    const modelLabelRegex = new RegExp(modelLabelPattern);
-    for (const label of pr.labels) {
-        const labelName = typeof label === 'string' ? label : label.name;
-        const match = labelName.match(modelLabelRegex);
-        if (match) {
-            const resolvedModel = resolveModelAlias(match[1]);
-            correlatedLogger.debug({ pullRequestNumber: pr.number, label: labelName, resolvedModel }, 'Extracted model from PR label');
-            return resolvedModel;
-        }
-    }
-    return null;
+    return extractLlmFromLabels(pr.labels, modelLabelPattern, pr.number, correlatedLogger);
 }
 
 async function prHasProcessingLabel(pr: PullRequest): Promise<boolean> {

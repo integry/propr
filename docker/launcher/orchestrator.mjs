@@ -19,6 +19,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, statSync, accessSync, constants as fsConstants } from 'node:fs';
+import { homedir } from 'node:os';
 import { resolve, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -245,6 +246,14 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostData = overrides.hostData ?? env.PROPR_DATA_DIR;
     const hostLogs = overrides.hostLogs ?? env.PROPR_LOGS_DIR;
     const hostRepos = overrides.hostRepos ?? env.PROPR_REPOS_DIR;
+    // Browser-created agent accounts use an isolated ProPR-owned root. The
+    // launcher-container path derives it from the already-required host data
+    // directory, so operators do not need to provide another host path.
+    const managedCredentialsDir = overrides.managedCredentialsDir
+        ?? get('PROPR_MANAGED_CREDENTIALS_DIR')
+        ?? (overrides.validateHostPaths === true
+            ? join(homedir(), '.propr', 'agent-credentials')
+            : (hostData ? join(hostData, 'agent-credentials') : undefined));
 
     const apiPort = overrides.apiPort ?? get('API_PORT') ?? '4000';
     const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '5173';
@@ -302,7 +311,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
     return Object.freeze({
         stack, network, envFileLocal, envFileHost,
         validateHostPaths: overrides.validateHostPaths === true,
-        hostData, hostLogs, hostRepos,
+        hostData, hostLogs, hostRepos, managedCredentialsDir,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
@@ -383,6 +392,16 @@ export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false } = {})
         args.push('-e', `VIBE_CONFIG_PATH=${cfg.hostVibeDir}`);
     }
     return args;
+}
+
+function managedCredentialArgs(cfg) {
+    if (!cfg.managedCredentialsDir) return [];
+    return [
+        // HOST:HOST keeps the generated path valid when an app container asks
+        // the host Docker daemon to mount it into a sibling agent container.
+        '-v', `${cfg.managedCredentialsDir}:${cfg.managedCredentialsDir}`,
+        '-e', `PROPR_MANAGED_CREDENTIALS_DIR=${cfg.managedCredentialsDir}`,
+    ];
 }
 
 // Bind-mount the GitHub App private key into app containers (read-only) and
@@ -810,6 +829,8 @@ function appBaseArgs(cfg) {
         '-v', '/tmp/git-processor:/tmp/git-processor',
         '--add-host', 'host.docker.internal:host-gateway',
         '-e', `REDIS_HOST=${cfg.stack}-redis`,
+        '-e', `PROPR_STACK=${cfg.stack}`,
+        '-e', 'PROPR_CONTAINERIZED=1',
         // Every app container imports @propr/core's githubAuth, which needs the
         // GitHub App private key — so mount it for all of them when provided.
         ...githubKeyArgs(cfg),
@@ -847,11 +868,13 @@ export function buildServiceSpec(cfg, service) {
                 // .env without API_PUBLIC_URL/FRONTEND_URL doesn't crashloop it.
                 '-e', `API_PUBLIC_URL=${cfg.apiPublicUrl}`,
                 ...vibePromptCacheArgs(cfg),
+                ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg, { opencodeDataReadWrite: true }),
             ]);
         case 'analysis-worker':
             return appSpec(cfg, ['dist/src/analysis_worker.js'], [
                 ...vibePromptCacheArgs(cfg),
+                ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg),
             ]);
         case 'indexing-worker':
@@ -859,6 +882,7 @@ export function buildServiceSpec(cfg, service) {
                 '-v', '/tmp/claude-logs:/tmp/claude-logs',
                 '-e', `INDEXING_SCAN_INTERVAL_MS=${cfg.indexingScanInterval}`,
                 '-e', `INDEXING_REINDEX_INTERVAL_MS=${cfg.indexingReindexInterval}`,
+                ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg),
             ]);
         case 'api':
@@ -879,6 +903,7 @@ export function buildServiceSpec(cfg, service) {
                 '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
                 '--ulimit', 'nofile=65536:65536',
                 ...vibePromptCacheArgs(cfg),
+                ...managedCredentialArgs(cfg),
                 ...agentCredentialArgs(cfg),
                 '-e', `API_PUBLIC_URL=${cfg.apiPublicUrl}`,
                 '-e', `FRONTEND_URL=${cfg.frontendUrl}`,
@@ -1371,6 +1396,13 @@ export function validateEnv(cfg) {
     if (!cfg.hostData) errors.push('data dir is not set (PROPR_DATA_DIR)');
     if (!cfg.hostLogs) errors.push('logs dir is not set (PROPR_LOGS_DIR)');
     if (!cfg.hostRepos) errors.push('repos dir is not set (PROPR_REPOS_DIR)');
+    if (cfg.managedCredentialsDir) {
+        const invalidManagedCredentials = validateDockerBindPath(
+            'PROPR_MANAGED_CREDENTIALS_DIR',
+            cfg.managedCredentialsDir,
+        );
+        if (invalidManagedCredentials) errors.push(invalidManagedCredentials);
+    }
     if (cfg.validateHostPaths) {
         for (const [name, path] of [
             ['PROPR_DATA_DIR', cfg.hostData],

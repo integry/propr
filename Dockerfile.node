@@ -1,9 +1,10 @@
 FROM node:20-alpine
 
-# Install git, sudo, docker client with compose plugin, curl, jq, and build tools for native modules (better-sqlite3)
+# Install git, sudo, Docker tooling, script(1) for browser agent-login PTYs,
+# curl, jq, and build tools for native modules (better-sqlite3)
 # curl and jq are required for deploy-pr.sh script execution
 # docker-cli-compose provides 'docker compose' (v2) command
-RUN apk add --no-cache git sudo docker-cli docker-cli-compose curl jq python3 make g++
+RUN apk add --no-cache git sudo docker-cli docker-cli-compose curl jq util-linux-misc python3 make g++
 
 WORKDIR /usr/src/app
 

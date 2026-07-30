@@ -105,7 +105,7 @@ WORKDIR /home/node/workspace
 
 
 FROM agent-base AS claude-cli
-ARG CLAUDE_CLI_VERSION=2.1.211
+ARG CLAUDE_CLI_VERSION=2.1.220
 USER root
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
     && npm cache clean --force \
@@ -114,7 +114,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" \
 
 
 FROM agent-base AS codex-cli
-ARG CODEX_CLI_VERSION=0.144.5
+ARG CODEX_CLI_VERSION=0.146.0
 USER root
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
     && npm cache clean --force \
@@ -123,7 +123,7 @@ RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
 
 
 FROM agent-base AS opencode-cli
-ARG OPENCODE_CLI_VERSION=1.18.2
+ARG OPENCODE_CLI_VERSION=1.18.9
 USER root
 RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
     && npm cache clean --force \
@@ -137,7 +137,7 @@ RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
 
 
 FROM agent-base AS vibe-cli
-ARG VIBE_CLI_VERSION=2.20.0
+ARG VIBE_CLI_VERSION=2.23.1
 COPY --from=uv-bin /uv /uvx /usr/local/bin/
 ENV UV_TOOL_DIR=/opt/uv/tools \
     UV_TOOL_BIN_DIR=/usr/local/bin \
@@ -173,11 +173,11 @@ RUN if [ "${ANTIGRAVITY_CLI_VERSION}" != "latest" ]; then \
 
 
 FROM agent-base AS final
-ARG CLAUDE_CLI_VERSION=2.1.211
-ARG CODEX_CLI_VERSION=0.144.5
+ARG CLAUDE_CLI_VERSION=2.1.220
+ARG CODEX_CLI_VERSION=0.146.0
 ARG ANTIGRAVITY_CLI_VERSION=latest
-ARG OPENCODE_CLI_VERSION=1.18.2
-ARG VIBE_CLI_VERSION=2.20.0
+ARG OPENCODE_CLI_VERSION=1.18.9
+ARG VIBE_CLI_VERSION=2.23.1
 
 LABEL dev.propr.agent-bundle="true" \
       dev.propr.agent.claude.version="${CLAUDE_CLI_VERSION}" \

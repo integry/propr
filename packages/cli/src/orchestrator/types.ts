@@ -20,6 +20,7 @@ export interface OrchestratorConfig {
   readonly hostData?: string;
   readonly hostLogs?: string;
   readonly hostRepos?: string;
+  readonly managedCredentialsDir?: string;
   readonly apiPort: string;
   readonly uiPort: string;
   readonly docsPort: string;

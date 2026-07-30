@@ -23,10 +23,13 @@ export interface AgentDisplayInfo {
 }
 
 // Claude models (newest first within each tier, then by capability: Opus > Sonnet > Haiku)
-// 4.8/4.7/4.6 models require newer Claude Code versions; 4.5 models work with older versions
+// Claude 5 and 4.8/4.7/4.6 models require newer Claude Code versions; 4.5 models work with older versions
 export const CLAUDE_MODELS: ModelInfo[] = [
   // Claude Fable 5 (top tier, above Opus)
   { id: 'claude-fable-5', name: 'Claude Fable 5', shortName: 'Claude Fable 5', shortAlias: 'fable', githubLabel: 'llm-claude-fable', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-fable-5', minAgentVersion: '2.1.170' },
+  // Claude 5 series
+  { id: 'claude-opus-5', name: 'Claude Opus 5', shortName: 'Claude Opus 5', shortAlias: 'opus5', githubLabel: 'llm-claude-opus5', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5', minAgentVersion: '2.1.219' },
+  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', shortName: 'Claude Sonnet 5', shortAlias: 'sonnet5', githubLabel: 'llm-claude-sonnet5', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5', minAgentVersion: '2.1.201' },
   // Claude 4.8 series
   { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', shortName: 'Claude Opus 4.8', shortAlias: 'opus48', githubLabel: 'llm-claude-opus48', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-4.8' },
   // Claude 4.7 series
@@ -43,9 +46,9 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 // Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
 // Recommended: gpt-5.6-sol (default), gpt-5.6-terra (balanced), gpt-5.6-luna (fast/low-cost)
 export const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', shortName: 'GPT-5.6 Sol', shortAlias: 'gpt56-sol', githubLabel: 'llm-codex-gpt56-sol', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-5.6-sol', minAgentVersion: '0.144.0' },
-  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', shortName: 'GPT-5.6 Terra', shortAlias: 'gpt56-terra', githubLabel: 'llm-codex-gpt56-terra', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.6-terra', minAgentVersion: '0.144.0' },
-  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', shortName: 'GPT-5.6 Luna', shortAlias: 'gpt56-luna', githubLabel: 'llm-codex-gpt56-luna', contextWindow: '400K', maxTokens: 400000, openRouterId: 'openai/gpt-5.6-luna', minAgentVersion: '0.144.0' },
+  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', shortName: 'GPT-5.6 Sol', shortAlias: 'gpt56-sol', githubLabel: 'llm-codex-gpt56-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-sol', minAgentVersion: '0.144.0' },
+  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', shortName: 'GPT-5.6 Terra', shortAlias: 'gpt56-terra', githubLabel: 'llm-codex-gpt56-terra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-terra', minAgentVersion: '0.144.0' },
+  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', shortName: 'GPT-5.6 Luna', shortAlias: 'gpt56-luna', githubLabel: 'llm-codex-gpt56-luna', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-luna', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.5', name: 'GPT-5.5', shortName: 'GPT-5.5', shortAlias: 'gpt55', githubLabel: 'llm-codex-gpt55', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.5' },
   { id: 'gpt-5.5-pro', name: 'GPT-5.5 Pro', shortName: 'GPT-5.5 Pro', shortAlias: 'gpt55-pro', githubLabel: 'llm-codex-gpt55-pro', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.5-pro' },
   { id: 'gpt-5.4', name: 'GPT-5.4', shortName: 'GPT-5.4', shortAlias: 'gpt54', githubLabel: 'llm-codex-gpt54', contextWindow: '1M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.4' },
@@ -63,6 +66,9 @@ export const CODEX_MODELS: ModelInfo[] = [
 // these IDs are intentionally namespaced instead of treating every model as a
 // Google/Gemini model.
 export const ANTIGRAVITY_MODELS: ModelInfo[] = [
+  { id: 'antigravity-gemini-3.6-flash-medium', name: 'Antigravity Gemini 3.6 Flash Medium', shortName: 'Gemini 3.6 Flash Medium', shortAlias: 'flash36-medium', githubLabel: 'llm-antigravity-flash36-medium', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },
+  { id: 'antigravity-gemini-3.6-flash-high', name: 'Antigravity Gemini 3.6 Flash High', shortName: 'Gemini 3.6 Flash High', shortAlias: 'flash36-high', githubLabel: 'llm-antigravity-flash36-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },
+  { id: 'antigravity-gemini-3.6-flash-low', name: 'Antigravity Gemini 3.6 Flash Low', shortName: 'Gemini 3.6 Flash Low', shortAlias: 'flash36-low', githubLabel: 'llm-antigravity-flash36-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },
   { id: 'antigravity-gemini-3.5-flash-medium', name: 'Antigravity Gemini 3.5 Flash Medium', shortName: 'Gemini 3.5 Flash Medium', shortAlias: 'flash-medium', githubLabel: 'llm-antigravity-flash-medium', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.5-flash' },
   { id: 'antigravity-gemini-3.5-flash-high', name: 'Antigravity Gemini 3.5 Flash High', shortName: 'Gemini 3.5 Flash High', shortAlias: 'flash-high', githubLabel: 'llm-antigravity-flash-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.5-flash' },
   { id: 'antigravity-gemini-3.5-flash-low', name: 'Antigravity Gemini 3.5 Flash Low', shortName: 'Gemini 3.5 Flash Low', shortAlias: 'flash-low', githubLabel: 'llm-antigravity-flash-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.5-flash' },
@@ -78,9 +84,11 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
 // back to OpenCode's provider/model syntax at CLI execution time.
 // These are available from `opencode models` without provider login.
 export const OPENCODE_MODELS: ModelInfo[] = [
-  { id: 'opencode-minimax-m3-free', name: 'MiniMax M3 Free', shortName: 'MiniMax M3 Free', shortAlias: 'minimax-m3-free', githubLabel: 'llm-opencode-minimax-m3-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'minimax/minimax-m3' },
   { id: 'opencode-deepseek-v4-flash-free', name: 'DeepSeek V4 Flash Free', shortName: 'DeepSeek V4 Flash Free', shortAlias: 'deepseek-v4-flash-free', githubLabel: 'llm-opencode-deepseek-v4-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4-flash' },
   { id: 'opencode-mimo-v2.5-free', name: 'MiMo V2.5 Free', shortName: 'MiMo V2.5 Free', shortAlias: 'mimo-v25-free', githubLabel: 'llm-opencode-mimo-v25-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.5' },
+  { id: 'opencode-laguna-s-2.1-free', name: 'Laguna S 2.1 Free', shortName: 'Laguna S 2.1 Free', shortAlias: 'laguna-s21-free', githubLabel: 'llm-opencode-laguna-s21-free', contextWindow: '256K', maxTokens: 256000, openRouterId: 'poolside/laguna-s-2.1:free' },
+  { id: 'opencode-ling-3.0-flash-free', name: 'Ling 3.0 Flash Free', shortName: 'Ling 3.0 Flash Free', shortAlias: 'ling30-flash-free', githubLabel: 'llm-opencode-ling30-flash-free', contextWindow: '262K', maxTokens: 262144, openRouterId: 'inclusionai/ling-3.0-flash:free' },
+  { id: 'opencode-north-mini-code-free', name: 'North Mini Code Free', shortName: 'North Mini Code Free', shortAlias: 'north-mini-code-free', githubLabel: 'llm-opencode-north-mini-code-free', contextWindow: '256K', maxTokens: 256000, openRouterId: 'cohere/north-mini-code:free' },
   { id: 'opencode-nemotron-3-ultra-free', name: 'Nemotron 3 Ultra Free', shortName: 'Nemotron 3 Ultra Free', shortAlias: 'nemotron-3-ultra-free', githubLabel: 'llm-opencode-nemotron-3-ultra-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'nvidia/nemotron-3-ultra-550b-a55b' },
   { id: 'opencode-big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
 ];
@@ -142,7 +150,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.211'
+    defaultCliVersion: '2.1.220'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -150,7 +158,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.144.5'
+    defaultCliVersion: '0.146.0'
   },
   antigravity: {
     dockerImage: 'propr/agent:latest',
@@ -166,7 +174,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: OPENCODE_MODELS.map(m => m.id),
     defaultAlias: 'opencode',
     npmPackage: 'opencode-ai',
-    defaultCliVersion: '1.18.2'
+    defaultCliVersion: '1.18.9'
   },
   vibe: {
     dockerImage: 'propr/agent:latest',
@@ -174,7 +182,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: VIBE_MODELS.map(m => m.id),
     defaultAlias: 'vibe',
     npmPackage: 'mistral-vibe',
-    defaultCliVersion: '2.20.0'
+    defaultCliVersion: '2.23.1'
   }
 };
 

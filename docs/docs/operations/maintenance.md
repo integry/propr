@@ -97,6 +97,7 @@ Back up:
 
 - The SQLite database (`data/propr.sqlite`, including `-wal`/`-shm` files) — the primary application state. Copy it while the stack is stopped, or use `sqlite3 propr.sqlite ".backup backup.sqlite"` for a consistent snapshot of a live database (WAL mode is enabled)
 - Production `.env` and the GitHub App private key (or the secret source that produces them)
+- ProPR's managed agent credential root if you use direct login (`~/.propr/agent-credentials` for native/Compose installs or `PROPR_DATA_DIR/agent-credentials` for the launcher)
 - The `propr-redis-data` Docker volume if you want queue state and sessions to survive a restore
 - Logs, if you need history
 
@@ -181,6 +182,12 @@ To remove ProPR from a host completely:
    ```bash
    rm -rf /srv/propr     # or your propr-deploy directory
    ```
+
+   Launcher-managed agent credentials are already below `data/`. For a native
+   or Compose install that used direct agent login, separately remove
+   `~/.propr/agent-credentials` after backing up or revoking those provider
+   accounts; do not remove the rest of `~/.propr` unless you also intend to
+   discard other CLI state.
 
 5. **Uninstall the GitHub App.** Remove the ProPR GitHub App installation (the shared hosted App, or your own) from the organization or repositories in GitHub settings. If you registered a GitHub OAuth App only for this install's dashboard login, delete that too.
 
