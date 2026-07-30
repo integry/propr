@@ -125,12 +125,15 @@ describe('demo mode API helpers', () => {
     const response = new Response(JSON.stringify({
       code: 'INSUFFICIENT_INSTANCE_PERMISSION',
       error: 'Forbidden',
+      message: 'This action requires the instance.manage_settings permission.',
     }), {
       status: 403,
       headers: { 'Content-Type': 'application/json' },
     });
 
-    await expect(handleApiResponse(response)).rejects.toThrow('Forbidden');
+    await expect(handleApiResponse(response)).rejects.toThrow(
+      'This action requires the instance.manage_settings permission.'
+    );
 
     expect(listener).toHaveBeenCalledOnce();
     window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);

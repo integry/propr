@@ -12,7 +12,7 @@ export type InstanceMemberSource = 'local' | 'managed';
 
 export interface AuthenticatedInstanceUser {
   id: string;
-  login?: string;
+  login: string;
   username: string;
   displayName: string;
   email: string | null;

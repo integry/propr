@@ -1,13 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ShieldCheck, Trash2, UserPlus } from 'lucide-react';
+import { History, ShieldCheck, Trash2, UserPlus } from 'lucide-react';
 import {
   addInstanceMember,
   claimBootstrapAdmin,
   getInstanceMembers,
+  getInstanceRoleAudit,
   removeInstanceMember,
   updateInstanceMemberRole
 } from '../api/instanceMembersApi';
-import type { InstanceMember, InstanceMembersResponse, InstanceRole } from '../api/proprTypes';
+import type {
+  InstanceMember,
+  InstanceMembersResponse,
+  InstanceRole,
+  InstanceRoleAuditEntry
+} from '../api/proprTypes';
 import { useCurrentUser, useRefreshCurrentUser } from '../contexts/AuthContext';
 
 const EMPTY_RESPONSE: InstanceMembersResponse = {
@@ -15,10 +21,21 @@ const EMPTY_RESPONSE: InstanceMembersResponse = {
   bootstrapAdmins: []
 };
 
+function auditDescription(entry: InstanceRoleAuditEntry): string {
+  if (entry.action === 'admin_claimed') return 'stored an administrator role for';
+  if (entry.action === 'member_added') return `added ${entry.newRole ?? 'a role'} for`;
+  if (entry.action === 'member_removed') return `removed ${entry.previousRole ?? 'the role'} from`;
+  if (entry.action === 'role_changed') {
+    return `changed ${entry.previousRole ?? 'the role'} to ${entry.newRole ?? 'unassigned'} for`;
+  }
+  return `${entry.action.replace(/_/g, ' ')} for`;
+}
+
 const AccessManagementPage: React.FC = () => {
   const currentUser = useCurrentUser();
   const refreshCurrentUser = useRefreshCurrentUser();
   const [data, setData] = useState<InstanceMembersResponse>(EMPTY_RESPONSE);
+  const [auditEntries, setAuditEntries] = useState<InstanceRoleAuditEntry[]>([]);
   const [username, setUsername] = useState('');
   const [role, setRole] = useState<InstanceRole>('member');
   const [loading, setLoading] = useState(true);
@@ -37,9 +54,18 @@ const AccessManagementPage: React.FC = () => {
     }
   }, []);
 
+  const loadAudit = useCallback(async () => {
+    try {
+      setAuditEntries(await getInstanceRoleAudit());
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Failed to load role audit');
+    }
+  }, []);
+
   useEffect(() => {
     void loadMembers();
-  }, [loadMembers]);
+    void loadAudit();
+  }, [loadAudit, loadMembers]);
 
   const runMutation = async (mutation: () => Promise<unknown>) => {
     setSaving(true);
@@ -47,7 +73,7 @@ const AccessManagementPage: React.FC = () => {
     try {
       await mutation();
       await refreshCurrentUser();
-      await loadMembers();
+      await Promise.all([loadMembers(), loadAudit()]);
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : 'Role update failed');
     } finally {
@@ -65,15 +91,16 @@ const AccessManagementPage: React.FC = () => {
     });
   };
 
-  const updateRole = (member: InstanceMember, nextRole: InstanceRole) =>
-    runMutation(() => updateInstanceMemberRole(member.githubUserId, nextRole));
+  const updateRole = (member: InstanceMember, nextRole: InstanceRole) => {
+    if (member.role === nextRole) return;
+    void runMutation(() => updateInstanceMemberRole(member.githubUserId, nextRole));
+  };
 
   const removeMember = (member: InstanceMember) => {
     if (!window.confirm(`Remove the explicit role assignment for @${member.githubUsername}?`)) return;
     void runMutation(() => removeInstanceMember(member.githubUserId));
   };
 
-  const bootstrapAdminSet = new Set(data.bootstrapAdmins.map(value => value.toLowerCase()));
   const canStoreBootstrapRole = currentUser?.authorizationSource === 'bootstrap'
     && !data.members.some(member => member.githubUserId === currentUser.id && member.role === 'admin');
 
@@ -171,7 +198,6 @@ const AccessManagementPage: React.FC = () => {
         ) : (
           <ul className="divide-y divide-gray-200">
             {data.members.map(member => {
-              const environmentManaged = bootstrapAdminSet.has(member.githubUsername.toLowerCase());
               return (
                 <li key={member.githubUserId} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center">
                   <div className="min-w-0 flex-1">
@@ -189,8 +215,8 @@ const AccessManagementPage: React.FC = () => {
                     <select
                       aria-label={`Role for ${member.githubUsername}`}
                       value={member.role}
-                      disabled={saving || environmentManaged}
-                      onChange={event => void updateRole(member, event.target.value as InstanceRole)}
+                      disabled={saving}
+                      onChange={event => updateRole(member, event.target.value as InstanceRole)}
                       className="rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100"
                     >
                       <option value="member">Member</option>
@@ -199,8 +225,8 @@ const AccessManagementPage: React.FC = () => {
                     <button
                       type="button"
                       aria-label={`Remove ${member.githubUsername}`}
-                      title={environmentManaged ? 'Managed through PROPR_ADMIN_USERS' : 'Remove assignment'}
-                      disabled={saving || environmentManaged}
+                      title="Remove durable assignment"
+                      disabled={saving}
                       onClick={() => removeMember(member)}
                       className="rounded-md p-2 text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
                     >
@@ -210,6 +236,29 @@ const AccessManagementPage: React.FC = () => {
                 </li>
               );
             })}
+          </ul>
+        )}
+      </div>
+
+      <div className="mt-8 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+        <div className="flex items-center gap-2 border-b border-gray-200 px-5 py-4">
+          <History className="h-4 w-4 text-gray-500" />
+          <h2 className="font-medium text-gray-900">Recent role changes</h2>
+        </div>
+        {auditEntries.length === 0 ? (
+          <div className="p-6 text-sm text-gray-500">No role changes recorded yet.</div>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {auditEntries.map(entry => (
+              <li key={entry.id} className="px-5 py-3 text-sm text-gray-700">
+                <span className="font-medium">@{entry.actorGithubUsername}</span>
+                {' '}{auditDescription(entry)}{' '}
+                <span className="font-medium">@{entry.targetGithubUsername}</span>
+                <span className="ml-2 text-xs text-gray-500">
+                  {new Date(entry.createdAt).toLocaleString()}
+                </span>
+              </li>
+            ))}
           </ul>
         )}
       </div>

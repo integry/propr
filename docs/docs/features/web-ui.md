@@ -12,7 +12,7 @@ Two persistent elements frame every page.
 
 **Header (top).** A global **search** (focus with `Cmd/Ctrl+K`) spans tasks, plans, and repositories. To its right: an **AI activity monitor** (how many tasks are running now), an **active plans** dropdown, a **tasks awaiting review** dropdown grouped by repo/PR/issue, a **quick add to-do** popover (`Alt+T`), a **New Plan** button, a **system health** indicator that opens a status modal (daemon, workers, Redis, GitHub auth, indexing, and per-agent health), and your GitHub profile with sign-out.
 
-When the backend runs with `PROPR_DEMO_MODE=true`, a banner indicates read-only access and all mutating actions are disabled.
+When the backend runs with `PROPR_DEMO_MODE=true`, a banner indicates read-only access and all mutating actions are disabled. The synthetic demo identity has member-level operational access; installation-only Settings, Coding Agents, trusted-runtime, and Access controls are hidden.
 
 {/* SCREENSHOT PLACEHOLDER (P1): Capture the full app shell — left sidebar (nav + Agent Tank usage + version footer) and the global header (search, activity monitor, New Plan, system health, profile) — with the Dashboard behind it. */}
 
@@ -74,7 +74,7 @@ These map onto [Agents And Models](./agents-and-models.md), [PR Follow-up](./pr-
 
 ## Access
 
-**Access** (`/admin/members`) is available to administrators. It creates durable `admin` and `member` role assignments using stable GitHub user IDs, shows environment administrators configured through `PROPR_ADMIN_USERS`, and prevents removal or demotion of the last durable administrator. On a new installation, sign in as a configured environment administrator and use **Store my administrator role** before removing that username from `PROPR_ADMIN_USERS`.
+**Access** (`/admin/members`) is available to administrators. It creates durable `admin` and `member` role assignments using stable GitHub user IDs, shows environment administrators configured through `PROPR_ADMIN_USERS`, surfaces recent role-audit events, and prevents removal or demotion of the last durable administrator. On a new installation, sign in as a configured environment administrator and use **Store my administrator role** before removing that username from `PROPR_ADMIN_USERS`.
 
 Role assignments do not edit the GitHub trigger whitelist. Configure allowed login and trigger actors separately under **Settings**.
 

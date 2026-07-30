@@ -64,6 +64,9 @@ export interface UseRepositoryManagementResult {
 
 export function useRepositoryManagement(): UseRepositoryManagementResult {
   const { isConnected, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onIndexingUpdate } = useSocket();
+  // AppContent keeps the route tree behind its initial auth check, so this value
+  // is resolved before the first repository fetch rather than changing from a
+  // pending null into an administrator after the hook mounts.
   const currentUser = useCurrentUser();
   const canManageRepositories = userHasPermission(currentUser, 'instance.manage_settings');
   const [repos, setRepos] = useState<Repo[]>([]);

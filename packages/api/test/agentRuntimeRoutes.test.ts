@@ -195,37 +195,7 @@ describe('agent runtime package routes', () => {
         assert.equal(record.status, 403);
     });
 
-    test('redacts runtime build details for non-admin readers', async () => {
-        const previous = process.env.PROPR_ADMIN_USERS;
-        process.env.PROPR_ADMIN_USERS = 'owner';
-        try {
-            const routes = createAgentRuntimeRoutes({
-                runtimeBuildQueue: {} as never,
-                services: {
-                    loadState: async () => ({
-                        ...initialState(),
-                        status: 'failed',
-                        error: 'apt mirror exposed host details',
-                        buildLog: 'full build log'
-                    })
-                }
-            });
-            const { response, record } = responseRecorder();
-
-            await routes.getRuntimePackages({ user: { username: 'member' }, authorization: memberAuthorization } as unknown as Request, response);
-
-            assert.equal(record.status, 200);
-            assert.equal((record.body as AgentRuntimePackageState).status, 'failed');
-            assert.equal((record.body as AgentRuntimePackageState).error, undefined);
-            assert.equal((record.body as AgentRuntimePackageState).buildLog, undefined);
-            assert.equal((record.body as AgentRuntimePackageState & { canManage?: boolean }).canManage, false);
-        } finally {
-            if (previous === undefined) delete process.env.PROPR_ADMIN_USERS;
-            else process.env.PROPR_ADMIN_USERS = previous;
-        }
-    });
-
-    test('requires authentication before returning runtime package state', async () => {
+    test('requires runtime-management permission before returning runtime package state', async () => {
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: {} as never,
             services: {
@@ -239,10 +209,15 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.getRuntimePackages({} as unknown as Request, response);
+        await routes.getRuntimePackages({
+            user: { username: 'member' },
+            authorization: memberAuthorization
+        } as unknown as Request, response);
 
-        assert.equal(record.status, 401);
-        assert.deepEqual(record.body, { error: 'Authentication required' });
+        assert.equal(record.status, 403);
+        assert.deepEqual(record.body, {
+            error: 'Only ProPR installation administrators may change agent runtime packages'
+        });
     });
 
     test('warms the package catalog when an admin loads runtime package state', async () => {
@@ -266,7 +241,7 @@ describe('agent runtime package routes', () => {
         assert.deepEqual(warmedImages, ['propr/agent:bundle-test']);
     });
 
-    test('does not warm the package catalog for non-admin readers', async () => {
+    test('does not warm the package catalog when a member is rejected', async () => {
         let warmCalled = false;
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: {} as never,
@@ -281,7 +256,7 @@ describe('agent runtime package routes', () => {
         await routes.getRuntimePackages({ user: { username: 'member' }, authorization: memberAuthorization } as unknown as Request, response);
         await new Promise(resolve => setImmediate(resolve));
 
-        assert.equal(record.status, 200);
+        assert.equal(record.status, 403);
         assert.equal(warmCalled, false);
     });
 

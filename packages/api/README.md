@@ -66,6 +66,7 @@ All API endpoints are protected by authentication:
 - `GET /api/auth/logout` - Logout user
 - `GET /api/auth/user` - Get sanitized current user info, instance role, and permissions
 - `GET /api/catalog` - Get the sanitized enabled repository/agent catalog needed by member workflows
+- `GET /api/repositories/indexing-status` - Get indexing status projected to enabled catalog repository/branch entries
 - `GET /api/admin/members` - List explicit role assignments (administrator)
 - `POST /api/admin/members/claim` - Store a configured bootstrap administrator by numeric GitHub ID
 - `POST /api/admin/members` - Add a role assignment by GitHub username (administrator)

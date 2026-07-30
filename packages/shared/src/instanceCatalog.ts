@@ -1,5 +1,6 @@
 export interface InstanceCatalogAgent {
   alias: string;
+  /** Always true: the operational catalog omits disabled entries. */
   enabled: boolean;
   supportedModels: string[];
   defaultModel?: string;
@@ -7,6 +8,7 @@ export interface InstanceCatalogAgent {
 
 export interface InstanceCatalogRepository {
   name: string;
+  /** Always true: the operational catalog omits disabled entries. */
   enabled: boolean;
   alias?: string;
   baseBranch?: string;

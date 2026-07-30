@@ -10,14 +10,10 @@ import {
   ActivePlansButton,
   TasksButton,
 } from './GlobalHeaderComponents';
+import type { CurrentUser } from '../api/proprTypes';
 
 interface GlobalHeaderProps {
-  user: {
-    id: string;
-    username: string;
-    displayName: string;
-    avatarUrl?: string | null;
-  } | null;
+  user: Pick<CurrentUser, 'id' | 'username' | 'displayName' | 'avatarUrl'> | null;
   onLogout: () => void;
   onMenuToggle: () => void;
   MenuIcon: React.FC<{ className?: string }>;

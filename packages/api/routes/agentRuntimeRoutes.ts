@@ -12,7 +12,6 @@ import {
     type AgentRuntimeBuildJobData,
     type AgentRuntimePackageState
 } from '@propr/core';
-import { hasPermission } from '../authorization.js';
 
 interface AgentRuntimeRoutesDeps {
     runtimeBuildQueue?: Queue<AgentRuntimeBuildJobData>;
@@ -41,25 +40,14 @@ interface AgentRuntimeRouteServices {
     warmCatalog: typeof warmAgentRuntimePackageCatalog;
 }
 
-function canManageRuntime(req: Request): boolean {
-    return hasPermission(req, 'instance.manage_runtime');
-}
-
 function requireRuntimeAdmin(req: Request, res: Response): boolean {
-    if (canManageRuntime(req)) return true;
+    if (req.authorization?.permissions.includes('instance.manage_runtime')) return true;
     res.status(403).json({ error: 'Only ProPR installation administrators may change agent runtime packages' });
     return false;
 }
 
-function requireAuthenticatedRuntimeReader(req: Request, res: Response): boolean {
-    if (req.user?.username) return true;
-    res.status(401).json({ error: 'Authentication required' });
-    return false;
-}
-
-function runtimeStateResponse(state: AgentRuntimePackageState, req: Request): RuntimePackageStateResponse {
-    const canManage = canManageRuntime(req);
-    return { ...(canManage ? state : { ...state, buildLog: undefined, error: undefined }), canManage };
+function runtimeStateResponse(state: AgentRuntimePackageState): RuntimePackageStateResponse {
+    return { ...state, canManage: true };
 }
 
 function runtimePackageRequestTimeoutMs(): number {
@@ -116,17 +104,15 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
     };
 
     async function getRuntimePackages(req: Request, res: Response): Promise<void> {
-        if (!requireAuthenticatedRuntimeReader(req, res)) return;
+        if (!requireRuntimeAdmin(req, res)) return;
         try {
-            if (canManageRuntime(req)) {
-                // An admin loading the runtime state is about to search/validate
-                // packages; warm the catalog off the request path so their first
-                // search does not wait on a container running apt-get update.
-                void configuredBaseImages(services.loadBaseImages)
-                    .then(images => services.warmCatalog(images))
-                    .catch(() => { /* Best-effort warm-up only. */ });
-            }
-            res.json(runtimeStateResponse(await services.loadState(), req));
+            // An admin loading the runtime state is about to search/validate
+            // packages; warm the catalog off the request path so their first
+            // search does not wait on a container running apt-get update.
+            void configuredBaseImages(services.loadBaseImages)
+                .then(images => services.warmCatalog(images))
+                .catch(() => { /* Best-effort warm-up only. */ });
+            res.json(runtimeStateResponse(await services.loadState()));
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
         }
@@ -165,7 +151,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         }
     }
 
-    async function queueBuild(packages: unknown, req: Request, res: Response): Promise<void> {
+    async function queueBuild(packages: unknown, res: Response): Promise<void> {
         let jobData: AgentRuntimeBuildJobData | undefined;
         let syntax: ReturnType<AgentRuntimeRouteServices['validate']> | undefined;
         try {
@@ -191,7 +177,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 removeOnComplete: 20,
                 removeOnFail: 50
             });
-            res.status(202).json(runtimeStateResponse(await services.loadState(), req));
+            res.status(202).json(runtimeStateResponse(await services.loadState()));
         } catch (error) {
             if (jobData) {
                 try {
@@ -214,14 +200,14 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
 
     async function putRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireRuntimeAdmin(req, res)) return;
-        await queueBuild(req.body?.packages, req, res);
+        await queueBuild(req.body?.packages, res);
     }
 
     async function applyRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireRuntimeAdmin(req, res)) return;
         try {
             const state = await services.loadState();
-            await queueBuild(state.packages, req, res);
+            await queueBuild(state.packages, res);
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
         }

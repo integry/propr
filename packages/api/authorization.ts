@@ -42,6 +42,21 @@ export function isBootstrapAdmin(username: string): boolean {
     return getBootstrapAdminUsernames().includes(username.trim().toLowerCase());
 }
 
+export async function assertInstanceAdministratorConfigured(database: Knex = db): Promise<void> {
+    if (isDemoMode() || getBootstrapAdminUsernames().length > 0) return;
+
+    const durableAdmin = await database<InstanceMemberRow>('instance_members')
+        .select('github_user_id')
+        .where({ role: 'admin' })
+        .first();
+    if (durableAdmin) return;
+
+    throw new Error(
+        'No instance administrator is configured. Set PROPR_ADMIN_USERS to at least one GitHub username, '
+        + 'start ProPR, and store that administrator role from Web UI > Access.'
+    );
+}
+
 export async function resolveInstanceAuthorization(
     user: GitHubUser,
     database: Knex = db

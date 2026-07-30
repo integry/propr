@@ -61,32 +61,31 @@ import type {
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
 
 export const handleApiResponse = async (response: Response): Promise<Response> => {
+  if (response.ok) return response;
   if (response.status === 401) {
     if (window.location.pathname === '/login') throw new Error('Authentication required');
     window.location.href = '/login';
     throw new Error('Authentication required');
   }
-  if (response.status === 403 || response.status === 405) {
-    let data: { code?: string; error?: string } | null = null;
-    try {
-      data = await response.clone().json() as { code?: string; error?: string };
-    } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
-    if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
-      throw new DemoModeReadOnlyError(data.error);
-    }
-    if (data?.code === 'INSUFFICIENT_INSTANCE_PERMISSION') {
-      window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
-    }
-    if (data?.error) throw new Error(data.error);
+
+  let data: { code?: string; error?: string; message?: string } | null = null;
+  try {
+    data = await response.clone().json() as { code?: string; error?: string; message?: string };
+  } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
+  if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
+    throw new DemoModeReadOnlyError(data.message || data.error);
   }
-  if (!response.ok) {
-        throw new Error(
-            response.status >= 500
-                ? `The server ran into a problem (HTTP ${response.status}). Please try again in a moment.`
-                : `The request could not be completed (HTTP ${response.status}).`
-        );
-    }
-  return response;
+  if (data?.code === 'INSUFFICIENT_INSTANCE_PERMISSION') {
+    window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
+  }
+  if (response.status < 500 && (data?.message || data?.error)) {
+    throw new Error(data.message || data.error);
+  }
+  throw new Error(
+    response.status >= 500
+      ? `The server ran into a problem (HTTP ${response.status}). Please try again in a moment.`
+      : `The request could not be completed (HTTP ${response.status}).`
+  );
 };
 
 export const getDemoModeStatus = async (): Promise<DemoModeStatus> => {

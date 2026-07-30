@@ -6,7 +6,7 @@ import type {
     InstanceRoleAuditEntry
 } from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
-import { getBootstrapAdminUsernames, type InstanceAuthorization } from './authorization.js';
+import type { InstanceAuthorization } from './authorization.js';
 
 export type { InstanceMember, InstanceRoleAuditEntry };
 
@@ -83,7 +83,7 @@ async function writeAudit(
     trx: Knex.Transaction,
     { actor, target, action, previousRole, newRole }: AuditWrite
 ): Promise<void> {
-    await trx('instance_role_audit').insert({
+    const insertedRows = await trx<AuditRow>('instance_role_audit').insert({
         actor_github_user_id: actor.id,
         actor_github_username: actor.username,
         target_github_user_id: target.id,
@@ -91,32 +91,28 @@ async function writeAudit(
         action,
         previous_role: previousRole,
         new_role: newRole
-    });
-    const firstExpired = await trx<AuditRow>('instance_role_audit')
-        .select('id')
-        .orderBy('id', 'desc')
-        .offset(AUDIT_RETENTION_LIMIT)
-        .first();
-    if (firstExpired) {
-        await trx('instance_role_audit').where('id', '<=', firstExpired.id).delete();
-    }
-}
-
-function assertNotEnvironmentAdmin(target: { username: string }): void {
-    if (getBootstrapAdminUsernames().includes(target.username.toLowerCase())) {
-        throw new InstanceMemberError(
-            `${target.username} is configured through PROPR_ADMIN_USERS and cannot be assigned or changed here`,
-            409,
-            'BOOTSTRAP_ADMIN_IMMUTABLE'
-        );
+    }, ['id']);
+    const insertedId = Number(insertedRows[0]?.id);
+    if (Number.isSafeInteger(insertedId) && insertedId > AUDIT_RETENTION_LIMIT) {
+        await trx('instance_role_audit')
+            .where('id', '<=', insertedId - AUDIT_RETENTION_LIMIT)
+            .delete();
     }
 }
 
 async function assertAnotherAdminExists(trx: Knex.Transaction): Promise<void> {
-    const countRow = await trx('instance_members').where({ role: 'admin' }).count<{ count: number | string }>({ count: '*' }).first();
-    if (Number(countRow?.count || 0) <= 1) {
+    // Lock every matching row on databases that support SELECT ... FOR UPDATE.
+    // Concurrent demotions/removals then re-evaluate the invariant after the
+    // first transaction commits. SQLite ignores the clause and serializes writes.
+    const admins = await trx<MemberRow>('instance_members')
+        .select('github_user_id')
+        .where({ role: 'admin' })
+        .orderBy('github_user_id')
+        .forUpdate();
+    if (admins.length <= 1) {
         throw new InstanceMemberError(
-            'The last instance administrator cannot be demoted or removed',
+            'The last durable instance administrator cannot be demoted or removed. '
+            + 'PROPR_ADMIN_USERS bootstrap entries are not counted as durable assignments.',
             409,
             'LAST_ADMIN_REQUIRED'
         );
@@ -160,6 +156,8 @@ export class InstanceMemberService {
                 .where({ github_user_id: actor.id })
                 .first();
             if (existing?.role === 'admin') {
+                // Keep the case-preserving display snapshot current even though
+                // authorization comparisons for GitHub usernames are case-insensitive.
                 if (existing.github_username === actor.username) return toMember(existing);
                 await trx('instance_members')
                     .where({ github_user_id: actor.id })
@@ -213,7 +211,6 @@ export class InstanceMemberService {
         role: InstanceRole
     ): Promise<InstanceMember> {
         return this.database.transaction(async trx => {
-            assertNotEnvironmentAdmin(target);
             const existing = await trx<MemberRow>('instance_members').where({ github_user_id: target.id }).first();
             if (existing) {
                 throw new InstanceMemberError('This GitHub user already has an explicit instance role', 409, 'MEMBER_EXISTS');
@@ -246,7 +243,6 @@ export class InstanceMemberService {
         return this.database.transaction(async trx => {
             const existing = await trx<MemberRow>('instance_members').where({ github_user_id: githubUserId }).first();
             if (!existing) throw new InstanceMemberError('Instance member not found', 404, 'MEMBER_NOT_FOUND');
-            assertNotEnvironmentAdmin({ username: existing.github_username });
             if (existing.role === 'admin' && role !== 'admin') await assertAnotherAdminExists(trx);
             if (existing.role !== role) {
                 await trx('instance_members')
@@ -273,7 +269,6 @@ export class InstanceMemberService {
         await this.database.transaction(async trx => {
             const existing = await trx<MemberRow>('instance_members').where({ github_user_id: githubUserId }).first();
             if (!existing) throw new InstanceMemberError('Instance member not found', 404, 'MEMBER_NOT_FOUND');
-            assertNotEnvironmentAdmin({ username: existing.github_username });
             if (existing.role === 'admin') await assertAnotherAdminExists(trx);
             await trx('instance_members').where({ github_user_id: githubUserId }).delete();
             await writeAudit(trx, {

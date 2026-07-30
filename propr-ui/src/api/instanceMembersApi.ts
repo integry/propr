@@ -2,28 +2,23 @@ import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
 import type {
   InstanceMember,
   InstanceMembersResponse,
-  InstanceRole
+  InstanceRole,
+  InstanceRoleAuditEntry
 } from './proprTypes';
-
-async function handleInstanceMemberResponse(response: Response): Promise<void> {
-  if (response.ok) return;
-  if ([401, 403, 405].includes(response.status)) {
-    await handleApiResponse(response);
-    return;
-  }
-  if (response.status < 500) {
-    let data: { error?: string; message?: string } | null = null;
-    try { data = await response.clone().json() as { error?: string; message?: string }; } catch { /* Use the shared fallback. */ }
-    const message = data?.message || data?.error;
-    if (message) throw new Error(message);
-  }
-  await handleApiResponse(response);
-}
 
 export const getInstanceMembers = async (): Promise<InstanceMembersResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/admin/members`, { credentials: 'include' });
-  await handleInstanceMemberResponse(response);
+  await handleApiResponse(response);
   return response.json();
+};
+
+export const getInstanceRoleAudit = async (limit = 25): Promise<InstanceRoleAuditEntry[]> => {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/admin/role-audit?limit=${encodeURIComponent(limit)}`,
+    { credentials: 'include' }
+  );
+  await handleApiResponse(response);
+  return (await response.json()).entries;
 };
 
 export const claimBootstrapAdmin = async (): Promise<InstanceMember> => {
@@ -31,7 +26,7 @@ export const claimBootstrapAdmin = async (): Promise<InstanceMember> => {
     method: 'POST',
     credentials: 'include'
   });
-  await handleInstanceMemberResponse(response);
+  await handleApiResponse(response);
   return (await response.json()).member;
 };
 
@@ -42,7 +37,7 @@ export const addInstanceMember = async (username: string, role: InstanceRole): P
     body: JSON.stringify({ username, role }),
     credentials: 'include'
   });
-  await handleInstanceMemberResponse(response);
+  await handleApiResponse(response);
   return (await response.json()).member;
 };
 
@@ -56,7 +51,7 @@ export const updateInstanceMemberRole = async (
     body: JSON.stringify({ role }),
     credentials: 'include'
   });
-  await handleInstanceMemberResponse(response);
+  await handleApiResponse(response);
   return (await response.json()).member;
 };
 
@@ -65,5 +60,5 @@ export const removeInstanceMember = async (githubUserId: string): Promise<void> 
     method: 'DELETE',
     credentials: 'include'
   });
-  await handleInstanceMemberResponse(response);
+  await handleApiResponse(response);
 };

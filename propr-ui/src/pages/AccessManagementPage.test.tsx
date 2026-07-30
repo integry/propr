@@ -6,6 +6,7 @@ import {
   addInstanceMember,
   claimBootstrapAdmin,
   getInstanceMembers,
+  getInstanceRoleAudit,
   removeInstanceMember,
   updateInstanceMemberRole
 } from '../api/instanceMembersApi';
@@ -15,12 +16,14 @@ vi.mock('../api/instanceMembersApi', () => ({
   addInstanceMember: vi.fn(),
   claimBootstrapAdmin: vi.fn(),
   getInstanceMembers: vi.fn(),
+  getInstanceRoleAudit: vi.fn(),
   removeInstanceMember: vi.fn(),
   updateInstanceMemberRole: vi.fn()
 }));
 
 const admin: CurrentUser = {
   id: '100',
+  login: 'owner',
   username: 'owner',
   displayName: 'Owner',
   email: null,
@@ -36,6 +39,7 @@ const admin: CurrentUser = {
 };
 
 const mockGetMembers = vi.mocked(getInstanceMembers);
+const mockGetRoleAudit = vi.mocked(getInstanceRoleAudit);
 const mockAddMember = vi.mocked(addInstanceMember);
 const mockClaimBootstrapAdmin = vi.mocked(claimBootstrapAdmin);
 
@@ -54,6 +58,7 @@ describe('AccessManagementPage', () => {
         updatedAt: '2026-07-30T00:00:00.000Z'
       }]
     });
+    mockGetRoleAudit.mockResolvedValue([]);
     vi.mocked(updateInstanceMemberRole).mockResolvedValue({
       githubUserId: '100',
       githubUsername: 'owner',
@@ -89,6 +94,7 @@ describe('AccessManagementPage', () => {
     await waitFor(() => {
       expect(mockAddMember).toHaveBeenCalledWith('developer', 'member');
       expect(mockGetMembers).toHaveBeenCalledTimes(2);
+      expect(mockGetRoleAudit).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -130,7 +136,31 @@ describe('AccessManagementPage', () => {
       expect(mockClaimBootstrapAdmin).toHaveBeenCalledTimes(1);
       expect(refreshUser).toHaveBeenCalledTimes(1);
       expect(mockGetMembers).toHaveBeenCalledTimes(2);
+      expect(mockGetRoleAudit).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it('surfaces recent role audit entries', async () => {
+    mockGetRoleAudit.mockResolvedValue([{
+      id: 1,
+      actorGithubUserId: '100',
+      actorGithubUsername: 'owner',
+      targetGithubUserId: '200',
+      targetGithubUsername: 'developer',
+      action: 'role_changed',
+      previousRole: 'member',
+      newRole: 'admin',
+      createdAt: '2026-07-30T00:00:00.000Z'
+    }]);
+
+    render(
+      <AuthProvider user={admin}>
+        <AccessManagementPage />
+      </AuthProvider>
+    );
+
+    expect(await screen.findByText(/changed member to admin for/)).toBeInTheDocument();
+    expect(screen.getByText('@developer')).toBeInTheDocument();
   });
 
 });

@@ -5,6 +5,7 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
 import { up as createInstanceMemberTables } from '../../core/src/db/migrations/20260730000000_create_instance_members.js';
 import {
+    assertInstanceAdministratorConfigured,
     authenticatedUserResponse,
     resolveInstanceAuthorization,
     requirePermission,
@@ -78,6 +79,25 @@ describe('instance authorization', () => {
         assert.equal(authorization.role, 'member');
         assert.equal(authorization.source, 'implicit');
         assert.deepEqual(authorization.permissions, []);
+    });
+
+    test('refuses startup until a bootstrap or durable administrator exists', async () => {
+        await assert.rejects(
+            () => assertInstanceAdministratorConfigured(database),
+            /No instance administrator is configured/
+        );
+
+        process.env.PROPR_ADMIN_USERS = actor.username;
+        await assert.doesNotReject(() => assertInstanceAdministratorConfigured(database));
+
+        delete process.env.PROPR_ADMIN_USERS;
+        await database('instance_members').insert({
+            github_user_id: actor.id,
+            github_username: actor.username,
+            role: 'admin',
+            source: 'local'
+        });
+        await assert.doesNotReject(() => assertInstanceAdministratorConfigured(database));
     });
 
     test('grants full admin permissions to PROPR_ADMIN_USERS', async () => {
@@ -184,20 +204,21 @@ describe('instance member service', () => {
         assert.equal(audits[0].action, 'member_added');
     });
 
-    test('rejects a durable assignment for an environment administrator', async () => {
+    test('keeps environment authority separate from durable role assignments', async () => {
         process.env.PROPR_ADMIN_USERS = 'developer';
         const service = new InstanceMemberService(database);
+        const developer = { ...actor, id: '200', login: 'developer', username: 'Developer' };
 
-        await assert.rejects(
-            () => service.addMember(actor, { id: '200', username: 'Developer' }, 'member'),
-            (error: unknown) =>
-                error instanceof InstanceMemberError
-                && error.code === 'BOOTSTRAP_ADMIN_IMMUTABLE'
-                && error.status === 409
-        );
+        const member = await service.addMember(actor, developer, 'member');
+        const effectiveAuthorization = await resolveInstanceAuthorization(developer, database);
+
+        assert.equal(member.role, 'member');
+        assert.equal(effectiveAuthorization.role, 'admin');
+        assert.equal(effectiveAuthorization.source, 'bootstrap');
     });
 
     test('prevents removing the last durable administrator', async () => {
+        process.env.PROPR_ADMIN_USERS = 'break-glass-admin';
         const service = new InstanceMemberService(database);
         await service.addMember(actor, actor, 'admin');
 
@@ -207,6 +228,7 @@ describe('instance member service', () => {
                 error instanceof InstanceMemberError
                 && error.code === 'LAST_ADMIN_REQUIRED'
                 && error.status === 409
+                && /last durable instance administrator/i.test(error.message)
         );
     });
 
@@ -267,6 +289,63 @@ describe('instance catalog', () => {
         });
         const serialized = JSON.stringify(record.body);
         assert.doesNotMatch(serialized, /private\.registry|operator|SECRET_TOKEN|private-user|private-disabled/);
+    });
+
+    test('projects indexing status only for enabled repository and branch entries', async () => {
+        const routes = createInstanceCatalogRoutes({
+            services: {
+                loadRepositories: async () => [
+                    { id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'main' },
+                    { id: 'repo-2', name: 'integry/disabled', enabled: false, baseBranch: 'main' }
+                ],
+                loadIndexingStatuses: async () => [
+                    {
+                        full_name: 'integry/propr',
+                        branch: 'main',
+                        indexing_status: 'completed',
+                        last_indexed_at: '2026-07-30T00:00:00.000Z',
+                        last_indexed_hash: 'abc123',
+                        last_indexed_commit_message: 'Safe operational metadata',
+                        icon_path: '/icons/propr.png',
+                        internal_path: '/private/index'
+                    },
+                    {
+                        full_name: 'integry/propr',
+                        branch: 'private-branch',
+                        indexing_status: 'completed',
+                        last_indexed_at: null,
+                        last_indexed_hash: null,
+                        last_indexed_commit_message: null,
+                        icon_path: null
+                    },
+                    {
+                        full_name: 'integry/disabled',
+                        branch: 'main',
+                        indexing_status: 'failed',
+                        last_indexed_at: null,
+                        last_indexed_hash: null,
+                        last_indexed_commit_message: null,
+                        icon_path: null
+                    }
+                ] as never
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.getRepositoryIndexingStatus({} as Request, response);
+
+        assert.deepEqual(record.body, {
+            repositories: [{
+                full_name: 'integry/propr',
+                branch: 'main',
+                indexing_status: 'completed',
+                last_indexed_at: '2026-07-30T00:00:00.000Z',
+                last_indexed_hash: 'abc123',
+                last_indexed_commit_message: 'Safe operational metadata',
+                icon_path: '/icons/propr.png'
+            }]
+        });
+        assert.doesNotMatch(JSON.stringify(record.body), /disabled|private-branch|internal_path|private\/index/);
     });
 });
 
