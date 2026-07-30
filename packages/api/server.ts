@@ -160,7 +160,7 @@ app.use('/api', (_req, res, next) => {
 });
 
 app.use('/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
