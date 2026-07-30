@@ -53,7 +53,7 @@ export * from './proprTypes';
 import type {
   SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
   GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
-  StopExecutionResponse, DeleteTaskResponse, SystemSettings
+  StopExecutionResponse, DeleteTaskResponse, SystemSettings, CurrentUser
 } from './proprTypes';
 
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
@@ -366,7 +366,7 @@ export const deleteTask = async (taskId: string, force?: boolean): Promise<void>
   await handleApiResponse(response);
 };
 
-export const getCurrentUser = async (): Promise<unknown> => {
+export const getCurrentUser = async (): Promise<CurrentUser> => {
   const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();

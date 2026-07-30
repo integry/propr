@@ -13,6 +13,7 @@ import SummaryBrowserPage from './pages/SummaryBrowserPage'
 import LlmLogsPage from './pages/LlmLogsPage'
 import LoginPage from './pages/LoginPage'
 import RevertPage from './pages/RevertPage'
+import AccessManagementPage from './pages/AccessManagementPage'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
 import { useDemoMode } from './contexts/DemoModeContext'
@@ -22,6 +23,8 @@ import './App.css'
 import { getCurrentUser } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
 import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
+import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
+import type { CurrentUser, InstancePermission } from './api/proprTypes'
 
 type CompatibilityState =
   | { status: 'checking' }
@@ -74,10 +77,27 @@ const HostedConnectionBlocked: React.FC<{ title: string; message: string }> = ({
   </div>
 );
 
+const PermissionRequired: React.FC<{
+  permission: InstancePermission;
+  children: React.ReactNode;
+}> = ({ permission, children }) => {
+  const user = useCurrentUser();
+  if (userHasPermission(user, permission)) return children;
+  return (
+    <div className="mx-auto max-w-2xl py-20 text-center">
+      <h1 className="text-2xl font-semibold text-gray-900">Administrator access required</h1>
+      <p className="mt-3 text-sm text-gray-600">
+        Your instance role does not allow you to manage this installation.
+      </p>
+    </div>
+  );
+};
+
 const AppContent: React.FC = () => {
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   // Auth check state - start loading unless already on login page
   const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
   // Perform initial auth check
   useEffect(() => {
@@ -91,7 +111,8 @@ const AppContent: React.FC = () => {
       }
 
       try {
-        await getCurrentUser();
+        const user = await getCurrentUser();
+        setCurrentUser(user);
         // Session is valid
         setIsLoading(false);
       } catch (error) {
@@ -117,6 +138,7 @@ const AppContent: React.FC = () => {
           <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
             <DemoModeBanner />
             <div className="min-h-0 flex-1">
+              <AuthProvider user={currentUser}>
               <Router>
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
@@ -181,7 +203,9 @@ const AppContent: React.FC = () => {
                   path="/ai-agents"
                   element={
                     <Layout>
-                      <AiAgentsPage />
+                      <PermissionRequired permission="instance.manage_agents">
+                        <AiAgentsPage />
+                      </PermissionRequired>
                     </Layout>
                   }
                 />
@@ -189,7 +213,19 @@ const AppContent: React.FC = () => {
                   path="/settings"
                   element={
                     <Layout>
-                      <SettingsPage />
+                      <PermissionRequired permission="instance.manage_settings">
+                        <SettingsPage />
+                      </PermissionRequired>
+                    </Layout>
+                  }
+                />
+                <Route
+                  path="/admin/members"
+                  element={
+                    <Layout>
+                      <PermissionRequired permission="instance.manage_members">
+                        <AccessManagementPage />
+                      </PermissionRequired>
                     </Layout>
                   }
                 />
@@ -225,6 +261,7 @@ const AppContent: React.FC = () => {
                 />
               </Routes>
               </Router>
+              </AuthProvider>
             </div>
           </div>
         </ToastProvider>

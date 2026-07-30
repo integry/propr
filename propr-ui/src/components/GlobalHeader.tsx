@@ -16,7 +16,7 @@ interface GlobalHeaderProps {
     id: string;
     username: string;
     displayName: string;
-    avatarUrl?: string;
+    avatarUrl?: string | null;
   } | null;
   onLogout: () => void;
   onMenuToggle: () => void;

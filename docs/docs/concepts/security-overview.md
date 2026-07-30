@@ -32,6 +32,19 @@ Outbound network access from agent containers is **unrestricted by default**. An
 - API access is protected by session auth (GitHub OAuth) and optional bearer-token auth for automation.
 - **Organizations with GitHub IP allow lists**: add your ProPR server's egress IP to the org allow list. The GitHub App deliberately declares no IP allow list of its own: every API call comes from your self-hosted stack at your own address, so inheriting an App-level list would block your own stack.
 
+## Who Can Manage The Instance
+
+Authenticated users have an instance role:
+
+- **Administrator** — can change installation settings, repositories, agents, trusted runtime packages, and access-role assignments.
+- **Member** — can use ProPR's task, plan, repository, and log workflows without changing the installation.
+
+The API enforces permissions independently of the Web UI. Role assignments use the stable numeric GitHub user ID, so a GitHub username change does not transfer access to another account. Manage durable assignments from **Web UI → Access**. `PROPR_ADMIN_USERS` bootstraps environment-controlled administrators and can be retained as a break-glass path.
+
+Existing installations enter compatibility admin mode until the first durable administrator is claimed or added. This preserves existing management access during an upgrade. Trusted runtime-package changes remain denied in compatibility mode unless an explicit administrator is configured.
+
+Instance roles and the GitHub trigger whitelist are intentionally separate: a role controls what an authenticated dashboard or CLI user may administer; the whitelist controls who may log in and whose GitHub activity can trigger work.
+
 ## Who Can Trigger Work
 
 Access control is layered, and all of it is enforced by **your** stack — ProPR Connect forwards deliveries without applying policy:

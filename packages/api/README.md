@@ -64,7 +64,12 @@ All API endpoints are protected by authentication:
 - `GET /api/auth/github` - Initiate GitHub OAuth flow
 - `GET /api/auth/github/callback` - OAuth callback
 - `GET /api/auth/logout` - Logout user
-- `GET /api/auth/user` - Get current user info
+- `GET /api/auth/user` - Get sanitized current user info, instance role, and permissions
+- `GET /api/admin/members` - List explicit role assignments (administrator)
+- `POST /api/admin/members` - Add a role assignment by GitHub username (administrator)
+- `PATCH /api/admin/members/:githubUserId` - Change an assigned role (administrator)
+- `DELETE /api/admin/members/:githubUserId` - Remove a role assignment (administrator)
+- `GET /api/admin/role-audit` - List role-assignment audit events (administrator)
 - `GET /api/status` - System health status
 - `GET /api/queue/stats` - Queue statistics
 - `GET /api/activity` - Activity log
@@ -75,5 +80,7 @@ All API endpoints are protected by authentication:
 
 - Session-based authentication with secure cookies
 - All API endpoints require authentication
+- Installation mutations use server-enforced instance permissions
+- Durable roles are keyed by stable GitHub numeric user IDs
 - CORS configured for frontend origin
 - Environment-based session secrets

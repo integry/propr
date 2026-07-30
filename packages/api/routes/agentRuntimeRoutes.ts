@@ -12,6 +12,7 @@ import {
     type AgentRuntimeBuildJobData,
     type AgentRuntimePackageState
 } from '@propr/core';
+import { hasPermission } from '../authorization.js';
 
 interface AgentRuntimeRoutesDeps {
     runtimeBuildQueue?: Queue<AgentRuntimeBuildJobData>;
@@ -41,15 +42,7 @@ interface AgentRuntimeRouteServices {
 }
 
 function canManageRuntime(req: Request): boolean {
-    const configured = (process.env.PROPR_ADMIN_USERS || '')
-        .split(',')
-        .map(value => value.trim().toLowerCase())
-        .filter(Boolean);
-    const username = req.user?.username?.toLowerCase();
-    if (configured.length === 0) {
-        return Boolean(username && /^(1|true|yes)$/i.test(process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER || ''));
-    }
-    return Boolean(username && configured.includes(username));
+    return hasPermission(req, 'instance.manage_runtime');
 }
 
 function requireRuntimeAdmin(req: Request, res: Response): boolean {

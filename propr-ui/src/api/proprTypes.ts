@@ -1,5 +1,41 @@
 import type { ReasoningLevel } from '@propr/shared';
 
+export type InstanceRole = 'admin' | 'member';
+export type InstancePermission =
+  | 'instance.manage_agents'
+  | 'instance.manage_members'
+  | 'instance.manage_runtime'
+  | 'instance.manage_settings';
+
+export interface CurrentUser {
+  id: string;
+  login?: string;
+  username: string;
+  displayName: string;
+  email: string | null;
+  avatarUrl: string | null;
+  role: InstanceRole;
+  permissions: InstancePermission[];
+  authorizationSource: 'bootstrap' | 'legacy' | 'local' | 'managed' | 'implicit' | 'demo';
+  legacyAdminMode: boolean;
+}
+
+export interface InstanceMember {
+  githubUserId: string;
+  githubUsername: string;
+  role: InstanceRole;
+  source: 'local' | 'bootstrap' | 'managed';
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InstanceMembersResponse {
+  members: InstanceMember[];
+  bootstrapAdmins: string[];
+  legacyMode: boolean;
+}
+
 export interface SystemAgentStatus {
   id: string;
   type: 'claude' | 'codex' | 'antigravity' | 'vibe' | string;

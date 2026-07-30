@@ -56,7 +56,7 @@ See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration]
 
 ## Coding Agents
 
-**Coding Agents** (`/ai-agents`) is a split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. See [Agents And Models](./agents-and-models.md).
+**Coding Agents** (`/ai-agents`) is an administrator-only split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. See [Agents And Models](./agents-and-models.md).
 
 ## LLM Log
 
@@ -64,13 +64,19 @@ See [Repository Knowledge](./repository-knowledge.md) and [Branch Configuration]
 
 ## Settings
 
-**Settings** (`/settings`) auto-saves and is organized in two columns.
+**Settings** (`/settings`) is administrator-only, auto-saves, and is organized in two columns.
 
 **AI engine configuration:** model roles (fast analysis, planner context, planner generation, default agent alias, PR review, and summarization), the knowledge-base reindex control, and the **LLM Usage Tracking** ([Agent Tank](../operations/agent-tank.md)) toggle and URL.
 
 **Automation rules:** the GitHub user whitelist, primary processing labels, the PR label, follow-up keywords and ignore keywords, worker concurrency, the auto-follow-up score threshold, auto-resolve merge conflicts, and the Ultrafix rating goal / max cycles / pause settings.
 
 These map onto [Agents And Models](./agents-and-models.md), [PR Follow-up](./pr-followup.md), the [Ultrafix commands](./pr-commands.md), and [Execution Safety](./execution-safety.md).
+
+## Access
+
+**Access** (`/admin/members`) is available to administrators. It creates durable `admin` and `member` role assignments using stable GitHub user IDs, shows environment administrators configured through `PROPR_ADMIN_USERS`, and prevents removal or demotion of the last durable administrator. On an upgraded installation, use this page to claim the first durable administrator and leave compatibility mode.
+
+Role assignments do not edit the GitHub trigger whitelist. Configure allowed login and trigger actors separately under **Settings**.
 
 ## Live Updates And Shortcuts
 
