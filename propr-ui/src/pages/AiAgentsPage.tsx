@@ -8,7 +8,7 @@ import {
   AgentConfig
 } from '../api/proprApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
-import ChatPanel from '../components/AgentChat/ChatPanel';
+import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
 import { useDemoMode } from '../contexts/DemoModeContext';
 
 const AiAgentsPage: React.FC = () => {
@@ -23,6 +23,7 @@ const AiAgentsPage: React.FC = () => {
 
   // Mobile tab state: 'config' or 'playground'
   const [mobileTab, setMobileTab] = useState<'config' | 'playground'>('playground');
+  const [selectedModels, setSelectedModels] = useState<AgentModelSelection[]>([]);
 
   useEffect(() => {
     const loadAgents = async () => {
@@ -74,6 +75,14 @@ const AiAgentsPage: React.FC = () => {
   const handleCloseModal = useCallback(() => {
     setShowAddModal(false);
   }, []);
+
+  const handleSelectModel = useCallback((agentId: string, modelId: string) => {
+    const agent = agents.find(candidate => candidate.id === agentId);
+    if (!agent?.enabled || !agent.supportedModels.includes(modelId)) return;
+
+    setSelectedModels([{ agentId, modelId }]);
+    setMobileTab('playground');
+  }, [agents]);
 
   // Mobile layout
   const renderMobileLayout = () => (
@@ -128,7 +137,14 @@ const AiAgentsPage: React.FC = () => {
         {mobileTab === 'playground' ? (
           <div className="h-full bg-[#F8FAFC] flex flex-col">
             <div className="flex-1 min-h-0">
-              {!agentsLoading && <ChatPanel agents={agents} disabled={isDemoMode} />}
+              {!agentsLoading && (
+                <ChatPanel
+                  agents={agents}
+                  selectedModels={selectedModels}
+                  onSelectedModelsChange={setSelectedModels}
+                  disabled={isDemoMode}
+                />
+              )}
             </div>
           </div>
         ) : (
@@ -145,6 +161,7 @@ const AiAgentsPage: React.FC = () => {
                 showAddModal={showAddModal}
                 onCloseAddModal={handleCloseModal}
                 onAddClick={handleAddAgentClick}
+                onSelectModel={handleSelectModel}
                 readOnly={isDemoMode}
               />
             </div>
@@ -208,6 +225,7 @@ const AiAgentsPage: React.FC = () => {
                   showAddModal={showAddModal}
                   onCloseAddModal={handleCloseModal}
                   onAddClick={handleAddAgentClick}
+                  onSelectModel={handleSelectModel}
                   readOnly={isDemoMode}
                 />
               </div>
@@ -223,7 +241,14 @@ const AiAgentsPage: React.FC = () => {
           <Panel defaultSize={60} minSize={30}>
             <div className="h-full bg-[#F8FAFC] flex flex-col">
               <div className="flex-1 min-h-0">
-                {!agentsLoading && <ChatPanel agents={agents} disabled={isDemoMode} />}
+                {!agentsLoading && (
+                  <ChatPanel
+                    agents={agents}
+                    selectedModels={selectedModels}
+                    onSelectedModelsChange={setSelectedModels}
+                    disabled={isDemoMode}
+                  />
+                )}
               </div>
             </div>
           </Panel>
