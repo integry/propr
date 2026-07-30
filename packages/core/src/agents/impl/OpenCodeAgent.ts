@@ -10,10 +10,11 @@ import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
+import { isManagedAgentConfigPath } from '@propr/shared';
 
 export { UsageLimitError };
 
-const DEFAULT_OPENCODE_TIMEOUT_MS = 3600000;
 const DEFAULT_OPENCODE_ANALYSIS_ROOT = '/tmp/git-processor/opencode-analysis';
 
 export class OpenCodeAgent implements Agent {
@@ -22,7 +23,7 @@ export class OpenCodeAgent implements Agent {
 
     constructor(config: AgentConfig) {
         this.config = config;
-        this.timeoutMs = parseInt(process.env.OPENCODE_TIMEOUT_MS || String(DEFAULT_OPENCODE_TIMEOUT_MS), 10);
+        this.timeoutMs = parseInt(process.env.OPENCODE_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
@@ -320,7 +321,7 @@ export class OpenCodeAgent implements Agent {
     }
 
     private resolveAnalysisDataPath(): string | undefined {
-        if (process.env.HOST_OPENCODE_DATA_DIR) return undefined;
+        if (process.env.HOST_OPENCODE_DATA_DIR && !isManagedAgentConfigPath(this.config.configPath)) return undefined;
         if (this.config.envVars?.XDG_DATA_HOME) return undefined;
         const sourceConfigPath = resolveConfigPath(this.config.configPath).replace(/\/+$/, '');
         if (!sourceConfigPath.endsWith('/.config/opencode')) return undefined;

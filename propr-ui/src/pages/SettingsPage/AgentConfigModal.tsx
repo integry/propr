@@ -1,8 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Eye, EyeOff, ExternalLink } from 'lucide-react';
 import { AgentConfig, CliVersionType, getOpenCodeModels } from '../../api/proprApi';
-import { AgentType, AGENT_DEFAULTS, AGENT_DISPLAY_ORDER } from '../../config/modelDefinitions';
+import { AgentType, AGENT_DEFAULTS } from '../../config/modelDefinitions';
+import {
+  getManagedAgentConfigPath,
+  isAgentLoginSupported,
+  isManagedAgentConfigPath,
+} from '@propr/shared';
 import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
+import AgentCredentialSetup from './AgentCredentialSetup';
+import AgentEnabledToggle from './AgentEnabledToggle';
+import {
+  createNewAgentFormData,
+  getAgentSubmitLabel,
+  shouldLoginAfterSave,
+  type AgentFormData,
+  type CredentialSetup,
+} from './agentCredentialSetupUtils';
+import AgentTypeSelector from './AgentTypeSelector';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
 import { buildSelectableModels } from './modelSelectionHelpers';
@@ -11,33 +26,21 @@ interface AgentConfigModalProps {
   agent: AgentConfig | null;
   existingAliases: string[];
   onClose: () => void;
-  onSave: (agent: AgentConfig) => void;
+  onSave: (agent: AgentConfig, options?: { loginAfterSave: boolean }) => void;
+  saving?: boolean;
 }
 
 const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   agent,
   existingAliases,
   onClose,
-  onSave
+  onSave,
+  saving = false,
 }) => {
   const isEditing = agent !== null;
-  const getAgentTypeLabel = (type: AgentType) => type === 'opencode' ? 'OpenCode' : type === 'antigravity' ? 'Antigravity' : type;
 
-  const [formData, setFormData] = useState<Omit<AgentConfig, 'id'> & { id?: string }>({
-    type: 'claude',
-    alias: AGENT_DEFAULTS.claude.defaultAlias,
-    enabled: true,
-    dockerImage: AGENT_DEFAULTS.claude.dockerImage,
-    configPath: AGENT_DEFAULTS.claude.configPath,
-    supportedModels: AGENT_DEFAULTS.claude.defaultModels,
-    defaultModel: AGENT_DEFAULTS.claude.defaultModels[0],
-    modelCustomLabels: {},
-    modelReasoningLevels: {},
-    envVars: {},
-    cliVersionType: 'default',
-    cliVersion: undefined,
-    cliVersionResolved: AGENT_DEFAULTS.claude.defaultCliVersion
-  });
+  const [formData, setFormData] = useState<AgentFormData>(createNewAgentFormData);
+  const [credentialSetup, setCredentialSetup] = useState<CredentialSetup>('login');
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [versionData, setVersionData] = useState<AvailableVersionsResponse | null>(null);
@@ -88,6 +91,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   useEffect(() => {
     if (agent) {
+      setCredentialSetup('existing');
       setFormData({
         id: agent.id,
         type: agent.type,
@@ -116,13 +120,31 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       // Update alias to new default if it was the previous default alias (for new agents)
       alias: prev.alias === prevDefaults.defaultAlias ? defaults.defaultAlias : prev.alias,
       dockerImage: defaults.dockerImage, // Docker image is predefined and not editable
-      configPath: prev.configPath === prevDefaults.configPath ? defaults.configPath : prev.configPath,
+      configPath: (
+        (!isEditing && credentialSetup === 'login')
+        || isManagedAgentConfigPath(prev.configPath)
+      ) && isAgentLoginSupported(newType)
+        ? getManagedAgentConfigPath(prev.id!, newType)
+        : (prev.configPath === prevDefaults.configPath || isManagedAgentConfigPath(prev.configPath))
+          ? defaults.configPath
+          : prev.configPath,
       supportedModels: defaults.defaultModels,
       defaultModel: defaults.defaultModels[0],
       // Reset version to default when changing agent type
       cliVersionType: 'default',
       cliVersion: undefined,
       cliVersionResolved: defaults.defaultCliVersion
+    }));
+  };
+
+  const handleCredentialSetupChange = (next: CredentialSetup) => {
+    setCredentialSetup(next);
+    setErrors(prev => ({ ...prev, configPath: '' }));
+    setFormData(prev => ({
+      ...prev,
+      configPath: next === 'login' && isAgentLoginSupported(prev.type)
+        ? getManagedAgentConfigPath(prev.id!, prev.type)
+        : AGENT_DEFAULTS[prev.type].configPath,
     }));
   };
 
@@ -210,6 +232,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
 
     if (!validateForm()) {
       return;
@@ -262,7 +285,13 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       cliVersionResolved: formData.cliVersionResolved
     };
 
-    onSave(agentToSave);
+    onSave(agentToSave, {
+      loginAfterSave: shouldLoginAfterSave(
+        isEditing,
+        credentialSetup,
+        formData.type,
+      ),
+    });
   };
 
   return (
@@ -275,32 +304,15 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           <button
             className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
             onClick={onClose}
+            disabled={saving}
+            aria-label="Close agent configuration"
           >
             &times;
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-3">
-          {/* Agent Type - Pill Toggle Style */}
-          <div>
-            <label className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</label>
-            <div className="flex flex-wrap gap-1 bg-gray-100 rounded-full p-1 w-fit">
-              {AGENT_DISPLAY_ORDER.map(type => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => handleTypeChange(type)}
-                  className={`px-4 py-1.5 rounded-full text-sm font-medium capitalize transition-all ${
-                    formData.type === type
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  {getAgentTypeLabel(type)}
-                </button>
-              ))}
-            </div>
-          </div>
+          <AgentTypeSelector value={formData.type} onChange={handleTypeChange} />
 
           <CliVersionSelector
             agentType={formData.type}
@@ -376,26 +388,20 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             </p>
           </div>
 
-          {/* Config Path */}
-          <div>
-            <label className="block text-gray-700 mb-1.5 font-medium text-sm" htmlFor="configPath">
-              Config Path
-            </label>
-            <input
-              type="text"
-              id="configPath"
-              value={formData.configPath}
-              onChange={(e) => setFormData(prev => ({ ...prev, configPath: e.target.value }))}
-              placeholder={AGENT_DEFAULTS[formData.type].configPath}
-              className={`w-full px-3 py-1.5 bg-gray-50 text-gray-900 border rounded-md focus:ring-2 focus:ring-primary-500 focus:border-primary-500 font-mono text-sm ${
-                errors.configPath ? 'border-red-500' : 'border-gray-300'
-              }`}
-            />
-            {errors.configPath && <p className="mt-1 text-xs text-red-600">{errors.configPath}</p>}
-          </div>
+          <AgentCredentialSetup
+            isEditing={isEditing}
+            type={formData.type}
+            configPath={formData.configPath}
+            credentialSetup={credentialSetup}
+            configPathError={errors.configPath}
+            onCredentialSetupChange={handleCredentialSetupChange}
+            onConfigPathChange={configPath => {
+              setFormData(prev => ({ ...prev, configPath }));
+            }}
+          />
 
           <ModelSelector
-            agentType={formData.type}
+            agentType={formData.type} agentAlias={formData.alias}
             supportedModels={formData.supportedModels}
             defaultModel={formData.defaultModel}
             availableModelIds={formData.type === 'opencode' ? discoveredOpenCodeModels : undefined}
@@ -416,25 +422,14 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             }))}
           />
 
-          {/* Enabled Toggle */}
-          <div className="flex items-center gap-2">
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={formData.enabled}
-                onChange={(e) => setFormData(prev => ({ ...prev, enabled: e.target.checked }))}
-                className="sr-only peer"
-              />
-              <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
-            </label>
-            <span className="text-gray-700 font-medium text-sm">Enabled</span>
-          </div>
+          <AgentEnabledToggle checked={formData.enabled} onChange={enabled => setFormData(prev => ({ ...prev, enabled }))} />
         </form>
 
         <div className="flex justify-end gap-2 px-4 py-3 border-t border-gray-200">
           <button
             type="button"
             onClick={onClose}
+            disabled={saving}
             className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
           >
             Cancel
@@ -442,9 +437,15 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           <button
             type="submit"
             onClick={handleSubmit}
-            className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
+            disabled={saving}
+            className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-300 rounded-md transition-colors"
           >
-            {isEditing ? 'Save Changes' : 'Add Agent'}
+            {getAgentSubmitLabel(
+              saving,
+              isEditing,
+              credentialSetup,
+              formData.type,
+            )}
           </button>
         </div>
       </div>

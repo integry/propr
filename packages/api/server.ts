@@ -11,21 +11,14 @@ import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeMode
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import { createCorsOriginValidator } from './corsValidation.js';
 import {
-  createStatusRoutes,
-  createTaskRoutes,
-  createTaskHistoryRoutes,
-  createLiveDetailsRoutes,
-  createFileChangesRoutes,
-  createConfigRoutes,
-  createQueueRoutes,
-  createExecutionRoutes,
-  createDockerRoutes,
-  createGitHubRoutes,
-  createLLMMetricsRoutes,
-  createLlmLogsRoutes,
-  createPlannerRoutes,
-  createRelevanceRoutes,
-  createAgentRoutes,
+  createStatusRoutes, createTaskRoutes,
+  createTaskHistoryRoutes, createLiveDetailsRoutes,
+  createFileChangesRoutes, createConfigRoutes,
+  createQueueRoutes, createExecutionRoutes,
+  createDockerRoutes, createGitHubRoutes,
+  createLLMMetricsRoutes, createLlmLogsRoutes,
+  createPlannerRoutes, createRelevanceRoutes,
+  createAgentRoutes, createAgentLoginRoutes,
   createAgentVersionRoutes,
   createStatsRoutes,
   createSummaryBrowserRoutes,
@@ -36,6 +29,7 @@ import {
   createAgentRuntimeRoutes,
   attachmentUpload
 } from './routes/index.js';
+import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
 import {
   generateCorrelationId,
@@ -246,6 +240,7 @@ function setupRoutes(): void {
   const plannerRoutes = createPlannerRoutes({ db });
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
+  const agentLoginRoutes = createAgentLoginRoutes();
   const statsRoutes = createStatsRoutes({ db });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
@@ -291,6 +286,10 @@ function setupRoutes(): void {
     ['post', '/api/agent-runtime/packages/validate', agentRuntimeRoutes.validateRuntimePackages],
     ['put', '/api/agent-runtime/packages', agentRuntimeRoutes.putRuntimePackages],
     ['post', '/api/agent-runtime/packages/apply', agentRuntimeRoutes.applyRuntimePackages],
+    ['post', '/api/agents/:agentId/login-sessions', agentLoginRoutes.startLogin],
+    ['get', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.getLogin],
+    ['post', '/api/agents/:agentId/login-sessions/:sessionId/input', agentLoginRoutes.sendInput],
+    ['delete', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.cancelLogin],
   ];
   assertNoDuplicateRoutes(routes);
   routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
@@ -403,6 +402,14 @@ async function start(): Promise<void> {
     await initRedis();
     if (!demoMode) {
       try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+      try {
+        const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
+        if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
+      } catch (error) {
+        // Docker-backed features surface their own errors when invoked; a
+        // best-effort orphan sweep must not make the rest of the API unavailable.
+        console.warn('Could not sweep orphaned agent login containers:', (error as Error).message);
+      }
     } else {
       console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
     }
@@ -449,6 +456,7 @@ async function start(): Promise<void> {
       const shutdownTasks: ShutdownTask[] = [
         { name: 'task queue', close: () => taskQueue.close() },
         { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
+        { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },
         { name: 'redis client', close: () => redisClient.quit() }
       ];
       if (!demoMode) {

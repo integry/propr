@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # Agents and Models
 
-ProPR runs coding work through configurable agents. Each agent is a CLI tool packaged in its own Docker image, with credentials mounted from the host. Models are addressed by stable ProPR model IDs that work everywhere a model can be chosen: issue labels, the Web UI, the CLI (`-a`/`-m`), and PR commands (`/switch`, `/use`, `/review <model>`).
+ProPR runs coding work through configurable agents. Each agent is a CLI tool packaged in its own Docker image, with an isolated credential directory mounted into that image. Models are addressed by stable ProPR model IDs that work everywhere a model can be chosen: issue labels, the Web UI, the CLI (`-a`/`-m`), and PR commands (`/switch`, `/use`, `/review <model>`).
 
 The canonical catalog lives in `packages/shared/src/modelDefinitions.ts`. The tables below reflect that file; if they ever disagree, the source file wins. Custom model IDs can also be added per agent in the Web UI (**AI Agents**) or with `propr agent add`.
 
@@ -23,7 +23,7 @@ Use routing when you want to:
 
 ## Supported Agents
 
-| Agent | Type | Docker image | Host credentials |
+| Agent | Type | Docker image | Existing host credentials |
 |-------|------|--------------|------------------|
 | Claude Code (Anthropic) | `claude` | `propr/agent` | `HOST_CLAUDE_DIR` → `~/.claude` |
 | Codex (OpenAI) | `codex` | `propr/agent` | `HOST_CODEX_DIR` → `~/.codex` |
@@ -31,7 +31,11 @@ Use routing when you want to:
 | OpenCode | `opencode` | `propr/agent` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
 | Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
 
-Authenticate each agent's CLI on the host first; the launcher and compose files mount the credential directories into agent containers at their host paths. These mounts are read-write — worker containers may refresh auth state (the launcher mounts the OpenCode data directory read-write for workers and read-only elsewhere); only the `.env` file is mounted read-only. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
+When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose either **Log in to a new account** or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config.
+
+Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<agent-id>/…`. ProPR maps it automatically to `~/.propr/agent-credentials` for native and Compose installs, or to `PROPR_DATA_DIR/agent-credentials` for the launcher container. You do not enter a host path. The generated provider subdirectory is mounted read-write so its CLI can refresh auth state, and the agent image normalizes ownership before dropping to its unprivileged runtime user.
+
+To reuse an account that is already authenticated on the host, select **Use existing config** and provide its config path. Launcher deployments also expose that path with the matching `HOST_*` setting. You can authenticate existing paths with a host CLI or `propr agent login <type>`; both CLI and Web login actions run the configured agent image, avoiding host/image CLI version drift. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
 
 ## Agent Configuration
 
@@ -41,7 +45,7 @@ The Web UI includes an AI Agents page for configuring coding agents. Each agent 
 - A unique alias (lowercase alphanumeric and hyphens)
 - An enable toggle
 - The Docker image (predefined per agent type)
-- The credential/config path mounted into agent containers
+- A ProPR-managed login or an existing credential/config path
 - The supported model list (toggle individual models on or off)
 - The default model
 - Optional per-model custom labels
@@ -50,7 +54,9 @@ The Web UI includes an AI Agents page for configuring coding agents. Each agent 
 
 The model IDs you enable here become the durable names used by labels and slash commands.
 
-{/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the agent configuration modal open for a Claude agent: agent type, alias, enable toggle, supported models checklist with one default model selected, and the config path field. */}
+For an interactive login, choose direct login while adding the agent or select **Log in** on an existing entry. Open the authorization URL shown in the dialog and send a confirmation code or requested response when prompted. Login sessions are private to the dashboard user who started them, permit only one writer per credential directory, expire after ten minutes of inactivity, and are not persisted in task or LLM logs.
+
+{/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the add-agent modal open for Claude: the new-account/existing-config credential choice, alias, enable toggle, and supported models with one default selected. */}
 
 ## Reasoning Levels
 
@@ -68,7 +74,7 @@ Adding **several** model labels to one issue fans the work out into one job per 
 
 ```text
 AI
-llm-claude-opus48
+llm-claude-opus5
 llm-codex-gpt56-sol
 ```
 
@@ -77,9 +83,9 @@ This issue produces two tasks and two pull requests — one per model.
 The same aliases work in PR comments (the `llm-` prefix is optional; the raw catalog model ids are accepted too):
 
 ```
-/switch claude-opus48     # future follow-ups on this PR use this model
+/switch claude-opus5      # future follow-ups on this PR use this model
 /use codex-gpt56-sol      # one follow-up with this model
-/review claude-opus48 codex-gpt56-sol   # independent reviews from two models
+/review claude-opus5 codex-gpt56-sol   # independent reviews from two models
 ```
 
 See [PR Slash Commands](./pr-commands.md) for full command syntax.
@@ -89,6 +95,8 @@ See [PR Slash Commands](./pr-commands.md) for full command syntax.
 | Model | Label | Context |
 |-------|-------|---------|
 | Claude Fable 5 | `llm-claude-fable` | 1M |
+| Claude Opus 5 | `llm-claude-opus5` | 1M |
+| Claude Sonnet 5 | `llm-claude-sonnet5` | 1M |
 | Claude Opus 4.8 | `llm-claude-opus48` | 1M |
 | Claude Opus 4.7 | `llm-claude-opus47` | 1M |
 | Claude Opus 4.6 | `llm-claude-opus46` | 1M |
@@ -97,7 +105,7 @@ See [PR Slash Commands](./pr-commands.md) for full command syntax.
 | Claude Sonnet 4.5 | `llm-claude-sonnet45` | 200K |
 | Claude Haiku 4.5 | `llm-claude-haiku` | 200K |
 
-Some models require a minimum agent CLI version (for example, Fable 5 requires Claude Code ≥ 2.1.170); ProPR records this in the catalog and the agent image is kept current.
+Some models require a minimum agent CLI version (for example, Opus 5 requires Claude Code ≥ 2.1.219); ProPR records this in the catalog and the agent image is kept current.
 
 ## Codex Models
 
@@ -105,9 +113,9 @@ GPT-5.6 Sol is the recommended default for complex implementation, research, and
 
 | Model | Label | Context |
 |-------|-------|---------|
-| GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1M |
-| GPT-5.6 Terra | `llm-codex-gpt56-terra` | 400K |
-| GPT-5.6 Luna | `llm-codex-gpt56-luna` | 400K |
+| GPT-5.6 Sol | `llm-codex-gpt56-sol` | 1.05M |
+| GPT-5.6 Terra | `llm-codex-gpt56-terra` | 1.05M |
+| GPT-5.6 Luna | `llm-codex-gpt56-luna` | 1.05M |
 | GPT-5.5 | `llm-codex-gpt55` | 1M |
 | GPT-5.5 Pro | `llm-codex-gpt55-pro` | 1M |
 | GPT-5.4 | `llm-codex-gpt54` | 1M |
@@ -126,6 +134,7 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 
 | Model | Label |
 |-------|-------|
+| Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
 | Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
 | Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |
 | Claude Sonnet 4.6 Thinking | `llm-antigravity-sonnet46-thinking` |
@@ -138,15 +147,17 @@ Built-in free models:
 
 | Model | Label | Context |
 |-------|-------|---------|
-| MiniMax M3 Free | `llm-opencode-minimax-m3-free` | 200K |
 | DeepSeek V4 Flash Free | `llm-opencode-deepseek-v4-flash-free` | 200K |
 | MiMo V2.5 Free | `llm-opencode-mimo-v25-free` | 200K |
+| Laguna S 2.1 Free | `llm-opencode-laguna-s21-free` | 256K |
+| Ling 3.0 Flash Free | `llm-opencode-ling30-flash-free` | 262K |
+| North Mini Code Free | `llm-opencode-north-mini-code-free` | 256K |
 | Nemotron 3 Ultra Free | `llm-opencode-nemotron-3-ultra-free` | 1M |
 | Big Pickle | `llm-opencode-big-pickle` | 200K |
 
-OpenCode can also use any provider/model you have authenticated on the host. Run `opencode models` after `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
+OpenCode can also use any provider/model authenticated through its direct-login dialog or on the host. Run `opencode models` after a host `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
 
-OpenCode host setup, in brief: install the CLI, run `opencode auth login`, and use `~/.config/opencode` as the agent config path. Provider auth lands in `~/.local/share/opencode/auth.json`, which the worker mounts into agent containers when `HOST_OPENCODE_DATA_DIR` is set (or inferred from the default config path). See [OpenCode in the Agent Runtime Reference](../architecture/agent-runtime.md#opencode) for the full host setup and the auth-data fallback options.
+For an existing host account, install the CLI, run `opencode auth login`, and use `~/.config/opencode` as the agent config path. Provider auth lands in `~/.local/share/opencode/auth.json`, which the worker mounts into agent containers when `HOST_OPENCODE_DATA_DIR` is set (or inferred from the default config path). A direct-login account instead keeps both directories inside its own managed agent root. See [OpenCode in the Agent Runtime Reference](../architecture/agent-runtime.md#opencode) for the full host setup and the auth-data fallback options.
 
 ## Mistral Vibe Models
 

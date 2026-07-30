@@ -4,6 +4,8 @@ import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
 import { type AgentType, MODEL_INFO_MAP, typeBadgeColors } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../../components/ui/ProviderLogo';
+import { isAgentLoginSupported } from '@propr/shared';
+import AgentLoginModal from './AgentLoginModal';
 
 // --- Icons ---
 
@@ -84,7 +86,7 @@ interface AgentsListSectionProps {
   error: string | null;
   success: string | null;
   warning: string | null;
-  onSaveAgents: (agents: AgentConfig[]) => void;
+  onSaveAgents: (agents: AgentConfig[]) => Promise<AgentConfig[] | undefined>;
   showAddModal?: boolean;
   onCloseAddModal?: () => void;
   onAddClick?: () => void;
@@ -180,12 +182,13 @@ const ModelRow: React.FC<{
 
 const AgentCard: React.FC<{
   agent: AgentConfig;
+  onLogin: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onToggle: () => void;
   onSelectModel?: (agentId: string, modelId: string) => void;
   readOnly?: boolean;
-}> = ({ agent, onEdit, onDelete, onToggle, onSelectModel, readOnly = false }) => {
+}> = ({ agent, onLogin, onEdit, onDelete, onToggle, onSelectModel, readOnly = false }) => {
   return (
     <div className="border-b border-slate-100 py-4 first:pt-0">
       {/* --- Agent Header: [Icon] [Bold Name] [Brand Badge] ... [Toggle] [Edit] --- */}
@@ -200,6 +203,21 @@ const AgentCard: React.FC<{
         </div>
 
         <div className="flex items-center gap-1.5">
+          {isAgentLoginSupported(agent.type) && (
+            <button
+              onClick={onLogin}
+              disabled={readOnly}
+              className={`rounded border px-2 py-1 text-[11px] font-medium transition-colors ${
+                readOnly
+                  ? 'cursor-not-allowed border-gray-200 text-gray-300'
+                  : 'border-gray-300 text-gray-600 hover:border-primary-300 hover:bg-primary-50 hover:text-primary-700'
+              }`}
+              title={readOnly ? 'Demo mode is read-only' : `Log in to ${agent.alias}`}
+            >
+              Log in
+            </button>
+          )}
+
           {/* Toggle Switch */}
           <label className={`relative inline-flex items-center ${readOnly ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
             <input
@@ -286,6 +304,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
+  const [loginAgent, setLoginAgent] = useState<AgentConfig | null>(null);
 
   // Handle external trigger for add modal from header button
   React.useEffect(() => {
@@ -314,7 +333,10 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
     onSaveAgents(updatedAgents);
   };
 
-  const handleSaveAgent = (agent: AgentConfig) => {
+  const handleSaveAgent = async (
+    agent: AgentConfig,
+    options?: { loginAfterSave: boolean },
+  ) => {
     let updatedAgents: AgentConfig[];
     const existingIndex = agents.findIndex(a => a.id === agent.id);
 
@@ -327,9 +349,14 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
       updatedAgents = [...agents, agent];
     }
 
-    onSaveAgents(updatedAgents);
+    const savedAgents = await onSaveAgents(updatedAgents);
+    if (!savedAgents) return;
     setShowModal(false);
     setEditingAgent(null);
+    onCloseAddModal?.();
+    if (options?.loginAfterSave) {
+      setLoginAgent(savedAgents.find(saved => saved.id === agent.id) ?? agent);
+    }
   };
 
   const existingAliases = agents
@@ -355,6 +382,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
             <AgentCard
               key={agent.id}
               agent={agent}
+              onLogin={() => setLoginAgent(agent)}
               onEdit={() => handleEditAgent(agent)}
               onDelete={() => handleDeleteAgent(agent)}
               onToggle={() => handleToggleAgent(agent)}
@@ -400,6 +428,15 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
             onCloseAddModal?.();
           }}
           onSave={handleSaveAgent}
+          saving={saving}
+        />
+      )}
+
+      {loginAgent && (
+        <AgentLoginModal
+          key={loginAgent.id}
+          agent={loginAgent}
+          onClose={() => setLoginAgent(null)}
         />
       )}
     </div>

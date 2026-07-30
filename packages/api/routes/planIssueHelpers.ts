@@ -10,6 +10,7 @@ import {
   AgentRegistry,
   toProprOpenCodeModelId,
   buildDynamicLlmLabel,
+  buildAgentModelLlmLabel,
   getIssueQueue,
   generateCorrelationId,
   withRetry,
@@ -74,7 +75,7 @@ async function enqueueIssueImplementationJob(params: {
 
 /**
  * Gets the default model from the configured default agent.
- * Falls back to 'claude-sonnet-4-6' if no default agent is configured.
+ * Falls back to the latest Claude Sonnet model if no default agent is configured.
  */
 async function getConfiguredDefaultModel(): Promise<string> {
   try {
@@ -94,7 +95,7 @@ async function getConfiguredDefaultModel(): Promise<string> {
     logger.warn({ error: (err as Error).message }, 'Failed to get configured default model, using fallback');
   }
 
-  return 'claude-sonnet-4-6'; // Fallback
+  return 'claude-sonnet-5'; // Fallback
 }
 
 /**
@@ -104,7 +105,7 @@ async function getConfiguredDefaultModel(): Promise<string> {
 export async function getLlmLabel(modelName: string | null, agentAlias?: string | null): Promise<string | null> {
   const effectiveModel = modelName || await getConfiguredDefaultModel();
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
-  if (modelInfo?.githubLabel) return modelInfo.githubLabel;
+  if (modelInfo?.githubLabel && !agentAlias) return modelInfo.githubLabel;
 
   try {
     const registry = AgentRegistry.getInstance();
@@ -120,7 +121,7 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
       );
     }
 
-    if (!agent) return null;
+    if (!agent) return modelInfo?.githubLabel || null;
 
     const labelModel = agent.config.type === 'opencode' ? toProprOpenCodeModelId(effectiveModel) : effectiveModel;
     const modelSupported = agent.config.supportedModels.some(m =>
@@ -130,9 +131,12 @@ export async function getLlmLabel(modelName: string | null, agentAlias?: string 
       logger.warn({ agentAlias: agent.config.alias, model: labelModel }, 'Agent does not support the specified model, skipping label');
       return null;
     }
+    if (modelInfo?.githubLabel) {
+      return buildAgentModelLlmLabel(agent.config.type, agent.config.alias, modelInfo);
+    }
     return buildDynamicLlmLabel(agent.config.alias, labelModel);
   } catch (err) {
-    logger.warn({ modelName: effectiveModel, error: (err as Error).message }, 'Failed to resolve dynamic LLM label');
+    logger.warn({ modelName: effectiveModel, error: (err as Error).message }, 'Failed to resolve LLM label');
     return null;
   }
 }

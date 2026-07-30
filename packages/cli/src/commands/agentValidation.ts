@@ -21,6 +21,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import {
+  AGENT_LOGIN_DESCRIPTORS,
+  LOGINABLE_AGENT_TYPES,
+} from "@propr/shared";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { CheckResult, CheckStatus } from "./checkCommands.js";
 
@@ -234,8 +238,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       stdin: VALIDATION_PROMPT,
     }),
     versionArgs: ["claude", "--version"],
-    containerConfigPath: "/home/node/.claude",
-    loginArgs: ["claude", "login"],
+    containerConfigPath: AGENT_LOGIN_DESCRIPTORS.claude.containerConfigPath,
+    loginArgs: [...AGENT_LOGIN_DESCRIPTORS.claude.command],
   },
   {
     type: "codex",
@@ -256,8 +260,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       stdin: VALIDATION_PROMPT,
     }),
     versionArgs: ["codex", "--version"],
-    containerConfigPath: "/home/node/.codex",
-    loginArgs: ["codex", "login"],
+    containerConfigPath: AGENT_LOGIN_DESCRIPTORS.codex.containerConfigPath,
+    loginArgs: [...AGENT_LOGIN_DESCRIPTORS.codex.command],
   },
   {
     type: "antigravity",
@@ -278,12 +282,13 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       stdin: VALIDATION_PROMPT,
     }),
     versionArgs: ["agy", "--version"],
-    containerConfigPath: "/home/node/.gemini",
+    containerConfigPath: AGENT_LOGIN_DESCRIPTORS.antigravity.containerConfigPath,
     // `agy` (installed via the antigravity script, not an npm global) isn't on
     // sudo's PATH when the entrypoint drops to the node user, so run it through a
     // login shell — matching the validation invocation.
-    loginArgs: ["/bin/bash", "-lc", "exec agy login"],
-    loginExtraArgs: () => ["-e", "ANTIGRAVITY_CLI=1", "-e", "ANTIGRAVITY_CLI_TRUST_WORKSPACE=true"],
+    loginArgs: [...AGENT_LOGIN_DESCRIPTORS.antigravity.command],
+    loginExtraArgs: () => Object.entries(AGENT_LOGIN_DESCRIPTORS.antigravity.environment)
+      .flatMap(([key, value]) => ["-e", `${key}=${value}`]),
   },
   {
     type: "opencode",
@@ -306,8 +311,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
       };
     },
     versionArgs: ["opencode", "--version"],
-    containerConfigPath: "/home/node/.config/opencode",
-    loginArgs: ["opencode", "auth", "login"],
+    containerConfigPath: AGENT_LOGIN_DESCRIPTORS.opencode.containerConfigPath,
+    loginArgs: [...AGENT_LOGIN_DESCRIPTORS.opencode.command],
     loginExtraArgs: (cfg) =>
       cfg.hostOpencodeDataDir ? ["-v", `${cfg.hostOpencodeDataDir}:/home/node/.local/share/opencode:rw`] : [],
   },
@@ -605,7 +610,7 @@ export interface AgentLoginPlan {
 
 /** Agent types that support an interactive login through their image. */
 export function loginableAgents(): string[] {
-  return DESCRIPTORS.filter((d) => d.loginArgs).map((d) => d.type);
+  return [...LOGINABLE_AGENT_TYPES];
 }
 
 /**

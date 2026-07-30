@@ -5,7 +5,7 @@
  * buildAnalysisWorkRef, and createLlmLogFromAnalysis — verifying actual
  * output rather than hand-written object shapes.
  */
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert';
 import {
   buildLlmLogRow,
@@ -15,6 +15,11 @@ import {
   WORK_TYPES,
 } from '../packages/core/src/utils/llmLogger.js';
 import type { WorkReference, LlmLogEntry } from '../packages/core/src/utils/llmLogger.js';
+
+after(async () => {
+  const { db } = await import('../packages/core/src/db/connection.js');
+  await db.destroy();
+});
 
 /* ------------------------------------------------------------------ */
 /*  WORK_TYPES constant                                                */
@@ -291,5 +296,28 @@ describe('createLlmLogFromAnalysis', () => {
       usageMetricRecords: records,
     });
     assert.deepStrictEqual(entry.usageMetricRecords, records);
+  });
+
+  it('records reasoning settings without treating reasoning as extra output', () => {
+    const entry = createLlmLogFromAnalysis({
+      executionType: 'implementation',
+      modelUsed: 'gpt-5.6-sol',
+      executionTimeMs: 100,
+      success: true,
+      reasoningLevel: 'high',
+      tokenUsage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        reasoning_output_tokens: 20,
+      },
+      metadata: { conversationId: 'conv-1' },
+    });
+
+    assert.strictEqual(entry.outputTokens, 50);
+    assert.deepStrictEqual(entry.metadata, {
+      conversationId: 'conv-1',
+      reasoningLevel: 'high',
+      reasoningOutputTokens: 20,
+    });
   });
 });

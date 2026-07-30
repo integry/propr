@@ -41,10 +41,10 @@ const AiAgentsPage: React.FC = () => {
     loadAgents();
   }, []);
 
-  const handleSaveAgents = async (updatedAgents: AgentConfig[]) => {
+  const handleSaveAgents = async (updatedAgents: AgentConfig[]): Promise<AgentConfig[] | undefined> => {
     if (isDemoMode) {
       setAgentsError('Demo mode is read-only. Agent settings cannot be saved.');
-      return;
+      return undefined;
     }
     try {
       setAgentsSaving(true);
@@ -55,8 +55,10 @@ const AiAgentsPage: React.FC = () => {
       setAgents(result.agents || updatedAgents);
       setAgentsWarning(result.warnings?.join(' ') || null);
       setAgentsSuccess('Agents updated successfully! Changes are applied immediately.');
+      return result.agents || updatedAgents;
     } catch (err) {
       setAgentsError((err as Error).message || 'Failed to update agents');
+      return undefined;
     } finally {
       setAgentsSaving(false);
     }

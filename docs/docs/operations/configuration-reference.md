@@ -59,24 +59,25 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 
 ## Agents & Timeouts
 
-Unified image selection, per-agent credential paths, and execution limits. `ANTIGRAVITY_TIMEOUT_MS` and `CLAUDE_MAX_TURNS` are the two places the shipped value and the code fallback diverge most — deleting the line does not restore the shipped behavior.
+Unified image selection, per-agent credential paths, and execution limits. Coding-agent task executions default to 24 hours; analysis calls keep their separate, shorter timeouts.
 
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
 | `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. | Optional. |
-| `CLAUDE_CONFIG_PATH` | Empty | Absolute path to your `~/.claude` directory. `~` and `${HOME}` are **not** expanded in `.env` files or Docker bind mounts. | Running Claude Code. |
+| `PROPR_MANAGED_CREDENTIALS_DIR` | Native/Compose: `~/.propr/agent-credentials`; launcher: `PROPR_DATA_DIR/agent-credentials` | Host-visible root for isolated accounts created through direct Web login. The default is derived automatically; a launcher/CLI override must be an absolute Docker-host path. | Optional advanced override. |
+| `CLAUDE_CONFIG_PATH` | Empty | Absolute path to an existing `~/.claude` directory. `~` and `${HOME}` are **not** expanded in `.env` files or Docker bind mounts. Direct-login agents do not need this setting. | Reusing an existing Claude account. |
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
-| `CLAUDE_TIMEOUT_MS` | `300000` | Claude run timeout. | Optional. |
-| `CODEX_TIMEOUT_MS` | `3600000` | Codex run timeout. | Optional. |
-| `ANTIGRAVITY_TIMEOUT_MS` | Shipped `300000` / code falls back to `3600000` if unset | Antigravity run timeout. | Optional. |
-| `OPENCODE_TIMEOUT_MS` | `3600000` | OpenCode run timeout. | Optional. |
+| `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | Claude task run timeout. | Optional. |
+| `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | Codex task run timeout. | Optional. |
+| `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Antigravity task run timeout. | Optional. |
+| `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |
-| `VIBE_TIMEOUT_MS` | `3600000` | Vibe run timeout. | Optional. |
+| `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | Vibe task run timeout. | Optional. |
 | `VIBE_CONFIG_PATH` | Unset | Absolute path to your `~/.vibe` directory (no `~`). | Running a Vibe agent. |
 | `MISTRAL_API_KEY` | Unset | Vibe credentials fallback when `VIBE_CONFIG_PATH` does not provide them. | Vibe without config-dir credentials. |
-| `HOST_CLAUDE_DIR` / `HOST_CODEX_DIR` / `HOST_ANTIGRAVITY_DIR` / `HOST_VIBE_DIR` | Unset | Production launcher only — absolute host paths for mounting agent credential directories into containers. Omit a variable to skip that agent's mount. Antigravity is Gemini-based, so its directory is `~/.gemini`. | Launcher deployments. |
-| `HOST_OPENCODE_XDG_DIR` | Unset | Host path to the OpenCode XDG config directory (`~/.config/opencode`). | OpenCode via docker/launcher. |
-| `HOST_OPENCODE_DATA_DIR` | Unset | Host path to OpenCode auth data (`~/.local/share/opencode`), so `opencode auth login` credentials reach spawned agent containers. | OpenCode via launcher. |
+| `HOST_CLAUDE_DIR` / `HOST_CODEX_DIR` / `HOST_ANTIGRAVITY_DIR` / `HOST_VIBE_DIR` | Unset | Production launcher only — absolute host paths for reusing existing agent credential directories. ProPR-managed direct-login accounts need no `HOST_*` setting. Antigravity is Gemini-based, so its directory is `~/.gemini`. | Reusing host credentials with the launcher. |
+| `HOST_OPENCODE_XDG_DIR` | Unset | Host path to an existing OpenCode XDG config directory (`~/.config/opencode`). | Reusing OpenCode host config via docker/launcher. |
+| `HOST_OPENCODE_DATA_DIR` | Unset | Host path to existing OpenCode auth data (`~/.local/share/opencode`), so `opencode auth login` credentials reach spawned agent containers. Managed accounts keep their own isolated data directory. | Reusing OpenCode host auth via launcher. |
 | `VIBE_PROMPT_CACHE_DIR` / `HOST_VIBE_PROMPT_CACHE_DIR` | Container `/tmp/propr-vibe-prompts`; host `/tmp/propr-vibe-prompts-<uid>` | Vibe Docker-outside-Docker writes prompt files to a host-visible directory so spawned containers can bind-mount them. Set both only to override the locations. | Optional. |
 
 ## Workers & Queue

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,36 @@ test('resolveHostConfig honors stack .env values for ports and docs', () => {
   assert.equal(cfg.docsPort, '9090');
   assert.equal(cfg.redisExternalPort, '6380');
   assert.equal(cfg.docsEnabled, true);
+  assert.equal(
+    cfg.managedCredentialsDir,
+    join(homedir(), '.propr', 'agent-credentials'),
+  );
+});
+
+test('launcher derives and mounts managed agent credentials without another host-path setting', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFileLocal = join(rootDir, '.env');
+  writeFileSync(envFileLocal, 'API_PORT=4400\n');
+  const cfg = resolveConfig({
+    PROPR_ENV_FILE: '/host/propr/.env',
+    PROPR_LAUNCHER_ENV_FILE: envFileLocal,
+    PROPR_DATA_DIR: '/host/propr/data',
+    PROPR_LOGS_DIR: '/host/propr/logs',
+    PROPR_REPOS_DIR: '/host/propr/repos',
+  }, { manifestPath });
+
+  assert.equal(cfg.managedCredentialsDir, '/host/propr/data/agent-credentials');
+  for (const service of ['api', 'worker', 'analysis-worker', 'indexing-worker']) {
+    const { args } = buildServiceSpec(cfg, service);
+    assert.ok(args.includes(
+      '/host/propr/data/agent-credentials:/host/propr/data/agent-credentials',
+    ));
+    assert.deepEqual(
+      envValues(args, 'PROPR_MANAGED_CREDENTIALS_DIR'),
+      ['/host/propr/data/agent-credentials'],
+    );
+    assert.deepEqual(envValues(args, 'PROPR_CONTAINERIZED'), ['1']);
+  }
 });
 
 test('process env values override stack .env values', () => {

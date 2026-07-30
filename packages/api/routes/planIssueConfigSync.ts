@@ -58,7 +58,9 @@ async function syncModelLabels(params: {
   draftId: string;
   issueNumber: number;
   repository: string;
+  currentAgentAlias: string | null;
   currentModelName: string | null;
+  agentAlias: string | null;
   modelName: string | null;
   octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 }): Promise<void> {
@@ -66,8 +68,8 @@ async function syncModelLabels(params: {
   if (!owner || !repo) return;
 
   const [oldLabel, newLabel, octokit] = await Promise.all([
-    getLlmLabel(params.currentModelName),
-    getLlmLabel(params.modelName),
+    getLlmLabel(params.currentModelName, params.currentAgentAlias),
+    getLlmLabel(params.modelName, params.agentAlias),
     params.octokit ? Promise.resolve(params.octokit) : getAuthenticatedOctokit()
   ]);
 
@@ -108,6 +110,10 @@ export function buildIssueConfigRollbackUpdates(
   };
 }
 
+function hasRoutingUpdate(updates: PlanIssueConfigState): boolean {
+  return updates.model_name !== undefined || updates.agent_alias !== undefined;
+}
+
 export async function updateIssueConfigWithRollback(params: {
   draftId: string;
   issueNumber: number;
@@ -116,7 +122,7 @@ export async function updateIssueConfigWithRollback(params: {
   updates: PlanIssueConfigState;
   octokit?: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 }): Promise<void> {
-  const hasModelNameUpdate = params.updates.model_name !== undefined;
+  const shouldSyncRouting = hasRoutingUpdate(params.updates);
   const nextConfig = resolveIssueConfigState(params.currentIssue, params.updates);
   const nextAgentAlias = nextConfig.agent_alias;
   const nextModelName = nextConfig.model_name;
@@ -125,11 +131,11 @@ export async function updateIssueConfigWithRollback(params: {
     && nextModelName === (params.currentIssue.model_name ?? null)
   );
 
-  if (!hasModelNameUpdate && configUnchanged) {
+  if (!shouldSyncRouting && configUnchanged) {
     return;
   }
 
-  if (!hasModelNameUpdate) {
+  if (!shouldSyncRouting) {
     const nextIssue = await updatePlanIssue(params.draftId, params.issueNumber, params.updates);
     if (!nextIssue) {
       throw new Error('Issue not found in this plan');
@@ -143,7 +149,9 @@ export async function updateIssueConfigWithRollback(params: {
     draftId: params.draftId,
     issueNumber: params.issueNumber,
     repository: params.repository,
+    currentAgentAlias: params.currentIssue.agent_alias ?? null,
     currentModelName: params.currentIssue.model_name ?? null,
+    agentAlias: nextAgentAlias,
     modelName: nextModelName,
     octokit
   });
@@ -163,7 +171,9 @@ export async function updateIssueConfigWithRollback(params: {
         draftId: params.draftId,
         issueNumber: params.issueNumber,
         repository: params.repository,
+        currentAgentAlias: nextAgentAlias,
         currentModelName: nextModelName,
+        agentAlias: params.currentIssue.agent_alias ?? null,
         modelName: params.currentIssue.model_name ?? null,
         octokit
       });

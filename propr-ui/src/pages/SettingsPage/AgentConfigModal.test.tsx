@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import AgentConfigModal from './AgentConfigModal';
 import { AGENT_DEFAULTS, AGENT_MODELS } from '../../config/modelDefinitions';
+import { getManagedAgentConfigPath } from '@propr/shared';
 
 vi.mock('../../api/agentVersionApi', () => ({
   getAgentVersions: vi.fn().mockResolvedValue({
@@ -20,7 +21,7 @@ vi.mock('../../api/proprApi', () => ({
 }));
 
 describe('AgentConfigModal', () => {
-  it('shows OpenCode and populates OpenCode defaults from shared agent definitions', () => {
+  it('adds a loginable agent with an isolated managed credential path and requests login', () => {
     const onSave = vi.fn();
 
     render(
@@ -35,7 +36,8 @@ describe('AgentConfigModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
 
     expect(screen.getByLabelText('ID / Alias')).toHaveValue(AGENT_DEFAULTS.opencode.defaultAlias);
-    expect(screen.getByLabelText('Config Path')).toHaveValue(AGENT_DEFAULTS.opencode.configPath);
+    expect(screen.queryByLabelText('Config Path')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Log in to a new account' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText(AGENT_DEFAULTS.opencode.defaultCliVersion)).toBeInTheDocument();
 
     const defaultOpenCodeModel = AGENT_MODELS.opencode[0];
@@ -43,18 +45,43 @@ describe('AgentConfigModal', () => {
     expect(screen.getByText(defaultOpenCodeModel.id)).toBeInTheDocument();
     expect(screen.getByText(defaultOpenCodeModel.githubLabel)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add Agent' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Agent & Log In' }));
 
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+    const [savedAgent, saveOptions] = onSave.mock.calls[0];
+    expect(savedAgent).toEqual(expect.objectContaining({
       type: 'opencode',
       alias: AGENT_DEFAULTS.opencode.defaultAlias,
       dockerImage: AGENT_DEFAULTS.opencode.dockerImage,
-      configPath: AGENT_DEFAULTS.opencode.configPath,
+      configPath: getManagedAgentConfigPath(savedAgent.id, 'opencode'),
       supportedModels: AGENT_DEFAULTS.opencode.defaultModels,
       defaultModel: AGENT_DEFAULTS.opencode.defaultModels[0],
       cliVersionType: 'default',
       cliVersionResolved: AGENT_DEFAULTS.opencode.defaultCliVersion,
     }));
+    expect(saveOptions).toEqual({ loginAfterSave: true });
+  });
+
+  it('allows a new agent to reuse an existing config directory instead of logging in', () => {
+    const onSave = vi.fn();
+    render(
+      <AgentConfigModal
+        agent={null}
+        existingAliases={[]}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use existing config' }));
+    const configPath = screen.getByLabelText('Config Path');
+    expect(configPath).toHaveValue(AGENT_DEFAULTS.claude.configPath);
+    fireEvent.change(configPath, { target: { value: '/srv/credentials/claude-work' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Agent' }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ configPath: '/srv/credentials/claude-work' }),
+      { loginAfterSave: false },
+    );
   });
 
   it('adds discovered OpenCode provider models to the supported model selector', async () => {
@@ -72,6 +99,39 @@ describe('AgentConfigModal', () => {
     expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
     expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
     expect(screen.getByText('llm-opencode~opencode-openai/gpt-5.5')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'opencode2' } });
+
+    expect(screen.getByText('llm-opencode2~opencode-openai/gpt-5.5')).toBeInTheDocument();
+  });
+
+  it('uses the agent alias in long model labels', () => {
+    const model = AGENT_MODELS.codex[0];
+
+    render(
+      <AgentConfigModal
+        agent={{
+          id: 'agent-codex-2',
+          type: 'codex',
+          alias: 'codex2',
+          enabled: true,
+          dockerImage: AGENT_DEFAULTS.codex.dockerImage,
+          configPath: AGENT_DEFAULTS.codex.configPath,
+          supportedModels: [model.id],
+          defaultModel: model.id,
+        }}
+        existingAliases={['codex2']}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(`llm-codex2-${model.githubLabel.slice('llm-codex-'.length)}`)).toBeInTheDocument();
+    expect(screen.queryByText(model.githubLabel)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'codex3' } });
+
+    expect(screen.getByText(`llm-codex3-${model.githubLabel.slice('llm-codex-'.length)}`)).toBeInTheDocument();
   });
 
   it('shows OpenCode models already saved on an agent even when they are not static defaults', async () => {
@@ -127,9 +187,12 @@ describe('AgentConfigModal', () => {
     fireEvent.change(reasoningSelect, { target: { value: 'xhigh' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
 
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
-      modelReasoningLevels: { [model.id]: 'xhigh' },
-    }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelReasoningLevels: { [model.id]: 'xhigh' },
+      }),
+      { loginAfterSave: false }
+    );
   });
 
   it('marks a legacy cross-agent reasoning value as unsupported', () => {

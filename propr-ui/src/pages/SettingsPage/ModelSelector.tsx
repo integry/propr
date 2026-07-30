@@ -1,7 +1,7 @@
 import React from 'react';
 import { getReasoningLevelsForAgentType, type ReasoningLevel } from '@propr/shared';
 import { AgentType } from '../../config/modelDefinitions';
-import { buildSelectableModels } from './modelSelectionHelpers';
+import { buildSelectableModels, getModelGithubLabel } from './modelSelectionHelpers';
 import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
 
 // GitHub icon component
@@ -13,6 +13,7 @@ const GitHubIcon: React.FC<{ className?: string }> = ({ className = "w-4 h-4" })
 
 interface ModelSelectorProps {
   agentType: AgentType;
+  agentAlias: string;
   supportedModels: string[];
   defaultModel?: string;
   availableModelIds?: string[];
@@ -28,7 +29,7 @@ interface ModelSelectorProps {
 }
 
 const ModelSelector: React.FC<ModelSelectorProps> = ({
-  agentType, supportedModels, defaultModel, availableModelIds = [], modelCustomLabels, modelReasoningLevels,
+  agentType, agentAlias, supportedModels, defaultModel, availableModelIds = [], modelCustomLabels, modelReasoningLevels,
   errors, onModelToggle, onDefaultModelChange, onSelectAll, onDeselectAll, onCustomLabelChange,
   onReasoningLevelChange
 }) => {
@@ -59,6 +60,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         const modelCustomLabel = modelCustomLabels?.[model.id] || '';
         const modelReasoningLevel = modelReasoningLevels?.[model.id] || '';
         const reasoningLevelOptions = buildReasoningLevelSelectOptions(modelReasoningLevel, supportedReasoningLevels);
+        const githubLabel = getModelGithubLabel(agentType, agentAlias, model);
 
         return (
           <div key={model.id} className="py-2 px-2 hover:bg-gray-100 rounded">
@@ -95,7 +97,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
               <div className="flex flex-col items-end gap-0.5">
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded font-mono whitespace-nowrap">
                   <GitHubIcon className="w-3 h-3" />
-                  {model.githubLabel}
+                  {githubLabel}
                 </span>
                 {isSupported && (
                   <input

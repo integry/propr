@@ -50,7 +50,10 @@ export interface CachePricingMultipliers {
  * - Claude: cache_read = 0.1x, cache_creation = 1.25x
  * - Gemini 2.5+: cache_read = 0.1x, cache_creation = 1.0x
  * - Gemini 2.0: cache_read = 0.25x, cache_creation = 1.0x
- * - OpenAI/Codex: cache_read = 0.25x, cache_creation = 1.0x
+ * - OpenAI/Codex: cache_read = 0.1x, cache_creation = 1.0x
+ *
+ * These are fallbacks only. calculateCostWithCachePricing prefers explicit
+ * per-model cache prices when the pricing source supplies them.
  */
 export function getCachePricingMultipliers(model: string): CachePricingMultipliers {
     const lowerModel = model.toLowerCase();
@@ -70,8 +73,8 @@ export function getCachePricingMultipliers(model: string): CachePricingMultiplie
     }
 
     if (lowerModel.startsWith('gpt') || lowerModel.includes('codex')) {
-        // OpenAI/Codex: 75% discount on cache reads
-        return { cacheReadMultiplier: 0.25, cacheCreationMultiplier: 1.0 };
+        // Current OpenAI coding models use a 90% cached-input discount.
+        return { cacheReadMultiplier: 0.1, cacheCreationMultiplier: 1.0 };
     }
 
     // Default: no cache discount (treat cache tokens same as regular input)
@@ -223,19 +226,19 @@ export function getDetailedUsageStats(claudeResult: ClaudeResult | null): Detail
  * Calculate cost with proper cache pricing multipliers.
  * @param model - The model ID to determine provider-specific pricing
  * @param stats - Detailed usage stats with separate cache token counts
- * @param pricing - Base pricing (prompt and completion per token)
+ * @param pricing - Per-token pricing, optionally including explicit cache rates
  * @returns Total cost in USD
  */
 export function calculateCostWithCachePricing(
     model: string,
     stats: DetailedUsageStats,
-    pricing: { prompt: number; completion: number }
+    pricing: { prompt: number; completion: number; cacheRead?: number; cacheCreation?: number }
 ): number {
     const { cacheReadMultiplier, cacheCreationMultiplier } = getCachePricingMultipliers(model);
 
     const inputCost = stats.inputTokens * pricing.prompt;
-    const cacheCreationCost = stats.cacheCreationTokens * pricing.prompt * cacheCreationMultiplier;
-    const cacheReadCost = stats.cacheReadTokens * pricing.prompt * cacheReadMultiplier;
+    const cacheCreationCost = stats.cacheCreationTokens * (pricing.cacheCreation ?? pricing.prompt * cacheCreationMultiplier);
+    const cacheReadCost = stats.cacheReadTokens * (pricing.cacheRead ?? pricing.prompt * cacheReadMultiplier);
     const outputCost = stats.outputTokens * pricing.completion;
 
     return inputCost + cacheCreationCost + cacheReadCost + outputCost;

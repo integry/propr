@@ -1,4 +1,5 @@
 import logger from '../../utils/logger.js';
+import { isManagedAgentConfigPath } from '@propr/shared';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
@@ -12,6 +13,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import {
     parseAntigravityJsonl, aggregateDeltaMessages, convertEventToClaudeFormat,
     filterAntigravityAnalysisEvents,
@@ -26,7 +28,6 @@ import os from 'os';
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
-const DEFAULT_ANTIGRAVITY_TIMEOUT_MS = 3600000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.gemini';
@@ -38,7 +39,7 @@ export class AntigravityAgent implements Agent {
 
     constructor(config: AgentConfig) {
         this.config = config;
-        this.timeoutMs = parseInt(process.env.ANTIGRAVITY_TIMEOUT_MS || String(DEFAULT_ANTIGRAVITY_TIMEOUT_MS), 10);
+        this.timeoutMs = parseInt(process.env.ANTIGRAVITY_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
     private getRuntimeName(): 'antigravity' {
@@ -54,7 +55,13 @@ export class AntigravityAgent implements Agent {
     }
 
     private getHostConfigPath(): string {
-        const configuredPath = resolveConfigPath(process.env.ANTIGRAVITY_CONFIG_PATH || this.config.configPath);
+        // Provider-wide environment overrides remain the compatibility path for
+        // existing host credentials. ProPR-managed paths are per-agent and must
+        // win so multiple Antigravity accounts do not collapse onto one mount.
+        const configPath = isManagedAgentConfigPath(this.config.configPath)
+            ? this.config.configPath
+            : process.env.ANTIGRAVITY_CONFIG_PATH || this.config.configPath;
+        const configuredPath = resolveConfigPath(configPath);
         if (configuredPath.endsWith(`${path.sep}.antigravity`)) {
             const geminiPath = path.join(path.dirname(configuredPath), '.gemini');
             if (fs.existsSync(geminiPath)) {

@@ -85,7 +85,7 @@ AI-failed-*   # e.g. AI-failed-post-processing, set when a phase fails
 Model labels route work to configured models. They are matched against `MODEL_LABEL_PATTERN` (default `^llm-(.+)$`):
 
 ```text
-llm-claude-opus48
+llm-claude-opus5
 llm-codex-gpt56-sol
 llm-antigravity-pro-high
 llm-antigravity-opus46-thinking

@@ -1,15 +1,17 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert';
+import { AGENT_DEFAULTS, getManagedAgentConfigPath } from '@propr/shared';
 import type { AgentConfig } from '../packages/core/src/config/configManagerAgents.js';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
 
 process.env.NODE_ENV = 'test';
 
 let migrateAgentConfig: typeof import('../packages/core/src/config/configManagerAgents.js').migrateAgentConfig;
+let resolveConfigPath: typeof import('../packages/core/src/config/configManagerAgents.js').resolveConfigPath;
 let closeConnection: typeof import('../packages/core/src/db/connection.js').closeConnection;
 
 before(async () => {
-    ({ migrateAgentConfig } = await import('../packages/core/src/config/configManagerAgents.js'));
+    ({ migrateAgentConfig, resolveConfigPath } = await import('../packages/core/src/config/configManagerAgents.js'));
     ({ closeConnection } = await import('../packages/core/src/db/connection.js'));
 });
 
@@ -31,6 +33,20 @@ function createAgent(overrides: Partial<AgentConfig>): AgentConfig {
 }
 
 describe('agent config migration', () => {
+    test('resolves portable managed credentials through the deployment root', () => {
+        const previous = process.env.PROPR_MANAGED_CREDENTIALS_DIR;
+        try {
+            process.env.PROPR_MANAGED_CREDENTIALS_DIR = '/srv/propr-managed';
+            assert.strictEqual(
+                resolveConfigPath(getManagedAgentConfigPath('codex-1', 'codex')),
+                '/srv/propr-managed/codex-1/.codex'
+            );
+        } finally {
+            if (previous === undefined) delete process.env.PROPR_MANAGED_CREDENTIALS_DIR;
+            else process.env.PROPR_MANAGED_CREDENTIALS_DIR = previous;
+        }
+    });
+
     test('adds Claude CLI defaults when CLI version fields are missing', () => {
         const agent = createAgent({
             type: 'claude',
@@ -44,6 +60,8 @@ describe('agent config migration', () => {
         assert.strictEqual(agent.cliVersionType, 'default');
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.claude);
         assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
+        assert.ok(agent.supportedModels.includes('claude-opus-5'));
+        assert.ok(agent.supportedModels.includes('claude-sonnet-5'));
         assert.ok(agent.supportedModels.includes('claude-opus-4-6'));
         assert.ok(agent.supportedModels.includes('claude-sonnet-4-6'));
     });
@@ -121,8 +139,8 @@ describe('agent config migration', () => {
         const agent = createAgent({
             type: 'opencode',
             dockerImage: 'propr/agent:bundle-abc123-def456',
-            supportedModels: ['opencode-minimax-m3-free'],
-            defaultModel: 'opencode-minimax-m3-free',
+            supportedModels: [...AGENT_DEFAULTS.opencode.defaultModels],
+            defaultModel: AGENT_DEFAULTS.opencode.defaultModels[0],
             cliVersionType: 'default',
             cliVersionResolved: AGENT_DEFAULT_VERSIONS.opencode
         });
@@ -134,8 +152,8 @@ describe('agent config migration', () => {
     test('advances stale default CLI versions for every agent type', () => {
         const agent = createAgent({
             type: 'opencode',
-            supportedModels: ['opencode-minimax-m3-free'],
-            defaultModel: 'opencode-minimax-m3-free',
+            supportedModels: ['opencode-deepseek-v4-flash-free'],
+            defaultModel: 'opencode-deepseek-v4-flash-free',
             cliVersionType: 'default',
             cliVersion: 'latest',
             cliVersionResolved: '1.17.10'
@@ -144,6 +162,25 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.opencode);
         assert.strictEqual(agent.cliVersion, undefined);
+    });
+
+    test('replaces retired OpenCode defaults while preserving authenticated provider models', () => {
+        const agent = createAgent({
+            type: 'opencode',
+            supportedModels: ['opencode-minimax-m3-free', 'opencode-openai/gpt-5.5'],
+            defaultModel: 'opencode-minimax-m3-free',
+            cliVersionType: 'default',
+            cliVersionResolved: AGENT_DEFAULT_VERSIONS.opencode
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        assert.ok(!agent.supportedModels.includes('opencode-minimax-m3-free'));
+        assert.ok(agent.supportedModels.includes('opencode-deepseek-v4-flash-free'));
+        assert.ok(agent.supportedModels.includes('opencode-laguna-s-2.1-free'));
+        assert.ok(agent.supportedModels.includes('opencode-ling-3.0-flash-free'));
+        assert.ok(agent.supportedModels.includes('opencode-north-mini-code-free'));
+        assert.ok(agent.supportedModels.includes('opencode-openai/gpt-5.5'));
+        assert.strictEqual(agent.defaultModel, 'opencode-deepseek-v4-flash-free');
     });
 
     test('migrates legacy Antigravity config paths to Gemini credentials', () => {

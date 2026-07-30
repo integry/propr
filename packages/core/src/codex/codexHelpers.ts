@@ -55,7 +55,13 @@ export interface CodexOutput {
     sessionId?: string;
     conversationId?: string;
     model?: string;
-    tokenUsage?: { input_tokens?: number; output_tokens?: number };
+    tokenUsage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_read_input_tokens?: number;
+        /** Informational subset of output_tokens; never bill separately. */
+        reasoning_output_tokens?: number;
+    };
 }
 
 export interface StoreCodexPromptOptions {
@@ -126,7 +132,12 @@ interface ParseState {
     sessionId: string | undefined;
     conversationId: string | undefined;
     model: string | undefined;
-    tokenUsage: { input_tokens: number; output_tokens: number };
+    tokenUsage: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_input_tokens: number;
+        reasoning_output_tokens: number;
+    };
 }
 
 function handleItemCompleted(event: CodexEvent, state: ParseState): void {
@@ -160,8 +171,7 @@ function handleResultEvent(event: CodexEvent, state: ParseState): void {
     }
     addCodexTokenUsage(event.usage, state);
     if (event.stats) {
-        state.tokenUsage.input_tokens += (event.stats.input_tokens ?? 0) + (event.stats.cached_input_tokens ?? 0);
-        state.tokenUsage.output_tokens += event.stats.output_tokens ?? 0;
+        addCodexTokenUsage(event.stats, state);
     }
 }
 
@@ -179,8 +189,22 @@ function handleTurnCompleted(event: CodexEvent, state: ParseState): void {
 
 function addCodexTokenUsage(usage: CodexEvent['usage'] | undefined, state: ParseState): void {
     if (!usage) return;
-    state.tokenUsage.input_tokens += (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
+
+    // Codex follows the OpenAI usage schema: input_tokens already includes the
+    // cached_input_tokens subset. Store the two portions separately so cached
+    // input is neither double-counted nor billed at the full input rate.
+    const totalInputTokens = Math.max(0, usage.input_tokens ?? 0);
+    const reportedCachedTokens = Math.max(0, usage.cached_input_tokens ?? 0);
+    const cachedInputTokens = totalInputTokens > 0
+        ? Math.min(totalInputTokens, reportedCachedTokens)
+        : reportedCachedTokens;
+
+    state.tokenUsage.input_tokens += Math.max(0, totalInputTokens - cachedInputTokens);
+    state.tokenUsage.cache_read_input_tokens += cachedInputTokens;
     state.tokenUsage.output_tokens += usage.output_tokens ?? 0;
+    // reasoning_output_tokens is a subset of output_tokens, not an extra billed
+    // category. Capture it only to make reasoning-effort usage auditable.
+    state.tokenUsage.reasoning_output_tokens += usage.reasoning_output_tokens ?? 0;
 }
 
 function handleErrorEvent(event: CodexEvent, state: ParseState): void {
@@ -266,7 +290,12 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         sessionId: undefined,
         conversationId: undefined,
         model: undefined,
-        tokenUsage: { input_tokens: 0, output_tokens: 0 }
+        tokenUsage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            reasoning_output_tokens: 0
+        }
     };
     const conversationLog: CodexEvent[] = [];
 
@@ -284,6 +313,18 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         }
     }
 
+    const hasTokenUsage = Object.values(state.tokenUsage).some(value => value > 0);
+    const tokenUsage = hasTokenUsage ? {
+        input_tokens: state.tokenUsage.input_tokens,
+        output_tokens: state.tokenUsage.output_tokens,
+        ...(state.tokenUsage.cache_read_input_tokens > 0 && {
+            cache_read_input_tokens: state.tokenUsage.cache_read_input_tokens
+        }),
+        ...(state.tokenUsage.reasoning_output_tokens > 0 && {
+            reasoning_output_tokens: state.tokenUsage.reasoning_output_tokens
+        })
+    } : undefined;
+
     return {
         success: !state.isError,
         logs: state.logs,
@@ -293,7 +334,7 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
         sessionId: state.sessionId,
         conversationId: state.conversationId,
         model: state.model,
-        tokenUsage: (state.tokenUsage.input_tokens || state.tokenUsage.output_tokens) ? state.tokenUsage : undefined
+        tokenUsage
     };
 }
 

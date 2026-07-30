@@ -34,7 +34,7 @@ function humanizeMetricKey(key: string): string {
 }
 
 export interface UsageBadgeProps {
-  /** Total tokens consumed */
+  /** Total billable tokens consumed, including cached input */
   tokens?: number;
   /** Cost in USD */
   cost?: number;
@@ -83,7 +83,7 @@ export const UsageBadge: React.FC<UsageBadgeProps> = ({
 
   if (hasTokens) {
     parts.push(
-      <span key="tokens" title={`${tokens!.toLocaleString()} tokens`}>
+      <span key="tokens" title={`${tokens!.toLocaleString()} billable tokens (input, output, and cache)`}>
         {formatTokens(tokens!)} tok
       </span>
     );

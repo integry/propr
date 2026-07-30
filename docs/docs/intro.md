@@ -12,7 +12,7 @@ ProPR connects to your GitHub repositories and keeps the pull request as the cen
 
 ## First 15 Minutes
 
-You need a Docker-capable Linux host, Node.js 22+, and a login for at least one coding agent — reuse one already on the host (Claude Code's `claude login`, Antigravity's `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
+You need a Docker-capable Linux host, Node.js 22+, and a login for at least one coding agent — reuse one already on the host (Claude Code's `claude auth login`, Antigravity's `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
 
 ```bash
 npm install -g propr-cli
@@ -37,7 +37,7 @@ End-to-end usage remains fully supported — it is simply one of the ways to use
 - **Web UI Dashboard**: Configure GitHub repositories, labels, agents, and defaults, then track task activity, queue health, repository status, usage, and live run details from the browser
 - **Planner Studio**: Build draft plans, attach extra context, generate structured implementation steps, refine them, and run approved work
 - **Multi-Agent Support**: Run Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe agents, choose different models per task, and use the right agent for review or implementation
-- **Label-Based Model Routing**: Route any issue to a specific agent and model with `llm-*` labels such as `llm-claude-opus48`, `llm-codex-gpt55`, or `llm-antigravity-pro-high`; several model labels on one issue produce a separate run, branch, and PR per model
+- **Label-Based Model Routing**: Route any issue to a specific agent and model with `llm-*` labels such as `llm-claude-opus5`, `llm-codex-gpt55`, or `llm-antigravity-pro-high`; several model labels on one issue produce a separate run, branch, and PR per model
 - **CLI**: Use the `propr` command (`propr-cli`) as the local stack control plane (`propr init stack`, `propr check`, `propr start`) and to manage plans, implement issues, inspect tasks, and configure repositories and agents from the terminal
 - **GitHub PR Automation**: Use slash commands like `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` for follow-up work on pull requests after the main setup is already handled in the UI
 - **End-to-End GitHub Flow**: Detect labeled issues through the configured event intake mode (routing WebSocket by default, or optionally polling or a direct webhook), create isolated worktrees and branches, implement changes, and open linked pull requests automatically

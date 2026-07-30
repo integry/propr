@@ -2,7 +2,12 @@ import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import { AGENT_DEFAULTS } from '@propr/shared';
-import { AGENT_IMAGE_NAME, AGENT_TYPES, DEFAULT_AGENT_DOCKER_IMAGES } from '../packages/core/src/agents/constants.js';
+import {
+    AGENT_IMAGE_NAME,
+    AGENT_TYPES,
+    DEFAULT_AGENT_DOCKER_IMAGES,
+    DEFAULT_AGENT_EXECUTION_TIMEOUT_MS
+} from '../packages/core/src/agents/constants.js';
 import { CONTAINER_CONFIG_PATHS } from '../packages/core/src/agents/types.js';
 import { AGENT_CLI_PACKAGES, AGENT_CLI_TAGS, AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.js';
 import { findAgentCliVersionConflicts, generateAgentBundleImageTag, getAvailableVersions, getDefaultAgentCliVersionMatrix, resolveVersion } from '../packages/core/src/agents/version/versionService.js';
@@ -23,8 +28,8 @@ describe('agent version management', () => {
         assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
         assert.strictEqual(AGENT_CLI_PACKAGES.opencode, 'opencode-ai');
         assert.deepStrictEqual(AGENT_CLI_TAGS.opencode, ['latest', 'beta', 'dev']);
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.18.2');
-        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.18.2');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.18.9');
+        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.18.9');
         assert.strictEqual(AGENT_IMAGE_NAME, 'propr/agent');
         assert.strictEqual(DEFAULT_AGENT_DOCKER_IMAGES.opencode, 'propr/agent:latest');
     });
@@ -52,7 +57,7 @@ describe('agent version management', () => {
 
     test('reports conflicting CLI versions among enabled aliases of one agent type', () => {
         const conflicts = findAgentCliVersionConflicts([
-            { type: 'claude', alias: 'claude-stable', cliVersionResolved: '2.1.211', enabled: true },
+            { type: 'claude', alias: 'claude-stable', cliVersionResolved: '2.1.220', enabled: true },
             { type: 'claude', alias: 'claude-next', cliVersionResolved: '2.2.0', enabled: true },
             { type: 'codex', alias: 'codex', cliVersionResolved: '1.0.0', enabled: true }
         ]);
@@ -60,20 +65,20 @@ describe('agent version management', () => {
         assert.strictEqual(conflicts.length, 1);
         assert.strictEqual(conflicts[0].agentType, 'claude');
         assert.deepStrictEqual(conflicts[0].aliases, ['claude-stable', 'claude-next']);
-        assert.deepStrictEqual([...conflicts[0].versions].sort(), ['2.1.211', '2.2.0']);
+        assert.deepStrictEqual([...conflicts[0].versions].sort(), ['2.1.220', '2.2.0']);
     });
 
     test('ignores disabled aliases and matching versions when detecting conflicts', () => {
         assert.deepStrictEqual(findAgentCliVersionConflicts([
-            { type: 'claude', alias: 'claude-stable', cliVersionResolved: '2.1.211', enabled: true },
+            { type: 'claude', alias: 'claude-stable', cliVersionResolved: '2.1.220', enabled: true },
             { type: 'claude', alias: 'claude-old', cliVersionResolved: '2.0.0', enabled: false },
-            { type: 'claude', alias: 'claude-copy', cliVersionResolved: '2.1.211', enabled: true }
+            { type: 'claude', alias: 'claude-copy', cliVersionResolved: '2.1.220', enabled: true }
         ]), []);
     });
 
     test('generates unified bundle image tags', () => {
         const versions = getDefaultAgentCliVersionMatrix();
-        versions.opencode = '1.18.2';
+        versions.opencode = '1.18.9';
         assert.match(generateAgentBundleImageTag(versions, 'abc123'), /^propr\/agent:bundle-[0-9a-f]{12}-abc123$/);
     });
 
@@ -85,6 +90,37 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, new RegExp(`^ARG VIBE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.vibe}$`, 'm'));
         assert.match(buildScript, new RegExp(`^CLAUDE_CLI_VERSION="\\$\\{CLAUDE_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.claude}\\}"$`, 'm'));
         assert.match(buildScript, new RegExp(`^CODEX_CLI_VERSION="\\$\\{CODEX_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.codex}\\}"$`, 'm'));
+    });
+
+    test('defaults every coding agent task execution to 24 hours', () => {
+        const envExample = fs.readFileSync('.env.example', 'utf8');
+        const timeoutEnvVars = [
+            'CLAUDE_TIMEOUT_MS',
+            'CODEX_TIMEOUT_MS',
+            'ANTIGRAVITY_TIMEOUT_MS',
+            'OPENCODE_TIMEOUT_MS',
+            'VIBE_TIMEOUT_MS'
+        ];
+        const agentSources = [
+            'packages/core/src/agents/impl/ClaudeAgent.ts',
+            'packages/core/src/agents/impl/CodexAgent.ts',
+            'packages/core/src/agents/impl/AntigravityAgent.ts',
+            'packages/core/src/agents/impl/OpenCodeAgent.ts',
+            'packages/core/src/agents/impl/VibeAgent.ts',
+            'packages/core/src/claude/claudeService.ts'
+        ];
+
+        assert.strictEqual(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS, 86_400_000);
+        for (const envVar of timeoutEnvVars) {
+            assert.match(envExample, new RegExp(`^${envVar}=86400000$`, 'm'));
+        }
+        for (const sourcePath of agentSources) {
+            assert.match(
+                fs.readFileSync(sourcePath, 'utf8'),
+                /DEFAULT_AGENT_EXECUTION_TIMEOUT_MS/,
+                `${sourcePath} should use the shared task execution timeout`
+            );
+        }
     });
 
     test('uses Debian/glibc package management for the unified agent image', () => {
@@ -161,7 +197,7 @@ describe('agent version management', () => {
 
         assert.strictEqual(metadata.agentType, 'opencode');
         assert.strictEqual(metadata.packageName, 'opencode-ai');
-        assert.strictEqual(metadata.defaultVersion, '1.18.2');
+        assert.strictEqual(metadata.defaultVersion, '1.18.9');
         assert.deepStrictEqual(metadata.availableTags, [
             { tag: 'latest', version: '1.17.10' },
             { tag: 'beta', version: '1.18.0-beta.1' },

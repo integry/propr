@@ -29,7 +29,7 @@ propr setup                # guided, re-runnable bootstrap
 - A host with Docker and access to the Docker socket (Linux for the CLI and launcher paths; see the table above for macOS/Windows)
 - Node.js 22+ for the CLI path (the `propr/launcher:latest` container alternative needs no Node.js)
 - GitHub access for the backend. By default ProPR uses the shared, hosted ProPR GitHub App through the token relay — `propr setup` enrolls you when you pick **Token relay**, and running your own GitHub App is the advanced alternative. See [GitHub Authentication](../operations/github-auth.md).
-- Credentials for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — authenticate on the host before starting ProPR, or afterwards through the agent image with `propr agent login <agent>`
+- A provider account for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — reuse host credentials, run `propr agent login <agent>`, or add the agent and log in directly from the Web UI
 - Disk space for data, logs, and repository workspaces
 
 ## After Setup

@@ -45,7 +45,7 @@ describe('OpenCode API routes', () => {
             const [agent] = params.processedAgents ?? [];
             assert.equal(agent?.type, 'opencode');
             assert.equal(agent?.cliVersionType, 'default');
-            assert.equal(agent?.cliVersionResolved, '1.18.2');
+            assert.equal(agent?.cliVersionResolved, '1.18.9');
             return { status: 200, body: { success: true, agents: params.processedAgents } };
         });
         const routes = createAgentsRoutes({
@@ -65,7 +65,7 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode-minimax-m3-free', 'openai/gpt-5.5'],
+                    supportedModels: ['opencode-deepseek-v4-flash-free', 'openai/gpt-5.5'],
                     defaultModel: 'openai/gpt-5.5'
                 }]
             }
@@ -76,7 +76,7 @@ describe('OpenCode API routes', () => {
         assert.equal(redisClient.set.mock.calls.length, 1);
         const appliedAgent = (res.body?.agents as Array<Record<string, unknown>>)[0];
         assert.equal(appliedAgent?.type, 'opencode');
-        assert.deepEqual(appliedAgent?.supportedModels, ['opencode-minimax-m3-free', 'opencode-openai/gpt-5.5']);
+        assert.deepEqual(appliedAgent?.supportedModels, ['opencode-deepseek-v4-flash-free', 'opencode-openai/gpt-5.5']);
         assert.equal(appliedAgent?.defaultModel, 'opencode-openai/gpt-5.5');
     });
 
@@ -102,8 +102,8 @@ describe('OpenCode API routes', () => {
                     enabled: true,
                     dockerImage: 'propr/agent:latest',
                     configPath: '~/.config/opencode',
-                    supportedModels: ['opencode-minimax-m3-free'],
-                    defaultModel: 'opencode-minimax-m3-free',
+                    supportedModels: ['opencode-deepseek-v4-flash-free'],
+                    defaultModel: 'opencode-deepseek-v4-flash-free',
                     cliVersionType: 'default',
                     cliVersion: 'latest'
                 }]
@@ -142,17 +142,17 @@ describe('OpenCode API routes', () => {
     });
 
     test('GET /api/agents/opencode/images uses the unified image name', async () => {
+        const listAgentImages = mock.fn(async () => ['1.17.10-abc123']);
         const routes = createAgentVersionRoutes({
-            listAgentImages: async agentType => {
-                assert.equal(agentType, 'opencode');
-                return ['1.17.10-abc123'];
-            }
+            listAgentImages
         });
         const res = createMockResponse();
 
         await routes.listImages({ params: { agentType: 'opencode' } } as never, res as never);
 
         assert.equal(res.statusCode, 200);
+        assert.equal(listAgentImages.mock.calls.length, 1);
+        assert.equal(listAgentImages.mock.calls[0].arguments.length, 0);
         assert.deepEqual(res.body, {
             agentType: 'opencode',
             images: [{

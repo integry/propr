@@ -2,7 +2,9 @@ FROM node:20-slim
 
 WORKDIR /usr/src/app
 
-# Install git, sudo, docker client, and build tools for native modules (better-sqlite3)
+# Install git, sudo, Docker tooling, and build tools for native modules
+# (better-sqlite3). Debian's essential bsdutils package already provides
+# script(1), used as the browser agent-login PTY bridge.
 # Git is required for simple-git operations in the application
 # Sudo is required for changing file ownership in worktrees
 # python3, make, g++ are required for building native Node.js modules like better-sqlite3

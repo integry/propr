@@ -4,7 +4,11 @@ import assert from 'node:assert';
 const mockUpdatePlanIssue = mock.fn(async () => null);
 const mockGetAuthenticatedOctokit = mock.fn(async () => ({ request: mock.fn() }));
 const mockSafeUpdateLabels = mock.fn(async () => {});
+const mockGetLlmLabel = mock.fn(async (modelName: string | null, agentAlias?: string | null) => (
+  modelName ? `llm:${agentAlias || 'default'}:${modelName}` : null
+));
 const mockLoggerError = mock.fn();
+const mockLoggerWarn = mock.fn();
 const mockLoggerWithCorrelation = mock.fn(() => ({
   info: mock.fn(),
   warn: mock.fn(),
@@ -14,10 +18,12 @@ const mockLoggerWithCorrelation = mock.fn(() => ({
 
 await mock.module('@propr/core', {
   namedExports: {
+    PlanIssueStatus: {},
     db: {},
     getAuthenticatedOctokit: mockGetAuthenticatedOctokit,
     logger: {
       error: mockLoggerError,
+      warn: mockLoggerWarn,
       withCorrelation: mockLoggerWithCorrelation,
     },
     safeUpdateLabels: mockSafeUpdateLabels,
@@ -27,7 +33,7 @@ await mock.module('@propr/core', {
 
 await mock.module('../packages/api/routes/planIssueHelpers.js', {
   namedExports: {
-    getLlmLabel: mock.fn(async (modelName: string | null) => modelName ? `llm:${modelName}` : null),
+    getLlmLabel: mockGetLlmLabel,
     getOrCreateEpicLabel: mock.fn(async () => null),
   },
 });
@@ -41,7 +47,9 @@ function resetMocks(): void {
   mockUpdatePlanIssue.mock.resetCalls();
   mockSafeUpdateLabels.mock.resetCalls();
   mockGetAuthenticatedOctokit.mock.resetCalls();
+  mockGetLlmLabel.mock.resetCalls();
   mockLoggerError.mock.resetCalls();
+  mockLoggerWarn.mock.resetCalls();
   mockLoggerWithCorrelation.mock.resetCalls();
   mockSafeUpdateLabels.mock.mockImplementation(async () => {});
 }
@@ -71,8 +79,43 @@ describe('planIssueConfigSync rollback behavior', () => {
 
     assert.strictEqual(mockSafeUpdateLabels.mock.calls.length, 2);
     assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls.map((call) => call.arguments.slice(1)), [
-      [['llm:gpt-5.4'], ['llm:gpt-5.5']],
-      [['llm:gpt-5.5'], ['llm:gpt-5.4']],
+      [['llm:codex:gpt-5.4'], ['llm:codex:gpt-5.5']],
+      [['llm:codex:gpt-5.5'], ['llm:codex:gpt-5.4']],
+    ]);
+  });
+
+  test('updates the GitHub model label when only the agent alias changes', async () => {
+    resetMocks();
+    mockUpdatePlanIssue.mock.mockImplementationOnce(async (_draftId, issueNumber, updates) => ({
+      issue_number: issueNumber as number,
+      ...updates,
+    }));
+
+    await updateIssueConfigWithRollback({
+      draftId: 'draft-alias',
+      issueNumber: 12,
+      repository: 'owner/repo',
+      currentIssue: {
+        agent_alias: 'codex',
+        model_name: 'gpt-5.6-sol',
+      },
+      updates: {
+        agent_alias: 'codex2',
+      },
+    });
+
+    assert.deepStrictEqual(mockGetLlmLabel.mock.calls.map((call) => call.arguments), [
+      ['gpt-5.6-sol', 'codex'],
+      ['gpt-5.6-sol', 'codex2'],
+    ]);
+    assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments.slice(1), [
+      ['llm:codex:gpt-5.6-sol'],
+      ['llm:codex2:gpt-5.6-sol'],
+    ]);
+    assert.deepStrictEqual(mockUpdatePlanIssue.mock.calls[0].arguments, [
+      'draft-alias',
+      12,
+      { agent_alias: 'codex2' },
     ]);
   });
 

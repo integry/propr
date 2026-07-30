@@ -19,6 +19,9 @@ export interface AntigravityParsedOutput {
 }
 
 export const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
+    'antigravity-gemini-3.6-flash-medium': 'Gemini 3.6 Flash (Medium)',
+    'antigravity-gemini-3.6-flash-high': 'Gemini 3.6 Flash (High)',
+    'antigravity-gemini-3.6-flash-low': 'Gemini 3.6 Flash (Low)',
     'antigravity-gemini-3.5-flash-medium': 'Gemini 3.5 Flash (Medium)',
     'antigravity-gemini-3.5-flash-high': 'Gemini 3.5 Flash (High)',
     'antigravity-gemini-3.5-flash-low': 'Gemini 3.5 Flash (Low)',

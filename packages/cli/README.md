@@ -171,7 +171,7 @@ Implement GitHub issues from plans using AI agents.
 propr issue implement <draft-id>/<issue-number>              # Trigger implementation
 propr issue implement <draft-id>/1 --wait                    # Wait for completion
 propr issue implement <draft-id>/1 -a claude -m model-name   # Use specific agent/model
-propr issue implement <draft-id>/1 -a opencode -m opencode-minimax-m3-free
+propr issue implement <draft-id>/1 -a opencode -m opencode-deepseek-v4-flash-free
 propr issue implement <draft-id>/1 --epic --auto-merge       # Epic PR + auto-merge
 ```
 
@@ -246,7 +246,7 @@ propr agent list                                         # List configured agent
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
 propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabled   # Add in disabled state
-propr agent add opencode -t opencode -m opencode-minimax-m3-free -d opencode-minimax-m3-free --config-path /home/your-user/.config/opencode
+propr agent add opencode -t opencode -m opencode-deepseek-v4-flash-free -d opencode-deepseek-v4-flash-free --config-path /home/your-user/.config/opencode
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
@@ -266,7 +266,7 @@ mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth
 
 OpenCode stores `auth.json` under `~/.local/share/opencode`, but ProPR mounts the configured OpenCode config directory into the agent container. When using copied file-based auth, set `XDG_DATA_HOME=/home/node/.config/opencode/xdg-data` on the OpenCode agent. Use `~/.config/opencode` as the agent `configPath`.
 
-The example model `opencode-minimax-m3-free` is a built-in free OpenCode model. OpenCode's model list changes with auth providers; run `opencode models` after logging in and register any desired provider/model IDs with ProPR's `opencode-` prefix, such as `opencode-openai/gpt-5.5`. ProPR converts these IDs back to OpenCode's native `provider/model` syntax at execution time and does not add authenticated provider models by default.
+The example model `opencode-deepseek-v4-flash-free` is a built-in free OpenCode model. OpenCode's model list changes with auth providers; run `opencode models` after logging in and register any desired provider/model IDs with ProPR's `opencode-` prefix, such as `opencode-openai/gpt-5.5`. ProPR converts these IDs back to OpenCode's native `provider/model` syntax at execution time and does not add authenticated provider models by default.
 Dynamic OpenCode GitHub labels use the format `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` separator is an intentional public contract — these labels are persisted on GitHub issues and resolved later for execution routing.
 
 **JSON file format** for `--file`:
@@ -275,8 +275,8 @@ Dynamic OpenCode GitHub labels use the format `llm-<agent-alias>~<propr-opencode
 {
   "alias": "opencode",
   "type": "opencode",
-  "models": ["opencode-minimax-m3-free"],
-  "defaultModel": "opencode-minimax-m3-free",
+  "models": ["opencode-deepseek-v4-flash-free"],
+  "defaultModel": "opencode-deepseek-v4-flash-free",
   "dockerImage": "propr/agent:latest",
   "configPath": "/home/your-user/.config/opencode",
   "enabled": true,

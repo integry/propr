@@ -60,7 +60,7 @@ ProPR is a set of stages you can adopt independently — use one or all:
 
 ## Quick start (recommended: CLI)
 
-You need a Docker-capable Linux host, **Node.js 22+**, and a login for at least one coding agent — reuse one already on the host (`claude login`, `agy login`, …) or create it through the agent's image with `propr agent login <agent>`.
+You need a Docker-capable Linux host, **Node.js 22+**, and a provider account for at least one coding agent. Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
 
 ```bash
 npm install -g propr-cli
@@ -92,9 +92,9 @@ You supply your own provider credentials. The full model catalog, per-agent cred
 
 Add an `llm-<agent>-<model>` label to an issue to choose who processes it:
 
-- `llm-claude-opus48` — Claude Opus 4.8
+- `llm-claude-opus5` — Claude Opus 5
 - `llm-codex-gpt54` — Codex GPT-5.4
-- `llm-opencode-minimax-m3-free` — OpenCode MiniMax M3 Free
+- `llm-opencode-deepseek-v4-flash-free` — OpenCode DeepSeek V4 Flash Free
 - `llm-antigravity-pro-high` — Antigravity Gemini 3.1 Pro High
 - `llm-antigravity-opus46-thinking` — Antigravity Claude Opus 4.6 Thinking
 
@@ -108,7 +108,7 @@ Each labeled issue runs through a deterministic three-phase pipeline:
 2. **AI implementation** — run the selected agent in a sandboxed container with implementation-only prompts and full issue + comment context.
 3. **Post-agent finalization** — commit changes, push, and open a pull request linked to the issue (`Closes #123`), then manage state labels.
 
-Branches follow `<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`, e.g. `349/claude-opus48-feat-implement-onboarding-20260529-1506-3he`.
+Branches follow `<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`, e.g. `349/claude-opus5-feat-implement-onboarding-20260529-1506-3he`.
 
 State labels are derived from the trigger label, so an issue labeled `AI` moves through `AI-processing` → `AI-waiting` → `AI-done` / `AI-failed-*`, while a `propr`-labeled issue uses the `propr-*` set. Configure trigger labels in the UI or via `PRIMARY_PROCESSING_LABELS`.
 
