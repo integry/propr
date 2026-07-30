@@ -1,35 +1,20 @@
 import type { Knex } from 'knex';
+import type {
+    InstanceMember,
+    InstanceMemberSource,
+    InstanceRole,
+    InstanceRoleAuditEntry
+} from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
-import type { InstanceAuthorization, InstanceRole } from './authorization.js';
-import { getBootstrapAdminUsernames } from './authorization.js';
+import { getBootstrapAdminUsernames, type InstanceAuthorization } from './authorization.js';
 
-export interface InstanceMember {
-    githubUserId: string;
-    githubUsername: string;
-    role: InstanceRole;
-    source: 'local' | 'bootstrap' | 'managed';
-    createdByUserId: string | null;
-    createdAt: string;
-    updatedAt: string;
-}
-
-export interface InstanceRoleAuditEntry {
-    id: number;
-    actorGithubUserId: string;
-    actorGithubUsername: string;
-    targetGithubUserId: string;
-    targetGithubUsername: string;
-    action: string;
-    previousRole: InstanceRole | null;
-    newRole: InstanceRole | null;
-    createdAt: string;
-}
+export type { InstanceMember, InstanceRoleAuditEntry };
 
 interface MemberRow {
     github_user_id: string;
     github_username: string;
     role: InstanceRole;
-    source: 'local' | 'bootstrap' | 'managed';
+    source: InstanceMemberSource;
     created_by_user_id: string | null;
     created_at: string;
     updated_at: string;
@@ -54,6 +39,8 @@ interface AuditWrite {
     previousRole: InstanceRole | null;
     newRole: InstanceRole | null;
 }
+
+const AUDIT_RETENTION_LIMIT = 10_000;
 
 export class InstanceMemberError extends Error {
     constructor(
@@ -105,65 +92,20 @@ async function writeAudit(
         previous_role: previousRole,
         new_role: newRole
     });
-}
-
-async function persistActingAdmin(
-    trx: Knex.Transaction,
-    actor: GitHubUser,
-    authorization: InstanceAuthorization
-): Promise<void> {
-    const existing = await trx<MemberRow>('instance_members')
-        .where({ github_user_id: actor.id })
+    const firstExpired = await trx<AuditRow>('instance_role_audit')
+        .select('id')
+        .orderBy('id', 'desc')
+        .offset(AUDIT_RETENTION_LIMIT)
         .first();
-    if (existing?.role === 'admin') {
-        if (existing.github_username !== actor.username) {
-            await trx('instance_members')
-                .where({ github_user_id: actor.id })
-                .update({ github_username: actor.username, updated_at: trx.fn.now() });
-        }
-        return;
+    if (firstExpired) {
+        await trx('instance_role_audit').where('id', '<=', firstExpired.id).delete();
     }
-
-    const source = authorization.source === 'bootstrap' ? 'bootstrap' : 'local';
-    if (existing) {
-        await trx('instance_members')
-            .where({ github_user_id: actor.id })
-            .update({
-                github_username: actor.username,
-                role: 'admin',
-                source,
-                updated_at: trx.fn.now()
-            });
-        await writeAudit(trx, {
-            actor,
-            target: actor,
-            action: 'admin_claimed',
-            previousRole: existing.role,
-            newRole: 'admin'
-        });
-        return;
-    }
-
-    await trx('instance_members').insert({
-        github_user_id: actor.id,
-        github_username: actor.username,
-        role: 'admin',
-        source,
-        created_by_user_id: actor.id
-    });
-    await writeAudit(trx, {
-        actor,
-        target: actor,
-        action: 'admin_claimed',
-        previousRole: null,
-        newRole: 'admin'
-    });
 }
 
-function assertNotEnvironmentAdmin(member: MemberRow): void {
-    if (getBootstrapAdminUsernames().includes(member.github_username.toLowerCase())) {
+function assertNotEnvironmentAdmin(target: { username: string }): void {
+    if (getBootstrapAdminUsernames().includes(target.username.toLowerCase())) {
         throw new InstanceMemberError(
-            `${member.github_username} is configured through PROPR_ADMIN_USERS and cannot be changed here`,
+            `${target.username} is configured through PROPR_ADMIN_USERS and cannot be assigned or changed here`,
             409,
             'BOOTSTRAP_ADMIN_IMMUTABLE'
         );
@@ -193,7 +135,8 @@ export class InstanceMemberService {
     }
 
     async listAudit(limit = 100): Promise<InstanceRoleAuditEntry[]> {
-        const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 250);
+        const finiteLimit = Number.isFinite(limit) ? limit : 100;
+        const safeLimit = Math.min(Math.max(Math.trunc(finiteLimit), 1), 250);
         const rows = await this.database<AuditRow>('instance_role_audit')
             .select('*')
             .orderBy('id', 'desc')
@@ -201,23 +144,76 @@ export class InstanceMemberService {
         return rows.map(toAuditEntry);
     }
 
-    async claimAdmin(actor: GitHubUser, authorization: InstanceAuthorization): Promise<InstanceMember> {
+    async claimBootstrapAdmin(
+        actor: GitHubUser,
+        authorization: InstanceAuthorization
+    ): Promise<InstanceMember> {
+        if (authorization.source !== 'bootstrap') {
+            throw new InstanceMemberError(
+                'Only an administrator configured through PROPR_ADMIN_USERS can store their bootstrap role',
+                409,
+                'BOOTSTRAP_ADMIN_REQUIRED'
+            );
+        }
         return this.database.transaction(async trx => {
-            await persistActingAdmin(trx, actor, authorization);
-            const row = await trx<MemberRow>('instance_members').where({ github_user_id: actor.id }).first();
-            if (!row) throw new Error('Failed to persist the acting administrator');
+            const existing = await trx<MemberRow>('instance_members')
+                .where({ github_user_id: actor.id })
+                .first();
+            if (existing?.role === 'admin') {
+                if (existing.github_username === actor.username) return toMember(existing);
+                await trx('instance_members')
+                    .where({ github_user_id: actor.id })
+                    .update({
+                        github_username: actor.username,
+                        updated_at: trx.fn.now()
+                    });
+                const refreshed = await trx<MemberRow>('instance_members')
+                    .where({ github_user_id: actor.id })
+                    .first();
+                if (!refreshed) throw new Error('Failed to refresh the bootstrap administrator');
+                return toMember(refreshed);
+            }
+
+            if (existing) {
+                await trx('instance_members')
+                    .where({ github_user_id: actor.id })
+                    .update({
+                        github_username: actor.username,
+                        role: 'admin',
+                        source: 'local',
+                        updated_at: trx.fn.now()
+                    });
+            } else {
+                await trx('instance_members').insert({
+                    github_user_id: actor.id,
+                    github_username: actor.username,
+                    role: 'admin',
+                    source: 'local',
+                    created_by_user_id: actor.id
+                });
+            }
+            await writeAudit(trx, {
+                actor,
+                target: actor,
+                action: 'admin_claimed',
+                previousRole: existing?.role ?? null,
+                newRole: 'admin'
+            });
+            const row = await trx<MemberRow>('instance_members')
+                .where({ github_user_id: actor.id })
+                .first();
+            if (!row) throw new Error('Failed to store the bootstrap administrator');
             return toMember(row);
         });
     }
 
     async addMember(
         actor: GitHubUser,
-        authorization: InstanceAuthorization,
         target: { id: string; username: string },
         role: InstanceRole
     ): Promise<InstanceMember> {
         return this.database.transaction(async trx => {
-            await persistActingAdmin(trx, actor, authorization);
+            assertNotEnvironmentAdmin(target);
             const existing = await trx<MemberRow>('instance_members').where({ github_user_id: target.id }).first();
             if (existing) {
                 throw new InstanceMemberError('This GitHub user already has an explicit instance role', 409, 'MEMBER_EXISTS');
@@ -244,15 +240,13 @@ export class InstanceMemberService {
 
     async updateRole(
         actor: GitHubUser,
-        authorization: InstanceAuthorization,
         githubUserId: string,
         role: InstanceRole
     ): Promise<InstanceMember> {
         return this.database.transaction(async trx => {
-            await persistActingAdmin(trx, actor, authorization);
             const existing = await trx<MemberRow>('instance_members').where({ github_user_id: githubUserId }).first();
             if (!existing) throw new InstanceMemberError('Instance member not found', 404, 'MEMBER_NOT_FOUND');
-            assertNotEnvironmentAdmin(existing);
+            assertNotEnvironmentAdmin({ username: existing.github_username });
             if (existing.role === 'admin' && role !== 'admin') await assertAnotherAdminExists(trx);
             if (existing.role !== role) {
                 await trx('instance_members')
@@ -274,14 +268,12 @@ export class InstanceMemberService {
 
     async removeMember(
         actor: GitHubUser,
-        authorization: InstanceAuthorization,
         githubUserId: string
     ): Promise<void> {
         await this.database.transaction(async trx => {
-            await persistActingAdmin(trx, actor, authorization);
             const existing = await trx<MemberRow>('instance_members').where({ github_user_id: githubUserId }).first();
             if (!existing) throw new InstanceMemberError('Instance member not found', 404, 'MEMBER_NOT_FOUND');
-            assertNotEnvironmentAdmin(existing);
+            assertNotEnvironmentAdmin({ username: existing.github_username });
             if (existing.role === 'admin') await assertAnotherAdminExists(trx);
             await trx('instance_members').where({ github_user_id: githubUserId }).delete();
             await writeAudit(trx, {

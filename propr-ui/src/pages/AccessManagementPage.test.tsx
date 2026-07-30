@@ -4,7 +4,7 @@ import AccessManagementPage from './AccessManagementPage';
 import { AuthProvider } from '../contexts/AuthContext';
 import {
   addInstanceMember,
-  claimInstanceAdmin,
+  claimBootstrapAdmin,
   getInstanceMembers,
   removeInstanceMember,
   updateInstanceMemberRole
@@ -13,7 +13,7 @@ import type { CurrentUser } from '../api/proprTypes';
 
 vi.mock('../api/instanceMembersApi', () => ({
   addInstanceMember: vi.fn(),
-  claimInstanceAdmin: vi.fn(),
+  claimBootstrapAdmin: vi.fn(),
   getInstanceMembers: vi.fn(),
   removeInstanceMember: vi.fn(),
   updateInstanceMemberRole: vi.fn()
@@ -32,19 +32,17 @@ const admin: CurrentUser = {
     'instance.manage_runtime',
     'instance.manage_settings'
   ],
-  authorizationSource: 'local',
-  legacyAdminMode: false
+  authorizationSource: 'local'
 };
 
 const mockGetMembers = vi.mocked(getInstanceMembers);
 const mockAddMember = vi.mocked(addInstanceMember);
-const mockClaimAdmin = vi.mocked(claimInstanceAdmin);
+const mockClaimBootstrapAdmin = vi.mocked(claimBootstrapAdmin);
 
 describe('AccessManagementPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetMembers.mockResolvedValue({
-      legacyMode: false,
       bootstrapAdmins: [],
       members: [{
         githubUserId: '100',
@@ -94,11 +92,23 @@ describe('AccessManagementPage', () => {
     });
   });
 
-  it('lets a compatibility administrator claim a durable role', async () => {
+  it('lets an environment administrator store a durable numeric-ID role', async () => {
+    const refreshUser = vi.fn().mockResolvedValue(undefined);
     mockGetMembers
-      .mockResolvedValueOnce({ legacyMode: true, bootstrapAdmins: [], members: [] })
-      .mockResolvedValueOnce({ legacyMode: false, bootstrapAdmins: [], members: [] });
-    mockClaimAdmin.mockResolvedValue({
+      .mockResolvedValueOnce({ bootstrapAdmins: ['owner'], members: [] })
+      .mockResolvedValueOnce({
+        bootstrapAdmins: ['owner'],
+        members: [{
+          githubUserId: '100',
+          githubUsername: 'owner',
+          role: 'admin',
+          source: 'local',
+          createdByUserId: '100',
+          createdAt: '2026-07-30T00:00:00.000Z',
+          updatedAt: '2026-07-30T00:00:00.000Z'
+        }]
+      });
+    mockClaimBootstrapAdmin.mockResolvedValue({
       githubUserId: '100',
       githubUsername: 'owner',
       role: 'admin',
@@ -107,17 +117,20 @@ describe('AccessManagementPage', () => {
       createdAt: '2026-07-30T00:00:00.000Z',
       updatedAt: '2026-07-30T00:00:00.000Z'
     });
+
     render(
-      <AuthProvider user={admin}>
+      <AuthProvider user={{ ...admin, authorizationSource: 'bootstrap' }} refreshUser={refreshUser}>
         <AccessManagementPage />
       </AuthProvider>
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Claim administrator role' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Store my administrator role' }));
 
     await waitFor(() => {
-      expect(mockClaimAdmin).toHaveBeenCalledTimes(1);
+      expect(mockClaimBootstrapAdmin).toHaveBeenCalledTimes(1);
+      expect(refreshUser).toHaveBeenCalledTimes(1);
       expect(mockGetMembers).toHaveBeenCalledTimes(2);
     });
   });
+
 });

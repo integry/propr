@@ -74,7 +74,7 @@ These map onto [Agents And Models](./agents-and-models.md), [PR Follow-up](./pr-
 
 ## Access
 
-**Access** (`/admin/members`) is available to administrators. It creates durable `admin` and `member` role assignments using stable GitHub user IDs, shows environment administrators configured through `PROPR_ADMIN_USERS`, and prevents removal or demotion of the last durable administrator. On an upgraded installation, use this page to claim the first durable administrator and leave compatibility mode.
+**Access** (`/admin/members`) is available to administrators. It creates durable `admin` and `member` role assignments using stable GitHub user IDs, shows environment administrators configured through `PROPR_ADMIN_USERS`, and prevents removal or demotion of the last durable administrator. On a new installation, sign in as a configured environment administrator and use **Store my administrator role** before removing that username from `PROPR_ADMIN_USERS`.
 
 Role assignments do not edit the GitHub trigger whitelist. Configure allowed login and trigger actors separately under **Settings**.
 

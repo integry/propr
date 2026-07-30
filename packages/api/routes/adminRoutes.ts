@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
-import { getBootstrapAdminUsernames, type InstanceAuthorization, type InstanceRole } from '../authorization.js';
+import type { InstanceRole } from '@propr/shared';
+import { getBootstrapAdminUsernames, type InstanceAuthorization } from '../authorization.js';
 import { InstanceMemberError, InstanceMemberService } from '../instanceMemberService.js';
 import type { GitHubUser } from '../authTypes.js';
 
@@ -19,7 +20,7 @@ interface AdminRoutesDeps {
     services?: Partial<AdminRouteServices>;
 }
 
-const GITHUB_USERNAME_PATTERN = /^[a-z\d](?:[a-z\d-]{0,38})$/i;
+const GITHUB_USERNAME_PATTERN = /^(?!.*--)[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i;
 
 async function resolveGitHubUser(username: string, accessToken?: string): Promise<ResolvedGitHubUser> {
     const response = await fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, {
@@ -79,8 +80,7 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         try {
             res.json({
                 members: await service.listMembers(),
-                bootstrapAdmins: getBootstrapAdminUsernames(),
-                legacyMode: req.authorization?.legacyMode === true
+                bootstrapAdmins: getBootstrapAdminUsernames()
             });
         } catch (error) {
             sendAdminError(error, res);
@@ -88,7 +88,19 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
     }
 
     async function listRoleAudit(req: Request, res: Response): Promise<void> {
-        const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : 100;
+        const rawLimit = req.query.limit;
+        const requestedLimit = rawLimit === undefined
+            ? 100
+            : typeof rawLimit === 'string' && rawLimit.trim()
+                ? Number(rawLimit)
+                : Number.NaN;
+        if (!Number.isFinite(requestedLimit)) {
+            res.status(400).json({
+                error: 'limit must be a finite number',
+                code: 'INVALID_AUDIT_LIMIT'
+            });
+            return;
+        }
         try {
             res.json({ entries: await service.listAudit(requestedLimit) });
         } catch (error) {
@@ -96,11 +108,13 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         }
     }
 
-    async function claimAdmin(req: Request, res: Response): Promise<void> {
+    async function claimBootstrapAdmin(req: Request, res: Response): Promise<void> {
         const context = requestContext(req, res);
         if (!context) return;
         try {
-            res.json({ member: await service.claimAdmin(context.user, context.authorization) });
+            res.json({
+                member: await service.claimBootstrapAdmin(context.user, context.authorization)
+            });
         } catch (error) {
             sendAdminError(error, res);
         }
@@ -121,7 +135,7 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         }
         try {
             const target = await services.resolveGitHubUser(username, context.user.accessToken);
-            const member = await service.addMember(context.user, context.authorization, target, role);
+            const member = await service.addMember(context.user, target, role);
             res.status(201).json({ member });
         } catch (error) {
             sendAdminError(error, res);
@@ -139,7 +153,6 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         try {
             const member = await service.updateRole(
                 context.user,
-                context.authorization,
                 req.params.githubUserId,
                 role
             );
@@ -153,7 +166,7 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
         const context = requestContext(req, res);
         if (!context) return;
         try {
-            await service.removeMember(context.user, context.authorization, req.params.githubUserId);
+            await service.removeMember(context.user, req.params.githubUserId);
             res.status(204).end();
         } catch (error) {
             sendAdminError(error, res);
@@ -163,7 +176,7 @@ export function createAdminRoutes({ database = db, services: overrides }: AdminR
     return {
         listMembers,
         listRoleAudit,
-        claimAdmin,
+        claimBootstrapAdmin,
         addMember,
         updateMemberRole,
         removeMember

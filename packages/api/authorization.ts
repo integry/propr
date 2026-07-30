@@ -1,37 +1,33 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
+import {
+    INSTANCE_PERMISSIONS,
+    type AuthenticatedInstanceUser,
+    type InstanceAuthorizationSource,
+    type InstanceMemberSource,
+    type InstancePermission,
+    type InstanceRole
+} from '@propr/shared';
 import { isDemoMode } from './demoMode.js';
 import type { GitHubUser } from './authTypes.js';
 
-export const INSTANCE_PERMISSIONS = [
-    'instance.manage_agents',
-    'instance.manage_members',
-    'instance.manage_runtime',
-    'instance.manage_settings'
-] as const;
-
-export type InstancePermission = typeof INSTANCE_PERMISSIONS[number];
-export type InstanceRole = 'admin' | 'member';
-export type AuthorizationSource = 'bootstrap' | 'legacy' | 'local' | 'managed' | 'implicit' | 'demo';
+export { INSTANCE_PERMISSIONS };
+export type { InstancePermission, InstanceRole };
 
 export interface InstanceAuthorization {
     role: InstanceRole;
     permissions: InstancePermission[];
-    source: AuthorizationSource;
-    legacyMode: boolean;
+    source: InstanceAuthorizationSource;
 }
 
 interface InstanceMemberRow {
     github_user_id: string;
     role: InstanceRole;
-    source: 'local' | 'bootstrap' | 'managed';
+    source: InstanceMemberSource;
 }
 
 const ADMIN_PERMISSIONS: InstancePermission[] = [...INSTANCE_PERMISSIONS];
-const LEGACY_ADMIN_PERMISSIONS: InstancePermission[] = INSTANCE_PERMISSIONS.filter(
-    permission => permission !== 'instance.manage_runtime'
-);
 
 export function getBootstrapAdminUsernames(): string[] {
     return [...new Set(
@@ -42,7 +38,7 @@ export function getBootstrapAdminUsernames(): string[] {
     )];
 }
 
-function isBootstrapAdmin(username: string): boolean {
+export function isBootstrapAdmin(username: string): boolean {
     return getBootstrapAdminUsernames().includes(username.trim().toLowerCase());
 }
 
@@ -51,29 +47,28 @@ export async function resolveInstanceAuthorization(
     database: Knex = db
 ): Promise<InstanceAuthorization> {
     if (isDemoMode()) {
-        return { role: 'member', permissions: [], source: 'demo', legacyMode: false };
+        return { role: 'member', permissions: [], source: 'demo' };
     }
 
-    const [member, anyMember] = await Promise.all([
-        database<InstanceMemberRow>('instance_members')
-            .select('github_user_id', 'role', 'source')
-            .where({ github_user_id: user.id })
-            .first(),
-        database<InstanceMemberRow>('instance_members').select('github_user_id').first()
-    ]);
-    const legacyMode = !anyMember;
-
+    // Environment administrators do not require a database lookup. Besides
+    // keeping the break-glass path independent of the database, this avoids an
+    // authorization query on every request made by a bootstrap installation
+    // administrator.
     if (isBootstrapAdmin(user.username)) {
-        return { role: 'admin', permissions: [...ADMIN_PERMISSIONS], source: 'bootstrap', legacyMode };
+        return { role: 'admin', permissions: [...ADMIN_PERMISSIONS], source: 'bootstrap' };
     }
+
+    // Keep this single primary-key lookup uncached so demotions and removals
+    // take effect on the next request.
+    const member = await database<InstanceMemberRow>('instance_members')
+        .select('github_user_id', 'role', 'source')
+        .where({ github_user_id: user.id })
+        .first();
     if (member) {
         const permissions = member.role === 'admin' ? [...ADMIN_PERMISSIONS] : [];
-        return { role: member.role, permissions, source: member.source, legacyMode };
+        return { role: member.role, permissions, source: member.source };
     }
-    if (legacyMode) {
-        return { role: 'admin', permissions: [...LEGACY_ADMIN_PERMISSIONS], source: 'legacy', legacyMode: true };
-    }
-    return { role: 'member', permissions: [], source: 'implicit', legacyMode: false };
+    return { role: 'member', permissions: [], source: 'implicit' };
 }
 
 export async function resolveAuthorization(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -91,13 +86,6 @@ export async function resolveAuthorization(req: Request, res: Response, next: Ne
 }
 
 export function hasPermission(req: Request, permission: InstancePermission): boolean {
-    if (
-        permission === 'instance.manage_runtime'
-        && req.user
-        && /^(1|true|yes)$/i.test(process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER || '')
-    ) {
-        return true;
-    }
     return req.authorization?.permissions.includes(permission) === true;
 }
 
@@ -115,18 +103,7 @@ export function requirePermission(permission: InstancePermission): RequestHandle
     };
 }
 
-export interface AuthenticatedUserResponse {
-    id: string;
-    login?: string;
-    username: string;
-    displayName: string;
-    email: string | null;
-    avatarUrl: string | null;
-    role: InstanceRole;
-    permissions: InstancePermission[];
-    authorizationSource: AuthorizationSource;
-    legacyAdminMode: boolean;
-}
+export type AuthenticatedUserResponse = AuthenticatedInstanceUser;
 
 export function authenticatedUserResponse(
     user: GitHubUser,
@@ -141,7 +118,6 @@ export function authenticatedUserResponse(
         avatarUrl: user.avatarUrl,
         role: authorization.role,
         permissions: [...authorization.permissions],
-        authorizationSource: authorization.source,
-        legacyAdminMode: authorization.legacyMode
+        authorizationSource: authorization.source
     };
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
@@ -20,7 +20,7 @@ import { useDemoMode } from './contexts/DemoModeContext'
 import { DemoModeProvider } from './contexts/DemoModeProvider'
 import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
-import { getCurrentUser } from './api/proprApi'
+import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
 import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
@@ -99,6 +99,10 @@ const AppContent: React.FC = () => {
   const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
+  const refreshCurrentUser = useCallback(async () => {
+    setCurrentUser(await getCurrentUser());
+  }, []);
+
   // Perform initial auth check
   useEffect(() => {
     if (isDemoModeLoading) return;
@@ -111,8 +115,7 @@ const AppContent: React.FC = () => {
       }
 
       try {
-        const user = await getCurrentUser();
-        setCurrentUser(user);
+        await refreshCurrentUser();
         // Session is valid
         setIsLoading(false);
       } catch (error) {
@@ -126,7 +129,17 @@ const AppContent: React.FC = () => {
     };
 
     checkSession();
-  }, [isDemoModeLoading]);
+  }, [isDemoModeLoading, refreshCurrentUser]);
+
+  useEffect(() => {
+    const handleAuthorizationChanged = () => {
+      void refreshCurrentUser().catch(error => {
+        console.error('Failed to refresh instance authorization:', error);
+      });
+    };
+    window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChanged);
+    return () => window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChanged);
+  }, [refreshCurrentUser]);
 
 
   // Render spinner while checking auth
@@ -138,7 +151,7 @@ const AppContent: React.FC = () => {
           <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
             <DemoModeBanner />
             <div className="min-h-0 flex-1">
-              <AuthProvider user={currentUser}>
+              <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <Router>
               <Routes>
                 <Route path="/login" element={<LoginPage />} />

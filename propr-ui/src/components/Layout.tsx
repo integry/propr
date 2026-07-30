@@ -226,7 +226,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </Link>
             ))}
           </nav>
-          <AgentTankSidebar />
+          {userHasPermission(user, 'instance.manage_agents') && <AgentTankSidebar />}
           <footer className="px-4 py-3 border-t border-gray-100 text-[11px] leading-tight text-gray-400 space-y-1">
             <div>
               <a

@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import { apiFetch, getDemoModeStatus, handleApiResponse } from './proprApi';
+import {
+  apiFetch,
+  getDemoModeStatus,
+  handleApiResponse,
+  INSTANCE_AUTHORIZATION_CHANGED_EVENT
+} from './proprApi';
 
 describe('demo mode API helpers', () => {
   afterEach(() => {
@@ -112,6 +117,23 @@ describe('demo mode API helpers', () => {
       code: DEMO_MODE_READ_ONLY_CODE,
       message: 'Demo mode is read-only. Changes are not allowed.',
     });
+  });
+
+  it('requests a current-user refresh after a stale permission is rejected', async () => {
+    const listener = vi.fn();
+    window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+    const response = new Response(JSON.stringify({
+      code: 'INSUFFICIENT_INSTANCE_PERMISSION',
+      error: 'Forbidden',
+    }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toThrow('Forbidden');
+
+    expect(listener).toHaveBeenCalledOnce();
+    window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
   });
 
   it('continues to allow GET requests in demo mode', async () => {

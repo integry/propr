@@ -20,6 +20,7 @@ import {
   PaginationFooter,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
+import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 
 const DISMISSED_AGENT_TANK_SUGGESTION_KEY = 'dismissed_agent_tank_suggestion';
 
@@ -27,6 +28,8 @@ const DEFAULT_PAGE_SIZE = 20;
 
 const LlmLogsPage: React.FC = () => {
   useDocumentTitle('LLM Log');
+  const currentUser = useCurrentUser();
+  const canManageAgents = userHasPermission(currentUser, 'instance.manage_agents');
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Derive state from URL parameters
@@ -46,6 +49,7 @@ const LlmLogsPage: React.FC = () => {
   const [showAgentTankSuggestion, setShowAgentTankSuggestion] = useState(false);
 
   useEffect(() => {
+    if (!canManageAgents) return;
     const dismissed = localStorage.getItem(DISMISSED_AGENT_TANK_SUGGESTION_KEY);
     if (dismissed === 'true') return;
     getAgentTankStatus()
@@ -58,7 +62,7 @@ const LlmLogsPage: React.FC = () => {
         // If we can't check status, show the suggestion
         setShowAgentTankSuggestion(true);
       });
-  }, []);
+  }, [canManageAgents]);
 
   const dismissAgentTankSuggestion = useCallback(() => {
     setShowAgentTankSuggestion(false);

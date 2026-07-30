@@ -6,7 +6,7 @@ import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../a
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
-vi.mock('../../api/proprApi', () => ({ uploadAttachment: vi.fn(), removeAttachment: vi.fn(), abortGeneration: vi.fn(), getAgents: vi.fn(), getRepoConfig: vi.fn(), getRepoBranches: vi.fn(), createDraft: vi.fn(), updateDraft: vi.fn(), generatePlan: vi.fn() }));
+vi.mock('../../api/proprApi', () => ({ uploadAttachment: vi.fn(), removeAttachment: vi.fn(), abortGeneration: vi.fn(), getInstanceCatalog: vi.fn(), getRepoBranches: vi.fn(), createDraft: vi.fn(), updateDraft: vi.fn(), generatePlan: vi.fn() }));
 vi.mock('../../api/repoIndexingApi', () => ({ getRepositoriesIndexingStatus: vi.fn() }));
 vi.mock('../../api/userRepoPreferencesApi', () => ({ getUserRepoPreferences: vi.fn() }));
 vi.mock('../../hooks/usePlannerSettings', () => ({ savePlannerSettings: vi.fn() }));

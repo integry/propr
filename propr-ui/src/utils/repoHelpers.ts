@@ -1,5 +1,5 @@
 import { RepoOption } from '../components/RepositorySelector';
-import { getRepoConfig } from '../api/proprApi';
+import { getInstanceCatalog } from '../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../api/repoIndexingApi';
 import { getUserRepoPreferences, UserRepoPreferences } from '../api/userRepoPreferencesApi';
 
@@ -9,7 +9,7 @@ import { getUserRepoPreferences, UserRepoPreferences } from '../api/userRepoPref
  */
 export async function fetchEnabledRepos(): Promise<RepoOption[]> {
   const [repoData, userPrefs, indexingData] = await Promise.all([
-    getRepoConfig() as Promise<{ repos_to_monitor?: Array<{ name: string; enabled?: boolean; baseBranch?: string }> }>,
+    getInstanceCatalog(),
     getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
     getRepositoriesIndexingStatus().catch(() => ({ repositories: [] as RepositoryIndexingStatus[] }))
   ]);
@@ -19,11 +19,8 @@ export async function fetchEnabledRepos(): Promise<RepoOption[]> {
     indexingMap.set(status.full_name, status);
   }
 
-  return (repoData.repos_to_monitor || [])
-    .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } =>
-      typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string'
-    )
-    .filter(r => r.enabled !== false)
+  return repoData.repositories
+    .filter(r => r.enabled)
     .map(r => {
       const prefs = userPrefs[r.name];
       const indexingStatus = indexingMap.get(r.name);

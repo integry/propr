@@ -8,19 +8,15 @@ import type { InstanceAuthorization } from '../authorization.js';
 after(async () => closeConnection());
 
 const originalAdminUsers = process.env.PROPR_ADMIN_USERS;
-const originalAdminAnyUser = process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
 const originalRuntimeRequestTimeoutMs = process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
 
 beforeEach(() => {
     process.env.PROPR_ADMIN_USERS = 'admin';
-    delete process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
 });
 
 afterEach(() => {
     if (originalAdminUsers === undefined) delete process.env.PROPR_ADMIN_USERS;
     else process.env.PROPR_ADMIN_USERS = originalAdminUsers;
-    if (originalAdminAnyUser === undefined) delete process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
-    else process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER = originalAdminAnyUser;
     if (originalRuntimeRequestTimeoutMs === undefined) delete process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
     else process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS = originalRuntimeRequestTimeoutMs;
 });
@@ -37,14 +33,12 @@ const initialState = (): AgentRuntimePackageState => ({
 const adminAuthorization: InstanceAuthorization = {
     role: 'admin',
     permissions: ['instance.manage_runtime'],
-    source: 'local',
-    legacyMode: false
+    source: 'local'
 };
 const memberAuthorization: InstanceAuthorization = {
     role: 'member',
     permissions: [],
-    source: 'implicit',
-    legacyMode: false
+    source: 'implicit'
 };
 
 function responseRecorder() {
@@ -199,27 +193,6 @@ describe('agent runtime package routes', () => {
         await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' }, authorization: memberAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 403);
-    });
-
-    test('allows explicit any-authenticated-user runtime administration opt-in', async () => {
-        delete process.env.PROPR_ADMIN_USERS;
-        process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER = 'true';
-        let queued = false;
-        const routes = createAgentRuntimeRoutes({
-            runtimeBuildQueue: { add: async () => { queued = true; } } as never,
-            services: {
-                loadState: async () => ({ ...initialState(), packages: ['jq'], status: 'pending', buildId: 'build-any' }),
-                loadBaseImages: async () => ['propr/agent:bundle-test'],
-                requestBuild: async (packages, baseImages) => ({ buildId: 'build-any', packages: packages as string[], baseImages }),
-                validateAvailability: availablePackages
-            }
-        });
-        const { response, record } = responseRecorder();
-
-        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' }, authorization: memberAuthorization } as unknown as Request, response);
-
-        assert.equal(record.status, 202);
-        assert.equal(queued, true);
     });
 
     test('redacts runtime build details for non-admin readers', async () => {

@@ -2,22 +2,22 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ShieldCheck, Trash2, UserPlus } from 'lucide-react';
 import {
   addInstanceMember,
-  claimInstanceAdmin,
+  claimBootstrapAdmin,
   getInstanceMembers,
   removeInstanceMember,
   updateInstanceMemberRole
 } from '../api/instanceMembersApi';
 import type { InstanceMember, InstanceMembersResponse, InstanceRole } from '../api/proprTypes';
-import { useCurrentUser } from '../contexts/AuthContext';
+import { useCurrentUser, useRefreshCurrentUser } from '../contexts/AuthContext';
 
 const EMPTY_RESPONSE: InstanceMembersResponse = {
   members: [],
-  bootstrapAdmins: [],
-  legacyMode: false
+  bootstrapAdmins: []
 };
 
 const AccessManagementPage: React.FC = () => {
   const currentUser = useCurrentUser();
+  const refreshCurrentUser = useRefreshCurrentUser();
   const [data, setData] = useState<InstanceMembersResponse>(EMPTY_RESPONSE);
   const [username, setUsername] = useState('');
   const [role, setRole] = useState<InstanceRole>('member');
@@ -46,6 +46,7 @@ const AccessManagementPage: React.FC = () => {
     setError('');
     try {
       await mutation();
+      await refreshCurrentUser();
       await loadMembers();
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : 'Role update failed');
@@ -73,6 +74,8 @@ const AccessManagementPage: React.FC = () => {
   };
 
   const bootstrapAdminSet = new Set(data.bootstrapAdmins.map(value => value.toLowerCase()));
+  const canStoreBootstrapRole = currentUser?.authorizationSource === 'bootstrap'
+    && !data.members.some(member => member.githubUserId === currentUser.id && member.role === 'admin');
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
@@ -88,27 +91,28 @@ const AccessManagementPage: React.FC = () => {
         </div>
       </div>
 
-      {data.legacyMode && (
-        <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <h2 className="font-medium text-amber-900">Compatibility admin mode is active</h2>
-          <p className="mt-1 text-sm text-amber-800">
-            No durable role assignments exist yet. Claim your administrator role to make access explicit.
-          </p>
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => void runMutation(claimInstanceAdmin)}
-            className="mt-3 rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            Claim administrator role
-          </button>
-        </div>
-      )}
-
       {data.bootstrapAdmins.length > 0 && (
         <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
           Environment administrators: {data.bootstrapAdmins.map(name => `@${name}`).join(', ')}.
           These assignments remain authoritative while <code>PROPR_ADMIN_USERS</code> is configured.
+        </div>
+      )}
+
+      {canStoreBootstrapRole && (
+        <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <h2 className="font-medium text-amber-900">Store your administrator role</h2>
+          <p className="mt-1 text-sm text-amber-800">
+            Your access currently comes from <code>PROPR_ADMIN_USERS</code>. Store it against your numeric
+            GitHub ID before removing your username from that environment setting.
+          </p>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void runMutation(claimBootstrapAdmin)}
+            className="mt-3 rounded-md bg-amber-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+          >
+            Store my administrator role
+          </button>
         </div>
       )}
 

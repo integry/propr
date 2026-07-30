@@ -9,7 +9,7 @@ export async function up(knex) {
     table.text('github_user_id').primary();
     table.text('github_username').notNullable();
     table.text('role').notNullable().checkIn(['admin', 'member']);
-    table.text('source').notNullable().defaultTo('local').checkIn(['local', 'bootstrap', 'managed']);
+    table.text('source').notNullable().defaultTo('local').checkIn(['local', 'managed']);
     table.text('created_by_user_id').nullable();
     table.timestamp('created_at').notNullable().defaultTo(knex.fn.now());
     table.timestamp('updated_at').notNullable().defaultTo(knex.fn.now());

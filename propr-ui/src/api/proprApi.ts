@@ -4,6 +4,7 @@ import type { AgentType, ReasoningLevel } from '@propr/shared';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
 export const API_BASE_URL = getApiBaseUrl();
+export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 
 export interface DemoModeStatus {
   demoMode: boolean;
@@ -53,7 +54,8 @@ export * from './proprTypes';
 import type {
   SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
   GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
-  StopExecutionResponse, DeleteTaskResponse, SystemSettings, CurrentUser
+  StopExecutionResponse, DeleteTaskResponse, SystemSettings, CurrentUser,
+  InstanceCatalogResponse
 } from './proprTypes';
 
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
@@ -71,6 +73,9 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
     } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
     if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
       throw new DemoModeReadOnlyError(data.error);
+    }
+    if (data?.code === 'INSUFFICIENT_INSTANCE_PERMISSION') {
+      window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
     }
     if (data?.error) throw new Error(data.error);
   }
@@ -210,6 +215,12 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
 
 export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const getInstanceCatalog = async (): Promise<InstanceCatalogResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };

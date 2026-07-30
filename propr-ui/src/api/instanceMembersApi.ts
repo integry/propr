@@ -26,7 +26,7 @@ export const getInstanceMembers = async (): Promise<InstanceMembersResponse> => 
   return response.json();
 };
 
-export const claimInstanceAdmin = async (): Promise<InstanceMember> => {
+export const claimBootstrapAdmin = async (): Promise<InstanceMember> => {
   const response = await apiFetch(`${API_BASE_URL}/api/admin/members/claim`, {
     method: 'POST',
     credentials: 'include'

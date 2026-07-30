@@ -39,9 +39,11 @@ Authenticated users have an instance role:
 - **Administrator** — can change installation settings, repositories, agents, trusted runtime packages, and access-role assignments.
 - **Member** — can use ProPR's task, plan, repository, and log workflows without changing the installation.
 
-The API enforces permissions independently of the Web UI. Role assignments use the stable numeric GitHub user ID, so a GitHub username change does not transfer access to another account. Manage durable assignments from **Web UI → Access**. `PROPR_ADMIN_USERS` bootstraps environment-controlled administrators and can be retained as a break-glass path.
+The API enforces permissions independently of the Web UI. Full settings, repository configuration, agent configuration, image metadata, and Agent Tank configuration reads require the corresponding administrator permission. Members receive only a sanitized operational catalog containing enabled repository names and the agent aliases/models needed by task and plan workflows.
 
-Existing installations enter compatibility admin mode until the first durable administrator is claimed or added. This preserves existing management access during an upgrade. Trusted runtime-package changes remain denied in compatibility mode unless an explicit administrator is configured.
+Durable role assignments use the stable numeric GitHub user ID, so a GitHub username change does not transfer that access to another account. A new installation has no implicit administrator: configure at least one username in `PROPR_ADMIN_USERS`, sign in as that user, then use **Web UI → Access** to store the bootstrap role against its numeric GitHub ID and manage other assignments.
+
+`PROPR_ADMIN_USERS` remains authoritative while configured and can be retained as a break-glass path. It is intentionally username-based, so it does not have the stable-ID guarantee: GitHub usernames can be renamed and eventually reassigned. Remove bootstrap entries after storing durable access, or audit the list whenever an administrator renames or deletes an account. The role audit retains the most recent 10,000 changes.
 
 Instance roles and the GitHub trigger whitelist are intentionally separate: a role controls what an authenticated dashboard or CLI user may administer; the whitelist controls who may log in and whose GitHub activity can trigger work.
 
