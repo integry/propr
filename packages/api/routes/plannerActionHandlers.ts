@@ -24,9 +24,12 @@ import {
   updateDraftContextConfig,
   runBackgroundGeneration,
   runBackgroundRefinement,
+  claimDraftPreparation,
   claimDraftOperation,
   hasRunningPlannerContainer,
   isDraftOperationActive,
+  recoverStaleRefinement,
+  releaseDraftPreparation,
   validateRefineInput,
   GenerateRequestBody
 } from './plannerHelpers/index.js';
@@ -72,12 +75,18 @@ export function createGenerateHandler(db: Knex) {
 
     const correlationId = generateCorrelationId();
     let generationClaimed = false;
+    let preparationClaimed = false;
 
     try {
       const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id', 'repository', 'context_config', 'status']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
+      preparationClaimed = claimDraftPreparation(draftId, 'plan-generation');
+      if (!preparationClaimed) {
+        res.status(409).json({ error: 'Another planner operation is still preparing this draft' });
+        return;
+      }
       if (isDraftOperationActive(draft.status)) {
         res.status(409).json({ error: 'Another operation is already running for this draft' });
         return;
@@ -139,6 +148,8 @@ export function createGenerateHandler(db: Knex) {
         }
       }
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to generate plan' });
+    } finally {
+      if (preparationClaimed) releaseDraftPreparation(draftId, 'plan-generation');
     }
   };
 }
@@ -154,12 +165,19 @@ export function createRefineHandler(db: Knex) {
 
     const correlationId = generateCorrelationId();
     let refinementClaimed = false;
+    let preparationClaimed = false;
 
     try {
       // Verify ownership
       const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id', 'status']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-      if (isDraftOperationActive(ownership.draft!.status) || await hasRunningPlannerContainer(draftId, 'plan-refinement')) {
+      preparationClaimed = claimDraftPreparation(draftId, 'plan-refinement');
+      if (!preparationClaimed) {
+        res.status(409).json({ error: 'Another planner operation is still preparing this draft' });
+        return;
+      }
+      const draft = await recoverStaleRefinement(db, ownership.draft!);
+      if (isDraftOperationActive(draft.status) || await hasRunningPlannerContainer(draftId, 'plan-refinement')) {
         res.status(409).json({ error: 'Another operation is already running for this draft' });
         return;
       }
@@ -255,6 +273,8 @@ export function createRefineHandler(db: Knex) {
         }
       }
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to refine plan' });
+    } finally {
+      if (preparationClaimed) releaseDraftPreparation(draftId, 'plan-refinement');
     }
   };
 }

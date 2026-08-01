@@ -20,6 +20,7 @@ import {
   createImplementIssueHandler,
   createUpdateIssueHandler,
   validatePreviewInput,
+  recoverStaleRefinement,
   withAuthCheck,
   createValidateContextRepositoryHandler,
 } from './plannerHelpers/index.js';
@@ -192,9 +193,11 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
     try {
       const draftQuery = db!('task_drafts').where({ draft_id: req.params.id });
-      const draft = await draftQuery.first();
+      let draft = await draftQuery.first();
       if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
       if (!isDemoMode() && draft.user_id !== req.user!.id) { res.status(403).json({ error: 'Unauthorized access to draft' }); return; }
+
+      draft = await recoverStaleRefinement(db!, draft);
 
       const parsedDraft = parseDraftJsonFields(draft) as Record<string, unknown> & { task_title?: string };
       parsedDraft.task_title = draft.name;

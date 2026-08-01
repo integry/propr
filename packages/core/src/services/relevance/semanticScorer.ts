@@ -44,6 +44,7 @@ const CHARS_PER_TOKEN_ESTIMATE = 3;
 
 /** Default maximum tokens per chunk (conservative fallback) */
 const DEFAULT_MAX_CHUNK_TOKENS = 30000;
+const CONTEXT_ANALYSIS_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Percentage of model context window to use for chunks.
@@ -169,7 +170,18 @@ export async function scoreSemanticRelevance(
 
       try {
         // Pass modelId to use the configured context analysis model
-        const analysisResult = await agent.analyze(prompt, { model: modelId });
+        const analysisResult = await agent.analyze(prompt, {
+          model: modelId,
+          timeoutMs: CONTEXT_ANALYSIS_TIMEOUT_MS,
+          executionType: 'context-analysis',
+          correlationId,
+          repository: repoName,
+          metadata: { callType: 'semantic_scoring', chunkIndex: index },
+          suppressLlmLog: true
+        });
+        if (!analysisResult.success) {
+          throw new Error(analysisResult.error || `Semantic scoring chunk ${index} failed`);
+        }
         const response = analysisResult.response;
         const parsed = parseSemanticResponse(response);
 

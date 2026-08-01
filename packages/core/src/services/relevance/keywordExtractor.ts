@@ -4,6 +4,8 @@ import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { loadSettings } from '../../config/configManager.js';
 
+const CONTEXT_ANALYSIS_TIMEOUT_MS = 5 * 60 * 1000;
+
 // --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
 
 const SETTINGS_CACHE_TTL_MS = 30_000;
@@ -132,7 +134,17 @@ export async function extractKeywordsWithLLM(
 
     correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
 
-    const analysisResult = await agent.analyze(llmPrompt, contextModel ? { model: contextModel } : {});
+    const analysisResult = await agent.analyze(llmPrompt, {
+      ...(contextModel ? { model: contextModel } : {}),
+      timeoutMs: CONTEXT_ANALYSIS_TIMEOUT_MS,
+      executionType: 'context-analysis',
+      correlationId,
+      metadata: { callType: 'keyword_extraction' },
+      suppressLlmLog: true
+    });
+    if (!analysisResult.success) {
+      throw new Error(analysisResult.error || 'Context keyword analysis failed');
+    }
     const response = analysisResult.response;
 
     const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);

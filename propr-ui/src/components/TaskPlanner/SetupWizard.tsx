@@ -62,7 +62,7 @@ function getContentModeValues({ isNewMode, draft, repoLoader, newModeBranches, r
 }
 
 function getGenerateDisabledState(props: SetupWizardContentProps, promptTrimmed: string, isDemoMode: boolean, modeValues: ReturnType<typeof getContentModeValues>) {
-  return isDemoMode || computeIsGenerateDisabled({
+  return isDemoMode || props.contextRefresh.preview.isLoading || computeIsGenerateDisabled({
     isNewMode: props.isNewMode,
     isCreating: props.isCreating,
     selectedRepo: props.repoLoader.selectedRepo,

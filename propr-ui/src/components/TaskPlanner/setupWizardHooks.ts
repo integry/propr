@@ -27,7 +27,7 @@ export interface Repo { name: string; enabled: boolean; baseBranch?: string; sta
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[]; contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 
 interface RepoInfoState { isLoading: boolean; error: string | null; }
-interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<void> }; startPolling: () => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
+interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: () => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
 interface DraftCreationParams { selectedRepo: string; config: PlannerConfig; localFiles: File[]; onDraftCreated?: (draftId: string) => void; navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; todoIds?: string[]; }
 interface GenerateDisabledParams { isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean; isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string; }
 
@@ -212,9 +212,16 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
     if (branchError) return void setError('Please fix the branch name before generating');
     setError(null);
     setGenerationError(null);
-    startPolling();
     try {
-      if (contextHelpers.isContextStale) { contextHelpers.clearCountdown(); await contextHelpers.fetchPreview(); }
+      if (contextHelpers.isContextStale) {
+        contextHelpers.clearCountdown();
+        const previewReady = await contextHelpers.fetchPreview();
+        if (!previewReady) {
+          setError('Context preview did not complete. Please refresh it before generating.');
+          return;
+        }
+      }
+      startPolling();
       await generatePlan(draft.draft_id, buildGenerationPayload(config));
     } catch (err) {
       stopPolling();

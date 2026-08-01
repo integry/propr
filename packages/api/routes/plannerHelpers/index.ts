@@ -21,9 +21,13 @@ export { runBackgroundRefinement } from './refineBackground.js';
 // Long-running operation guards
 export {
   ACTIVE_DRAFT_OPERATION_STATUSES,
+  claimDraftPreparation,
   claimDraftOperation,
   hasRunningPlannerContainer,
-  isDraftOperationActive
+  isDraftOperationActive,
+  releaseDraftPreparation,
+  recoverStaleRefinement,
+  REFINEMENT_STALE_AFTER_MS
 } from './operationGuard.js';
 
 // Utility functions
