@@ -251,10 +251,9 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
         pendingPreviewRequestIdRef.current = result.previewRequestId;
         setPendingPreviewRequestId(result.previewRequestId);
         return completionPromise;
-      } else {
-        markPreviewComplete(result);
-        return true;
       }
+      markPreviewComplete(result);
+      return true;
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         settlePreview(false);

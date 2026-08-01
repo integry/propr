@@ -14,6 +14,14 @@ export interface DockerCommandOptions {
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
 
+interface AbortCheckerOptions {
+    taskId: string;
+    abortedRef: { value: boolean };
+    child: ChildProcess;
+    containerIdRef: { value: string | null };
+    namedContainer: string | null;
+}
+
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
 
@@ -152,13 +160,7 @@ function resolveDockerPath(command: string): string {
     return 'docker';
 }
 
-function setupAbortChecker(
-    taskId: string,
-    abortedRef: { value: boolean },
-    child: ChildProcess,
-    containerIdRef: { value: string | null },
-    namedContainer: string | null
-): ReturnType<typeof setInterval> {
+function setupAbortChecker({ taskId, abortedRef, child, containerIdRef, namedContainer }: AbortCheckerOptions): ReturnType<typeof setInterval> {
     return setInterval(async () => {
         const shouldAbort = await checkAbortSignal(taskId);
         if (shouldAbort && !abortedRef.value && !child.killed) {
@@ -216,7 +218,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             child.kill('SIGTERM');
             setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
         }, timeout);
-        const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId, namedContainer) : null;
+        const abortCheckInterval = taskId ? setupAbortChecker({ taskId, abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer }) : null;
 
         const getRedisOutput = () => {
             const primaryOutput = streamStderrToRedis ? `${stderr}${stdout ? `\n${stdout}` : ''}` : stdout;
