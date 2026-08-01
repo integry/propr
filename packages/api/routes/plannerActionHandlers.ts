@@ -24,6 +24,9 @@ import {
   updateDraftContextConfig,
   runBackgroundGeneration,
   runBackgroundRefinement,
+  claimDraftOperation,
+  hasRunningPlannerContainer,
+  isDraftOperationActive,
   validateRefineInput,
   GenerateRequestBody
 } from './plannerHelpers/index.js';
@@ -68,12 +71,22 @@ export function createGenerateHandler(db: Knex) {
     }
 
     const correlationId = generateCorrelationId();
+    let generationClaimed = false;
 
     try {
-      const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id', 'repository', 'context_config']);
+      const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id', 'repository', 'context_config', 'status']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
+      if (isDraftOperationActive(draft.status)) {
+        res.status(409).json({ error: 'Another operation is already running for this draft' });
+        return;
+      }
+      if (await hasRunningPlannerContainer(draftId, 'plan-generation')) {
+        res.status(409).json({ error: 'Plan generation is already running for this draft' });
+        return;
+      }
+
       const [owner, repoName] = (draft.repository as string).split('/');
       if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
@@ -88,7 +101,16 @@ export function createGenerateHandler(db: Knex) {
 
       await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles });
 
-      // Clear any previous abort signal to allow immediate retry after abort
+      generationClaimed = await claimDraftOperation(db, draftId, 'generating', {
+        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString() })
+      });
+      if (!generationClaimed) {
+        res.status(409).json({ error: 'Another operation is already running for this draft' });
+        return;
+      }
+
+      // Only the request that won the database claim may clear an old abort
+      // signal. A concurrent loser must not erase an abort for the active run.
       const redis = new Redis({
         host: process.env.REDIS_HOST || 'redis',
         port: parseInt(process.env.REDIS_PORT || '6379', 10)
@@ -96,17 +118,26 @@ export function createGenerateHandler(db: Knex) {
       await redis.del(`planner:abort:${draftId}`);
       await redis.quit();
 
-      await db('task_drafts').where({ draft_id: draftId }).update({
-        status: 'generating',
-        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString() }),
-        updated_at: db.fn.now()
-      });
-
       res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
 
       runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId });
     } catch (error) {
       console.error('Generate plan error:', error);
+      if (generationClaimed && !res.headersSent) {
+        try {
+          await db('task_drafts').where({ draft_id: draftId, status: 'generating' }).update({
+            status: 'failed',
+            generation_trace: JSON.stringify({
+              steps: [],
+              error: error instanceof Error ? error.message : 'Failed to start plan generation',
+              failedAt: new Date().toISOString()
+            }),
+            updated_at: db.fn.now()
+          });
+        } catch (updateError) {
+          console.error('Failed to release generation claim:', updateError);
+        }
+      }
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to generate plan' });
     }
   };
@@ -122,11 +153,16 @@ export function createRefineHandler(db: Knex) {
     if (!inputCheck.valid) { res.status(400).json({ error: inputCheck.error }); return; }
 
     const correlationId = generateCorrelationId();
+    let refinementClaimed = false;
 
     try {
       // Verify ownership
-      const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id']);
+      const ownership = await verifyDraftOwnership(db, draftId, req.user!.id, ['user_id', 'status']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
+      if (isDraftOperationActive(ownership.draft!.status) || await hasRunningPlannerContainer(draftId, 'plan-refinement')) {
+        res.status(409).json({ error: 'Another operation is already running for this draft' });
+        return;
+      }
 
       // Calculate estimation early so we can store it before the LLM call starts
       // Fetch original context to include in the token estimate (this is the bulk of the prompt)
@@ -171,19 +207,22 @@ export function createRefineHandler(db: Knex) {
         sampleCount: estimation.sampleCount
       };
 
-      // Clear any previous abort signal to allow immediate retry after abort
+      refinementClaimed = await claimDraftOperation(db, draftId, 'refining', {
+        refinement_result: JSON.stringify(initialRefinementMeta),
+      });
+      if (!refinementClaimed) {
+        res.status(409).json({ error: 'Another operation is already running for this draft' });
+        return;
+      }
+
+      // Clear an abort from an earlier run only after this request has won the
+      // claim, otherwise a duplicate request could cancel the active abort.
       const redisForClear = new Redis({
         host: process.env.REDIS_HOST || 'redis',
         port: parseInt(process.env.REDIS_PORT || '6379', 10)
       });
       await redisForClear.del(`planner:abort:${draftId}`);
       await redisForClear.quit();
-
-      await db('task_drafts').where({ draft_id: draftId }).update({
-        status: 'refining',
-        refinement_result: JSON.stringify(initialRefinementMeta),
-        updated_at: db.fn.now()
-      });
 
       // Return 202 Accepted immediately - client should poll for status
       res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
@@ -200,6 +239,21 @@ export function createRefineHandler(db: Knex) {
       });
     } catch (error) {
       console.error('Refine plan error:', error);
+      if (refinementClaimed && !res.headersSent) {
+        try {
+          await db('task_drafts').where({ draft_id: draftId, status: 'refining' }).update({
+            status: 'review',
+            refinement_result: JSON.stringify({
+              status: 'failed',
+              error: error instanceof Error ? error.message : 'Failed to start plan refinement',
+              timestamp: new Date().toISOString()
+            }),
+            updated_at: db.fn.now()
+          });
+        } catch (updateError) {
+          console.error('Failed to release refinement claim:', updateError);
+        }
+      }
       res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to refine plan' });
     }
   };
