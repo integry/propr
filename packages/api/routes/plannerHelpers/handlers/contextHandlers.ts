@@ -86,6 +86,14 @@ async function storePreviewFailure(
   });
 }
 
+function sendPreviewError(res: Response, error: unknown): void {
+  if (error instanceof BranchNotFoundError) {
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
+}
+
 export function createPreviewContextHandler(deps: PreviewContextDeps) {
   return async function previewContext(req: Request, res: Response): Promise<void> {
     const validation = deps.validateInput(req.body);
@@ -182,8 +190,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
       res.status(202).json({ pending: true, draftId, previewRequestId });
     } catch (error) {
       console.error('Preview context error:', error);
-      if (error instanceof BranchNotFoundError) { res.status(400).json({ error: error.message }); return; }
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
+      sendPreviewError(res, error);
     } finally {
       if (preparationClaimed && !backgroundStarted) {
         releaseDraftPreparation(draftId, 'context-preview');

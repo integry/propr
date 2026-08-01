@@ -6,8 +6,6 @@ import { Knex } from 'knex';
 import { Redis } from 'ioredis';
 import {
   executeDraft,
-  getGitHubInstallationToken,
-  ensureRepoCloned,
   generateCorrelationId,
   estimateLlmDuration,
   loadSettings,
@@ -30,9 +28,31 @@ import {
   isDraftOperationActive,
   recoverStaleRefinement,
   releaseDraftPreparation,
+  setupRepoContext,
   validateRefineInput,
   GenerateRequestBody
 } from './plannerHelpers/index.js';
+
+function validateGenerateRequest(body: GenerateRequestBody): string | undefined {
+  const { draftId, contextRepositories, excludedFiles } = body;
+  if (!draftId) return 'draftId is required';
+
+  const repoValidation = validateContextRepositories(contextRepositories);
+  if (!repoValidation.valid) return repoValidation.error;
+  if (excludedFiles && (!Array.isArray(excludedFiles) || !excludedFiles.every(file => typeof file === 'string'))) {
+    return 'excludedFiles must be an array of strings';
+  }
+  return undefined;
+}
+
+async function clearAbortSignal(draftId: string): Promise<void> {
+  const redis = new Redis({
+    host: process.env.REDIS_HOST || 'redis',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10)
+  });
+  await redis.del(`planner:abort:${draftId}`);
+  await redis.quit();
+}
 
 /**
  * Extract the model a plan was generated with from a draft's context_config
@@ -50,28 +70,21 @@ function parseDraftGenerationModel(contextConfig: unknown): string | undefined {
   }
 }
 
+function selectRefinementModel(
+  requestedModel: string | undefined, contextConfig: unknown, configuredModel: string | undefined
+): string {
+  return requestedModel || parseDraftGenerationModel(contextConfig) || configuredModel || 'opus';
+}
+
 export function createGenerateHandler(db: Knex) {
   return async function generate(req: Request, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
-    const { draftId, baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles } = req.body as GenerateRequestBody;
-    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
-
-    // Validate context repositories if provided
-    if (contextRepositories) {
-      const repoValidation = validateContextRepositories(contextRepositories);
-      if (!repoValidation.valid) {
-        res.status(400).json({ error: repoValidation.error });
-        return;
-      }
-    }
-
-    // Validate excludedFiles if provided
-    if (excludedFiles && (!Array.isArray(excludedFiles) || !excludedFiles.every(f => typeof f === 'string'))) {
-      res.status(400).json({ error: 'excludedFiles must be an array of strings' });
-      return;
-    }
+    const body = req.body as GenerateRequestBody;
+    const validationError = validateGenerateRequest(body);
+    if (validationError) { res.status(400).json({ error: validationError }); return; }
+    const { draftId = '', baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles } = body;
 
     const correlationId = generateCorrelationId();
     let generationClaimed = false;
@@ -99,14 +112,10 @@ export function createGenerateHandler(db: Knex) {
       const [owner, repoName] = (draft.repository as string).split('/');
       if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
-      const accessToken = req.user?.accessToken;
+      const accessToken = req.user!.accessToken;
       if (!accessToken) { res.status(401).json({ error: 'GitHub access token not available' }); return; }
 
-      let authToken: string;
-      try { authToken = await getGitHubInstallationToken(); } catch { authToken = accessToken; }
-
-      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-      const worktreePath = await ensureRepoCloned({ repoUrl, owner, repoName, authToken });
+      const { worktreePath, authToken } = await setupRepoContext({ repository: draft.repository as string }, accessToken);
 
       await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles });
 
@@ -120,12 +129,7 @@ export function createGenerateHandler(db: Knex) {
 
       // Only the request that won the database claim may clear an old abort
       // signal. A concurrent loser must not erase an abort for the active run.
-      const redis = new Redis({
-        host: process.env.REDIS_HOST || 'redis',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10)
-      });
-      await redis.del(`planner:abort:${draftId}`);
-      await redis.quit();
+      await clearAbortSignal(draftId);
 
       res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
 
@@ -190,8 +194,6 @@ export function createRefineHandler(db: Knex) {
       // Refine with the model the plan was generated with (stored on the draft),
       // overridable per-request from the UI model switcher. This keeps refinement
       // consistent with the original plan and respects that model's input limit.
-      const draftGenerationModel = parseDraftGenerationModel(draftForContext?.context_config);
-
       // Build a close approximation of the full prompt for token estimation
       // This matches the structure in taskPlanningService.refinePlan()
       const planJsonStr = JSON.stringify(currentPlan, null, 2);
@@ -203,7 +205,9 @@ export function createRefineHandler(db: Knex) {
       const estimatedInputTokens = estimateTokens(roughPrompt);
 
       const settings = await loadSettings();
-      const generationModel = requestedModel || draftGenerationModel || settings.planner_generation_model || 'opus';
+      const generationModel = selectRefinementModel(
+        requestedModel, draftForContext?.context_config, settings.planner_generation_model
+      );
 
       const estimation = await estimateLlmDuration({
         executionType: 'plan-refinement',
@@ -235,12 +239,7 @@ export function createRefineHandler(db: Knex) {
 
       // Clear an abort from an earlier run only after this request has won the
       // claim, otherwise a duplicate request could cancel the active abort.
-      const redisForClear = new Redis({
-        host: process.env.REDIS_HOST || 'redis',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10)
-      });
-      await redisForClear.del(`planner:abort:${draftId}`);
-      await redisForClear.quit();
+      await clearAbortSignal(draftId);
 
       // Return 202 Accepted immediately - client should poll for status
       res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
@@ -253,7 +252,7 @@ export function createRefineHandler(db: Knex) {
         instruction,
         generationModel,
         correlationId,
-        accessToken: req.user?.accessToken || ''
+        accessToken: req.user!.accessToken || ''
       });
     } catch (error) {
       console.error('Refine plan error:', error);
