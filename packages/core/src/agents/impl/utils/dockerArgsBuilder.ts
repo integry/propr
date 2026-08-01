@@ -110,6 +110,7 @@ export function buildDockerArgs(
         config.dockerImage,
         // Claude CLI command
         'claude', '-p', '-',
+        '--no-session-persistence',
         '--max-turns', maxTurns.toString(),
         '--output-format', 'stream-json',
         '--verbose',

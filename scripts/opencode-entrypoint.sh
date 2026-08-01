@@ -16,6 +16,21 @@ opencode_config_dir="${OPENCODE_CONFIG_DIR:-${OPENCODE_CONFIG_PATH:-/home/node/.
 xdg_data_home="${XDG_DATA_HOME:-/home/node/.local/share}"
 xdg_state_home="${XDG_STATE_HOME:-/home/node/.local/state}"
 opencode_data_dir="$xdg_data_home/opencode"
+opencode_source_data="${PROPR_OPENCODE_SOURCE_DATA:-}"
+opencode_ephemeral="${PROPR_EPHEMERAL_STATE:-0}"
+opencode_credential_files=("auth.json" "account.json")
+
+if [ "$opencode_ephemeral" = "1" ]; then
+    mkdir -p "$opencode_data_dir"
+    if [ -n "$opencode_source_data" ] && [ -d "$opencode_source_data" ]; then
+        for credential_file in "${opencode_credential_files[@]}"; do
+            if [ -f "$opencode_source_data/$credential_file" ]; then
+                cp -p "$opencode_source_data/$credential_file" "$opencode_data_dir/$credential_file"
+            fi
+        done
+    fi
+    echo "Using disposable OpenCode data directory at $opencode_data_dir" >&2
+fi
 
 if [ -d "$opencode_config_dir" ]; then
     echo "OpenCode config directory available at $opencode_config_dir" >&2
@@ -62,7 +77,32 @@ fi
 
 if [ $# -gt 0 ]; then
     echo "Executing command: $@" >&2
-    if [ "$(id -u)" = "0" ]; then
+    if [ "$(id -u)" = "0" ] && [ "$opencode_ephemeral" = "1" ]; then
+        echo "Switching to node user with disposable OpenCode state..." >&2
+        cd /home/node/workspace
+        set +e
+        su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+        command_status=$?
+        set -e
+
+        if [ -n "$opencode_source_data" ] && [ -d "$opencode_source_data" ]; then
+            for credential_file in "${opencode_credential_files[@]}"; do
+                runtime_path="$opencode_data_dir/$credential_file"
+                source_path="$opencode_source_data/$credential_file"
+                if [ -f "$runtime_path" ]; then
+                    temporary_path="${source_path}.propr-tmp-$$"
+                    if cp -p "$runtime_path" "$temporary_path" && mv "$temporary_path" "$source_path"; then
+                        :
+                    else
+                        rm -f "$temporary_path"
+                        echo "Warning: could not sync refreshed OpenCode credential file $credential_file" >&2
+                    fi
+                fi
+            done
+        fi
+
+        exit "$command_status"
+    elif [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2
         cd /home/node/workspace
         exec su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"

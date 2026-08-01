@@ -260,6 +260,7 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
         '-w', '/home/node/workspace',
         CLAUDE_DOCKER_IMAGE,
         'claude', '-p', '-', // Read prompt from stdin
+        '--no-session-persistence',
         '--max-turns', CLAUDE_MAX_TURNS.toString(),
         '--output-format', 'stream-json',
         '--verbose',
