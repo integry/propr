@@ -45,7 +45,10 @@ import {
   closeUltrafixStateRedis,
   getActiveTasksForPR,
   AGENT_RUNTIME_BUILD_QUEUE_NAME,
-  NotificationStalledDetector
+  NotificationStalledDetector,
+  NotificationSystemSampler,
+  getNotificationStalledCheckIntervalMs,
+  getNotificationSystemCheckIntervalMs
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -176,6 +179,7 @@ let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
 let notificationStalledDetector: NotificationStalledDetector | null = null;
+let notificationSystemSampler: NotificationSystemSampler | null = null;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -218,7 +222,40 @@ async function initRedis(): Promise<void> {
   console.log('Connected to Redis');
 }
 
-function setupRoutes(): void {
+function createNotificationProjectionLease(
+  name: string,
+  ttlMs: number
+): () => Promise<boolean> {
+  const key = `notification:projection-lease:${name}`;
+  const owner = `${process.pid}:${generateCorrelationId()}`;
+  const script = `
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      redis.call('PEXPIRE', KEYS[1], ARGV[2])
+      return 1
+    end
+    if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then
+      return 1
+    end
+    return 0
+  `;
+  return async () => {
+    try {
+      const acquired = await redisClient.eval(script, {
+        keys: [key],
+        arguments: [owner, String(ttlMs)]
+      });
+      return Number(acquired) === 1;
+    } catch (error) {
+      // Projection deduplication remains the safety net when Redis cannot
+      // coordinate replicas; fail open so health monitoring is not disabled.
+      console.warn(`Could not acquire ${name} notification projection lease:`,
+        error instanceof Error ? error.message : String(error));
+      return true;
+    }
+  };
+}
+
+function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   const statusRoutes = createStatusRoutes({ redisClient });
   // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
   // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
@@ -311,6 +348,7 @@ function setupRoutes(): void {
   app.use('/api/agents', agentRoutes.router);
 
   setupWebhookRoute();
+  return statusRoutes;
 }
 
 function setupWebhookRoute(): void {
@@ -405,7 +443,14 @@ async function start(): Promise<void> {
     await initRedis();
     if (!demoMode) {
       await initializePushSubscriptionMaintenance();
-      notificationStalledDetector = new NotificationStalledDetector();
+      const stalledIntervalMs = getNotificationStalledCheckIntervalMs();
+      notificationStalledDetector = new NotificationStalledDetector({
+        intervalMs: stalledIntervalMs,
+        acquireLease: createNotificationProjectionLease(
+          'stalled-activity',
+          stalledIntervalMs * 2
+        )
+      });
       notificationStalledDetector.start();
       try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
       try {
@@ -419,8 +464,18 @@ async function start(): Promise<void> {
     } else {
       console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
     }
-    setupRoutes();
+    const statusRoutes = setupRoutes();
     if (!demoMode) {
+      const systemCheckIntervalMs = getNotificationSystemCheckIntervalMs();
+      notificationSystemSampler = new NotificationSystemSampler({
+        getSnapshot: statusRoutes.getStatusSnapshot,
+        intervalMs: systemCheckIntervalMs,
+        acquireLease: createNotificationProjectionLease(
+          'system-health',
+          systemCheckIntervalMs * 2
+        )
+      });
+      notificationSystemSampler.start();
       const socketService = initSocketService(httpServer, validateCorsOrigin);
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
@@ -459,6 +514,12 @@ async function start(): Promise<void> {
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
+      if (!demoMode) {
+        await closeResources([
+          { name: 'notification stalled detector', close: () => notificationStalledDetector?.stop() ?? Promise.resolve() },
+          { name: 'notification system sampler', close: () => notificationSystemSampler?.stop() ?? Promise.resolve() }
+        ]);
+      }
       const shutdownTasks: ShutdownTask[] = [
         { name: 'task queue', close: () => taskQueue.close() },
         { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
@@ -467,7 +528,6 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
-          { name: 'notification stalled detector', close: async () => { notificationStalledDetector?.stop(); } },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }

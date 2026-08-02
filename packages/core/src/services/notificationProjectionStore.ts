@@ -6,11 +6,14 @@ import {
     type JsonObject,
     type NotificationSourceActivityStatus
 } from '@propr/shared';
+import { NotificationProjectionRecipients } from './notificationProjectionRecipients.js';
 
 export interface DraftProjectionContext {
     draftId: string;
     repository: string;
     userId: string;
+    status?: string;
+    updatedAt?: ISO8601Timestamp;
 }
 
 export interface TaskProjectionContext {
@@ -20,6 +23,7 @@ export interface TaskProjectionContext {
     prNumber?: number;
     commandMode?: string;
     prUrl?: string;
+    ownerUserIds?: string[];
 }
 
 export interface SourceActivityRow {
@@ -38,6 +42,7 @@ export interface SystemTransition {
     status: string;
     healthy: boolean;
     transitionAt: ISO8601Timestamp;
+    unhealthyEpisodeStarted: boolean;
 }
 
 function parseRecordJson(value: unknown): Record<string, unknown> {
@@ -79,6 +84,32 @@ function uniqueStrings(values: readonly unknown[]): string[] {
     }))];
 }
 
+function normalizedStoredTimestamp(
+    value: unknown,
+    publishedAt: ISO8601Timestamp
+): ISO8601Timestamp | undefined {
+    if (typeof value !== 'string' && typeof value !== 'number' && !(value instanceof Date)) {
+        return undefined;
+    }
+    try {
+        const normalized = normalizeISO8601Timestamp(value);
+        return normalized <= publishedAt ? normalized : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function normalizedTimestamp(value: unknown): ISO8601Timestamp | undefined {
+    if (typeof value !== 'string' && typeof value !== 'number' && !(value instanceof Date)) {
+        return undefined;
+    }
+    try {
+        return normalizeISO8601Timestamp(value);
+    } catch {
+        return undefined;
+    }
+}
+
 export function buildProjectionDeduplicationKey(
     source: string,
     entity: string,
@@ -96,15 +127,32 @@ function indexingActivityKey(repository: string, branch: string | undefined, tim
 }
 
 export class NotificationProjectionStore {
-    constructor(private readonly database: Knex) {}
+    private readonly recipients: NotificationProjectionRecipients;
+
+    constructor(private readonly database: Knex) {
+        this.recipients = new NotificationProjectionRecipients(database);
+    }
 
     async getDraftContext(draftId: string): Promise<DraftProjectionContext | null> {
         const row = await this.database('task_drafts')
-            .select('draft_id', 'repository', 'user_id')
+            .select('draft_id', 'repository', 'user_id', 'status', 'updated_at')
             .where({ draft_id: draftId })
-            .first() as { draft_id: string; repository: string; user_id: string } | undefined;
+            .first() as {
+                draft_id: string;
+                repository: string;
+                user_id: string;
+                status?: string;
+                updated_at?: unknown;
+            } | undefined;
+        const updatedAt = normalizedTimestamp(row?.updated_at);
         return row
-            ? { draftId: row.draft_id, repository: row.repository, userId: row.user_id }
+            ? {
+                draftId: row.draft_id,
+                repository: row.repository,
+                userId: row.user_id,
+                ...(typeof row.status === 'string' ? { status: row.status } : {}),
+                ...(updatedAt === undefined ? {} : { updatedAt })
+            }
             : null;
     }
 
@@ -113,7 +161,7 @@ export class NotificationProjectionStore {
         payload: { repository?: string; issueNumber?: number; metadata?: Record<string, unknown> }
     ): Promise<TaskProjectionContext | null> {
         const task = await this.database('tasks')
-            .select('repository', 'issue_number', 'pr_number', 'task_type')
+            .select('repository', 'issue_number', 'pr_number', 'task_type', 'initial_job_data')
             .where({ task_id: taskId })
             .first() as Record<string, unknown> | undefined;
         const history = await this.database('task_history')
@@ -125,6 +173,7 @@ export class NotificationProjectionStore {
         const historyMetadata = parseRecordJson(history?.metadata);
         const historyPrResult = parseRecordJson(historyMetadata.prResult);
         const payloadMetadata = payload.metadata ?? {};
+        const initialJobData = parseRecordJson(task?.initial_job_data);
         const repository = nonBlankString(payload.repository) ?? nonBlankString(task?.repository);
         if (!repository) return null;
 
@@ -141,62 +190,88 @@ export class NotificationProjectionStore {
                     ? positiveInteger(payload.issueNumber) ?? positiveInteger(task?.issue_number)
                     : undefined),
             commandMode,
-            prUrl: nonBlankString(payloadMetadata.prUrl) ?? nonBlankString(historyPrResult.prUrl)
+            prUrl: nonBlankString(payloadMetadata.prUrl) ?? nonBlankString(historyPrResult.prUrl),
+            ownerUserIds: uniqueStrings([
+                payloadMetadata.userId,
+                payloadMetadata.user_id,
+                historyMetadata.userId,
+                historyMetadata.user_id,
+                initialJobData.userId,
+                initialJobData.user_id,
+                initialJobData.requestingUserId,
+                initialJobData.ownerUserId
+            ])
         };
     }
 
+    async resolveTaskTransitionTimestamp(
+        taskId: string,
+        state: string,
+        publishedAt: ISO8601Timestamp
+    ): Promise<ISO8601Timestamp> {
+        if (!await this.database.schema.hasTable('task_history')) return publishedAt;
+        const rows = await this.database('task_history')
+            .select('timestamp')
+            .where({ task_id: taskId, state })
+            .orderBy('history_id', 'desc') as Array<{ timestamp: unknown }>;
+        for (const row of rows) {
+            const timestamp = normalizedStoredTimestamp(row.timestamp, publishedAt);
+            if (timestamp !== undefined) return timestamp;
+        }
+        return publishedAt;
+    }
+
+    async resolveIndexingTransitionTimestamp(
+        repository: string,
+        branch: string | undefined,
+        status: NotificationSourceActivityStatus,
+        publishedAt: ISO8601Timestamp
+    ): Promise<ISO8601Timestamp> {
+        // Progress publications are heartbeats and must retain their own time.
+        // Only terminal transitions need the durable repository transition time
+        // to make publication retries deduplicate.
+        if (!isTerminalActivity(status)) return publishedAt;
+        if (!await this.database.schema.hasTable('repositories')) return publishedAt;
+        if (!await this.database.schema.hasColumn('repositories', 'updated_at')) return publishedAt;
+        const query = this.database('repositories')
+            .select('updated_at')
+            .where({ full_name: repository });
+        if (await this.database.schema.hasColumn('repositories', 'branch')) {
+            query.andWhere({ branch: branch ?? 'HEAD' });
+        }
+        if (await this.database.schema.hasColumn('repositories', 'indexing_status')) {
+            const repositoryStatus = status === 'cancelled' ? 'idle' : status;
+            query.andWhere({ indexing_status: repositoryStatus });
+        }
+        const row = await query.first() as { updated_at?: unknown } | undefined;
+        const repositoryTransition = normalizedStoredTimestamp(row?.updated_at, publishedAt);
+        if (repositoryTransition !== undefined) return repositoryTransition;
+
+        // Once another run starts, repositories contains only that newer state.
+        // Retained activity still identifies a replay of the older terminal event.
+        const previous = await this.database<SourceActivityRow>('notification_source_activity')
+            .select('last_activity_at')
+            .where({
+                activity_type: 'indexing',
+                repository,
+                branch: branch ?? null,
+                status
+            })
+            .orderBy('last_activity_at', 'desc')
+            .first();
+        return normalizedStoredTimestamp(previous?.last_activity_at, publishedAt) ?? publishedAt;
+    }
+
     async getTaskRecipients(context: TaskProjectionContext): Promise<string[]> {
-        if (!await this.database.schema.hasTable('plan_issues')) return [];
-        const rows = await this.database('plan_issues as issue')
-            .join('task_drafts as draft', 'draft.draft_id', 'issue.draft_id')
-            .distinct('draft.user_id')
-            .where((query) => {
-                query.where('issue.task_id', context.taskId);
-                if (context.issueNumber !== undefined) {
-                    query.orWhere((issueQuery) => issueQuery
-                        .where('issue.repository', context.repository)
-                        .where('issue.issue_number', context.issueNumber!));
-                }
-                if (context.prNumber !== undefined) {
-                    query.orWhere((issueQuery) => issueQuery
-                        .where('issue.repository', context.repository)
-                        .where('issue.pr_number', context.prNumber!));
-                }
-            }) as Array<{ user_id: string }>;
-        return uniqueStrings(rows.map((row) => row.user_id));
+        return this.recipients.getTaskRecipients(context);
     }
 
     async getRepositoryRecipients(repository: string): Promise<string[]> {
-        const recipients: unknown[] = [];
-        if (await this.database.schema.hasTable('task_drafts')) {
-            const rows = await this.database('task_drafts')
-                .distinct('user_id')
-                .where({ repository }) as Array<{ user_id: string }>;
-            recipients.push(...rows.map((row) => row.user_id));
-        }
-        if (await this.database.schema.hasTable('repo_todos')) {
-            const rows = await this.database('repo_todos')
-                .distinct('user_id')
-                .where({ repository }) as Array<{ user_id: string }>;
-            recipients.push(...rows.map((row) => row.user_id));
-        }
-        return uniqueStrings(recipients);
+        return this.recipients.getRepositoryRecipients(repository);
     }
 
     async getKnownRecipients(): Promise<string[]> {
-        const recipients: unknown[] = [];
-        const tables = [
-            ['task_drafts', 'user_id'],
-            ['notification_preferences', 'user_id'],
-            ['notification_preference_settings', 'user_id'],
-            ['repo_todos', 'user_id']
-        ] as const;
-        for (const [table, column] of tables) {
-            if (!await this.database.schema.hasTable(table)) continue;
-            const rows = await this.database(table).distinct(column) as Array<Record<string, unknown>>;
-            recipients.push(...rows.map((row) => row[column]));
-        }
-        return uniqueStrings(recipients);
+        return this.recipients.getKnownRecipients();
     }
 
     async upsertTaskActivity(input: {
@@ -204,8 +279,8 @@ export class NotificationProjectionStore {
         status: NotificationSourceActivityStatus;
         timestamp: ISO8601Timestamp;
         metadata?: JsonObject;
-    }): Promise<void> {
-        await this.upsertActivity({
+    }): Promise<boolean> {
+        return this.upsertActivity({
             activity_type: 'task',
             activity_key: input.context.taskId,
             repository: input.context.repository,
@@ -224,30 +299,9 @@ export class NotificationProjectionStore {
         branch?: string;
         status: NotificationSourceActivityStatus;
         timestamp: ISO8601Timestamp;
-    }): Promise<void> {
-        const active = await this.database<SourceActivityRow>('notification_source_activity')
-            .where({
-                activity_type: 'indexing',
-                repository: input.repository,
-                branch: input.branch ?? null
-            })
-            .whereNull('completed_at')
-            .where('last_activity_at', '<=', input.timestamp)
-            .orderBy('last_activity_at', 'desc')
-            .first();
-        const repeatedTransition = active ? undefined : await this.database<SourceActivityRow>(
-            'notification_source_activity'
-        )
-            .where({
-                activity_type: 'indexing',
-                repository: input.repository,
-                branch: input.branch ?? null,
-                status: input.status,
-                last_activity_at: input.timestamp
-            })
-            .first();
-        const latestTransition = active || repeatedTransition ? undefined
-            : await this.database<SourceActivityRow>('notification_source_activity')
+    }): Promise<boolean> {
+        return this.database.transaction(async (transaction) => {
+            const latestTransition = await transaction<SourceActivityRow>('notification_source_activity')
                 .where({
                     activity_type: 'indexing',
                     repository: input.repository,
@@ -255,23 +309,24 @@ export class NotificationProjectionStore {
                 })
                 .orderBy('last_activity_at', 'desc')
                 .first();
-        const key = active?.activity_key
-            ?? repeatedTransition?.activity_key
-            ?? (latestTransition && latestTransition.last_activity_at >= input.timestamp
+            if (latestTransition && latestTransition.last_activity_at >= input.timestamp) {
+                return false;
+            }
+            const key = latestTransition && !isTerminalActivity(latestTransition.status)
                 ? latestTransition.activity_key
-                : undefined)
-            ?? indexingActivityKey(input.repository, input.branch, input.timestamp);
-        await this.upsertActivity({
-            activity_type: 'indexing',
-            activity_key: key,
-            repository: input.repository,
-            branch: input.branch ?? null,
-            status: input.status,
-            last_activity_at: input.timestamp,
-            completed_at: isTerminalActivity(input.status) ? input.timestamp : null,
-            metadata_json: null,
-            created_at: input.timestamp,
-            updated_at: input.timestamp
+                : indexingActivityKey(input.repository, input.branch, input.timestamp);
+            return this.upsertActivity({
+                activity_type: 'indexing',
+                activity_key: key,
+                repository: input.repository,
+                branch: input.branch ?? null,
+                status: input.status,
+                last_activity_at: input.timestamp,
+                completed_at: isTerminalActivity(input.status) ? input.timestamp : null,
+                metadata_json: null,
+                created_at: input.timestamp,
+                updated_at: input.timestamp
+            }, transaction);
         });
     }
 
@@ -299,18 +354,27 @@ export class NotificationProjectionStore {
                     transition_at: string;
                     updated_at: string;
                 } | undefined;
-            if (existing && existing.updated_at > input.timestamp) {
+            if (existing && existing.updated_at >= input.timestamp) {
                 return {
                     component: input.component,
                     status: existing.status,
                     healthy: Boolean(existing.healthy),
-                    transitionAt: normalizeISO8601Timestamp(existing.transition_at)
+                    transitionAt: normalizeISO8601Timestamp(existing.transition_at),
+                    unhealthyEpisodeStarted: false
                 };
             }
-            const changed = !existing
-                || existing.status !== input.status
-                || Boolean(existing.healthy) !== input.healthy;
-            const transitionAt = changed
+            const healthChanged = !existing || Boolean(existing.healthy) !== input.healthy;
+            const statusChanged = !existing || existing.status !== input.status;
+            if (existing && !healthChanged && !statusChanged) {
+                return {
+                    component: input.component,
+                    status: existing.status,
+                    healthy: Boolean(existing.healthy),
+                    transitionAt: normalizeISO8601Timestamp(existing.transition_at),
+                    unhealthyEpisodeStarted: false
+                };
+            }
+            const transitionAt = healthChanged
                 ? input.timestamp
                 : normalizeISO8601Timestamp(existing.transition_at);
             await transaction('notification_system_health')
@@ -325,25 +389,37 @@ export class NotificationProjectionStore {
                 .merge({
                     status: input.status,
                     healthy: input.healthy,
-                    ...(changed ? { transition_at: transitionAt } : {}),
+                    ...(healthChanged ? { transition_at: transitionAt } : {}),
                     updated_at: input.timestamp
                 });
-            return { ...input, transitionAt };
+            return {
+                ...input,
+                transitionAt,
+                unhealthyEpisodeStarted: !input.healthy && healthChanged
+            };
         });
     }
 
-    private async upsertActivity(row: Record<string, unknown>): Promise<void> {
-        await this.database('notification_source_activity')
+    private async upsertActivity(
+        row: Record<string, unknown>,
+        database: Knex | Knex.Transaction = this.database
+    ): Promise<boolean> {
+        const updated = await database('notification_source_activity')
             .insert(row)
             .onConflict(['activity_type', 'activity_key'])
-            .merge([
-                'repository',
-                'branch',
-                'status',
-                'last_activity_at',
-                'completed_at',
-                'metadata_json'
-            ]);
+            .merge({
+                repository: row.repository,
+                branch: row.branch,
+                status: row.status,
+                last_activity_at: row.last_activity_at,
+                completed_at: row.completed_at,
+                metadata_json: row.metadata_json
+            })
+            // updated_at is advanced by notification_source_activity_touch_updated_at;
+            // writing it directly is rejected because that audit field is DB-managed.
+            .where('notification_source_activity.last_activity_at', '<', String(row.last_activity_at))
+            .returning('activity_key') as Array<{ activity_key: string }>;
+        return updated.length > 0;
     }
 }
 

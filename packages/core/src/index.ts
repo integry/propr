@@ -431,6 +431,14 @@ export type {
     SystemStatusSnapshot
 } from './services/notificationSystemProjection.js';
 export {
+    NotificationSystemSampler,
+    DEFAULT_NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS,
+    getNotificationSystemCheckIntervalMs
+} from './services/notificationSystemSampler.js';
+export type {
+    NotificationSystemSamplerOptions
+} from './services/notificationSystemSampler.js';
+export {
     NotificationStalledDetector,
     DEFAULT_NOTIFICATION_STALLED_AFTER_MS,
     DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS,

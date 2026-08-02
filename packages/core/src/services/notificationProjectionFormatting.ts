@@ -65,6 +65,8 @@ export function safePullRequestUrl(context: TaskProjectionContext): string | und
         const expectedPath = `/${context.repository}/pull/${context.prNumber}`;
         if (
             url.protocol !== 'https:'
+            || url.hostname !== 'github.com'
+            || url.port !== ''
             || url.username
             || url.password
             || decodeURIComponent(url.pathname).replace(/\/$/, '') !== expectedPath

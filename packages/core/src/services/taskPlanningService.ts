@@ -153,10 +153,11 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     chatHistoryJson = '[]';
   }
 
+  const reviewTransitionAt = new Date().toISOString();
   await db('task_drafts').where({ draft_id: draftId }).update({
     plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
     generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
-    name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+    name: truncateToSentences(draft.initial_prompt), updated_at: reviewTransitionAt
   });
 
   // Emit final completion event so the UI can transition without polling
@@ -166,7 +167,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     step: 'complete',
     status: 'completed',
     draftStatus: 'review',
-    generationTrace: buildDraftUpdateTraceSnapshot(finalTrace)
+    generationTrace: buildDraftUpdateTraceSnapshot(finalTrace),
+    timestamp: reviewTransitionAt
   });
   if (!published) {
     correlatedLogger.warn('Failed to publish completion event — client will resync via safety-net poll');

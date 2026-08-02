@@ -35,6 +35,7 @@ export interface NotificationStalledDetectorOptions {
     stalledAfterMs?: number;
     intervalMs?: number;
     now?: () => string | number | Date;
+    acquireLease?: () => Promise<boolean>;
 }
 
 export class NotificationStalledDetector {
@@ -42,14 +43,16 @@ export class NotificationStalledDetector {
     private readonly stalledAfterMs: number;
     private readonly intervalMs: number;
     private readonly now: () => string | number | Date;
+    private readonly acquireLease?: () => Promise<boolean>;
     private timer: NodeJS.Timeout | null = null;
-    private running = false;
+    private activeRun: Promise<number> | null = null;
 
     constructor(options: NotificationStalledDetectorOptions = {}) {
         this.projector = options.projector ?? notificationProjectionService;
         this.stalledAfterMs = options.stalledAfterMs ?? getNotificationStalledAfterMs();
         this.intervalMs = options.intervalMs ?? getNotificationStalledCheckIntervalMs();
         this.now = options.now ?? (() => new Date());
+        this.acquireLease = options.acquireLease;
         if (!Number.isSafeInteger(this.stalledAfterMs) || this.stalledAfterMs <= 0) {
             throw new TypeError('stalledAfterMs must be a positive safe integer');
         }
@@ -70,24 +73,34 @@ export class NotificationStalledDetector {
     }
 
     async runOnce(): Promise<number> {
-        if (this.running) return 0;
-        this.running = true;
+        if (this.activeRun) return 0;
+        const run = this.executeRun();
+        this.activeRun = run;
         try {
+            return await run;
+        } finally {
+            if (this.activeRun === run) this.activeRun = null;
+        }
+    }
+
+    async stop(): Promise<void> {
+        if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = null;
+        }
+        await this.activeRun;
+        logger.info('Notification stalled-task detector stopped');
+    }
+
+    private async executeRun(): Promise<number> {
+        try {
+            if (this.acquireLease && !await this.acquireLease()) return 0;
             return await this.projector.detectStalledActivities(this.stalledAfterMs, this.now());
         } catch (error) {
             logger.warn({
                 error: error instanceof Error ? error.message : String(error)
             }, 'Failed to detect stalled notification activity');
             return 0;
-        } finally {
-            this.running = false;
         }
-    }
-
-    stop(): void {
-        if (!this.timer) return;
-        clearInterval(this.timer);
-        this.timer = null;
-        logger.info('Notification stalled-task detector stopped');
     }
 }

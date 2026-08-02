@@ -14,10 +14,6 @@ type StatusRoutesDeps = {
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
   now?: () => number;
-  projectSystemSnapshot?: (
-    snapshot: Record<string, unknown>,
-    recipients?: readonly string[]
-  ) => Promise<void>;
   loadSummarizationRuntimeState?: () => Promise<{
     primary_quota_failures: number;
     primary_quota_failures_by_alias: Record<string, number>;
@@ -142,10 +138,7 @@ function configureStatusEnv(): void {
 
 async function createRoutes(deps: StatusRoutesDeps) {
   const { createStatusRoutes } = await import('../routes/statusRoutes.js');
-  return createStatusRoutes({
-    projectSystemSnapshot: async () => undefined,
-    ...deps,
-  });
+  return createStatusRoutes(deps);
 }
 
 async function readStatus(overrides: Partial<StatusRoutesDeps> = {}, configureEnv?: () => void) {
@@ -159,7 +152,6 @@ async function readStatus(overrides: Partial<StatusRoutesDeps> = {}, configureEn
     loadAgents: async () => [],
     agentRegistry: createRegistry(),
     getIndexingQueue: async () => createIndexingQueue(),
-    projectSystemSnapshot: async () => undefined,
     ...overrides,
   });
 
@@ -195,11 +187,9 @@ test('/api/status omits disabled configured agents', async () => {
   assert.equal(body.claudeAuth, 'disconnected');
 });
 
-test('/api/status remains available when notification projection fails', async () => {
+test('/api/status remains available when warning collection fails', async () => {
   const status = await readStatus({
-    projectSystemSnapshot: async () => {
-      throw new Error('projection unavailable');
-    },
+    loadSummarizationRuntimeState: async () => { throw new Error('warnings unavailable'); },
   });
 
   assert.equal(status.api, 'healthy');
@@ -504,7 +494,8 @@ test('/api/status maps indexing queue states', async () => {
     [{ active: 1, waiting: 0, delayed: 0, failed: 0 }, 'active'],
     [{ active: 0, waiting: 1, delayed: 0, failed: 0 }, 'queued'],
     [{ active: 0, waiting: 0, delayed: 1, failed: 0 }, 'queued'],
-    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, 'failed'],
+    // Retained failed jobs are historical diagnostics, not current-run health.
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, 'idle'],
     [{ active: 0, waiting: 0, delayed: 0, failed: 0 }, 'idle'],
   ];
 

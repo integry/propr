@@ -94,6 +94,8 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | `WORKER_CONCURRENCY` | Shipped `2` / code falls back to `5` if unset | Jobs a worker processes in parallel. | Optional. |
 | `COMMENT_BATCH_DELAY_MS` | `3000` | Delay for batching GitHub comment updates. | Optional. |
 | `NOTIFICATION_STALLED_AFTER_MS` | `1800000` (30 minutes) | Creates one durable stalled notification when active task or indexing activity remains unchanged for this long. | Optional. |
+| `NOTIFICATION_STALLED_CHECK_INTERVAL_MS` | `60000` (1 minute) | How often the API scans durable task and indexing activity for stalls. Replicas coordinate each scan through Redis. | Optional. |
+| `NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS` | `30000` (30 seconds) | How often the API samples installation health for durable notifications independently of UI polling. Replicas coordinate each sample through Redis. | Optional. |
 | `SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD` | `3` | Promotes the summarization fallback to primary after this many primary quota failures for the same agent/model. | Optional. |
 | `SUMMARIZATION_QUOTA_COOLDOWN_MS` | `3600000` (1 hour) | Pauses normal summarization jobs for a repository/branch after both primary and fallback paths fail. | Optional. |
 | `SYSTEM_TASK_SECRET` | Empty | Signs system task requests (for example revert operations). Generate with `openssl rand -hex 32`. | System tasks (reverts). |

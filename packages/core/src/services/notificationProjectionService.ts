@@ -31,6 +31,21 @@ import {
 
 type TimestampInput = string | number | Date;
 
+function stablePayloadTransitionTimestamp(
+    value: unknown,
+    publishedAt: ReturnType<typeof normalizeISO8601Timestamp>
+): ReturnType<typeof normalizeISO8601Timestamp> | undefined {
+    if (typeof value !== 'string' && typeof value !== 'number' && !(value instanceof Date)) {
+        return undefined;
+    }
+    try {
+        const timestamp = normalizeISO8601Timestamp(value);
+        return timestamp <= publishedAt ? timestamp : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 export interface NotificationProjectionServiceOptions {
     database?: Knex;
     notificationService?: NotificationService;
@@ -71,9 +86,12 @@ export class NotificationProjectionService {
 
     async projectDraftUpdate(payload: DraftUpdatePayload): Promise<void> {
         if (payload.draftStatus !== 'review' || payload.status !== 'completed') return;
-        const timestamp = normalizeISO8601Timestamp(payload.timestamp);
+        const publishedAt = normalizeISO8601Timestamp(payload.timestamp);
         const context = await this.store.getDraftContext(payload.draftId);
-        if (!context) return;
+        if (!context || (context.status !== undefined && context.status !== 'review')) return;
+        const timestamp = context.updatedAt && context.updatedAt <= publishedAt
+            ? context.updatedAt
+            : publishedAt;
         await this.notifications.createNotificationEvent({
             deduplicationKey: buildProjectionDeduplicationKey(
                 'draft',
@@ -102,17 +120,26 @@ export class NotificationProjectionService {
     }
 
     async projectTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
-        const timestamp = normalizeISO8601Timestamp(payload.timestamp);
+        const publishedAt = normalizeISO8601Timestamp(payload.timestamp);
+        const timestamp = stablePayloadTransitionTimestamp(
+            payload.metadata?.transitionAt,
+            publishedAt
+        ) ?? await this.store.resolveTaskTransitionTimestamp(
+            payload.taskId,
+            payload.state,
+            publishedAt
+        );
         const context = await this.store.getTaskContext(payload.taskId, payload);
         if (!context) return;
         const activityStatus = taskActivityStatus(payload.state);
         const safeMetadata = safeTaskMetadata(context, activityStatus, timestamp);
-        await this.store.upsertTaskActivity({
+        const applied = await this.store.upsertTaskActivity({
             context,
             status: activityStatus,
             timestamp,
             metadata: safeMetadata
         });
+        if (!applied) return;
         const recipients = await this.store.getTaskRecipients(context);
 
         if (activityStatus === 'failed') {
@@ -126,15 +153,21 @@ export class NotificationProjectionService {
     }
 
     async projectIndexingUpdate(payload: IndexingUpdatePayload): Promise<void> {
-        const timestamp = normalizeISO8601Timestamp(payload.timestamp);
+        const publishedAt = normalizeISO8601Timestamp(payload.timestamp);
         const status = indexingActivityStatus(payload.phase);
-        await this.store.upsertIndexingActivity({
+        const timestamp = await this.store.resolveIndexingTransitionTimestamp(
+            payload.repository,
+            payload.branch,
+            status,
+            publishedAt
+        );
+        const applied = await this.store.upsertIndexingActivity({
             repository: payload.repository,
             ...(payload.branch === undefined ? {} : { branch: payload.branch }),
             status,
             timestamp
         });
-        if (status !== 'failed') return;
+        if (!applied || status !== 'failed') return;
         const recipients = await this.store.getRepositoryRecipients(payload.repository);
         await this.notifications.createNotificationEvent({
             deduplicationKey: buildProjectionDeduplicationKey(

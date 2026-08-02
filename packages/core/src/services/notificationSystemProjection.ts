@@ -170,17 +170,22 @@ export class NotificationSystemProjection {
         const timestamp = normalizeISO8601Timestamp(
             typeof snapshot.timestamp === 'string' ? snapshot.timestamp : this.now()
         );
-        const requestedRecipients = recipients.length > 0
-            ? [...recipients]
-            : await this.store.getKnownRecipients();
+        const knownRecipients = await this.store.getKnownRecipients();
+        const requestedUserIds = new Set(recipients.map((recipient) =>
+            typeof recipient === 'string' ? recipient : recipient.userId
+        ));
+        const requestedRecipients = [
+            ...recipients,
+            ...knownRecipients.filter((userId) => !requestedUserIds.has(userId))
+        ];
         for (const component of extractComponentSnapshots(snapshot)) {
             const transition = await this.store.updateSystemTransition({ ...component, timestamp });
-            if (transition.healthy) continue;
+            if (!transition.unhealthyEpisodeStarted) continue;
             await this.notifications.createNotificationEvent({
                 deduplicationKey: buildProjectionDeduplicationKey(
                     'system',
                     transition.component,
-                    transition.status,
+                    'unhealthy',
                     transition.transitionAt
                 ),
                 kind: 'system_failure',

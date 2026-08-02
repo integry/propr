@@ -64,11 +64,12 @@ export class WorkerStateManager {
      * @returns Task state data
      */
     async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
+        const transitionAt = new Date().toISOString();
         const state: TaskStateData = {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
-            state: TaskStates.PENDING, createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(), attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+            state: TaskStates.PENDING, createdAt: transitionAt,
+            updatedAt: transitionAt, attempts: 0,
+            history: [{ state: TaskStates.PENDING, timestamp: transitionAt, reason: 'Task created' }]
         };
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
@@ -104,7 +105,8 @@ export class WorkerStateManager {
                 taskId,
                 state: TaskStates.PENDING,
                 repository,
-                issueNumber: issueRef.number
+                issueNumber: issueRef.number,
+                timestamp: transitionAt
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
@@ -126,12 +128,13 @@ export class WorkerStateManager {
 
         const state: TaskStateData = JSON.parse(stateJson);
         const previousState = state.state;
+        const transitionAt = new Date().toISOString();
         state.state = newState;
-        state.updatedAt = new Date().toISOString();
+        state.updatedAt = transitionAt;
         state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
 
         if (metadata.error) {
-            state.lastError = { message: metadata.error.message, category: metadata.error.category ?? 'unknown', timestamp: new Date().toISOString() };
+            state.lastError = { message: metadata.error.message, category: metadata.error.category ?? 'unknown', timestamp: transitionAt };
         }
         if (metadata.worktreeInfo) state.worktreeInfo = metadata.worktreeInfo;
         if (metadata.claudeResult) {
@@ -140,7 +143,7 @@ export class WorkerStateManager {
         if (metadata.prResult) state.prResult = metadata.prResult;
 
         state.history.push({
-            state: newState, timestamp: new Date().toISOString(),
+            state: newState, timestamp: transitionAt,
             reason: metadata.reason ?? `State changed from ${previousState}`,
             metadata: metadata.historyMetadata ?? {}
         });
@@ -155,7 +158,7 @@ export class WorkerStateManager {
 
         try {
             const historyData = {
-                task_id: taskId, state: newState, timestamp: new Date().toISOString(),
+                task_id: taskId, state: newState, timestamp: transitionAt,
                 reason: metadata.reason ?? `State changed from ${previousState}`,
                 metadata: JSON.stringify({
                     ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
@@ -178,7 +181,8 @@ export class WorkerStateManager {
                     state.issueRef.number,
                     state.attempts,
                     metadata
-                )
+                ),
+                timestamp: transitionAt
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
@@ -210,6 +214,8 @@ export class WorkerStateManager {
         if (!stateJson) return null;
 
         const state: TaskStateData = JSON.parse(stateJson);
+        const transitionAt = state.history.findLast(entry => entry.state === state.state)?.timestamp
+            ?? state.updatedAt;
         state.issueRef = { ...state.issueRef, ...issueRefPatch };
         state.updatedAt = new Date().toISOString();
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
@@ -231,7 +237,8 @@ export class WorkerStateManager {
                 issueNumber: state.issueRef.number,
                 metadata: {
                     issueRefUpdated: true,
-                    updatedFields: Object.keys(issueRefPatch)
+                    updatedFields: Object.keys(issueRefPatch),
+                    transitionAt
                 }
             });
         } catch (error) {
@@ -283,6 +290,7 @@ export class WorkerStateManager {
         const historyIndex = state.history.findLastIndex(h => h.state === historyState);
 
         if (historyIndex >= 0) {
+            const transitionAt = state.history[historyIndex].timestamp;
             state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
             state.updatedAt = new Date().toISOString();
             await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
@@ -299,7 +307,8 @@ export class WorkerStateManager {
                     issueNumber: state.issueRef.number,
                     metadata: {
                         metadataUpdate: true,
-                        updatedFields: Object.keys(metadata)
+                        updatedFields: Object.keys(metadata),
+                        transitionAt
                     }
                 });
             } catch (error) {

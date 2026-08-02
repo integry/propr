@@ -24,6 +24,15 @@ import {
 } from '@propr/shared';
 import { projectNotificationUpdateBestEffort } from '../services/notificationProjectionService.js';
 
+const NOTIFICATION_PROJECTION_DEADLINE_MS = 250;
+
+export interface EventPublisherOptions {
+  now?: () => Date;
+  publish?: (channel: string, payload: EventPayload) => Promise<boolean>;
+  projectNotification?: (payload: EventPayload) => Promise<void>;
+  projectionDeadlineMs?: number;
+}
+
 /**
  * Event publisher for real-time updates via Redis pub/sub.
  * Publishes events that will be consumed by the SocketService in the dashboard.
@@ -31,16 +40,36 @@ import { projectNotificationUpdateBestEffort } from '../services/notificationPro
 class EventPublisher {
   private redis: InstanceType<typeof Redis> | null = null;
   private isInitialized = false;
+  private readonly now: () => Date;
+  private readonly publishOverride?: EventPublisherOptions['publish'];
+  private readonly notificationProjector: NonNullable<EventPublisherOptions['projectNotification']>;
+  private readonly projectionDeadlineMs: number;
 
-  /** Notification projection is deliberately isolated from socket publication. */
+  constructor(options: EventPublisherOptions = {}) {
+    this.now = options.now ?? (() => new Date());
+    this.publishOverride = options.publish;
+    this.notificationProjector = options.projectNotification ?? projectNotificationUpdateBestEffort;
+    this.projectionDeadlineMs = options.projectionDeadlineMs ?? NOTIFICATION_PROJECTION_DEADLINE_MS;
+    if (!Number.isSafeInteger(this.projectionDeadlineMs) || this.projectionDeadlineMs <= 0) {
+      throw new TypeError('projectionDeadlineMs must be a positive safe integer');
+    }
+  }
+
+  /** Bound projection latency so SQLite contention cannot stall socket publication. */
   private async projectNotification(payload: EventPayload): Promise<void> {
-    try {
-      await projectNotificationUpdateBestEffort(payload);
-    } catch (error) {
+    let timeout: NodeJS.Timeout | undefined;
+    const completed = await Promise.race([
+      this.notificationProjector(payload).then(() => true),
+      new Promise<false>(resolve => {
+        timeout = setTimeout(() => resolve(false), this.projectionDeadlineMs);
+      })
+    ]);
+    if (timeout) clearTimeout(timeout);
+    if (!completed) {
       logger.warn({
         eventType: payload.eventType,
-        error: error instanceof Error ? error.message : String(error)
-      }, 'Failed to project published event into notifications');
+        deadlineMs: this.projectionDeadlineMs
+      }, 'Notification projection exceeded the publication deadline and continues in background');
     }
   }
 
@@ -79,6 +108,7 @@ class EventPublisher {
    */
   private async publish(channel: string, payload: EventPayload): Promise<boolean> {
     try {
+      if (this.publishOverride) return await this.publishOverride(channel, payload);
       await this.ensureInitialized();
       if (!this.redis) return false;
 
@@ -103,6 +133,7 @@ class EventPublisher {
     repository?: string;
     issueNumber?: number;
     metadata?: Record<string, unknown>;
+    timestamp?: string;
   }): Promise<void> {
     const payload: TaskUpdatePayload = {
       eventType: TASK_UPDATE,
@@ -111,7 +142,7 @@ class EventPublisher {
       previousState: params.previousState,
       repository: params.repository,
       issueNumber: params.issueNumber,
-      timestamp: new Date().toISOString(),
+      timestamp: params.timestamp ?? this.now().toISOString(),
       metadata: params.metadata
     };
     await Promise.all([
@@ -131,13 +162,14 @@ class EventPublisher {
     data?: Record<string, unknown>;
     draftStatus?: DraftStatus;
     generationTrace?: DraftUpdateGenerationTrace;
+    timestamp?: string;
   }): Promise<boolean> {
     const payload: DraftUpdatePayload = {
       eventType: DRAFT_UPDATE,
       draftId: params.draftId,
       step: params.step,
       status: params.status,
-      timestamp: new Date().toISOString(),
+      timestamp: params.timestamp ?? this.now().toISOString(),
       data: params.data,
       draftStatus: params.draftStatus,
       generationTrace: params.generationTrace
@@ -162,6 +194,7 @@ class EventPublisher {
     processedFiles?: number;
     totalDirectories?: number;
     processedDirectories?: number;
+    timestamp?: string;
   }): Promise<void> {
     const payload: IndexingUpdatePayload = {
       eventType: INDEXING_UPDATE,
@@ -173,7 +206,7 @@ class EventPublisher {
       processedFiles: params.processedFiles,
       totalDirectories: params.totalDirectories,
       processedDirectories: params.processedDirectories,
-      timestamp: new Date().toISOString()
+      timestamp: params.timestamp ?? this.now().toISOString()
     };
     await Promise.all([
       this.publish(REDIS_CHANNELS.INDEXING, payload),
@@ -199,7 +232,7 @@ class EventPublisher {
       todos: params.todos,
       currentTask: params.currentTask,
       tokenUsage: params.tokenUsage,
-      timestamp: new Date().toISOString()
+      timestamp: this.now().toISOString()
     };
     await this.publish(REDIS_CHANNELS.LIVE_DETAILS, payload);
   }
@@ -214,7 +247,7 @@ class EventPublisher {
     const payload: QueueStatsUpdatePayload = {
       eventType: QUEUE_STATS_UPDATE,
       stats: params.stats,
-      timestamp: new Date().toISOString()
+      timestamp: this.now().toISOString()
     };
     await this.publish(REDIS_CHANNELS.QUEUE_STATS, payload);
   }
