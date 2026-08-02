@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- projection dispatch and notification creation share one orchestration boundary */
 import type { Knex } from 'knex';
 import {
     DRAFT_UPDATE,

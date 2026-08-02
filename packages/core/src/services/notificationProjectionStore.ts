@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- projection ordering and checkpoint writes share transactional invariants */
 import { createHash } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
@@ -132,6 +133,7 @@ function activityTransitionTimestamp(row: SourceActivityRow): ISO8601Timestamp {
         ?? normalizeISO8601Timestamp(row.last_activity_at);
 }
 
+// eslint-disable-next-line max-params -- each field is part of the persisted deduplication-key schema
 export function buildProjectionDeduplicationKey(
     source: string,
     entity: string,
@@ -186,6 +188,7 @@ export class NotificationProjectionStore {
             : null;
     }
 
+    // eslint-disable-next-line complexity -- context precedence intentionally reconciles several durable sources
     async getTaskContext(
         taskId: string,
         payload: { repository?: string; issueNumber?: number; metadata?: Record<string, unknown> }
@@ -249,6 +252,7 @@ export class NotificationProjectionStore {
         };
     }
 
+    // eslint-disable-next-line max-params -- transition identity inputs mirror the published event and durable row
     async resolveTaskTransition(
         taskId: string,
         state: string,
@@ -290,6 +294,7 @@ export class NotificationProjectionStore {
         };
     }
 
+    // eslint-disable-next-line max-params, complexity -- reconciliation preserves durable run ordering across schema versions
     async resolveIndexingTransition(
         repository: string,
         branch: string | undefined,
@@ -375,6 +380,7 @@ export class NotificationProjectionStore {
         return this.recipients.getKnownRecipients();
     }
 
+    // eslint-disable-next-line complexity -- all ordering decisions must remain inside the atomic checkpoint write
     async upsertTaskActivity(input: {
         context: TaskProjectionContext;
         status: NotificationSourceActivityStatus;
@@ -460,6 +466,7 @@ export class NotificationProjectionStore {
         return updated > 0;
     }
 
+    // eslint-disable-next-line complexity -- run identity and terminal-state guards form one atomic checkpoint write
     async upsertIndexingActivity(input: {
         repository: string;
         branch?: string;

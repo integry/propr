@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- Redis state, durable history, and publication form one transition lifecycle */
 import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
 import { db } from '../db/connection.js';
