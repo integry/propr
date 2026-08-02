@@ -45,6 +45,7 @@ type Database = Knex | Knex.Transaction;
 
 export interface NotificationRecipientInput {
     userId: string;
+    /** Producer eligibility; stored user preferences are applied at assignment time. */
     inboxEnabled?: boolean;
     pushEnabled?: boolean;
 }
@@ -460,8 +461,6 @@ export class NotificationService {
             parseNotificationPreferencesUpdate(input));
 
         return this.database.transaction(async (transaction) => {
-            await this.ensurePreferenceDefaults(transaction, userId);
-
             for (const [kind, channels] of Object.entries(update.preferences ?? {})) {
                 const values: Record<string, boolean> = {};
                 if (channels.inboxEnabled !== undefined) {
@@ -471,8 +470,16 @@ export class NotificationService {
                     values.push_enabled = channels.pushEnabled;
                 }
                 await transaction('notification_preferences')
-                    .where({ user_id: userId, notification_kind: kind })
-                    .update(values);
+                    .insert({
+                        user_id: userId,
+                        notification_kind: kind,
+                        inbox_enabled: channels.inboxEnabled
+                            ?? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.inboxEnabled,
+                        push_enabled: channels.pushEnabled
+                            ?? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.pushEnabled
+                    })
+                    .onConflict(['user_id', 'notification_kind'])
+                    .merge(values);
             }
 
             if (update.quietHours !== undefined) {
@@ -487,8 +494,17 @@ export class NotificationService {
                     values.timezone = update.quietHours.timezone;
                 }
                 await transaction('notification_preference_settings')
-                    .where({ user_id: userId })
-                    .update(values);
+                    .insert({
+                        user_id: userId,
+                        quiet_hours_start: update.quietHours.start
+                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.start,
+                        quiet_hours_end: update.quietHours.end
+                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.end,
+                        timezone: update.quietHours.timezone
+                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.timezone
+                    })
+                    .onConflict('user_id')
+                    .merge(values);
             }
 
             return this.readPreferenceSnapshot(transaction, userId);
@@ -752,30 +768,6 @@ export class NotificationService {
         return this.updateInboxTimestamp(userId, eventId, 'dismissed_at');
     }
 
-    private async ensurePreferenceDefaults(
-        transaction: Knex.Transaction,
-        userId: string
-    ): Promise<void> {
-        await transaction('notification_preferences')
-            .insert(NOTIFICATION_KINDS.map((kind) => ({
-                user_id: userId,
-                notification_kind: kind,
-                inbox_enabled: DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.inboxEnabled,
-                push_enabled: DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.pushEnabled
-            })))
-            .onConflict(['user_id', 'notification_kind'])
-            .ignore();
-        await transaction('notification_preference_settings')
-            .insert({
-                user_id: userId,
-                quiet_hours_start: DEFAULT_NOTIFICATION_QUIET_HOURS.start,
-                quiet_hours_end: DEFAULT_NOTIFICATION_QUIET_HOURS.end,
-                timezone: DEFAULT_NOTIFICATION_QUIET_HOURS.timezone
-            })
-            .onConflict('user_id')
-            .ignore();
-    }
-
     private async readPreferenceSnapshot(
         database: Database,
         userId: string
@@ -818,11 +810,37 @@ export class NotificationService {
         recipients: NormalizedRecipient[]
     ): Promise<void> {
         if (recipients.length === 0) return;
+        const preferenceRows = await transaction<NotificationPreferenceRow>(
+            'notification_preferences'
+        )
+            .select('user_id', 'inbox_enabled', 'push_enabled')
+            .where({ notification_kind: event.kind })
+            .whereIn('user_id', recipients.map(({ userId }) => userId));
+        const preferenceByUser = new Map(
+            preferenceRows.map((row) => [row.user_id, row])
+        );
+        const eligibleRecipients = recipients.flatMap((recipient) => {
+            const preference = preferenceByUser.get(recipient.userId);
+            const inboxEnabled = recipient.inboxEnabled && (
+                preference === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.inboxEnabled
+                    : Boolean(preference.inbox_enabled)
+            );
+            const pushEnabled = recipient.pushEnabled && (
+                preference === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.pushEnabled
+                    : Boolean(preference.push_enabled)
+            );
+            return inboxEnabled || pushEnabled
+                ? [{ ...recipient, inboxEnabled, pushEnabled }]
+                : [];
+        });
+        if (eligibleRecipients.length === 0) return;
         const now = normalizeISO8601Timestamp(this.now());
         const assignedAt: ISO8601Timestamp = now < event.createdAt ? event.createdAt : now;
 
         await transaction('notification_user_states')
-            .insert(recipients.map((recipient) => ({
+            .insert(eligibleRecipients.map((recipient) => ({
                 event_id: event.id,
                 user_id: recipient.userId,
                 inbox_enabled: recipient.inboxEnabled,

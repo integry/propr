@@ -1,5 +1,7 @@
 /* eslint-disable max-lines -- SQLite table rebuild preserves notification delivery invariants */
 
+import { ECDH } from 'node:crypto';
+
 /**
  * Add authenticated preference settings and browser enrollment semantics.
  *
@@ -14,7 +16,6 @@ const JAVASCRIPT_WHITESPACE_CODEPOINTS = [
   9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197,
   8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288, 65279,
 ];
-const CONTROL_CODEPOINTS = [...Array.from({ length: 32 }, (_, index) => index), 127];
 const WEB_PUSH_ENDPOINT_HOSTS = [
   'fcm.googleapis.com',
   'updates.push.services.mozilla.com',
@@ -81,6 +82,60 @@ function base64UrlKeyCheck(value, bytes, firstByteIsUncompressedPoint = false) {
   )`;
 }
 
+function decodeStoredBase64Url(value, bytes) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+={0,2}$/.test(value)) return null;
+  const unpadded = value.replace(/=+$/, '');
+  const expectedUnpaddedLength = Math.ceil(bytes * 8 / 6);
+  const expectedPaddingLength = (3 - (bytes % 3)) % 3;
+  const paddingLength = value.length - unpadded.length;
+  if (
+    unpadded.length !== expectedUnpaddedLength
+    || (paddingLength !== 0 && paddingLength !== expectedPaddingLength)
+    || (paddingLength !== 0 && value.length % 4 !== 0)
+  ) return null;
+
+  const decoded = Buffer.from(value, 'base64url');
+  return decoded.length === bytes && decoded.toString('base64url') === unpadded
+    ? decoded
+    : null;
+}
+
+function hasValidActiveSubscriptionKeys(row) {
+  const p256dh = decodeStoredBase64Url(row.p256dh_key, 65);
+  if (!p256dh || p256dh[0] !== 0x04 || !decodeStoredBase64Url(row.auth_key, 16)) {
+    return false;
+  }
+
+  try {
+    const converted = ECDH.convertKey(
+      p256dh,
+      'prime256v1',
+      undefined,
+      undefined,
+      'uncompressed'
+    );
+    return Buffer.isBuffer(converted) && converted.equals(p256dh);
+  } catch {
+    return false;
+  }
+}
+
+function canonicalPushEndpoint(endpoint, subscriptionId) {
+  try {
+    return new URL(endpoint).href;
+  } catch {
+    throw new Error(`Cannot canonicalize push subscription ${subscriptionId}`);
+  }
+}
+
+function dotSegmentCheck(pathname) {
+  return ['.', '..', '%2e', '.%2e', '%2e.', '%2e%2e']
+    .map((segment) => `
+      instr(lower(${pathname}), '/${segment}/') = 0
+      AND substr(lower(${pathname}), -${segment.length + 1}) != '/${segment}'`)
+    .join('\n      AND ');
+}
+
 function pushEndpointCheck(value, allowLocalhost) {
   const authorityStart = `CASE
     WHEN lower(substr(${value}, 1, 8)) = 'https://' THEN 9
@@ -102,6 +157,12 @@ function pushEndpointCheck(value, allowLocalhost) {
     ELSE substr(${authority}, 1, ${colonPosition} - 1)
   END`;
   const port = `substr(${authority}, ${colonPosition} + 1)`;
+  const pathAndQuery = `substr(${remainder}, length(${authority}) + 1)`;
+  const queryPosition = `instr(${pathAndQuery}, '?')`;
+  const pathname = `CASE
+    WHEN ${queryPosition} = 0 THEN ${pathAndQuery}
+    ELSE substr(${pathAndQuery}, 1, ${queryPosition} - 1)
+  END`;
   const loopback = `lower(${hostname}) IN ('localhost', '127.0.0.1')`;
   const supportedPublicHost = `(
     lower(${hostname}) IN (${WEB_PUSH_ENDPOINT_HOSTS.map((host) => `'${host}'`).join(', ')})
@@ -113,10 +174,10 @@ function pushEndpointCheck(value, allowLocalhost) {
     : supportedPublicHost;
   const allowedScheme = allowLocalhost
     ? `(
-      (lower(substr(${value}, 1, 8)) = 'https://' AND ${allowedHost})
-      OR (lower(substr(${value}, 1, 7)) = 'http://' AND ${loopback})
+      (substr(${value}, 1, 8) = 'https://' AND ${allowedHost})
+      OR (substr(${value}, 1, 7) = 'http://' AND ${loopback})
     )`
-    : `(lower(substr(${value}, 1, 8)) = 'https://' AND ${supportedPublicHost})`;
+    : `(substr(${value}, 1, 8) = 'https://' AND ${supportedPublicHost})`;
   const hostnameShape = allowLocalhost
     ? `(${loopback} OR (
       length(${hostname}) BETWEEN 1 AND 253
@@ -133,8 +194,20 @@ function pushEndpointCheck(value, allowLocalhost) {
       AND instr(${hostname}, '.') > 0
     )`;
   const portCheck = allowLocalhost
-    ? `(${loopback} OR ${colonPosition} = 0 OR CAST(${port} AS INTEGER) = 443)`
-    : `(${colonPosition} = 0 OR CAST(${port} AS INTEGER) = 443)`;
+    ? `(
+      (${supportedPublicHost} AND ${colonPosition} = 0)
+      OR (${loopback} AND (
+        ${colonPosition} = 0
+        OR (
+          ${port} = CAST(CAST(${port} AS INTEGER) AS TEXT)
+          AND NOT (
+            (substr(${value}, 1, 7) = 'http://' AND CAST(${port} AS INTEGER) = 80)
+            OR (substr(${value}, 1, 8) = 'https://' AND CAST(${port} AS INTEGER) = 443)
+          )
+        )
+      ))
+    )`
+    : `${colonPosition} = 0`;
 
   return `(
     typeof(${value}) = 'text'
@@ -142,6 +215,7 @@ function pushEndpointCheck(value, allowLocalhost) {
     AND length(${authority}) > 0
     AND length(CAST(${value} AS BLOB)) <= 2048
     AND ${hostnameShape}
+    AND ${hostname} = lower(${hostname})
     AND instr(${hostname}, '..') = 0
     AND instr(${hostname}, '.-') = 0
     AND instr(${hostname}, '-.') = 0
@@ -159,9 +233,12 @@ function pushEndpointCheck(value, allowLocalhost) {
       )
     )
     AND ${portCheck}
+    AND substr(${pathAndQuery}, 1, 1) = '/'
+    AND ${dotSegmentCheck(pathname)}
     AND instr(${value}, '#') = 0
     AND instr(${value}, char(92)) = 0
-    AND ${excludesCodepoints(value, CONTROL_CODEPOINTS)}
+    AND ${value} NOT GLOB '*[^ -~]*'
+    AND ${excludesCodepoints(value, JAVASCRIPT_WHITESPACE_CODEPOINTS)}
   )`;
 }
 
@@ -589,6 +666,97 @@ async function createPushSubscriptionSchemaObjects(knex, mutable) {
   `);
 }
 
+function compareLegacySubscriptionAge(left, right) {
+  return left.created_at.localeCompare(right.created_at)
+    || left.subscription_id.localeCompare(right.subscription_id);
+}
+
+async function normalizeLegacyPushSubscriptions(knex) {
+  const rows = await knex('push_subscriptions_legacy')
+    .select(
+      'subscription_id',
+      'endpoint',
+      'p256dh_key',
+      'auth_key',
+      'revoked_at',
+      'created_at',
+      'updated_at'
+    );
+  const timestampRows = await knex.raw(`SELECT ${ISO_NOW_SQL} AS migration_timestamp`);
+  const migrationTimestamp = timestampRows[0]?.migration_timestamp;
+  if (typeof migrationTimestamp !== 'string') {
+    throw new Error('Could not obtain a canonical push subscription migration timestamp');
+  }
+
+  const normalizedRows = rows.map((row) => ({
+    ...row,
+    canonical_endpoint: canonicalPushEndpoint(row.endpoint, row.subscription_id),
+    active_keys_valid: row.revoked_at === null && hasValidActiveSubscriptionKeys(row),
+  }));
+  const activeByEndpoint = new Map();
+  for (const row of normalizedRows) {
+    if (!row.active_keys_valid) continue;
+    const candidates = activeByEndpoint.get(row.canonical_endpoint) ?? [];
+    candidates.push(row);
+    activeByEndpoint.set(row.canonical_endpoint, candidates);
+  }
+
+  // A canonical collision means the old text index admitted multiple spellings
+  // of one browser endpoint. Preserve the earliest valid enrollment as owner and
+  // revoke later aliases; invalid active keys never win ownership.
+  const retainedActiveIds = new Set();
+  for (const candidates of activeByEndpoint.values()) {
+    candidates.sort(compareLegacySubscriptionAge);
+    retainedActiveIds.add(candidates[0].subscription_id);
+  }
+
+  for (const row of normalizedRows) {
+    const wasActive = row.revoked_at === null;
+    const revoke = wasActive && (
+      !row.active_keys_valid || !retainedActiveIds.has(row.subscription_id)
+    );
+    const changedAt = row.updated_at > migrationTimestamp
+      ? row.updated_at
+      : migrationTimestamp;
+    const values = {};
+    if (row.endpoint !== row.canonical_endpoint) {
+      values.endpoint = row.canonical_endpoint;
+      values.updated_at = changedAt;
+    }
+    if (revoke) {
+      values.p256dh_key = null;
+      values.auth_key = null;
+      values.revoked_at = changedAt;
+      values.updated_at = changedAt;
+    }
+    if (Object.keys(values).length > 0) {
+      await knex('push_subscriptions_legacy')
+        .where({ subscription_id: row.subscription_id })
+        .update(values);
+    }
+  }
+}
+
+async function cancelJobsForRevokedSubscriptions(knex) {
+  await knex.raw(`
+    UPDATE push_delivery_jobs
+    SET status = 'cancelled',
+        next_retry_at = NULL,
+        claim_token = NULL,
+        claimed_at = NULL,
+        lease_expires_at = NULL
+    WHERE subscription_id IN (
+        SELECT subscription_id
+        FROM push_subscriptions
+        WHERE revoked_at IS NOT NULL
+      )
+      AND (
+        status IN ('pending', 'retryable')
+        OR (status = 'processing' AND lease_expires_at <= ${ISO_NOW_SQL})
+      )
+  `);
+}
+
 async function rebuildPushSubscriptions(knex, options) {
   const hasLegacyTable = await knex.schema.hasTable('push_subscriptions_legacy');
   if (hasLegacyTable) {
@@ -602,6 +770,7 @@ async function rebuildPushSubscriptions(knex, options) {
   await dropPushSubscriptionSchemaObjects(knex);
   await knex.raw('PRAGMA legacy_alter_table = ON');
   await knex.schema.renameTable('push_subscriptions', 'push_subscriptions_legacy');
+  await normalizeLegacyPushSubscriptions(knex);
   await createPushSubscriptionsTable(knex, options.allowLocalhost);
   await knex.raw(`
     INSERT INTO push_subscriptions (
@@ -616,6 +785,7 @@ async function rebuildPushSubscriptions(knex, options) {
   await knex.schema.dropTable('push_subscriptions_legacy');
   await knex.raw('PRAGMA legacy_alter_table = OFF');
   await createPushSubscriptionSchemaObjects(knex, options.mutable);
+  await cancelJobsForRevokedSubscriptions(knex);
 }
 
 async function hasLocalhostPushEndpoints(knex) {
@@ -680,8 +850,9 @@ export async function up(knex) {
 export async function down(knex) {
   await withForeignKeysDisabled(knex, async (transaction) => {
     // Rollback preserves explicitly enrolled localhost rows. When none exist,
-    // restore the original public-only CHECK exactly. Older runtimes still reject
-    // new localhost registrations at their API validation boundary.
+    // restore the public-only host policy while retaining canonical endpoint
+    // storage. Older runtimes still reject new localhost registrations at their
+    // API validation boundary.
     const allowLocalhost = await hasLocalhostPushEndpoints(transaction);
     await rebuildPushSubscriptions(transaction, {
       allowLocalhost,

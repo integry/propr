@@ -7,7 +7,10 @@ import {
     down as removeNotificationPreferenceApis,
     up as addNotificationPreferenceApis
 } from '../packages/core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
-import { NotificationService } from '../packages/core/src/services/notificationService.js';
+import {
+    NotificationService,
+    PushSubscriptionConflictError
+} from '../packages/core/src/services/notificationService.js';
 import {
     parsePushSubscription,
     parsePushSubscriptionInput
@@ -27,6 +30,7 @@ function generatedP256dhKey(privateKeyValue: number): string {
 }
 
 const validP256dhKey = generatedP256dhKey(1);
+const refreshedP256dhKey = generatedP256dhKey(2);
 const validAuthKey = 'A'.repeat(22);
 
 function createDatabase(): Knex {
@@ -209,6 +213,152 @@ describe('notification preference API migration', { concurrency: false }, () => 
         ]);
     });
 
+    test('canonicalizes legacy endpoints, reconciles collisions, and preserves revocation identity', async () => {
+        const canonicalEndpoint =
+            'https://fcm.googleapis.com/fcm/send/normalized-default-port';
+        const legacySpelling =
+            'HTTPS://FCM.GOOGLEAPIS.COM:443/fcm/send/normalized-default-port';
+        await database('notification_preferences').insert({
+            user_id: 'collision-user-b',
+            notification_kind: 'task',
+            inbox_enabled: true,
+            push_enabled: true
+        });
+        const legacyService = new NotificationService({
+            database,
+            now: () => timestamp,
+            generateId: () => 'collision-event'
+        });
+        await legacyService.createNotificationEvent({
+            eventId: 'collision-event',
+            deduplicationKey: 'migration:collision-event',
+            kind: 'task',
+            target: {
+                type: 'task',
+                repository: 'integry/propr',
+                taskId: 'collision-task'
+            },
+            title: 'Canonical endpoint collision',
+            body: 'Reconcile legacy endpoint spellings',
+            recipients: [{ userId: 'collision-user-b', pushEnabled: true }]
+        });
+        await database('push_subscriptions').insert([
+            {
+                subscription_id: 'collision-first-owner',
+                user_id: 'collision-user-a',
+                endpoint: legacySpelling,
+                p256dh_key: validP256dhKey,
+                auth_key: validAuthKey,
+                expires_at: null,
+                user_agent: null,
+                last_used_at: null,
+                revoked_at: null,
+                created_at: '2026-08-02T07:00:00.000Z',
+                updated_at: '2026-08-02T07:00:00.000Z'
+            },
+            {
+                subscription_id: 'collision-later-alias',
+                user_id: 'collision-user-b',
+                endpoint: canonicalEndpoint,
+                p256dh_key: validP256dhKey,
+                auth_key: validAuthKey,
+                expires_at: null,
+                user_agent: null,
+                last_used_at: null,
+                revoked_at: null,
+                created_at: timestamp,
+                updated_at: timestamp
+            }
+        ]);
+        await database('push_delivery_jobs').insert({
+            job_id: 'collision-later-job',
+            deduplication_key: 'migration:collision-later-job',
+            event_id: 'collision-event',
+            user_id: 'collision-user-b',
+            subscription_id: 'collision-later-alias',
+            attempt_count: 0,
+            status: 'pending',
+            next_retry_at: null,
+            claim_token: null,
+            claimed_at: null,
+            lease_expires_at: null,
+            created_at: timestamp,
+            updated_at: timestamp
+        });
+
+        await addNotificationPreferenceApis(database);
+
+        const rows = await database('push_subscriptions')
+            .where({ endpoint: canonicalEndpoint })
+            .orderBy('subscription_id');
+        assert.equal(rows.length, 2);
+        const firstOwner = rows.find(row => row.subscription_id === 'collision-first-owner');
+        const laterAlias = rows.find(row => row.subscription_id === 'collision-later-alias');
+        assert.equal(firstOwner?.revoked_at, null);
+        assert.equal(laterAlias?.p256dh_key, null);
+        assert.equal(laterAlias?.auth_key, null);
+        assert.ok(laterAlias?.revoked_at);
+        assert.equal(
+            await database('push_delivery_jobs')
+                .where({ job_id: 'collision-later-job' })
+                .first()
+                .then(row => row?.status),
+            'cancelled'
+        );
+
+        const migratedService = new NotificationService({ database });
+        await assert.rejects(
+            migratedService.upsertPushSubscription('collision-user-b', {
+                endpoint: legacySpelling,
+                expirationTime: null,
+                keys: { p256dh: refreshedP256dhKey, auth: validAuthKey }
+            }),
+            PushSubscriptionConflictError
+        );
+        const refreshed = await migratedService.upsertPushSubscription('collision-user-a', {
+            endpoint: legacySpelling,
+            expirationTime: null,
+            keys: { p256dh: refreshedP256dhKey, auth: validAuthKey }
+        });
+        assert.equal(refreshed.id, 'collision-first-owner');
+        assert.equal(refreshed.endpoint, canonicalEndpoint);
+        assert.equal(
+            await migratedService.revokePushSubscription(
+                'collision-user-a',
+                legacySpelling
+            ),
+            true
+        );
+        assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
+    });
+
+    test('revokes legacy active subscriptions whose P-256 point is off-curve', async () => {
+        const offCurvePoint = Buffer.alloc(65);
+        offCurvePoint[0] = 0x04;
+        await database('push_subscriptions').insert({
+            subscription_id: 'legacy-off-curve',
+            user_id: 'legacy-key-user',
+            endpoint: 'https://fcm.googleapis.com/fcm/send/legacy-off-curve',
+            p256dh_key: offCurvePoint.toString('base64url'),
+            auth_key: validAuthKey,
+            expires_at: null,
+            user_agent: null,
+            last_used_at: null,
+            revoked_at: null,
+            created_at: timestamp,
+            updated_at: timestamp
+        });
+
+        await addNotificationPreferenceApis(database);
+
+        const migrated = await database('push_subscriptions')
+            .where({ subscription_id: 'legacy-off-curve' })
+            .first();
+        assert.ok(migrated.revoked_at);
+        assert.equal(migrated.p256dh_key, null);
+        assert.equal(migrated.auth_key, null);
+    });
+
     test('keeps settings identity immutable and touches mutable updates', async () => {
         await addNotificationPreferenceApis(database);
         await database('notification_preference_settings').insert({
@@ -281,7 +431,7 @@ describe('notification preference API migration', { concurrency: false }, () => 
         assert.equal(reactivated.p256dh_key, validP256dhKey);
     });
 
-    test('keeps endpoint and encoded-key validation in runtime and SQLite parity', async () => {
+    test('stores the runtime-normalized form of every accepted endpoint in SQLite', async () => {
         await addNotificationPreferenceApis(database);
         const cases = [
             {
@@ -365,12 +515,13 @@ describe('notification preference API migration', { concurrency: false }, () => 
 
         for (const candidate of cases) {
             let runtimeAccepted = true;
+            let normalizedEndpoint = candidate.endpoint;
             try {
-                parsePushSubscriptionInput({
+                normalizedEndpoint = parsePushSubscriptionInput({
                     endpoint: candidate.endpoint,
                     expirationTime: null,
                     keys: { p256dh: candidate.p256dh, auth: candidate.auth }
-                }, { allowInsecureLocalhost: true });
+                }, { allowInsecureLocalhost: true }).endpoint;
             } catch {
                 runtimeAccepted = false;
             }
@@ -380,7 +531,7 @@ describe('notification preference API migration', { concurrency: false }, () => 
                 await database('push_subscriptions').insert({
                     subscription_id: `parity-${candidate.name}`,
                     user_id: 'parity-user',
-                    endpoint: candidate.endpoint,
+                    endpoint: normalizedEndpoint,
                     p256dh_key: candidate.p256dh,
                     auth_key: candidate.auth,
                     expires_at: null,
@@ -394,6 +545,23 @@ describe('notification preference API migration', { concurrency: false }, () => 
 
             assert.equal(runtimeAccepted, candidate.accepted, candidate.name);
             assert.equal(sqliteAccepted, candidate.accepted, candidate.name);
+            if (runtimeAccepted && normalizedEndpoint !== candidate.endpoint) {
+                await assert.rejects(
+                    database('push_subscriptions').insert({
+                        subscription_id: `raw-parity-${candidate.name}`,
+                        user_id: 'raw-parity-user',
+                        endpoint: candidate.endpoint,
+                        p256dh_key: candidate.p256dh,
+                        auth_key: candidate.auth,
+                        expires_at: null,
+                        user_agent: null,
+                        last_used_at: null,
+                        revoked_at: null
+                    }),
+                    /push_subscriptions_required_values_check/i,
+                    candidate.name
+                );
+            }
         }
     });
 

@@ -80,6 +80,10 @@ disabled. Quiet hours default to `{ "start": null, "end": null, "timezone":
 "UTC" }`. Push is not enabled by registering a browser; the user must also set
 `pushEnabled` for each desired category. A synthesized category default has
 `updatedAt: null`; persisted choices carry their actual update timestamp.
+When a trusted producer assigns recipients, its channel eligibility is
+intersected with the stored category preference. In particular, an explicit
+producer `pushEnabled: true` cannot bypass a user opt-out, while an opt-in only
+enables Push for events whose producer also selected that channel.
 
 This API currently stores notification delivery policy and browser enrollment;
 it does not include a Web Push dispatcher. Quiet hours therefore do not yet

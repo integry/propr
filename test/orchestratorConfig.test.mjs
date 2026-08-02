@@ -45,14 +45,10 @@ test('resolveHostConfig honors stack .env values for ports and docs', () => {
   );
 });
 
-test('supported launcher passes both VAPID keys to the API through its env file', () => {
+test('api service receives the configured stack env file', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFile = join(rootDir, '.env');
-  writeFileSync(envFile, [
-    'VAPID_PUBLIC_KEY=public-vapid-value',
-    'VAPID_PRIVATE_KEY=private-vapid-value',
-    '',
-  ].join('\n'));
+  writeFileSync(envFile, 'EXAMPLE_API_SETTING=configured\n');
   const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
 
   const { args } = buildServiceSpec(cfg, 'api');

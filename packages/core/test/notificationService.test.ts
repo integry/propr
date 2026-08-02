@@ -294,7 +294,141 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(partial.preferences.review.inboxEnabled, false);
         assert.equal(partial.preferences.review.pushEnabled, false);
         assert.equal(partial.preferences.task.pushEnabled, true);
+        assert.equal(
+            partial.preferences.task.updatedAt,
+            updated.preferences.task.updatedAt,
+            'an omitted persisted category must keep its timestamp'
+        );
         assert.deepEqual(partial.quietHours, updated.quietHours);
+    });
+
+    test('persists only categories and settings named by a sparse preference patch', async () => {
+        const quietOnly = await service.updateNotificationPreferences('quiet-only-user', {
+            quietHours: { timezone: 'Europe/Riga' }
+        });
+        assert.equal(
+            Object.values(quietOnly.preferences).every(({ updatedAt }) => updatedAt === null),
+            true
+        );
+        assert.equal(
+            await database('notification_preferences')
+                .where({ user_id: 'quiet-only-user' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            0
+        );
+        assert.equal(
+            await database('notification_preference_settings')
+                .where({ user_id: 'quiet-only-user' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            1
+        );
+
+        const categoryOnly = await service.updateNotificationPreferences('category-only-user', {
+            preferences: { task: { pushEnabled: true } }
+        });
+        assert.ok(categoryOnly.preferences.task.updatedAt);
+        for (const [kind, preference] of Object.entries(categoryOnly.preferences)) {
+            if (kind !== 'task') assert.equal(preference.updatedAt, null, kind);
+        }
+        assert.equal(
+            await database('notification_preferences')
+                .where({ user_id: 'category-only-user' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            1
+        );
+        assert.equal(
+            await database('notification_preference_settings')
+                .where({ user_id: 'category-only-user' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            0
+        );
+    });
+
+    test('applies stored Push opt-in when assigning recipients and creating delivery jobs', async () => {
+        const userId = 'preference-user';
+        const subscription = await service.upsertPushSubscription(userId, {
+            endpoint: 'https://fcm.googleapis.com/fcm/send/preference-user',
+            expirationTime: null,
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+        });
+        await service.updateNotificationPreferences(userId, {
+            preferences: { task: { pushEnabled: false } }
+        });
+
+        const createCandidateEvent = (eventId: string) => createEvent(
+            eventId,
+            '2026-08-02T09:00:00.000Z',
+            [{ userId, inboxEnabled: true, pushEnabled: true }]
+        );
+        const insertJob = async (eventId: string, jobId: string) => {
+            const recipient = await database('notification_user_states')
+                .where({ event_id: eventId, user_id: userId })
+                .first();
+            assert.ok(recipient);
+            await database('push_delivery_jobs').insert({
+                job_id: jobId,
+                deduplication_key: `delivery:${jobId}`,
+                event_id: eventId,
+                user_id: userId,
+                subscription_id: subscription.id,
+                created_at: recipient.created_at,
+                updated_at: recipient.created_at
+            });
+        };
+
+        await createCandidateEvent('stored-opt-out');
+        assert.equal(
+            await database('notification_user_states')
+                .where({ event_id: 'stored-opt-out', user_id: userId })
+                .first()
+                .then(row => row?.push_enabled),
+            0,
+            'producer push eligibility must not bypass a stored opt-out'
+        );
+        await assert.rejects(
+            insertJob('stored-opt-out', 'stored-opt-out-job'),
+            /push delivery requires an eligible recipient/i
+        );
+
+        await service.updateNotificationPreferences(userId, {
+            preferences: { task: { pushEnabled: true } }
+        });
+        await createCandidateEvent('stored-opt-in');
+        assert.equal(
+            await database('notification_user_states')
+                .where({ event_id: 'stored-opt-in', user_id: userId })
+                .first()
+                .then(row => row?.push_enabled),
+            1
+        );
+        await insertJob('stored-opt-in', 'stored-opt-in-job');
+        assert.equal(
+            await database('push_delivery_jobs')
+                .where({ job_id: 'stored-opt-in-job' })
+                .first()
+                .then(row => row?.status),
+            'pending'
+        );
+
+        await service.updateNotificationPreferences(userId, {
+            preferences: { task: { pushEnabled: false } }
+        });
+        await createCandidateEvent('stored-opt-out-again');
+        assert.equal(
+            await database('notification_user_states')
+                .where({ event_id: 'stored-opt-out-again', user_id: userId })
+                .first()
+                .then(row => row?.push_enabled),
+            0
+        );
     });
 
     test('rejects invalid categories, quiet-hour values, and timezones', async () => {
@@ -368,6 +502,119 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(stored.p256dh_key, p256dhKey3);
         assert.equal(await database('push_subscriptions').count('* as count').first()
             .then(row => Number(row?.count)), 1);
+    });
+
+    test('uses one database identity for every accepted endpoint normalization', async () => {
+        let generated = 0;
+        const normalizationService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => `normalized-subscription-${generated += 1}`,
+            allowInsecureLocalhost: true
+        });
+        const cases = [
+            {
+                name: 'scheme-host-default-port',
+                input: 'HTTPS://FCM.GOOGLEAPIS.COM:0443/fcm/send/normalized-port',
+                canonical: 'https://fcm.googleapis.com/fcm/send/normalized-port'
+            },
+            {
+                name: 'missing-path',
+                input: 'HTTPS://UPDATES.PUSH.SERVICES.MOZILLA.COM:443?subscription=normalized',
+                canonical: 'https://updates.push.services.mozilla.com/?subscription=normalized'
+            },
+            {
+                name: 'dot-segment',
+                input: 'https://fcm.googleapis.com/fcm/send/alias/../normalized-dot',
+                canonical: 'https://fcm.googleapis.com/fcm/send/normalized-dot'
+            },
+            {
+                name: 'escaped-path',
+                input: 'https://fcm.googleapis.com/fcm/send/normalized path',
+                canonical: 'https://fcm.googleapis.com/fcm/send/normalized%20path'
+            },
+            {
+                name: 'loopback-host-port',
+                input: 'HTTP://LOCALHOST:04173/push/normalized-local',
+                canonical: 'http://localhost:4173/push/normalized-local'
+            },
+            {
+                name: 'loopback-ipv4-shorthand',
+                input: 'HTTP://127.1:04173/push/normalized-ipv4',
+                canonical: 'http://127.0.0.1:4173/push/normalized-ipv4'
+            },
+            {
+                name: 'trimmed-input',
+                input: ' https://fcm.googleapis.com/fcm/send/normalized-trim ',
+                canonical: 'https://fcm.googleapis.com/fcm/send/normalized-trim'
+            },
+            {
+                name: 'encoded-host-separator',
+                input: 'https://fcm%2Egoogleapis.com/fcm/send/normalized-host',
+                canonical: 'https://fcm.googleapis.com/fcm/send/normalized-host'
+            },
+            {
+                name: 'empty-port',
+                input: 'https://fcm.googleapis.com:/fcm/send/normalized-empty-port',
+                canonical: 'https://fcm.googleapis.com/fcm/send/normalized-empty-port'
+            },
+            {
+                name: 'encoded-dot-segment',
+                input: 'https://fcm.googleapis.com/%2e%2e/fcm/send/normalized-encoded-dot',
+                canonical: 'https://fcm.googleapis.com/fcm/send/normalized-encoded-dot'
+            },
+            {
+                name: 'unicode-path',
+                input: 'https://fcm.googleapis.com/fcm/send/ümlaut',
+                canonical: 'https://fcm.googleapis.com/fcm/send/%C3%BCmlaut'
+            }
+        ];
+
+        for (const candidate of cases) {
+            const first = await normalizationService.upsertPushSubscription('user-a', {
+                endpoint: candidate.input,
+                expirationTime: null,
+                keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+            });
+            assert.equal(first.endpoint, candidate.canonical, candidate.name);
+            assert.equal(
+                await database('push_subscriptions')
+                    .where({ subscription_id: first.id })
+                    .first()
+                    .then(row => row?.endpoint),
+                candidate.canonical,
+                candidate.name
+            );
+
+            const refreshed = await normalizationService.upsertPushSubscription('user-a', {
+                endpoint: candidate.canonical,
+                expirationTime: null,
+                keys: { p256dh: p256dhKey2, auth: 'B'.repeat(21) + 'A' }
+            });
+            assert.equal(refreshed.id, first.id, candidate.name);
+            assert.equal(
+                await database('push_subscriptions')
+                    .where({ subscription_id: first.id })
+                    .first()
+                    .then(row => row?.p256dh_key),
+                p256dhKey2,
+                candidate.name
+            );
+            await assert.rejects(
+                normalizationService.upsertPushSubscription('user-b', {
+                    endpoint: candidate.input,
+                    expirationTime: null,
+                    keys: { p256dh: p256dhKey3, auth: 'C'.repeat(21) + 'Q' }
+                }),
+                PushSubscriptionConflictError,
+                candidate.name
+            );
+            assert.equal(
+                await normalizationService.revokePushSubscription('user-a', candidate.input),
+                true,
+                candidate.name
+            );
+        }
     });
 
     test('validates push endpoints and browser encryption keys', async () => {
