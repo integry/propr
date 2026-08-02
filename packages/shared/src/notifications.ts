@@ -236,7 +236,7 @@ export type NotificationEvent<K extends NotificationKind = NotificationKind> =
 interface NotificationUserStateFields {
   eventId: string;
   userId: string;
-  /** Recipient assignment time and the primary descending Inbox cursor. */
+  /** Recipient assignment time; ordering uses the immutable event occurrence. */
   createdAt: ISO8601Timestamp;
 }
 
@@ -492,8 +492,8 @@ export type NotificationSourceActivity =
   | IndexingNotificationSourceActivity;
 
 /**
- * Cursor-paginated Inbox response ordered by recipient assignment time, then
- * event ID, both descending. The cursor remains opaque to API consumers.
+ * Cursor-paginated Inbox response ordered by event occurrence time, then event
+ * ID, both descending. The cursor remains opaque to API consumers.
  */
 export interface NotificationListResponse {
   notifications: Notification[];
