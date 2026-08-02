@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert';
+import { createECDH } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -23,6 +24,7 @@ import {
   parseISO8601Timestamp,
   parseNotification,
   parseNotificationAction,
+  parseNotificationCapabilitiesResponse,
   parseNotificationEvent,
   parseNotificationListResponse,
   parseNotificationSourceActivity,
@@ -33,6 +35,7 @@ import {
   parsePushDeliveryAttempt,
   parsePushDeliveryJob,
   parsePushSubscription,
+  parsePushSubscriptionEnrollmentResponse,
   parsePushSubscriptionInput,
   parsePushSubscriptionsResponse,
   type NotificationKind,
@@ -60,7 +63,15 @@ const timestamp = '2026-08-02T08:00:00.000Z';
 const eventCreatedAt = '2026-08-02T07:59:00.000Z';
 const claimedAt = '2026-08-02T08:01:00.000Z';
 const leaseExpiresAt = '2099-08-02T08:06:00.000Z';
-const validP256dhKey = 'B' + 'A'.repeat(86);
+function generatedP256dhKey(privateKeyValue: number): string {
+  const privateKey = Buffer.alloc(32);
+  privateKey[31] = privateKeyValue;
+  const ecdh = createECDH('prime256v1');
+  ecdh.setPrivateKey(privateKey);
+  return ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url');
+}
+
+const validP256dhKey = generatedP256dhKey(1);
 const validAuthKey = 'A'.repeat(22);
 const pushEndpointOrigin = 'https://fcm.googleapis.com';
 const betterSqliteModulePath = createRequire(import.meta.url).resolve('better-sqlite3');
@@ -1396,7 +1407,7 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
     for (const rewrite of [
       { endpoint: pushEndpointOrigin + '/fcm/send/active-rewrite' },
-      { p256dh_key: 'B' + 'Q'.repeat(86) },
+      { p256dh_key: generatedP256dhKey(2) },
       { user_id: 'rewritten-user' },
       { subscription_id: 'rewritten-subscription-id' },
     ]) {
@@ -2433,6 +2444,19 @@ describe('durable notification schema', { concurrency: false }, () => {
       }),
       /base64url/,
     );
+    const offCurvePoint = Buffer.alloc(65);
+    offCurvePoint[0] = 0x04;
+    assert.throws(
+      () => parsePushSubscriptionInput({
+        endpoint: pushEndpointOrigin + '/fcm/send/off-curve',
+        expirationTime: null,
+        keys: {
+          p256dh: offCurvePoint.toString('base64url'),
+          auth: validAuthKey,
+        },
+      }),
+      /P-256 curve/,
+    );
     assert.throws(
       () => parsePushSubscriptionInput({
         endpoint: pushEndpointOrigin + '/fcm/send/subscription',
@@ -2440,6 +2464,17 @@ describe('durable notification schema', { concurrency: false }, () => {
         keys: { p256dh: validP256dhKey, auth: 'auth' },
       }),
       /16-byte base64url/,
+    );
+    const normalizationExpansion =
+      pushEndpointOrigin + '/fcm/send/' + 'ü'.repeat(900);
+    assert.ok(Buffer.byteLength(normalizationExpansion, 'utf8') < 2_048);
+    assert.throws(
+      () => parsePushSubscriptionInput({
+        endpoint: normalizationExpansion,
+        expirationTime: null,
+        keys: { p256dh: validP256dhKey, auth: validAuthKey },
+      }),
+      /safe HTTPS browser push endpoint URL/,
     );
 
     const subscription = parsePushSubscription({
@@ -2454,6 +2489,22 @@ describe('durable notification schema', { concurrency: false }, () => {
       parsePushSubscriptionsResponse({ subscriptions: [subscription] })
         .subscriptions.length,
       1,
+    );
+    assert.strictEqual(
+      parsePushSubscriptionEnrollmentResponse({ subscription }).subscription.id,
+      subscription.id,
+    );
+    assert.deepStrictEqual(
+      parseNotificationCapabilitiesResponse({
+        push: { configured: true, vapidPublicKey: validP256dhKey },
+      }),
+      { push: { configured: true, vapidPublicKey: validP256dhKey } },
+    );
+    assert.throws(
+      () => parseNotificationCapabilitiesResponse({
+        push: { configured: false, vapidPublicKey: validP256dhKey },
+      }),
+      /configured to match/,
     );
 
     assert.strictEqual(parsePushDeliveryJob({
@@ -2983,7 +3034,7 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
   });
 
-  test('cancels queued work while preserving in-flight audit claims on revocation', async () => {
+  test('cancels queued work and documents best-effort live-lease revocation', async () => {
     const event = await seedEventAndRecipients(db);
     const unreferencedActive = createSubscription({
       subscription_id: 'unreferenced-active-subscription',
@@ -3091,6 +3142,9 @@ describe('durable notification schema', { concurrency: false }, () => {
       .first();
     assert.strictEqual(processingJob.status, 'processing');
     assert.strictEqual(processingJob.claim_token, 'processing-worker');
+    // Persistence cannot recall key material a live worker already loaded. The
+    // dispatcher contract therefore requires a subscription/job recheck just
+    // before sending; this audit transition represents the residual race window.
     await recordAttempt(db, {
       attemptId: 'attempt-after-revocation',
       jobId: 'processing-revoked-job',

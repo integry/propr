@@ -45,6 +45,18 @@ test('resolveHostConfig honors stack .env values for ports and docs', () => {
   );
 });
 
+test('api service receives the configured stack env file', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFile = join(rootDir, '.env');
+  writeFileSync(envFile, 'EXAMPLE_API_SETTING=configured\n');
+  const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
+
+  const { args } = buildServiceSpec(cfg, 'api');
+  const envFileIndex = args.indexOf('--env-file');
+  assert.notEqual(envFileIndex, -1);
+  assert.equal(args[envFileIndex + 1], envFile);
+});
+
 test('launcher derives and mounts managed agent credentials without another host-path setting', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFileLocal = join(rootDir, '.env');

@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   troubleshooting guide; intro gains a "First 15 Minutes" panel and the
   hosted-UI-tunnel docs are canonicalized to the deployment guide.
 
+### Changed
+
+- **Notification API contract (0.8.6)**: Push eligibility is opt-in at both the
+  user-preference and producer-assignment layers; object-form recipients now
+  require an explicit `pushEnabled` boolean. Synthesized preference entries use
+  `updatedAt: null`, while persisted entries retain an ISO-8601 timestamp.
+  Downstream `@propr/shared` consumers should handle the nullable timestamp when
+  adopting the new notification API. No notification UI or production event
+  producer existed in this repository to migrate.
+
 ### Fixed
 
 - **Web UI**: dead `/agents` link in the no-models helper (now `/ai-agents`)

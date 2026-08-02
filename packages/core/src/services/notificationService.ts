@@ -1,12 +1,18 @@
-/* eslint-disable max-lines -- event creation and Inbox state share one transactional boundary */
+/* eslint-disable max-lines -- event creation, preferences, and Inbox state share transactions */
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
+    DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS,
+    DEFAULT_NOTIFICATION_QUIET_HOURS,
+    NOTIFICATION_KINDS,
     NOTIFICATION_PAYLOAD_LIMITS,
     normalizeISO8601Timestamp,
+    parseIanaTimezone,
     parseNotification,
     parseNotificationEvent,
     parseNotificationListResponse,
+    parseNotificationPreferencesResponse,
+    parseNotificationPreferencesUpdate,
     parseNotificationStateResponse,
     type ISO8601Timestamp,
     type JsonObject,
@@ -15,9 +21,14 @@ import {
     type NotificationEvent,
     type NotificationKind,
     type NotificationListResponse,
+    type NotificationPreferenceChannels,
+    type NotificationPreferencesResponse,
+    type NotificationPreferencesUpdate,
     type NotificationSeverity,
     type NotificationStateResponse,
-    type NotificationTargetFor
+    type NotificationTargetFor,
+    type PushSubscription,
+    type PushSubscriptionInput
 } from '@propr/shared';
 import { db } from '../db/connection.js';
 import {
@@ -25,14 +36,29 @@ import {
     encodeNotificationCursor,
     parseNotificationListLimit
 } from './notificationPagination.js';
+import {
+    MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER,
+    MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW,
+    MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
+    NotificationValidationError,
+    PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
+    PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
+    PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS,
+    PushSubscriptionConflictError,
+    PushSubscriptionQuotaError,
+    PushSubscriptionRateLimitError,
+    PushSubscriptionService,
+    type PushSubscriptionPolicyOptions
+} from './pushSubscriptionService.js';
 
 type TimestampInput = string | number | Date;
 type Database = Knex | Knex.Transaction;
 
 export interface NotificationRecipientInput {
     userId: string;
+    /** Producer eligibility; stored user preferences are applied at assignment time. */
     inboxEnabled?: boolean;
-    pushEnabled?: boolean;
+    pushEnabled: boolean;
 }
 
 export type NotificationRecipient = string | NotificationRecipientInput;
@@ -63,7 +89,7 @@ export interface NotificationListOptions {
     includeDismissed?: boolean;
 }
 
-export interface NotificationServiceOptions {
+export interface NotificationServiceOptions extends PushSubscriptionPolicyOptions {
     database?: Knex;
     now?: () => TimestampInput;
     generateId?: () => string;
@@ -86,6 +112,21 @@ interface NotificationEventRow {
 interface NotificationRow extends NotificationEventRow {
     read_at: string | null;
     dismissed_at: string | null;
+}
+
+interface NotificationPreferenceRow {
+    user_id: string;
+    notification_kind: string;
+    inbox_enabled: number | boolean;
+    push_enabled: number | boolean;
+    updated_at: string;
+}
+
+interface NotificationPreferenceSettingsRow {
+    user_id: string;
+    quiet_hours_start: string | null;
+    quiet_hours_end: string | null;
+    timezone: string;
 }
 
 interface NormalizedRecipient {
@@ -130,6 +171,22 @@ function toNotification(row: NotificationRow): Notification {
     });
 }
 
+function asNotificationValidationError(error: unknown): never {
+    if (error instanceof NotificationValidationError) throw error;
+    if (error instanceof TypeError) {
+        throw new NotificationValidationError(error.message);
+    }
+    throw error;
+}
+
+function validateNotificationInput<T>(parser: () => T): T {
+    try {
+        return parser();
+    } catch (error) {
+        return asNotificationValidationError(error);
+    }
+}
+
 function assertIdentifier(value: string, path: string): void {
     // Reuse the durable event parser's identifier constraints without exposing
     // unbounded values to SQLite. User IDs come from trusted auth or workers.
@@ -149,11 +206,11 @@ function normalizeRecipients(
 
     for (const recipient of recipients) {
         const value = typeof recipient === 'string'
-            ? { userId: recipient }
+            ? { userId: recipient, inboxEnabled: true, pushEnabled: false }
             : recipient;
         assertIdentifier(value.userId, 'notification recipient userId');
         const inboxEnabled = value.inboxEnabled ?? true;
-        const pushEnabled = value.pushEnabled ?? true;
+        const pushEnabled = value.pushEnabled;
         if (typeof inboxEnabled !== 'boolean' || typeof pushEnabled !== 'boolean') {
             throw new TypeError('notification recipient channels must be booleans');
         }
@@ -211,11 +268,18 @@ export class NotificationService {
     private readonly database: Knex;
     private readonly now: () => TimestampInput;
     private readonly generateId: () => string;
+    private readonly pushSubscriptions: PushSubscriptionService;
 
     constructor(options: NotificationServiceOptions = {}) {
         this.database = options.database ?? db;
         this.now = options.now ?? (() => new Date());
         this.generateId = options.generateId ?? randomUUID;
+        this.pushSubscriptions = new PushSubscriptionService({
+            ...options,
+            database: this.database,
+            now: this.now,
+            generateId: this.generateId
+        });
     }
 
     async createNotificationEvent<K extends NotificationKind>(
@@ -294,6 +358,109 @@ export class NotificationService {
         });
     }
 
+    async getNotificationPreferences(userId: string): Promise<NotificationPreferencesResponse> {
+        assertIdentifier(userId, 'notification userId');
+        return this.readPreferenceSnapshot(this.database, userId);
+    }
+
+    async updateNotificationPreferences(
+        userId: string,
+        input: NotificationPreferencesUpdate
+    ): Promise<NotificationPreferencesResponse> {
+        assertIdentifier(userId, 'notification userId');
+        const update = validateNotificationInput(() =>
+            parseNotificationPreferencesUpdate(input));
+
+        return this.database.transaction(async (transaction) => {
+            for (const [kind, channels] of Object.entries(update.preferences ?? {})) {
+                const values: Record<string, boolean> = {};
+                if (channels.inboxEnabled !== undefined) {
+                    values.inbox_enabled = channels.inboxEnabled;
+                }
+                if (channels.pushEnabled !== undefined) {
+                    values.push_enabled = channels.pushEnabled;
+                }
+                await transaction('notification_preferences')
+                    .insert({
+                        user_id: userId,
+                        notification_kind: kind,
+                        inbox_enabled: channels.inboxEnabled
+                            ?? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.inboxEnabled,
+                        push_enabled: channels.pushEnabled
+                            ?? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.pushEnabled
+                    })
+                    .onConflict(['user_id', 'notification_kind'])
+                    .merge(values);
+            }
+
+            if (update.quietHours !== undefined) {
+                const values: Record<string, string | null> = {};
+                if (update.quietHours.start !== undefined) {
+                    values.quiet_hours_start = update.quietHours.start;
+                }
+                if (update.quietHours.end !== undefined) {
+                    values.quiet_hours_end = update.quietHours.end;
+                }
+                if (update.quietHours.timezone !== undefined) {
+                    values.timezone = update.quietHours.timezone;
+                }
+                await transaction('notification_preference_settings')
+                    .insert({
+                        user_id: userId,
+                        quiet_hours_start: update.quietHours.start
+                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.start,
+                        quiet_hours_end: update.quietHours.end
+                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.end,
+                        timezone: update.quietHours.timezone
+                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.timezone
+                    })
+                    .onConflict('user_id')
+                    .merge(values);
+            }
+
+            return this.readPreferenceSnapshot(transaction, userId);
+        });
+    }
+
+    async updateNotificationPreference(
+        userId: string,
+        category: string,
+        channels: Partial<NotificationPreferenceChannels>
+    ): Promise<NotificationPreferencesResponse> {
+        return this.updateNotificationPreferences(userId, {
+            preferences: { [category]: channels }
+        } as NotificationPreferencesUpdate);
+    }
+
+    async upsertPushSubscription(
+        userId: string,
+        input: PushSubscriptionInput,
+        userAgent?: string
+    ): Promise<PushSubscription> {
+        return this.pushSubscriptions.upsert(userId, input, userAgent);
+    }
+
+    async garbageCollectPushSubscriptions(
+        limit = PUSH_SUBSCRIPTION_GC_BATCH_SIZE
+    ): Promise<number> {
+        return this.pushSubscriptions.garbageCollect(limit);
+    }
+
+    async listPushSubscriptions(userId: string): Promise<PushSubscription[]> {
+        return this.pushSubscriptions.list(userId);
+    }
+
+    async revokePushSubscription(userId: string, endpoint: string): Promise<boolean> {
+        return this.pushSubscriptions.revokeByEndpoint(userId, endpoint);
+    }
+
+    async revokePushSubscriptionById(
+        userId: string,
+        subscriptionId: string
+    ): Promise<boolean> {
+        return this.pushSubscriptions.revokeById(userId, subscriptionId);
+    }
+
     async listNotifications(
         userId: string,
         options: NotificationListOptions = {}
@@ -368,17 +535,81 @@ export class NotificationService {
         return this.updateInboxTimestamp(userId, eventId, 'dismissed_at');
     }
 
+    private async readPreferenceSnapshot(
+        database: Database,
+        userId: string
+    ): Promise<NotificationPreferencesResponse> {
+        const rows = await database<NotificationPreferenceRow>('notification_preferences')
+            .select('notification_kind', 'inbox_enabled', 'push_enabled', 'updated_at')
+            .where({ user_id: userId });
+        const rowByKind = new Map(rows.map((row) => [row.notification_kind, row]));
+        const settings = await database<NotificationPreferenceSettingsRow>(
+            'notification_preference_settings'
+        ).where({ user_id: userId }).first();
+
+        const preferences = Object.fromEntries(NOTIFICATION_KINDS.map((kind) => {
+            const row = rowByKind.get(kind);
+            return [kind, {
+                inboxEnabled: row === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.inboxEnabled
+                    : Boolean(row.inbox_enabled),
+                pushEnabled: row === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.pushEnabled
+                    : Boolean(row.push_enabled),
+                // Null identifies a synthesized default without manufacturing a
+                // timestamp or making GET mutate a read-only database.
+                updatedAt: row?.updated_at ?? null
+            }];
+        }));
+        return parseNotificationPreferencesResponse({
+            preferences,
+            quietHours: {
+                start: settings?.quiet_hours_start ?? DEFAULT_NOTIFICATION_QUIET_HOURS.start,
+                end: settings?.quiet_hours_end ?? DEFAULT_NOTIFICATION_QUIET_HOURS.end,
+                timezone: parseIanaTimezone(
+                    settings?.timezone ?? DEFAULT_NOTIFICATION_QUIET_HOURS.timezone
+                )
+            }
+        });
+    }
+
     private async assignRecipients(
         transaction: Knex.Transaction,
         event: NotificationEvent,
         recipients: NormalizedRecipient[]
     ): Promise<void> {
         if (recipients.length === 0) return;
+        const preferenceRows = await transaction<NotificationPreferenceRow>(
+            'notification_preferences'
+        )
+            .select('user_id', 'inbox_enabled', 'push_enabled')
+            .where({ notification_kind: event.kind })
+            .whereIn('user_id', recipients.map(({ userId }) => userId));
+        const preferenceByUser = new Map(
+            preferenceRows.map((row) => [row.user_id, row])
+        );
+        const eligibleRecipients = recipients.flatMap((recipient) => {
+            const preference = preferenceByUser.get(recipient.userId);
+            const inboxEnabled = recipient.inboxEnabled && (
+                preference === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.inboxEnabled
+                    : Boolean(preference.inbox_enabled)
+            );
+            const pushEnabled = recipient.pushEnabled && (
+                preference === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.pushEnabled
+                    : Boolean(preference.push_enabled)
+            );
+            return inboxEnabled || pushEnabled
+                ? [{ ...recipient, inboxEnabled, pushEnabled }]
+                : [];
+        });
+        if (eligibleRecipients.length === 0) return;
         const now = normalizeISO8601Timestamp(this.now());
         const assignedAt: ISO8601Timestamp = now < event.createdAt ? event.createdAt : now;
 
         await transaction('notification_user_states')
-            .insert(recipients.map((recipient) => ({
+            .insert(eligibleRecipients.map((recipient) => ({
                 event_id: event.id,
                 user_id: recipient.userId,
                 inbox_enabled: recipient.inboxEnabled,
@@ -436,6 +667,19 @@ export class NotificationEventNotFoundError extends Error {
     }
 }
 
+export {
+    MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER,
+    MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW,
+    MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
+    NotificationValidationError,
+    PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
+    PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
+    PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS,
+    PushSubscriptionConflictError,
+    PushSubscriptionQuotaError,
+    PushSubscriptionRateLimitError
+};
+
 export const notificationService = new NotificationService();
 
 export const createNotificationEvent = notificationService.createNotificationEvent
@@ -450,3 +694,20 @@ export const markNotificationRead = notificationService.markNotificationRead
     .bind(notificationService) as NotificationService['markNotificationRead'];
 export const dismissNotification = notificationService.dismissNotification
     .bind(notificationService) as NotificationService['dismissNotification'];
+export const getNotificationPreferences = notificationService.getNotificationPreferences
+    .bind(notificationService) as NotificationService['getNotificationPreferences'];
+export const updateNotificationPreferences = notificationService.updateNotificationPreferences
+    .bind(notificationService) as NotificationService['updateNotificationPreferences'];
+export const updateNotificationPreference = notificationService.updateNotificationPreference
+    .bind(notificationService) as NotificationService['updateNotificationPreference'];
+export const upsertPushSubscription = notificationService.upsertPushSubscription
+    .bind(notificationService) as NotificationService['upsertPushSubscription'];
+export const listPushSubscriptions = notificationService.listPushSubscriptions
+    .bind(notificationService) as NotificationService['listPushSubscriptions'];
+export const revokePushSubscription = notificationService.revokePushSubscription
+    .bind(notificationService) as NotificationService['revokePushSubscription'];
+export const revokePushSubscriptionById = notificationService.revokePushSubscriptionById
+    .bind(notificationService) as NotificationService['revokePushSubscriptionById'];
+export const garbageCollectPushSubscriptions = notificationService
+    .garbageCollectPushSubscriptions
+    .bind(notificationService) as NotificationService['garbageCollectPushSubscriptions'];

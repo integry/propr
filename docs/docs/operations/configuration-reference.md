@@ -30,6 +30,9 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `API_PUBLIC_URL` | `http://localhost:4000` when unset | Public URL the API is reached at (auth redirects, attachment links, cookie security). Derived to the `t-<id>.propr.dev` host in tunnel mode. | Custom deployments; derived in tunnel mode. |
 | `COOKIE_DOMAIN` | Unset | Session cookie domain. Leave unset — including for tunnel proxy sessions, which run host-only on a single `t-<id>.propr.dev` host. | Custom multi-subdomain deployments only. |
 | `AUTH_REDIRECT_ALLOWED_HOSTS` | Unset | Comma-separated extra redirect hosts for auth preview flows. Entries are exact-match unless prefixed with `.` or `*.` for trusted parent domains. | Preview auth flows. |
+| `VAPID_PUBLIC_KEY` | Unset | Browser-safe public half of the installation's P-256 Web Push VAPID key pair. The API advertises it only when its format and match with the private key are valid. | Web Push. |
+| `VAPID_PRIVATE_KEY` | Unset | Secret half of the same P-256 VAPID pair, retained server-side for validation and future request signing. Its value is never returned by the API. | Web Push; keep server-side only. |
+| `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH` | `false` | Requests loopback HTTP Push enrollment for isolated local development. It is honored only outside production when `API_PUBLIC_URL` is unset/local or has a loopback host, and can be changed without migrating the stable schema. | Local browser development only. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
 | `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |
