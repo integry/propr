@@ -1,15 +1,68 @@
+/* eslint-disable max-lines -- this atomic migration documents all cross-table invariants */
 /**
  * Create the durable notification schema.
  *
- * Notification events are immutable and recipient-independent. Read/dismiss
- * state, preferences, subscriptions, delivery attempts, and source activity
- * are stored separately so each concern can evolve without rewriting history.
- *
- * SQLite's timestamp coercion varies across drivers, so every timestamp in
- * these tables is explicitly stored as ISO-8601 TEXT.
+ * Events and delivery attempts are immutable audit records. Recipient state,
+ * channel preferences, subscriptions, schedulable delivery jobs, and source
+ * activity are stored separately. All timestamps use fixed-width UTC TEXT so
+ * lexical indexes retain chronological order.
  */
 
-const isoNow = (knex) => knex.raw("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))");
+const ISO_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+const ISO_TIMESTAMP_GLOB = '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z';
+const JSON_REPOSITORY_TARGET_CHECK = `
+  json_type(target_json, '$.repository') = 'text'
+  AND json_extract(target_json, '$.repository') = trim(json_extract(target_json, '$.repository'))
+  AND instr(json_extract(target_json, '$.repository'), '/') > 1
+  AND length(substr(
+    json_extract(target_json, '$.repository'),
+    instr(json_extract(target_json, '$.repository'), '/') + 1
+  )) > 0
+  AND instr(substr(
+    json_extract(target_json, '$.repository'),
+    instr(json_extract(target_json, '$.repository'), '/') + 1
+  ), '/') = 0
+  AND instr(json_extract(target_json, '$.repository'), ' ') = 0
+  AND instr(json_extract(target_json, '$.repository'), char(9)) = 0
+  AND instr(json_extract(target_json, '$.repository'), char(10)) = 0
+  AND instr(json_extract(target_json, '$.repository'), char(13)) = 0
+`;
+
+const isoNow = (knex) => knex.raw(`(${ISO_NOW_SQL})`);
+
+function canonicalTimestampCheck(column, nullable = false) {
+  const valid = `(
+    typeof(${column}) = 'text'
+    AND length(${column}) = 24
+    AND ${column} GLOB '${ISO_TIMESTAMP_GLOB}'
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', ${column}) = ${column}
+  )`;
+  return nullable ? `(${column} IS NULL OR ${valid})` : valid;
+}
+
+function addTimestampCheck(table, column, constraintName, nullable = false) {
+  table.check(
+    canonicalTimestampCheck(column, nullable),
+    {},
+    constraintName
+  );
+}
+
+async function createUpdatedAtTrigger(knex, tableName, keyPredicate) {
+  await knex.raw(`
+    CREATE TRIGGER ${tableName}_touch_updated_at
+    AFTER UPDATE ON ${tableName}
+    WHEN NEW.updated_at <= OLD.updated_at
+    BEGIN
+      UPDATE ${tableName}
+      SET updated_at = CASE
+        WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
+        ELSE strftime('%Y-%m-%dT%H:%M:%fZ', OLD.updated_at, '+0.001 seconds')
+      END
+      WHERE ${keyPredicate};
+    END
+  `);
+}
 
 export async function up(knex) {
   await knex.schema.createTable('notification_events', (table) => {
@@ -36,6 +89,11 @@ export async function up(knex) {
       'notification_events_severity_check'
     );
     table.check(
+      "length(trim(event_id)) > 0 AND length(trim(deduplication_key)) > 0 AND length(trim(title)) > 0",
+      {},
+      'notification_events_required_text_check'
+    );
+    table.check(
       "CASE WHEN json_valid(target_json) THEN COALESCE(json_type(target_json) = 'object', 0) ELSE 0 END",
       {},
       'notification_events_target_json_check'
@@ -46,7 +104,99 @@ export async function up(knex) {
       'notification_events_target_kind_check'
     );
     table.check(
-      "CASE WHEN action_json IS NULL THEN 1 WHEN json_valid(action_json) THEN COALESCE(json_type(action_json) = 'object' AND json_extract(action_json, '$.type') IN ('navigate', 'external_link'), 0) ELSE 0 END",
+      `CASE
+        WHEN NOT json_valid(target_json) OR json_type(target_json) != 'object' THEN 0
+        WHEN kind = 'plan' THEN COALESCE(
+          ${JSON_REPOSITORY_TARGET_CHECK}
+          AND json_type(target_json, '$.draftId') = 'text'
+          AND length(trim(json_extract(target_json, '$.draftId'))) > 0,
+          0
+        )
+        WHEN kind = 'task' THEN COALESCE(
+          ${JSON_REPOSITORY_TARGET_CHECK}
+          AND json_type(target_json, '$.taskId') = 'text'
+          AND length(trim(json_extract(target_json, '$.taskId'))) > 0
+          AND (json_type(target_json, '$.issueNumber') IS NULL OR (
+            json_type(target_json, '$.issueNumber') = 'integer'
+            AND json_extract(target_json, '$.issueNumber') > 0
+          ))
+          AND (json_type(target_json, '$.prNumber') IS NULL OR (
+            json_type(target_json, '$.prNumber') = 'integer'
+            AND json_extract(target_json, '$.prNumber') > 0
+          )),
+          0
+        )
+        WHEN kind = 'review' THEN COALESCE(
+          ${JSON_REPOSITORY_TARGET_CHECK}
+          AND json_type(target_json, '$.prNumber') = 'integer'
+          AND json_extract(target_json, '$.prNumber') > 0
+          AND (json_type(target_json, '$.taskId') IS NULL OR (
+            json_type(target_json, '$.taskId') = 'text'
+            AND length(trim(json_extract(target_json, '$.taskId'))) > 0
+          )),
+          0
+        )
+        WHEN kind = 'pull_request' THEN COALESCE(
+          ${JSON_REPOSITORY_TARGET_CHECK}
+          AND json_type(target_json, '$.prNumber') = 'integer'
+          AND json_extract(target_json, '$.prNumber') > 0,
+          0
+        )
+        WHEN kind = 'indexing' THEN COALESCE(
+          ${JSON_REPOSITORY_TARGET_CHECK}
+          AND (json_type(target_json, '$.branch') IS NULL OR (
+            json_type(target_json, '$.branch') = 'text'
+            AND length(trim(json_extract(target_json, '$.branch'))) > 0
+          )),
+          0
+        )
+        WHEN kind = 'system_failure' THEN COALESCE(
+          json_type(target_json, '$.component') = 'text'
+          AND length(trim(json_extract(target_json, '$.component'))) > 0
+          AND (json_type(target_json, '$.correlationId') IS NULL OR (
+            json_type(target_json, '$.correlationId') = 'text'
+            AND length(trim(json_extract(target_json, '$.correlationId'))) > 0
+          )),
+          0
+        )
+        ELSE 0
+      END`,
+      {},
+      'notification_events_target_contract_check'
+    );
+    table.check(
+      `CASE
+        WHEN action_json IS NULL THEN 1
+        WHEN NOT json_valid(action_json) OR json_type(action_json) != 'object' THEN 0
+        ELSE COALESCE(
+          json_type(action_json, '$.label') = 'text'
+          AND length(trim(json_extract(action_json, '$.label'))) > 0
+          AND json_type(action_json, '$.href') = 'text'
+          AND length(trim(json_extract(action_json, '$.href'))) > 0
+          AND instr(json_extract(action_json, '$.href'), char(9)) = 0
+          AND instr(json_extract(action_json, '$.href'), char(10)) = 0
+          AND instr(json_extract(action_json, '$.href'), char(13)) = 0
+          AND CASE json_extract(action_json, '$.type')
+            WHEN 'navigate' THEN
+              substr(json_extract(action_json, '$.href'), 1, 1) = '/'
+              AND substr(json_extract(action_json, '$.href'), 1, 2) != '//'
+              AND instr(json_extract(action_json, '$.href'), char(92)) = 0
+              AND instr(json_extract(action_json, '$.href'), char(10)) = 0
+              AND instr(json_extract(action_json, '$.href'), char(13)) = 0
+            WHEN 'external_link' THEN (
+              lower(substr(json_extract(action_json, '$.href'), 1, 8)) = 'https://'
+              AND length(json_extract(action_json, '$.href')) > 8
+              AND substr(json_extract(action_json, '$.href'), 9, 1) != '/'
+            ) OR (
+              lower(substr(json_extract(action_json, '$.href'), 1, 7)) = 'http://'
+              AND length(json_extract(action_json, '$.href')) > 7
+              AND substr(json_extract(action_json, '$.href'), 8, 1) != '/'
+            )
+            ELSE 0
+          END,
+          0
+        )
+      END`,
       {},
       'notification_events_action_json_check'
     );
@@ -54,6 +204,16 @@ export async function up(knex) {
       "CASE WHEN metadata_json IS NULL THEN 1 WHEN json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
       {},
       'notification_events_metadata_json_check'
+    );
+    addTimestampCheck(
+      table,
+      'occurred_at',
+      'notification_events_occurred_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'created_at',
+      'notification_events_created_at_check'
     );
   });
 
@@ -64,8 +224,6 @@ export async function up(knex) {
     'CREATE INDEX notification_events_occurred_at_idx ON notification_events (occurred_at DESC, event_id)'
   );
 
-  // Events are an append-only audit record. Recipient state remains mutable in
-  // the separate table below.
   await knex.raw(`
     CREATE TRIGGER notification_events_immutable_update
     BEFORE UPDATE ON notification_events
@@ -84,11 +242,46 @@ export async function up(knex) {
   await knex.schema.createTable('notification_user_states', (table) => {
     table.text('event_id').notNullable();
     table.text('user_id').notNullable();
+    table.boolean('inbox_enabled').notNullable().defaultTo(true);
+    table.boolean('push_enabled').notNullable().defaultTo(true);
     table.text('read_at').nullable();
     table.text('dismissed_at').nullable();
     table.text('created_at').notNullable().defaultTo(isoNow(knex));
 
     table.primary(['event_id', 'user_id']);
+    table.check(
+      'inbox_enabled IN (0, 1) AND push_enabled IN (0, 1)',
+      {},
+      'notification_user_states_channels_boolean_check'
+    );
+    table.check(
+      'inbox_enabled = 1 OR (read_at IS NULL AND dismissed_at IS NULL)',
+      {},
+      'notification_user_states_inbox_state_check'
+    );
+    table.check(
+      'inbox_enabled = 1 OR push_enabled = 1',
+      {},
+      'notification_user_states_channel_required_check'
+    );
+    addTimestampCheck(
+      table,
+      'read_at',
+      'notification_user_states_read_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'dismissed_at',
+      'notification_user_states_dismissed_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'created_at',
+      'notification_user_states_created_at_check'
+    );
+
     table
       .foreign('event_id')
       .references('event_id')
@@ -97,22 +290,28 @@ export async function up(knex) {
       .onDelete('RESTRICT');
   });
 
-  // Recipient assignment time (created_at), rather than event occurrence time,
-  // is the canonical Inbox cursor. Delayed assignments and backfilled events
-  // therefore appear when the recipient actually receives them, and the query
-  // can use one state-table index for its complete ordering.
+  await knex.raw(`
+    CREATE TRIGGER notification_user_states_assignment_immutable
+    BEFORE UPDATE ON notification_user_states
+    WHEN NEW.event_id IS NOT OLD.event_id
+      OR NEW.user_id IS NOT OLD.user_id
+      OR NEW.inbox_enabled IS NOT OLD.inbox_enabled
+      OR NEW.push_enabled IS NOT OLD.push_enabled
+      OR NEW.created_at IS NOT OLD.created_at
+    BEGIN
+      SELECT RAISE(ABORT, 'notification recipient assignment is immutable');
+    END
+  `);
+
   await knex.raw(`
     CREATE INDEX notification_user_states_visible_idx
     ON notification_user_states (user_id, created_at DESC, event_id DESC)
-    WHERE dismissed_at IS NULL
+    WHERE inbox_enabled = 1 AND dismissed_at IS NULL
   `);
-
-  // The narrower partial index keeps unread badge counts and unread-only Inbox
-  // pages from scanning visible rows that have already been read.
   await knex.raw(`
     CREATE INDEX notification_user_states_unread_idx
     ON notification_user_states (user_id, created_at DESC, event_id DESC)
-    WHERE read_at IS NULL AND dismissed_at IS NULL
+    WHERE inbox_enabled = 1 AND read_at IS NULL AND dismissed_at IS NULL
   `);
 
   await knex.schema.createTable('notification_preferences', (table) => {
@@ -129,7 +328,32 @@ export async function up(knex) {
       {},
       'notification_preferences_kind_check'
     );
+    table.check(
+      'inbox_enabled IN (0, 1)',
+      {},
+      'notification_preferences_inbox_boolean_check'
+    );
+    table.check(
+      'push_enabled IN (0, 1)',
+      {},
+      'notification_preferences_push_boolean_check'
+    );
+    addTimestampCheck(
+      table,
+      'created_at',
+      'notification_preferences_created_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'updated_at',
+      'notification_preferences_updated_at_check'
+    );
   });
+  await createUpdatedAtTrigger(
+    knex,
+    'notification_preferences',
+    'user_id = NEW.user_id AND notification_kind = NEW.notification_kind'
+  );
 
   await knex.schema.createTable('push_subscriptions', (table) => {
     table.text('subscription_id').primary();
@@ -143,57 +367,198 @@ export async function up(knex) {
     table.text('revoked_at').nullable();
     table.text('created_at').notNullable().defaultTo(isoNow(knex));
     table.text('updated_at').notNullable().defaultTo(isoNow(knex));
+
+    table.check(
+      "length(trim(subscription_id)) > 0 AND length(trim(user_id)) > 0 AND lower(substr(endpoint, 1, 8)) = 'https://' AND length(endpoint) > 8 AND length(p256dh_key) > 0 AND length(auth_key) > 0",
+      {},
+      'push_subscriptions_required_values_check'
+    );
+    addTimestampCheck(
+      table,
+      'expires_at',
+      'push_subscriptions_expires_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'last_used_at',
+      'push_subscriptions_last_used_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'revoked_at',
+      'push_subscriptions_revoked_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'created_at',
+      'push_subscriptions_created_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'updated_at',
+      'push_subscriptions_updated_at_check'
+    );
   });
 
-  // Only an active endpoint is unique. Revoked rows remain immutable identities
-  // for delivery history, while a later registration can version the endpoint
-  // under a different user after account switching.
   await knex.raw(`
     CREATE UNIQUE INDEX push_subscriptions_active_endpoint_idx
     ON push_subscriptions (endpoint)
     WHERE revoked_at IS NULL
   `);
-  // Supports the composite delivery foreign key that verifies subscription
-  // ownership without requiring a separate users table.
   await knex.raw(`
     CREATE UNIQUE INDEX push_subscriptions_id_user_idx
     ON push_subscriptions (subscription_id, user_id)
   `);
   await knex.raw(`
     CREATE INDEX push_subscriptions_active_user_idx
-    ON push_subscriptions (user_id, subscription_id)
+    ON push_subscriptions (user_id, expires_at, subscription_id)
     WHERE revoked_at IS NULL
   `);
 
-  await knex.schema.createTable('push_delivery_attempts', (table) => {
-    table.text('attempt_id').primary();
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_created_at_immutable
+    BEFORE UPDATE ON push_subscriptions
+    WHEN NEW.created_at IS NOT OLD.created_at
+    BEGIN
+      SELECT RAISE(ABORT, 'push subscription creation time is immutable');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_revoked_identity_immutable
+    BEFORE UPDATE ON push_subscriptions
+    WHEN OLD.revoked_at IS NOT NULL AND (
+      NEW.subscription_id IS NOT OLD.subscription_id
+      OR NEW.user_id IS NOT OLD.user_id
+      OR NEW.endpoint IS NOT OLD.endpoint
+      OR NEW.p256dh_key IS NOT OLD.p256dh_key
+      OR NEW.auth_key IS NOT OLD.auth_key
+      OR NEW.expires_at IS NOT OLD.expires_at
+      OR NEW.user_agent IS NOT OLD.user_agent
+      OR NEW.last_used_at IS NOT OLD.last_used_at
+      OR NEW.revoked_at IS NOT OLD.revoked_at
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'revoked push subscriptions are immutable');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_revoke_without_rewrite
+    BEFORE UPDATE ON push_subscriptions
+    WHEN OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL AND (
+      NEW.subscription_id IS NOT OLD.subscription_id
+      OR NEW.user_id IS NOT OLD.user_id
+      OR NEW.endpoint IS NOT OLD.endpoint
+      OR NEW.p256dh_key IS NOT OLD.p256dh_key
+      OR NEW.auth_key IS NOT OLD.auth_key
+      OR NEW.expires_at IS NOT OLD.expires_at
+      OR NEW.user_agent IS NOT OLD.user_agent
+      OR NEW.last_used_at IS NOT OLD.last_used_at
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'revoke a push subscription without rewriting its identity');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_preserve_revoked_version
+    BEFORE DELETE ON push_subscriptions
+    WHEN OLD.revoked_at IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'revoked push subscriptions cannot be deleted');
+    END
+  `);
+  await createUpdatedAtTrigger(
+    knex,
+    'push_subscriptions',
+    'subscription_id = NEW.subscription_id'
+  );
+
+  // Delivery jobs are mutable scheduling state. Actual Web Push requests are
+  // inserted into the immutable attempts table below.
+  await knex.schema.createTable('push_delivery_jobs', (table) => {
+    table.text('job_id').primary();
     table.text('deduplication_key').notNullable();
     table.text('event_id').notNullable();
     table.text('user_id').notNullable();
     table.text('subscription_id').notNullable();
-    table.integer('attempt_number').notNullable().defaultTo(1);
+    table.integer('attempt_count').notNullable().defaultTo(0);
     table.text('status').notNullable().defaultTo('pending');
-    table.integer('response_status').nullable();
-    table.text('error_code').nullable();
-    table.text('error_message').nullable();
-    table.text('attempted_at').nullable();
     table.text('next_retry_at').nullable();
+    table.text('claim_token').nullable();
+    table.text('claimed_at').nullable();
+    table.text('lease_expires_at').nullable();
     table.text('created_at').notNullable().defaultTo(isoNow(knex));
+    table.text('updated_at').notNullable().defaultTo(isoNow(knex));
 
     table.check(
-      "status IN ('pending', 'delivered', 'retryable', 'failed')",
+      "status IN ('pending', 'processing', 'retryable', 'delivered', 'failed', 'cancelled')",
       {},
-      'push_delivery_attempts_status_check'
+      'push_delivery_jobs_status_check'
     );
     table.check(
-      'attempt_number > 0',
+      "typeof(attempt_count) = 'integer' AND attempt_count >= 0",
       {},
-      'push_delivery_attempts_number_check'
+      'push_delivery_jobs_attempt_count_check'
     );
     table.check(
-      "(status = 'pending' AND attempted_at IS NULL AND next_retry_at IS NULL) OR (status = 'retryable' AND attempted_at IS NOT NULL AND next_retry_at IS NOT NULL) OR (status IN ('delivered', 'failed') AND attempted_at IS NOT NULL AND next_retry_at IS NULL)",
+      `COALESCE(((
+        status = 'pending'
+        AND next_retry_at IS NULL
+        AND claim_token IS NULL
+        AND claimed_at IS NULL
+        AND lease_expires_at IS NULL
+      ) OR (
+        status = 'processing'
+        AND next_retry_at IS NULL
+        AND length(trim(claim_token)) > 0
+        AND claimed_at IS NOT NULL
+        AND lease_expires_at IS NOT NULL
+        AND lease_expires_at > claimed_at
+      ) OR (
+        status = 'retryable'
+        AND next_retry_at IS NOT NULL
+        AND claim_token IS NULL
+        AND claimed_at IS NULL
+        AND lease_expires_at IS NULL
+      ) OR (
+        status IN ('delivered', 'failed', 'cancelled')
+        AND next_retry_at IS NULL
+        AND claim_token IS NULL
+        AND claimed_at IS NULL
+        AND lease_expires_at IS NULL
+      )), 0)`,
       {},
-      'push_delivery_attempts_timestamps_check'
+      'push_delivery_jobs_state_check'
+    );
+    addTimestampCheck(
+      table,
+      'next_retry_at',
+      'push_delivery_jobs_next_retry_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'claimed_at',
+      'push_delivery_jobs_claimed_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'lease_expires_at',
+      'push_delivery_jobs_lease_expires_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'created_at',
+      'push_delivery_jobs_created_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'updated_at',
+      'push_delivery_jobs_updated_at_check'
     );
 
     table
@@ -211,23 +576,361 @@ export async function up(knex) {
   });
 
   await knex.raw(
-    'CREATE UNIQUE INDEX push_delivery_attempts_deduplication_key_idx ON push_delivery_attempts (deduplication_key)'
+    'CREATE UNIQUE INDEX push_delivery_jobs_deduplication_key_idx ON push_delivery_jobs (deduplication_key)'
   );
   await knex.raw(`
-    CREATE UNIQUE INDEX push_delivery_attempts_event_subscription_attempt_idx
-    ON push_delivery_attempts (event_id, subscription_id, attempt_number)
+    CREATE UNIQUE INDEX push_delivery_jobs_event_subscription_idx
+    ON push_delivery_jobs (event_id, subscription_id)
   `);
-  // Pending rows are undispatched and recoverable in insertion order. Retried
-  // attempts use their required schedule timestamp in the separate index.
   await knex.raw(`
-    CREATE INDEX push_delivery_attempts_pending_idx
-    ON push_delivery_attempts (created_at, attempt_id)
+    CREATE INDEX push_delivery_jobs_pending_idx
+    ON push_delivery_jobs (created_at, job_id)
     WHERE status = 'pending'
   `);
   await knex.raw(`
-    CREATE INDEX push_delivery_attempts_retry_idx
-    ON push_delivery_attempts (next_retry_at, attempt_id)
+    CREATE INDEX push_delivery_jobs_retry_idx
+    ON push_delivery_jobs (next_retry_at, job_id)
     WHERE status = 'retryable' AND next_retry_at IS NOT NULL
+  `);
+  await knex.raw(`
+    CREATE INDEX push_delivery_jobs_processing_lease_idx
+    ON push_delivery_jobs (lease_expires_at, job_id)
+    WHERE status = 'processing' AND lease_expires_at IS NOT NULL
+  `);
+
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_insert_pending_only
+    BEFORE INSERT ON push_delivery_jobs
+    WHEN NEW.status != 'pending' OR NEW.attempt_count != 0
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery jobs must start pending');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_insert_eligibility
+    BEFORE INSERT ON push_delivery_jobs
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM notification_user_states AS recipient
+      JOIN push_subscriptions AS subscription
+        ON subscription.subscription_id = NEW.subscription_id
+        AND subscription.user_id = NEW.user_id
+      WHERE recipient.event_id = NEW.event_id
+        AND recipient.user_id = NEW.user_id
+        AND recipient.push_enabled = 1
+        AND subscription.revoked_at IS NULL
+        AND (subscription.expires_at IS NULL OR subscription.expires_at > NEW.created_at)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery requires an eligible recipient and active subscription');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_identity_immutable
+    BEFORE UPDATE ON push_delivery_jobs
+    WHEN NEW.job_id IS NOT OLD.job_id
+      OR NEW.deduplication_key IS NOT OLD.deduplication_key
+      OR NEW.event_id IS NOT OLD.event_id
+      OR NEW.user_id IS NOT OLD.user_id
+      OR NEW.subscription_id IS NOT OLD.subscription_id
+      OR NEW.created_at IS NOT OLD.created_at
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery job identity is immutable');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_immutable_delete
+    BEFORE DELETE ON push_delivery_jobs
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery jobs cannot be deleted');
+    END
+  `);
+
+  await knex.schema.createTable('push_delivery_attempts', (table) => {
+    table.text('attempt_id').primary();
+    table.text('job_id').notNullable();
+    table.integer('attempt_number').notNullable();
+    table.text('status').notNullable();
+    table.integer('response_status').nullable();
+    table.text('error_code').nullable();
+    table.text('error_message').nullable();
+    table.text('attempted_at').notNullable();
+    table.text('next_retry_at').nullable();
+    table.text('claim_token').notNullable();
+    table.text('created_at').notNullable().defaultTo(isoNow(knex));
+
+    table.check(
+      "status IN ('delivered', 'retryable', 'failed')",
+      {},
+      'push_delivery_attempts_status_check'
+    );
+    table.check(
+      "typeof(attempt_number) = 'integer' AND attempt_number > 0",
+      {},
+      'push_delivery_attempts_number_check'
+    );
+    table.check(
+      "response_status IS NULL OR (typeof(response_status) = 'integer' AND response_status BETWEEN 100 AND 599)",
+      {},
+      'push_delivery_attempts_response_status_check'
+    );
+    table.check(
+      `COALESCE(((
+        status = 'delivered'
+        AND response_status IS NOT NULL
+        AND error_code IS NULL
+        AND error_message IS NULL
+        AND next_retry_at IS NULL
+      ) OR (
+        status = 'retryable'
+        AND (response_status IS NOT NULL OR length(trim(error_code)) > 0)
+        AND next_retry_at IS NOT NULL
+        AND next_retry_at > attempted_at
+      ) OR (
+        status = 'failed'
+        AND (response_status IS NOT NULL OR length(trim(error_code)) > 0)
+        AND next_retry_at IS NULL
+      )), 0)`,
+      {},
+      'push_delivery_attempts_outcome_check'
+    );
+    table.check(
+      'length(trim(claim_token)) > 0',
+      {},
+      'push_delivery_attempts_claim_token_check'
+    );
+    addTimestampCheck(
+      table,
+      'attempted_at',
+      'push_delivery_attempts_attempted_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'next_retry_at',
+      'push_delivery_attempts_next_retry_at_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'created_at',
+      'push_delivery_attempts_created_at_check'
+    );
+
+    table
+      .foreign('job_id')
+      .references('job_id')
+      .inTable('push_delivery_jobs')
+      .onUpdate('RESTRICT')
+      .onDelete('RESTRICT');
+  });
+
+  await knex.raw(`
+    CREATE UNIQUE INDEX push_delivery_attempts_job_attempt_idx
+    ON push_delivery_attempts (job_id, attempt_number)
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_attempts_valid_claim
+    BEFORE INSERT ON push_delivery_attempts
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM push_delivery_jobs AS job
+      WHERE job.job_id = NEW.job_id
+        AND job.status = 'processing'
+        AND job.claim_token = NEW.claim_token
+        AND NEW.attempt_number = job.attempt_count + 1
+        AND NEW.attempted_at >= job.claimed_at
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery attempt does not own the active claim');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_attempts_immutable_update
+    BEFORE UPDATE ON push_delivery_attempts
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery attempts are immutable');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_attempts_immutable_delete
+    BEFORE DELETE ON push_delivery_attempts
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery attempts are immutable');
+    END
+  `);
+
+  // Every state change is forward-only. Retrying moves the job schedule while
+  // the inserted attempt remains immutable audit history.
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_valid_transition
+    BEFORE UPDATE ON push_delivery_jobs
+    WHEN NOT (
+      (
+        NEW.status = OLD.status
+        AND NEW.attempt_count = OLD.attempt_count
+        AND NEW.next_retry_at IS OLD.next_retry_at
+        AND NEW.claim_token IS OLD.claim_token
+        AND NEW.claimed_at IS OLD.claimed_at
+        AND NEW.lease_expires_at IS OLD.lease_expires_at
+      )
+      OR (
+        OLD.status IN ('pending', 'retryable')
+        AND NEW.status = 'processing'
+        AND NEW.attempt_count = OLD.attempt_count
+        AND (OLD.status = 'pending' OR NEW.claimed_at >= OLD.next_retry_at)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM push_delivery_attempts AS attempt
+          WHERE attempt.job_id = OLD.job_id
+            AND attempt.attempt_number = OLD.attempt_count + 1
+        )
+      )
+      OR (
+        OLD.status = 'processing'
+        AND NEW.status = 'processing'
+        AND NEW.attempt_count = OLD.attempt_count
+        AND NEW.claim_token IS NOT OLD.claim_token
+        AND NEW.claimed_at >= OLD.lease_expires_at
+        AND NOT EXISTS (
+          SELECT 1
+          FROM push_delivery_attempts AS attempt
+          WHERE attempt.job_id = OLD.job_id
+            AND attempt.attempt_number = OLD.attempt_count + 1
+        )
+      )
+      OR (
+        OLD.status = 'processing'
+        AND NEW.status IN ('delivered', 'retryable', 'failed')
+        AND NEW.attempt_count = OLD.attempt_count + 1
+        AND EXISTS (
+          SELECT 1
+          FROM push_delivery_attempts AS attempt
+          WHERE attempt.job_id = OLD.job_id
+            AND attempt.attempt_number = NEW.attempt_count
+            AND attempt.claim_token = OLD.claim_token
+            AND attempt.status = NEW.status
+            AND (
+              NEW.status != 'retryable'
+              OR attempt.next_retry_at = NEW.next_retry_at
+            )
+        )
+      )
+      OR (
+        OLD.status IN ('pending', 'processing', 'retryable')
+        AND NEW.status = 'cancelled'
+        AND NEW.attempt_count = OLD.attempt_count
+        AND NOT EXISTS (
+          SELECT 1
+          FROM push_delivery_attempts AS attempt
+          WHERE attempt.job_id = OLD.job_id
+            AND attempt.attempt_number = OLD.attempt_count + 1
+        )
+      )
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid push delivery job transition');
+    END
+  `);
+
+  // Inserting the immutable outcome and advancing its mutable job are one
+  // SQLite statement. A crash therefore cannot leave an audit row detached
+  // from retry scheduling or terminal job state.
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_attempts_apply_outcome
+    AFTER INSERT ON push_delivery_attempts
+    BEGIN
+      UPDATE push_delivery_jobs
+      SET status = NEW.status,
+          attempt_count = NEW.attempt_number,
+          next_retry_at = NEW.next_retry_at,
+          claim_token = NULL,
+          claimed_at = NULL,
+          lease_expires_at = NULL
+      WHERE job_id = NEW.job_id
+        AND status = 'processing'
+        AND claim_token = NEW.claim_token;
+    END
+  `);
+
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_claim_eligibility
+    BEFORE UPDATE ON push_delivery_jobs
+    WHEN NEW.status = 'processing'
+      AND (OLD.status != 'processing' OR NEW.claim_token IS NOT OLD.claim_token)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM notification_user_states AS recipient
+        JOIN push_subscriptions AS subscription
+          ON subscription.subscription_id = NEW.subscription_id
+          AND subscription.user_id = NEW.user_id
+        WHERE recipient.event_id = NEW.event_id
+          AND recipient.user_id = NEW.user_id
+          AND recipient.push_enabled = 1
+          AND subscription.revoked_at IS NULL
+          AND (subscription.expires_at IS NULL OR subscription.expires_at > NEW.claimed_at)
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'cannot claim delivery for an inactive subscription');
+    END
+  `);
+  await createUpdatedAtTrigger(
+    knex,
+    'push_delivery_jobs',
+    'job_id = NEW.job_id'
+  );
+
+  // This is the only polling surface for dispatchers. It rechecks recipient
+  // eligibility, revocation, and expiration at read time. Workers atomically
+  // claim one returned job with a conditional UPDATE ... RETURNING statement.
+  await knex.raw(`
+    CREATE VIEW push_delivery_claimable_jobs AS
+    SELECT job.*
+    FROM push_delivery_jobs AS job
+    JOIN notification_user_states AS recipient
+      ON recipient.event_id = job.event_id
+      AND recipient.user_id = job.user_id
+      AND recipient.push_enabled = 1
+    JOIN push_subscriptions AS subscription
+      ON subscription.subscription_id = job.subscription_id
+      AND subscription.user_id = job.user_id
+      AND subscription.revoked_at IS NULL
+      AND (subscription.expires_at IS NULL OR subscription.expires_at > ${ISO_NOW_SQL})
+    WHERE (job.status = 'pending' AND job.created_at <= ${ISO_NOW_SQL})
+      OR (job.status = 'retryable' AND job.next_retry_at <= ${ISO_NOW_SQL})
+      OR (job.status = 'processing' AND job.lease_expires_at <= ${ISO_NOW_SQL})
+  `);
+
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_cancel_revoked_jobs
+    AFTER UPDATE OF revoked_at ON push_subscriptions
+    WHEN OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL
+    BEGIN
+      UPDATE push_delivery_jobs
+      SET status = 'cancelled',
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claimed_at = NULL,
+          lease_expires_at = NULL
+      WHERE subscription_id = NEW.subscription_id
+        AND status IN ('pending', 'processing', 'retryable');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_cancel_newly_expired_jobs
+    AFTER UPDATE OF expires_at ON push_subscriptions
+    WHEN NEW.revoked_at IS NULL
+      AND NEW.expires_at IS NOT NULL
+      AND NEW.expires_at <= ${ISO_NOW_SQL}
+    BEGIN
+      UPDATE push_delivery_jobs
+      SET status = 'cancelled',
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claimed_at = NULL,
+          lease_expires_at = NULL
+      WHERE subscription_id = NEW.subscription_id
+        AND status IN ('pending', 'processing', 'retryable');
+    END
   `);
 
   await knex.schema.createTable('notification_source_activity', (table) => {
@@ -249,14 +952,70 @@ export async function up(knex) {
       'notification_source_activity_type_check'
     );
     table.check(
+      "length(trim(activity_key)) > 0 AND length(trim(repository)) > 0 AND length(trim(status)) > 0",
+      {},
+      'notification_source_activity_required_text_check'
+    );
+    table.check(
       "CASE WHEN metadata_json IS NULL THEN 1 WHEN json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
       {},
       'notification_source_activity_metadata_json_check'
     );
+    table.check(
+      'completed_at IS NULL OR completed_at >= last_activity_at',
+      {},
+      'notification_source_activity_completed_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'last_activity_at',
+      'notification_source_activity_last_activity_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'completed_at',
+      'notification_source_activity_completed_at_timestamp_check',
+      true
+    );
+    addTimestampCheck(
+      table,
+      'created_at',
+      'notification_source_activity_created_at_check'
+    );
+    addTimestampCheck(
+      table,
+      'updated_at',
+      'notification_source_activity_updated_at_check'
+    );
   });
 
-  // Active rows ordered by their last heartbeat are exactly the candidate set
-  // a later stalled-work monitor needs to scan.
+  // Delayed heartbeats cannot regress a newer row, and completed work cannot
+  // be reopened. RAISE(IGNORE) makes stale conflict-upserts safe no-ops.
+  await knex.raw(`
+    CREATE TRIGGER notification_source_activity_monotonic
+    BEFORE UPDATE ON notification_source_activity
+    WHEN NEW.last_activity_at < OLD.last_activity_at
+      OR (OLD.completed_at IS NOT NULL AND NEW.completed_at IS NULL)
+    BEGIN
+      SELECT RAISE(IGNORE);
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER notification_source_activity_identity_immutable
+    BEFORE UPDATE ON notification_source_activity
+    WHEN NEW.activity_type IS NOT OLD.activity_type
+      OR NEW.activity_key IS NOT OLD.activity_key
+      OR NEW.created_at IS NOT OLD.created_at
+    BEGIN
+      SELECT RAISE(ABORT, 'notification source activity identity is immutable');
+    END
+  `);
+  await createUpdatedAtTrigger(
+    knex,
+    'notification_source_activity',
+    'activity_type = NEW.activity_type AND activity_key = NEW.activity_key'
+  );
+
   await knex.raw(`
     CREATE INDEX notification_source_activity_stalled_idx
     ON notification_source_activity (activity_type, last_activity_at, activity_key)
@@ -265,11 +1024,11 @@ export async function up(knex) {
 }
 
 export async function down(knex) {
-  await knex.raw('DROP TRIGGER IF EXISTS notification_events_immutable_delete');
-  await knex.raw('DROP TRIGGER IF EXISTS notification_events_immutable_update');
+  await knex.raw('DROP VIEW IF EXISTS push_delivery_claimable_jobs');
 
   await knex.schema.dropTableIfExists('notification_source_activity');
   await knex.schema.dropTableIfExists('push_delivery_attempts');
+  await knex.schema.dropTableIfExists('push_delivery_jobs');
   await knex.schema.dropTableIfExists('push_subscriptions');
   await knex.schema.dropTableIfExists('notification_preferences');
   await knex.schema.dropTableIfExists('notification_user_states');

@@ -1,16 +1,47 @@
 /**
  * Durable notification contracts shared by the API, backend workers, and UI.
  *
- * Timestamps in this module are serialized ISO-8601 strings. The database
- * deliberately stores the same representation as TEXT instead of relying on
- * driver-specific SQLite timestamp conversion.
+ * All timestamps are canonical, fixed-width UTC strings produced by
+ * `Date.prototype.toISOString()`. Use the runtime schemas below at database
+ * and API boundaries instead of casting untrusted values to these types.
  */
 
-/** An ISO-8601 timestamp, normally emitted by `Date.prototype.toISOString()`. */
-export type ISO8601Timestamp = string;
+declare const iso8601TimestampBrand: unique symbol;
+
+/** A canonical `YYYY-MM-DDTHH:mm:ss.sssZ` UTC timestamp. */
+export type ISO8601Timestamp = string & {
+  readonly [iso8601TimestampBrand]: true;
+};
 
 /** Backwards-friendly spelling for consumers that prefer `Iso`. */
 export type Iso8601Timestamp = ISO8601Timestamp;
+
+const CANONICAL_ISO8601_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Normalize a Date-compatible value before writing it to the database. */
+export function normalizeISO8601Timestamp(
+  value: string | number | Date,
+): ISO8601Timestamp {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new TypeError('Expected a valid timestamp');
+  }
+
+  return date.toISOString() as ISO8601Timestamp;
+}
+
+/** Validate that an unknown value is already in canonical UTC form. */
+export function parseISO8601Timestamp(value: unknown): ISO8601Timestamp {
+  if (
+    typeof value !== 'string'
+    || !CANONICAL_ISO8601_PATTERN.test(value)
+    || normalizeISO8601Timestamp(value) !== value
+  ) {
+    throw new TypeError('Expected a canonical ISO-8601 UTC timestamp');
+  }
+
+  return value as ISO8601Timestamp;
+}
 
 export const NOTIFICATION_KINDS = [
   'plan',
@@ -98,15 +129,14 @@ export type NotificationActionType = (typeof NOTIFICATION_ACTION_TYPES)[number];
 export interface NavigateNotificationAction {
   type: 'navigate';
   label: string;
-  /** An application-relative path, validated at the API boundary. */
+  /** An application-relative path beginning with one `/`. */
   href: string;
 }
 
-/** An action that leaves the application for an absolute URL. */
+/** An action that leaves the application for an absolute HTTP(S) URL. */
 export interface ExternalLinkNotificationAction {
   type: 'external_link';
   label: string;
-  /** An absolute URL, validated at the API boundary. */
   href: string;
 }
 
@@ -139,10 +169,15 @@ interface NotificationEventFields<K extends NotificationKind> {
 export type NotificationEvent<K extends NotificationKind = NotificationKind> =
   K extends NotificationKind ? NotificationEventFields<K> : never;
 
-/** Per-user state for an immutable event. Null means the action has not occurred. */
+/**
+ * Per-recipient state and the channel decision captured at assignment time.
+ * Preferences are deliberately not consulted when reading historical rows.
+ */
 export interface NotificationUserState {
   eventId: string;
   userId: string;
+  inboxEnabled: boolean;
+  pushEnabled: boolean;
   readAt: ISO8601Timestamp | null;
   dismissedAt: ISO8601Timestamp | null;
   /** Recipient assignment time and the primary descending Inbox cursor. */
@@ -160,16 +195,15 @@ export interface NotificationPreferenceChannels {
   pushEnabled: boolean;
 }
 
-/** Preferences for one notification kind. */
+/** One persisted entry in a complete preference snapshot. */
 export interface NotificationPreference extends NotificationPreferenceChannels {
-  kind: NotificationKind;
-  updatedAt?: ISO8601Timestamp;
+  updatedAt: ISO8601Timestamp;
 }
 
-/** A complete preference snapshot keyed by notification kind. */
+/** A complete preference snapshot keyed by every durable notification kind. */
 export type NotificationPreferences = Record<
   NotificationKind,
-  NotificationPreferenceChannels
+  NotificationPreference
 >;
 
 /** The encryption keys supplied by the browser Push API. */
@@ -198,34 +232,122 @@ export interface PushSubscription {
   updatedAt: ISO8601Timestamp;
 }
 
+/** Mutable delivery-job states. `processing` is always protected by a lease. */
 export const PUSH_DELIVERY_STATUSES = [
   'pending',
-  'delivered',
+  'processing',
   'retryable',
+  'delivered',
   'failed',
+  'cancelled',
 ] as const;
 
-export type PushDeliveryStatus = (typeof PUSH_DELIVERY_STATUSES)[number];
+export type PushDeliveryJobStatus = (typeof PUSH_DELIVERY_STATUSES)[number];
 
-/**
- * An auditable Web Push attempt. Pending rows have not been dispatched;
- * retryable rows always carry both `attemptedAt` and `nextRetryAt`.
- */
-export interface PushDeliveryAttempt {
+/** Backwards-compatible name for the mutable delivery-job status. */
+export type PushDeliveryStatus = PushDeliveryJobStatus;
+
+interface PushDeliveryJobFields {
   id: string;
   deduplicationKey: string;
   eventId: string;
   userId: string;
   subscriptionId: string;
+  attemptCount: number;
+  createdAt: ISO8601Timestamp;
+  updatedAt: ISO8601Timestamp;
+}
+
+interface UnclaimedPushDeliveryJobFields {
+  claimToken: null;
+  claimedAt: null;
+  leaseExpiresAt: null;
+}
+
+export interface PendingPushDeliveryJob
+  extends PushDeliveryJobFields, UnclaimedPushDeliveryJobFields {
+  status: 'pending';
+  nextRetryAt: null;
+}
+
+export interface ProcessingPushDeliveryJob extends PushDeliveryJobFields {
+  status: 'processing';
+  nextRetryAt: null;
+  claimToken: string;
+  claimedAt: ISO8601Timestamp;
+  leaseExpiresAt: ISO8601Timestamp;
+}
+
+export interface RetryablePushDeliveryJob
+  extends PushDeliveryJobFields, UnclaimedPushDeliveryJobFields {
+  status: 'retryable';
+  nextRetryAt: ISO8601Timestamp;
+}
+
+export interface TerminalPushDeliveryJob
+  extends PushDeliveryJobFields, UnclaimedPushDeliveryJobFields {
+  status: 'delivered' | 'failed' | 'cancelled';
+  nextRetryAt: null;
+}
+
+/** A schedulable delivery job. Claim and schedule invariants narrow by status. */
+export type PushDeliveryJob =
+  | PendingPushDeliveryJob
+  | ProcessingPushDeliveryJob
+  | RetryablePushDeliveryJob
+  | TerminalPushDeliveryJob;
+
+/** Immutable outcomes recorded once for each actual Web Push request. */
+export const PUSH_DELIVERY_ATTEMPT_STATUSES = [
+  'delivered',
+  'retryable',
+  'failed',
+] as const;
+
+export type PushDeliveryAttemptStatus =
+  (typeof PUSH_DELIVERY_ATTEMPT_STATUSES)[number];
+
+interface PushDeliveryAttemptFields {
+  id: string;
+  jobId: string;
   attemptNumber: number;
-  status: PushDeliveryStatus;
-  attemptedAt: ISO8601Timestamp | null;
-  nextRetryAt: ISO8601Timestamp | null;
+  claimToken: string;
+  attemptedAt: ISO8601Timestamp;
+  createdAt: ISO8601Timestamp;
+}
+
+export interface DeliveredPushDeliveryAttempt extends PushDeliveryAttemptFields {
+  status: 'delivered';
+  nextRetryAt: null;
+  responseStatus: number;
+  errorCode: null;
+  errorMessage: null;
+}
+
+export interface RetryablePushDeliveryAttempt extends PushDeliveryAttemptFields {
+  status: 'retryable';
+  nextRetryAt: ISO8601Timestamp;
   responseStatus: number | null;
   errorCode: string | null;
   errorMessage: string | null;
-  createdAt: ISO8601Timestamp;
 }
+
+export interface FailedPushDeliveryAttempt extends PushDeliveryAttemptFields {
+  status: 'failed';
+  nextRetryAt: null;
+  responseStatus: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+/**
+ * An append-only send audit record. Retry scheduling lives on the related job,
+ * so recording attempt N never causes attempt N to be polled again.
+ */
+export type PushDeliveryAttempt =
+  | DeliveredPushDeliveryAttempt
+  | RetryablePushDeliveryAttempt
+  | FailedPushDeliveryAttempt;
 
 export const NOTIFICATION_SOURCE_ACTIVITY_TYPES = ['task', 'indexing'] as const;
 
@@ -267,10 +389,351 @@ export interface NotificationStateResponse {
   unreadCount: number;
 }
 
+/** API snapshots are complete and use the same keyed representation everywhere. */
 export interface NotificationPreferencesResponse {
-  preferences: NotificationPreference[];
+  preferences: NotificationPreferences;
 }
 
 export interface PushSubscriptionsResponse {
   subscriptions: PushSubscription[];
 }
+
+/** Minimal schema interface used without imposing a validation dependency. */
+export interface RuntimeSchema<T> {
+  parse(value: unknown): T;
+}
+
+function invalid(path: string, expectation: string): never {
+  throw new TypeError(`${path}: expected ${expectation}`);
+}
+
+function parseRecord(value: unknown, path: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return invalid(path, 'an object');
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseString(value: unknown, path: string, allowEmpty = false): string {
+  if (typeof value !== 'string' || (!allowEmpty && value.trim().length === 0)) {
+    return invalid(path, allowEmpty ? 'a string' : 'a non-empty string');
+  }
+  return value;
+}
+
+function parsePositiveInteger(value: unknown, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    return invalid(path, 'a positive integer');
+  }
+  return value as number;
+}
+
+function parseOptionalString(
+  value: unknown,
+  path: string,
+): string | undefined {
+  return value === undefined ? undefined : parseString(value, path);
+}
+
+function parseOptionalPositiveInteger(
+  value: unknown,
+  path: string,
+): number | undefined {
+  return value === undefined ? undefined : parsePositiveInteger(value, path);
+}
+
+function parseRepository(value: unknown, path: string): string {
+  const repository = parseString(value, path);
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) {
+    return invalid(path, 'a repository in owner/name form');
+  }
+  return repository;
+}
+
+function parseEnum<T extends readonly string[]>(
+  value: unknown,
+  values: T,
+  path: string,
+): T[number] {
+  if (typeof value !== 'string' || !values.includes(value)) {
+    return invalid(path, `one of ${values.join(', ')}`);
+  }
+  return value as T[number];
+}
+
+export function parseNotificationTarget<K extends NotificationKind>(
+  value: unknown,
+  expectedKind: K,
+): NotificationTargetFor<K>;
+export function parseNotificationTarget(value: unknown): NotificationTarget;
+export function parseNotificationTarget(
+  value: unknown,
+  expectedKind?: NotificationKind,
+): NotificationTarget {
+  const target = parseRecord(value, 'target');
+  const type = parseEnum(target.type, NOTIFICATION_KINDS, 'target.type');
+  if (expectedKind !== undefined && type !== expectedKind) {
+    return invalid('target.type', expectedKind);
+  }
+
+  switch (type) {
+    case 'plan':
+      return {
+        type,
+        repository: parseRepository(target.repository, 'target.repository'),
+        draftId: parseString(target.draftId, 'target.draftId'),
+      };
+    case 'task': {
+      const issueNumber = parseOptionalPositiveInteger(
+        target.issueNumber,
+        'target.issueNumber',
+      );
+      const prNumber = parseOptionalPositiveInteger(target.prNumber, 'target.prNumber');
+      return {
+        type,
+        repository: parseRepository(target.repository, 'target.repository'),
+        taskId: parseString(target.taskId, 'target.taskId'),
+        ...(issueNumber === undefined ? {} : { issueNumber }),
+        ...(prNumber === undefined ? {} : { prNumber }),
+      };
+    }
+    case 'review': {
+      const taskId = parseOptionalString(target.taskId, 'target.taskId');
+      return {
+        type,
+        repository: parseRepository(target.repository, 'target.repository'),
+        prNumber: parsePositiveInteger(target.prNumber, 'target.prNumber'),
+        ...(taskId === undefined ? {} : { taskId }),
+      };
+    }
+    case 'pull_request':
+      return {
+        type,
+        repository: parseRepository(target.repository, 'target.repository'),
+        prNumber: parsePositiveInteger(target.prNumber, 'target.prNumber'),
+      };
+    case 'indexing': {
+      const branch = parseOptionalString(target.branch, 'target.branch');
+      return {
+        type,
+        repository: parseRepository(target.repository, 'target.repository'),
+        ...(branch === undefined ? {} : { branch }),
+      };
+    }
+    case 'system_failure': {
+      const correlationId = parseOptionalString(
+        target.correlationId,
+        'target.correlationId',
+      );
+      return {
+        type,
+        component: parseString(target.component, 'target.component'),
+        ...(correlationId === undefined ? {} : { correlationId }),
+      };
+    }
+  }
+}
+
+export function parseNotificationAction(value: unknown): NotificationAction {
+  const action = parseRecord(value, 'action');
+  const type = parseEnum(action.type, NOTIFICATION_ACTION_TYPES, 'action.type');
+  const label = parseString(action.label, 'action.label');
+  const href = parseString(action.href, 'action.href');
+
+  if (type === 'navigate') {
+    if (!href.startsWith('/') || href.startsWith('//') || /[\\\u0000-\u001f]/.test(href)) {
+      return invalid('action.href', 'a safe application-relative path');
+    }
+    return { type, label, href };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return invalid('action.href', 'an absolute HTTP(S) URL');
+  }
+  if (
+    !['http:', 'https:'].includes(url.protocol)
+    || url.hostname.length === 0
+    || url.username.length > 0
+    || url.password.length > 0
+  ) {
+    return invalid('action.href', 'a safe absolute HTTP(S) URL');
+  }
+  return { type, label, href: url.href };
+}
+
+function parseOptionalMetadata(
+  value: unknown,
+  path: string,
+): Record<string, unknown> | undefined {
+  return value === undefined ? undefined : { ...parseRecord(value, path) };
+}
+
+/** Validate and sanitize the immutable payload before insertion or serialization. */
+export function parseNotificationEvent(value: unknown): NotificationEvent {
+  const event = parseRecord(value, 'notificationEvent');
+  const kind = parseEnum(event.kind, NOTIFICATION_KINDS, 'notificationEvent.kind');
+  const action = event.action === undefined
+    ? undefined
+    : parseNotificationAction(event.action);
+  const metadata = parseOptionalMetadata(event.metadata, 'notificationEvent.metadata');
+
+  return {
+    id: parseString(event.id, 'notificationEvent.id'),
+    deduplicationKey: parseString(
+      event.deduplicationKey,
+      'notificationEvent.deduplicationKey',
+    ),
+    kind,
+    severity: parseEnum(
+      event.severity,
+      NOTIFICATION_SEVERITIES,
+      'notificationEvent.severity',
+    ),
+    target: parseNotificationTarget(event.target, kind),
+    title: parseString(event.title, 'notificationEvent.title'),
+    body: parseString(event.body, 'notificationEvent.body', true),
+    ...(action === undefined ? {} : { action }),
+    ...(metadata === undefined ? {} : { metadata }),
+    occurredAt: parseISO8601Timestamp(event.occurredAt),
+    createdAt: parseISO8601Timestamp(event.createdAt),
+  } as NotificationEvent;
+}
+
+/** Validate an Inbox item immediately before serializing an API response. */
+export function parseNotification(value: unknown): Notification {
+  const record = parseRecord(value, 'notification');
+  const event = parseNotificationEvent(record);
+  const readAt = record.readAt === null
+    ? null
+    : parseISO8601Timestamp(record.readAt);
+  const dismissedAt = record.dismissedAt === null
+    ? null
+    : parseISO8601Timestamp(record.dismissedAt);
+  return { ...event, readAt, dismissedAt } as Notification;
+}
+
+/** Validate a complete, consistently shaped preference response. */
+export function parseNotificationPreferences(
+  value: unknown,
+): NotificationPreferences {
+  const preferences = parseRecord(value, 'preferences');
+  const expectedKinds = new Set<string>(NOTIFICATION_KINDS);
+  for (const key of Object.keys(preferences)) {
+    if (!expectedKinds.has(key)) {
+      return invalid('preferences', `only known notification kinds (found ${key})`);
+    }
+  }
+
+  return Object.fromEntries(NOTIFICATION_KINDS.map((kind) => {
+    const preference = parseRecord(preferences[kind], `preferences.${kind}`);
+    if (typeof preference.inboxEnabled !== 'boolean') {
+      return invalid(`preferences.${kind}.inboxEnabled`, 'a boolean');
+    }
+    if (typeof preference.pushEnabled !== 'boolean') {
+      return invalid(`preferences.${kind}.pushEnabled`, 'a boolean');
+    }
+    return [kind, {
+      inboxEnabled: preference.inboxEnabled,
+      pushEnabled: preference.pushEnabled,
+      updatedAt: parseISO8601Timestamp(preference.updatedAt),
+    }];
+  })) as NotificationPreferences;
+}
+
+function parseNonnegativeInteger(value: unknown, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    return invalid(path, 'a nonnegative integer');
+  }
+  return value as number;
+}
+
+/** Validate the complete Inbox envelope immediately before serialization. */
+export function parseNotificationListResponse(
+  value: unknown,
+): NotificationListResponse {
+  const response = parseRecord(value, 'notificationListResponse');
+  if (!Array.isArray(response.notifications)) {
+    return invalid('notificationListResponse.notifications', 'an array');
+  }
+  const nextCursor = response.nextCursor === null
+    ? null
+    : parseString(response.nextCursor, 'notificationListResponse.nextCursor');
+  return {
+    notifications: response.notifications.map(parseNotification),
+    unreadCount: parseNonnegativeInteger(
+      response.unreadCount,
+      'notificationListResponse.unreadCount',
+    ),
+    nextCursor,
+  };
+}
+
+export function parseNotificationUnreadCountResponse(
+  value: unknown,
+): NotificationUnreadCountResponse {
+  const response = parseRecord(value, 'notificationUnreadCountResponse');
+  return {
+    unreadCount: parseNonnegativeInteger(
+      response.unreadCount,
+      'notificationUnreadCountResponse.unreadCount',
+    ),
+  };
+}
+
+export function parseNotificationStateResponse(
+  value: unknown,
+): NotificationStateResponse {
+  const response = parseRecord(value, 'notificationStateResponse');
+  return {
+    notification: parseNotification(response.notification),
+    unreadCount: parseNonnegativeInteger(
+      response.unreadCount,
+      'notificationStateResponse.unreadCount',
+    ),
+  };
+}
+
+export function parseNotificationPreferencesResponse(
+  value: unknown,
+): NotificationPreferencesResponse {
+  const response = parseRecord(value, 'notificationPreferencesResponse');
+  return {
+    preferences: parseNotificationPreferences(response.preferences),
+  };
+}
+
+export const iso8601TimestampSchema: RuntimeSchema<ISO8601Timestamp> = {
+  parse: parseISO8601Timestamp,
+};
+export const notificationTargetSchema: RuntimeSchema<NotificationTarget> = {
+  parse: parseNotificationTarget,
+};
+export const notificationActionSchema: RuntimeSchema<NotificationAction> = {
+  parse: parseNotificationAction,
+};
+export const notificationEventSchema: RuntimeSchema<NotificationEvent> = {
+  parse: parseNotificationEvent,
+};
+export const notificationSchema: RuntimeSchema<Notification> = {
+  parse: parseNotification,
+};
+export const notificationPreferencesSchema: RuntimeSchema<NotificationPreferences> = {
+  parse: parseNotificationPreferences,
+};
+export const notificationListResponseSchema: RuntimeSchema<NotificationListResponse> = {
+  parse: parseNotificationListResponse,
+};
+export const notificationUnreadCountResponseSchema:
+  RuntimeSchema<NotificationUnreadCountResponse> = {
+  parse: parseNotificationUnreadCountResponse,
+};
+export const notificationStateResponseSchema: RuntimeSchema<NotificationStateResponse> = {
+  parse: parseNotificationStateResponse,
+};
+export const notificationPreferencesResponseSchema:
+  RuntimeSchema<NotificationPreferencesResponse> = {
+  parse: parseNotificationPreferencesResponse,
+};
