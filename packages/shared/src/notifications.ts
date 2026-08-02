@@ -27,6 +27,42 @@ export interface JsonObject {
 
 const CANONICAL_ISO8601_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
+/** Largest epoch-millisecond value representable by the fixed-width contract. */
+export const MAX_CANONICAL_TIMESTAMP_EPOCH_MS = 253_402_300_799_999;
+
+/**
+ * Push-service hosts that notification workers may contact.
+ *
+ * Delivery clients must also disable redirects. Keeping this list exact makes
+ * a stored subscription safe to use without performing requests to arbitrary
+ * user-selected hosts or relying on DNS results captured at registration time.
+ */
+export const WEB_PUSH_ENDPOINT_HOSTS = [
+  'fcm.googleapis.com',
+  'updates.push.services.mozilla.com',
+  'push.services.mozilla.com',
+] as const;
+
+/** Vendor-controlled suffixes explicitly documented for Web Push delivery. */
+export const WEB_PUSH_ENDPOINT_HOST_SUFFIXES = ['.push.apple.com'] as const;
+
+/** UTF-8 byte and structural limits shared by API and persistence boundaries. */
+export const NOTIFICATION_PAYLOAD_LIMITS = {
+  identifierBytes: 255,
+  deduplicationKeyBytes: 512,
+  repositoryBytes: 255,
+  titleBytes: 256,
+  bodyBytes: 4_096,
+  actionLabelBytes: 128,
+  urlBytes: 2_048,
+  userAgentBytes: 512,
+  errorCodeBytes: 128,
+  errorMessageBytes: 2_048,
+  metadataBytes: 16_384,
+  metadataDepth: 16,
+  metadataNodes: 256,
+} as const;
+
 /** Normalize a Date-compatible value before writing it to the database. */
 export function normalizeISO8601Timestamp(
   value: string | number | Date,
@@ -36,7 +72,12 @@ export function normalizeISO8601Timestamp(
     throw new TypeError('Expected a valid timestamp');
   }
 
-  return date.toISOString() as ISO8601Timestamp;
+  const normalized = date.toISOString();
+  if (!CANONICAL_ISO8601_PATTERN.test(normalized)) {
+    throw new TypeError('Expected a timestamp in the four-digit-year range');
+  }
+
+  return normalized as ISO8601Timestamp;
 }
 
 /** Validate that an unknown value is already in canonical UTC form. */
@@ -232,7 +273,10 @@ export interface PushSubscriptionKeys {
   auth: string;
 }
 
-/** Browser payload accepted when registering or refreshing a subscription. */
+/**
+ * Browser payload accepted when registering a subscription version. Refreshes
+ * revoke the prior version and register this payload under a new identifier.
+ */
 export interface PushSubscriptionInput {
   endpoint: string;
   expirationTime: number | null;
@@ -396,21 +440,18 @@ export const NOTIFICATION_SOURCE_ACTIVITY_STATUSES = [
 export type NotificationSourceActivityStatus =
   (typeof NOTIFICATION_SOURCE_ACTIVITY_STATUSES)[number];
 
-/** Latest known activity for a task or repository-indexing operation. */
+/** Latest known activity fields shared by task and indexing operations. */
 interface NotificationSourceActivityFields {
-  type: NotificationSourceActivityType;
   /** Task ID, or a stable repository/branch key for indexing. */
   key: string;
   repository: string;
-  /** Present for branch-scoped indexing activity. */
-  branch?: string;
   lastActivityAt: ISO8601Timestamp;
   metadata?: JsonObject;
   createdAt: ISO8601Timestamp;
   updatedAt: ISO8601Timestamp;
 }
 
-export type NotificationSourceActivity = NotificationSourceActivityFields & (
+type NotificationSourceActivityState =
   | {
     status: 'queued' | 'processing';
     completedAt: null;
@@ -418,8 +459,25 @@ export type NotificationSourceActivity = NotificationSourceActivityFields & (
   | {
     status: 'completed' | 'failed' | 'cancelled';
     completedAt: ISO8601Timestamp;
-  }
-);
+  };
+
+export type TaskNotificationSourceActivity = NotificationSourceActivityFields &
+  NotificationSourceActivityState & {
+    type: 'task';
+    /** Branches belong only to indexing activity. */
+    branch?: never;
+  };
+
+export type IndexingNotificationSourceActivity = NotificationSourceActivityFields &
+  NotificationSourceActivityState & {
+    type: 'indexing';
+    /** Present when indexing is scoped to one branch. */
+    branch?: string;
+  };
+
+export type NotificationSourceActivity =
+  | TaskNotificationSourceActivity
+  | IndexingNotificationSourceActivity;
 
 /**
  * Cursor-paginated Inbox response ordered by recipient assignment time, then
@@ -471,9 +529,25 @@ function parseRecord(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function parseString(value: unknown, path: string, allowEmpty = false): string {
-  if (typeof value !== 'string' || (!allowEmpty && value.trim().length === 0)) {
-    return invalid(path, allowEmpty ? 'a string' : 'a non-empty string');
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function parseString(
+  value: unknown,
+  path: string,
+  allowEmpty = false,
+  maxBytes: number = NOTIFICATION_PAYLOAD_LIMITS.identifierBytes,
+): string {
+  if (
+    typeof value !== 'string'
+    || (!allowEmpty && value.trim().length === 0)
+    || utf8ByteLength(value) > maxBytes
+  ) {
+    return invalid(
+      path,
+      `${allowEmpty ? 'a string' : 'a non-empty string'} no larger than ${maxBytes} UTF-8 bytes`,
+    );
   }
   return value;
 }
@@ -496,8 +570,9 @@ function parseNullableString(
   value: unknown,
   path: string,
   allowEmpty = false,
+  maxBytes: number = NOTIFICATION_PAYLOAD_LIMITS.identifierBytes,
 ): string | null {
-  return value === null ? null : parseString(value, path, allowEmpty);
+  return value === null ? null : parseString(value, path, allowEmpty, maxBytes);
 }
 
 function parseNullableTimestamp(
@@ -526,7 +601,12 @@ function parseOptionalPositiveInteger(
 }
 
 function parseRepository(value: unknown, path: string): string {
-  const repository = parseString(value, path);
+  const repository = parseString(
+    value,
+    path,
+    false,
+    NOTIFICATION_PAYLOAD_LIMITS.repositoryBytes,
+  );
   if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) {
     return invalid(path, 'a repository in owner/name form');
   }
@@ -551,22 +631,44 @@ function parseExpirationTime(value: unknown, path: string): number | null {
     typeof value !== 'number'
     || !Number.isFinite(value)
     || (value as number) < 0
-    || (value as number) > 8_640_000_000_000_000
+    || (value as number) > MAX_CANONICAL_TIMESTAMP_EPOCH_MS
   ) {
-    return invalid(path, 'a Date-compatible epoch-millisecond number or null');
+    return invalid(
+      path,
+      'an epoch-millisecond number in the canonical four-digit-year range or null',
+    );
   }
   return value as number;
 }
 
-function parseBase64Url(value: unknown, path: string): string {
-  const encoded = parseString(value, path);
+function parseBase64Url(
+  value: unknown,
+  path: string,
+  expectedBytes: number,
+  expectedFirstByte?: number,
+): string {
+  const encoded = parseString(value, path, false, 128);
   const unpadded = encoded.replace(/=+$/, '');
+  const expectedUnpaddedLength = Math.ceil(expectedBytes * 8 / 6);
+  const expectedPaddingLength = (3 - (expectedBytes % 3)) % 3;
+  const paddingLength = encoded.length - unpadded.length;
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const unusedTrailingBits = (unpadded.length * 6) % 8;
+  const trailingValue = alphabet.indexOf(unpadded.at(-1) ?? '');
+  const firstByte = unpadded.length < 2
+    ? -1
+    : (alphabet.indexOf(unpadded[0] ?? '') << 2)
+      | (alphabet.indexOf(unpadded[1] ?? '') >> 4);
   if (
     !/^[A-Za-z0-9_-]+={0,2}$/.test(encoded)
-    || unpadded.length % 4 === 1
-    || (encoded.includes('=') && encoded.length % 4 !== 0)
+    || unpadded.length !== expectedUnpaddedLength
+    || (paddingLength !== 0 && paddingLength !== expectedPaddingLength)
+    || (paddingLength !== 0 && encoded.length % 4 !== 0)
+    || (unusedTrailingBits > 0
+      && (trailingValue & ((1 << unusedTrailingBits) - 1)) !== 0)
+    || (expectedFirstByte !== undefined && firstByte !== expectedFirstByte)
   ) {
-    return invalid(path, 'a base64url-encoded value');
+    return invalid(path, `a ${expectedBytes}-byte base64url-encoded value`);
   }
   return encoded;
 }
@@ -580,8 +682,16 @@ function parseSafeAbsoluteUrl(
   protocols: readonly string[],
   allowFragment = true,
   expectation = `a safe absolute ${protocols.join(' or ')} URL`,
+  allowedHosts?: readonly string[],
+  allowedHostSuffixes?: readonly string[],
+  defaultHttpsPortOnly = false,
 ): string {
-  const href = parseString(value, path);
+  const href = parseString(
+    value,
+    path,
+    false,
+    NOTIFICATION_PAYLOAD_LIMITS.urlBytes,
+  );
   if (UNSAFE_URL_CHARACTER_PATTERN.test(href)) {
     return invalid(path, expectation);
   }
@@ -604,6 +714,14 @@ function parseSafeAbsoluteUrl(
     || url.username.length > 0
     || url.password.length > 0
     || (!allowFragment && url.hash.length > 0)
+    || (
+      allowedHosts !== undefined
+      && !allowedHosts.includes(url.hostname.toLowerCase())
+      && !(allowedHostSuffixes ?? []).some((suffix) =>
+        url.hostname.length > suffix.length
+          && url.hostname.toLowerCase().endsWith(suffix))
+    )
+    || (defaultHttpsPortOnly && url.port.length > 0)
   ) {
     return invalid(path, expectation);
   }
@@ -697,11 +815,25 @@ export function parseNotificationTarget(
 export function parseNotificationAction(value: unknown): NotificationAction {
   const action = parseRecord(value, 'action');
   const type = parseEnum(action.type, NOTIFICATION_ACTION_TYPES, 'action.type');
-  const label = parseString(action.label, 'action.label');
-  const href = parseString(action.href, 'action.href');
+  const label = parseString(
+    action.label,
+    'action.label',
+    false,
+    NOTIFICATION_PAYLOAD_LIMITS.actionLabelBytes,
+  );
+  const href = parseString(
+    action.href,
+    'action.href',
+    false,
+    NOTIFICATION_PAYLOAD_LIMITS.urlBytes,
+  );
 
   if (type === 'navigate') {
-    if (!href.startsWith('/') || href.startsWith('//') || /[\\\u0000-\u001f]/.test(href)) {
+    if (
+      !href.startsWith('/')
+      || href.startsWith('//')
+      || UNSAFE_URL_CHARACTER_PATTERN.test(href)
+    ) {
       return invalid('action.href', 'a safe application-relative path');
     }
     return { type, label, href };
@@ -729,12 +861,35 @@ function parseOptionalMetadata(
   }
 
   const ancestors = new WeakSet<object>();
-  const parseJsonValue = (candidate: unknown, candidatePath: string): JsonValue => {
+  let nodeCount = 0;
+  const parseJsonValue = (
+    candidate: unknown,
+    candidatePath: string,
+    depth: number,
+  ): JsonValue => {
+    nodeCount += 1;
+    if (nodeCount > NOTIFICATION_PAYLOAD_LIMITS.metadataNodes) {
+      return invalid(
+        path,
+        `JSON metadata with at most ${NOTIFICATION_PAYLOAD_LIMITS.metadataNodes} nodes`,
+      );
+    }
+    if (depth > NOTIFICATION_PAYLOAD_LIMITS.metadataDepth) {
+      return invalid(
+        candidatePath,
+        `JSON metadata nested at most ${NOTIFICATION_PAYLOAD_LIMITS.metadataDepth} levels`,
+      );
+    }
     if (
       candidate === null
-      || typeof candidate === 'string'
       || typeof candidate === 'boolean'
     ) {
+      return candidate;
+    }
+    if (typeof candidate === 'string') {
+      if (utf8ByteLength(candidate) > NOTIFICATION_PAYLOAD_LIMITS.metadataBytes) {
+        return invalid(candidatePath, 'a bounded JSON string');
+      }
       return candidate;
     }
     if (typeof candidate === 'number') {
@@ -753,20 +908,54 @@ function parseOptionalMetadata(
     ancestors.add(candidate);
     try {
       if (Array.isArray(candidate)) {
-        return Array.from(candidate, (item, index) =>
-          parseJsonValue(item, `${candidatePath}[${index}]`));
+        if (
+          candidate.length
+            > NOTIFICATION_PAYLOAD_LIMITS.metadataNodes - nodeCount
+        ) {
+          return invalid(
+            candidatePath,
+            `a JSON array within the ${NOTIFICATION_PAYLOAD_LIMITS.metadataNodes}-node limit`,
+          );
+        }
+        const parsedItems: JsonValue[] = [];
+        for (let index = 0; index < candidate.length; index += 1) {
+          parsedItems.push(parseJsonValue(
+            candidate[index],
+            `${candidatePath}[${index}]`,
+            depth + 1,
+          ));
+        }
+        return parsedItems;
       }
       const record = parseRecord(candidate, candidatePath);
-      return Object.fromEntries(Object.entries(record).map(([key, item]) => [
-        key,
-        parseJsonValue(item, `${candidatePath}.${key}`),
-      ]));
+      const parsedEntries: Array<[string, JsonValue]> = [];
+      for (const key in record) {
+        if (!Object.prototype.hasOwnProperty.call(record, key)) {
+          continue;
+        }
+        if (utf8ByteLength(key) > NOTIFICATION_PAYLOAD_LIMITS.metadataBytes) {
+          return invalid(`${candidatePath}.${key}`, 'a bounded JSON object key');
+        }
+        parsedEntries.push([
+          key,
+          parseJsonValue(record[key], `${candidatePath}.${key}`, depth + 1),
+        ]);
+      }
+      return Object.fromEntries(parsedEntries);
     } finally {
       ancestors.delete(candidate);
     }
   };
 
-  return parseJsonValue(parseRecord(value, path), path) as JsonObject;
+  const parsed = parseJsonValue(parseRecord(value, path), path, 0) as JsonObject;
+  const serialized = JSON.stringify(parsed);
+  if (utf8ByteLength(serialized) > NOTIFICATION_PAYLOAD_LIMITS.metadataBytes) {
+    return invalid(
+      path,
+      `JSON metadata no larger than ${NOTIFICATION_PAYLOAD_LIMITS.metadataBytes} UTF-8 bytes`,
+    );
+  }
+  return parsed;
 }
 
 /** Validate and sanitize the immutable payload before insertion or serialization. */
@@ -778,11 +967,22 @@ export function parseNotificationEvent(value: unknown): NotificationEvent {
     : parseNotificationAction(event.action);
   const metadata = parseOptionalMetadata(event.metadata, 'notificationEvent.metadata');
 
+  const occurredAt = parseISO8601Timestamp(event.occurredAt);
+  const createdAt = parseISO8601Timestamp(event.createdAt);
+  if (createdAt < occurredAt) {
+    return invalid(
+      'notificationEvent.createdAt',
+      'a timestamp at or after occurredAt',
+    );
+  }
+
   return {
     id: parseString(event.id, 'notificationEvent.id'),
     deduplicationKey: parseString(
       event.deduplicationKey,
       'notificationEvent.deduplicationKey',
+      false,
+      NOTIFICATION_PAYLOAD_LIMITS.deduplicationKeyBytes,
     ),
     kind,
     severity: parseEnum(
@@ -791,12 +991,22 @@ export function parseNotificationEvent(value: unknown): NotificationEvent {
       'notificationEvent.severity',
     ),
     target: parseNotificationTarget(event.target, kind),
-    title: parseString(event.title, 'notificationEvent.title'),
-    body: parseString(event.body, 'notificationEvent.body', true),
+    title: parseString(
+      event.title,
+      'notificationEvent.title',
+      false,
+      NOTIFICATION_PAYLOAD_LIMITS.titleBytes,
+    ),
+    body: parseString(
+      event.body,
+      'notificationEvent.body',
+      true,
+      NOTIFICATION_PAYLOAD_LIMITS.bodyBytes,
+    ),
     ...(action === undefined ? {} : { action }),
     ...(metadata === undefined ? {} : { metadata }),
-    occurredAt: parseISO8601Timestamp(event.occurredAt),
-    createdAt: parseISO8601Timestamp(event.createdAt),
+    occurredAt,
+    createdAt,
   } as NotificationEvent;
 }
 
@@ -895,14 +1105,23 @@ export function parsePushSubscriptionInput(value: unknown): PushSubscriptionInpu
       'pushSubscriptionInput.endpoint',
       ['https:'],
       false,
+      undefined,
+      WEB_PUSH_ENDPOINT_HOSTS,
+      WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
+      true,
     ),
     expirationTime: parseExpirationTime(
       subscription.expirationTime,
       'pushSubscriptionInput.expirationTime',
     ),
     keys: {
-      p256dh: parseBase64Url(keys.p256dh, 'pushSubscriptionInput.keys.p256dh'),
-      auth: parseBase64Url(keys.auth, 'pushSubscriptionInput.keys.auth'),
+      p256dh: parseBase64Url(
+        keys.p256dh,
+        'pushSubscriptionInput.keys.p256dh',
+        65,
+        0x04,
+      ),
+      auth: parseBase64Url(keys.auth, 'pushSubscriptionInput.keys.auth', 16),
     },
   };
 }
@@ -915,6 +1134,23 @@ export function parsePushSubscription(value: unknown): PushSubscription {
   if (updatedAt < createdAt) {
     return invalid('pushSubscription.updatedAt', 'a timestamp at or after createdAt');
   }
+  const expiresAt = parseNullableTimestamp(
+    subscription.expiresAt,
+    'pushSubscription.expiresAt',
+  );
+  const revokedAt = parseNullableTimestamp(
+    subscription.revokedAt,
+    'pushSubscription.revokedAt',
+  );
+  if (expiresAt !== null && expiresAt < createdAt) {
+    return invalid('pushSubscription.expiresAt', 'a timestamp at or after createdAt');
+  }
+  if (revokedAt !== null && (revokedAt < createdAt || revokedAt > updatedAt)) {
+    return invalid(
+      'pushSubscription.revokedAt',
+      'a timestamp between createdAt and updatedAt',
+    );
+  }
   return {
     id: parseString(subscription.id, 'pushSubscription.id'),
     endpoint: parseSafeAbsoluteUrl(
@@ -922,15 +1158,13 @@ export function parsePushSubscription(value: unknown): PushSubscription {
       'pushSubscription.endpoint',
       ['https:'],
       false,
+      undefined,
+      WEB_PUSH_ENDPOINT_HOSTS,
+      WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
+      true,
     ),
-    expiresAt: parseNullableTimestamp(
-      subscription.expiresAt,
-      'pushSubscription.expiresAt',
-    ),
-    revokedAt: parseNullableTimestamp(
-      subscription.revokedAt,
-      'pushSubscription.revokedAt',
-    ),
+    expiresAt,
+    revokedAt,
     createdAt,
     updatedAt,
   };
@@ -1057,11 +1291,14 @@ export function parsePushDeliveryAttempt(value: unknown): PushDeliveryAttempt {
   const errorCode = parseNullableString(
     attempt.errorCode,
     'pushDeliveryAttempt.errorCode',
+    false,
+    NOTIFICATION_PAYLOAD_LIMITS.errorCodeBytes,
   );
   const errorMessage = parseNullableString(
     attempt.errorMessage,
     'pushDeliveryAttempt.errorMessage',
     true,
+    NOTIFICATION_PAYLOAD_LIMITS.errorMessageBytes,
   );
   const common = {
     id: parseString(attempt.id, 'pushDeliveryAttempt.id'),
@@ -1146,26 +1383,42 @@ export function parseNotificationSourceActivity(
   }
   const createdAt = parseISO8601Timestamp(activity.createdAt);
   const updatedAt = parseISO8601Timestamp(activity.updatedAt);
-  if (updatedAt < createdAt) {
-    return invalid('notificationSourceActivity.updatedAt', 'a timestamp at or after createdAt');
+  if (lastActivityAt < createdAt || lastActivityAt > updatedAt) {
+    return invalid(
+      'notificationSourceActivity.lastActivityAt',
+      'a timestamp between createdAt and updatedAt',
+    );
   }
+  if (completedAt !== null && completedAt > updatedAt) {
+    return invalid(
+      'notificationSourceActivity.completedAt',
+      'a timestamp at or before updatedAt',
+    );
+  }
+  const type = parseEnum(
+    activity.type,
+    NOTIFICATION_SOURCE_ACTIVITY_TYPES,
+    'notificationSourceActivity.type',
+  );
   const branch = parseOptionalString(activity.branch, 'notificationSourceActivity.branch');
+  if (type === 'task' && branch !== undefined) {
+    return invalid(
+      'notificationSourceActivity.branch',
+      'an indexing-only field',
+    );
+  }
   const metadata = parseOptionalMetadata(
     activity.metadata,
     'notificationSourceActivity.metadata',
   );
   return {
-    type: parseEnum(
-      activity.type,
-      NOTIFICATION_SOURCE_ACTIVITY_TYPES,
-      'notificationSourceActivity.type',
-    ),
+    type,
     key: parseString(activity.key, 'notificationSourceActivity.key'),
     repository: parseRepository(
       activity.repository,
       'notificationSourceActivity.repository',
     ),
-    ...(branch === undefined ? {} : { branch }),
+    ...(type === 'indexing' && branch !== undefined ? { branch } : {}),
     status,
     lastActivityAt,
     completedAt,

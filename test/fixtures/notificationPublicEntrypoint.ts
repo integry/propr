@@ -68,6 +68,19 @@ const contradictoryActivity: NotificationSourceActivity = {
   updatedAt: timestamp,
 };
 
+// @ts-expect-error A task activity cannot carry an indexing-only branch.
+const taskActivityWithBranch: NotificationSourceActivity = {
+  type: 'task',
+  key: 'task-1',
+  repository: 'integry/propr',
+  branch: 'main',
+  status: 'processing',
+  lastActivityAt: timestamp,
+  completedAt: null,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+};
+
 const jsonValue: JsonValue = { nested: [true, 1, null] } satisfies JsonObject;
 const schemas: Array<RuntimeSchema<unknown>> = [
   notificationSourceActivitySchema,
@@ -104,3 +117,4 @@ void NOTIFICATION_SOURCE_ACTIVITY_STATUSES;
 void disabledRecipient;
 void detailFreeAttempt;
 void contradictoryActivity;
+void taskActivityWithBranch;

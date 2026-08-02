@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 type KnexEnvironment = 'development' | 'production' | 'test';
-type BetterSqliteConnection = {
+export type BetterSqliteConnection = {
     pragma: (arg: string, options?: { simple?: boolean }) => unknown;
 };
 
@@ -19,7 +19,7 @@ function getSqliteBusyTimeoutMs(): number {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SQLITE_BUSY_TIMEOUT_MS;
 }
 
-function configureSqliteConnection(conn: BetterSqliteConnection): void {
+export function configureSqliteConnection(conn: BetterSqliteConnection): void {
     conn.pragma(`busy_timeout = ${getSqliteBusyTimeoutMs()}`);
     conn.pragma('journal_mode = WAL');
     conn.pragma('synchronous = NORMAL');
@@ -34,13 +34,13 @@ function configureSqliteConnection(conn: BetterSqliteConnection): void {
     }
 }
 
-function configurePooledSqliteConnection(
+export function configurePooledSqliteConnection(
     conn: BetterSqliteConnection,
-    done: (err: Error | null) => void
+    done: (err: Error | null, connection?: BetterSqliteConnection) => void
 ): void {
     try {
         configureSqliteConnection(conn);
-        done(null);
+        done(null, conn);
     } catch (error) {
         done(error as Error);
     }

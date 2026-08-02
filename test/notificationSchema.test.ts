@@ -1,18 +1,24 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import {
   NOTIFICATION_ACTION_TYPES,
   NOTIFICATION_KINDS,
+  NOTIFICATION_PAYLOAD_LIMITS,
   NOTIFICATION_SEVERITIES,
   NOTIFICATION_SOURCE_ACTIVITY_TYPES,
   NOTIFICATION_SOURCE_ACTIVITY_STATUSES,
   PUSH_DELIVERY_ATTEMPT_STATUSES,
   PUSH_DELIVERY_STATUSES,
+  MAX_CANONICAL_TIMESTAMP_EPOCH_MS,
+  WEB_PUSH_ENDPOINT_HOSTS,
+  WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
   normalizeISO8601Timestamp,
   parseISO8601Timestamp,
   parseNotification,
@@ -51,8 +57,13 @@ const migrationsDirectory = fileURLToPath(
   new URL('../packages/core/src/db/migrations/', import.meta.url),
 );
 const timestamp = '2026-08-02T08:00:00.000Z';
+const eventCreatedAt = '2026-08-02T07:59:00.000Z';
 const claimedAt = '2026-08-02T08:01:00.000Z';
 const leaseExpiresAt = '2099-08-02T08:06:00.000Z';
+const validP256dhKey = 'B' + 'A'.repeat(86);
+const validAuthKey = 'A'.repeat(22);
+const pushEndpointOrigin = 'https://fcm.googleapis.com';
+const betterSqliteModulePath = createRequire(import.meta.url).resolve('better-sqlite3');
 
 const targetsByKind = {
   plan: {
@@ -174,6 +185,8 @@ function createEvent(overrides: Partial<EventRow> = {}): EventRow {
     target_json: JSON.stringify(target),
     title: 'Notification ' + eventId,
     body: 'Body for ' + eventId,
+    occurred_at: eventCreatedAt,
+    created_at: eventCreatedAt,
     ...overrides,
   };
 }
@@ -185,10 +198,22 @@ function createSubscription(
   return {
     subscription_id: subscriptionId,
     user_id: 'user-a',
-    endpoint: 'https://push.example.test/' + subscriptionId,
-    p256dh_key: 'p256dh',
-    auth_key: 'auth',
+    endpoint: pushEndpointOrigin + '/fcm/send/' + subscriptionId,
+    p256dh_key: validP256dhKey,
+    auth_key: validAuthKey,
+    created_at: timestamp,
+    updated_at: timestamp,
     ...overrides,
+  };
+}
+
+function sourceActivityClock(lastActivityAt: string): {
+  created_at: string;
+  updated_at: string;
+} {
+  return {
+    created_at: eventCreatedAt,
+    updated_at: lastActivityAt,
   };
 }
 
@@ -205,9 +230,7 @@ async function seedEventAndRecipients(
       user_id: recipient.userId,
       inbox_enabled: recipient.inboxEnabled ?? true,
       push_enabled: recipient.pushEnabled ?? true,
-      ...(recipient.createdAt === undefined
-        ? {}
-        : { created_at: recipient.createdAt }),
+      created_at: recipient.createdAt ?? timestamp,
     })),
   );
   return event;
@@ -280,6 +303,88 @@ async function claimJobUsingDatabaseTime(
      RETURNING *`,
     [claimToken, leaseModifier, jobId],
   ) as Promise<Array<Record<string, unknown>>>;
+}
+
+function createCrossProcessClaimWorker(
+  filename: string,
+  jobId: string,
+  claimToken: string,
+  gate: SharedArrayBuffer,
+): { ready: Promise<void>; result: Promise<string | null> } {
+  const worker = new Worker(`
+    const { parentPort, workerData } = require('node:worker_threads');
+    const Database = require(workerData.betterSqliteModulePath);
+    const database = new Database(workerData.filename);
+    database.pragma('busy_timeout = 30000');
+    database.pragma('foreign_keys = ON');
+    database.pragma('recursive_triggers = ON');
+    const gate = new Int32Array(workerData.gate);
+    parentPort.postMessage({ type: 'ready' });
+    Atomics.wait(gate, 0, 0);
+    try {
+      const rows = database.prepare(\`
+        UPDATE push_delivery_jobs
+        SET status = 'processing',
+            claim_token = ?,
+            claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+5 minutes'),
+            next_retry_at = NULL
+        WHERE job_id = (
+          SELECT job_id
+          FROM push_delivery_claimable_jobs
+          WHERE job_id = ?
+        )
+        RETURNING claim_token
+      \`).all(workerData.claimToken, workerData.jobId);
+      parentPort.postMessage({
+        type: 'result',
+        claimToken: rows[0]?.claim_token ?? null,
+      });
+    } catch (error) {
+      parentPort.postMessage({
+        type: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      database.close();
+    }
+  `, {
+    eval: true,
+    workerData: {
+      betterSqliteModulePath,
+      filename,
+      jobId,
+      claimToken,
+      gate,
+    },
+  });
+
+  let markReady: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    markReady = resolve;
+  });
+  const result = new Promise<string | null>((resolve, reject) => {
+    worker.on('message', (message: {
+      type: 'ready' | 'result' | 'error';
+      claimToken?: string | null;
+      message?: string;
+    }) => {
+      if (message.type === 'ready') {
+        markReady?.();
+      } else if (message.type === 'result') {
+        resolve(message.claimToken ?? null);
+      } else {
+        reject(new Error(message.message ?? 'claim worker failed'));
+      }
+    });
+    worker.on('error', reject);
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error('claim worker exited with code ' + code));
+      }
+    });
+  });
+  return { ready, result };
 }
 
 async function recordAttempt(
@@ -481,6 +586,32 @@ describe('durable notification schema', { concurrency: false }, () => {
     assert.ok(
       retryPlan.some(({ detail }) => detail.includes('push_delivery_jobs_retry_idx')),
     );
+
+    const dispatcherPlan = await db.raw(
+      `EXPLAIN QUERY PLAN
+       SELECT job_id
+       FROM push_delivery_claimable_jobs
+       ORDER BY CASE status
+         WHEN 'pending' THEN created_at
+         WHEN 'retryable' THEN next_retry_at
+         ELSE lease_expires_at
+       END, job_id
+       LIMIT 1`,
+    ) as Array<{ detail: string }>;
+    for (const indexName of [
+      'push_delivery_jobs_pending_idx',
+      'push_delivery_jobs_retry_idx',
+      'push_delivery_jobs_processing_lease_idx',
+    ]) {
+      assert.ok(
+        dispatcherPlan.some(({ detail }) => detail.includes(indexName)),
+        'dispatcher should use ' + indexName,
+      );
+    }
+    assert.strictEqual(
+      dispatcherPlan.some(({ detail }) => /^SCAN job$/i.test(detail)),
+      false,
+    );
   });
 
   test('accepts every event, action, activity, and attempt enum value', async () => {
@@ -525,6 +656,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         repository: 'integry/propr',
         status: 'processing',
         last_activity_at: timestamp,
+        ...sourceActivityClock(timestamp),
       })),
     );
 
@@ -606,6 +738,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         repository: 'integry/propr',
         status: 'processing',
         last_activity_at: timestamp,
+        ...sourceActivityClock(timestamp),
       }),
       /notification_source_activity_type_check/i,
     );
@@ -616,6 +749,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         repository: 'integry/propr',
         status: 'running',
         last_activity_at: timestamp,
+        ...sourceActivityClock(timestamp),
       }),
       /notification_source_activity_status_check/i,
     );
@@ -627,8 +761,35 @@ describe('durable notification schema', { concurrency: false }, () => {
         status: 'processing',
         last_activity_at: timestamp,
         completed_at: timestamp,
+        ...sourceActivityClock(timestamp),
       }),
       /notification_source_activity_completion_state_check/i,
+    );
+    await assert.rejects(
+      db('notification_source_activity').insert({
+        activity_type: 'task',
+        activity_key: 'task-with-branch',
+        repository: 'integry/propr',
+        branch: 'main',
+        status: 'processing',
+        last_activity_at: timestamp,
+        ...sourceActivityClock(timestamp),
+      }),
+      /notification_source_activity_required_text_check/i,
+    );
+    assert.throws(
+      () => parseNotificationSourceActivity({
+        type: 'task',
+        key: 'task-with-branch',
+        repository: 'integry/propr',
+        branch: 'main',
+        status: 'processing',
+        lastActivityAt: timestamp,
+        completedAt: null,
+        createdAt: eventCreatedAt,
+        updatedAt: timestamp,
+      }),
+      /indexing-only field/,
     );
   });
 
@@ -706,6 +867,27 @@ describe('durable notification schema', { concurrency: false }, () => {
           ...overrides,
         })),
         error,
+      );
+    }
+
+    const duplicateKeyPayloads: Array<Partial<EventRow>> = [
+      {
+        target_json: '{"type":"task","type":"review","repository":"integry/propr","taskId":"task-1","prNumber":1}',
+      },
+      {
+        action_json: '{"type":"navigate","type":"external_link","label":"Open","href":"/tasks/1","href":"https://example.test/tasks/1"}',
+      },
+      {
+        metadata_json: '{"nested":{"worker":"first","worker":"second"}}',
+      },
+    ];
+    for (const [index, overrides] of duplicateKeyPayloads.entries()) {
+      await assert.rejects(
+        db('notification_events').insert(createEvent({
+          event_id: 'duplicate-json-key-' + index,
+          ...overrides,
+        })),
+        /must not contain duplicate object keys/,
       );
     }
 
@@ -881,7 +1063,10 @@ describe('durable notification schema', { concurrency: false }, () => {
       );
     }
 
-    for (let codepoint = 0; codepoint <= 31; codepoint += 1) {
+    for (const codepoint of [
+      ...Array.from({ length: 32 }, (_, index) => index),
+      127,
+    ]) {
       const action = {
         type: 'navigate',
         label: 'Open',
@@ -936,6 +1121,10 @@ describe('durable notification schema', { concurrency: false }, () => {
       () => parseISO8601Timestamp('2026-02-31T08:00:00.000Z'),
       /canonical ISO-8601/,
     );
+    assert.throws(
+      () => normalizeISO8601Timestamp(8_640_000_000_000_000),
+      /four-digit-year range/,
+    );
 
     await assert.rejects(
       db('notification_events').insert(createEvent({
@@ -951,6 +1140,8 @@ describe('durable notification schema', { concurrency: false }, () => {
         repository: 'integry/propr',
         status: 'processing',
         last_activity_at: '2026-02-31T08:00:00.000Z',
+        created_at: '2020-01-01T00:00:00.000Z',
+        updated_at: timestamp,
       }),
       /notification_source_activity_last_activity_at_check/i,
     );
@@ -1061,8 +1252,35 @@ describe('durable notification schema', { concurrency: false }, () => {
   });
 
   test('enforces associated timestamp ordering and database-managed updated_at', async () => {
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'event-created-before-occurrence',
+        occurred_at: timestamp,
+        created_at: eventCreatedAt,
+      })),
+      /notification_events_temporal_order_check/i,
+    );
+    assert.throws(
+      () => parseNotificationEvent({
+        ...createContractEvent(),
+        occurredAt: timestamp,
+        createdAt: eventCreatedAt,
+      }),
+      /at or after occurredAt/,
+    );
+
     const event = createEvent({ event_id: 'temporal-event' });
     await db('notification_events').insert(event);
+    await assert.rejects(
+      db('notification_user_states').insert({
+        event_id: event.event_id,
+        user_id: 'recipient-before-event',
+        inbox_enabled: true,
+        push_enabled: false,
+        created_at: '2026-08-02T07:58:00.000Z',
+      }),
+      /assignment must follow event creation/,
+    );
     await assert.rejects(
       db('notification_user_states').insert({
         event_id: event.event_id,
@@ -1087,6 +1305,26 @@ describe('durable notification schema', { concurrency: false }, () => {
       user_id: 'temporal-user',
     });
     await db('push_subscriptions').insert(subscription);
+    await assert.rejects(
+      db('push_subscriptions').insert(createSubscription({
+        subscription_id: 'revoked-before-creation',
+        revoked_at: eventCreatedAt,
+      })),
+      /push_subscriptions_temporal_order_check/i,
+    );
+    for (const rewrite of [
+      { endpoint: pushEndpointOrigin + '/fcm/send/active-rewrite' },
+      { p256dh_key: 'B' + 'Q'.repeat(86) },
+      { user_id: 'rewritten-user' },
+      { subscription_id: 'rewritten-subscription-id' },
+    ]) {
+      await assert.rejects(
+        db('push_subscriptions')
+          .where({ subscription_id: subscription.subscription_id })
+          .update(rewrite),
+        /push subscription versions are immutable/,
+      );
+    }
     await insertDeliveryJob(db, {
       jobId: 'temporal-job',
       eventId: event.event_id,
@@ -1106,6 +1344,32 @@ describe('durable notification schema', { concurrency: false }, () => {
         claim_token: 'temporal-worker',
       }),
       /push_delivery_attempts_temporal_order_check/i,
+    );
+
+    await assert.rejects(
+      db('notification_source_activity').insert({
+        activity_type: 'task',
+        activity_key: 'activity-before-creation',
+        repository: 'integry/propr',
+        status: 'processing',
+        last_activity_at: eventCreatedAt,
+        created_at: timestamp,
+        updated_at: timestamp,
+      }),
+      /invalid notification source activity timestamps/,
+    );
+    assert.throws(
+      () => parseNotificationSourceActivity({
+        type: 'task',
+        key: 'activity-before-creation',
+        repository: 'integry/propr',
+        status: 'processing',
+        lastActivityAt: eventCreatedAt,
+        completedAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+      /between createdAt and updatedAt/,
     );
 
     await assert.rejects(
@@ -1243,20 +1507,49 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
   });
 
-  test('persists only structurally valid HTTPS push endpoints', async () => {
-    await db('push_subscriptions').insert(createSubscription({
-      subscription_id: 'valid-port-endpoint',
-      endpoint: 'https://push.example.test:8443/subscription?token=abc',
-    }));
+  test('persists only vetted Web Push service endpoints', async () => {
+    for (const [index, host] of WEB_PUSH_ENDPOINT_HOSTS.entries()) {
+      const endpoint = 'https://' + host + '/push/subscription-' + index;
+      await db('push_subscriptions').insert(createSubscription({
+        subscription_id: 'valid-push-host-' + index,
+        endpoint,
+      }));
+      assert.strictEqual(
+        parsePushSubscriptionInput({
+          endpoint,
+          expirationTime: null,
+          keys: { p256dh: validP256dhKey, auth: validAuthKey },
+        }).endpoint,
+        endpoint,
+      );
+    }
+    for (const [index, suffix] of WEB_PUSH_ENDPOINT_HOST_SUFFIXES.entries()) {
+      const endpoint = 'https://web' + suffix + '/push/subscription-' + index;
+      await db('push_subscriptions').insert(createSubscription({
+        subscription_id: 'valid-push-suffix-' + index,
+        endpoint,
+      }));
+      assert.strictEqual(
+        parsePushSubscriptionInput({
+          endpoint,
+          expirationTime: null,
+          keys: { p256dh: validP256dhKey, auth: validAuthKey },
+        }).endpoint,
+        endpoint,
+      );
+    }
 
     const invalidEndpoints = [
       'https://?x',
-      'https://user:secret@push.example.test/subscription',
-      'https://push.example.test:not-a-port/subscription',
-      'https://push.example.test:65536/subscription',
-      'https://push.example.test/#fragment',
-      'https://push.example.test\\redirect',
-      'http://push.example.test/subscription',
+      'https://user:secret@fcm.googleapis.com/fcm/send/subscription',
+      'https://fcm.googleapis.com:not-a-port/fcm/send/subscription',
+      'https://fcm.googleapis.com:8443/fcm/send/subscription',
+      'https://fcm.googleapis.com/fcm/send/subscription#fragment',
+      'https://fcm.googleapis.com\\redirect',
+      'http://fcm.googleapis.com/fcm/send/subscription',
+      'https://localhost/subscription',
+      'https://127.0.0.1/subscription',
+      'https://push.attacker.example/subscription',
     ];
     for (const [index, endpoint] of invalidEndpoints.entries()) {
       await assert.rejects(
@@ -1332,6 +1625,7 @@ describe('durable notification schema', { concurrency: false }, () => {
       { value: Number.POSITIVE_INFINITY },
       { value: new Date(timestamp) },
       { value: new Array(1) },
+      { value: new Array(NOTIFICATION_PAYLOAD_LIMITS.metadataNodes + 1) },
       circular,
     ];
     for (const candidate of invalidMetadata) {
@@ -1350,6 +1644,132 @@ describe('durable notification schema', { concurrency: false }, () => {
         metadata_json: '{"nested":{"value":1e400}}',
       })),
       /metadata numbers must be finite/i,
+    );
+  });
+
+  test('bounds durable text, Web Push keys, and metadata complexity', async () => {
+    const oversizedTitle = 't'.repeat(NOTIFICATION_PAYLOAD_LIMITS.titleBytes + 1);
+    const oversizedBody = 'b'.repeat(NOTIFICATION_PAYLOAD_LIMITS.bodyBytes + 1);
+    const oversizedIdentifier = 'i'.repeat(
+      NOTIFICATION_PAYLOAD_LIMITS.identifierBytes + 1,
+    );
+    for (const [field, value] of [
+      ['title', oversizedTitle],
+      ['body', oversizedBody],
+      ['id', oversizedIdentifier],
+    ] as const) {
+      assert.throws(
+        () => parseNotificationEvent({ ...createContractEvent(), [field]: value }),
+        /UTF-8 bytes/,
+      );
+    }
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'oversized-title',
+        title: oversizedTitle,
+      })),
+      /notification_events_required_text_check/i,
+    );
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'oversized-body',
+        body: oversizedBody,
+      })),
+      /notification_events_required_text_check/i,
+    );
+    await assert.rejects(
+      db('notification_events').insert(createEvent({ event_id: oversizedIdentifier })),
+      /notification_events_required_text_check/i,
+    );
+
+    const oversizedEndpoint = pushEndpointOrigin + '/fcm/send/'
+      + 'x'.repeat(NOTIFICATION_PAYLOAD_LIMITS.urlBytes);
+    assert.throws(
+      () => parsePushSubscriptionInput({
+        endpoint: oversizedEndpoint,
+        expirationTime: null,
+        keys: { p256dh: validP256dhKey, auth: validAuthKey },
+      }),
+      /UTF-8 bytes/,
+    );
+    await assert.rejects(
+      db('push_subscriptions').insert(createSubscription({
+        subscription_id: 'oversized-endpoint',
+        endpoint: oversizedEndpoint,
+      })),
+      /push_subscriptions_required_values_check/i,
+    );
+    await assert.rejects(
+      db('push_subscriptions').insert(createSubscription({
+        subscription_id: 'short-web-push-keys',
+        p256dh_key: 'p256dh',
+        auth_key: 'auth',
+      })),
+      /push_subscriptions_required_values_check/i,
+    );
+
+    const oversizedMetadata = {
+      value: 'm'.repeat(NOTIFICATION_PAYLOAD_LIMITS.metadataBytes),
+    };
+    assert.throws(
+      () => parseNotificationEvent({
+        ...createContractEvent(),
+        metadata: oversizedMetadata,
+      }),
+      /metadata no larger/,
+    );
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'oversized-metadata',
+        metadata_json: JSON.stringify(oversizedMetadata),
+      })),
+      /notification_events_metadata_json_check/i,
+    );
+
+    let deeplyNested: Record<string, unknown> = { leaf: true };
+    for (let depth = 0; depth <= NOTIFICATION_PAYLOAD_LIMITS.metadataDepth; depth += 1) {
+      deeplyNested = { nested: deeplyNested };
+    }
+    assert.throws(
+      () => parseNotificationEvent({
+        ...createContractEvent(),
+        metadata: deeplyNested,
+      }),
+      /nested at most/,
+    );
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'deeply-nested-metadata',
+        metadata_json: JSON.stringify(deeplyNested),
+      })),
+      /metadata exceeds structural limits/,
+    );
+
+    const event = await seedEventAndRecipients(db, undefined, {
+      event_id: 'oversized-attempt-event',
+    });
+    const subscription = createSubscription({
+      subscription_id: 'oversized-attempt-subscription',
+    });
+    await db('push_subscriptions').insert(subscription);
+    await insertDeliveryJob(db, {
+      jobId: 'oversized-attempt-job',
+      eventId: event.event_id,
+      subscriptionId: subscription.subscription_id,
+    });
+    await claimJob(db, 'oversized-attempt-job', 'oversized-attempt-worker');
+    await assert.rejects(
+      db('push_delivery_attempts').insert({
+        attempt_id: 'oversized-error-attempt',
+        job_id: 'oversized-attempt-job',
+        attempt_number: 1,
+        status: 'failed',
+        error_code: 'delivery-error',
+        error_message: 'e'.repeat(NOTIFICATION_PAYLOAD_LIMITS.errorMessageBytes + 1),
+        attempted_at: '2026-08-02T08:02:00.000Z',
+        claim_token: 'oversized-attempt-worker',
+      }),
+      /push_delivery_attempts_text_values_check/i,
     );
   });
 
@@ -1389,41 +1809,63 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
 
     const input = parsePushSubscriptionInput({
-      endpoint: 'https://push.example.test/subscription',
+      endpoint: pushEndpointOrigin + '/fcm/send/subscription',
       expirationTime: 1_800_000_000_000,
-      keys: { p256dh: 'p256dh', auth: 'auth' },
+      keys: { p256dh: validP256dhKey, auth: validAuthKey },
     });
-    assert.strictEqual(input.endpoint, 'https://push.example.test/subscription');
+    assert.strictEqual(input.endpoint, pushEndpointOrigin + '/fcm/send/subscription');
     for (const endpoint of [
       'https://?x',
-      'https://user:secret@push.example.test/subscription',
-      'https://push.example.test:invalid/subscription',
-      'http://push.example.test/subscription',
+      'https://user:secret@fcm.googleapis.com/fcm/send/subscription',
+      'https://fcm.googleapis.com:invalid/fcm/send/subscription',
+      'http://fcm.googleapis.com/fcm/send/subscription',
+      'https://localhost/subscription',
+      'https://push.attacker.example/subscription',
     ]) {
       assert.throws(
         () => parsePushSubscriptionInput({
           endpoint,
           expirationTime: null,
-          keys: { p256dh: 'p256dh', auth: 'auth' },
+          keys: { p256dh: validP256dhKey, auth: validAuthKey },
         }),
         /URL/,
       );
     }
     assert.throws(
       () => parsePushSubscriptionInput({
-        endpoint: 'https://push.example.test/subscription',
-        expirationTime: Number.POSITIVE_INFINITY,
-        keys: { p256dh: 'p256dh', auth: 'auth' },
+        endpoint: pushEndpointOrigin + '/fcm/send/subscription',
+        expirationTime: MAX_CANONICAL_TIMESTAMP_EPOCH_MS + 1,
+        keys: { p256dh: validP256dhKey, auth: validAuthKey },
       }),
       /epoch-millisecond/,
     );
+    assert.strictEqual(
+      parsePushSubscriptionInput({
+        endpoint: pushEndpointOrigin + '/fcm/send/max-expiration',
+        expirationTime: MAX_CANONICAL_TIMESTAMP_EPOCH_MS,
+        keys: { p256dh: validP256dhKey, auth: validAuthKey },
+      }).expirationTime,
+      MAX_CANONICAL_TIMESTAMP_EPOCH_MS,
+    );
+    assert.strictEqual(
+      normalizeISO8601Timestamp(MAX_CANONICAL_TIMESTAMP_EPOCH_MS),
+      '9999-12-31T23:59:59.999Z',
+    );
     assert.throws(
       () => parsePushSubscriptionInput({
-        endpoint: 'https://push.example.test/subscription',
+        endpoint: pushEndpointOrigin + '/fcm/send/subscription',
         expirationTime: null,
-        keys: { p256dh: '***', auth: 'auth' },
+        keys: { p256dh: '***', auth: validAuthKey },
       }),
       /base64url/,
+    );
+    assert.throws(
+      () => parsePushSubscriptionInput({
+        endpoint: pushEndpointOrigin + '/fcm/send/subscription',
+        expirationTime: null,
+        keys: { p256dh: validP256dhKey, auth: 'auth' },
+      }),
+      /16-byte base64url/,
     );
 
     const subscription = parsePushSubscription({
@@ -1533,14 +1975,17 @@ describe('durable notification schema', { concurrency: false }, () => {
     const earlierEvent = createEvent({
       event_id: 'occurred-earlier',
       occurred_at: '2026-08-01T08:00:00.000Z',
+      created_at: '2026-08-02T08:30:00.000Z',
     });
     const laterEvent = createEvent({
       event_id: 'occurred-later',
       occurred_at: '2026-08-02T08:00:00.000Z',
+      created_at: '2026-08-02T08:30:00.000Z',
     });
     const pushOnlyEvent = createEvent({
       event_id: 'push-only-hidden',
       occurred_at: timestamp,
+      created_at: '2026-08-02T08:30:00.000Z',
     });
     await db('notification_events').insert([earlierEvent, laterEvent, pushOnlyEvent]);
     await db('notification_user_states').insert([
@@ -1564,7 +2009,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         user_id: 'user-a',
         inbox_enabled: false,
         push_enabled: true,
-        created_at: '2026-08-02T11:00:00.000Z',
+        created_at: '2026-08-02T09:30:00.000Z',
       },
     ]);
 
@@ -1729,19 +2174,28 @@ describe('durable notification schema', { concurrency: false }, () => {
       assert.strictEqual(retryableClaim.length, 1);
       await new Promise((resolve) => setTimeout(resolve, 250));
 
-      const [firstReclaim, secondReclaim] = await Promise.all([
-        claimJobUsingDatabaseTime(
-          firstConnection,
-          'three-state-claim-job',
-          'expired-worker-a',
-        ),
-        claimJobUsingDatabaseTime(
-          secondConnection,
-          'three-state-claim-job',
-          'expired-worker-b',
-        ),
+      const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+      const firstReclaim = createCrossProcessClaimWorker(
+        filename,
+        'three-state-claim-job',
+        'expired-worker-a',
+        gate,
+      );
+      const secondReclaim = createCrossProcessClaimWorker(
+        filename,
+        'three-state-claim-job',
+        'expired-worker-b',
+        gate,
+      );
+      await Promise.all([firstReclaim.ready, secondReclaim.ready]);
+      const gateView = new Int32Array(gate);
+      Atomics.store(gateView, 0, 1);
+      Atomics.notify(gateView, 0, 2);
+      const competingResults = await Promise.all([
+        firstReclaim.result,
+        secondReclaim.result,
       ]);
-      assert.strictEqual(firstReclaim.length + secondReclaim.length, 1);
+      assert.strictEqual(competingResults.filter((result) => result !== null).length, 1);
       const stored = await firstConnection('push_delivery_jobs')
         .where({ job_id: 'three-state-claim-job' })
         .first();
@@ -1841,7 +2295,7 @@ describe('durable notification schema', { concurrency: false }, () => {
     const event = await seedEventAndRecipients(db);
     const subscription = createSubscription({
       subscription_id: 'subscription-revoked',
-      endpoint: 'https://push.example.test/versioned-endpoint',
+      endpoint: pushEndpointOrigin + '/fcm/send/versioned-endpoint',
     });
     await db('push_subscriptions').insert(subscription);
     await insertDeliveryJob(db, {
@@ -1874,6 +2328,11 @@ describe('durable notification schema', { concurrency: false }, () => {
       .first();
     assert.strictEqual(cancelled.status, 'cancelled');
     assert.strictEqual(historicalAttempt.status, 'retryable');
+    const revokedSubscription = await db('push_subscriptions')
+      .where({ subscription_id: subscription.subscription_id })
+      .first();
+    assert.strictEqual(revokedSubscription.p256dh_key, null);
+    assert.strictEqual(revokedSubscription.auth_key, null);
     assert.strictEqual(
       await db('push_delivery_claimable_jobs').where({ job_id: 'revoked-job' }).first(),
       undefined,
@@ -1882,8 +2341,8 @@ describe('durable notification schema', { concurrency: false }, () => {
     await assert.rejects(
       db('push_subscriptions')
         .where({ subscription_id: subscription.subscription_id })
-        .update({ endpoint: 'https://push.example.test/rewritten' }),
-      /revoked push subscriptions are immutable/,
+        .update({ endpoint: pushEndpointOrigin + '/fcm/send/rewritten' }),
+      /push subscription versions are immutable/,
     );
     await assert.rejects(
       db('push_subscriptions')
@@ -1969,114 +2428,71 @@ describe('durable notification schema', { concurrency: false }, () => {
     const expiredEvent = await seedEventAndRecipients(db, [{ userId: 'expired-user' }], {
       event_id: 'expired-event',
     });
-    const expiredSubscription = createSubscription({
-      subscription_id: 'expired-subscription',
-      user_id: 'expired-user',
-      expires_at: '2020-01-02T00:00:00.000Z',
+    await db('push_subscriptions').insert({
+      ...createSubscription({
+        subscription_id: 'expired-subscription',
+        user_id: 'expired-user',
+      }),
+      expires_at: db.raw(
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+0.150 seconds')",
+      ),
     });
-    await db('push_subscriptions').insert(expiredSubscription);
-    await insertDeliveryJob(db, {
-      jobId: 'expired-job',
-      eventId: expiredEvent.event_id,
-      userId: 'expired-user',
-      subscriptionId: expiredSubscription.subscription_id,
-      createdAt: '2020-01-01T00:00:00.000Z',
-    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await assert.rejects(
+      insertDeliveryJob(db, {
+        jobId: 'expired-job',
+        eventId: expiredEvent.event_id,
+        userId: 'expired-user',
+        subscriptionId: 'expired-subscription',
+        // A caller-supplied old timestamp must not bypass current expiration.
+        createdAt: timestamp,
+      }),
+      /push delivery requires an eligible recipient and active subscription/,
+    );
     assert.strictEqual(
-      await db('push_delivery_claimable_jobs').where({ job_id: 'expired-job' }).first(),
+      await db('push_delivery_jobs').where({ job_id: 'expired-job' }).first(),
       undefined,
     );
-    await assert.rejects(
-      db('push_delivery_jobs')
-        .where({ job_id: 'expired-job' })
-        .update({
-          status: 'processing',
-          claim_token: 'expired-worker',
-          claimed_at: timestamp,
-          lease_expires_at: leaseExpiresAt,
-        }),
-      /cannot claim delivery for an inactive subscription/,
-    );
-    assert.ok(
-      await db('push_delivery_jobs_requiring_cancellation')
-        .where({ job_id: 'expired-job' })
-        .first(),
-    );
-    const cleanup = await db.raw(
-      `UPDATE push_delivery_jobs
-       SET status = 'cancelled',
-           next_retry_at = NULL,
-           claim_token = NULL,
-           claimed_at = NULL,
-           lease_expires_at = NULL
-       WHERE job_id = (
-         SELECT job_id
-         FROM push_delivery_jobs_requiring_cancellation
-         WHERE job_id = ?
-       )
-       RETURNING *`,
-      ['expired-job'],
-    ) as Array<Record<string, unknown>>;
-    assert.strictEqual(cleanup.length, 1);
-    assert.strictEqual(cleanup[0]?.status, 'cancelled');
   });
 
-  test('cancels existing jobs when an active subscription becomes expired', async () => {
+  test('versions subscription refreshes and cleans up natural expiration', async () => {
     const event = await seedEventAndRecipients(db);
     const subscription = createSubscription({
-      subscription_id: 'newly-expired-subscription',
+      subscription_id: 'subscription-version-1',
       expires_at: '2099-01-01T00:00:00.000Z',
     });
     await db('push_subscriptions').insert(subscription);
     await insertDeliveryJob(db, {
-      jobId: 'newly-expired-job',
+      jobId: 'version-1-job',
       eventId: event.event_id,
       subscriptionId: subscription.subscription_id,
     });
 
+    await assert.rejects(
+      db('push_subscriptions')
+        .where({ subscription_id: subscription.subscription_id })
+        .update({ expires_at: '2098-01-01T00:00:00.000Z' }),
+      /push subscription versions are immutable/,
+    );
     await db('push_subscriptions')
       .where({ subscription_id: subscription.subscription_id })
-      .update({ expires_at: '2020-01-01T00:00:00.000Z' });
-
-    const job = await db('push_delivery_jobs')
-      .where({ job_id: 'newly-expired-job' })
-      .first();
-    assert.strictEqual(job.status, 'cancelled');
-
-    const processingSubscription = createSubscription({
-      subscription_id: 'newly-expired-processing-subscription',
-      expires_at: '2099-01-01T00:00:00.000Z',
-    });
-    await db('push_subscriptions').insert(processingSubscription);
-    await insertDeliveryJob(db, {
-      jobId: 'newly-expired-processing-job',
-      eventId: event.event_id,
-      subscriptionId: processingSubscription.subscription_id,
-    });
-    await claimJob(db, 'newly-expired-processing-job', 'expiry-worker');
-    await db('push_subscriptions')
-      .where({ subscription_id: processingSubscription.subscription_id })
-      .update({ expires_at: '2020-01-01T00:00:00.000Z' });
+      .update({ revoked_at: '2026-08-02T08:03:00.000Z' });
     assert.strictEqual(
-      (await db('push_delivery_jobs')
-        .where({ job_id: 'newly-expired-processing-job' })
-        .first()).status,
-      'processing',
+      (await db('push_delivery_jobs').where({ job_id: 'version-1-job' }).first()).status,
+      'cancelled',
     );
-    await recordAttempt(db, {
-      attemptId: 'attempt-after-expiry-update',
-      jobId: 'newly-expired-processing-job',
-      attemptNumber: 1,
-      claimToken: 'expiry-worker',
-      status: 'delivered',
-      attemptedAt: '2026-08-02T08:02:00.000Z',
-      responseStatus: 201,
+
+    const refreshed = createSubscription({
+      subscription_id: 'subscription-version-2-refresh',
+      endpoint: subscription.endpoint,
+      expires_at: '2098-01-01T00:00:00.000Z',
     });
+    await db('push_subscriptions').insert(refreshed);
     assert.strictEqual(
-      (await db('push_delivery_jobs')
-        .where({ job_id: 'newly-expired-processing-job' })
-        .first()).status,
-      'delivered',
+      (await db('push_subscriptions')
+        .where({ subscription_id: refreshed.subscription_id })
+        .first()).revoked_at,
+      null,
     );
 
     await db('push_subscriptions').insert({
@@ -2217,6 +2633,7 @@ describe('durable notification schema', { concurrency: false }, () => {
       status: 'processing',
       last_activity_at: '2026-08-02T08:10:00.000Z',
       metadata_json: JSON.stringify({ worker: 'new-worker' }),
+      ...sourceActivityClock('2026-08-02T08:10:00.000Z'),
     });
 
     await db('notification_source_activity')
@@ -2238,6 +2655,16 @@ describe('durable notification schema', { concurrency: false }, () => {
     assert.strictEqual(activity.status, 'processing');
     assert.strictEqual(JSON.parse(activity.metadata_json).worker, 'new-worker');
 
+    await assert.rejects(
+      db('notification_source_activity')
+        .where({ activity_type: 'task', activity_key: 'task-monotonic' })
+        .update({
+          status: 'queued',
+          last_activity_at: '2026-08-02T08:11:00.000Z',
+        }),
+      /status cannot regress/,
+    );
+
     await db('notification_source_activity')
       .insert({
         activity_type: 'task',
@@ -2246,6 +2673,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         status: 'completed',
         last_activity_at: '2026-08-02T08:20:00.000Z',
         completed_at: '2026-08-02T08:20:00.000Z',
+        ...sourceActivityClock('2026-08-02T08:20:00.000Z'),
       })
       .onConflict(['activity_type', 'activity_key'])
       .merge(['repository', 'status', 'last_activity_at', 'completed_at']);
@@ -2257,6 +2685,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         status: 'processing',
         last_activity_at: '2026-08-02T08:30:00.000Z',
         completed_at: null,
+        ...sourceActivityClock('2026-08-02T08:30:00.000Z'),
       })
       .onConflict(['activity_type', 'activity_key'])
       .merge(['repository', 'status', 'last_activity_at', 'completed_at']);
@@ -2335,6 +2764,94 @@ describe('notification migration runner compatibility', { concurrency: false }, 
       assert.deepStrictEqual(repeatedMigrations, []);
     } finally {
       await db.destroy();
+    }
+  });
+});
+
+describe('production SQLite connection initialization', { concurrency: false }, () => {
+  test('applies and verifies required pragmas and reports callback errors', async () => {
+    const temporaryDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'propr-notification-connection-'),
+    );
+    const previousDataDirectory = process.env.DATA_DIR;
+    const previousNodeEnvironment = process.env.NODE_ENV;
+    process.env.DATA_DIR = temporaryDirectory;
+    process.env.NODE_ENV = 'production';
+
+    const connectionModule = await import('../packages/core/src/db/connection.ts');
+    try {
+      const productionConfig = connectionModule
+        .createKnexConfigForMigrations().production;
+      assert.strictEqual(
+        productionConfig.pool?.afterCreate,
+        connectionModule.configurePooledSqliteConnection,
+      );
+
+      const pragmaCalls: string[] = [];
+      const validConnection = {
+        pragma(statement: string, options?: { simple?: boolean }): unknown {
+          pragmaCalls.push(statement);
+          if (options?.simple && statement === 'foreign_keys') {
+            return 1;
+          }
+          if (options?.simple && statement === 'recursive_triggers') {
+            return 1;
+          }
+          return undefined;
+        },
+      };
+      await new Promise<void>((resolve, reject) => {
+        connectionModule.configurePooledSqliteConnection(
+          validConnection,
+          (error, configuredConnection) => {
+            if (error !== null) {
+              reject(error);
+              return;
+            }
+            assert.strictEqual(configuredConnection, validConnection);
+            resolve();
+          },
+        );
+      });
+      for (const pragma of [
+        'journal_mode = WAL',
+        'foreign_keys = ON',
+        'recursive_triggers = ON',
+        'foreign_keys',
+        'recursive_triggers',
+      ]) {
+        assert.ok(pragmaCalls.includes(pragma), pragma);
+      }
+
+      await new Promise<void>((resolve) => {
+        connectionModule.configurePooledSqliteConnection(
+          {
+            pragma(statement: string, options?: { simple?: boolean }): unknown {
+              if (statement === 'foreign_keys' && options?.simple) {
+                return 0;
+              }
+              return 1;
+            },
+          },
+          (error) => {
+            assert.match(error?.message ?? '', /foreign_keys pragma must be enabled/);
+            resolve();
+          },
+        );
+      });
+    } finally {
+      await connectionModule.closeConnection();
+      if (previousDataDirectory === undefined) {
+        delete process.env.DATA_DIR;
+      } else {
+        process.env.DATA_DIR = previousDataDirectory;
+      }
+      if (previousNodeEnvironment === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnvironment;
+      }
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
     }
   });
 });

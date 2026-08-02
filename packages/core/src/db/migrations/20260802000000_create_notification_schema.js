@@ -19,6 +19,27 @@ const JAVASCRIPT_WHITESPACE_CODEPOINTS = [
   8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288, 65279,
 ];
 const CONTROL_CODEPOINTS = [...Array.from({ length: 32 }, (_, index) => index), 127];
+const WEB_PUSH_ENDPOINT_HOSTS = [
+  'fcm.googleapis.com',
+  'updates.push.services.mozilla.com',
+  'push.services.mozilla.com',
+];
+const WEB_PUSH_ENDPOINT_HOST_SUFFIXES = ['.push.apple.com'];
+const PAYLOAD_LIMITS = {
+  identifierBytes: 255,
+  deduplicationKeyBytes: 512,
+  repositoryBytes: 255,
+  titleBytes: 256,
+  bodyBytes: 4096,
+  actionLabelBytes: 128,
+  urlBytes: 2048,
+  userAgentBytes: 512,
+  errorCodeBytes: 128,
+  errorMessageBytes: 2048,
+  metadataBytes: 16384,
+  metadataDepth: 16,
+  metadataNodes: 256,
+};
 const JAVASCRIPT_WHITESPACE_SQL = [
   "' '",
   ...JAVASCRIPT_WHITESPACE_CODEPOINTS
@@ -39,11 +60,32 @@ function nonBlankTextCheck(value) {
   )`;
 }
 
+function utf8ByteLengthCheck(value, maximum) {
+  return `length(CAST(${value} AS BLOB)) <= ${maximum}`;
+}
+
+function boundedNonBlankTextCheck(value, maximum = PAYLOAD_LIMITS.identifierBytes) {
+  return `(${nonBlankTextCheck(value)} AND ${utf8ByteLengthCheck(value, maximum)})`;
+}
+
+function boundedTextCheck(value, maximum) {
+  return `(typeof(${value}) = 'text' AND ${utf8ByteLengthCheck(value, maximum)})`;
+}
+
 function javascriptWhitespaceFreeCheck(value) {
   return excludesCodepoints(value, JAVASCRIPT_WHITESPACE_CODEPOINTS);
 }
 
-function safeAbsoluteUrlCheck(value, { httpsOnly = false, allowFragment = true } = {}) {
+function safeAbsoluteUrlCheck(
+  value,
+  {
+    httpsOnly = false,
+    allowFragment = true,
+    allowedHosts,
+    allowedHostSuffixes,
+    defaultHttpsPortOnly = false,
+  } = {}
+) {
   const schemeCheck = httpsOnly
     ? `lower(substr(${value}, 1, 8)) = 'https://'`
     : `lower(substr(${value}, 1, 8)) = 'https://'
@@ -76,6 +118,7 @@ function safeAbsoluteUrlCheck(value, { httpsOnly = false, allowFragment = true }
   return `(
     (${schemeCheck})
     AND length(${authority}) > 0
+    AND ${utf8ByteLengthCheck(value, PAYLOAD_LIMITS.urlBytes)}
     AND length(${hostname}) BETWEEN 1 AND 253
     AND ${hostname} NOT GLOB '*[^A-Za-z0-9.-]*'
     AND substr(${hostname}, 1, 1) GLOB '[A-Za-z0-9]'
@@ -99,7 +142,69 @@ function safeAbsoluteUrlCheck(value, { httpsOnly = false, allowFragment = true }
     )
     AND instr(${value}, char(92)) = 0
     AND ${excludesCodepoints(value, CONTROL_CODEPOINTS)}
+    ${allowedHosts === undefined
+    ? ''
+    : `AND (
+      lower(${hostname}) IN (${allowedHosts.map((host) => `'${host}'`).join(', ')})
+      ${(allowedHostSuffixes ?? []).map((suffix) =>
+    `OR lower(${hostname}) LIKE '%${suffix}'`).join('\n      ')}
+    )`}
+    ${defaultHttpsPortOnly
+    ? `AND (${colonPosition} = 0 OR CAST(${port} AS INTEGER) = 443)`
+    : ''}
     ${allowFragment ? '' : `AND instr(${value}, '#') = 0`}
+  )`;
+}
+
+function base64UrlKeyCheck(
+  value,
+  { bytes, firstByteIsUncompressedPoint = false }
+) {
+  const unpaddedLength = Math.ceil(bytes * 8 / 6);
+  const paddingLength = (3 - (bytes % 3)) % 3;
+  const unpadded = `rtrim(${value}, '=')`;
+  const trailingCharacters = bytes % 3 === 1 ? 'AQgw' : 'AEIMQUYcgkosw048';
+  return `(
+    typeof(${value}) = 'text'
+    AND (
+      length(${value}) = ${unpaddedLength}
+      OR (
+        length(${value}) = ${unpaddedLength + paddingLength}
+        AND substr(${value}, -${paddingLength}) = '${'='.repeat(paddingLength)}'
+      )
+    )
+    AND length(${unpadded}) = ${unpaddedLength}
+    AND ${unpadded} NOT GLOB '*[^A-Za-z0-9_-]*'
+    AND substr(${unpadded}, -1, 1) GLOB '[${trailingCharacters}]'
+    ${firstByteIsUncompressedPoint
+    ? `AND substr(${unpadded}, 1, 1) = 'B'
+      AND substr(${unpadded}, 2, 1) GLOB '[A-P]'`
+    : ''}
+  )`;
+}
+
+function jsonHasDuplicateKeys(value) {
+  return `EXISTS (
+    SELECT 1
+    FROM json_tree(${value})
+    WHERE parent IS NOT NULL
+    GROUP BY parent, key
+    HAVING count(*) > 1
+  )`;
+}
+
+function jsonDepthExceeds(value, maximumDepth) {
+  return `EXISTS (
+    WITH RECURSIVE json_depth(id, depth) AS (
+      SELECT id, 0
+      FROM json_tree(${value})
+      WHERE parent IS NULL
+      UNION ALL
+      SELECT child.id, parent.depth + 1
+      FROM json_tree(${value}) AS child
+      JOIN json_depth AS parent ON child.parent = parent.id
+    )
+    SELECT 1 FROM json_depth WHERE depth > ${maximumDepth}
   )`;
 }
 
@@ -107,6 +212,7 @@ const JSON_REPOSITORY = "json_extract(target_json, '$.repository')";
 function repositoryCheck(value) {
   return `
   ${nonBlankTextCheck(value)}
+  AND ${utf8ByteLengthCheck(value, PAYLOAD_LIMITS.repositoryBytes)}
   AND ${javascriptWhitespaceFreeCheck(value)}
   AND instr(${value}, '/') > 1
   AND length(substr(
@@ -209,15 +315,25 @@ export async function up(knex) {
       'notification_events_severity_check'
     );
     table.check(
-      `${nonBlankTextCheck('event_id')}
-        AND ${nonBlankTextCheck('deduplication_key')}
-        AND ${nonBlankTextCheck('title')}
-        AND typeof(body) = 'text'`,
+      `${boundedNonBlankTextCheck('event_id')}
+        AND ${boundedNonBlankTextCheck(
+          'deduplication_key',
+          PAYLOAD_LIMITS.deduplicationKeyBytes
+        )}
+        AND ${boundedNonBlankTextCheck('title', PAYLOAD_LIMITS.titleBytes)}
+        AND ${boundedTextCheck('body', PAYLOAD_LIMITS.bodyBytes)}`,
       {},
       'notification_events_required_text_check'
     );
     table.check(
-      "CASE WHEN typeof(target_json) = 'text' AND json_valid(target_json) THEN COALESCE(json_type(target_json) = 'object', 0) ELSE 0 END",
+      `CASE WHEN typeof(target_json) = 'text' AND json_valid(target_json)
+        THEN COALESCE(
+          json_type(target_json) = 'object'
+          AND ${utf8ByteLengthCheck('target_json', PAYLOAD_LIMITS.metadataBytes)},
+          0
+        )
+        ELSE 0
+      END`,
       {},
       'notification_events_target_json_check'
     );
@@ -232,13 +348,13 @@ export async function up(knex) {
         WHEN kind = 'plan' THEN COALESCE(
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.draftId') = 'text'
-          AND ${nonBlankTextCheck("json_extract(target_json, '$.draftId')")},
+          AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.draftId')")},
           0
         )
         WHEN kind = 'task' THEN COALESCE(
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.taskId') = 'text'
-          AND ${nonBlankTextCheck("json_extract(target_json, '$.taskId')")}
+          AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.taskId')")}
           AND (json_type(target_json, '$.issueNumber') IS NULL OR (
             json_type(target_json, '$.issueNumber') = 'integer'
             AND json_extract(target_json, '$.issueNumber') > 0
@@ -258,7 +374,7 @@ export async function up(knex) {
           AND json_extract(target_json, '$.prNumber') <= 9007199254740991
           AND (json_type(target_json, '$.taskId') IS NULL OR (
             json_type(target_json, '$.taskId') = 'text'
-            AND ${nonBlankTextCheck("json_extract(target_json, '$.taskId')")}
+            AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.taskId')")}
           )),
           0
         )
@@ -273,16 +389,16 @@ export async function up(knex) {
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND (json_type(target_json, '$.branch') IS NULL OR (
             json_type(target_json, '$.branch') = 'text'
-            AND ${nonBlankTextCheck("json_extract(target_json, '$.branch')")}
+            AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.branch')")}
           )),
           0
         )
         WHEN kind = 'system_failure' THEN COALESCE(
           json_type(target_json, '$.component') = 'text'
-          AND ${nonBlankTextCheck("json_extract(target_json, '$.component')")}
+          AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.component')")}
           AND (json_type(target_json, '$.correlationId') IS NULL OR (
             json_type(target_json, '$.correlationId') = 'text'
-            AND ${nonBlankTextCheck("json_extract(target_json, '$.correlationId')")}
+            AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.correlationId')")}
           )),
           0
         )
@@ -297,9 +413,15 @@ export async function up(knex) {
         WHEN NOT json_valid(action_json) OR json_type(action_json) != 'object' THEN 0
         ELSE COALESCE(
           json_type(action_json, '$.label') = 'text'
-          AND ${nonBlankTextCheck("json_extract(action_json, '$.label')")}
+          AND ${boundedNonBlankTextCheck(
+            "json_extract(action_json, '$.label')",
+            PAYLOAD_LIMITS.actionLabelBytes
+          )}
           AND json_type(action_json, '$.href') = 'text'
-          AND ${nonBlankTextCheck("json_extract(action_json, '$.href')")}
+          AND ${boundedNonBlankTextCheck(
+            "json_extract(action_json, '$.href')",
+            PAYLOAD_LIMITS.urlBytes
+          )}
           AND CASE json_extract(action_json, '$.type')
             WHEN 'navigate' THEN
               substr(json_extract(action_json, '$.href'), 1, 1) = '/'
@@ -321,7 +443,15 @@ export async function up(knex) {
       'notification_events_action_json_check'
     );
     table.check(
-      "CASE WHEN metadata_json IS NULL THEN 1 WHEN typeof(metadata_json) = 'text' AND json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
+      `CASE
+        WHEN metadata_json IS NULL THEN 1
+        WHEN typeof(metadata_json) = 'text' AND json_valid(metadata_json) THEN COALESCE(
+          json_type(metadata_json) = 'object'
+          AND ${utf8ByteLengthCheck('metadata_json', PAYLOAD_LIMITS.metadataBytes)},
+          0
+        )
+        ELSE 0
+      END`,
       {},
       'notification_events_metadata_json_check'
     );
@@ -335,6 +465,11 @@ export async function up(knex) {
       'created_at',
       'notification_events_created_at_check'
     );
+    table.check(
+      'created_at >= occurred_at',
+      {},
+      'notification_events_temporal_order_check'
+    );
   });
 
   await knex.raw(
@@ -344,6 +479,47 @@ export async function up(knex) {
     'CREATE INDEX notification_events_occurred_at_idx ON notification_events (occurred_at DESC, event_id)'
   );
 
+  await knex.raw(`
+    CREATE TRIGGER notification_events_created_at_not_future
+    BEFORE INSERT ON notification_events
+    WHEN NEW.created_at > ${ISO_NOW_SQL}
+    BEGIN
+      SELECT RAISE(ABORT, 'notification event creation time cannot be in the future');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER notification_events_json_keys_unique
+    BEFORE INSERT ON notification_events
+    WHEN CASE
+      WHEN json_valid(NEW.target_json) AND ${jsonHasDuplicateKeys('NEW.target_json')}
+        THEN 1
+      WHEN NEW.action_json IS NOT NULL
+        AND json_valid(NEW.action_json)
+        AND ${jsonHasDuplicateKeys('NEW.action_json')}
+        THEN 1
+      WHEN NEW.metadata_json IS NOT NULL
+        AND json_valid(NEW.metadata_json)
+        AND ${jsonHasDuplicateKeys('NEW.metadata_json')}
+        THEN 1
+      ELSE 0
+    END
+    BEGIN
+      SELECT RAISE(ABORT, 'notification JSON must not contain duplicate object keys');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER notification_events_metadata_structure_limited
+    BEFORE INSERT ON notification_events
+    WHEN NEW.metadata_json IS NOT NULL
+      AND json_valid(NEW.metadata_json)
+      AND (
+        (SELECT count(*) FROM json_tree(NEW.metadata_json)) > ${PAYLOAD_LIMITS.metadataNodes}
+        OR ${jsonDepthExceeds('NEW.metadata_json', PAYLOAD_LIMITS.metadataDepth)}
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'notification metadata exceeds structural limits');
+    END
+  `);
   await knex.raw(`
     CREATE TRIGGER notification_events_metadata_numbers_finite
     BEFORE INSERT ON notification_events
@@ -386,7 +562,8 @@ export async function up(knex) {
 
     table.primary(['event_id', 'user_id']);
     table.check(
-      `${nonBlankTextCheck('event_id')} AND ${nonBlankTextCheck('user_id')}`,
+      `${boundedNonBlankTextCheck('event_id')}
+        AND ${boundedNonBlankTextCheck('user_id')}`,
       {},
       'notification_user_states_identifiers_check'
     );
@@ -437,6 +614,20 @@ export async function up(knex) {
   });
 
   await knex.raw(`
+    CREATE TRIGGER notification_user_states_assignment_time_valid
+    BEFORE INSERT ON notification_user_states
+    WHEN NEW.created_at > ${ISO_NOW_SQL}
+      OR EXISTS (
+        SELECT 1
+        FROM notification_events AS event
+        WHERE event.event_id = NEW.event_id
+          AND NEW.created_at < event.created_at
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'notification recipient assignment must follow event creation');
+    END
+  `);
+  await knex.raw(`
     CREATE TRIGGER notification_user_states_assignment_immutable
     BEFORE UPDATE ON notification_user_states
     WHEN NEW.event_id IS NOT OLD.event_id
@@ -470,7 +661,7 @@ export async function up(knex) {
 
     table.primary(['user_id', 'notification_kind']);
     table.check(
-      nonBlankTextCheck('user_id'),
+      boundedNonBlankTextCheck('user_id'),
       {},
       'notification_preferences_user_id_check'
     );
@@ -522,8 +713,10 @@ export async function up(knex) {
     table.text('subscription_id').notNullable().primary();
     table.text('user_id').notNullable();
     table.text('endpoint').notNullable();
-    table.text('p256dh_key').notNullable();
-    table.text('auth_key').notNullable();
+    // Active versions retain delivery material. Revocation erases both secrets
+    // while preserving the immutable endpoint/version identity for audit rows.
+    table.text('p256dh_key').nullable();
+    table.text('auth_key').nullable();
     table.text('expires_at').nullable();
     table.text('user_agent').nullable();
     table.text('last_used_at').nullable();
@@ -532,19 +725,37 @@ export async function up(knex) {
     table.text('updated_at').notNullable().defaultTo(isoNow(knex));
 
     table.check(
-      `${nonBlankTextCheck('subscription_id')}
-        AND ${nonBlankTextCheck('user_id')}
+      `${boundedNonBlankTextCheck('subscription_id')}
+        AND ${boundedNonBlankTextCheck('user_id')}
         AND ${safeAbsoluteUrlCheck('endpoint', {
           httpsOnly: true,
           allowFragment: false,
+          allowedHosts: WEB_PUSH_ENDPOINT_HOSTS,
+          allowedHostSuffixes: WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
+          defaultHttpsPortOnly: true,
         })}
-        AND ${nonBlankTextCheck('p256dh_key')}
-        AND ${nonBlankTextCheck('auth_key')}`,
+        AND (
+          (
+            ${base64UrlKeyCheck('p256dh_key', {
+              bytes: 65,
+              firstByteIsUncompressedPoint: true,
+            })}
+            AND ${base64UrlKeyCheck('auth_key', { bytes: 16 })}
+          )
+          OR (revoked_at IS NOT NULL AND p256dh_key IS NULL AND auth_key IS NULL)
+        )
+        AND (user_agent IS NULL OR ${boundedTextCheck(
+          'user_agent',
+          PAYLOAD_LIMITS.userAgentBytes
+        )})`,
       {},
       'push_subscriptions_required_values_check'
     );
     table.check(
-      'updated_at >= created_at',
+      `updated_at >= created_at
+        AND (expires_at IS NULL OR expires_at >= created_at)
+        AND (last_used_at IS NULL OR last_used_at >= created_at)
+        AND (revoked_at IS NULL OR revoked_at >= created_at)`,
       {},
       'push_subscriptions_temporal_order_check'
     );
@@ -593,47 +804,67 @@ export async function up(knex) {
     WHERE revoked_at IS NULL
   `);
 
+  const subscriptionManagedTimestamp = `CASE
+    WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
+    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', OLD.updated_at, '+0.001 seconds')
+  END`;
   await knex.raw(`
-    CREATE TRIGGER push_subscriptions_created_at_immutable
-    BEFORE UPDATE ON push_subscriptions
-    WHEN NEW.created_at IS NOT OLD.created_at
+    CREATE TRIGGER push_subscriptions_insert_lifecycle_valid
+    BEFORE INSERT ON push_subscriptions
+    WHEN NEW.created_at > ${ISO_NOW_SQL}
+      OR NEW.updated_at > ${ISO_NOW_SQL}
+      OR (NEW.last_used_at IS NOT NULL AND NEW.last_used_at > NEW.updated_at)
+      OR (NEW.revoked_at IS NOT NULL AND NEW.revoked_at > NEW.updated_at)
+      OR (
+        NEW.revoked_at IS NULL
+        AND NEW.expires_at IS NOT NULL
+        AND NEW.expires_at <= ${ISO_NOW_SQL}
+      )
     BEGIN
-      SELECT RAISE(ABORT, 'push subscription creation time is immutable');
+      SELECT RAISE(ABORT, 'invalid push subscription lifecycle timestamps');
     END
   `);
   await knex.raw(`
-    CREATE TRIGGER push_subscriptions_revoked_identity_immutable
+    CREATE TRIGGER push_subscriptions_version_identity_immutable
     BEFORE UPDATE ON push_subscriptions
-    WHEN OLD.revoked_at IS NOT NULL AND (
-      NEW.subscription_id IS NOT OLD.subscription_id
+    WHEN NEW.subscription_id IS NOT OLD.subscription_id
       OR NEW.user_id IS NOT OLD.user_id
       OR NEW.endpoint IS NOT OLD.endpoint
-      OR NEW.p256dh_key IS NOT OLD.p256dh_key
-      OR NEW.auth_key IS NOT OLD.auth_key
       OR NEW.expires_at IS NOT OLD.expires_at
       OR NEW.user_agent IS NOT OLD.user_agent
-      OR NEW.last_used_at IS NOT OLD.last_used_at
-      OR NEW.revoked_at IS NOT OLD.revoked_at
-    )
+      OR NEW.created_at IS NOT OLD.created_at
+      OR (
+        (NEW.p256dh_key IS NOT OLD.p256dh_key OR NEW.auth_key IS NOT OLD.auth_key)
+        AND NOT (
+          OLD.revoked_at IS NOT NULL
+          AND NEW.revoked_at IS OLD.revoked_at
+          AND NEW.p256dh_key IS NULL
+          AND NEW.auth_key IS NULL
+        )
+      )
     BEGIN
-      SELECT RAISE(ABORT, 'revoked push subscriptions are immutable');
+      SELECT RAISE(ABORT, 'push subscription versions are immutable');
     END
   `);
   await knex.raw(`
-    CREATE TRIGGER push_subscriptions_revoke_without_rewrite
+    CREATE TRIGGER push_subscriptions_lifecycle_update_valid
     BEFORE UPDATE ON push_subscriptions
-    WHEN OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL AND (
-      NEW.subscription_id IS NOT OLD.subscription_id
-      OR NEW.user_id IS NOT OLD.user_id
-      OR NEW.endpoint IS NOT OLD.endpoint
-      OR NEW.p256dh_key IS NOT OLD.p256dh_key
-      OR NEW.auth_key IS NOT OLD.auth_key
-      OR NEW.expires_at IS NOT OLD.expires_at
-      OR NEW.user_agent IS NOT OLD.user_agent
-      OR NEW.last_used_at IS NOT OLD.last_used_at
-    )
+    WHEN (OLD.revoked_at IS NOT NULL AND (
+        NEW.revoked_at IS NOT OLD.revoked_at
+        OR NEW.last_used_at IS NOT OLD.last_used_at
+      ))
+      OR (OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL
+        AND NEW.last_used_at IS NOT OLD.last_used_at)
+      OR (NEW.last_used_at IS NOT NULL AND (
+        NEW.last_used_at < NEW.created_at
+        OR NEW.last_used_at > (${subscriptionManagedTimestamp})
+      ))
+      OR (NEW.revoked_at IS NOT NULL AND (
+        NEW.revoked_at < NEW.created_at
+        OR NEW.revoked_at > (${subscriptionManagedTimestamp})
+      ))
     BEGIN
-      SELECT RAISE(ABORT, 'revoke a push subscription without rewriting its identity');
+      SELECT RAISE(ABORT, 'invalid push subscription lifecycle update');
     END
   `);
   await knex.raw(`
@@ -644,22 +875,34 @@ export async function up(knex) {
       SELECT RAISE(ABORT, 'revoked push subscriptions cannot be deleted');
     END
   `);
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_erase_inserted_revoked_keys
+    AFTER INSERT ON push_subscriptions
+    WHEN NEW.revoked_at IS NOT NULL
+      AND (NEW.p256dh_key IS NOT NULL OR NEW.auth_key IS NOT NULL)
+    BEGIN
+      UPDATE push_subscriptions
+      SET p256dh_key = NULL,
+          auth_key = NULL
+      WHERE subscription_id = NEW.subscription_id;
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_subscriptions_erase_revoked_keys
+    AFTER UPDATE OF revoked_at ON push_subscriptions
+    WHEN OLD.revoked_at IS NULL AND NEW.revoked_at IS NOT NULL
+    BEGIN
+      UPDATE push_subscriptions
+      SET p256dh_key = NULL,
+          auth_key = NULL
+      WHERE subscription_id = NEW.subscription_id;
+    END
+  `);
   await createUpdatedAtTrigger(
     knex,
     'push_subscriptions',
     'subscription_id = NEW.subscription_id',
-    [
-      'subscription_id',
-      'user_id',
-      'endpoint',
-      'p256dh_key',
-      'auth_key',
-      'expires_at',
-      'user_agent',
-      'last_used_at',
-      'revoked_at',
-      'created_at',
-    ]
+    ['last_used_at', 'revoked_at']
   );
 
   // Delivery jobs are mutable scheduling state. Actual Web Push requests are
@@ -690,11 +933,14 @@ export async function up(knex) {
       'push_delivery_jobs_attempt_count_check'
     );
     table.check(
-      `${nonBlankTextCheck('job_id')}
-        AND ${nonBlankTextCheck('deduplication_key')}
-        AND ${nonBlankTextCheck('event_id')}
-        AND ${nonBlankTextCheck('user_id')}
-        AND ${nonBlankTextCheck('subscription_id')}`,
+      `${boundedNonBlankTextCheck('job_id')}
+        AND ${boundedNonBlankTextCheck(
+          'deduplication_key',
+          PAYLOAD_LIMITS.deduplicationKeyBytes
+        )}
+        AND ${boundedNonBlankTextCheck('event_id')}
+        AND ${boundedNonBlankTextCheck('user_id')}
+        AND ${boundedNonBlankTextCheck('subscription_id')}`,
       {},
       'push_delivery_jobs_identifiers_check'
     );
@@ -822,9 +1068,12 @@ export async function up(knex) {
       WHERE recipient.event_id = NEW.event_id
         AND recipient.user_id = NEW.user_id
         AND recipient.push_enabled = 1
+        AND recipient.created_at <= NEW.created_at
+        AND subscription.created_at <= NEW.created_at
         AND subscription.revoked_at IS NULL
-        AND (subscription.expires_at IS NULL OR subscription.expires_at > NEW.created_at)
+        AND (subscription.expires_at IS NULL OR subscription.expires_at > ${ISO_NOW_SQL})
     )
+      OR NEW.created_at > ${ISO_NOW_SQL}
     BEGIN
       SELECT RAISE(ABORT, 'push delivery requires an eligible recipient and active subscription');
     END
@@ -874,11 +1123,17 @@ export async function up(knex) {
       'push_delivery_attempts_number_check'
     );
     table.check(
-      `${nonBlankTextCheck('attempt_id')}
-        AND ${nonBlankTextCheck('job_id')}
-        AND ${nonBlankTextCheck('claim_token')}
-        AND (error_code IS NULL OR ${nonBlankTextCheck('error_code')})
-        AND (error_message IS NULL OR typeof(error_message) = 'text')`,
+      `${boundedNonBlankTextCheck('attempt_id')}
+        AND ${boundedNonBlankTextCheck('job_id')}
+        AND ${boundedNonBlankTextCheck('claim_token')}
+        AND (error_code IS NULL OR ${boundedNonBlankTextCheck(
+          'error_code',
+          PAYLOAD_LIMITS.errorCodeBytes
+        )})
+        AND (error_message IS NULL OR ${boundedTextCheck(
+          'error_message',
+          PAYLOAD_LIMITS.errorMessageBytes
+        )})`,
       {},
       'push_delivery_attempts_text_values_check'
     );
@@ -940,6 +1195,14 @@ export async function up(knex) {
   await knex.raw(`
     CREATE UNIQUE INDEX push_delivery_attempts_job_attempt_idx
     ON push_delivery_attempts (job_id, attempt_number)
+  `);
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_attempts_created_at_not_future
+    BEFORE INSERT ON push_delivery_attempts
+    WHEN NEW.created_at > ${ISO_NOW_SQL}
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery attempt creation time cannot be in the future');
+    END
   `);
   await knex.raw(`
     CREATE TRIGGER push_delivery_attempts_valid_claim
@@ -1247,27 +1510,6 @@ export async function up(knex) {
         );
     END
   `);
-  await knex.raw(`
-    CREATE TRIGGER push_subscriptions_cancel_newly_expired_jobs
-    AFTER UPDATE OF expires_at ON push_subscriptions
-    WHEN NEW.revoked_at IS NULL
-      AND NEW.expires_at IS NOT NULL
-      AND NEW.expires_at <= ${ISO_NOW_SQL}
-    BEGIN
-      UPDATE push_delivery_jobs
-      SET status = 'cancelled',
-          next_retry_at = NULL,
-          claim_token = NULL,
-          claimed_at = NULL,
-          lease_expires_at = NULL
-      WHERE subscription_id = NEW.subscription_id
-        AND (
-          status IN ('pending', 'retryable')
-          OR (status = 'processing' AND lease_expires_at <= ${ISO_NOW_SQL})
-        );
-    END
-  `);
-
   await knex.schema.createTable('notification_source_activity', (table) => {
     table.text('activity_type').notNullable();
     table.text('activity_key').notNullable();
@@ -1287,9 +1529,10 @@ export async function up(knex) {
       'notification_source_activity_type_check'
     );
     table.check(
-      `${nonBlankTextCheck('activity_key')}
+      `${boundedNonBlankTextCheck('activity_key')}
         AND ${repositoryCheck('repository')}
-        AND (branch IS NULL OR ${nonBlankTextCheck('branch')})`,
+        AND (branch IS NULL OR ${boundedNonBlankTextCheck('branch')})
+        AND (activity_type = 'indexing' OR branch IS NULL)`,
       {},
       'notification_source_activity_required_text_check'
     );
@@ -1304,7 +1547,15 @@ export async function up(knex) {
       'notification_source_activity_completion_state_check'
     );
     table.check(
-      "CASE WHEN metadata_json IS NULL THEN 1 WHEN typeof(metadata_json) = 'text' AND json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
+      `CASE
+        WHEN metadata_json IS NULL THEN 1
+        WHEN typeof(metadata_json) = 'text' AND json_valid(metadata_json) THEN COALESCE(
+          json_type(metadata_json) = 'object'
+          AND ${utf8ByteLengthCheck('metadata_json', PAYLOAD_LIMITS.metadataBytes)},
+          0
+        )
+        ELSE 0
+      END`,
       {},
       'notification_source_activity_metadata_json_check'
     );
@@ -1341,80 +1592,139 @@ export async function up(knex) {
     );
   });
 
+  const sourceManagedTimestamp = `CASE
+    WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
+    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', OLD.updated_at, '+0.001 seconds')
+  END`;
   await knex.raw(`
-    CREATE TRIGGER notification_source_activity_metadata_numbers_finite
+    CREATE TRIGGER notification_source_activity_insert_guard
     BEFORE INSERT ON notification_source_activity
-    WHEN NEW.metadata_json IS NOT NULL
-      AND json_valid(NEW.metadata_json)
-      AND EXISTS (
-        SELECT 1
-        FROM json_tree(NEW.metadata_json)
-        WHERE type IN ('integer', 'real')
-          AND NOT (abs(atom) <= 1.7976931348623157e308)
-      )
     BEGIN
-      SELECT RAISE(ABORT, 'notification source metadata numbers must be finite');
-    END
-  `);
-  await knex.raw(`
-    CREATE TRIGGER notification_source_activity_metadata_numbers_finite_update
-    BEFORE UPDATE OF metadata_json ON notification_source_activity
-    WHEN NEW.metadata_json IS NOT NULL
-      AND json_valid(NEW.metadata_json)
-      AND EXISTS (
-        SELECT 1
-        FROM json_tree(NEW.metadata_json)
-        WHERE type IN ('integer', 'real')
-          AND NOT (abs(atom) <= 1.7976931348623157e308)
-      )
-    BEGIN
-      SELECT RAISE(ABORT, 'notification source metadata numbers must be finite');
+      SELECT CASE WHEN NOT EXISTS (
+          SELECT 1 FROM notification_source_activity
+          WHERE activity_type = NEW.activity_type
+            AND activity_key = NEW.activity_key
+        ) AND (
+          NEW.updated_at > ${ISO_NOW_SQL}
+          OR NEW.last_activity_at < NEW.created_at
+          OR NEW.last_activity_at > NEW.updated_at
+          OR (NEW.completed_at IS NOT NULL AND NEW.completed_at > NEW.updated_at)
+        )
+        THEN RAISE(ABORT, 'invalid notification source activity timestamps')
+      END;
+      SELECT CASE WHEN NOT EXISTS (
+          SELECT 1 FROM notification_source_activity
+          WHERE activity_type = NEW.activity_type
+            AND activity_key = NEW.activity_key
+        ) AND NEW.metadata_json IS NOT NULL
+          AND json_valid(NEW.metadata_json)
+          AND ${jsonHasDuplicateKeys('NEW.metadata_json')}
+        THEN RAISE(ABORT, 'notification source metadata must not contain duplicate keys')
+      END;
+      SELECT CASE WHEN NOT EXISTS (
+          SELECT 1 FROM notification_source_activity
+          WHERE activity_type = NEW.activity_type
+            AND activity_key = NEW.activity_key
+        ) AND NEW.metadata_json IS NOT NULL
+          AND json_valid(NEW.metadata_json)
+          AND (
+            (SELECT count(*) FROM json_tree(NEW.metadata_json)) > ${PAYLOAD_LIMITS.metadataNodes}
+            OR ${jsonDepthExceeds('NEW.metadata_json', PAYLOAD_LIMITS.metadataDepth)}
+          )
+        THEN RAISE(ABORT, 'notification source metadata exceeds structural limits')
+      END;
+      SELECT CASE WHEN NOT EXISTS (
+          SELECT 1 FROM notification_source_activity
+          WHERE activity_type = NEW.activity_type
+            AND activity_key = NEW.activity_key
+        ) AND NEW.metadata_json IS NOT NULL
+          AND json_valid(NEW.metadata_json)
+          AND EXISTS (
+            SELECT 1
+            FROM json_tree(NEW.metadata_json)
+            WHERE type IN ('integer', 'real')
+              AND NOT (abs(atom) <= 1.7976931348623157e308)
+          )
+        THEN RAISE(ABORT, 'notification source metadata numbers must be finite')
+      END;
     END
   `);
 
-  // Delayed heartbeats cannot regress a newer row, and completed work cannot
-  // be reopened. RAISE(IGNORE) makes stale conflict-upserts safe no-ops.
+  // Staleness is evaluated first in one guard, before identity, timestamp, or
+  // metadata validation. A conflict-upsert of an older heartbeat is therefore
+  // a deterministic no-op independent of SQLite's trigger creation order.
   await knex.raw(`
-    CREATE TRIGGER notification_source_activity_monotonic
+    CREATE TRIGGER notification_source_activity_update_guard
     BEFORE UPDATE ON notification_source_activity
-    WHEN NEW.last_activity_at < OLD.last_activity_at
-      OR (
-        OLD.completed_at IS NOT NULL
-        AND (
-          NEW.completed_at IS NOT OLD.completed_at
-          OR NEW.status IS NOT OLD.status
-        )
-      )
     BEGIN
-      SELECT RAISE(IGNORE);
+      SELECT CASE WHEN NEW.last_activity_at < OLD.last_activity_at
+          OR (
+            OLD.completed_at IS NOT NULL
+            AND (
+              NEW.completed_at IS NOT OLD.completed_at
+              OR NEW.status IS NOT OLD.status
+            )
+          )
+        THEN RAISE(IGNORE)
+      END;
+      SELECT CASE WHEN NEW.activity_type IS NOT OLD.activity_type
+          OR NEW.activity_key IS NOT OLD.activity_key
+          OR NEW.created_at IS NOT OLD.created_at
+        THEN RAISE(ABORT, 'notification source activity identity is immutable')
+      END;
+      SELECT CASE WHEN OLD.status = 'processing' AND NEW.status = 'queued'
+        THEN RAISE(ABORT, 'notification source activity status cannot regress')
+      END;
+      SELECT CASE WHEN NEW.updated_at IS NOT OLD.updated_at
+          AND NEW.updated_at IS NOT (${sourceManagedTimestamp})
+        THEN RAISE(ABORT, 'notification_source_activity.updated_at is database managed')
+      END;
+      SELECT CASE WHEN NEW.last_activity_at < NEW.created_at
+          OR NEW.last_activity_at > (${sourceManagedTimestamp})
+          OR (
+            NEW.completed_at IS NOT NULL
+            AND NEW.completed_at > (${sourceManagedTimestamp})
+          )
+        THEN RAISE(ABORT, 'invalid notification source activity timestamps')
+      END;
+      SELECT CASE WHEN NEW.metadata_json IS NOT NULL
+          AND json_valid(NEW.metadata_json)
+          AND ${jsonHasDuplicateKeys('NEW.metadata_json')}
+        THEN RAISE(ABORT, 'notification source metadata must not contain duplicate keys')
+      END;
+      SELECT CASE WHEN NEW.metadata_json IS NOT NULL
+          AND json_valid(NEW.metadata_json)
+          AND (
+            (SELECT count(*) FROM json_tree(NEW.metadata_json)) > ${PAYLOAD_LIMITS.metadataNodes}
+            OR ${jsonDepthExceeds('NEW.metadata_json', PAYLOAD_LIMITS.metadataDepth)}
+          )
+        THEN RAISE(ABORT, 'notification source metadata exceeds structural limits')
+      END;
+      SELECT CASE WHEN NEW.metadata_json IS NOT NULL
+          AND json_valid(NEW.metadata_json)
+          AND EXISTS (
+            SELECT 1
+            FROM json_tree(NEW.metadata_json)
+            WHERE type IN ('integer', 'real')
+              AND NOT (abs(atom) <= 1.7976931348623157e308)
+          )
+        THEN RAISE(ABORT, 'notification source metadata numbers must be finite')
+      END;
     END
   `);
   await knex.raw(`
-    CREATE TRIGGER notification_source_activity_identity_immutable
-    BEFORE UPDATE ON notification_source_activity
-    WHEN NEW.activity_type IS NOT OLD.activity_type
-      OR NEW.activity_key IS NOT OLD.activity_key
-      OR NEW.created_at IS NOT OLD.created_at
+    CREATE TRIGGER notification_source_activity_touch_updated_at
+    AFTER UPDATE OF activity_type, activity_key, repository, branch, status,
+      last_activity_at, completed_at, metadata_json, created_at
+    ON notification_source_activity
+    WHEN NEW.updated_at IS OLD.updated_at
     BEGIN
-      SELECT RAISE(ABORT, 'notification source activity identity is immutable');
+      UPDATE notification_source_activity
+      SET updated_at = ${sourceManagedTimestamp}
+      WHERE activity_type = NEW.activity_type
+        AND activity_key = NEW.activity_key;
     END
   `);
-  await createUpdatedAtTrigger(
-    knex,
-    'notification_source_activity',
-    'activity_type = NEW.activity_type AND activity_key = NEW.activity_key',
-    [
-      'activity_type',
-      'activity_key',
-      'repository',
-      'branch',
-      'status',
-      'last_activity_at',
-      'completed_at',
-      'metadata_json',
-      'created_at',
-    ]
-  );
 
   await knex.raw(`
     CREATE INDEX notification_source_activity_stalled_idx
