@@ -14,6 +14,10 @@ type StatusRoutesDeps = {
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
   now?: () => number;
+  projectSystemSnapshot?: (
+    snapshot: Record<string, unknown>,
+    recipients?: readonly string[]
+  ) => Promise<void>;
   loadSummarizationRuntimeState?: () => Promise<{
     primary_quota_failures: number;
     primary_quota_failures_by_alias: Record<string, number>;
@@ -138,7 +142,10 @@ function configureStatusEnv(): void {
 
 async function createRoutes(deps: StatusRoutesDeps) {
   const { createStatusRoutes } = await import('../routes/statusRoutes.js');
-  return createStatusRoutes(deps);
+  return createStatusRoutes({
+    projectSystemSnapshot: async () => undefined,
+    ...deps,
+  });
 }
 
 async function readStatus(overrides: Partial<StatusRoutesDeps> = {}, configureEnv?: () => void) {
@@ -152,6 +159,7 @@ async function readStatus(overrides: Partial<StatusRoutesDeps> = {}, configureEn
     loadAgents: async () => [],
     agentRegistry: createRegistry(),
     getIndexingQueue: async () => createIndexingQueue(),
+    projectSystemSnapshot: async () => undefined,
     ...overrides,
   });
 
@@ -185,6 +193,17 @@ test('/api/status omits disabled configured agents', async () => {
   assert.equal(body.uiCompatibility, PROPR_UI_COMPATIBILITY);
   assert.deepEqual(body.agents, []);
   assert.equal(body.claudeAuth, 'disconnected');
+});
+
+test('/api/status remains available when notification projection fails', async () => {
+  const status = await readStatus({
+    projectSystemSnapshot: async () => {
+      throw new Error('projection unavailable');
+    },
+  });
+
+  assert.equal(status.api, 'healthy');
+  assert.equal(status.redis, 'connected');
 });
 
 test('/api/compatibility returns public version contract metadata', async () => {

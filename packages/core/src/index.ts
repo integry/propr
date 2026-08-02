@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- public package exports are intentionally centralized */
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
@@ -412,6 +413,33 @@ export type {
     NotificationListOptions,
     NotificationServiceOptions
 } from './services/notificationService.js';
+export {
+    NotificationProjectionService,
+    notificationProjectionService,
+    projectNotificationUpdateBestEffort
+} from './services/notificationProjectionService.js';
+export type {
+    NotificationProjectionServiceOptions
+} from './services/notificationProjectionService.js';
+export {
+    NotificationSystemProjection,
+    notificationSystemProjection,
+    projectSystemSnapshotBestEffort
+} from './services/notificationSystemProjection.js';
+export type {
+    NotificationSystemProjectionOptions,
+    SystemStatusSnapshot
+} from './services/notificationSystemProjection.js';
+export {
+    NotificationStalledDetector,
+    DEFAULT_NOTIFICATION_STALLED_AFTER_MS,
+    DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS,
+    getNotificationStalledAfterMs,
+    getNotificationStalledCheckIntervalMs
+} from './services/notificationStalledDetector.js';
+export type {
+    NotificationStalledDetectorOptions
+} from './services/notificationStalledDetector.js';
 export {
     DEFAULT_NOTIFICATION_LIST_LIMIT,
     MAX_NOTIFICATION_LIST_LIMIT,

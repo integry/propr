@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- route registration and process lifecycle are centralized */
 import express, { Request, Response, RequestHandler } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
@@ -43,7 +44,8 @@ import {
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME
+  AGENT_RUNTIME_BUILD_QUEUE_NAME,
+  NotificationStalledDetector
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -173,6 +175,7 @@ setupAuth(app, demoMode);
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
+let notificationStalledDetector: NotificationStalledDetector | null = null;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -402,6 +405,8 @@ async function start(): Promise<void> {
     await initRedis();
     if (!demoMode) {
       await initializePushSubscriptionMaintenance();
+      notificationStalledDetector = new NotificationStalledDetector();
+      notificationStalledDetector.start();
       try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
@@ -462,6 +467,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'notification stalled detector', close: async () => { notificationStalledDetector?.stop(); } },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }

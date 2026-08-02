@@ -22,6 +22,7 @@ import {
   type QueueStatsData,
   type EventPayload
 } from '@propr/shared';
+import { projectNotificationUpdateBestEffort } from '../services/notificationProjectionService.js';
 
 /**
  * Event publisher for real-time updates via Redis pub/sub.
@@ -30,6 +31,18 @@ import {
 class EventPublisher {
   private redis: InstanceType<typeof Redis> | null = null;
   private isInitialized = false;
+
+  /** Notification projection is deliberately isolated from socket publication. */
+  private async projectNotification(payload: EventPayload): Promise<void> {
+    try {
+      await projectNotificationUpdateBestEffort(payload);
+    } catch (error) {
+      logger.warn({
+        eventType: payload.eventType,
+        error: error instanceof Error ? error.message : String(error)
+      }, 'Failed to project published event into notifications');
+    }
+  }
 
   /**
    * Initialize the Redis connection for publishing events.
@@ -101,7 +114,10 @@ class EventPublisher {
       timestamp: new Date().toISOString(),
       metadata: params.metadata
     };
-    await this.publish(REDIS_CHANNELS.TASKS, payload);
+    await Promise.all([
+      this.publish(REDIS_CHANNELS.TASKS, payload),
+      this.projectNotification(payload)
+    ]);
   }
 
   /**
@@ -126,7 +142,11 @@ class EventPublisher {
       draftStatus: params.draftStatus,
       generationTrace: params.generationTrace
     };
-    return this.publish(REDIS_CHANNELS.DRAFTS, payload);
+    const [published] = await Promise.all([
+      this.publish(REDIS_CHANNELS.DRAFTS, payload),
+      this.projectNotification(payload)
+    ]);
+    return published;
   }
 
   /**
@@ -155,7 +175,10 @@ class EventPublisher {
       processedDirectories: params.processedDirectories,
       timestamp: new Date().toISOString()
     };
-    await this.publish(REDIS_CHANNELS.INDEXING, payload);
+    await Promise.all([
+      this.publish(REDIS_CHANNELS.INDEXING, payload),
+      this.projectNotification(payload)
+    ]);
   }
 
   /**

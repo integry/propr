@@ -10,6 +10,29 @@ import { getEventPublisher } from './eventPublisher.js';
 
 export { TaskStates, type TaskState, type IssueRef };
 
+function buildPublishedTaskMetadata(
+    issueNumber: number,
+    attempts: number,
+    metadata: UpdateMetadata
+): Record<string, unknown> {
+    const commandMode = typeof metadata.historyMetadata?.commandMode === 'string'
+        ? metadata.historyMetadata.commandMode
+        : undefined;
+    const prNumber = typeof metadata.prResult?.prNumber === 'number'
+        ? metadata.prResult.prNumber
+        : commandMode === 'review' ? issueNumber : undefined;
+    const prUrl = typeof metadata.prResult?.prUrl === 'string'
+        ? metadata.prResult.prUrl
+        : undefined;
+    return {
+        attempts,
+        reason: metadata.reason,
+        ...(commandMode === undefined ? {} : { commandMode }),
+        ...(prNumber === undefined ? {} : { prNumber }),
+        ...(prUrl === undefined ? {} : { prUrl })
+    };
+}
+
 /**
  * Worker state manager for persistent task state tracking
  */
@@ -151,10 +174,11 @@ export class WorkerStateManager {
                 previousState,
                 repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                 issueNumber: state.issueRef.number,
-                metadata: {
-                    attempts: state.attempts,
-                    reason: metadata.reason
-                }
+                metadata: buildPublishedTaskMetadata(
+                    state.issueRef.number,
+                    state.attempts,
+                    metadata
+                )
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');

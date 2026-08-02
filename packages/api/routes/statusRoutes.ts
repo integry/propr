@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- status assembly and its health helpers form one contract */
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
@@ -13,7 +14,8 @@ import {
   AgentRegistry,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
-  loadSummarizationRuntimeState
+  loadSummarizationRuntimeState,
+  projectSystemSnapshotBestEffort
 } from '@propr/core';
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import path from 'node:path';
@@ -28,6 +30,10 @@ interface StatusRoutesDeps {
   agentHealthTimeoutMs?: number;
   now?: () => number;
   loadSummarizationRuntimeState?: typeof loadSummarizationRuntimeState;
+  projectSystemSnapshot?: (
+    snapshot: Record<string, unknown>,
+    recipients?: readonly string[]
+  ) => Promise<void>;
 }
 
 interface IndexingStatusQueue {
@@ -48,6 +54,20 @@ interface AgentStatus {
   status: 'connected' | 'disconnected';
 }
 
+async function projectStatusSnapshot(
+  projector: NonNullable<StatusRoutesDeps['projectSystemSnapshot']>,
+  status: Record<string, unknown>,
+  userId: unknown
+): Promise<void> {
+  try {
+    const recipients = typeof userId === 'string' && userId.trim().length > 0 ? [userId] : [];
+    await projector(status, recipients);
+  } catch (projectionError) {
+    console.warn('Failed to project system status notification:',
+      projectionError instanceof Error ? projectionError.message : String(projectionError));
+  }
+}
+
 export function createStatusRoutes(deps: StatusRoutesDeps) {
   const {
     redisClient,
@@ -57,7 +77,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
     now = Date.now,
-    loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState
+    loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState,
+    projectSystemSnapshot = projectSystemSnapshotBestEffort
   } = deps;
   let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
@@ -170,6 +191,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         }
       }
       status.warnings = warnings;
+
+      await projectStatusSnapshot(projectSystemSnapshot, status, req.user?.id);
 
       res.json(status);
     } catch (error) {
