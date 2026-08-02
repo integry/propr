@@ -32,7 +32,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `AUTH_REDIRECT_ALLOWED_HOSTS` | Unset | Comma-separated extra redirect hosts for auth preview flows. Entries are exact-match unless prefixed with `.` or `*.` for trusted parent domains. | Preview auth flows. |
 | `VAPID_PUBLIC_KEY` | Unset | Browser-safe public half of the installation's P-256 Web Push VAPID key pair. The API advertises it only when its format and match with the private key are valid. | Web Push. |
 | `VAPID_PRIVATE_KEY` | Unset | Secret half of the same P-256 VAPID pair, retained server-side for validation and future request signing. Its value is never returned by the API. | Web Push; keep server-side only. |
-| `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH` | `false` | Explicitly permits `http://localhost` and `http://127.0.0.1` browser enrollment for isolated local development. The setting affects the schema when the notification migration runs; never enable it on a remotely reachable development, preview, staging, or production host. | Local browser development only. |
+| `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH` | `false` | Explicitly permits the authenticated API to enroll `http://localhost` and `http://127.0.0.1` subscriptions for isolated local development. It can be changed across restarts without migrating the stable schema; never enable it on a remotely reachable development, preview, staging, or production host. | Local browser development only. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
 | `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |

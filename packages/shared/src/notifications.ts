@@ -273,9 +273,9 @@ export const DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS:
   pushEnabled: false,
 });
 
-/** One persisted entry in a complete preference snapshot. */
+/** One entry in a complete preference snapshot; null until a default is persisted. */
 export interface NotificationPreference extends NotificationPreferenceChannels {
-  updatedAt: ISO8601Timestamp;
+  updatedAt: ISO8601Timestamp | null;
 }
 
 /** A complete preference snapshot keyed by every durable notification kind. */
@@ -346,6 +346,10 @@ export interface PushSubscription {
   id: string;
   endpoint: string;
   expiresAt: ISO8601Timestamp | null;
+  /**
+   * Revocation is best-effort for a delivery whose live lease already loaded
+   * key material. Dispatchers must re-read this state immediately before send.
+   */
   revokedAt: ISO8601Timestamp | null;
   createdAt: ISO8601Timestamp;
   updatedAt: ISO8601Timestamp;
@@ -743,6 +747,51 @@ function parseBase64Url(
   return encoded;
 }
 
+const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const P256_FIELD_PRIME =
+  0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
+const P256_CURVE_B =
+  0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bn;
+
+function decodeBase64Url(encoded: string): Uint8Array {
+  const bytes: number[] = [];
+  let accumulator = 0;
+  let availableBits = 0;
+  for (const character of encoded.replace(/=+$/, '')) {
+    accumulator = (accumulator << 6) | BASE64URL_ALPHABET.indexOf(character);
+    availableBits += 6;
+    if (availableBits >= 8) {
+      availableBits -= 8;
+      bytes.push((accumulator >> availableBits) & 0xff);
+      accumulator &= (1 << availableBits) - 1;
+    }
+  }
+  return Uint8Array.from(bytes);
+}
+
+function unsignedBigEndian(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
+}
+
+/** Verify that an uncompressed SEC1 point is a member of the P-256 curve. */
+function isP256PublicPoint(encoded: string): boolean {
+  const point = decodeBase64Url(encoded);
+  if (point.length !== 65 || point[0] !== 0x04) return false;
+
+  const x = unsignedBigEndian(point.subarray(1, 33));
+  const y = unsignedBigEndian(point.subarray(33));
+  if (x >= P256_FIELD_PRIME || y >= P256_FIELD_PRIME) return false;
+
+  const ySquared = (y * y) % P256_FIELD_PRIME;
+  const xCubed = (x * x % P256_FIELD_PRIME) * x % P256_FIELD_PRIME;
+  const curveValue = (
+    xCubed - 3n * x + P256_CURVE_B + 3n * P256_FIELD_PRIME
+  ) % P256_FIELD_PRIME;
+  return ySquared === curveValue;
+}
+
 const UNSAFE_URL_CHARACTER_PATTERN = /[\\\u0000-\u001f\u007f]/;
 const HOST_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
 const WEB_PUSH_LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
@@ -784,7 +833,9 @@ function parseSafeAbsoluteUrl(
     || hostnameLabels.some((label) => !HOST_LABEL_PATTERN.test(label))
     || url.username.length > 0
     || url.password.length > 0
-    || (!allowFragment && url.hash.length > 0)
+    // URL.hash is empty for both "no fragment" and a trailing empty `#`.
+    // Inspect the original input so runtime validation stays aligned with SQL.
+    || (!allowFragment && href.includes('#'))
     || (
       allowedHosts !== undefined
       && !allowedHosts.includes(url.hostname.toLowerCase())
@@ -834,7 +885,7 @@ export function parsePushSubscriptionEndpoint(
       || (url.protocol !== 'http:' && url.protocol !== 'https:')
       || url.username.length > 0
       || url.password.length > 0
-      || url.hash.length > 0
+      || href.includes('#')
     ) {
       return invalid(path, expectation);
     }
@@ -1241,7 +1292,9 @@ export function parseNotificationPreference(value: unknown): NotificationPrefere
   const preference = parseRecord(value, 'notificationPreference');
   return {
     ...parseNotificationPreferenceChannels(preference),
-    updatedAt: parseISO8601Timestamp(preference.updatedAt),
+    updatedAt: preference.updatedAt === null
+      ? null
+      : parseISO8601Timestamp(preference.updatedAt),
   };
 }
 
@@ -1416,6 +1469,18 @@ export function parsePushSubscriptionInput(
   );
   const keys = parseRecord(subscription.keys, 'pushSubscriptionInput.keys');
   assertOnlyKnownProperties(keys, ['p256dh', 'auth'], 'pushSubscriptionInput.keys');
+  const p256dh = parseBase64Url(
+    keys.p256dh,
+    'pushSubscriptionInput.keys.p256dh',
+    65,
+    0x04,
+  );
+  if (!isP256PublicPoint(p256dh)) {
+    return invalid(
+      'pushSubscriptionInput.keys.p256dh',
+      'an uncompressed point on the P-256 curve',
+    );
+  }
   return {
     endpoint: parsePushSubscriptionEndpoint(subscription.endpoint, options),
     expirationTime: parseExpirationTime(
@@ -1423,12 +1488,7 @@ export function parsePushSubscriptionInput(
       'pushSubscriptionInput.expirationTime',
     ),
     keys: {
-      p256dh: parseBase64Url(
-        keys.p256dh,
-        'pushSubscriptionInput.keys.p256dh',
-        65,
-        0x04,
-      ),
+      p256dh,
       auth: parseBase64Url(keys.auth, 'pushSubscriptionInput.keys.auth', 16),
     },
   };
@@ -1762,7 +1822,9 @@ export function parseNotificationPreferences(
     return [kind, {
       inboxEnabled: preference.inboxEnabled,
       pushEnabled: preference.pushEnabled,
-      updatedAt: parseISO8601Timestamp(preference.updatedAt),
+      updatedAt: preference.updatedAt === null
+        ? null
+        : parseISO8601Timestamp(preference.updatedAt),
     }];
   })) as NotificationPreferences;
 }

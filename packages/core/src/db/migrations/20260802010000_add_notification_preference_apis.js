@@ -33,11 +33,6 @@ const JAVASCRIPT_WHITESPACE_SQL = [
 // create their own transaction after changing that connection-local PRAGMA.
 export const config = { transaction: false };
 
-function configuredLocalhostOptIn() {
-  const value = process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH?.trim().toLowerCase();
-  return value === 'true' || value === '1';
-}
-
 function excludesCodepoints(value, codepoints) {
   return codepoints
     .map((codepoint) => `instr(${value}, char(${codepoint})) = 0`)
@@ -224,6 +219,7 @@ async function changePushPreferenceDefault(knex, enabled) {
 }
 
 const NOTIFICATION_PREFERENCE_SETTINGS_TRIGGERS = [
+  'notification_preference_settings_identity_immutable',
   'notification_preference_settings_updated_at_managed',
   'notification_preference_settings_updated_at_not_future',
   'notification_preference_settings_touch_updated_at',
@@ -259,8 +255,17 @@ async function createNotificationPreferenceSettingsTriggers(knex) {
     END
   `);
   await knex.raw(`
+    CREATE TRIGGER notification_preference_settings_identity_immutable
+    BEFORE UPDATE ON notification_preference_settings
+    WHEN NEW.user_id IS NOT OLD.user_id
+      OR NEW.created_at IS NOT OLD.created_at
+    BEGIN
+      SELECT RAISE(ABORT, 'notification preference settings identity is immutable');
+    END
+  `);
+  await knex.raw(`
     CREATE TRIGGER notification_preference_settings_touch_updated_at
-    AFTER UPDATE OF quiet_hours_start, quiet_hours_end, timezone
+    AFTER UPDATE OF user_id, quiet_hours_start, quiet_hours_end, timezone, created_at
     ON notification_preference_settings
     WHEN NEW.updated_at IS OLD.updated_at
     BEGIN
@@ -657,14 +662,16 @@ async function withForeignKeysDisabled(knex, operation) {
   }
 }
 
-export async function up(knex, options = {}) {
-  const allowLocalhost = options.allowInsecureLocalhost ?? configuredLocalhostOptIn();
+export async function up(knex) {
   await withForeignKeysDisabled(knex, async (transaction) => {
     // Existing choices are user data. Only the default for future rows changes.
     await changePushPreferenceDefault(transaction, false);
     await createNotificationPreferenceSettings(transaction);
     await rebuildPushSubscriptions(transaction, {
-      allowLocalhost,
+      // Keep the installed schema independent from a process-start flag. The
+      // authenticated service remains the policy boundary for loopback
+      // enrollment and can therefore toggle its local-development opt-in safely.
+      allowLocalhost: true,
       mutable: true,
     });
   });

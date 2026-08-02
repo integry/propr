@@ -3,7 +3,11 @@ import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
 import express from 'express';
 import type { Request, Response } from 'express';
-import { closeConnection, NotificationValidationError } from '@propr/core';
+import {
+    closeConnection,
+    NotificationValidationError,
+    PushSubscriptionConflictError
+} from '@propr/core';
 import {
     NOTIFICATION_KINDS,
     parseNotificationPreferencesResponse,
@@ -338,6 +342,33 @@ describe('notification routes', () => {
         assert.deepEqual(body(), {
             code: 'INVALID_NOTIFICATION_INPUT',
             error: 'invalid timezone'
+        });
+    });
+
+    test('maps endpoint ownership conflicts to a 409 response', async () => {
+        const routes = createNotificationRoutes({
+            service: createService({
+                upsertPushSubscription: async () => {
+                    throw new PushSubscriptionConflictError();
+                }
+            })
+        });
+        const { response, status, body } = responseRecorder();
+
+        await routes.createPushSubscription({
+            user: { id: 'authenticated-user' },
+            body: {
+                endpoint: 'https://fcm.googleapis.com/fcm/send/already-owned',
+                expirationTime: null,
+                keys: {}
+            },
+            query: {}
+        } as unknown as Request, response);
+
+        assert.equal(status(), 409);
+        assert.deepEqual(body(), {
+            code: 'PUSH_SUBSCRIPTION_CONFLICT',
+            error: 'Push subscription endpoint is already enrolled'
         });
     });
 

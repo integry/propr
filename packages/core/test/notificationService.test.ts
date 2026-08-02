@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createECDH } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,19 @@ import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add
 let database: Knex;
 let service: NotificationService;
 let clock = Date.parse('2026-08-02T10:00:00.000Z');
+
+function generatedP256dhKey(privateKeyValue: number): string {
+    const privateKey = Buffer.alloc(32);
+    privateKey[31] = privateKeyValue;
+    const ecdh = createECDH('prime256v1');
+    ecdh.setPrivateKey(privateKey);
+    return ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url');
+}
+
+const p256dhKey1 = generatedP256dhKey(1);
+const p256dhKey2 = generatedP256dhKey(2);
+const p256dhKey3 = generatedP256dhKey(3);
+const p256dhKey4 = generatedP256dhKey(4);
 
 function createDatabase(filename = ':memory:'): Knex {
     return knex({
@@ -68,7 +82,7 @@ beforeEach(async () => {
     clock = Date.parse('2026-08-02T10:00:00.000Z');
     database = createDatabase();
     await up(database);
-    await addPreferenceApis(database, { allowInsecureLocalhost: true });
+    await addPreferenceApis(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -223,6 +237,7 @@ describe('notification service', { concurrency: false }, () => {
         for (const preference of Object.values(defaults.preferences)) {
             assert.equal(preference.inboxEnabled, true);
             assert.equal(preference.pushEnabled, false);
+            assert.equal(preference.updatedAt, null);
         }
         assert.deepEqual(defaults.quietHours, {
             start: null,
@@ -264,6 +279,7 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(updated.preferences.task.inboxEnabled, true);
         assert.equal(updated.preferences.plan.inboxEnabled, false);
         assert.equal(updated.preferences.plan.pushEnabled, false);
+        assert.ok(updated.preferences.task.updatedAt);
         assert.deepEqual(updated.quietHours, {
             start: '22:30',
             end: '07:15',
@@ -302,7 +318,7 @@ describe('notification service', { concurrency: false }, () => {
             endpoint,
             expirationTime: null,
             keys: {
-                p256dh: 'B' + 'A'.repeat(86),
+                p256dh: p256dhKey1,
                 auth: 'A'.repeat(22)
             }
         }, 'Test Browser');
@@ -314,7 +330,7 @@ describe('notification service', { concurrency: false }, () => {
             endpoint,
             expirationTime: null,
             keys: {
-                p256dh: 'BA' + 'B'.repeat(84) + 'A',
+                p256dh: p256dhKey2,
                 auth: 'B'.repeat(21) + 'A'
             }
         });
@@ -323,7 +339,7 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(await database('push_subscriptions').count('* as count').first()
             .then(row => Number(row?.count)), 1);
         let stored = await database('push_subscriptions').where({ endpoint }).first();
-        assert.equal(stored.p256dh_key, 'BA' + 'B'.repeat(84) + 'A');
+        assert.equal(stored.p256dh_key, p256dhKey2);
         assert.equal(stored.auth_key, 'B'.repeat(21) + 'A');
         assert.equal(stored.revoked_at, null);
         assert.equal(stored.user_agent, 'Test Browser');
@@ -342,21 +358,21 @@ describe('notification service', { concurrency: false }, () => {
             endpoint,
             expirationTime: null,
             keys: {
-                p256dh: 'BA' + 'C'.repeat(84) + 'A',
+                p256dh: p256dhKey3,
                 auth: 'C'.repeat(21) + 'Q'
             }
         });
         assert.equal(reactivated.id, first.id);
         stored = await database('push_subscriptions').where({ endpoint }).first();
         assert.equal(stored.revoked_at, null);
-        assert.equal(stored.p256dh_key, 'BA' + 'C'.repeat(84) + 'A');
+        assert.equal(stored.p256dh_key, p256dhKey3);
         assert.equal(await database('push_subscriptions').count('* as count').first()
             .then(row => Number(row?.count)), 1);
     });
 
     test('validates push endpoints and browser encryption keys', async () => {
         const validKeys = {
-            p256dh: 'B' + 'A'.repeat(86),
+            p256dh: p256dhKey1,
             auth: 'A'.repeat(22)
         };
         const localInput = {
@@ -376,6 +392,13 @@ describe('notification service', { concurrency: false }, () => {
         });
         await explicitlyLocalService.upsertPushSubscription('local-user', localInput);
         await assert.rejects(
+            () => explicitlyLocalService.upsertPushSubscription('fragment-user', {
+                ...localInput,
+                endpoint: 'http://localhost:4173/push/browser#'
+            }),
+            NotificationValidationError
+        );
+        await assert.rejects(
             () => service.upsertPushSubscription('user-a', {
                 endpoint: 'http://fcm.googleapis.com/fcm/send/insecure',
                 expirationTime: null,
@@ -391,6 +414,52 @@ describe('notification service', { concurrency: false }, () => {
             }),
             NotificationValidationError
         );
+        const offCurvePoint = Buffer.alloc(65);
+        offCurvePoint[0] = 0x04;
+        await assert.rejects(
+            () => service.upsertPushSubscription('user-a', {
+                endpoint: 'https://fcm.googleapis.com/fcm/send/off-curve-key',
+                expirationTime: null,
+                keys: {
+                    p256dh: offCurvePoint.toString('base64url'),
+                    auth: validKeys.auth
+                }
+            }),
+            (error: unknown) => error instanceof NotificationValidationError
+                && /P-256 curve/.test(error.message)
+        );
+    });
+
+    test('bounds User-Agent metadata in one UTF-8-aware pass', async () => {
+        let generated = 0;
+        const userAgentService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => `user-agent-${generated += 1}`
+        });
+        const firstEndpoint = 'https://fcm.googleapis.com/fcm/send/large-user-agent';
+        await userAgentService.upsertPushSubscription('user-a', {
+            endpoint: firstEndpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+        }, 'a'.repeat(100_000));
+        const firstStored = await database('push_subscriptions')
+            .where({ endpoint: firstEndpoint })
+            .first();
+        assert.equal(Buffer.byteLength(firstStored.user_agent, 'utf8'), 512);
+        assert.equal(firstStored.user_agent, 'a'.repeat(512));
+
+        const secondEndpoint = 'https://fcm.googleapis.com/fcm/send/unicode-user-agent';
+        await userAgentService.upsertPushSubscription('user-a', {
+            endpoint: secondEndpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+        }, `${'a'.repeat(511)}💥trailing`);
+        const secondStored = await database('push_subscriptions')
+            .where({ endpoint: secondEndpoint })
+            .first();
+        assert.equal(secondStored.user_agent, 'a'.repeat(511));
+        assert.equal(Buffer.byteLength(secondStored.user_agent, 'utf8'), 511);
     });
 
     test('refreshes the owned active row before tied revoked history', async () => {
@@ -398,7 +467,7 @@ describe('notification service', { concurrency: false }, () => {
         const active = await service.upsertPushSubscription('user-a', {
             endpoint,
             expirationTime: null,
-            keys: { p256dh: 'B' + 'A'.repeat(86), auth: 'A'.repeat(22) }
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
         }, 'Preserved Browser');
         const activeRow = await database('push_subscriptions')
             .where({ subscription_id: active.id })
@@ -421,7 +490,7 @@ describe('notification service', { concurrency: false }, () => {
             endpoint,
             expirationTime: null,
             keys: {
-                p256dh: 'BA' + 'D'.repeat(84) + 'A',
+                p256dh: p256dhKey4,
                 auth: 'D'.repeat(21) + 'A'
             }
         });
@@ -443,7 +512,7 @@ describe('notification service', { concurrency: false }, () => {
         const input = {
             endpoint,
             expirationTime: null,
-            keys: { p256dh: 'B' + 'A'.repeat(86), auth: 'A'.repeat(22) }
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
         };
         const firstService = new NotificationService({
             database,
@@ -467,6 +536,43 @@ describe('notification service', { concurrency: false }, () => {
         );
     });
 
+    test('applies submitted keys during same-user race reconciliation', async () => {
+        const endpoint = 'https://fcm.googleapis.com/fcm/send/forced-reconciliation';
+        const initial = await service.upsertPushSubscription('user-a', {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+        }, 'Original Browser');
+        const forcedRace = Object.assign(
+            new Error('UNIQUE constraint failed: push_subscriptions.endpoint'),
+            { code: 'SQLITE_CONSTRAINT_UNIQUE' }
+        );
+        const reconciliationDatabase = new Proxy(database, {
+            get(target, property, receiver) {
+                if (property === 'transaction') {
+                    return async () => { throw forcedRace; };
+                }
+                return Reflect.get(target, property, receiver) as unknown;
+            }
+        }) as Knex;
+        const reconciliationService = new NotificationService({
+            database: reconciliationDatabase,
+            now: () => '2026-08-02T10:00:02.000Z'
+        });
+
+        const refreshed = await reconciliationService.upsertPushSubscription('user-a', {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey2, auth: 'B'.repeat(21) + 'A' }
+        }, 'Refreshed Browser');
+
+        assert.equal(refreshed.id, initial.id);
+        const stored = await database('push_subscriptions').where({ endpoint }).first();
+        assert.equal(stored.p256dh_key, p256dhKey2);
+        assert.equal(stored.auth_key, 'B'.repeat(21) + 'A');
+        assert.equal(stored.user_agent, 'Refreshed Browser');
+    });
+
     test('reconciles a real cross-connection endpoint enrollment race', async () => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-push-race-'));
         const filename = path.join(directory, 'notifications.sqlite');
@@ -481,7 +587,7 @@ describe('notification service', { concurrency: false }, () => {
             const input = {
                 endpoint,
                 expirationTime: null,
-                keys: { p256dh: 'B' + 'A'.repeat(86), auth: 'A'.repeat(22) }
+                keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
             };
             const firstService = new NotificationService({
                 database: firstDatabase,
@@ -515,7 +621,7 @@ describe('notification service', { concurrency: false }, () => {
             );
 
             const sameUserEndpoint =
-                'https://fcm.googleapis.com/fcm/send/cross-connection-idempotent';
+                'https://fcm.googleapis.com/fcm/send/cross-connection-refresh';
             const sameUserResults = await Promise.all([
                 new NotificationService({
                     database: firstDatabase,
@@ -531,7 +637,8 @@ describe('notification service', { concurrency: false }, () => {
                     generateId: () => 'same-user-second'
                 }).upsertPushSubscription('user-a', {
                     ...input,
-                    endpoint: sameUserEndpoint
+                    endpoint: sameUserEndpoint,
+                    keys: { p256dh: p256dhKey2, auth: 'B'.repeat(21) + 'A' }
                 })
             ]);
             assert.equal(sameUserResults[0].id, sameUserResults[1].id);
@@ -544,10 +651,56 @@ describe('notification service', { concurrency: false }, () => {
                     .then(row => Number(row?.count)),
                 1
             );
+            const storedRefresh = await firstDatabase('push_subscriptions')
+                .where({ endpoint: sameUserEndpoint })
+                .whereNull('revoked_at')
+                .first();
+            assert.ok([p256dhKey1, p256dhKey2].includes(storedRefresh.p256dh_key));
         } finally {
             await Promise.allSettled([
                 firstDatabase.destroy(),
                 secondDatabase?.destroy()
+            ]);
+            fs.rmSync(directory, { recursive: true, force: true });
+        }
+    });
+
+    test('backs off and surfaces exhausted SQLite contention', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-push-busy-'));
+        const filename = path.join(directory, 'notifications.sqlite');
+        const lockingDatabase = createDatabase(filename);
+        const blockedDatabase = createDatabase(filename);
+        let lockHeld = false;
+        try {
+            await up(lockingDatabase);
+            await addPreferenceApis(lockingDatabase);
+            await blockedDatabase.raw('PRAGMA busy_timeout = 0');
+            // EXCLUSIVE blocks both the write attempt and the ownership read in
+            // its catch path, exercising contention-safe reconciliation.
+            await lockingDatabase.raw('BEGIN EXCLUSIVE');
+            lockHeld = true;
+            const blockedService = new NotificationService({
+                database: blockedDatabase,
+                now: () => '2026-08-02T10:00:00.000Z',
+                generateId: () => 'blocked-subscription'
+            });
+
+            await assert.rejects(
+                () => blockedService.upsertPushSubscription('user-a', {
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/busy',
+                    expirationTime: null,
+                    keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+                }),
+                (error: unknown) => {
+                    const code = (error as { code?: string }).code;
+                    return code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT';
+                }
+            );
+        } finally {
+            if (lockHeld) await lockingDatabase.raw('ROLLBACK');
+            await Promise.allSettled([
+                lockingDatabase.destroy(),
+                blockedDatabase.destroy()
             ]);
             fs.rmSync(directory, { recursive: true, force: true });
         }

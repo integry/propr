@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createECDH } from 'node:crypto';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import { up as createNotificationSchema } from '../packages/core/src/db/migrations/20260802000000_create_notification_schema.js';
@@ -8,12 +9,24 @@ import {
 } from '../packages/core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { NotificationService } from '../packages/core/src/services/notificationService.js';
 import {
+    parsePushSubscription,
+    parsePushSubscriptionInput
+} from '../packages/shared/src/notifications.js';
+import {
     closeConnection,
     type BetterSqliteConnection
 } from '../packages/core/src/db/connection.js';
 
 const timestamp = '2026-08-02T08:00:00.000Z';
-const validP256dhKey = 'B' + 'A'.repeat(86);
+function generatedP256dhKey(privateKeyValue: number): string {
+    const privateKey = Buffer.alloc(32);
+    privateKey[31] = privateKeyValue;
+    const ecdh = createECDH('prime256v1');
+    ecdh.setPrivateKey(privateKey);
+    return ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url');
+}
+
+const validP256dhKey = generatedP256dhKey(1);
 const validAuthKey = 'A'.repeat(22);
 
 function createDatabase(): Knex {
@@ -189,10 +202,47 @@ describe('notification preference API migration', { concurrency: false }, () => 
             .whereLike('name', 'notification_preference_settings_%')
             .orderBy('name');
         assert.deepEqual(triggers.map(({ name }) => name), [
+            'notification_preference_settings_identity_immutable',
             'notification_preference_settings_touch_updated_at',
             'notification_preference_settings_updated_at_managed',
             'notification_preference_settings_updated_at_not_future'
         ]);
+    });
+
+    test('keeps settings identity immutable and touches mutable updates', async () => {
+        await addNotificationPreferenceApis(database);
+        await database('notification_preference_settings').insert({
+            user_id: 'settings-user',
+            quiet_hours_start: null,
+            quiet_hours_end: null,
+            timezone: 'UTC'
+        });
+        const before = await database('notification_preference_settings')
+            .where({ user_id: 'settings-user' })
+            .first();
+
+        await assert.rejects(
+            database('notification_preference_settings')
+                .where({ user_id: 'settings-user' })
+                .update({ user_id: 'transferred-user' }),
+            /settings identity is immutable/i
+        );
+        await assert.rejects(
+            database('notification_preference_settings')
+                .where({ user_id: 'settings-user' })
+                .update({ created_at: '2020-01-01T00:00:00.000Z' }),
+            /settings identity is immutable/i
+        );
+
+        await database('notification_preference_settings')
+            .where({ user_id: 'settings-user' })
+            .update({ timezone: 'Europe/Riga' });
+        const after = await database('notification_preference_settings')
+            .where({ user_id: 'settings-user' })
+            .first();
+        assert.equal(after.user_id, before.user_id);
+        assert.equal(after.created_at, before.created_at);
+        assert.ok(after.updated_at > before.updated_at);
     });
 
     test('prevents encryption keys from being restored while a row remains revoked', async () => {
@@ -231,33 +281,235 @@ describe('notification preference API migration', { concurrency: false }, () => 
         assert.equal(reactivated.p256dh_key, validP256dhKey);
     });
 
-    test('rolls back a failed rebuild atomically and has an explicit localhost rollback policy', async () => {
-        await addNotificationPreferenceApis(database, { allowInsecureLocalhost: true });
-        const service = new NotificationService({
+    test('keeps endpoint and encoded-key validation in runtime and SQLite parity', async () => {
+        await addNotificationPreferenceApis(database);
+        const cases = [
+            {
+                name: 'public-host',
+                endpoint: 'https://fcm.googleapis.com/fcm/send/parity-public',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: true
+            },
+            {
+                name: 'apple-suffix',
+                endpoint: 'https://device.push.apple.com/3/device/parity',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: true
+            },
+            {
+                name: 'normalized-default-port',
+                endpoint: 'HTTPS://FCM.GOOGLEAPIS.COM:443/fcm/send/parity-port',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: true
+            },
+            {
+                name: 'padded-keys',
+                endpoint: 'https://fcm.googleapis.com/fcm/send/parity-padding',
+                p256dh: `${validP256dhKey}=`,
+                auth: `${validAuthKey}==`,
+                accepted: true
+            },
+            {
+                name: 'localhost',
+                endpoint: 'http://localhost:4173/push/parity',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: true
+            },
+            {
+                name: 'empty-local-fragment',
+                endpoint: 'http://localhost:4173/push/parity#',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: false
+            },
+            {
+                name: 'empty-public-fragment',
+                endpoint: 'https://fcm.googleapis.com/fcm/send/parity#',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: false
+            },
+            {
+                name: 'unsupported-host',
+                endpoint: 'https://push.attacker.example/parity',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: false
+            },
+            {
+                name: 'public-nondefault-port',
+                endpoint: 'https://fcm.googleapis.com:8443/fcm/send/parity',
+                p256dh: validP256dhKey,
+                auth: validAuthKey,
+                accepted: false
+            },
+            {
+                name: 'invalid-point-prefix',
+                endpoint: 'https://fcm.googleapis.com/fcm/send/parity-prefix',
+                p256dh: `A${validP256dhKey.slice(1)}`,
+                auth: validAuthKey,
+                accepted: false
+            },
+            {
+                name: 'noncanonical-auth-bits',
+                endpoint: 'https://fcm.googleapis.com/fcm/send/parity-auth',
+                p256dh: validP256dhKey,
+                auth: `${validAuthKey.slice(0, -1)}B`,
+                accepted: false
+            }
+        ];
+
+        for (const candidate of cases) {
+            let runtimeAccepted = true;
+            try {
+                parsePushSubscriptionInput({
+                    endpoint: candidate.endpoint,
+                    expirationTime: null,
+                    keys: { p256dh: candidate.p256dh, auth: candidate.auth }
+                }, { allowInsecureLocalhost: true });
+            } catch {
+                runtimeAccepted = false;
+            }
+
+            let sqliteAccepted = true;
+            try {
+                await database('push_subscriptions').insert({
+                    subscription_id: `parity-${candidate.name}`,
+                    user_id: 'parity-user',
+                    endpoint: candidate.endpoint,
+                    p256dh_key: candidate.p256dh,
+                    auth_key: candidate.auth,
+                    expires_at: null,
+                    user_agent: null,
+                    last_used_at: null,
+                    revoked_at: null
+                });
+            } catch {
+                sqliteAccepted = false;
+            }
+
+            assert.equal(runtimeAccepted, candidate.accepted, candidate.name);
+            assert.equal(sqliteAccepted, candidate.accepted, candidate.name);
+        }
+    });
+
+    test('keeps shared subscription lifecycle rules in runtime and SQLite parity', async () => {
+        await addNotificationPreferenceApis(database);
+        const base = {
+            expiresAt: null,
+            revokedAt: null,
+            createdAt: '2020-01-01T00:00:00.000Z',
+            updatedAt: '2020-01-03T00:00:00.000Z'
+        };
+        const cases = [
+            { name: 'active', values: base, accepted: true },
+            {
+                name: 'revoked-with-expiration',
+                values: {
+                    ...base,
+                    expiresAt: '2020-01-02T00:00:00.000Z',
+                    revokedAt: '2020-01-03T00:00:00.000Z'
+                },
+                accepted: true
+            },
+            {
+                name: 'updated-before-created',
+                values: { ...base, updatedAt: '2019-12-31T00:00:00.000Z' },
+                accepted: false
+            },
+            {
+                name: 'expiration-before-created',
+                values: { ...base, expiresAt: '2019-12-31T00:00:00.000Z' },
+                accepted: false
+            },
+            {
+                name: 'revoked-before-created',
+                values: { ...base, revokedAt: '2019-12-31T00:00:00.000Z' },
+                accepted: false
+            },
+            {
+                name: 'revoked-after-updated',
+                values: { ...base, revokedAt: '2020-01-04T00:00:00.000Z' },
+                accepted: false
+            }
+        ];
+
+        for (const candidate of cases) {
+            const endpoint = `https://fcm.googleapis.com/fcm/send/lifecycle-${candidate.name}`;
+            let runtimeAccepted = true;
+            try {
+                parsePushSubscription({
+                    id: `lifecycle-${candidate.name}`,
+                    endpoint,
+                    ...candidate.values
+                });
+            } catch {
+                runtimeAccepted = false;
+            }
+
+            let sqliteAccepted = true;
+            try {
+                await database('push_subscriptions').insert({
+                    subscription_id: `lifecycle-${candidate.name}`,
+                    user_id: 'lifecycle-user',
+                    endpoint,
+                    p256dh_key: candidate.values.revokedAt === null
+                        ? validP256dhKey
+                        : null,
+                    auth_key: candidate.values.revokedAt === null ? validAuthKey : null,
+                    expires_at: candidate.values.expiresAt,
+                    user_agent: null,
+                    last_used_at: null,
+                    revoked_at: candidate.values.revokedAt,
+                    created_at: candidate.values.createdAt,
+                    updated_at: candidate.values.updatedAt
+                });
+            } catch {
+                sqliteAccepted = false;
+            }
+
+            assert.equal(runtimeAccepted, candidate.accepted, candidate.name);
+            assert.equal(sqliteAccepted, candidate.accepted, candidate.name);
+        }
+    });
+
+    test('keeps localhost schema support stable while the runtime opt-in changes', async () => {
+        await addNotificationPreferenceApis(database);
+        const localService = new NotificationService({
             database,
             now: () => timestamp,
             generateId: () => 'localhost-subscription',
             allowInsecureLocalhost: true
         });
-        await service.upsertPushSubscription('local-user', {
+        const input = {
             endpoint: 'http://127.0.0.1:4173/push/browser',
             expirationTime: null,
             keys: { p256dh: validP256dhKey, auth: validAuthKey }
-        });
+        };
+        await localService.upsertPushSubscription('local-user', input);
 
-        await assert.rejects(
-            addNotificationPreferenceApis(database, { allowInsecureLocalhost: false }),
-            /push_subscriptions_required_values_check/i
-        );
+        // Re-running the migration and changing the process policy do not
+        // recompile a conflicting table CHECK.
+        await addNotificationPreferenceApis(database);
         assert.equal(await database.schema.hasTable('push_subscriptions_legacy'), false);
-        assert.equal(
-            await database('push_subscriptions')
-                .where({ subscription_id: 'localhost-subscription' })
-                .first()
-                .then(row => row?.endpoint),
-            'http://127.0.0.1:4173/push/browser'
+        const strictService = new NotificationService({ database, allowInsecureLocalhost: false });
+        await assert.rejects(
+            strictService.upsertPushSubscription('other-local-user', {
+                ...input,
+                endpoint: 'http://localhost:4173/push/disabled'
+            })
         );
-        assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
+        assert.equal(
+            await strictService.revokePushSubscription('local-user', input.endpoint),
+            true,
+            'turning enrollment off must not strand an existing loopback row'
+        );
+        const reactivated = await localService.upsertPushSubscription('local-user', input);
+        assert.equal(reactivated.id, 'localhost-subscription');
 
         await removeNotificationPreferenceApis(database);
 

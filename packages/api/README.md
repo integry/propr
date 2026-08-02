@@ -78,18 +78,23 @@ new user receives all six categories (`plan`, `task`, `review`,
 `pull_request`, `indexing`, and `system_failure`) with Inbox enabled and Push
 disabled. Quiet hours default to `{ "start": null, "end": null, "timezone":
 "UTC" }`. Push is not enabled by registering a browser; the user must also set
-`pushEnabled` for each desired category.
+`pushEnabled` for each desired category. A synthesized category default has
+`updatedAt: null`; persisted choices carry their actual update timestamp.
 
 This API currently stores notification delivery policy and browser enrollment;
 it does not include a Web Push dispatcher. Quiet hours therefore do not yet
 suppress outbound requests. A future dispatcher must apply both boundaries in
 the stored IANA timezone at claim time (including retries and DST transitions),
 treat either null boundary as disabled, and retain jobs until the quiet window
-ends.
+ends. Revocation erases stored keys and cancels queued or expired-lease jobs,
+but it is best-effort for a live lease that may already hold key material. A
+future dispatcher must re-read both the subscription and job immediately before
+network I/O and skip a revoked subscription or cancelled job.
 
 - `GET /api/notifications/config` - Return Web Push availability and the VAPID public key. The private key is never serialized.
 - `GET /api/notifications/preferences` - Return the complete category and quiet-hour snapshot.
-- `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged. `PUT` is accepted as an alias.
+- `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged.
+- `PUT /api/notifications/preferences` - Compatibility alias for the same sparse update; it does not replace the complete resource.
 - `POST /api/notifications/push-subscriptions` - Create or refresh the authenticated user's browser subscription by endpoint.
 - `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` in the JSON body or query string.
 
@@ -100,7 +105,9 @@ SQLite `CHECK`; delivery clients must revalidate stored endpoints and disable
 redirects. Insecure `localhost`/`127.0.0.1` enrollment is off by default and is
 available only for isolated local development through
 `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH=true`. Do not enable it on a remotely
-reachable development or staging server.
+reachable development or staging server. The SQLite constraint is deliberately
+stable across restarts and permits loopback rows; the authenticated service flag
+is the enrollment policy boundary.
 
 For example, this enables Push for task notifications and configures local
 quiet hours without changing any other category:
