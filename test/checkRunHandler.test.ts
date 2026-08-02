@@ -20,14 +20,15 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis(...args: unknown[]) {
-        redisConstructorCalls.push(args);
-        return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
-    },
     namedExports: {
         Redis: function Redis(...args: unknown[]) {
             redisConstructorCalls.push(args);
-            return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
+            return {
+                on: mock.fn(),
+                get: mockRedisGet,
+                quit: mock.fn(async () => {}),
+                disconnect: mock.fn(),
+            };
         }
     }
 });
@@ -88,6 +89,7 @@ const mockUpdatePlanIssueByPR = mock.fn(async () => {});
 
 await mock.module('../packages/core/src/config/planIssueManager.js', {
     namedExports: {
+        PlanIssueStatus: { MERGED: 'merged' },
         findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
         findPlanIssueByRepoAndNumber: mockFindPlanIssueByRepoAndNumber,
         updatePlanIssueByPR: mockUpdatePlanIssueByPR
@@ -1426,7 +1428,7 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 0);
     });
 
-    test('does not hard-block auto-merge solely because the ultrafix label remains without Redis state', async () => {
+    test('keeps auto-merge blocked while the ultrafix label remains without a success state', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1436,10 +1438,10 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
-    test('falls back to auto-merge when ultrafix state is unavailable while ultrafix is still labeled', async () => {
+    test('fails closed when ultrafix state is unavailable while ultrafix is still labeled', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1449,10 +1451,10 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
-    test('falls back to linked issue auto-merge when ultrafix state is unavailable and PR has no direct label', async () => {
+    test('does not use a linked issue to bypass unavailable ultrafix state', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint.includes('pulls')) {
@@ -1472,7 +1474,7 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
     test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {

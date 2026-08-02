@@ -2,7 +2,7 @@
 
 import { Command } from "commander";
 import { config } from "dotenv";
-import { readFileSync } from "fs";
+import { readFileSync, realpathSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createConfigManager } from "./config/index.js";
@@ -330,8 +330,21 @@ program.addCommand(createBackendCommand());
 program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
 
-// Bare `propr` (no args): run the environment check, then hint at next steps.
-if (!process.argv.slice(2).length) {
+function isCliEntryPoint(): boolean {
+  if (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT || process.argv.includes('--test')) return false;
+  const invocation = process.argv[1];
+  if (!invocation) return false;
+
+  try {
+    return realpathSync(invocation) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+// Importing @propr/cli exposes its programmatic API without executing a command.
+// Bare `propr` (no args) runs the environment check, then hints at next steps.
+if (isCliEntryPoint() && !process.argv.slice(2).length) {
   void (async () => {
     try {
       const outcome = await runChecks();
@@ -349,6 +362,6 @@ if (!process.argv.slice(2).length) {
       process.exit(1);
     }
   })();
-} else {
+} else if (isCliEntryPoint()) {
   program.parse();
 }

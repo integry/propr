@@ -8,10 +8,15 @@ import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import type { ConfigLockContext } from './configHelpers.js';
+import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
+import type { Knex } from 'knex';
 import { normalizeRepoConfig } from './configRepoValidation.js';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
+  configStore?: Partial<typeof configManager>;
+  database?: Pick<Knex, 'transaction'>;
+  agentPreparationDeps?: Partial<AgentPreparationDeps>;
 }
 interface JsonPostHandlerConfig<T> {
   lockKey: string;
@@ -121,6 +126,8 @@ async function saveThenPublishConfigUpdate({
 
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
+  const configStore = { ...configManager, ...deps.configStore };
+  const database = deps.database ?? configManager.db;
   const publishConfigUpdate = async (subtype: string): Promise<void> => {
     try {
       await redisClient.publish(CONFIG_EVENT_CHANNEL, JSON.stringify({ type: 'config_update', subtype, timestamp: Date.now() }));
@@ -145,7 +152,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   const indexingRoutes = createIndexingRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
   const agentTankRoutes = createAgentTankRoutes();
-  const agentsRoutes = createAgentsRoutes({ redisClient, publishConfigUpdate, logActivityHelper });
+  const agentsRoutes = createAgentsRoutes({
+    redisClient,
+    publishConfigUpdate,
+    logActivityHelper,
+    configStore,
+    database,
+    preparationDeps: deps.agentPreparationDeps,
+  });
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
@@ -178,14 +192,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
     res.status(result.status).json(result.body);
   };
-  const getFollowupKeywords = createJsonGetHandler(() => configManager.loadFollowupKeywords(), followup_keywords => ({ followup_keywords }), 'Failed to load followup keywords', '/api/config/followup-keywords GET');
-  const postFollowupKeywords = createJsonPostHandler({ lockKey: 'config:keywords:lock', pickValue: body => body.followup_keywords, validate: followup_keywords => parseNormalizedStringArrayResult(followup_keywords, 'followup_keywords'), save: followup_keywords => configManager.saveFollowupKeywords(followup_keywords), subtype: 'followup_keywords_update', body: followup_keywords => ({ followup_keywords }), committedErrorMessage: 'Follow-up keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
-  const getFollowupIgnoreKeywords = createJsonGetHandler(() => configManager.loadFollowupIgnoreKeywords(), followup_ignore_keywords => ({ followup_ignore_keywords }), 'Failed to load followup ignore keywords', '/api/config/followup-ignore-keywords GET');
-  const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => parseNormalizedStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configManager.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }), committedErrorMessage: 'Follow-up ignore keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
+  const getFollowupKeywords = createJsonGetHandler(() => configStore.loadFollowupKeywords(), followup_keywords => ({ followup_keywords }), 'Failed to load followup keywords', '/api/config/followup-keywords GET');
+  const postFollowupKeywords = createJsonPostHandler({ lockKey: 'config:keywords:lock', pickValue: body => body.followup_keywords, validate: followup_keywords => parseNormalizedStringArrayResult(followup_keywords, 'followup_keywords'), save: followup_keywords => configStore.saveFollowupKeywords(followup_keywords), subtype: 'followup_keywords_update', body: followup_keywords => ({ followup_keywords }), committedErrorMessage: 'Follow-up keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
+  const getFollowupIgnoreKeywords = createJsonGetHandler(() => configStore.loadFollowupIgnoreKeywords(), followup_ignore_keywords => ({ followup_ignore_keywords }), 'Failed to load followup ignore keywords', '/api/config/followup-ignore-keywords GET');
+  const postFollowupIgnoreKeywords = createJsonPostHandler({ lockKey: 'config:ignore-keywords:lock', pickValue: body => body.followup_ignore_keywords, validate: followup_ignore_keywords => parseNormalizedStringArrayResult(followup_ignore_keywords, 'followup_ignore_keywords'), save: followup_ignore_keywords => configStore.saveFollowupIgnoreKeywords(followup_ignore_keywords), subtype: 'followup_ignore_keywords_update', body: followup_ignore_keywords => ({ followup_ignore_keywords }), committedErrorMessage: 'Follow-up ignore keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.' });
 
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
-      const repos = await configManager.loadMonitoredReposRaw();
+      const repos = await configStore.loadMonitoredReposRaw();
       res.json({ repos_to_monitor: repos });
     } catch (error) {
       console.error('Error in /api/config/repos GET:', error);
@@ -216,12 +230,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       processedRepos.push(normalized.value);
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
-      const previousRepos = await configManager.loadMonitoredReposRaw();
+      const previousRepos = await configStore.loadMonitoredReposRaw();
       return saveThenPublishConfigUpdate({
         save: async () => {
-          await configManager.db.transaction(async trx => {
-            await configManager.saveMonitoredRepos(processedRepos, trx);
-            await configManager.clearRemovedRepositoryIndexData(previousRepos, processedRepos, trx);
+          await database.transaction(async trx => {
+            await configStore.saveMonitoredRepos(processedRepos, trx);
+            await configStore.clearRemovedRepositoryIndexData(previousRepos, processedRepos, trx);
           });
         },
         publish: async () => {
@@ -243,14 +257,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
       const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, modelReasoningLevel, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
-        configManager.loadSettings(),
-        configManager.loadAutoFollowupScoreThreshold(),
-        configManager.loadAutoResolveMergeConflicts(),
-        configManager.loadModelReasoningLevel(),
-        configManager.loadPrReviewModel(),
-        configManager.loadUltrafixRatingGoal(),
-        configManager.loadUltrafixMaxCycles(),
-        configManager.loadUltrafixPauseSeconds()
+        configStore.loadSettings(),
+        configStore.loadAutoFollowupScoreThreshold(),
+        configStore.loadAutoResolveMergeConflicts(),
+        configStore.loadModelReasoningLevel(),
+        configStore.loadPrReviewModel(),
+        configStore.loadUltrafixRatingGoal(),
+        configStore.loadUltrafixMaxCycles(),
+        configStore.loadUltrafixPauseSeconds()
       ]);
       const settings = loadedSettings as Record<string, unknown>;
       const envDefaults = { worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10), github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()), analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || 'claude-3-5-haiku-20241022', planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '', planner_generation_model: process.env.PLANNER_GENERATION_MODEL || '' };
@@ -315,7 +329,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock =>
-      saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, lock })
+      saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock })
     );
     if (result.status === 200 && result.body.noop !== true) {
       try {
@@ -326,14 +340,14 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     res.status(result.status).json(result.body);
   }
 
-  const getPrLabel = createJsonGetHandler(() => configManager.loadPrLabel(), pr_label => ({ pr_label }), 'Failed to load PR label', '/api/config/pr-label GET');
-  const postPrLabel = createJsonPostHandler<string>({ lockKey: 'config:pr-label:lock', pickValue: body => body.pr_label, validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? success(pr_label.trim()) : failure('pr_label must be a non-empty string'), save: pr_label => configManager.savePrLabel(pr_label), subtype: 'pr_label_update', body: pr_label => ({ pr_label }), committedErrorMessage: 'PR label was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.', activity: { description: pr_label => `Updated PR label to "${pr_label}"`, idSuffix: 'pr-label-update', type: 'config_updated' } });
-  const getAiPrimaryTag = createJsonGetHandler(() => configManager.loadAiPrimaryTag(), ai_primary_tag => ({ ai_primary_tag }), 'Failed to load AI primary tag', '/api/config/ai-primary-tag GET');
-  const postAiPrimaryTag = createJsonPostHandler<string>({ lockKey: 'config:ai-primary-tag:lock', pickValue: body => body.ai_primary_tag, validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? success(ai_primary_tag.trim()) : failure('ai_primary_tag must be a non-empty string'), save: ai_primary_tag => configManager.saveAiPrimaryTag(ai_primary_tag), subtype: 'ai_primary_tag_update', body: ai_primary_tag => ({ ai_primary_tag }), committedErrorMessage: 'AI primary tag was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.', activity: { description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`, idSuffix: 'ai-primary-tag-update', type: 'config_updated' } });
+  const getPrLabel = createJsonGetHandler(() => configStore.loadPrLabel(), pr_label => ({ pr_label }), 'Failed to load PR label', '/api/config/pr-label GET');
+  const postPrLabel = createJsonPostHandler<string>({ lockKey: 'config:pr-label:lock', pickValue: body => body.pr_label, validate: pr_label => typeof pr_label === 'string' && pr_label.trim() !== '' ? success(pr_label.trim()) : failure('pr_label must be a non-empty string'), save: pr_label => configStore.savePrLabel(pr_label), subtype: 'pr_label_update', body: pr_label => ({ pr_label }), committedErrorMessage: 'PR label was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.', activity: { description: pr_label => `Updated PR label to "${pr_label}"`, idSuffix: 'pr-label-update', type: 'config_updated' } });
+  const getAiPrimaryTag = createJsonGetHandler(() => configStore.loadAiPrimaryTag(), ai_primary_tag => ({ ai_primary_tag }), 'Failed to load AI primary tag', '/api/config/ai-primary-tag GET');
+  const postAiPrimaryTag = createJsonPostHandler<string>({ lockKey: 'config:ai-primary-tag:lock', pickValue: body => body.ai_primary_tag, validate: ai_primary_tag => typeof ai_primary_tag === 'string' && ai_primary_tag.trim() !== '' ? success(ai_primary_tag.trim()) : failure('ai_primary_tag must be a non-empty string'), save: ai_primary_tag => configStore.saveAiPrimaryTag(ai_primary_tag), subtype: 'ai_primary_tag_update', body: ai_primary_tag => ({ ai_primary_tag }), committedErrorMessage: 'AI primary tag was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.', activity: { description: ai_primary_tag => `Updated AI primary tag to "${ai_primary_tag}"`, idSuffix: 'ai-primary-tag-update', type: 'config_updated' } });
 
   async function getPrimaryProcessingLabels(_req: Request, res: Response): Promise<void> {
     try {
-      res.json({ primary_processing_labels: await configManager.loadPrimaryProcessingLabels() });
+      res.json({ primary_processing_labels: await configStore.loadPrimaryProcessingLabels() });
     } catch (error) {
       console.error('Error in /api/config/primary-processing-labels GET:', error);
       res.status(500).json({ error: 'Failed to load primary processing labels' });
@@ -365,7 +379,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async lock => {
       return saveThenPublishConfigUpdate({
         save: async () => {
-          await configManager.savePrimaryProcessingLabels(labels);
+          await configStore.savePrimaryProcessingLabels(labels);
         },
         publish: async () => {
           await publishConfigUpdate('primary_processing_labels_update');
@@ -385,8 +399,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSummarizationSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const settings = await configManager.loadSummarizationSettings();
-      const runtime = await configManager.loadSummarizationRuntimeState();
+      const settings = await configStore.loadSummarizationSettings();
+      const runtime = await configStore.loadSummarizationRuntimeState();
       res.json({ ...settings, default_prompt: DEFAULT_INSTRUCTIONS, runtime });
     } catch (error) {
       console.error('Error in /api/config/summarization GET:', error);

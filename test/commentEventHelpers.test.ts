@@ -1,18 +1,9 @@
 import { test, mock, describe } from 'node:test';
 import assert from 'node:assert';
 
-// Mock @propr/shared to avoid package resolution failure
-await mock.module('@propr/shared', {
+await mock.module('../packages/core/src/config/modelAliases.js', {
     namedExports: {
-        MODEL_ALIASES: {},
-    },
-});
-
-// Mock modelDefinitions to avoid transitive dependency issues
-await mock.module('../packages/core/src/config/modelDefinitions.js', {
-    namedExports: {
-        MODEL_INFO_MAP: {},
-        modelDefinitions: [],
+        resolveModelAlias: (model: string) => model,
     },
 });
 

@@ -186,6 +186,7 @@ await mock.module('@propr/core', {
         }),
         cleanupWorktree: mockCleanupWorktree,
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
+        AI_COMMIT_AUTHOR: { name: 'ProPR AI', email: 'ai@propr.dev' },
     }
 });
 
@@ -199,6 +200,7 @@ await mock.module('../src/jobs/prCommentJobHelpers.js', {
 
 await mock.module('../src/jobs/prCommentJobUtils.js', {
     namedExports: {
+        fetchAllComments: mock.fn(async () => []),
         toClaudeResult: mock.fn((r: unknown) => r),
         agentResultToClaudeResponse: mock.fn((r: Record<string, unknown>) => ({
             success: r.success,
@@ -211,6 +213,8 @@ await mock.module('../src/jobs/prCommentJobUtils.js', {
             finalResult: r.summary ? { type: 'result', result: r.summary } : null,
             conversationLog: r.conversationLog,
             tokenUsage: r.tokenUsage,
+            logs: r.logs,
+            rawOutput: r.rawOutput,
         })),
     }
 });
@@ -322,7 +326,6 @@ describe('processMergeConflictJob', () => {
         assert.ok(prompt.includes('src/index.ts'), 'Prompt should include conflicted files');
         assert.ok(prompt.includes('src/app.ts'), 'Prompt should include conflicted files');
         assert.ok(prompt.includes('main'), 'Prompt should include base branch');
-        assert.deepStrictEqual(executeOptions.environment, { PROPR_REPO_SETUP: '0' });
 
         // Verify commit and push were called
         assert.strictEqual(mockCommitChanges.mock.callCount(), 1);

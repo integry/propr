@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { ensureAuthenticated } from '../packages/api/auth.ts';
-import { demoModeReadOnlyMiddleware, resetConfiguredDemoMode } from '../packages/api/demoMode.ts';
+import { demoModeReadOnlyMiddleware, getDemoUser, resetConfiguredDemoMode } from '../packages/api/demoMode.ts';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 
@@ -38,14 +38,7 @@ test('demo mode attaches a synthetic user without OAuth', async () => {
 
   const response = await fetchFromApp(app, '/api/auth/user');
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    id: 'demo',
-    login: 'demo',
-    username: 'demo',
-    displayName: 'Demo User',
-    email: null,
-    avatarUrl: null,
-  });
+  assert.deepEqual(await response.json(), getDemoUser());
 });
 
 test('demo mode allows GET requests and blocks mutating requests', async () => {

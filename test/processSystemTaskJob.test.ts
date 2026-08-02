@@ -453,6 +453,7 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     data: {
                         head: {
                             ref: 'feature-branch',
+                            sha: 'head1234567890abcdef1234567890abcdef123456',
                             repo: {
                                 owner: { login: 'testorg' },
                                 name: 'testrepo',

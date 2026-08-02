@@ -1,6 +1,10 @@
 /* eslint-disable max-lines */
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
-import { isOpenCodeJsonlEvent, normalizeOpenCodeUsage } from '@propr/core';
+import {
+  isOpenCodeJsonlEvent,
+  normalizeOpenCodeTimestamp,
+  normalizeOpenCodeUsage,
+} from '@propr/core';
 import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParserVibe.js';
 
 /** Result from parsing Redis output */
@@ -174,8 +178,9 @@ function processCodexItemUpdated(event: CodexEvent, _timestamp: string, state: P
 
 function processCodexTurnCompleted(event: CodexEvent, _timestamp: string, state: ParseState): boolean {
   if (!event.usage) return false;
-  state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
+  state.tokenUsage.input_tokens += event.usage.input_tokens ?? 0;
   state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+  state.tokenUsage.cache_read_input_tokens += event.usage.cached_input_tokens ?? 0;
   return true;
 }
 
@@ -189,7 +194,7 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
     case 'tool_result':
       return processCodexToolResult(event, timestamp, state);
     case 'result':
-      return true;
+      return event.usage ? processCodexTurnCompleted(event, timestamp, state) : true;
     case 'item.completed':
       return processCodexItemCompleted(event, timestamp, state);
     case 'item.updated':
@@ -230,6 +235,15 @@ function processAntigravityEvent(
   }
   if (event.type === 'tool_use') {
     flushPendingMessage(state, timestamp);
+    if (!state.antigravityStreamActive) {
+      state.events.push({
+        type: 'tool_use' as const,
+        toolName: event.tool_name,
+        input: event.parameters as Record<string, unknown> | undefined,
+        id: event.tool_id,
+        timestamp
+      });
+    }
     return;
   }
   if (event.type === 'tool_result') {
@@ -604,16 +618,28 @@ function isAntigravityStreamEvent(
 function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
-    const timestamp = event.created_at || event.timestamp || getNextSyntheticTimestamp(state);
+    const rawTimestamp = event.created_at || event.timestamp;
+    const timestamp = typeof rawTimestamp === 'number'
+      ? normalizeOpenCodeTimestamp(rawTimestamp)
+      : rawTimestamp || getNextSyntheticTimestamp(state);
 
-    if (isAntigravityStreamEvent(event, state)) {
+    // Session-qualified OpenCode events overlap with Antigravity's tool
+    // envelopes, so preserve their stronger identity before generic routing.
+    if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
+
+    if (event.type === 'message' && event.role === 'assistant' && event.delta === true && !hasOpenCodeSessionId(event)) {
       state.antigravityStreamActive = true;
       processAntigravityEvent(event, timestamp, state);
       return;
     }
 
+    if (isAntigravityStreamEvent(event, state)) {
+      processAntigravityEvent(event, timestamp, state);
+      state.antigravityStreamActive = true;
+      return;
+    }
+
     // Try OpenCode before Codex when session ID is present (their envelopes overlap)
-    if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
     // Try Codex event processing
     if (!processCodexEvent(event, timestamp, state)) {
       // Try OpenCode

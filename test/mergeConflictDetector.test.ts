@@ -17,8 +17,10 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis() {
-        return { on: mock.fn(), quit: mock.fn(async () => {}) };
+    namedExports: {
+        Redis: function Redis() {
+            return { on: mock.fn(), quit: mock.fn(async () => {}) };
+        }
     }
 });
 

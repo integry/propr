@@ -11,29 +11,19 @@ jobs:
   e2e-tests:
     name: Run E2E Test Suite
     runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 120
     permissions:
       contents: read
       issues: write
-
-    services:
-      redis:
-        image: redis:alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -44,28 +34,33 @@ jobs:
             packages/core/package-lock.json
 
       - name: Install Dependencies
+        id: install
         run: npm ci
 
       - name: Build workspace packages
+        id: build
         run: |
           npm run build --workspace=packages/shared
           npm run build --workspace=packages/core
 
       - name: Validate docs site
+        id: docs
         env:
           PROPR_WORKSPACE: ${{ github.workspace }}
         run: ./.propr/setup.sh
+
+      - name: Start isolated Redis
+        id: redis
+        run: ./scripts/ci-redis.sh start
 
       - name: Run Full Test Suite
         id: full_tests
         continue-on-error: true
         env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
           NODE_ENV: test
         run: |
           echo "Running full test suite with Redis..."
-          npx tsx --test test/*.test.ts 2>&1 | tee test_output.txt
+          npm run test:full 2>&1 | tee test_output.txt
           TEST_EXIT_CODE=${PIPESTATUS[0]}
 
           if [ $TEST_EXIT_CODE -eq 0 ]; then
@@ -78,14 +73,35 @@ jobs:
 
           exit $TEST_EXIT_CODE
 
-      - name: Run E2E Tests
-        id: e2e_tests
+      - name: Validate live E2E configuration
+        id: e2e_config
         if: steps.full_tests.outcome == 'success'
         continue-on-error: true
         env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
+          PROPR_E2E_API_URL: ${{ secrets.PROPR_E2E_API_URL }}
+          PROPR_E2E_TOKEN: ${{ secrets.PROPR_E2E_TOKEN }}
+          PROPR_E2E_REPO: ${{ vars.PROPR_E2E_REPO }}
+        run: |
+          missing=()
+          for name in PROPR_E2E_API_URL PROPR_E2E_TOKEN PROPR_E2E_REPO; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing required nightly E2E configuration: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Run E2E Tests
+        id: e2e_tests
+        if: steps.full_tests.outcome == 'success' && steps.e2e_config.outcome == 'success'
+        continue-on-error: true
+        env:
           NODE_ENV: test
+          PROPR_E2E_API_URL: ${{ secrets.PROPR_E2E_API_URL }}
+          PROPR_E2E_TOKEN: ${{ secrets.PROPR_E2E_TOKEN }}
+          PROPR_E2E_REPO: ${{ vars.PROPR_E2E_REPO }}
         run: |
           echo "Running E2E test suite..."
           npm run test:e2e 2>&1 | tee e2e_output.txt
@@ -102,7 +118,7 @@ jobs:
           exit $E2E_EXIT_CODE
 
       - name: Create Failure Issue
-        if: steps.full_tests.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
+        if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
         uses: actions/github-script@v7
         with:
           script: |
@@ -126,15 +142,27 @@ jobs:
               e2eOutput = e2eOutput.substring(0, 30000) + "\n\n...(truncated)";
             }
 
-            const fullTestStatus = '${{ steps.full_tests.outcome }}' === 'failure' ? 'Failed' : 'Passed';
-            const e2eTestStatus = '${{ steps.e2e_tests.outcome }}' === 'failure' ? 'Failed' : ('${{ steps.e2e_tests.outcome }}' === 'skipped' ? 'Skipped' : 'Passed');
+            const outcomes = {
+              install: '${{ steps.install.outcome }}',
+              build: '${{ steps.build.outcome }}',
+              docs: '${{ steps.docs.outcome }}',
+              redis: '${{ steps.redis.outcome }}',
+              fullTests: '${{ steps.full_tests.outcome }}',
+              e2eConfig: '${{ steps.e2e_config.outcome }}',
+              e2eTests: '${{ steps.e2e_tests.outcome }}',
+            };
 
             const body = [
               '## Nightly Test Suite Failure Report',
               '',
               `**Date:** ${date}`,
-              `**Full Test Suite:** ${fullTestStatus}`,
-              `**E2E Tests:** ${e2eTestStatus}`,
+              `**Dependency install:** ${outcomes.install}`,
+              `**Workspace build:** ${outcomes.build}`,
+              `**Docs validation:** ${outcomes.docs}`,
+              `**Redis startup:** ${outcomes.redis}`,
+              `**Full test suite:** ${outcomes.fullTests}`,
+              `**Live E2E configuration:** ${outcomes.e2eConfig}`,
+              `**Live E2E tests:** ${outcomes.e2eTests}`,
               '',
               '### Full Test Suite Output',
               '',
@@ -193,5 +221,9 @@ jobs:
             }
 
       - name: Fail Job
-        if: steps.full_tests.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
+        if: steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
         run: exit 1
+
+      - name: Stop isolated Redis
+        if: always()
+        run: ./scripts/ci-redis.sh stop

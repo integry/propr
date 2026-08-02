@@ -54,9 +54,10 @@ function requireSingleHeader(
   headerName: string,
 ): string | null {
   const value = req.headers[headerName];
-  if (!value || Array.isArray(value)) {
-    const reason = Array.isArray(value) ? 'Invalid' : 'Missing';
-    const logReason = Array.isArray(value) ? 'Rejecting multi-valued' : 'Missing';
+  const isMultiValue = Array.isArray(value) || (typeof value === 'string' && value.includes(','));
+  if (!value || isMultiValue) {
+    const reason = isMultiValue ? 'Invalid' : 'Missing';
+    const logReason = isMultiValue ? 'Rejecting multi-valued' : 'Missing';
     console.warn(`[webhook] ${logReason} ${headerName} header`);
     res.status(400).send(`${reason} ${headerName} header.`);
     return null;
@@ -233,7 +234,7 @@ export async function handleWebhookRequest(
 
   // --- Signature verification ---
   const rawSignature = req.headers['x-hub-signature-256'];
-  if (Array.isArray(rawSignature)) {
+  if (Array.isArray(rawSignature) || rawSignature?.includes(',')) {
     console.error('[webhook] Rejecting multi-valued x-hub-signature-256 header');
     res.status(401).send('Invalid webhook signature header.');
     return;

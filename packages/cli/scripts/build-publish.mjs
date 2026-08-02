@@ -150,6 +150,7 @@ const stagePkg = {
   },
   keywords: ["propr", "cli", "github", "ai", "code-review", "automation"],
   license: rootPkg.license || "ISC",
+  repository: rootPkg.repository,
 };
 writeFileSync(join(stageDir, "package.json"), JSON.stringify(stagePkg, null, 2) + "\n");
 

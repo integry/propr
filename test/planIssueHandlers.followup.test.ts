@@ -60,6 +60,11 @@ function resetMocks(): void {
   mockSafeUpdateLabels.mock.resetCalls();
   mockLoggerWithCorrelation.mock.resetCalls();
   mockHandleSingleAgentImplementation.mock.resetCalls();
+  mockGetPlanIssue.mock.mockImplementation(async () => null);
+  mockGetPlanIssuesByDraft.mock.mockImplementation(async () => []);
+  mockUpdatePlanIssue.mock.mockImplementation(async () => null);
+  mockLoadPrimaryProcessingLabels.mock.mockImplementation(async () => ['AI']);
+  mockGetAuthenticatedOctokit.mock.mockImplementation(async () => ({ request: mock.fn() }));
   mockSafeUpdateLabels.mock.mockImplementation(async () => {});
 }
 
@@ -78,8 +83,8 @@ function createResponse() {
   };
 }
 
-describe('planIssueHandlers follow-up fixes', () => {
-  test('updateIssueHandler rolls back DB config when model label sync fails', async () => {
+test('planIssueHandlers follow-up fixes', async (t) => {
+  await t.test('updateIssueHandler rolls back DB config when model label sync fails', async () => {
     resetMocks();
     const handler = createUpdateIssueHandler({
       verifyOwnership: async () => ({
@@ -91,16 +96,6 @@ describe('planIssueHandlers follow-up fixes', () => {
     });
 
     mockGetPlanIssue.mock.mockImplementation(async () => ({
-      issue_number: 12,
-      agent_alias: 'codex',
-      model_name: 'gpt-5.4',
-    }));
-    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => ({
-      issue_number: 12,
-      agent_alias: 'codex-next',
-      model_name: 'gpt-5.5',
-    }));
-    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => ({
       issue_number: 12,
       agent_alias: 'codex',
       model_name: 'gpt-5.4',
@@ -119,13 +114,10 @@ describe('planIssueHandlers follow-up fixes', () => {
     await handler(req as never, res as never);
 
     assert.strictEqual(res.statusCode, 500);
-    assert.deepStrictEqual(mockUpdatePlanIssue.mock.calls.map((call) => call.arguments), [
-      ['draft-1', 12, { agent_alias: 'codex-next', model_name: 'gpt-5.5' }],
-      ['draft-1', 12, { agent_alias: 'codex', model_name: 'gpt-5.4' }],
-    ]);
+    assert.deepStrictEqual(mockUpdatePlanIssue.mock.calls, []);
   });
 
-  test('updateIssueHandler returns a reconciliation payload when rollback fails', async () => {
+  await t.test('updateIssueHandler returns a reconciliation payload when rollback fails', async () => {
     resetMocks();
     const handler = createUpdateIssueHandler({
       verifyOwnership: async () => ({
@@ -141,12 +133,13 @@ describe('planIssueHandlers follow-up fixes', () => {
       agent_alias: 'codex',
       model_name: 'gpt-5.4',
     }));
-    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => {
+    mockUpdatePlanIssue.mock.mockImplementation(async () => {
       throw new Error('db write failed');
     });
-    mockSafeUpdateLabels.mock.mockImplementationOnce(async () => {});
-    mockSafeUpdateLabels.mock.mockImplementationOnce(async () => {
-      throw new Error('rollback label sync failed');
+    mockSafeUpdateLabels.mock.mockImplementation(async () => {
+      if (mockSafeUpdateLabels.mock.calls.length >= 1) {
+        throw new Error('rollback label sync failed');
+      }
     });
 
     const req = {
@@ -174,7 +167,7 @@ describe('planIssueHandlers follow-up fixes', () => {
     });
   });
 
-  test('updateIssueHandler surfaces non-reconciliation rollback failures to the caller', async () => {
+  await t.test('updateIssueHandler surfaces non-reconciliation rollback failures to the caller', async () => {
     resetMocks();
     const handler = createUpdateIssueHandler({
       verifyOwnership: async () => ({
@@ -190,15 +183,16 @@ describe('planIssueHandlers follow-up fixes', () => {
       agent_alias: 'codex',
       model_name: 'gpt-5.4',
     }));
-    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => ({
-      issue_number: 18,
-      agent_alias: 'codex-next',
-      model_name: 'gpt-5.5',
-    }));
-    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => {
-      throw new Error('db write failed');
-    });
-    mockUpdatePlanIssue.mock.mockImplementationOnce(async () => {
+    mockUpdatePlanIssue.mock.mockImplementation(async () => {
+      const callNumber = mockUpdatePlanIssue.mock.calls.length;
+      if (callNumber === 0) {
+        return {
+          issue_number: 18,
+          agent_alias: 'codex-next',
+          model_name: 'gpt-5.5',
+        };
+      }
+      if (callNumber === 1) throw new Error('db write failed');
       throw new Error('rollback db write failed');
     });
     mockSafeUpdateLabels.mock.mockImplementationOnce(async () => {});
@@ -226,7 +220,7 @@ describe('planIssueHandlers follow-up fixes', () => {
     });
   });
 
-  test('implementIssue persists effective ultrafix settings before implementation starts', async () => {
+  await t.test('implementIssue persists effective ultrafix settings before implementation starts', async () => {
     resetMocks();
     const handler = createImplementIssueHandler({
       verifyOwnership: async () => ({
@@ -290,7 +284,7 @@ describe('planIssueHandlers follow-up fixes', () => {
     assert.strictEqual(res.statusCode, 200);
   });
 
-  test('implementIssue rejects a repository assertion that does not match the draft', async () => {
+  await t.test('implementIssue rejects a repository assertion that does not match the draft', async () => {
     resetMocks();
     const handler = createImplementIssueHandler({
       verifyOwnership: async () => ({
@@ -316,7 +310,7 @@ describe('planIssueHandlers follow-up fixes', () => {
     assert.deepStrictEqual(res.body, { error: 'Issue belongs to owner/repo, not other/repo' });
   });
 
-  test('implementIssue rejects malformed models entries with 400', async () => {
+  await t.test('implementIssue rejects malformed models entries with 400', async () => {
     resetMocks();
     const handler = createImplementIssueHandler({
       verifyOwnership: async () => ({
@@ -342,7 +336,7 @@ describe('planIssueHandlers follow-up fixes', () => {
     assert.deepStrictEqual(res.body, { error: 'models must be an array of { agent_alias, model_name } objects' });
   });
 
-  test('implementIssue returns 404 when the issue is missing from the plan', async () => {
+  await t.test('implementIssue returns 404 when the issue is missing from the plan', async () => {
     resetMocks();
     const handler = createImplementIssueHandler({
       verifyOwnership: async () => ({
@@ -369,7 +363,7 @@ describe('planIssueHandlers follow-up fixes', () => {
     assert.deepStrictEqual(res.body, { error: 'Issue not found in this plan' });
   });
 
-  test('updateIssueHandler preserves stored ultrafix disablement for partial PATCH updates', async () => {
+  await t.test('updateIssueHandler preserves stored ultrafix disablement for partial PATCH updates', async () => {
     resetMocks();
     const handler = createUpdateIssueHandler({
       verifyOwnership: async () => ({

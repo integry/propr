@@ -20,7 +20,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Check Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Check toolchain
         run: |
           node --version
           npm --version

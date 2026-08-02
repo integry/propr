@@ -13,13 +13,20 @@ import {
 import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
 import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
-import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
+import type { AgentConfigStore, AgentPreparationDeps, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
+
+const DEFAULT_PREPARATION_DEPS: AgentPreparationDeps = {
+  resolveVersion,
+  computeContentHash,
+  generateAgentBundleImageTag,
+};
 async function rollbackAgentConfigState({
   configStore,
   registry,
   previousAgents,
   currentDefault,
   defaultChanged,
+  database,
   lock,
   errorContext
 }: RollbackAgentConfigStateParams): Promise<boolean> {
@@ -28,6 +35,7 @@ async function rollbackAgentConfigState({
       configStore,
       agents: previousAgents,
       settingsPatch: defaultChanged ? { default_agent_alias: currentDefault } : null,
+      database,
       lock
     });
     if (settingsWereUpdated) {
@@ -59,7 +67,7 @@ function hasVersionSpec(versionSpec: string | undefined): boolean {
 }
 function classifyVersionResolutionError(error: unknown): { message: string; status: number } {
   const message = error instanceof Error ? error.message : 'Unknown version resolution error';
-  if (error instanceof TypeError || message.includes('fetch')) {
+  if (error instanceof TypeError || /fetch|network|timed?\s*out|ECONN|ENOTFOUND/i.test(message)) {
     return { message, status: 502 };
   }
   if (message.startsWith('NPM registry returned ')
@@ -72,7 +80,10 @@ function classifyVersionResolutionError(error: unknown): { message: string; stat
   }
   return { message, status: 500 };
 }
-async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
+async function prepareAgentsUpdate(
+  agents: unknown,
+  preparationDeps: AgentPreparationDeps = DEFAULT_PREPARATION_DEPS
+): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
   if (!Array.isArray(agents)) {
     return { error: 'agents must be an array', status: 400 };
   }
@@ -93,7 +104,7 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
       }
       try {
         const agentType = agent.type as AgentType;
-        const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
+        const resolvedVersion = await preparationDeps.resolveVersion(agentType, versionType, agent.cliVersion);
         processedAgent.cliVersionResolved = resolvedVersion;
       } catch (versionError) {
         const { message, status } = classifyVersionResolutionError(versionError);
@@ -120,24 +131,31 @@ async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; p
   }
 
   try {
-    const bundleImage = generateAgentBundleImageTag(getAgentCliVersionMatrix(processedAgents), computeContentHash());
+    const bundleImage = preparationDeps.generateAgentBundleImageTag(
+      getAgentCliVersionMatrix(processedAgents),
+      preparationDeps.computeContentHash()
+    );
     for (const agent of processedAgents) {
       agent.dockerImage = bundleImage;
     }
   } catch (error) {
-    return { error: error instanceof Error ? error.message : 'Invalid unified agent version configuration', status: 400 };
+    return {
+      error: `Failed to derive managed agent image: ${error instanceof Error ? error.message : 'unknown image derivation failure'}`,
+      status: 500,
+    };
   }
 
   return { processedAgents };
 }
 async function loadProcessedAgents(
   agents: AgentConfig[],
-  providedProcessedAgents?: AgentConfig[]
+  providedProcessedAgents?: AgentConfig[],
+  preparationDeps: AgentPreparationDeps = DEFAULT_PREPARATION_DEPS
 ): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
   if (providedProcessedAgents) {
     return { processedAgents: providedProcessedAgents };
   }
-  const prepared = await prepareAgentsUpdate(agents);
+  const prepared = await prepareAgentsUpdate(agents, preparationDeps);
   if (prepared.error || !prepared.processedAgents) {
     return prepared.error
       ? prepared
@@ -149,11 +167,13 @@ async function persistAgentConfigurationAtomically({
   configStore,
   agents,
   settingsPatch,
+  database,
   lock
 }: {
   configStore: AgentConfigStore;
   agents: AgentConfig[];
   settingsPatch: Record<string, unknown> | null;
+  database: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }): Promise<PersistAgentConfigurationResult> {
   let trx: Knex.Transaction | null = null;
@@ -165,7 +185,7 @@ async function persistAgentConfigurationAtomically({
       settingsPatch
     );
     const settingsWereUpdated = mergedSettings !== null;
-    trx = await db.transaction();
+    trx = await database.transaction();
     const transaction = trx;
     await upsertConfigValue(transaction, 'agents', agents);
     if (settingsWereUpdated) {
@@ -195,6 +215,7 @@ async function applyCommittedAgentsUpdate({
   newDefault,
   settingsWereUpdated,
   defaultChanged,
+  database,
   lock
 }: {
   configStore: AgentConfigStore;
@@ -204,6 +225,7 @@ async function applyCommittedAgentsUpdate({
   newDefault: string | undefined;
   settingsWereUpdated: boolean;
   defaultChanged: boolean;
+  database: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }): Promise<ApplyAgentsUpdateResult | void> {
   try {
@@ -221,6 +243,7 @@ async function applyCommittedAgentsUpdate({
       previousAgents,
       currentDefault,
       defaultChanged,
+      database,
       lock,
       errorContext: 'Failed to roll back agent configuration after live apply failure:'
     });
@@ -261,10 +284,13 @@ export async function applyAgentsUpdate({
   publishConfigUpdate,
   logActivityHelper,
   configStore = configManager,
+  database = db,
   registry = AgentRegistry.getInstance(),
+  preparationDeps: preparationOverrides,
   lock
 }: ApplyAgentsUpdateParams): Promise<ApplyAgentsUpdateResult> {
-  const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents);
+  const preparationDeps = { ...DEFAULT_PREPARATION_DEPS, ...preparationOverrides };
+  const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents, preparationDeps);
   if (preparedAgents.error) {
     return { status: preparedAgents.status ?? 400, body: { error: preparedAgents.error } };
   }
@@ -284,6 +310,7 @@ export async function applyAgentsUpdate({
       configStore,
       agents: processedAgents,
       settingsPatch: defaultChanged ? { default_agent_alias: newDefault } : null,
+      database,
       lock
     });
     const liveApplyResult = await applyCommittedAgentsUpdate({
@@ -294,6 +321,7 @@ export async function applyAgentsUpdate({
       newDefault,
       settingsWereUpdated,
       defaultChanged,
+      database,
       lock
     });
     if (liveApplyResult) {
@@ -356,11 +384,21 @@ export async function applyAgentsUpdate({
 }
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {
-  const { redisClient, publishConfigUpdate, logActivityHelper, applyAgentsUpdateFn } = deps;
+  const {
+    redisClient,
+    publishConfigUpdate,
+    logActivityHelper,
+    applyAgentsUpdateFn,
+    configStore = configManager,
+    database = db,
+    registry = AgentRegistry.getInstance(),
+    preparationDeps: preparationOverrides,
+  } = deps;
+  const preparationDeps = { ...DEFAULT_PREPARATION_DEPS, ...preparationOverrides };
   const effectiveApplyFn = applyAgentsUpdateFn ?? applyAgentsUpdate;
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
-      res.json({ agents: await configManager.loadAgents() });
+      res.json({ agents: await configStore.loadAgents() });
     } catch (error) {
       console.error('Error in /api/config/agents GET:', error);
       res.status(500).json({ error: 'Failed to load agents configuration' });
@@ -371,7 +409,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
     }
-    const prepared = await prepareAgentsUpdate(req.body.agents);
+    const prepared = await prepareAgentsUpdate(req.body.agents, preparationDeps);
     if (prepared.error) {
       res.status(prepared.status ?? 400).json({ error: prepared.error });
       return;
@@ -383,7 +421,18 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
 
     // Agent updates share the settings lock because they may also rewrite default_agent_alias.
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      return effectiveApplyFn({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
+      return effectiveApplyFn({
+        agents: req.body.agents,
+        processedAgents: prepared.processedAgents,
+        username: req.user?.username,
+        publishConfigUpdate,
+        logActivityHelper,
+        configStore,
+        database,
+        registry,
+        preparationDeps,
+        lock,
+      });
     });
 
     if (!result || typeof result.status !== 'number' || !result.body) {

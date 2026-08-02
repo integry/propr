@@ -214,7 +214,13 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
   const context: ConfigLockContext = {
     assertLockHeld: async () => {
       if (lostLock.detected) throwLockLossError();
-      const renewed = await renewLock(redisClient, lockKey, lockValue, lockTimeout);
+      let renewed = false;
+      try {
+        renewed = await renewLock(redisClient, lockKey, lockValue, lockTimeout);
+      } catch (error) {
+        markLockLost('renewal_error', error);
+        throwLockLossError();
+      }
       if (!renewed) { markLockLost('ownership_lost'); throwLockLossError(); }
     },
     hasLockBeenLost: () => lostLock.detected,
@@ -230,6 +236,10 @@ export async function withConfigLock(redisClient: RedisClientType, lockKey: stri
     lockAcquired = true;
     scheduleRenewal();
     result = await operation(context);
+    // A fast operation may finish before the first renewal timer fires. Verify
+    // ownership once more so lock replacement cannot pass unnoticed simply
+    // because the critical section completed within the renewal interval.
+    await context.assertLockHeld();
     if (lostLock.detected) {
       if (committed) {
         return buildCommittedLockLossResponse(result, lostLock.reason);

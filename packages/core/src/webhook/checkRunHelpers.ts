@@ -340,7 +340,9 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
         // Repos with no legacy status contexts report 'pending' — treat as passing.
         const statusPass = commitStatus.totalCount === 0 ||
             (commitStatus.state !== 'pending' && commitStatus.state !== 'failure' && commitStatus.state !== 'error');
-        const allPass = allCheckRunsPass && statusPass;
+        // Do not treat a commit with no CI signal at all as safe to merge.
+        const hasCheckSignal = checkRuns.length > 0 || commitStatus.totalCount > 0;
+        const allPass = hasCheckSignal && allCheckRunsPass && statusPass;
 
         logger.debug({
             owner,
@@ -349,6 +351,7 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
             totalCheckRuns: checkRuns.length,
             commitStatus: commitStatus.state,
             statusContexts: commitStatus.totalCount,
+            hasCheckSignal,
             allCheckRunsPass,
             statusPass,
             allPass

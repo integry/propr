@@ -1,41 +1,32 @@
-name: Full Test Suite (Label Triggered)
+name: Full Test Suite
 
 on:
   pull_request:
-    types: [labeled]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 concurrency:
-  group: pr-test-on-label-${{ github.event.pull_request.number }}
+  group: full-test-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
     name: Run Full Test Suite
-    if: github.event.label.name == 'run-tests'
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
     runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 45
     permissions:
       contents: read
       pull-requests: write
-
-    services:
-      redis:
-        image: redis:alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -58,16 +49,17 @@ jobs:
           PROPR_WORKSPACE: ${{ github.workspace }}
         run: ./.propr/setup.sh
 
+      - name: Start isolated Redis
+        run: ./scripts/ci-redis.sh start
+
       - name: Run Full Test Suite
         id: tests
         continue-on-error: true
         env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
           NODE_ENV: test
         run: |
           echo "Running full test suite with Redis..."
-          npx tsx --test test/*.test.ts 2>&1 | tee test_output.txt
+          npm run test:full 2>&1 | tee test_output.txt
           TEST_EXIT_CODE=${PIPESTATUS[0]}
 
           if [ $TEST_EXIT_CODE -eq 0 ]; then
@@ -81,7 +73,7 @@ jobs:
           exit $TEST_EXIT_CODE
 
       - name: Post Success Comment
-        if: steps.tests.outcome == 'success'
+        if: github.event_name == 'pull_request' && steps.tests.outcome == 'success'
         uses: actions/github-script@v7
         with:
           script: |
@@ -121,7 +113,7 @@ jobs:
             });
 
       - name: Post Failure Comment
-        if: steps.tests.outcome == 'failure'
+        if: github.event_name == 'pull_request' && steps.tests.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
@@ -163,3 +155,7 @@ jobs:
       - name: Fail Job
         if: steps.tests.outcome == 'failure'
         run: exit 1
+
+      - name: Stop isolated Redis
+        if: always()
+        run: ./scripts/ci-redis.sh stop

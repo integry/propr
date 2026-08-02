@@ -96,7 +96,10 @@ function extractOpenCodeStructuredText(event: OpenCodeEvent, eventType: string |
   }
 
   const topLevelPartsText = includeTopLevel
-    ? joinOpenCodePartsText([...(event.part ? [event.part] : []), ...(event.parts ?? [])], false)
+    ? joinOpenCodePartsText(
+        [...(event.part ? [event.part] : []), ...(event.parts ?? [])],
+        !isOpenCodeStreamingTextEvent(event)
+      )
     : '';
   const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
   const messageText = isConfirmedAssistant
@@ -143,7 +146,19 @@ function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delt
     if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return [];
     return [part.text, part.delta, part.content];
   });
-  return joinOpenCodeTextValues(values, trim);
+  if (!trim) return joinOpenCodeTextValues(values, false);
+
+  const seen = new Set<string>();
+  const textParts = values.filter((value): value is string => {
+    if (typeof value !== 'string' || value.length === 0 || seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+  return textParts.reduce((combined, value) => {
+    if (!combined) return value;
+    const separator = /\s$/.test(combined) || /^\s/.test(value) ? '' : '\n';
+    return `${combined}${separator}${value}`;
+  }, '').trim();
 }
 
 function joinOpenCodeTextValues(values: unknown[], trim = true): string {

@@ -23,7 +23,7 @@ test('withConfigLock preserves specific config operation failures', async () => 
 
 test('saveSettingsWithRollback returns a specific failure without partial-commit bookkeeping keys', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   let committed = false;
   let rolledBack = false;
   const writes: string[] = [];
@@ -57,6 +57,7 @@ test('saveSettingsWithRollback returns a specific failure without partial-commit
   try {
     let published = 0;
     const result = await saveSettingsWithRollback({
+      database: testDb,
       settings: {
         planner_context_model: 'gpt-5',
         pr_review_model: 'claude-sonnet-4-6'
@@ -99,7 +100,7 @@ test('saveSettingsWithRollback returns a specific failure without partial-commit
 
 test('saveSettingsWithRollback scrubs specialized keys from the general settings blob', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   const writes = new Map<string, unknown>();
 
   const trx = Object.assign(
@@ -123,6 +124,7 @@ test('saveSettingsWithRollback scrubs specialized keys from the general settings
 
   try {
     const result = await saveSettingsWithRollback({
+      database: testDb,
       settings: {
         ultrafix_rating_goal: 8
       },
@@ -161,7 +163,7 @@ test('saveSettingsWithRollback scrubs specialized keys from the general settings
 
 test('saveSettingsWithRollback preserves unknown stored settings keys when the public loader is filtered', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   const writes = new Map<string, unknown>();
 
   const trx = Object.assign(
@@ -185,6 +187,7 @@ test('saveSettingsWithRollback preserves unknown stored settings keys when the p
 
   try {
     const result = await saveSettingsWithRollback({
+      database: testDb,
       settings: {
         planner_context_model: 'gpt-5'
       },
@@ -226,7 +229,7 @@ test('saveSettingsWithRollback preserves unknown stored settings keys when the p
 
 test('saveSettingsWithRollback reports committed state when post-commit side effects fail', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   let committed = false;
   let rolledBack = false;
 
@@ -255,6 +258,7 @@ test('saveSettingsWithRollback reports committed state when post-commit side eff
   try {
     let published = 0;
     const result = await saveSettingsWithRollback({
+      database: testDb,
       settings: {
         worker_concurrency: 9
       },
@@ -284,7 +288,7 @@ test('saveSettingsWithRollback reports committed state when post-commit side eff
 
 test('saveSettingsWithRollback awaits async post-commit side effect failures', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
 
   const trx = Object.assign(
     ((table: string) => ({
@@ -307,6 +311,7 @@ test('saveSettingsWithRollback awaits async post-commit side effect failures', a
   try {
     let published = 0;
     const result = await saveSettingsWithRollback({
+      database: testDb,
       settings: {
         worker_concurrency: 9
       },
@@ -334,7 +339,7 @@ test('saveSettingsWithRollback awaits async post-commit side effect failures', a
 
 test('saveSettingsWithRollback reports committed state when publishing the settings update fails after commit', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
 
   const trx = Object.assign(
     ((table: string) => ({
@@ -356,6 +361,7 @@ test('saveSettingsWithRollback reports committed state when publishing the setti
 
   try {
     const result = await saveSettingsWithRollback({
+      database: testDb,
       settings: {
         worker_concurrency: 9
       },
@@ -380,7 +386,7 @@ test('saveSettingsWithRollback reports committed state when publishing the setti
 
 test('saveSettingsWithRollback surfaces lock loss before commit through withConfigLock', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   const redisState = new Map<string, string>();
   let committed = false;
   let published = 0;
@@ -431,6 +437,7 @@ test('saveSettingsWithRollback surfaces lock loss before commit through withConf
       } as never,
       'config:test:lock',
       async lock => saveSettingsWithRollback({
+        database: testDb,
         settings: { worker_concurrency: 9 },
         publishConfigUpdate: async () => {
           published += 1;
@@ -459,7 +466,7 @@ test('saveSettingsWithRollback surfaces lock loss before commit through withConf
 
 test('saveSettingsWithRollback preserves committed lock-loss warnings when the lock is lost during publish', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   const redisState = new Map<string, string>();
 
   const trx = Object.assign(
@@ -504,6 +511,7 @@ test('saveSettingsWithRollback preserves committed lock-loss warnings when the l
       } as never,
       'config:test:lock',
       async lock => saveSettingsWithRollback({
+        database: testDb,
         settings: { worker_concurrency: 9 },
         publishConfigUpdate: async () => {
           redisState.set('config:test:lock', 'someone-else');
@@ -519,7 +527,7 @@ test('saveSettingsWithRollback preserves committed lock-loss warnings when the l
       { timeoutSeconds: 1, renewalIntervalMs: 10 }
     );
 
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 409);
     assert.deepEqual(result.body, {
       success: true,
       settings: { worker_concurrency: 9 },
@@ -534,9 +542,9 @@ test('saveSettingsWithRollback preserves committed lock-loss warnings when the l
   }
 });
 
-test('saveSettingsWithRollback clears general settings when given an empty settings object', async () => {
+test('saveSettingsWithRollback treats an empty settings object as a no-op', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   const writes = new Map<string, unknown>();
 
   const trx = Object.assign(
@@ -560,6 +568,7 @@ test('saveSettingsWithRollback clears general settings when given an empty setti
 
   try {
     const result = await saveSettingsWithRollback({
+      database: testDb,
       settings: {},
       publishConfigUpdate: async () => {},
       configStore: {
@@ -586,7 +595,8 @@ test('saveSettingsWithRollback clears general settings when given an empty setti
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(writes.get('settings'), {});
+    assert.deepEqual(result.body, { success: true, settings: {}, noop: true });
+    assert.equal(writes.has('settings'), false);
   } finally {
     testDb.transaction = originalTransaction;
   }
@@ -594,7 +604,7 @@ test('saveSettingsWithRollback clears general settings when given an empty setti
 
 test('applyAgentsUpdate scrubs specialized settings when rewriting default_agent_alias', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   const writes = new Map<string, unknown>();
 
   const trx = Object.assign(
@@ -618,6 +628,7 @@ test('applyAgentsUpdate scrubs specialized settings when rewriting default_agent
 
   try {
     const result = await applyAgentsUpdate({
+      database: testDb,
       agents: [
         {
           id: 'new-agent',
@@ -658,7 +669,7 @@ test('applyAgentsUpdate scrubs specialized settings when rewriting default_agent
 
 test('applyAgentsUpdate preserves unknown stored settings keys when updating default_agent_alias', async () => {
   const originalTransaction = db.transaction.bind(db);
-  const testDb = db as typeof db & { transaction: typeof db.transaction };
+  const testDb = { transaction: db.transaction.bind(db) };
   const writes = new Map<string, unknown>();
 
   const trx = Object.assign(
@@ -682,6 +693,7 @@ test('applyAgentsUpdate preserves unknown stored settings keys when updating def
 
   try {
     const result = await applyAgentsUpdate({
+      database: testDb,
       agents: [
         {
           id: 'new-agent',
