@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import { closeConnection, type BetterSqliteConnection } from '../src/db/connection.js';
@@ -10,7 +13,8 @@ import {
 } from '../src/services/notificationPagination.js';
 import {
     NotificationService,
-    NotificationValidationError
+    NotificationValidationError,
+    PushSubscriptionConflictError
 } from '../src/services/notificationService.js';
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
@@ -19,10 +23,10 @@ let database: Knex;
 let service: NotificationService;
 let clock = Date.parse('2026-08-02T10:00:00.000Z');
 
-function createDatabase(): Knex {
+function createDatabase(filename = ':memory:'): Knex {
     return knex({
         client: 'better-sqlite3',
-        connection: { filename: ':memory:' },
+        connection: { filename },
         useNullAsDefault: true,
         pool: {
             afterCreate(
@@ -31,6 +35,7 @@ function createDatabase(): Knex {
             ) {
                 connection.pragma('foreign_keys = ON');
                 connection.pragma('recursive_triggers = ON');
+                connection.pragma('busy_timeout = 1000');
                 done(null, connection);
             }
         }
@@ -63,11 +68,12 @@ beforeEach(async () => {
     clock = Date.parse('2026-08-02T10:00:00.000Z');
     database = createDatabase();
     await up(database);
-    await addPreferenceApis(database);
+    await addPreferenceApis(database, { allowInsecureLocalhost: true });
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
-        generateId: () => 'generated-event'
+        generateId: () => 'generated-event',
+        allowInsecureLocalhost: false
     });
 });
 
@@ -201,6 +207,10 @@ describe('notification service', { concurrency: false }, () => {
     });
 
     test('returns opt-in-safe defaults and preserves unrelated preference updates', async () => {
+        const beforeRead = await database('notification_preferences')
+            .where({ user_id: 'user-a' })
+            .count('* as count')
+            .first();
         const defaults = await service.getNotificationPreferences('user-a');
         assert.deepEqual(Object.keys(defaults.preferences), [
             'plan',
@@ -219,6 +229,25 @@ describe('notification service', { concurrency: false }, () => {
             end: null,
             timezone: 'UTC'
         });
+        assert.equal(Number(beforeRead?.count), 0);
+        assert.equal(
+            await database('notification_preferences')
+                .where({ user_id: 'user-a' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            0,
+            'GET must synthesize defaults without writing preference rows'
+        );
+        assert.equal(
+            await database('notification_preference_settings')
+                .where({ user_id: 'user-a' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            0,
+            'GET must not write settings in read-only deployments'
+        );
 
         const updated = await service.updateNotificationPreferences('user-a', {
             preferences: {
@@ -277,6 +306,10 @@ describe('notification service', { concurrency: false }, () => {
                 auth: 'A'.repeat(22)
             }
         }, 'Test Browser');
+        const firstStored = await database('push_subscriptions').where({ endpoint }).first();
+        await database('push_subscriptions')
+            .where({ subscription_id: first.id })
+            .update({ last_used_at: firstStored.created_at });
         const refreshed = await service.upsertPushSubscription('user-a', {
             endpoint,
             expirationTime: null,
@@ -293,6 +326,8 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(stored.p256dh_key, 'BA' + 'B'.repeat(84) + 'A');
         assert.equal(stored.auth_key, 'B'.repeat(21) + 'A');
         assert.equal(stored.revoked_at, null);
+        assert.equal(stored.user_agent, 'Test Browser');
+        assert.equal(stored.last_used_at, null);
 
         assert.equal(await service.revokePushSubscription('user-b', endpoint), false);
         stored = await database('push_subscriptions').where({ endpoint }).first();
@@ -324,11 +359,22 @@ describe('notification service', { concurrency: false }, () => {
             p256dh: 'B' + 'A'.repeat(86),
             auth: 'A'.repeat(22)
         };
-        await service.upsertPushSubscription('local-user', {
+        const localInput = {
             endpoint: 'http://localhost:4173/push/browser',
             expirationTime: null,
             keys: validKeys
+        };
+        await assert.rejects(
+            () => service.upsertPushSubscription('local-user', localInput),
+            NotificationValidationError
+        );
+        const explicitlyLocalService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => 'local-subscription',
+            allowInsecureLocalhost: true
         });
+        await explicitlyLocalService.upsertPushSubscription('local-user', localInput);
         await assert.rejects(
             () => service.upsertPushSubscription('user-a', {
                 endpoint: 'http://fcm.googleapis.com/fcm/send/insecure',
@@ -345,5 +391,165 @@ describe('notification service', { concurrency: false }, () => {
             }),
             NotificationValidationError
         );
+    });
+
+    test('refreshes the owned active row before tied revoked history', async () => {
+        const endpoint = 'https://fcm.googleapis.com/fcm/send/history-tie';
+        const active = await service.upsertPushSubscription('user-a', {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: 'B' + 'A'.repeat(86), auth: 'A'.repeat(22) }
+        }, 'Preserved Browser');
+        const activeRow = await database('push_subscriptions')
+            .where({ subscription_id: active.id })
+            .first();
+        await database('push_subscriptions').insert({
+            subscription_id: 'zz-revoked-history',
+            user_id: 'user-a',
+            endpoint,
+            p256dh_key: null,
+            auth_key: null,
+            expires_at: null,
+            user_agent: 'Old Browser',
+            last_used_at: null,
+            revoked_at: activeRow.updated_at,
+            created_at: activeRow.created_at,
+            updated_at: activeRow.updated_at
+        });
+
+        const refreshed = await service.upsertPushSubscription('user-a', {
+            endpoint,
+            expirationTime: null,
+            keys: {
+                p256dh: 'BA' + 'D'.repeat(84) + 'A',
+                auth: 'D'.repeat(21) + 'A'
+            }
+        });
+
+        assert.equal(refreshed.id, active.id);
+        assert.equal(
+            await database('push_subscriptions')
+                .where({ endpoint })
+                .whereNull('revoked_at')
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            1
+        );
+    });
+
+    test('maps competing endpoint enrollment to a conflict and keeps same-user retries idempotent', async () => {
+        const endpoint = 'https://fcm.googleapis.com/fcm/send/concurrent';
+        const input = {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: 'B' + 'A'.repeat(86), auth: 'A'.repeat(22) }
+        };
+        const firstService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => 'concurrent-a'
+        });
+        const secondService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => 'concurrent-b'
+        });
+
+        const sameUser = await Promise.all([
+            firstService.upsertPushSubscription('user-a', input),
+            secondService.upsertPushSubscription('user-a', input)
+        ]);
+        assert.equal(sameUser[0].id, sameUser[1].id);
+        await assert.rejects(
+            () => secondService.upsertPushSubscription('user-b', input),
+            PushSubscriptionConflictError
+        );
+    });
+
+    test('reconciles a real cross-connection endpoint enrollment race', async () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-push-race-'));
+        const filename = path.join(directory, 'notifications.sqlite');
+        const firstDatabase = createDatabase(filename);
+        let secondDatabase: Knex | undefined;
+        try {
+            await up(firstDatabase);
+            await addPreferenceApis(firstDatabase);
+            secondDatabase = createDatabase(filename);
+            await secondDatabase.raw('SELECT 1');
+            const endpoint = 'https://fcm.googleapis.com/fcm/send/cross-connection-race';
+            const input = {
+                endpoint,
+                expirationTime: null,
+                keys: { p256dh: 'B' + 'A'.repeat(86), auth: 'A'.repeat(22) }
+            };
+            const firstService = new NotificationService({
+                database: firstDatabase,
+                now: () => '2026-08-02T10:00:00.000Z',
+                generateId: () => 'race-first'
+            });
+            const secondService = new NotificationService({
+                database: secondDatabase,
+                now: () => '2026-08-02T10:00:00.000Z',
+                generateId: () => 'race-second'
+            });
+
+            const results = await Promise.allSettled([
+                firstService.upsertPushSubscription('user-a', input),
+                secondService.upsertPushSubscription('user-b', input)
+            ]);
+            const fulfilled = results.filter(result => result.status === 'fulfilled');
+            const rejected = results.filter(result => result.status === 'rejected');
+            assert.equal(fulfilled.length, 1);
+            assert.equal(rejected.length, 1);
+            assert.ok(rejected[0].status === 'rejected');
+            assert.ok(rejected[0].reason instanceof PushSubscriptionConflictError);
+            assert.equal(
+                await firstDatabase('push_subscriptions')
+                    .where({ endpoint })
+                    .whereNull('revoked_at')
+                    .count('* as count')
+                    .first()
+                    .then(row => Number(row?.count)),
+                1
+            );
+
+            const sameUserEndpoint =
+                'https://fcm.googleapis.com/fcm/send/cross-connection-idempotent';
+            const sameUserResults = await Promise.all([
+                new NotificationService({
+                    database: firstDatabase,
+                    now: () => '2026-08-02T10:00:01.000Z',
+                    generateId: () => 'same-user-first'
+                }).upsertPushSubscription('user-a', {
+                    ...input,
+                    endpoint: sameUserEndpoint
+                }),
+                new NotificationService({
+                    database: secondDatabase,
+                    now: () => '2026-08-02T10:00:01.000Z',
+                    generateId: () => 'same-user-second'
+                }).upsertPushSubscription('user-a', {
+                    ...input,
+                    endpoint: sameUserEndpoint
+                })
+            ]);
+            assert.equal(sameUserResults[0].id, sameUserResults[1].id);
+            assert.equal(
+                await firstDatabase('push_subscriptions')
+                    .where({ endpoint: sameUserEndpoint })
+                    .whereNull('revoked_at')
+                    .count('* as count')
+                    .first()
+                    .then(row => Number(row?.count)),
+                1
+            );
+        } finally {
+            await Promise.allSettled([
+                firstDatabase.destroy(),
+                secondDatabase?.destroy()
+            ]);
+            fs.rmSync(directory, { recursive: true, force: true });
+        }
     });
 });

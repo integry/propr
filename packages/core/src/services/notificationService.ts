@@ -13,6 +13,7 @@ import {
     parseNotificationPreferencesResponse,
     parseNotificationPreferencesUpdate,
     parseNotificationStateResponse,
+    parseTruthyEnvValue,
     parsePushSubscription,
     parsePushSubscriptionEndpoint,
     parsePushSubscriptionInput,
@@ -135,6 +136,20 @@ interface NormalizedRecipient {
     userId: string;
     inboxEnabled: boolean;
     pushEnabled: boolean;
+}
+
+const SYNTHETIC_NOTIFICATION_PREFERENCE_UPDATED_AT =
+    '1970-01-01T00:00:00.000Z' as ISO8601Timestamp;
+const PUSH_SUBSCRIPTION_WRITE_ATTEMPTS = 3;
+
+function isPushSubscriptionWriteRace(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code = (error as Error & { code?: string }).code;
+    return code === 'SQLITE_BUSY'
+        || code === 'SQLITE_BUSY_SNAPSHOT'
+        || code === 'SQLITE_CONSTRAINT_UNIQUE'
+        || error.message.includes('push_subscriptions_active_endpoint_idx')
+        || error.message.includes('UNIQUE constraint failed: push_subscriptions.endpoint');
 }
 
 function parseStoredJson(value: string, field: string): unknown {
@@ -300,7 +315,7 @@ export class NotificationService {
         this.now = options.now ?? (() => new Date());
         this.generateId = options.generateId ?? randomUUID;
         this.allowInsecureLocalhost = options.allowInsecureLocalhost
-            ?? process.env.NODE_ENV !== 'production';
+            ?? parseTruthyEnvValue(process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH);
     }
 
     async createNotificationEvent<K extends NotificationKind>(
@@ -381,10 +396,7 @@ export class NotificationService {
 
     async getNotificationPreferences(userId: string): Promise<NotificationPreferencesResponse> {
         assertIdentifier(userId, 'notification userId');
-        return this.database.transaction(async (transaction) => {
-            await this.ensurePreferenceDefaults(transaction, userId);
-            return this.readPreferenceSnapshot(transaction, userId);
-        });
+        return this.readPreferenceSnapshot(this.database, userId);
     }
 
     async updateNotificationPreferences(
@@ -461,53 +473,95 @@ export class NotificationService {
             );
         }
 
-        return this.database.transaction(async (transaction) => {
-            const activeOwner = await transaction<PushSubscriptionRow>('push_subscriptions')
-                .where({ endpoint: subscription.endpoint })
-                .whereNull('revoked_at')
-                .first();
-            if (activeOwner && activeOwner.user_id !== userId) {
-                throw new PushSubscriptionConflictError();
-            }
+        let lastRaceError: unknown;
+        for (let attempt = 0; attempt < PUSH_SUBSCRIPTION_WRITE_ATTEMPTS; attempt += 1) {
+            try {
+                return await this.database.transaction(async (transaction) => {
+                    const activeOwner = await transaction<PushSubscriptionRow>(
+                        'push_subscriptions'
+                    )
+                        .where({ endpoint: subscription.endpoint })
+                        .whereNull('revoked_at')
+                        .orderBy('subscription_id', 'asc')
+                        .first();
+                    if (activeOwner && activeOwner.user_id !== userId) {
+                        throw new PushSubscriptionConflictError();
+                    }
 
-            const existing = await transaction<PushSubscriptionRow>('push_subscriptions')
-                .where({ user_id: userId, endpoint: subscription.endpoint })
-                .orderBy('updated_at', 'desc')
-                .first();
-            if (existing) {
-                await transaction('push_subscriptions')
-                    .where({ subscription_id: existing.subscription_id, user_id: userId })
-                    .update({
-                        p256dh_key: subscription.keys.p256dh,
-                        auth_key: subscription.keys.auth,
-                        expires_at: expiresAt,
-                        user_agent: boundedUserAgent(userAgent),
-                        revoked_at: null
-                    });
-            } else {
-                await transaction('push_subscriptions').insert({
-                    subscription_id: this.generateId(),
-                    user_id: userId,
-                    endpoint: subscription.endpoint,
-                    p256dh_key: subscription.keys.p256dh,
-                    auth_key: subscription.keys.auth,
-                    expires_at: expiresAt,
-                    user_agent: boundedUserAgent(userAgent),
-                    last_used_at: null,
-                    revoked_at: null,
-                    created_at: now,
-                    updated_at: now
+                    // Prefer the already-active owned row. Legacy append-only data can
+                    // contain newer revoked versions with identical timestamps.
+                    const existing = activeOwner ?? await transaction<PushSubscriptionRow>(
+                        'push_subscriptions'
+                    )
+                        .where({ user_id: userId, endpoint: subscription.endpoint })
+                        .whereNotNull('revoked_at')
+                        .orderBy('updated_at', 'desc')
+                        .orderBy('created_at', 'desc')
+                        .orderBy('subscription_id', 'desc')
+                        .first();
+                    if (existing) {
+                        const values: Record<string, string | null> = {
+                            p256dh_key: subscription.keys.p256dh,
+                            auth_key: subscription.keys.auth,
+                            expires_at: expiresAt,
+                            revoked_at: null
+                        };
+                        if (userAgent !== undefined) {
+                            values.user_agent = boundedUserAgent(userAgent);
+                        }
+                        if (
+                            existing.p256dh_key !== subscription.keys.p256dh
+                            || existing.auth_key !== subscription.keys.auth
+                        ) {
+                            values.last_used_at = null;
+                        }
+                        await transaction('push_subscriptions')
+                            .where({ subscription_id: existing.subscription_id, user_id: userId })
+                            .update(values);
+                    } else {
+                        await transaction('push_subscriptions').insert({
+                            subscription_id: this.generateId(),
+                            user_id: userId,
+                            endpoint: subscription.endpoint,
+                            p256dh_key: subscription.keys.p256dh,
+                            auth_key: subscription.keys.auth,
+                            expires_at: expiresAt,
+                            user_agent: boundedUserAgent(userAgent),
+                            last_used_at: null,
+                            revoked_at: null,
+                            created_at: now,
+                            updated_at: now
+                        });
+                    }
+
+                    const stored = await transaction<PushSubscriptionRow>('push_subscriptions')
+                        .where({ user_id: userId, endpoint: subscription.endpoint })
+                        .whereNull('revoked_at')
+                        .orderBy('subscription_id', 'asc')
+                        .first();
+                    if (!stored) throw new Error('Push subscription was not persisted');
+                    return toPushSubscription(stored);
                 });
-            }
+            } catch (error) {
+                if (!isPushSubscriptionWriteRace(error)) throw error;
+                lastRaceError = error;
 
-            const stored = await transaction<PushSubscriptionRow>('push_subscriptions')
-                .where({ user_id: userId, endpoint: subscription.endpoint })
-                .whereNull('revoked_at')
-                .orderBy('updated_at', 'desc')
-                .first();
-            if (!stored) throw new Error('Push subscription was not persisted');
-            return toPushSubscription(stored);
-        });
+                // The unique partial index is the final ownership authority. A
+                // competing transaction may have committed after our initial read.
+                const owner = await this.database<PushSubscriptionRow>('push_subscriptions')
+                    .where({ endpoint: subscription.endpoint })
+                    .whereNull('revoked_at')
+                    .orderBy('subscription_id', 'asc')
+                    .first();
+                if (owner && owner.user_id !== userId) {
+                    throw new PushSubscriptionConflictError();
+                }
+                if (attempt === PUSH_SUBSCRIPTION_WRITE_ATTEMPTS - 1 && owner) {
+                    return toPushSubscription(owner);
+                }
+            }
+        }
+        throw lastRaceError;
     }
 
     async revokePushSubscription(userId: string, endpoint: string): Promise<boolean> {
@@ -623,35 +677,37 @@ export class NotificationService {
     }
 
     private async readPreferenceSnapshot(
-        transaction: Knex.Transaction,
+        database: Database,
         userId: string
     ): Promise<NotificationPreferencesResponse> {
-        const rows = await transaction<NotificationPreferenceRow>('notification_preferences')
+        const rows = await database<NotificationPreferenceRow>('notification_preferences')
             .select('notification_kind', 'inbox_enabled', 'push_enabled', 'updated_at')
             .where({ user_id: userId });
         const rowByKind = new Map(rows.map((row) => [row.notification_kind, row]));
-        const settings = await transaction<NotificationPreferenceSettingsRow>(
+        const settings = await database<NotificationPreferenceSettingsRow>(
             'notification_preference_settings'
         ).where({ user_id: userId }).first();
-        if (!settings || NOTIFICATION_KINDS.some((kind) => !rowByKind.has(kind))) {
-            throw new Error('Notification preference defaults were not persisted');
-        }
 
         const preferences = Object.fromEntries(NOTIFICATION_KINDS.map((kind) => {
             const row = rowByKind.get(kind);
-            if (!row) throw new Error(`Notification preference ${kind} is missing`);
             return [kind, {
-                inboxEnabled: Boolean(row.inbox_enabled),
-                pushEnabled: Boolean(row.push_enabled),
-                updatedAt: row.updated_at
+                inboxEnabled: row === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.inboxEnabled
+                    : Boolean(row.inbox_enabled),
+                pushEnabled: row === undefined
+                    ? DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS.pushEnabled
+                    : Boolean(row.push_enabled),
+                // The epoch distinguishes a synthesized read default from a stored
+                // user choice without making GET mutate a read-only database.
+                updatedAt: row?.updated_at ?? SYNTHETIC_NOTIFICATION_PREFERENCE_UPDATED_AT
             }];
         }));
         return parseNotificationPreferencesResponse({
             preferences,
             quietHours: {
-                start: settings.quiet_hours_start,
-                end: settings.quiet_hours_end,
-                timezone: settings.timezone
+                start: settings?.quiet_hours_start ?? DEFAULT_NOTIFICATION_QUIET_HOURS.start,
+                end: settings?.quiet_hours_end ?? DEFAULT_NOTIFICATION_QUIET_HOURS.end,
+                timezone: settings?.timezone ?? DEFAULT_NOTIFICATION_QUIET_HOURS.timezone
             }
         });
     }

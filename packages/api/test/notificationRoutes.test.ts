@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
 import express from 'express';
 import type { Request, Response } from 'express';
@@ -74,6 +75,15 @@ function createService(
         }),
         revokePushSubscription: async () => false,
         ...overrides
+    };
+}
+
+function createVapidConfiguration(): { publicKey: string; privateKey: string } {
+    const ecdh = createECDH('prime256v1');
+    ecdh.generateKeys();
+    return {
+        publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
+        privateKey: ecdh.getPrivateKey().toString('base64url')
     };
 }
 
@@ -186,12 +196,10 @@ describe('notification routes', () => {
     });
 
     test('returns Web Push capability without exposing private VAPID material', async () => {
+        const vapid = createVapidConfiguration();
         const routes = createNotificationRoutes({
             service: createService(),
-            getWebPushConfiguration: () => ({
-                publicKey: 'browser-safe-public-key',
-                privateKey: 'never-return-this-private-key'
-            })
+            getWebPushConfiguration: () => vapid
         });
         const { response, status, body } = responseRecorder();
 
@@ -204,10 +212,37 @@ describe('notification routes', () => {
         assert.deepEqual(body(), {
             push: {
                 configured: true,
-                vapidPublicKey: 'browser-safe-public-key'
+                vapidPublicKey: vapid.publicKey
             }
         });
-        assert.equal(JSON.stringify(body()).includes('never-return-this-private-key'), false);
+        assert.equal(JSON.stringify(body()).includes(vapid.privateKey), false);
+    });
+
+    test('does not advertise malformed, padded, or mismatched VAPID keys', async () => {
+        const valid = createVapidConfiguration();
+        const other = createVapidConfiguration();
+
+        for (const configuration of [
+            { publicKey: ` ${valid.publicKey}`, privateKey: valid.privateKey },
+            { publicKey: `${valid.publicKey}=`, privateKey: valid.privateKey },
+            { publicKey: valid.publicKey, privateKey: other.privateKey },
+            { publicKey: 'not-a-p256-key', privateKey: 'not-a-private-key' }
+        ]) {
+            const routes = createNotificationRoutes({
+                service: createService(),
+                getWebPushConfiguration: () => configuration
+            });
+            const { response, status, body } = responseRecorder();
+            await routes.getConfiguration({
+                user: { id: 'authenticated-user' },
+                query: {}
+            } as unknown as Request, response);
+
+            assert.equal(status(), 200);
+            assert.deepEqual(body(), {
+                push: { configured: false, vapidPublicKey: null }
+            });
+        }
     });
 
     test('derives the preference owner from authentication and passes sparse updates through', async () => {

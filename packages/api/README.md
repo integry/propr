@@ -80,11 +80,27 @@ disabled. Quiet hours default to `{ "start": null, "end": null, "timezone":
 "UTC" }`. Push is not enabled by registering a browser; the user must also set
 `pushEnabled` for each desired category.
 
+This API currently stores notification delivery policy and browser enrollment;
+it does not include a Web Push dispatcher. Quiet hours therefore do not yet
+suppress outbound requests. A future dispatcher must apply both boundaries in
+the stored IANA timezone at claim time (including retries and DST transitions),
+treat either null boundary as disabled, and retain jobs until the quiet window
+ends.
+
 - `GET /api/notifications/config` - Return Web Push availability and the VAPID public key. The private key is never serialized.
 - `GET /api/notifications/preferences` - Return the complete category and quiet-hour snapshot.
 - `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged. `PUT` is accepted as an alias.
 - `POST /api/notifications/push-subscriptions` - Create or refresh the authenticated user's browser subscription by endpoint.
 - `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` in the JSON body or query string.
+
+Subscription endpoints are intentionally limited to FCM, Mozilla Autopush, and
+Apple Web Push vendor hosts. Adding another browser provider requires updating
+the shared allowlist and shipping a schema migration that updates the persisted
+SQLite `CHECK`; delivery clients must revalidate stored endpoints and disable
+redirects. Insecure `localhost`/`127.0.0.1` enrollment is off by default and is
+available only for isolated local development through
+`PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH=true`. Do not enable it on a remotely
+reachable development or staging server.
 
 For example, this enables Push for task notifications and configures local
 quiet hours without changing any other category:

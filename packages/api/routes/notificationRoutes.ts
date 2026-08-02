@@ -1,3 +1,4 @@
+import { createECDH, timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
 import {
     decodeNotificationCursor,
@@ -33,6 +34,44 @@ export interface WebPushServerConfiguration {
 export interface NotificationRouteDependencies {
     service?: NotificationRouteService;
     getWebPushConfiguration?: () => WebPushServerConfiguration;
+}
+
+function decodeVapidKey(value: unknown, expectedBytes: number): Buffer | null {
+    const expectedLength = Math.ceil(expectedBytes * 8 / 6);
+    if (
+        typeof value !== 'string'
+        || value.length !== expectedLength
+        || value !== value.trim()
+        || !/^[A-Za-z0-9_-]+$/.test(value)
+    ) {
+        return null;
+    }
+    const decoded = Buffer.from(value, 'base64url');
+    if (
+        decoded.length !== expectedBytes
+        || decoded.toString('base64url') !== value
+    ) {
+        return null;
+    }
+    return decoded;
+}
+
+function validatedVapidPublicKey(
+    configuration: WebPushServerConfiguration
+): string | null {
+    const publicKey = decodeVapidKey(configuration.publicKey, 65);
+    const privateKey = decodeVapidKey(configuration.privateKey, 32);
+    if (!publicKey || publicKey[0] !== 0x04 || !privateKey) return null;
+
+    try {
+        const ecdh = createECDH('prime256v1');
+        ecdh.setPrivateKey(privateKey);
+        const derivedPublicKey = ecdh.getPublicKey(undefined, 'uncompressed');
+        if (!timingSafeEqual(publicKey, derivedPublicKey)) return null;
+    } catch {
+        return null;
+    }
+    return publicKey.toString('base64url');
 }
 
 function authenticatedUserId(req: Request, res: Response): string | null {
@@ -183,15 +222,10 @@ export function createNotificationRoutes(
         if (!userId) return;
 
         const configuration = getWebPushConfiguration();
-        const publicKey = typeof configuration.publicKey === 'string'
-            && configuration.publicKey.trim().length > 0
-            ? configuration.publicKey
-            : null;
-        const privateKeyConfigured = typeof configuration.privateKey === 'string'
-            && configuration.privateKey.trim().length > 0;
+        const publicKey = validatedVapidPublicKey(configuration);
         res.json({
             push: {
-                configured: publicKey !== null && privateKeyConfigured,
+                configured: publicKey !== null,
                 vapidPublicKey: publicKey
             }
         });

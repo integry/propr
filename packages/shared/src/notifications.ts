@@ -285,8 +285,10 @@ export type NotificationPreferences = Record<
 >;
 
 /**
- * User-local delivery suppression. A null boundary disables quiet hours; the
- * timezone is still retained so enabling them later does not require guessing.
+ * User-local quiet-hours policy persisted for a future Web Push dispatcher. A
+ * null boundary disables the policy; the timezone is retained so enabling it
+ * later does not require guessing. The current notification API is storage-only
+ * and does not send or suppress Web Push requests.
  */
 export interface NotificationQuietHours {
   start: string | null;

@@ -397,7 +397,8 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
+    await db.migrate.latest();
+    console.log('Database migrations completed successfully');
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await initRedis();
     if (!demoMode) {

@@ -28,7 +28,15 @@ const JAVASCRIPT_WHITESPACE_SQL = [
     .map((codepoint) => `char(${codepoint})`),
 ].join(' || ');
 
+// Foreign-key enforcement must be disabled before the table rebuild begins, so
+// Knex cannot wrap this migration for us. up()/down() acquire one connection and
+// create their own transaction after changing that connection-local PRAGMA.
 export const config = { transaction: false };
+
+function configuredLocalhostOptIn() {
+  const value = process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH?.trim().toLowerCase();
+  return value === 'true' || value === '1';
+}
 
 function excludesCodepoints(value, codepoints) {
   return codepoints
@@ -207,10 +215,7 @@ async function createPreferenceTriggers(knex) {
   `);
 }
 
-async function changePushPreferenceDefault(knex, enabled, updateExistingRows) {
-  if (updateExistingRows) {
-    await knex('notification_preferences').update({ push_enabled: enabled });
-  }
+async function changePushPreferenceDefault(knex, enabled) {
   await dropPreferenceTriggers(knex);
   await knex.schema.alterTable('notification_preferences', (table) => {
     table.boolean('push_enabled').notNullable().defaultTo(enabled).alter();
@@ -218,49 +223,20 @@ async function changePushPreferenceDefault(knex, enabled, updateExistingRows) {
   await createPreferenceTriggers(knex);
 }
 
-async function createNotificationPreferenceSettings(knex) {
-  if (await knex.schema.hasTable('notification_preference_settings')) return;
-  await knex.schema.createTable('notification_preference_settings', (table) => {
-    table.text('user_id').notNullable().primary();
-    table.text('quiet_hours_start').nullable();
-    table.text('quiet_hours_end').nullable();
-    table.text('timezone').notNullable().defaultTo('UTC');
-    table.text('created_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
-    table.text('updated_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
+const NOTIFICATION_PREFERENCE_SETTINGS_TRIGGERS = [
+  'notification_preference_settings_updated_at_managed',
+  'notification_preference_settings_updated_at_not_future',
+  'notification_preference_settings_touch_updated_at',
+];
 
-    const quietHourCheck = (column) => `(
-      ${column} IS NULL OR (
-        typeof(${column}) = 'text'
-        AND length(${column}) = 5
-        AND ${column} GLOB '[0-2][0-9]:[0-5][0-9]'
-        AND CAST(substr(${column}, 1, 2) AS INTEGER) BETWEEN 0 AND 23
-      )
-    )`;
-    table.check(
-      `${boundedNonBlankTextCheck('user_id')}
-        AND ${quietHourCheck('quiet_hours_start')}
-        AND ${quietHourCheck('quiet_hours_end')}
-        AND ${boundedNonBlankTextCheck('timezone')}`,
-      {},
-      'notification_preference_settings_values_check'
-    );
-    table.check(
-      'updated_at >= created_at',
-      {},
-      'notification_preference_settings_temporal_order_check'
-    );
-    table.check(
-      canonicalTimestampCheck('created_at'),
-      {},
-      'notification_preference_settings_created_at_check'
-    );
-    table.check(
-      canonicalTimestampCheck('updated_at'),
-      {},
-      'notification_preference_settings_updated_at_check'
-    );
-  });
+async function dropNotificationPreferenceSettingsTriggers(knex) {
+  for (const name of NOTIFICATION_PREFERENCE_SETTINGS_TRIGGERS) {
+    await knex.raw(`DROP TRIGGER IF EXISTS ${name}`);
+  }
+}
 
+async function createNotificationPreferenceSettingsTriggers(knex) {
+  await dropNotificationPreferenceSettingsTriggers(knex);
   const managedTimestamp = `CASE
     WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
     ELSE strftime('%Y-%m-%dT%H:%M:%fZ', OLD.updated_at, '+0.001 seconds')
@@ -295,6 +271,56 @@ async function createNotificationPreferenceSettings(knex) {
   `);
 }
 
+async function createNotificationPreferenceSettings(knex) {
+  if (!(await knex.schema.hasTable('notification_preference_settings'))) {
+    await knex.schema.createTable('notification_preference_settings', (table) => {
+      table.text('user_id').notNullable().primary();
+      table.text('quiet_hours_start').nullable();
+      table.text('quiet_hours_end').nullable();
+      table.text('timezone').notNullable().defaultTo('UTC');
+      table.text('created_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
+      table.text('updated_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
+
+      const quietHourCheck = (column) => `(
+        ${column} IS NULL OR (
+          typeof(${column}) = 'text'
+          AND length(${column}) = 5
+          AND ${column} GLOB '[0-2][0-9]:[0-5][0-9]'
+          AND CAST(substr(${column}, 1, 2) AS INTEGER) BETWEEN 0 AND 23
+        )
+      )`;
+      table.check(
+        `${boundedNonBlankTextCheck('user_id')}
+          AND ${quietHourCheck('quiet_hours_start')}
+          AND ${quietHourCheck('quiet_hours_end')}
+          AND ${boundedNonBlankTextCheck('timezone')}`,
+        {},
+        'notification_preference_settings_values_check'
+      );
+      table.check(
+        'updated_at >= created_at',
+        {},
+        'notification_preference_settings_temporal_order_check'
+      );
+      table.check(
+        canonicalTimestampCheck('created_at'),
+        {},
+        'notification_preference_settings_created_at_check'
+      );
+      table.check(
+        canonicalTimestampCheck('updated_at'),
+        {},
+        'notification_preference_settings_updated_at_check'
+      );
+    });
+  }
+
+  // A prior non-transactional attempt may have created the table and only some
+  // triggers. Always converge the trigger set instead of treating the table as
+  // proof that the settings schema is complete.
+  await createNotificationPreferenceSettingsTriggers(knex);
+}
+
 async function dropPushSubscriptionSchemaObjects(knex) {
   for (const name of [
     'push_subscriptions_active_endpoint_idx',
@@ -309,6 +335,7 @@ async function dropPushSubscriptionSchemaObjects(knex) {
     'push_subscriptions_version_identity_immutable',
     'push_subscriptions_lifecycle_update_valid',
     'push_subscriptions_preserve_version',
+    'push_subscriptions_revoked_keys_guard',
     'push_subscriptions_erase_inserted_revoked_keys',
     'push_subscriptions_erase_revoked_keys',
     'push_subscriptions_updated_at_managed',
@@ -477,6 +504,16 @@ async function createPushSubscriptionSchemaObjects(knex, mutable) {
     END
   `);
   await knex.raw(`
+    CREATE TRIGGER push_subscriptions_revoked_keys_guard
+    BEFORE UPDATE OF p256dh_key, auth_key, revoked_at ON push_subscriptions
+    WHEN OLD.revoked_at IS NOT NULL
+      AND NEW.revoked_at IS NOT NULL
+      AND (NEW.p256dh_key IS NOT NULL OR NEW.auth_key IS NOT NULL)
+    BEGIN
+      SELECT RAISE(ABORT, 'revoked push subscriptions cannot retain encryption keys');
+    END
+  `);
+  await knex.raw(`
     CREATE TRIGGER push_subscriptions_erase_inserted_revoked_keys
     AFTER INSERT ON push_subscriptions
     WHEN NEW.revoked_at IS NOT NULL
@@ -576,40 +613,74 @@ async function rebuildPushSubscriptions(knex, options) {
   await createPushSubscriptionSchemaObjects(knex, options.mutable);
 }
 
+async function hasLocalhostPushEndpoints(knex) {
+  const rows = await knex('push_subscriptions').select('endpoint');
+  return rows.some(({ endpoint }) => {
+    try {
+      const hostname = new URL(endpoint).hostname.toLowerCase();
+      return hostname === 'localhost' || hostname === '127.0.0.1';
+    } catch {
+      return false;
+    }
+  });
+}
+
 async function withForeignKeysDisabled(knex, operation) {
-  const rows = await knex.raw('PRAGMA foreign_keys');
-  const foreignKeysEnabled = rows[0]?.foreign_keys === 1;
-  if (foreignKeysEnabled) await knex.raw('PRAGMA foreign_keys = OFF');
+  const connection = await knex.client.acquireConnection();
+  const raw = (sql) => knex.raw(sql).connection(connection);
   try {
-    await operation();
+    const rows = await raw('PRAGMA foreign_keys');
+    const foreignKeysEnabled = rows[0]?.foreign_keys === 1;
+    if (foreignKeysEnabled) await raw('PRAGMA foreign_keys = OFF');
+    try {
+      // The explicit connection option pins BEGIN/DDL/COMMIT to the connection
+      // whose foreign-key enforcement was disabled. This makes every data and
+      // schema change atomic, including trigger creation.
+      await knex.transaction(
+        async (transaction) => {
+          await operation(transaction);
+          const violations = await transaction.raw('PRAGMA foreign_key_check');
+          if (violations.length > 0) {
+            throw new Error(
+              'Foreign-key violations detected after rebuilding push subscriptions'
+            );
+          }
+        },
+        { connection }
+      );
+    } finally {
+      await raw('PRAGMA legacy_alter_table = OFF');
+      if (foreignKeysEnabled) await raw('PRAGMA foreign_keys = ON');
+    }
   } finally {
-    await knex.raw('PRAGMA legacy_alter_table = OFF');
-    if (foreignKeysEnabled) await knex.raw('PRAGMA foreign_keys = ON');
-  }
-  const violations = await knex.raw('PRAGMA foreign_key_check');
-  if (violations.length > 0) {
-    throw new Error('Foreign-key violations detected after rebuilding push subscriptions');
+    await knex.client.releaseConnection(connection);
   }
 }
 
-export async function up(knex) {
-  await changePushPreferenceDefault(knex, false, true);
-  await createNotificationPreferenceSettings(knex);
-  await withForeignKeysDisabled(knex, async () => {
-    await rebuildPushSubscriptions(knex, {
-      allowLocalhost: true,
+export async function up(knex, options = {}) {
+  const allowLocalhost = options.allowInsecureLocalhost ?? configuredLocalhostOptIn();
+  await withForeignKeysDisabled(knex, async (transaction) => {
+    // Existing choices are user data. Only the default for future rows changes.
+    await changePushPreferenceDefault(transaction, false);
+    await createNotificationPreferenceSettings(transaction);
+    await rebuildPushSubscriptions(transaction, {
+      allowLocalhost,
       mutable: true,
     });
   });
 }
 
 export async function down(knex) {
-  await withForeignKeysDisabled(knex, async () => {
-    await rebuildPushSubscriptions(knex, {
-      allowLocalhost: false,
+  await withForeignKeysDisabled(knex, async (transaction) => {
+    // Rollback preserves explicitly enrolled localhost rows. When none exist,
+    // restore the original public-only CHECK exactly. Older runtimes still reject
+    // new localhost registrations at their API validation boundary.
+    const allowLocalhost = await hasLocalhostPushEndpoints(transaction);
+    await rebuildPushSubscriptions(transaction, {
+      allowLocalhost,
       mutable: false,
     });
+    await transaction.schema.dropTableIfExists('notification_preference_settings');
+    await changePushPreferenceDefault(transaction, true);
   });
-  await knex.schema.dropTableIfExists('notification_preference_settings');
-  await changePushPreferenceDefault(knex, true, false);
 }

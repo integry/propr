@@ -45,6 +45,22 @@ test('resolveHostConfig honors stack .env values for ports and docs', () => {
   );
 });
 
+test('supported launcher passes both VAPID keys to the API through its env file', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFile = join(rootDir, '.env');
+  writeFileSync(envFile, [
+    'VAPID_PUBLIC_KEY=public-vapid-value',
+    'VAPID_PRIVATE_KEY=private-vapid-value',
+    '',
+  ].join('\n'));
+  const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
+
+  const { args } = buildServiceSpec(cfg, 'api');
+  const envFileIndex = args.indexOf('--env-file');
+  assert.notEqual(envFileIndex, -1);
+  assert.equal(args[envFileIndex + 1], envFile);
+});
+
 test('launcher derives and mounts managed agent credentials without another host-path setting', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   const envFileLocal = join(rootDir, '.env');
