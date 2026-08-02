@@ -74,6 +74,15 @@ export class TaskWatcherManager {
       return;
     }
 
+    // Docker-backed agents stream their live output through Redis. Prefer that
+    // source when it is already available, even if older task metadata does not
+    // identify the agent type reliably.
+    if (await this.hasRedisOutput(taskId)) {
+      console.log(`[TaskWatcher] Redis output found for task ${taskId}, using Redis watcher`);
+      await this.startRedisWatcher(taskId);
+      return;
+    }
+
     // Get agent config to find the correct log path
     const agentConfig = await findAgentConfigForTask(taskId);
     const agentType = agentConfig?.type || 'claude';
@@ -108,8 +117,16 @@ export class TaskWatcherManager {
       const dirPath = path.dirname(conversationPath);
       const fileName = path.basename(conversationPath);
 
-      // Ensure directory exists
-      await fs.ensureDir(dirPath);
+      // The API commonly mounts agent credentials read-only. A missing Claude
+      // log directory must not turn a live-view subscription into an unhandled
+      // rejection that terminates the API process.
+      try {
+        await fs.ensureDir(dirPath);
+      } catch (error) {
+        console.warn(`[TaskWatcher] Cannot prepare Claude log directory for task ${taskId}; falling back to Redis watcher:`, error);
+        await this.startRedisWatcher(taskId);
+        return;
+      }
 
       // Watch the directory for the file to be created
       // Use polling to avoid EMFILE errors when directory has many files
@@ -128,13 +145,17 @@ export class TaskWatcherManager {
       watcher.on('add', async (addedPath) => {
         // Check if this is the file we're waiting for
         if (path.basename(addedPath) === fileName) {
-          console.log(`[TaskWatcher] Claude log file created for task ${taskId}, switching to file watcher`);
+          try {
+            console.log(`[TaskWatcher] Claude log file created for task ${taskId}, switching to file watcher`);
 
-          // File has been created - switch to watching the file directly
-          await this.switchToFileWatcher(taskId, conversationPath, sessionId);
+            // File has been created - switch to watching the file directly
+            await this.switchToFileWatcher(taskId, conversationPath, sessionId);
 
-          // Send initial update now that file exists
-          await this.sendTaskLiveUpdate(taskId, true);
+            // Send initial update now that file exists
+            await this.sendTaskLiveUpdate(taskId, true);
+          } catch (error) {
+            console.error(`[TaskWatcher] Failed to switch watcher for task ${taskId}:`, error);
+          }
         }
       });
 

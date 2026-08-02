@@ -5,6 +5,7 @@ import logger from '../../utils/logger.js';
 
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
+export interface RunningTaskContainer { id: string; name: string; }
 
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
@@ -174,6 +175,41 @@ function getDockerRunContainerName(args: string[]): string | null {
     const nameIndex = args.indexOf('--name');
     if (nameIndex >= 0 && args[nameIndex + 1]) return args[nameIndex + 1];
     return null;
+}
+
+/**
+ * Finds a running agent container by the task-id suffix used by every agent
+ * container name. This survives worker/Redis restarts because Docker remains
+ * the source of truth for an execution that is still active.
+ */
+export async function findRunningDockerContainerForTask(
+    taskId: string,
+    executor: typeof executeDockerCommand = executeDockerCommand,
+): Promise<RunningTaskContainer | null> {
+    const shortTaskId = taskId.slice(-8);
+    if (!shortTaskId) return null;
+    const escapedSuffix = shortTaskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    try {
+        const result = await executor('docker', [
+            'ps',
+            '--filter', `name=${escapedSuffix}$`,
+            '--format', '{{.ID}}:{{.Names}}',
+        ], { timeout: 10000 });
+        if (result.exitCode !== 0) {
+            logger.warn({ taskId, stderr: result.stderr }, 'Failed to inspect running Docker containers for task');
+            return null;
+        }
+
+        const firstMatch = result.stdout.split('\n').map(line => line.trim()).find(Boolean);
+        if (!firstMatch) return null;
+        const separator = firstMatch.indexOf(':');
+        if (separator < 1) return null;
+        return { id: firstMatch.slice(0, separator), name: firstMatch.slice(separator + 1) };
+    } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Failed to inspect running Docker containers for task');
+        return null;
+    }
 }
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
