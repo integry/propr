@@ -28,11 +28,10 @@ import {
   createUserRepoPreferencesRoutes,
   createAgentRuntimeRoutes,
   createAdminRoutes,
-  createHostedFleetRoutes,
-  isHostedFleetControlEnabled,
   createInstanceCatalogRoutes,
   attachmentUpload
 } from './routes/index.js';
+import { registerHostedFleetRoutes } from './routes/hostedFleetRoutes.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
 import {
@@ -226,17 +225,14 @@ function setupRoutes(): void {
   // compatibility dates). All other /api routes registered after this line are
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
-  if (isHostedFleetControlEnabled()) {
-    const hostedFleetRoutes = createHostedFleetRoutes({
-      operationalStatus: statusRoutes.getStatus,
-      queueStatus: queueRoutes.getQueueStats
-    });
-    // Machine-to-machine bootstrap verification has its own narrow service
-    // credential and deliberately does not depend on a customer's OAuth session.
-    app.get('/api/internal/hosted/bootstrap', hostedFleetRoutes.getBootstrapStatus);
-    app.get('/api/internal/hosted/status', hostedFleetRoutes.getOperationalStatus);
-    app.get('/api/internal/hosted/queue', hostedFleetRoutes.getQueueStatus);
-  }
+  // Machine-to-machine bootstrap verification has its own narrow service
+  // credential and deliberately does not depend on a customer's OAuth session.
+  // Registration remains before the OAuth boundary and is a no-op unless Fleet
+  // control was explicitly enabled at startup.
+  registerHostedFleetRoutes(app, {
+    operationalStatus: statusRoutes.getStatus,
+    queueStatus: queueRoutes.getQueueStats
+  });
   app.use('/api', ensureAuthenticated, resolveAuthorization);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
