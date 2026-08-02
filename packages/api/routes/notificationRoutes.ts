@@ -2,8 +2,10 @@ import type { Request, Response } from 'express';
 import {
     decodeNotificationCursor,
     NotificationQueryValidationError,
+    NotificationValidationError,
     notificationService,
     parseNotificationListLimit,
+    PushSubscriptionConflictError,
     type NotificationService
 } from '@propr/core';
 import {
@@ -17,10 +19,20 @@ export type NotificationRouteService = Pick<
     | 'getUnreadNotificationCount'
     | 'markNotificationRead'
     | 'dismissNotification'
+    | 'getNotificationPreferences'
+    | 'updateNotificationPreferences'
+    | 'upsertPushSubscription'
+    | 'revokePushSubscription'
 >;
+
+export interface WebPushServerConfiguration {
+    publicKey?: string;
+    privateKey?: string;
+}
 
 export interface NotificationRouteDependencies {
     service?: NotificationRouteService;
+    getWebPushConfiguration?: () => WebPushServerConfiguration;
 }
 
 function authenticatedUserId(req: Request, res: Response): string | null {
@@ -61,9 +73,26 @@ function eventIdFromRequest(req: Request): string {
     return eventId;
 }
 
+function withoutClientSuppliedOwner(value: unknown): unknown {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+    const payload = { ...value as Record<string, unknown> };
+    delete payload.userId;
+    return payload;
+}
+
 function handleRouteError(res: Response, error: unknown, operation: string): void {
-    if (error instanceof NotificationQueryValidationError) {
+    if (
+        error instanceof NotificationQueryValidationError
+        || error instanceof NotificationValidationError
+    ) {
         res.status(400).json({
+            code: error.code,
+            error: error.message
+        });
+        return;
+    }
+    if (error instanceof PushSubscriptionConflictError) {
+        res.status(409).json({
             code: error.code,
             error: error.message
         });
@@ -78,6 +107,10 @@ export function createNotificationRoutes(
     dependencies: NotificationRouteDependencies = {}
 ) {
     const service = dependencies.service ?? notificationService;
+    const getWebPushConfiguration = dependencies.getWebPushConfiguration ?? (() => ({
+        publicKey: process.env.VAPID_PUBLIC_KEY,
+        privateKey: process.env.VAPID_PRIVATE_KEY
+    }));
 
     async function getNotifications(req: Request, res: Response): Promise<void> {
         const userId = authenticatedUserId(req, res);
@@ -145,5 +178,105 @@ export function createNotificationRoutes(
         }
     }
 
-    return { getNotifications, getUnreadCount, markRead, dismiss };
+    async function getConfiguration(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        const configuration = getWebPushConfiguration();
+        const publicKey = typeof configuration.publicKey === 'string'
+            && configuration.publicKey.trim().length > 0
+            ? configuration.publicKey
+            : null;
+        const privateKeyConfigured = typeof configuration.privateKey === 'string'
+            && configuration.privateKey.trim().length > 0;
+        res.json({
+            push: {
+                configured: publicKey !== null && privateKeyConfigured,
+                vapidPublicKey: publicKey
+            }
+        });
+    }
+
+    async function getPreferences(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        try {
+            res.json(await service.getNotificationPreferences(userId));
+        } catch (error) {
+            handleRouteError(res, error, 'read notification preferences');
+        }
+    }
+
+    async function updatePreferences(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        try {
+            res.json(await service.updateNotificationPreferences(
+                userId,
+                withoutClientSuppliedOwner(req.body) as Parameters<
+                    NotificationRouteService['updateNotificationPreferences']
+                >[1]
+            ));
+        } catch (error) {
+            handleRouteError(res, error, 'update notification preferences');
+        }
+    }
+
+    async function createPushSubscription(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        try {
+            const userAgent = typeof req.get === 'function'
+                ? req.get('user-agent')
+                : undefined;
+            const subscription = await service.upsertPushSubscription(
+                userId,
+                withoutClientSuppliedOwner(req.body) as Parameters<
+                    NotificationRouteService['upsertPushSubscription']
+                >[1],
+                userAgent
+            );
+            res.json({ subscription });
+        } catch (error) {
+            handleRouteError(res, error, 'create or refresh push subscription');
+        }
+    }
+
+    async function revokePushSubscription(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        try {
+            const body = typeof req.body === 'object' && req.body !== null
+                ? req.body as Record<string, unknown>
+                : {};
+            const endpoint = body.endpoint ?? req.query.endpoint;
+            if (typeof endpoint !== 'string') {
+                throw new NotificationValidationError(
+                    'pushSubscriptionInput.endpoint is required'
+                );
+            }
+            await service.revokePushSubscription(userId, endpoint);
+            res.status(204).end();
+        } catch (error) {
+            handleRouteError(res, error, 'revoke push subscription');
+        }
+    }
+
+    return {
+        getNotifications,
+        getUnreadCount,
+        markRead,
+        dismiss,
+        getConfiguration,
+        getCapabilities: getConfiguration,
+        getPreferences,
+        updatePreferences,
+        createPushSubscription,
+        upsertPushSubscription: createPushSubscription,
+        revokePushSubscription
+    };
 }

@@ -44,6 +44,8 @@ services:
       DB_FILENAME: /app/data/propr.sqlite
       GH_WEBHOOK_SECRET: ${GH_WEBHOOK_SECRET}
       SYSTEM_TASK_SECRET: ${SYSTEM_TASK_SECRET}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       PROPR_MANAGED_CREDENTIALS_DIR: ${HOME:?HOME must be set}/.propr/agent-credentials
       PROPR_CONTAINERIZED: "1"
       PROPR_STACK: ${PROPR_STACK:-propr}

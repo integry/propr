@@ -71,6 +71,37 @@ All API endpoints are protected by authentication:
 - `GET /api/metrics` - Performance metrics
 - `GET /api/task/:taskId/history` - Task history
 
+### Notification preferences and Web Push
+
+Notification routes always derive the user from the authenticated session. A
+new user receives all six categories (`plan`, `task`, `review`,
+`pull_request`, `indexing`, and `system_failure`) with Inbox enabled and Push
+disabled. Quiet hours default to `{ "start": null, "end": null, "timezone":
+"UTC" }`. Push is not enabled by registering a browser; the user must also set
+`pushEnabled` for each desired category.
+
+- `GET /api/notifications/config` - Return Web Push availability and the VAPID public key. The private key is never serialized.
+- `GET /api/notifications/preferences` - Return the complete category and quiet-hour snapshot.
+- `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged. `PUT` is accepted as an alias.
+- `POST /api/notifications/push-subscriptions` - Create or refresh the authenticated user's browser subscription by endpoint.
+- `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` in the JSON body or query string.
+
+For example, this enables Push for task notifications and configures local
+quiet hours without changing any other category:
+
+```json
+{
+  "preferences": {
+    "task": { "pushEnabled": true }
+  },
+  "quietHours": {
+    "start": "22:00",
+    "end": "07:30",
+    "timezone": "America/New_York"
+  }
+}
+```
+
 ## Security
 
 - Session-based authentication with secure cookies

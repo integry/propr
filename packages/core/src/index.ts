@@ -379,13 +379,20 @@ export type {
 export {
     NotificationService,
     NotificationEventNotFoundError,
+    NotificationValidationError,
+    PushSubscriptionConflictError,
     notificationService,
     createNotificationEvent,
     assignNotificationRecipients,
     listNotifications,
     getUnreadNotificationCount,
     markNotificationRead,
-    dismissNotification
+    dismissNotification,
+    getNotificationPreferences,
+    updateNotificationPreferences,
+    updateNotificationPreference,
+    upsertPushSubscription,
+    revokePushSubscription
 } from './services/notificationService.js';
 export type {
     NotificationRecipientInput,

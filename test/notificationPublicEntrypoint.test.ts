@@ -62,6 +62,8 @@ test('builds and exposes the notification contract from @propr/shared', async (c
     pathToFileURL(path.join(packageDist, 'index.js')).href
   );
   const runtimeExports = [
+    'DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS',
+    'DEFAULT_NOTIFICATION_QUIET_HOURS',
     'MAX_CANONICAL_TIMESTAMP_EPOCH_MS',
     'NOTIFICATION_ACTION_TYPES',
     'NOTIFICATION_KINDS',
@@ -82,6 +84,8 @@ test('builds and exposes the notification contract from @propr/shared', async (c
     'notificationPreferenceSchema',
     'notificationPreferencesResponseSchema',
     'notificationPreferencesSchema',
+    'notificationPreferencesUpdateSchema',
+    'notificationQuietHoursSchema',
     'notificationSchema',
     'notificationSourceActivitySchema',
     'notificationStateResponseSchema',
@@ -97,6 +101,8 @@ test('builds and exposes the notification contract from @propr/shared', async (c
     'parseNotificationPreferenceChannels',
     'parseNotificationPreferences',
     'parseNotificationPreferencesResponse',
+    'parseNotificationPreferencesUpdate',
+    'parseNotificationQuietHours',
     'parseNotificationSourceActivity',
     'parseNotificationStateResponse',
     'parseNotificationTarget',
@@ -105,7 +111,10 @@ test('builds and exposes the notification contract from @propr/shared', async (c
     'parsePushDeliveryAttempt',
     'parsePushDeliveryJob',
     'parsePushSubscription',
+    'parsePushSubscriptionEndpoint',
     'parsePushSubscriptionInput',
+    'parseIanaTimezone',
+    'parseQuietHour',
     'parsePushSubscriptionsResponse',
     'pushDeliveryAttemptSchema',
     'pushDeliveryJobSchema',

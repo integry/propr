@@ -8,8 +8,12 @@ import {
     decodeNotificationCursor,
     parseNotificationListLimit
 } from '../src/services/notificationPagination.js';
-import { NotificationService } from '../src/services/notificationService.js';
+import {
+    NotificationService,
+    NotificationValidationError
+} from '../src/services/notificationService.js';
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
+import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -59,6 +63,7 @@ beforeEach(async () => {
     clock = Date.parse('2026-08-02T10:00:00.000Z');
     database = createDatabase();
     await up(database);
+    await addPreferenceApis(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -193,5 +198,152 @@ describe('notification service', { concurrency: false }, () => {
             NotificationQueryValidationError
         );
         assert.equal((await service.listNotifications('user-a', { limit: 10_000 })).notifications.length, 0);
+    });
+
+    test('returns opt-in-safe defaults and preserves unrelated preference updates', async () => {
+        const defaults = await service.getNotificationPreferences('user-a');
+        assert.deepEqual(Object.keys(defaults.preferences), [
+            'plan',
+            'task',
+            'review',
+            'pull_request',
+            'indexing',
+            'system_failure'
+        ]);
+        for (const preference of Object.values(defaults.preferences)) {
+            assert.equal(preference.inboxEnabled, true);
+            assert.equal(preference.pushEnabled, false);
+        }
+        assert.deepEqual(defaults.quietHours, {
+            start: null,
+            end: null,
+            timezone: 'UTC'
+        });
+
+        const updated = await service.updateNotificationPreferences('user-a', {
+            preferences: {
+                task: { pushEnabled: true },
+                plan: { inboxEnabled: false }
+            },
+            quietHours: {
+                start: '22:30',
+                end: '07:15',
+                timezone: 'America/New_York'
+            }
+        });
+        assert.equal(updated.preferences.task.pushEnabled, true);
+        assert.equal(updated.preferences.task.inboxEnabled, true);
+        assert.equal(updated.preferences.plan.inboxEnabled, false);
+        assert.equal(updated.preferences.plan.pushEnabled, false);
+        assert.deepEqual(updated.quietHours, {
+            start: '22:30',
+            end: '07:15',
+            timezone: 'America/New_York'
+        });
+
+        const partial = await service.updateNotificationPreference(
+            'user-a',
+            'review',
+            { inboxEnabled: false }
+        );
+        assert.equal(partial.preferences.review.inboxEnabled, false);
+        assert.equal(partial.preferences.review.pushEnabled, false);
+        assert.equal(partial.preferences.task.pushEnabled, true);
+        assert.deepEqual(partial.quietHours, updated.quietHours);
+    });
+
+    test('rejects invalid categories, quiet-hour values, and timezones', async () => {
+        const invalidUpdates = [
+            { preferences: { unknown: { pushEnabled: true } } },
+            { quietHours: { start: '24:00' } },
+            { quietHours: { end: '7:00' } },
+            { quietHours: { timezone: 'Mars/Olympus_Mons' } }
+        ];
+        for (const update of invalidUpdates) {
+            await assert.rejects(
+                () => service.updateNotificationPreferences('user-a', update as never),
+                NotificationValidationError
+            );
+        }
+    });
+
+    test('upserts, revokes, and reactivates a subscription by owned endpoint', async () => {
+        const endpoint = 'https://fcm.googleapis.com/fcm/send/browser-a';
+        const first = await service.upsertPushSubscription('user-a', {
+            endpoint,
+            expirationTime: null,
+            keys: {
+                p256dh: 'B' + 'A'.repeat(86),
+                auth: 'A'.repeat(22)
+            }
+        }, 'Test Browser');
+        const refreshed = await service.upsertPushSubscription('user-a', {
+            endpoint,
+            expirationTime: null,
+            keys: {
+                p256dh: 'BA' + 'B'.repeat(84) + 'A',
+                auth: 'B'.repeat(21) + 'A'
+            }
+        });
+
+        assert.equal(refreshed.id, first.id);
+        assert.equal(await database('push_subscriptions').count('* as count').first()
+            .then(row => Number(row?.count)), 1);
+        let stored = await database('push_subscriptions').where({ endpoint }).first();
+        assert.equal(stored.p256dh_key, 'BA' + 'B'.repeat(84) + 'A');
+        assert.equal(stored.auth_key, 'B'.repeat(21) + 'A');
+        assert.equal(stored.revoked_at, null);
+
+        assert.equal(await service.revokePushSubscription('user-b', endpoint), false);
+        stored = await database('push_subscriptions').where({ endpoint }).first();
+        assert.equal(stored.revoked_at, null);
+        assert.equal(await service.revokePushSubscription('user-a', endpoint), true);
+        stored = await database('push_subscriptions').where({ endpoint }).first();
+        assert.ok(stored.revoked_at);
+        assert.equal(stored.p256dh_key, null);
+        assert.equal(stored.auth_key, null);
+
+        const reactivated = await service.upsertPushSubscription('user-a', {
+            endpoint,
+            expirationTime: null,
+            keys: {
+                p256dh: 'BA' + 'C'.repeat(84) + 'A',
+                auth: 'C'.repeat(21) + 'Q'
+            }
+        });
+        assert.equal(reactivated.id, first.id);
+        stored = await database('push_subscriptions').where({ endpoint }).first();
+        assert.equal(stored.revoked_at, null);
+        assert.equal(stored.p256dh_key, 'BA' + 'C'.repeat(84) + 'A');
+        assert.equal(await database('push_subscriptions').count('* as count').first()
+            .then(row => Number(row?.count)), 1);
+    });
+
+    test('validates push endpoints and browser encryption keys', async () => {
+        const validKeys = {
+            p256dh: 'B' + 'A'.repeat(86),
+            auth: 'A'.repeat(22)
+        };
+        await service.upsertPushSubscription('local-user', {
+            endpoint: 'http://localhost:4173/push/browser',
+            expirationTime: null,
+            keys: validKeys
+        });
+        await assert.rejects(
+            () => service.upsertPushSubscription('user-a', {
+                endpoint: 'http://fcm.googleapis.com/fcm/send/insecure',
+                expirationTime: null,
+                keys: validKeys
+            }),
+            NotificationValidationError
+        );
+        await assert.rejects(
+            () => service.upsertPushSubscription('user-a', {
+                endpoint: 'https://fcm.googleapis.com/fcm/send/invalid-key',
+                expirationTime: null,
+                keys: { p256dh: 'short', auth: 'short' }
+            }),
+            NotificationValidationError
+        );
     });
 });

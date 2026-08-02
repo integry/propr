@@ -266,6 +266,13 @@ export interface NotificationPreferenceChannels {
   pushEnabled: boolean;
 }
 
+/** Defaults used until an authenticated user explicitly changes a category. */
+export const DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS:
+  Readonly<NotificationPreferenceChannels> = Object.freeze({
+  inboxEnabled: true,
+  pushEnabled: false,
+});
+
 /** One persisted entry in a complete preference snapshot. */
 export interface NotificationPreference extends NotificationPreferenceChannels {
   updatedAt: ISO8601Timestamp;
@@ -277,6 +284,37 @@ export type NotificationPreferences = Record<
   NotificationPreference
 >;
 
+/**
+ * User-local delivery suppression. A null boundary disables quiet hours; the
+ * timezone is still retained so enabling them later does not require guessing.
+ */
+export interface NotificationQuietHours {
+  start: string | null;
+  end: string | null;
+  timezone: string;
+}
+
+export const DEFAULT_NOTIFICATION_QUIET_HOURS:
+  Readonly<NotificationQuietHours> = Object.freeze({
+  start: null,
+  end: null,
+  timezone: 'UTC',
+});
+
+export type NotificationPreferencePatch = Partial<NotificationPreferenceChannels>;
+
+/** A sparse category map; omitted categories and channels remain unchanged. */
+export type NotificationPreferencesPatch = Partial<Record<
+  NotificationKind,
+  NotificationPreferencePatch
+>>;
+
+/** Sparse authenticated-user update accepted by the preferences API. */
+export interface NotificationPreferencesUpdate {
+  preferences?: NotificationPreferencesPatch;
+  quietHours?: Partial<NotificationQuietHours>;
+}
+
 /** The encryption keys supplied by the browser Push API. */
 export interface PushSubscriptionKeys {
   p256dh: string;
@@ -284,13 +322,18 @@ export interface PushSubscriptionKeys {
 }
 
 /**
- * Browser payload accepted when registering a subscription version. Refreshes
- * revoke the prior version and register this payload under a new identifier.
+ * Browser payload accepted when registering or refreshing a subscription.
+ * Refreshes replace the mutable encryption material for the same endpoint.
  */
 export interface PushSubscriptionInput {
   endpoint: string;
   expirationTime: number | null;
   keys: PushSubscriptionKeys;
+}
+
+export interface PushSubscriptionValidationOptions {
+  /** Allow HTTP only for loopback hosts used by local browser development. */
+  allowInsecureLocalhost?: boolean;
 }
 
 /** Alias matching Web Push terminology used by non-browser backend consumers. */
@@ -513,6 +556,7 @@ export interface NotificationStateResponse {
 /** API snapshots are complete and use the same keyed representation everywhere. */
 export interface NotificationPreferencesResponse {
   preferences: NotificationPreferences;
+  quietHours: NotificationQuietHours;
 }
 
 export interface PushSubscriptionsResponse {
@@ -699,6 +743,7 @@ function parseBase64Url(
 
 const UNSAFE_URL_CHARACTER_PATTERN = /[\\\u0000-\u001f\u007f]/;
 const HOST_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
+const WEB_PUSH_LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
 
 function parseSafeAbsoluteUrl(
   value: unknown,
@@ -750,6 +795,60 @@ function parseSafeAbsoluteUrl(
     return invalid(path, expectation);
   }
   return url.href;
+}
+
+/**
+ * Validate a browser push endpoint without widening the delivery-host
+ * allowlist. Local loopback URLs are accepted only when the caller explicitly
+ * opts into development behavior.
+ */
+export function parsePushSubscriptionEndpoint(
+  value: unknown,
+  options: PushSubscriptionValidationOptions = {},
+): string {
+  const path = 'pushSubscriptionInput.endpoint';
+  const expectation = 'a safe HTTPS browser push endpoint URL';
+  const href = parseString(
+    value,
+    path,
+    false,
+    NOTIFICATION_PAYLOAD_LIMITS.urlBytes,
+  );
+  if (UNSAFE_URL_CHARACTER_PATTERN.test(href)) {
+    return invalid(path, expectation);
+  }
+
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return invalid(path, expectation);
+  }
+
+  const loopback = WEB_PUSH_LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+  if (loopback) {
+    if (
+      !options.allowInsecureLocalhost
+      || (url.protocol !== 'http:' && url.protocol !== 'https:')
+      || url.username.length > 0
+      || url.password.length > 0
+      || url.hash.length > 0
+    ) {
+      return invalid(path, expectation);
+    }
+    return url.href;
+  }
+
+  return parseSafeAbsoluteUrl(
+    href,
+    path,
+    ['https:'],
+    false,
+    expectation,
+    WEB_PUSH_ENDPOINT_HOSTS,
+    WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
+    true,
+  );
 }
 
 function parseEnum<T extends readonly string[]>(
@@ -1144,21 +1243,179 @@ export function parseNotificationPreference(value: unknown): NotificationPrefere
   };
 }
 
-/** Validate and normalize a browser Push API registration payload. */
-export function parsePushSubscriptionInput(value: unknown): PushSubscriptionInput {
-  const subscription = parseRecord(value, 'pushSubscriptionInput');
-  const keys = parseRecord(subscription.keys, 'pushSubscriptionInput.keys');
+export function parseIanaTimezone(value: unknown, path = 'timezone'): string {
+  const timezone = parseString(value, path);
+  if (timezone !== timezone.trim()) {
+    return invalid(path, 'an IANA timezone identifier');
+  }
+  try {
+    // Intl uses the runtime's IANA tz database and rejects numeric offsets and
+    // arbitrary labels. Preserve aliases rather than silently rewriting user data.
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(0);
+  } catch {
+    return invalid(path, 'an IANA timezone identifier');
+  }
+  return timezone;
+}
+
+export function parseQuietHour(value: unknown, path = 'quietHour'): string {
+  if (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    return invalid(path, 'a time in HH:mm format');
+  }
+  return value;
+}
+
+function parseNullableQuietHour(value: unknown, path: string): string | null {
+  return value === null ? null : parseQuietHour(value, path);
+}
+
+export function parseNotificationQuietHours(value: unknown): NotificationQuietHours {
+  const quietHours = parseRecord(value, 'notificationQuietHours');
+  assertOnlyKnownProperties(
+    quietHours,
+    ['start', 'end', 'timezone'],
+    'notificationQuietHours',
+  );
   return {
-    endpoint: parseSafeAbsoluteUrl(
-      subscription.endpoint,
-      'pushSubscriptionInput.endpoint',
-      ['https:'],
-      false,
-      undefined,
-      WEB_PUSH_ENDPOINT_HOSTS,
-      WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
-      true,
+    start: parseNullableQuietHour(quietHours.start, 'notificationQuietHours.start'),
+    end: parseNullableQuietHour(quietHours.end, 'notificationQuietHours.end'),
+    timezone: parseIanaTimezone(
+      quietHours.timezone,
+      'notificationQuietHours.timezone',
     ),
+  };
+}
+
+/** Validate a sparse update without manufacturing values for omitted fields. */
+export function parseNotificationPreferencesUpdate(
+  value: unknown,
+): NotificationPreferencesUpdate {
+  const update = parseRecord(value, 'notificationPreferencesUpdate');
+  assertOnlyKnownProperties(
+    update,
+    ['preferences', 'quietHours'],
+    'notificationPreferencesUpdate',
+  );
+  if (update.preferences === undefined && update.quietHours === undefined) {
+    return invalid(
+      'notificationPreferencesUpdate',
+      'at least one preferences or quietHours update',
+    );
+  }
+
+  let preferences: NotificationPreferencesPatch | undefined;
+  if (update.preferences !== undefined) {
+    const preferenceUpdates = parseRecord(
+      update.preferences,
+      'notificationPreferencesUpdate.preferences',
+    );
+    if (Object.keys(preferenceUpdates).length === 0) {
+      return invalid(
+        'notificationPreferencesUpdate.preferences',
+        'at least one notification category',
+      );
+    }
+    const allowedKinds = new Set<string>(NOTIFICATION_KINDS);
+    const parsedEntries = Object.entries(preferenceUpdates).map(([kind, candidate]) => {
+      if (!allowedKinds.has(kind)) {
+        return invalid(
+          `notificationPreferencesUpdate.preferences.${kind}`,
+          `one of ${NOTIFICATION_KINDS.join(', ')}`,
+        );
+      }
+      const channels = parseRecord(
+        candidate,
+        `notificationPreferencesUpdate.preferences.${kind}`,
+      );
+      assertOnlyKnownProperties(
+        channels,
+        ['inboxEnabled', 'pushEnabled'],
+        `notificationPreferencesUpdate.preferences.${kind}`,
+      );
+      if (channels.inboxEnabled === undefined && channels.pushEnabled === undefined) {
+        return invalid(
+          `notificationPreferencesUpdate.preferences.${kind}`,
+          'at least one channel update',
+        );
+      }
+      return [kind, {
+        ...(channels.inboxEnabled === undefined
+          ? {}
+          : { inboxEnabled: parseBoolean(
+            channels.inboxEnabled,
+            `notificationPreferencesUpdate.preferences.${kind}.inboxEnabled`,
+          ) }),
+        ...(channels.pushEnabled === undefined
+          ? {}
+          : { pushEnabled: parseBoolean(
+            channels.pushEnabled,
+            `notificationPreferencesUpdate.preferences.${kind}.pushEnabled`,
+          ) }),
+      }] as const;
+    });
+    preferences = Object.fromEntries(parsedEntries) as NotificationPreferencesPatch;
+  }
+
+  let quietHours: Partial<NotificationQuietHours> | undefined;
+  if (update.quietHours !== undefined) {
+    const quietHoursUpdate = parseRecord(
+      update.quietHours,
+      'notificationPreferencesUpdate.quietHours',
+    );
+    assertOnlyKnownProperties(
+      quietHoursUpdate,
+      ['start', 'end', 'timezone'],
+      'notificationPreferencesUpdate.quietHours',
+    );
+    if (Object.keys(quietHoursUpdate).length === 0) {
+      return invalid(
+        'notificationPreferencesUpdate.quietHours',
+        'at least one quiet-hour update',
+      );
+    }
+    quietHours = {
+      ...(quietHoursUpdate.start === undefined
+        ? {}
+        : { start: parseNullableQuietHour(
+          quietHoursUpdate.start,
+          'notificationPreferencesUpdate.quietHours.start',
+        ) }),
+      ...(quietHoursUpdate.end === undefined
+        ? {}
+        : { end: parseNullableQuietHour(
+          quietHoursUpdate.end,
+          'notificationPreferencesUpdate.quietHours.end',
+        ) }),
+      ...(quietHoursUpdate.timezone === undefined
+        ? {}
+        : { timezone: parseIanaTimezone(
+          quietHoursUpdate.timezone,
+          'notificationPreferencesUpdate.quietHours.timezone',
+        ) }),
+    };
+  }
+
+  return {
+    ...(preferences === undefined ? {} : { preferences }),
+    ...(quietHours === undefined ? {} : { quietHours }),
+  };
+}
+
+/** Validate and normalize a browser Push API registration payload. */
+export function parsePushSubscriptionInput(
+  value: unknown,
+  options: PushSubscriptionValidationOptions = {},
+): PushSubscriptionInput {
+  const subscription = parseRecord(value, 'pushSubscriptionInput');
+  assertOnlyKnownProperties(
+    subscription,
+    ['endpoint', 'expirationTime', 'keys'],
+    'pushSubscriptionInput',
+  );
+  const keys = parseRecord(subscription.keys, 'pushSubscriptionInput.keys');
+  assertOnlyKnownProperties(keys, ['p256dh', 'auth'], 'pushSubscriptionInput.keys');
+  return {
+    endpoint: parsePushSubscriptionEndpoint(subscription.endpoint, options),
     expirationTime: parseExpirationTime(
       subscription.expirationTime,
       'pushSubscriptionInput.expirationTime',
@@ -1202,16 +1459,9 @@ export function parsePushSubscription(value: unknown): PushSubscription {
   }
   return {
     id: parseString(subscription.id, 'pushSubscription.id'),
-    endpoint: parseSafeAbsoluteUrl(
-      subscription.endpoint,
-      'pushSubscription.endpoint',
-      ['https:'],
-      false,
-      undefined,
-      WEB_PUSH_ENDPOINT_HOSTS,
-      WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
-      true,
-    ),
+    endpoint: parsePushSubscriptionEndpoint(subscription.endpoint, {
+      allowInsecureLocalhost: true,
+    }),
     expiresAt,
     revokedAt,
     createdAt,
@@ -1574,6 +1824,9 @@ export function parseNotificationPreferencesResponse(
   const response = parseRecord(value, 'notificationPreferencesResponse');
   return {
     preferences: parseNotificationPreferences(response.preferences),
+    quietHours: response.quietHours === undefined
+      ? { ...DEFAULT_NOTIFICATION_QUIET_HOURS }
+      : parseNotificationQuietHours(response.quietHours),
   };
 }
 
@@ -1614,6 +1867,13 @@ export const notificationPreferenceSchema: RuntimeSchema<NotificationPreference>
 };
 export const notificationPreferencesSchema: RuntimeSchema<NotificationPreferences> = {
   parse: parseNotificationPreferences,
+};
+export const notificationQuietHoursSchema: RuntimeSchema<NotificationQuietHours> = {
+  parse: parseNotificationQuietHours,
+};
+export const notificationPreferencesUpdateSchema:
+RuntimeSchema<NotificationPreferencesUpdate> = {
+  parse: parseNotificationPreferencesUpdate,
 };
 export const pushSubscriptionInputSchema: RuntimeSchema<PushSubscriptionInput> = {
   parse: parsePushSubscriptionInput,
