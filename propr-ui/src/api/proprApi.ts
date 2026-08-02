@@ -1,6 +1,6 @@
-// API for fetching system data from backend
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import type { AgentType, ReasoningLevel } from '@propr/shared';
+import type { Task as ApiTask } from './tasks';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
 export const API_BASE_URL = getApiBaseUrl();
@@ -171,9 +171,11 @@ export const getQueueStats = async (): Promise<QueueStats> => {
   return { ...queueStats, active: queueStats.active + generatingCount };
 };
 
+export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; }
+
 export const getTasks = async (
   statusOrOptions: string | GetTasksOptions = 'all', limit = 50, offset = 0, repository = 'all', search = ''
-): Promise<unknown> => {
+): Promise<GetTasksResponse> => {
   let options: GetTasksOptions;
   if (typeof statusOrOptions === 'object') options = statusOrOptions;
   else options = { status: statusOrOptions, limit, offset, repository, search };
@@ -438,3 +440,14 @@ export * from './repoTodosApi';
 export * from './userRepoPreferencesApi';
 export * from './revertApi';
 export * from './agentLoginApi';
+
+export type { ChatMessage } from './plannerApi';
+export type { PlanIssueStatus } from './planIssuesApi';
+export type {
+  CommitInfo,
+  DeleteTaskResponse,
+  PostFollowupResponse,
+  RevertParams,
+  RevertPreviewResponse,
+  TriggerReindexAllResponse
+} from './proprTypes';

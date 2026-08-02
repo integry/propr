@@ -42,7 +42,7 @@ export const useLogFilesData = () => {
     try {
       setLoadingLogFile(true);
       setSelectedLogFile(null);
-      const logsData = await apiFetchLogFiles(logsPath);
+      const logsData = await apiFetchLogFiles(logsPath) as LogFilesData;
       
       if (logsData.files) {
         const transformedData = {

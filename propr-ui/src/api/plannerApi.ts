@@ -44,6 +44,7 @@ import type {
   DraftWithPlan,
   PlanTask,
   ChatMessage,
+  DraftContextConfig,
   RefineResponse,
   FinalizeResponse,
   GetDraftsOptions,
@@ -143,7 +144,7 @@ export const getDraftWithPlan = async (id: string): Promise<DraftWithPlan> => {
   return response.json();
 };
 
-export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[]; initial_prompt?: string; name?: string }): Promise<void> => {
+export const updateDraft = async (draftId: string, data: { plan_json?: PlanTask[]; chat_history?: ChatMessage[]; initial_prompt?: string; name?: string; context_config?: DraftContextConfig }): Promise<void> => {
   const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

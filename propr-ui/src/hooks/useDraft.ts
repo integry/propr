@@ -19,7 +19,7 @@ function ensureArray(value: unknown): unknown[] {
 }
 
 // Helper to safely parse JSON string fields that should be arrays/objects
-function parseJsonFields<T extends Record<string, unknown>>(data: T): T {
+function parseJsonFields(data: Record<string, unknown>): Record<string, unknown> {
   const result = { ...data };
   const jsonFields = ['plan_json', 'chat_history', 'attachments'] as const;
   for (const field of jsonFields) {
@@ -85,7 +85,7 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
   const [draft, setDraft] = useState<PlannerDraft | null>(() => {
     if (useInitialData) {
       consumedInitialDataRef.current = draftId;
-      return initialData;
+      return initialData ?? null;
     }
     return null;
   });

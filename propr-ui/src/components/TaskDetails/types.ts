@@ -106,9 +106,12 @@ export interface LiveEvent {
   content?: string;
   timestamp?: string;
   toolName?: string;
-  input?: { file_path?: string; command?: string };
-  result?: string | object;
+  input?: Record<string, unknown> & { file_path?: string; command?: string };
+  id?: string;
+  toolUseId?: string;
+  result?: unknown;
   isError?: boolean;
+  isSubagentSummary?: boolean;
 }
 
 export interface LiveDetails {

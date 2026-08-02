@@ -79,6 +79,7 @@ export interface PreviewStats {
   maxTokens?: number;
   modelName?: string;
   modelMaxContextTokens?: number;
+  attachmentTokens?: number;
   /** Estimated percentage of the 5-hour session usage this task will consume */
   usageEstimatePercent?: number;
 }

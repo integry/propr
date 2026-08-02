@@ -256,7 +256,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
     const checkAborted = (): boolean => signal?.aborted ?? false;
 
-    const handleReviewStatus = (draft: { plan_json: unknown; refinement_result: unknown }): { success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean } | null => {
+    const handleReviewStatus = (draft: { plan_json: unknown; refinement_result?: unknown }): { success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean } | null => {
       const refinementResult = parseRefinementResult(draft.refinement_result);
 
       if (refinementResult?.action === 'cancelled') {
@@ -286,7 +286,7 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
       return { success: true, message, action };
     };
 
-    const updateProgressFromResult = (draft: { refinement_result: unknown }, hasUpdatedProgress: boolean): boolean => {
+    const updateProgressFromResult = (draft: { refinement_result?: unknown }, hasUpdatedProgress: boolean): boolean => {
       if (hasUpdatedProgress || !draft.refinement_result) {
         return hasUpdatedProgress;
       }

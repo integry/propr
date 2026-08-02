@@ -172,7 +172,7 @@ jobs:
 
           # --- UI ---
           if [ "${{ steps.filter.outputs.ui }}" == 'true' ]; then
-            echo -e "\n--- UI: Lint & Build ---" >> build_log.txt
+            echo -e "\n--- UI: Typecheck, Lint & Build ---" >> build_log.txt
             UI_FAILED=0
 
             # Dependencies already installed in earlier step
@@ -181,6 +181,18 @@ jobs:
               echo "$SHARED_OUTPUT" >> build_log.txt
               UI_FAILED=1
               EXIT_CODE=1
+            fi
+
+            if [ $UI_FAILED -eq 0 ]; then
+              TYPECHECK_OUTPUT=$(npm run typecheck -w propr-ui 2>&1) || {
+                echo "❌ UI Typecheck FAILED" >> build_log.txt
+                echo "$TYPECHECK_OUTPUT" >> build_log.txt
+                UI_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $UI_FAILED -eq 0 ]; then
+                echo "✅ UI Typecheck passed" >> build_log.txt
+              fi
             fi
 
             if [ $UI_FAILED -eq 0 ]; then

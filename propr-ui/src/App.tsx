@@ -1,18 +1,6 @@
-import React, { useEffect, useState } from 'react'
+import React, { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
-import Dashboard from './components/Dashboard'
-import RepositoriesPage from './pages/RepositoriesPage'
-import TasksPage from './pages/TasksPage'
-// TaskPlannerPage removed - all plan routes now use PlanStudioPage
-import PlanStudioPage from './pages/PlanStudioPage'
-import PlansPage from './pages/PlansPage'
-import AiAgentsPage from './pages/AiAgentsPage'
-import SettingsPage from './pages/SettingsPage'
-import SummaryBrowserPage from './pages/SummaryBrowserPage'
-import LlmLogsPage from './pages/LlmLogsPage'
-import LoginPage from './pages/LoginPage'
-import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
 import { useDemoMode } from './contexts/DemoModeContext'
@@ -22,6 +10,18 @@ import './App.css'
 import { getCurrentUser } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
 import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
+
+const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
+const Dashboard = lazy(() => import('./components/Dashboard'))
+const LlmLogsPage = lazy(() => import('./pages/LlmLogsPage'))
+const LoginPage = lazy(() => import('./pages/LoginPage'))
+const PlansPage = lazy(() => import('./pages/PlansPage'))
+const PlanStudioPage = lazy(() => import('./pages/PlanStudioPage'))
+const RepositoriesPage = lazy(() => import('./pages/RepositoriesPage'))
+const RevertPage = lazy(() => import('./pages/RevertPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const SummaryBrowserPage = lazy(() => import('./pages/SummaryBrowserPage'))
+const TasksPage = lazy(() => import('./pages/TasksPage'))
 
 type CompatibilityState =
   | { status: 'checking' }
@@ -118,7 +118,8 @@ const AppContent: React.FC = () => {
             <DemoModeBanner />
             <div className="min-h-0 flex-1">
               <Router>
-              <Routes>
+                <Suspense fallback={<LoadingSpinner />}>
+                  <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/revert" element={<RevertPage />} />
                 <Route
@@ -223,7 +224,8 @@ const AppContent: React.FC = () => {
                     </Layout>
                   }
                 />
-              </Routes>
+                  </Routes>
+                </Suspense>
               </Router>
             </div>
           </div>

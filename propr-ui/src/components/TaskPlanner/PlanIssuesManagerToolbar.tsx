@@ -60,10 +60,10 @@ export const TasksBeingCreated: React.FC<{
 
 interface ExecutionOptionsToolbarProps {
   agents: AgentConfig[];
-  globalAgent: string; globalModel: string; globalIsMulti: boolean;
+  globalAgent: string | null; globalModel: string | null; globalIsMulti: boolean;
   globalSelectedModels: AgentModelPair[]; applyingGlobal: boolean;
-  handleGlobalAgentChange: (agent: string) => void;
-  handleGlobalModelChange: (model: string) => void;
+  handleGlobalAgentChange: (agent: string | null) => void;
+  handleGlobalModelChange: (model: string | null) => void;
   handleGlobalMultiToggle: (isMulti: boolean) => void;
   handleGlobalMultiModelChange: (models: AgentModelPair[]) => void;
   handleApplyToAll: () => void;

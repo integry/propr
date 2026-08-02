@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { Layers, Zap, Clock, Turtle, DollarSign, BarChart2, Target } from 'lucide-react';
+import { Layers, Zap, Clock, Turtle, BarChart2, Target } from 'lucide-react';
 
 interface ContextLevelSliderProps {
   value: number;
@@ -61,7 +61,6 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
   const levelType = getLevelType(value);
   const config = LEVEL_CONFIGS[levelType];
   const SpeedIcon = config.speedIcon;
-  const PrecisionIcon = config.precisionIcon;
 
   // Handle slider change - no snapping, moves at 10% increments
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {

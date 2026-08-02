@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
-import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
+import { getRepoBranches, createDraft, generatePlan, updateDraft, type PlannerDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
@@ -26,7 +26,7 @@ function renderBranchesLoader(repo: string, configuredBaseBranch = '', initialCo
   }, { initialProps: { currentRepo: repo, currentBaseBranch: configuredBaseBranch } });
 }
 
-function renderRepoInfoLoader(draft = makeDraft(), initialConfig: PlannerConfig = baseConfig) {
+function renderRepoInfoLoader(draft: PlannerDraft | undefined = makeDraft(), initialConfig: PlannerConfig = baseConfig) {
   return renderHook(({ currentDraft }) => {
     const [config, setConfig] = useState<PlannerConfig>(initialConfig);
     const state = useRepoInfoLoader(false, currentDraft as never, setConfig);
@@ -97,7 +97,7 @@ describe('setupWizardHooks branch resolution', () => {
       const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
       const state = useRepoInfoLoader(false, draft as never, setConfig);
       return { config, state };
-    }, { initialProps: { draft: makeDraft() } });
+    }, { initialProps: { draft: makeDraft() as PlannerDraft | undefined } });
 
     await waitFor(() => expect(result.current.state.isLoading).toBe(true));
     rerender({ draft: undefined });

@@ -42,7 +42,7 @@ function conciseBuildError(value?: string): string | null {
     const line = [...lines].reverse().find(candidate => pattern.test(candidate));
     if (line) return line.slice(0, 240);
   }
-  return (lines.at(-1) || value).slice(0, 240);
+  return (lines[lines.length - 1] || value).slice(0, 240);
 }
 
 interface PackageAutocompleteProps {

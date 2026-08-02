@@ -51,13 +51,16 @@ interface SetupWizardProps {
 type SetupWizardContentProps = { isNewMode: boolean; draft: PlannerDraft | undefined; config: PlannerConfig; setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>; repoLoader: ReturnType<typeof useRepositoryLoader>; newModeBranches: ReturnType<typeof useBranchesLoader>; repoInfo: ReturnType<typeof useRepoInfoLoader>; fileHandling: ReturnType<typeof useFileHandling>; generationPolling: ReturnType<typeof useGenerationPolling>; contextExport: ReturnType<typeof useContextExport>; contextRefresh: ReturnType<typeof useContextRefresh>; generationHandlers: ReturnType<typeof useGenerationHandlers>; autoResize: () => void; textareaRef: React.RefObject<HTMLTextAreaElement | null>; fileInputRef: React.RefObject<HTMLInputElement | null>; error: string | null; branchError: string | null; isCreating: boolean; initialConfiguredBaseBranch: string; handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>; handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>; handleExportContext: () => void; handleGenerate: () => Promise<void>; agents: ReturnType<typeof useAgentsLoader>; availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>; previewTrace?: GenerationTrace };
 
 function getContentModeValues({ isNewMode, draft, repoLoader, newModeBranches, repoInfo, initialConfiguredBaseBranch, handleRepoChangeInEditMode }: Pick<SetupWizardContentProps, 'isNewMode' | 'draft' | 'repoLoader' | 'newModeBranches' | 'repoInfo' | 'initialConfiguredBaseBranch' | 'handleRepoChangeInEditMode'>) {
+  const draftContextConfig = getDraftContextConfig(draft);
   return {
     repository: draft?.repository ?? repoLoader.selectedRepo,
     isRepoLoading: isNewMode ? newModeBranches.isLoading : repoInfo.isLoading,
     repoError: isNewMode ? newModeBranches.error : repoInfo.error,
-    onRepoChange: isNewMode ? repoLoader.setSelectedRepository : handleRepoChangeInEditMode,
+    onRepoChange: isNewMode
+      ? (repo: string, selection?: RepoSelection) => repoLoader.setSelectedRepository(repo, selection)
+      : handleRepoChangeInEditMode,
     selectedBaseBranch: isNewMode ? repoLoader.selectedBaseBranch : initialConfiguredBaseBranch,
-    configuredBaseBranch: (draft as DraftWithContextConfig | undefined)?.context_config?.baseBranch
+    configuredBaseBranch: draftContextConfig?.baseBranch
   };
 }
 
@@ -90,9 +93,14 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const canExport = computeCanExport(isNewMode, promptTrimmed, config.baseBranch);
   const handleModelChange = updateConfigField(setConfig, 'generationModel');
   const handleAddContextRepo = appendConfigArrayValue(setConfig, 'contextRepositories');
-  const handleRemoveContextRepo = removeConfigArrayValue(setConfig, 'contextRepositories', (value, repository) => value.repository === repository);
+  const handleRemoveContextRepo = (repository: string) =>
+    setConfig(prev => ({
+      ...prev,
+      contextRepositories: prev.contextRepositories.filter(value => value.repository !== repository)
+    }));
   const handleAddManualFile = appendConfigArrayValue(setConfig, 'manualFiles');
-  const handleRemoveManualFile = removeConfigArrayValue(setConfig, 'manualFiles', (value, filePath) => value === filePath);
+  const handleRemoveManualFile = (filePath: string) =>
+    setConfig(prev => ({ ...prev, manualFiles: prev.manualFiles.filter(value => value !== filePath) }));
   const handleExcludeFile = appendConfigArrayValue(setConfig, 'excludedFiles');
   const isGenerating = generationPolling.isGenerating;
   const isMobile = useIsMobile(768);
@@ -207,11 +215,13 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
 };
 
 interface LocationState { initialPrompt?: string; initialRepository?: string; initialBaseBranch?: string; baseBranchPersistenceWarning?: string | null; todoIds?: string[]; }
-type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
+const getDraftContextConfig = (draft: PlannerDraft | undefined): DraftContextConfig | undefined =>
+  typeof draft?.context_config === 'object' && draft.context_config !== null
+    ? draft.context_config
+    : undefined;
 const ensureArray = <T,>(value: T[] | unknown): T[] => Array.isArray(value) ? value : [];
 const updateConfigField = <K extends keyof PlannerConfig>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K) => (value: PlannerConfig[K]) => setConfig(prev => ({ ...prev, [key]: value }));
 const appendConfigArrayValue = <K extends 'contextRepositories' | 'manualFiles' | 'excludedFiles'>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K) => (value: PlannerConfig[K][number]) => setConfig(prev => ({ ...prev, [key]: [...prev[key], value] }));
-const removeConfigArrayValue = <K extends 'contextRepositories' | 'manualFiles' | 'excludedFiles'>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K, predicate: (value: PlannerConfig[K][number], target: PlannerConfig[K][number]) => boolean) => (target: PlannerConfig[K][number]) => setConfig(prev => ({ ...prev, [key]: prev[key].filter(value => !predicate(value, target)) }));
 interface RepoChangeHandlerParams { draft: PlannerDraft | undefined; config: PlannerConfig; locationTodoIds?: string[]; navigate: ReturnType<typeof useNavigate>; onDraftCreated?: (draftId: string) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; }
 
 function isLatestRepoChange(requestId: number, requestIdRef: React.MutableRefObject<number>) {
@@ -267,7 +277,7 @@ async function createDraftForRepoChange({ newRepo, resolvedBaseBranch, config, d
 
 function useSetupWizardConfig(draft: PlannerDraft | undefined, locationState: LocationState | undefined) {
   const savedSettings = useMemo(() => getPlannerSettings(), []);
-  const draftContextConfig = (draft as DraftWithContextConfig | undefined)?.context_config;
+  const draftContextConfig = getDraftContextConfig(draft);
   const initialConfiguredBaseBranch = draftContextConfig?.baseBranch ?? locationState?.initialBaseBranch ?? '';
   const [config, setConfig] = useState<PlannerConfig>(() => ({
     prompt: draft?.initial_prompt ?? locationState?.initialPrompt ?? '',
@@ -306,7 +316,7 @@ function useSetupWizardLoaders({ isNewMode, draft, locationState, savedSettings,
   usePlannerSettingsPersistence(
     config,
     draft?.repository,
-    draft?.context_config?.baseBranch,
+    getDraftContextConfig(draft)?.baseBranch,
     repoLoader.selectedRepo,
     repoLoader.selectedBaseBranch
   );

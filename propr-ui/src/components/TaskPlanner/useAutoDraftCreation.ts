@@ -14,6 +14,21 @@ export type DraftSetupSnapshot = Pick<
   'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'
 >;
 
+const getDraftContextConfig = (draft: PlannerDraft): DraftContextConfig => {
+  if (typeof draft.context_config === 'object' && draft.context_config !== null) {
+    return draft.context_config;
+  }
+  if (typeof draft.context_config === 'string') {
+    try {
+      const parsed = JSON.parse(draft.context_config) as unknown;
+      if (typeof parsed === 'object' && parsed !== null) return parsed as DraftContextConfig;
+    } catch {
+      // Ignore malformed legacy JSON and use a clean config object.
+    }
+  }
+  return {};
+};
+
 function mergeDraftSetupSnapshot(baseBranch?: string, setupSnapshot?: DraftSetupSnapshot): DraftSetupSnapshot | undefined {
   if (!baseBranch && !setupSnapshot) {
     return undefined;
@@ -31,19 +46,15 @@ export function constructDraftWithPlan(draft: PlannerDraft, setupSnapshot?: Draf
     ...draft,
     plan_json: [],
     chat_history: [],
-    context_config: setupSnapshot ? { ...draft.context_config, ...setupSnapshot } : draft.context_config,
+    context_config: { ...getDraftContextConfig(draft), ...setupSnapshot },
     refinement_result: undefined
   };
 }
 
 export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, setupSnapshot?: DraftSetupSnapshot): T & { context_config?: DraftContextConfig } {
-  if (!setupSnapshot) {
-    return draft;
-  }
-
   return {
     ...draft,
-    context_config: { ...draft.context_config, ...setupSnapshot }
+    context_config: { ...getDraftContextConfig(draft), ...setupSnapshot }
   };
 }
 

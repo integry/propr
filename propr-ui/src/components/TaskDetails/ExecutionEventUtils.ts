@@ -131,7 +131,7 @@ const extractTextFromContentBlocks = (blocks: ContentBlock[]): string => {
     .join('\n\n');
 };
 
-export const formatToolResult = (result: string | object | undefined): string => {
+export const formatToolResult = (result: unknown): string => {
   let resultText: string;
   if (typeof result === 'string') {
     resultText = result;

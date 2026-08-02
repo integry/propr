@@ -4,7 +4,7 @@ import { AgentConfig, SystemSettings, getAgents, getSettings } from '../../api/p
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
 import { DraftUpdatePayload } from '@propr/shared';
-import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData } from './planIssuesManagerUtils';
+import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { applyPlanIssueDefaults, resolvePlanIssueDefaultSelection } from './planIssueDefaultSelection';
 export type { IssueCreationProgress } from './planIssuesManagerUtils';
 

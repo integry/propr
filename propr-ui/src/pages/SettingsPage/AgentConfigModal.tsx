@@ -47,10 +47,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [versionLoading, setVersionLoading] = useState(false);
   const [discoveredOpenCodeModels, setDiscoveredOpenCodeModels] = useState<string[]>([]);
 
-  // Separate state for API key visibility (password field toggle)
   const [showApiKey, setShowApiKey] = useState(false);
 
-  // Load version data when agent type changes
   const loadVersionData = useCallback(async (agentType: AgentType) => {
     setVersionLoading(true);
     try {
@@ -416,10 +414,10 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               ...prev,
               modelCustomLabels: { ...prev.modelCustomLabels, [modelId]: label }
             }))}
-            onReasoningLevelChange={(modelId, level) => setFormData(prev => ({
-              ...prev,
-              modelReasoningLevels: { ...prev.modelReasoningLevels, [modelId]: level }
-            }))}
+            onReasoningLevelChange={(modelId, level) => setFormData(prev => {
+              const modelReasoningLevels = { ...prev.modelReasoningLevels }; if (level) modelReasoningLevels[modelId] = level; else delete modelReasoningLevels[modelId];
+              return { ...prev, modelReasoningLevels };
+            })}
           />
 
           <AgentEnabledToggle checked={formData.enabled} onChange={enabled => setFormData(prev => ({ ...prev, enabled }))} />

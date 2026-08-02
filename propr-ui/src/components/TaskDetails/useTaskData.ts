@@ -11,12 +11,32 @@ import {
   HistoryItem,
   TaskInfo,
   LiveDetails,
+  LiveEvent,
+  TodoItem,
   AnalysisData,
   UsageMetricRecord
 } from './types';
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
-import { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import type { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+
+interface TaskHistoryData {
+  history?: HistoryItem[];
+  taskInfo?: TaskInfo | null;
+  usageMetricRecords?: UsageMetricRecord[];
+}
+
+const normalizeTodoStatus = (status: string): TodoItem['status'] => {
+  if (status === 'in_progress' || status === 'completed') return status;
+  return 'pending';
+};
+
+const normalizeLiveTodos = (todos: TaskLiveUpdatePayload['todos']): TodoItem[] =>
+  todos.map((todo, index) => ({
+    id: `${index}-${todo.content}`,
+    content: todo.content,
+    status: normalizeTodoStatus(todo.status)
+  }));
 
 const eventFingerprint = (event: LiveDetails['events'][number]) => JSON.stringify({
   type: event.type,
@@ -67,7 +87,7 @@ export const useTaskData = (taskId: string | undefined) => {
     if (!taskId) return;
 
     try {
-      const data = await getTaskHistory(taskId);
+      const data = await getTaskHistory(taskId) as TaskHistoryData;
       setHistory(data.history || []);
       setTaskInfo(data.taskInfo || null);
       setUsageMetricRecords(data.usageMetricRecords || []);
@@ -128,7 +148,8 @@ export const useTaskData = (taskId: string | undefined) => {
   const handleTaskLiveUpdate = useCallback((payload: TaskLiveUpdatePayload) => {
     if (payload.taskId !== taskId) return;
 
-    const newEvents = payload.events || [];
+    const newEvents: LiveEvent[] = payload.events || [];
+    const newTodos = normalizeLiveTodos(payload.todos || []);
 
     if (!hasReceivedInitialDataRef.current) {
       // First message: this is the initial full state
@@ -136,8 +157,9 @@ export const useTaskData = (taskId: string | undefined) => {
       hasReceivedInitialDataRef.current = true;
       setLiveDetails({
         events: newEvents,
-        todos: payload.todos || [],
+        todos: newTodos,
         currentTask: payload.currentTask || null,
+        tokenUsage: payload.tokenUsage || null,
       });
     } else {
       // Subsequent messages: these are incremental updates (only new events)
@@ -145,8 +167,9 @@ export const useTaskData = (taskId: string | undefined) => {
       console.log(`[useTaskData] Received incremental update via WebSocket: ${newEvents.length} new events`);
       setLiveDetails(prev => ({
         events: appendUniqueEvents(prev.events, newEvents),
-        todos: payload.todos || [],
+        todos: newTodos,
         currentTask: payload.currentTask || null,
+        tokenUsage: payload.tokenUsage || null,
       }));
     }
   }, [taskId]);
@@ -205,7 +228,14 @@ export const useTaskData = (taskId: string | undefined) => {
       try {
         setAnalysisLoading(true);
         const analysisData = await getTaskAnalysis(taskId);
-        setAnalysis(analysisData.analysis);
+        const nextAnalysis = analysisData.analysis;
+        setAnalysis(
+          typeof nextAnalysis === 'object' && nextAnalysis !== null
+            ? nextAnalysis as AnalysisData
+            : typeof nextAnalysis === 'string'
+              ? { analysis: nextAnalysis }
+              : null
+        );
       } catch (err) {
         console.error('Error fetching analysis:', err);
       } finally {

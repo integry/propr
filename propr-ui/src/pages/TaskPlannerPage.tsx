@@ -7,9 +7,11 @@ import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import SkeletonLoader from '../components/TaskPlanner/SkeletonLoader';
-import { DraftWithPlan, Draft } from '../api/proprApi';
+import { DraftWithPlan, type PlannerDraft } from '../api/proprApi';
 
-const GeneratingView: React.FC<{ draft: Draft }> = ({ draft }) => (
+type GeneratingDraft = PlannerDraft & { task_title?: string; title?: string };
+
+const GeneratingView: React.FC<{ draft: GeneratingDraft }> = ({ draft }) => (
   <div className="h-[calc(100vh-120px)] p-4">
     <motion.div
       initial={{ opacity: 0 }}
