@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- status aggregation and health probes share one diagnostic contract */
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
