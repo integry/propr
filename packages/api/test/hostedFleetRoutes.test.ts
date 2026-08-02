@@ -7,6 +7,8 @@ import knex, { type Knex } from 'knex';
 import { up as createInstanceMemberTables } from '../../core/src/db/migrations/20260730000000_create_instance_members.js';
 import { ensureAuthenticated } from '../auth.js';
 import { resolveAuthorization } from '../authorization.js';
+import { createQueueRoutes } from '../routes/queueRoutes.js';
+import { createStatusRoutes } from '../routes/statusRoutes.js';
 import {
     createHostedFleetRoutes,
     isHostedFleetControlEnabled,
@@ -65,19 +67,15 @@ function routes(overrides: HostedFleetRoutesDeps = {}) {
         initialAdminGithubLogin: 'owner',
         githubUserWhitelist: 'owner',
         bootstrapAdminUsernames: ['owner'],
-        operationalStatus: (_req, res) => {
-            res.json({
-                githubAuthMode: 'relay',
-                githubAuth: 'connected',
-                githubEventIntake: 'routing_websocket',
-                githubEventIntakeStatus: 'connected',
-                redis: 'connected',
-                routing: { routingUrl: 'wss://internal.example.test' },
-            });
-        },
-        queueStatus: (_req, res) => {
-            res.json({ waiting: 2, active: 1, completed: 20, failed: 3, delayed: 4, total: 30 });
-        },
+        operationalStatus: () => ({
+            githubAuthMode: 'relay',
+            githubAuth: 'connected',
+            githubEventIntake: 'routing_websocket',
+            githubEventIntakeStatus: 'connected',
+            redis: 'connected',
+            routing: { routingUrl: 'wss://internal.example.test' },
+        }),
+        queueStatus: () => ({ waiting: 2, active: 1, completed: 20, failed: 3, delayed: 4, total: 30 }),
         ...overrides,
     });
 }
@@ -101,6 +99,37 @@ async function fetchFromApp(
 
 function wiredApp(secret: string) {
     const app = express();
+    const statusRoutes = createStatusRoutes({
+        redisClient: {
+            ping: async () => 'PONG',
+            get: async (key: string) => key === 'system:status:routing' ? null : Date.now().toString(),
+            sCard: async () => 1,
+        } as never,
+        loadAgents: async () => [],
+        agentRegistry: {
+            ensureInitialized: async () => undefined,
+            getAllAgents: () => [],
+            getAgentById: () => undefined,
+            getAgentByAlias: () => undefined,
+            createAgentFromConfig: () => { throw new Error('not used'); },
+        } as never,
+        getIndexingQueue: async () => ({ getJobCounts: async () => ({}) }),
+        loadSummarizationRuntimeState: async () => ({
+            primary_quota_failures: 0,
+            primary_quota_failures_by_alias: {},
+            cooldowns: {},
+        }),
+    });
+    const queueRoutes = createQueueRoutes({
+        redisClient: {} as never,
+        taskQueue: {
+            getWaitingCount: async () => 2,
+            getActiveCount: async () => 1,
+            getCompletedCount: async () => 20,
+            getFailedCount: async () => 3,
+            getDelayedCount: async () => 4,
+        } as never,
+    });
     app.use((req, _res, next) => {
         req.isAuthenticated = (() => false) as Request['isAuthenticated'];
         next();
@@ -112,15 +141,8 @@ function wiredApp(secret: string) {
         initialAdminGithubLogin: 'owner',
         githubUserWhitelist: 'owner',
         bootstrapAdminUsernames: ['owner'],
-        operationalStatus: (_req, res) => {
-            res.json({
-                githubAuthMode: 'relay',
-                githubAuth: 'connected',
-                githubEventIntake: 'routing_websocket',
-                githubEventIntakeStatus: 'connected',
-            });
-        },
-        queueStatus: (_req, res) => { res.json({ waiting: 2, active: 1 }); },
+        operationalStatus: statusRoutes.collectStatus,
+        queueStatus: queueRoutes.collectQueueStats,
     });
     app.use('/api', ensureAuthenticated, resolveAuthorization);
     return { app, registered };
@@ -148,8 +170,16 @@ describe('hosted fleet bootstrap status', () => {
         assert.deepEqual(queue.record.body, { error: 'Fleet authentication required' });
     });
 
-    test('rejects missing or invalid initial administrator IDs', async () => {
-        for (const initialAdminGithubUserId of ['', 'not-a-github-id']) {
+    test('rejects missing, non-positive, and unreasonably large initial administrator IDs', async () => {
+        for (const initialAdminGithubUserId of [
+            '',
+            'not-a-github-id',
+            '0',
+            '000',
+            '-1',
+            '1.5',
+            '1'.repeat(21),
+        ]) {
             const { response, record } = recorder();
             await routes({ initialAdminGithubUserId }).getBootstrapStatus(fleetRequest(fleetSecret), response);
             assert.equal(record.status, 409);
@@ -173,6 +203,28 @@ describe('hosted fleet bootstrap status', () => {
         assert.equal(JSON.stringify(record.body).includes('owner'), false);
     });
 
+    test('returns a stable 503 response when the durable administrator lookup fails', async () => {
+        const failingDatabase = (() => {
+            const query = {
+                select: () => query,
+                where: () => query,
+                first: async () => { throw new Error('sensitive database failure'); },
+            };
+            return query;
+        }) as unknown as Knex;
+        const originalConsoleError = console.error;
+        console.error = () => undefined;
+        try {
+            const { response, record } = recorder();
+            await routes({ database: failingDatabase }).getBootstrapStatus(fleetRequest(fleetSecret), response);
+            assert.equal(record.status, 503);
+            assert.deepEqual(record.body, { error: 'Bootstrap status is unavailable' });
+            assert.equal(record.headers['cache-control'], 'no-store');
+        } finally {
+            console.error = originalConsoleError;
+        }
+    });
+
     test('canonicalizes the configured GitHub ID before durable administrator lookup', async () => {
         await database('instance_members').insert({
             github_user_id: '100',
@@ -189,6 +241,15 @@ describe('hosted fleet bootstrap status', () => {
         assert.equal((record.body as Record<string, unknown>).initialAdminGithubUserId, '100');
         assert.equal((record.body as Record<string, unknown>).durableAdminVerified, true);
         assert.equal((record.body as Record<string, unknown>).environmentBootstrapActive, false);
+    });
+
+    test('preserves valid GitHub IDs larger than the JavaScript safe-integer range', async () => {
+        const initialAdminGithubUserId = '9007199254740993';
+        const { response, record } = recorder();
+        await routes({ initialAdminGithubUserId }).getBootstrapStatus(fleetRequest(fleetSecret), response);
+
+        assert.equal((record.body as Record<string, unknown>).initialAdminGithubUserId, initialAdminGithubUserId);
+        assert.equal((record.body as Record<string, unknown>).durableAdminVerified, false);
     });
 
     test('distinguishes removable owner-only bootstrap state from additional administrators', async () => {
@@ -241,7 +302,7 @@ describe('hosted fleet health status', () => {
         assert.equal(queue.record.headers['cache-control'], 'no-store');
     });
 
-    test('returns 503 when delegated handlers are unavailable', async () => {
+    test('returns 503 when status collectors are unavailable', async () => {
         const operational = recorder();
         await routes({ operationalStatus: undefined }).getOperationalStatus(
             fleetRequest(fleetSecret),
@@ -256,15 +317,53 @@ describe('hosted fleet health status', () => {
         assert.deepEqual(queue.record.body, { error: 'Queue status is unavailable' });
     });
 
-    test('sanitizes delegated error responses and catches thrown failures', async () => {
-        const delegatedFailure = recorder();
+    test('rejects malformed and unbounded operational status values', async () => {
+        const valid = {
+            githubAuthMode: 'relay',
+            githubAuth: 'connected',
+            githubEventIntake: 'routing_websocket',
+            githubEventIntakeStatus: 'connected',
+        };
+        const malformedValues = [
+            { ...valid, githubAuthMode: 42 },
+            { ...valid, githubAuth: null },
+            { ...valid, githubEventIntake: ['routing_websocket'] },
+            { ...valid, githubEventIntakeStatus: false },
+            { ...valid, githubEventIntakeStatus: 'x'.repeat(256) },
+        ];
+
+        for (const value of malformedValues) {
+            const result = recorder();
+            await routes({ operationalStatus: () => value }).getOperationalStatus(
+                fleetRequest(fleetSecret),
+                result.response
+            );
+            assert.equal(result.record.status, 503);
+            assert.deepEqual(result.record.body, { error: 'Operational status is unavailable' });
+        }
+    });
+
+    test('rejects non-integer and negative queue counts', async () => {
+        for (const value of [
+            { waiting: -1, active: 0 },
+            { waiting: 0.5, active: 0 },
+            { waiting: 0, active: -1 },
+            { waiting: 0, active: 1.5 },
+        ]) {
+            const result = recorder();
+            await routes({ queueStatus: () => value }).getQueueStatus(fleetRequest(fleetSecret), result.response);
+            assert.equal(result.record.status, 503);
+            assert.deepEqual(result.record.body, { error: 'Queue status is unavailable' });
+        }
+    });
+
+    test('sanitizes invalid collector results and catches thrown failures as 503 responses', async () => {
+        const invalidResult = recorder();
         await routes({
-            operationalStatus: (_req, res) => {
-                res.status(500).json({ error: 'sensitive backend detail', credential: 'do-not-expose' });
-            },
-        }).getOperationalStatus(fleetRequest(fleetSecret), delegatedFailure.response);
-        assert.equal(delegatedFailure.record.status, 500);
-        assert.deepEqual(delegatedFailure.record.body, { error: 'Operational status is unavailable' });
+            operationalStatus: () => ({ error: 'sensitive backend detail', credential: 'do-not-expose' }),
+        }).getOperationalStatus(fleetRequest(fleetSecret), invalidResult.response);
+        assert.equal(invalidResult.record.status, 503);
+        assert.deepEqual(invalidResult.record.body, { error: 'Operational status is unavailable' });
 
         const originalConsoleError = console.error;
         console.error = () => undefined;
@@ -307,6 +406,17 @@ describe('hosted fleet Express wiring', () => {
             });
             assert.equal(response.status, 200, path);
             assert.equal(response.headers.get('cache-control'), 'no-store', path);
+            const body = await response.json() as Record<string, unknown>;
+            if (path.endsWith('/status')) {
+                assert.deepEqual(Object.keys(body).sort(), [
+                    'githubAuth',
+                    'githubAuthMode',
+                    'githubEventIntake',
+                    'githubEventIntakeStatus',
+                ]);
+            } else if (path.endsWith('/queue')) {
+                assert.deepEqual(body, { waiting: 2, active: 1 });
+            }
         }
     });
 });

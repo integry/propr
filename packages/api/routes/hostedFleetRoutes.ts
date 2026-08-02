@@ -11,16 +11,8 @@ interface HostedFleetRoutesDeps {
     initialAdminGithubLogin?: string;
     githubUserWhitelist?: string;
     bootstrapAdminUsernames?: readonly string[];
-    operationalStatus?: (req: Request, res: Response) => void | Promise<void>;
-    queueStatus?: (req: Request, res: Response) => void | Promise<void>;
-}
-
-type DelegatedHandler = NonNullable<HostedFleetRoutesDeps['operationalStatus']>;
-
-interface DelegatedJsonResult {
-    statusCode: number;
-    body: unknown;
-    jsonSent: boolean;
+    operationalStatus?: () => unknown | Promise<unknown>;
+    queueStatus?: () => unknown | Promise<unknown>;
 }
 
 interface FleetOperationalStatus {
@@ -34,6 +26,12 @@ interface FleetQueueStatus {
     waiting: number;
     active: number;
 }
+
+const MAX_GITHUB_USER_ID_DIGITS = 20;
+const GITHUB_AUTH_MODES = new Set(['app', 'relay', 'demo', 'none', 'unknown']);
+const GITHUB_AUTH_STATUSES = new Set(['connected', 'disconnected']);
+const GITHUB_EVENT_INTAKE_MODES = new Set(['routing_websocket', 'polling', 'direct_webhook', 'unknown']);
+const GITHUB_EVENT_INTAKE_STATUSES = new Set(['connected', 'disconnected', 'active', 'unknown']);
 
 export function isHostedFleetControlEnabled(
     fleetSecret: string | undefined = process.env.PROPR_FLEET_CONTROL_SECRET
@@ -49,8 +47,9 @@ function safeEqual(left: string, right: string): boolean {
 
 function canonicalizeGithubUserId(value: string | undefined): string | undefined {
     const trimmed = value?.trim();
-    if (!trimmed || !/^\d+$/.test(trimmed)) return undefined;
-    return trimmed.replace(/^0+(?=\d)/, '');
+    if (!trimmed || trimmed.length > MAX_GITHUB_USER_ID_DIGITS || !/^\d+$/.test(trimmed)) return undefined;
+    const canonical = trimmed.replace(/^0+(?=\d)/, '');
+    return canonical === '0' ? undefined : canonical;
 }
 
 function normalizeUsernames(usernames: readonly string[]): Set<string> {
@@ -66,9 +65,13 @@ function parseOperationalStatus(value: unknown): FleetOperationalStatus | undefi
     const { githubAuthMode, githubAuth, githubEventIntake, githubEventIntakeStatus } = value;
     if (
         typeof githubAuthMode !== 'string'
+        || !GITHUB_AUTH_MODES.has(githubAuthMode)
         || typeof githubAuth !== 'string'
+        || !GITHUB_AUTH_STATUSES.has(githubAuth)
         || typeof githubEventIntake !== 'string'
+        || !GITHUB_EVENT_INTAKE_MODES.has(githubEventIntake)
         || typeof githubEventIntakeStatus !== 'string'
+        || !GITHUB_EVENT_INTAKE_STATUSES.has(githubEventIntakeStatus)
     ) {
         return undefined;
     }
@@ -89,35 +92,6 @@ function parseQueueStatus(value: unknown): FleetQueueStatus | undefined {
         return undefined;
     }
     return { waiting, active };
-}
-
-async function captureDelegatedJson(handler: DelegatedHandler, req: Request): Promise<DelegatedJsonResult> {
-    const result: DelegatedJsonResult = { statusCode: 200, body: undefined, jsonSent: false };
-    const response = {
-        status(code: number) {
-            result.statusCode = code;
-            return response;
-        },
-        json(body: unknown) {
-            result.body = body;
-            result.jsonSent = true;
-            return response;
-        },
-        setHeader() {
-            return response;
-        },
-        set() {
-            return response;
-        },
-        header() {
-            return response;
-        },
-        get headersSent() {
-            return result.jsonSent;
-        },
-    } as unknown as Response;
-    await handler(req, response);
-    return result;
 }
 
 export function createHostedFleetRoutes({
@@ -151,16 +125,24 @@ export function createHostedFleetRoutes({
             return;
         }
 
-        const durableAdmin = await database('instance_members')
-            .select('github_user_id')
-            .where({ github_user_id: canonicalInitialAdminGithubUserId, role: 'admin' })
-            .first();
+        let durableAdminVerified: boolean;
+        try {
+            const durableAdmin = await database('instance_members')
+                .select('github_user_id')
+                .where({ github_user_id: canonicalInitialAdminGithubUserId, role: 'admin' })
+                .first();
+            durableAdminVerified = Boolean(durableAdmin);
+        } catch (error) {
+            console.error('Failed to collect hosted Fleet bootstrap status:', error);
+            res.status(503).json({ error: 'Bootstrap status is unavailable' });
+            return;
+        }
         const environmentBootstrapActive = normalizedLogin.length > 0
             && normalizedBootstrapAdmins.has(normalizedLogin);
 
         res.json({
             initialAdminGithubUserId: canonicalInitialAdminGithubUserId,
-            durableAdminVerified: Boolean(durableAdmin),
+            durableAdminVerified,
             environmentBootstrapActive,
             bootstrapOnlyInitialOwner: normalizedLogin.length > 0
                 && normalizedBootstrapAdmins.size === 1
@@ -182,17 +164,12 @@ export function createHostedFleetRoutes({
             return;
         }
         try {
-            const delegated = await captureDelegatedJson(operationalStatus, req);
-            if (delegated.statusCode < 200 || delegated.statusCode >= 300) {
-                res.status(delegated.statusCode).json({ error: 'Operational status is unavailable' });
-                return;
-            }
-            const status = delegated.jsonSent ? parseOperationalStatus(delegated.body) : undefined;
+            const status = parseOperationalStatus(await operationalStatus());
             if (!status) {
                 res.status(503).json({ error: 'Operational status is unavailable' });
                 return;
             }
-            res.status(delegated.statusCode).json(status);
+            res.json(status);
         } catch (error) {
             console.error('Failed to collect hosted Fleet operational status:', error);
             res.status(503).json({ error: 'Operational status is unavailable' });
@@ -210,17 +187,12 @@ export function createHostedFleetRoutes({
             return;
         }
         try {
-            const delegated = await captureDelegatedJson(queueStatus, req);
-            if (delegated.statusCode < 200 || delegated.statusCode >= 300) {
-                res.status(delegated.statusCode).json({ error: 'Queue status is unavailable' });
-                return;
-            }
-            const status = delegated.jsonSent ? parseQueueStatus(delegated.body) : undefined;
+            const status = parseQueueStatus(await queueStatus());
             if (!status) {
                 res.status(503).json({ error: 'Queue status is unavailable' });
                 return;
             }
-            res.status(delegated.statusCode).json(status);
+            res.json(status);
         } catch (error) {
             console.error('Failed to collect hosted Fleet queue status:', error);
             res.status(503).json({ error: 'Queue status is unavailable' });

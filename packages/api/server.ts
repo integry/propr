@@ -29,9 +29,9 @@ import {
   createAgentRuntimeRoutes,
   createAdminRoutes,
   createInstanceCatalogRoutes,
-  attachmentUpload
+  attachmentUpload,
+  registerHostedFleetRoutes
 } from './routes/index.js';
-import { registerHostedFleetRoutes } from './routes/hostedFleetRoutes.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
 import {
@@ -230,8 +230,8 @@ function setupRoutes(): void {
   // Registration remains before the OAuth boundary and is a no-op unless Fleet
   // control was explicitly enabled at startup.
   registerHostedFleetRoutes(app, {
-    operationalStatus: statusRoutes.getStatus,
-    queueStatus: queueRoutes.getQueueStats
+    operationalStatus: statusRoutes.collectStatus,
+    queueStatus: queueRoutes.collectQueueStats
   });
   app.use('/api', ensureAuthenticated, resolveAuthorization);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
