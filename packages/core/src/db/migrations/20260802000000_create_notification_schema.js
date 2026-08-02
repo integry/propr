@@ -6,26 +6,123 @@
  * channel preferences, subscriptions, schedulable delivery jobs, and source
  * activity are stored separately. All timestamps use fixed-width UTC TEXT so
  * lexical indexes retain chronological order.
+ *
+ * Audit retention is intentionally indefinite. Immutable events, attempts,
+ * jobs, and revoked subscription versions may only be archived by a future,
+ * explicitly reviewed migration that preserves their referential history.
  */
 
 const ISO_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 const ISO_TIMESTAMP_GLOB = '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z';
-const JSON_REPOSITORY_TARGET_CHECK = `
-  json_type(target_json, '$.repository') = 'text'
-  AND json_extract(target_json, '$.repository') = trim(json_extract(target_json, '$.repository'))
-  AND instr(json_extract(target_json, '$.repository'), '/') > 1
+const JAVASCRIPT_WHITESPACE_CODEPOINTS = [
+  9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197,
+  8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288, 65279,
+];
+const CONTROL_CODEPOINTS = [...Array.from({ length: 32 }, (_, index) => index), 127];
+const JAVASCRIPT_WHITESPACE_SQL = [
+  "' '",
+  ...JAVASCRIPT_WHITESPACE_CODEPOINTS
+    .filter((codepoint) => codepoint !== 32)
+    .map((codepoint) => `char(${codepoint})`),
+].join(' || ');
+
+function excludesCodepoints(value, codepoints) {
+  return codepoints
+    .map((codepoint) => `instr(${value}, char(${codepoint})) = 0`)
+    .join('\n  AND ');
+}
+
+function nonBlankTextCheck(value) {
+  return `(
+    typeof(${value}) = 'text'
+    AND length(trim(${value}, ${JAVASCRIPT_WHITESPACE_SQL})) > 0
+  )`;
+}
+
+function javascriptWhitespaceFreeCheck(value) {
+  return excludesCodepoints(value, JAVASCRIPT_WHITESPACE_CODEPOINTS);
+}
+
+function safeAbsoluteUrlCheck(value, { httpsOnly = false, allowFragment = true } = {}) {
+  const schemeCheck = httpsOnly
+    ? `lower(substr(${value}, 1, 8)) = 'https://'`
+    : `lower(substr(${value}, 1, 8)) = 'https://'
+      OR lower(substr(${value}, 1, 7)) = 'http://'`;
+  const authorityStart = `CASE
+    WHEN lower(substr(${value}, 1, 8)) = 'https://' THEN 9
+    ELSE 8
+  END`;
+  const remainder = `substr(${value}, ${authorityStart})`;
+  const delimiterPosition = (delimiter) => `CASE
+    WHEN instr(${remainder}, '${delimiter}') = 0 THEN length(${remainder}) + 1
+    ELSE instr(${remainder}, '${delimiter}')
+  END`;
+  const authority = `substr(
+    ${remainder},
+    1,
+    min(
+      ${delimiterPosition('/')},
+      ${delimiterPosition('?')},
+      ${delimiterPosition('#')}
+    ) - 1
+  )`;
+  const colonPosition = `instr(${authority}, ':')`;
+  const hostname = `CASE
+    WHEN ${colonPosition} = 0 THEN ${authority}
+    ELSE substr(${authority}, 1, ${colonPosition} - 1)
+  END`;
+  const port = `substr(${authority}, ${colonPosition} + 1)`;
+
+  return `(
+    (${schemeCheck})
+    AND length(${authority}) > 0
+    AND length(${hostname}) BETWEEN 1 AND 253
+    AND ${hostname} NOT GLOB '*[^A-Za-z0-9.-]*'
+    AND substr(${hostname}, 1, 1) GLOB '[A-Za-z0-9]'
+    AND substr(${hostname}, -1, 1) GLOB '[A-Za-z]'
+    AND (lower(${hostname}) = 'localhost' OR instr(${hostname}, '.') > 0)
+    AND instr(${hostname}, '..') = 0
+    AND instr(${hostname}, '.-') = 0
+    AND instr(${hostname}, '-.') = 0
+    AND instr(lower(${hostname}), '.0x') = 0
+    AND instr(${authority}, '@') = 0
+    AND instr(${authority}, '[') = 0
+    AND instr(${authority}, ']') = 0
+    AND (
+      ${colonPosition} = 0
+      OR (
+        instr(substr(${authority}, ${colonPosition} + 1), ':') = 0
+        AND length(${port}) > 0
+        AND ${port} NOT GLOB '*[^0-9]*'
+        AND CAST(${port} AS INTEGER) BETWEEN 0 AND 65535
+      )
+    )
+    AND instr(${value}, char(92)) = 0
+    AND ${excludesCodepoints(value, CONTROL_CODEPOINTS)}
+    ${allowFragment ? '' : `AND instr(${value}, '#') = 0`}
+  )`;
+}
+
+const JSON_REPOSITORY = "json_extract(target_json, '$.repository')";
+function repositoryCheck(value) {
+  return `
+  ${nonBlankTextCheck(value)}
+  AND ${javascriptWhitespaceFreeCheck(value)}
+  AND instr(${value}, '/') > 1
   AND length(substr(
-    json_extract(target_json, '$.repository'),
-    instr(json_extract(target_json, '$.repository'), '/') + 1
+    ${value},
+    instr(${value}, '/') + 1
   )) > 0
   AND instr(substr(
-    json_extract(target_json, '$.repository'),
-    instr(json_extract(target_json, '$.repository'), '/') + 1
+    ${value},
+    instr(${value}, '/') + 1
   ), '/') = 0
-  AND instr(json_extract(target_json, '$.repository'), ' ') = 0
-  AND instr(json_extract(target_json, '$.repository'), char(9)) = 0
-  AND instr(json_extract(target_json, '$.repository'), char(10)) = 0
-  AND instr(json_extract(target_json, '$.repository'), char(13)) = 0
+`;
+}
+
+const JSON_REPOSITORY_TARGET_CHECK = `
+  json_type(target_json, '$.repository') = 'text'
+  AND ${repositoryCheck(JSON_REPOSITORY)}
 `;
 
 const isoNow = (knex) => knex.raw(`(${ISO_NOW_SQL})`);
@@ -48,17 +145,40 @@ function addTimestampCheck(table, column, constraintName, nullable = false) {
   );
 }
 
-async function createUpdatedAtTrigger(knex, tableName, keyPredicate) {
+async function createUpdatedAtTrigger(
+  knex,
+  tableName,
+  keyPredicate,
+  mutableColumns
+) {
+  const managedTimestamp = `CASE
+    WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
+    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', OLD.updated_at, '+0.001 seconds')
+  END`;
+  await knex.raw(`
+    CREATE TRIGGER ${tableName}_updated_at_managed
+    BEFORE UPDATE OF updated_at ON ${tableName}
+    WHEN NEW.updated_at IS NOT OLD.updated_at
+      AND NEW.updated_at IS NOT (${managedTimestamp})
+    BEGIN
+      SELECT RAISE(ABORT, '${tableName}.updated_at is database managed');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER ${tableName}_updated_at_not_future
+    BEFORE INSERT ON ${tableName}
+    WHEN NEW.updated_at > ${ISO_NOW_SQL}
+    BEGIN
+      SELECT RAISE(ABORT, '${tableName}.updated_at cannot be in the future');
+    END
+  `);
   await knex.raw(`
     CREATE TRIGGER ${tableName}_touch_updated_at
-    AFTER UPDATE ON ${tableName}
-    WHEN NEW.updated_at <= OLD.updated_at
+    AFTER UPDATE OF ${mutableColumns.join(', ')} ON ${tableName}
+    WHEN NEW.updated_at IS OLD.updated_at
     BEGIN
       UPDATE ${tableName}
-      SET updated_at = CASE
-        WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
-        ELSE strftime('%Y-%m-%dT%H:%M:%fZ', OLD.updated_at, '+0.001 seconds')
-      END
+      SET updated_at = ${managedTimestamp}
       WHERE ${keyPredicate};
     END
   `);
@@ -66,7 +186,7 @@ async function createUpdatedAtTrigger(knex, tableName, keyPredicate) {
 
 export async function up(knex) {
   await knex.schema.createTable('notification_events', (table) => {
-    table.text('event_id').primary();
+    table.text('event_id').notNullable().primary();
     table.text('deduplication_key').notNullable();
     table.text('kind').notNullable();
     table.text('severity').notNullable().defaultTo('info');
@@ -89,12 +209,15 @@ export async function up(knex) {
       'notification_events_severity_check'
     );
     table.check(
-      "length(trim(event_id)) > 0 AND length(trim(deduplication_key)) > 0 AND length(trim(title)) > 0",
+      `${nonBlankTextCheck('event_id')}
+        AND ${nonBlankTextCheck('deduplication_key')}
+        AND ${nonBlankTextCheck('title')}
+        AND typeof(body) = 'text'`,
       {},
       'notification_events_required_text_check'
     );
     table.check(
-      "CASE WHEN json_valid(target_json) THEN COALESCE(json_type(target_json) = 'object', 0) ELSE 0 END",
+      "CASE WHEN typeof(target_json) = 'text' AND json_valid(target_json) THEN COALESCE(json_type(target_json) = 'object', 0) ELSE 0 END",
       {},
       'notification_events_target_json_check'
     );
@@ -109,20 +232,22 @@ export async function up(knex) {
         WHEN kind = 'plan' THEN COALESCE(
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.draftId') = 'text'
-          AND length(trim(json_extract(target_json, '$.draftId'))) > 0,
+          AND ${nonBlankTextCheck("json_extract(target_json, '$.draftId')")},
           0
         )
         WHEN kind = 'task' THEN COALESCE(
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.taskId') = 'text'
-          AND length(trim(json_extract(target_json, '$.taskId'))) > 0
+          AND ${nonBlankTextCheck("json_extract(target_json, '$.taskId')")}
           AND (json_type(target_json, '$.issueNumber') IS NULL OR (
             json_type(target_json, '$.issueNumber') = 'integer'
             AND json_extract(target_json, '$.issueNumber') > 0
+            AND json_extract(target_json, '$.issueNumber') <= 9007199254740991
           ))
           AND (json_type(target_json, '$.prNumber') IS NULL OR (
             json_type(target_json, '$.prNumber') = 'integer'
             AND json_extract(target_json, '$.prNumber') > 0
+            AND json_extract(target_json, '$.prNumber') <= 9007199254740991
           )),
           0
         )
@@ -130,32 +255,34 @@ export async function up(knex) {
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.prNumber') = 'integer'
           AND json_extract(target_json, '$.prNumber') > 0
+          AND json_extract(target_json, '$.prNumber') <= 9007199254740991
           AND (json_type(target_json, '$.taskId') IS NULL OR (
             json_type(target_json, '$.taskId') = 'text'
-            AND length(trim(json_extract(target_json, '$.taskId'))) > 0
+            AND ${nonBlankTextCheck("json_extract(target_json, '$.taskId')")}
           )),
           0
         )
         WHEN kind = 'pull_request' THEN COALESCE(
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.prNumber') = 'integer'
-          AND json_extract(target_json, '$.prNumber') > 0,
+          AND json_extract(target_json, '$.prNumber') > 0
+          AND json_extract(target_json, '$.prNumber') <= 9007199254740991,
           0
         )
         WHEN kind = 'indexing' THEN COALESCE(
           ${JSON_REPOSITORY_TARGET_CHECK}
           AND (json_type(target_json, '$.branch') IS NULL OR (
             json_type(target_json, '$.branch') = 'text'
-            AND length(trim(json_extract(target_json, '$.branch'))) > 0
+            AND ${nonBlankTextCheck("json_extract(target_json, '$.branch')")}
           )),
           0
         )
         WHEN kind = 'system_failure' THEN COALESCE(
           json_type(target_json, '$.component') = 'text'
-          AND length(trim(json_extract(target_json, '$.component'))) > 0
+          AND ${nonBlankTextCheck("json_extract(target_json, '$.component')")}
           AND (json_type(target_json, '$.correlationId') IS NULL OR (
             json_type(target_json, '$.correlationId') = 'text'
-            AND length(trim(json_extract(target_json, '$.correlationId'))) > 0
+            AND ${nonBlankTextCheck("json_extract(target_json, '$.correlationId')")}
           )),
           0
         )
@@ -170,28 +297,21 @@ export async function up(knex) {
         WHEN NOT json_valid(action_json) OR json_type(action_json) != 'object' THEN 0
         ELSE COALESCE(
           json_type(action_json, '$.label') = 'text'
-          AND length(trim(json_extract(action_json, '$.label'))) > 0
+          AND ${nonBlankTextCheck("json_extract(action_json, '$.label')")}
           AND json_type(action_json, '$.href') = 'text'
-          AND length(trim(json_extract(action_json, '$.href'))) > 0
-          AND instr(json_extract(action_json, '$.href'), char(9)) = 0
-          AND instr(json_extract(action_json, '$.href'), char(10)) = 0
-          AND instr(json_extract(action_json, '$.href'), char(13)) = 0
+          AND ${nonBlankTextCheck("json_extract(action_json, '$.href')")}
           AND CASE json_extract(action_json, '$.type')
             WHEN 'navigate' THEN
               substr(json_extract(action_json, '$.href'), 1, 1) = '/'
               AND substr(json_extract(action_json, '$.href'), 1, 2) != '//'
               AND instr(json_extract(action_json, '$.href'), char(92)) = 0
-              AND instr(json_extract(action_json, '$.href'), char(10)) = 0
-              AND instr(json_extract(action_json, '$.href'), char(13)) = 0
-            WHEN 'external_link' THEN (
-              lower(substr(json_extract(action_json, '$.href'), 1, 8)) = 'https://'
-              AND length(json_extract(action_json, '$.href')) > 8
-              AND substr(json_extract(action_json, '$.href'), 9, 1) != '/'
-            ) OR (
-              lower(substr(json_extract(action_json, '$.href'), 1, 7)) = 'http://'
-              AND length(json_extract(action_json, '$.href')) > 7
-              AND substr(json_extract(action_json, '$.href'), 8, 1) != '/'
-            )
+              AND ${excludesCodepoints(
+                "json_extract(action_json, '$.href')",
+                CONTROL_CODEPOINTS
+              )}
+            WHEN 'external_link' THEN ${safeAbsoluteUrlCheck(
+              "json_extract(action_json, '$.href')"
+            )}
             ELSE 0
           END,
           0
@@ -201,7 +321,7 @@ export async function up(knex) {
       'notification_events_action_json_check'
     );
     table.check(
-      "CASE WHEN metadata_json IS NULL THEN 1 WHEN json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
+      "CASE WHEN metadata_json IS NULL THEN 1 WHEN typeof(metadata_json) = 'text' AND json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
       {},
       'notification_events_metadata_json_check'
     );
@@ -223,6 +343,22 @@ export async function up(knex) {
   await knex.raw(
     'CREATE INDEX notification_events_occurred_at_idx ON notification_events (occurred_at DESC, event_id)'
   );
+
+  await knex.raw(`
+    CREATE TRIGGER notification_events_metadata_numbers_finite
+    BEFORE INSERT ON notification_events
+    WHEN NEW.metadata_json IS NOT NULL
+      AND json_valid(NEW.metadata_json)
+      AND EXISTS (
+        SELECT 1
+        FROM json_tree(NEW.metadata_json)
+        WHERE type IN ('integer', 'real')
+          AND NOT (abs(atom) <= 1.7976931348623157e308)
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'notification metadata numbers must be finite');
+    END
+  `);
 
   await knex.raw(`
     CREATE TRIGGER notification_events_immutable_update
@@ -250,6 +386,11 @@ export async function up(knex) {
 
     table.primary(['event_id', 'user_id']);
     table.check(
+      `${nonBlankTextCheck('event_id')} AND ${nonBlankTextCheck('user_id')}`,
+      {},
+      'notification_user_states_identifiers_check'
+    );
+    table.check(
       'inbox_enabled IN (0, 1) AND push_enabled IN (0, 1)',
       {},
       'notification_user_states_channels_boolean_check'
@@ -263,6 +404,11 @@ export async function up(knex) {
       'inbox_enabled = 1 OR push_enabled = 1',
       {},
       'notification_user_states_channel_required_check'
+    );
+    table.check(
+      '(read_at IS NULL OR read_at >= created_at) AND (dismissed_at IS NULL OR dismissed_at >= created_at)',
+      {},
+      'notification_user_states_temporal_order_check'
     );
     addTimestampCheck(
       table,
@@ -324,6 +470,11 @@ export async function up(knex) {
 
     table.primary(['user_id', 'notification_kind']);
     table.check(
+      nonBlankTextCheck('user_id'),
+      {},
+      'notification_preferences_user_id_check'
+    );
+    table.check(
       "notification_kind IN ('plan', 'task', 'review', 'pull_request', 'indexing', 'system_failure')",
       {},
       'notification_preferences_kind_check'
@@ -337,6 +488,11 @@ export async function up(knex) {
       'push_enabled IN (0, 1)',
       {},
       'notification_preferences_push_boolean_check'
+    );
+    table.check(
+      'updated_at >= created_at',
+      {},
+      'notification_preferences_temporal_order_check'
     );
     addTimestampCheck(
       table,
@@ -352,11 +508,18 @@ export async function up(knex) {
   await createUpdatedAtTrigger(
     knex,
     'notification_preferences',
-    'user_id = NEW.user_id AND notification_kind = NEW.notification_kind'
+    'user_id = NEW.user_id AND notification_kind = NEW.notification_kind',
+    [
+      'user_id',
+      'notification_kind',
+      'inbox_enabled',
+      'push_enabled',
+      'created_at',
+    ]
   );
 
   await knex.schema.createTable('push_subscriptions', (table) => {
-    table.text('subscription_id').primary();
+    table.text('subscription_id').notNullable().primary();
     table.text('user_id').notNullable();
     table.text('endpoint').notNullable();
     table.text('p256dh_key').notNullable();
@@ -369,9 +532,21 @@ export async function up(knex) {
     table.text('updated_at').notNullable().defaultTo(isoNow(knex));
 
     table.check(
-      "length(trim(subscription_id)) > 0 AND length(trim(user_id)) > 0 AND lower(substr(endpoint, 1, 8)) = 'https://' AND length(endpoint) > 8 AND length(p256dh_key) > 0 AND length(auth_key) > 0",
+      `${nonBlankTextCheck('subscription_id')}
+        AND ${nonBlankTextCheck('user_id')}
+        AND ${safeAbsoluteUrlCheck('endpoint', {
+          httpsOnly: true,
+          allowFragment: false,
+        })}
+        AND ${nonBlankTextCheck('p256dh_key')}
+        AND ${nonBlankTextCheck('auth_key')}`,
       {},
       'push_subscriptions_required_values_check'
+    );
+    table.check(
+      'updated_at >= created_at',
+      {},
+      'push_subscriptions_temporal_order_check'
     );
     addTimestampCheck(
       table,
@@ -472,13 +647,25 @@ export async function up(knex) {
   await createUpdatedAtTrigger(
     knex,
     'push_subscriptions',
-    'subscription_id = NEW.subscription_id'
+    'subscription_id = NEW.subscription_id',
+    [
+      'subscription_id',
+      'user_id',
+      'endpoint',
+      'p256dh_key',
+      'auth_key',
+      'expires_at',
+      'user_agent',
+      'last_used_at',
+      'revoked_at',
+      'created_at',
+    ]
   );
 
   // Delivery jobs are mutable scheduling state. Actual Web Push requests are
   // inserted into the immutable attempts table below.
   await knex.schema.createTable('push_delivery_jobs', (table) => {
-    table.text('job_id').primary();
+    table.text('job_id').notNullable().primary();
     table.text('deduplication_key').notNullable();
     table.text('event_id').notNullable();
     table.text('user_id').notNullable();
@@ -498,9 +685,18 @@ export async function up(knex) {
       'push_delivery_jobs_status_check'
     );
     table.check(
-      "typeof(attempt_count) = 'integer' AND attempt_count >= 0",
+      "typeof(attempt_count) = 'integer' AND attempt_count BETWEEN 0 AND 9007199254740991",
       {},
       'push_delivery_jobs_attempt_count_check'
+    );
+    table.check(
+      `${nonBlankTextCheck('job_id')}
+        AND ${nonBlankTextCheck('deduplication_key')}
+        AND ${nonBlankTextCheck('event_id')}
+        AND ${nonBlankTextCheck('user_id')}
+        AND ${nonBlankTextCheck('subscription_id')}`,
+      {},
+      'push_delivery_jobs_identifiers_check'
     );
     table.check(
       `COALESCE(((
@@ -512,18 +708,21 @@ export async function up(knex) {
       ) OR (
         status = 'processing'
         AND next_retry_at IS NULL
-        AND length(trim(claim_token)) > 0
+        AND ${nonBlankTextCheck('claim_token')}
         AND claimed_at IS NOT NULL
         AND lease_expires_at IS NOT NULL
+        AND claimed_at >= created_at
         AND lease_expires_at > claimed_at
       ) OR (
         status = 'retryable'
+        AND attempt_count > 0
         AND next_retry_at IS NOT NULL
         AND claim_token IS NULL
         AND claimed_at IS NULL
         AND lease_expires_at IS NULL
       ) OR (
         status IN ('delivered', 'failed', 'cancelled')
+        AND (status = 'cancelled' OR attempt_count > 0)
         AND next_retry_at IS NULL
         AND claim_token IS NULL
         AND claimed_at IS NULL
@@ -531,6 +730,11 @@ export async function up(knex) {
       )), 0)`,
       {},
       'push_delivery_jobs_state_check'
+    );
+    table.check(
+      'updated_at >= created_at',
+      {},
+      'push_delivery_jobs_temporal_order_check'
     );
     addTimestampCheck(
       table,
@@ -647,7 +851,7 @@ export async function up(knex) {
   `);
 
   await knex.schema.createTable('push_delivery_attempts', (table) => {
-    table.text('attempt_id').primary();
+    table.text('attempt_id').notNullable().primary();
     table.text('job_id').notNullable();
     table.integer('attempt_number').notNullable();
     table.text('status').notNullable();
@@ -665,9 +869,18 @@ export async function up(knex) {
       'push_delivery_attempts_status_check'
     );
     table.check(
-      "typeof(attempt_number) = 'integer' AND attempt_number > 0",
+      "typeof(attempt_number) = 'integer' AND attempt_number > 0 AND attempt_number <= 9007199254740991",
       {},
       'push_delivery_attempts_number_check'
+    );
+    table.check(
+      `${nonBlankTextCheck('attempt_id')}
+        AND ${nonBlankTextCheck('job_id')}
+        AND ${nonBlankTextCheck('claim_token')}
+        AND (error_code IS NULL OR ${nonBlankTextCheck('error_code')})
+        AND (error_message IS NULL OR typeof(error_message) = 'text')`,
+      {},
+      'push_delivery_attempts_text_values_check'
     );
     table.check(
       "response_status IS NULL OR (typeof(response_status) = 'integer' AND response_status BETWEEN 100 AND 599)",
@@ -683,21 +896,21 @@ export async function up(knex) {
         AND next_retry_at IS NULL
       ) OR (
         status = 'retryable'
-        AND (response_status IS NOT NULL OR length(trim(error_code)) > 0)
+        AND (response_status IS NOT NULL OR ${nonBlankTextCheck('error_code')})
         AND next_retry_at IS NOT NULL
         AND next_retry_at > attempted_at
       ) OR (
         status = 'failed'
-        AND (response_status IS NOT NULL OR length(trim(error_code)) > 0)
+        AND (response_status IS NOT NULL OR ${nonBlankTextCheck('error_code')})
         AND next_retry_at IS NULL
       )), 0)`,
       {},
       'push_delivery_attempts_outcome_check'
     );
     table.check(
-      'length(trim(claim_token)) > 0',
+      'created_at >= attempted_at',
       {},
-      'push_delivery_attempts_claim_token_check'
+      'push_delivery_attempts_temporal_order_check'
     );
     addTimestampCheck(
       table,
@@ -777,7 +990,14 @@ export async function up(knex) {
         OLD.status IN ('pending', 'retryable')
         AND NEW.status = 'processing'
         AND NEW.attempt_count = OLD.attempt_count
-        AND (OLD.status = 'pending' OR NEW.claimed_at >= OLD.next_retry_at)
+        AND NEW.claimed_at <= ${ISO_NOW_SQL}
+        AND NEW.lease_expires_at > ${ISO_NOW_SQL}
+        AND (
+          (OLD.status = 'pending' AND OLD.created_at <= ${ISO_NOW_SQL}
+            AND NEW.claimed_at >= OLD.created_at)
+          OR (OLD.status = 'retryable' AND OLD.next_retry_at <= ${ISO_NOW_SQL}
+            AND NEW.claimed_at >= OLD.next_retry_at)
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM push_delivery_attempts AS attempt
@@ -790,7 +1010,10 @@ export async function up(knex) {
         AND NEW.status = 'processing'
         AND NEW.attempt_count = OLD.attempt_count
         AND NEW.claim_token IS NOT OLD.claim_token
+        AND OLD.lease_expires_at <= ${ISO_NOW_SQL}
         AND NEW.claimed_at >= OLD.lease_expires_at
+        AND NEW.claimed_at <= ${ISO_NOW_SQL}
+        AND NEW.lease_expires_at > ${ISO_NOW_SQL}
         AND NOT EXISTS (
           SELECT 1
           FROM push_delivery_attempts AS attempt
@@ -816,7 +1039,7 @@ export async function up(knex) {
         )
       )
       OR (
-        OLD.status IN ('pending', 'processing', 'retryable')
+        OLD.status IN ('pending', 'retryable')
         AND NEW.status = 'cancelled'
         AND NEW.attempt_count = OLD.attempt_count
         AND NOT EXISTS (
@@ -824,6 +1047,42 @@ export async function up(knex) {
           FROM push_delivery_attempts AS attempt
           WHERE attempt.job_id = OLD.job_id
             AND attempt.attempt_number = OLD.attempt_count + 1
+        )
+      )
+      OR (
+        OLD.status = 'processing'
+        AND NEW.status = 'cancelled'
+        AND NEW.attempt_count = OLD.attempt_count
+        AND OLD.lease_expires_at <= ${ISO_NOW_SQL}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM push_delivery_attempts AS attempt
+          WHERE attempt.job_id = OLD.job_id
+            AND attempt.attempt_number = OLD.attempt_count + 1
+        )
+      )
+      OR (
+        OLD.status = 'processing'
+        AND NEW.status = 'cancelled'
+        AND NEW.attempt_count = OLD.attempt_count + 1
+        AND EXISTS (
+          SELECT 1
+          FROM push_delivery_attempts AS attempt
+          WHERE attempt.job_id = OLD.job_id
+            AND attempt.attempt_number = NEW.attempt_count
+            AND attempt.claim_token = OLD.claim_token
+            AND attempt.status = 'retryable'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM push_subscriptions AS subscription
+          WHERE subscription.subscription_id = OLD.subscription_id
+            AND subscription.user_id = OLD.user_id
+            AND subscription.revoked_at IS NULL
+            AND (
+              subscription.expires_at IS NULL
+              OR subscription.expires_at > ${ISO_NOW_SQL}
+            )
         )
       )
     )
@@ -840,9 +1099,39 @@ export async function up(knex) {
     AFTER INSERT ON push_delivery_attempts
     BEGIN
       UPDATE push_delivery_jobs
-      SET status = NEW.status,
+      SET status = CASE
+            WHEN NEW.status = 'retryable' AND NOT EXISTS (
+              SELECT 1
+              FROM push_subscriptions AS subscription
+              JOIN push_delivery_jobs AS active_job
+                ON active_job.subscription_id = subscription.subscription_id
+                AND active_job.user_id = subscription.user_id
+              WHERE active_job.job_id = NEW.job_id
+                AND subscription.revoked_at IS NULL
+                AND (
+                  subscription.expires_at IS NULL
+                  OR subscription.expires_at > ${ISO_NOW_SQL}
+                )
+            ) THEN 'cancelled'
+            ELSE NEW.status
+          END,
           attempt_count = NEW.attempt_number,
-          next_retry_at = NEW.next_retry_at,
+          next_retry_at = CASE
+            WHEN NEW.status = 'retryable' AND NOT EXISTS (
+              SELECT 1
+              FROM push_subscriptions AS subscription
+              JOIN push_delivery_jobs AS active_job
+                ON active_job.subscription_id = subscription.subscription_id
+                AND active_job.user_id = subscription.user_id
+              WHERE active_job.job_id = NEW.job_id
+                AND subscription.revoked_at IS NULL
+                AND (
+                  subscription.expires_at IS NULL
+                  OR subscription.expires_at > ${ISO_NOW_SQL}
+                )
+            ) THEN NULL
+            ELSE NEW.next_retry_at
+          END,
           claim_token = NULL,
           claimed_at = NULL,
           lease_expires_at = NULL
@@ -867,7 +1156,7 @@ export async function up(knex) {
           AND recipient.user_id = NEW.user_id
           AND recipient.push_enabled = 1
           AND subscription.revoked_at IS NULL
-          AND (subscription.expires_at IS NULL OR subscription.expires_at > NEW.claimed_at)
+          AND (subscription.expires_at IS NULL OR subscription.expires_at > ${ISO_NOW_SQL})
       )
     BEGIN
       SELECT RAISE(ABORT, 'cannot claim delivery for an inactive subscription');
@@ -876,7 +1165,21 @@ export async function up(knex) {
   await createUpdatedAtTrigger(
     knex,
     'push_delivery_jobs',
-    'job_id = NEW.job_id'
+    'job_id = NEW.job_id',
+    [
+      'job_id',
+      'deduplication_key',
+      'event_id',
+      'user_id',
+      'subscription_id',
+      'attempt_count',
+      'status',
+      'next_retry_at',
+      'claim_token',
+      'claimed_at',
+      'lease_expires_at',
+      'created_at',
+    ]
   );
 
   // This is the only polling surface for dispatchers. It rechecks recipient
@@ -900,6 +1203,32 @@ export async function up(knex) {
       OR (job.status = 'processing' AND job.lease_expires_at <= ${ISO_NOW_SQL})
   `);
 
+  // Natural expiration cannot fire a trigger, so cleanup workers poll this
+  // view and terminally cancel the returned rows. A live processing lease is
+  // deliberately excluded until its owner records the actual request outcome.
+  await knex.raw(`
+    CREATE VIEW push_delivery_jobs_requiring_cancellation AS
+    SELECT job.*
+    FROM push_delivery_jobs AS job
+    JOIN push_subscriptions AS subscription
+      ON subscription.subscription_id = job.subscription_id
+      AND subscription.user_id = job.user_id
+    WHERE (
+      subscription.revoked_at IS NOT NULL
+      OR (
+        subscription.expires_at IS NOT NULL
+        AND subscription.expires_at <= ${ISO_NOW_SQL}
+      )
+    )
+      AND (
+        job.status IN ('pending', 'retryable')
+        OR (
+          job.status = 'processing'
+          AND job.lease_expires_at <= ${ISO_NOW_SQL}
+        )
+      )
+  `);
+
   await knex.raw(`
     CREATE TRIGGER push_subscriptions_cancel_revoked_jobs
     AFTER UPDATE OF revoked_at ON push_subscriptions
@@ -912,7 +1241,10 @@ export async function up(knex) {
           claimed_at = NULL,
           lease_expires_at = NULL
       WHERE subscription_id = NEW.subscription_id
-        AND status IN ('pending', 'processing', 'retryable');
+        AND (
+          status IN ('pending', 'retryable')
+          OR (status = 'processing' AND lease_expires_at <= ${ISO_NOW_SQL})
+        );
     END
   `);
   await knex.raw(`
@@ -929,7 +1261,10 @@ export async function up(knex) {
           claimed_at = NULL,
           lease_expires_at = NULL
       WHERE subscription_id = NEW.subscription_id
-        AND status IN ('pending', 'processing', 'retryable');
+        AND (
+          status IN ('pending', 'retryable')
+          OR (status = 'processing' AND lease_expires_at <= ${ISO_NOW_SQL})
+        );
     END
   `);
 
@@ -952,12 +1287,24 @@ export async function up(knex) {
       'notification_source_activity_type_check'
     );
     table.check(
-      "length(trim(activity_key)) > 0 AND length(trim(repository)) > 0 AND length(trim(status)) > 0",
+      `${nonBlankTextCheck('activity_key')}
+        AND ${repositoryCheck('repository')}
+        AND (branch IS NULL OR ${nonBlankTextCheck('branch')})`,
       {},
       'notification_source_activity_required_text_check'
     );
     table.check(
-      "CASE WHEN metadata_json IS NULL THEN 1 WHEN json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
+      "status IN ('queued', 'processing', 'completed', 'failed', 'cancelled')",
+      {},
+      'notification_source_activity_status_check'
+    );
+    table.check(
+      "(status IN ('queued', 'processing') AND completed_at IS NULL) OR (status IN ('completed', 'failed', 'cancelled') AND completed_at IS NOT NULL)",
+      {},
+      'notification_source_activity_completion_state_check'
+    );
+    table.check(
+      "CASE WHEN metadata_json IS NULL THEN 1 WHEN typeof(metadata_json) = 'text' AND json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
       {},
       'notification_source_activity_metadata_json_check'
     );
@@ -965,6 +1312,11 @@ export async function up(knex) {
       'completed_at IS NULL OR completed_at >= last_activity_at',
       {},
       'notification_source_activity_completed_at_check'
+    );
+    table.check(
+      'updated_at >= created_at',
+      {},
+      'notification_source_activity_temporal_order_check'
     );
     addTimestampCheck(
       table,
@@ -989,13 +1341,50 @@ export async function up(knex) {
     );
   });
 
+  await knex.raw(`
+    CREATE TRIGGER notification_source_activity_metadata_numbers_finite
+    BEFORE INSERT ON notification_source_activity
+    WHEN NEW.metadata_json IS NOT NULL
+      AND json_valid(NEW.metadata_json)
+      AND EXISTS (
+        SELECT 1
+        FROM json_tree(NEW.metadata_json)
+        WHERE type IN ('integer', 'real')
+          AND NOT (abs(atom) <= 1.7976931348623157e308)
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'notification source metadata numbers must be finite');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER notification_source_activity_metadata_numbers_finite_update
+    BEFORE UPDATE OF metadata_json ON notification_source_activity
+    WHEN NEW.metadata_json IS NOT NULL
+      AND json_valid(NEW.metadata_json)
+      AND EXISTS (
+        SELECT 1
+        FROM json_tree(NEW.metadata_json)
+        WHERE type IN ('integer', 'real')
+          AND NOT (abs(atom) <= 1.7976931348623157e308)
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'notification source metadata numbers must be finite');
+    END
+  `);
+
   // Delayed heartbeats cannot regress a newer row, and completed work cannot
   // be reopened. RAISE(IGNORE) makes stale conflict-upserts safe no-ops.
   await knex.raw(`
     CREATE TRIGGER notification_source_activity_monotonic
     BEFORE UPDATE ON notification_source_activity
     WHEN NEW.last_activity_at < OLD.last_activity_at
-      OR (OLD.completed_at IS NOT NULL AND NEW.completed_at IS NULL)
+      OR (
+        OLD.completed_at IS NOT NULL
+        AND (
+          NEW.completed_at IS NOT OLD.completed_at
+          OR NEW.status IS NOT OLD.status
+        )
+      )
     BEGIN
       SELECT RAISE(IGNORE);
     END
@@ -1013,7 +1402,18 @@ export async function up(knex) {
   await createUpdatedAtTrigger(
     knex,
     'notification_source_activity',
-    'activity_type = NEW.activity_type AND activity_key = NEW.activity_key'
+    'activity_type = NEW.activity_type AND activity_key = NEW.activity_key',
+    [
+      'activity_type',
+      'activity_key',
+      'repository',
+      'branch',
+      'status',
+      'last_activity_at',
+      'completed_at',
+      'metadata_json',
+      'created_at',
+    ]
   );
 
   await knex.raw(`
@@ -1024,6 +1424,7 @@ export async function up(knex) {
 }
 
 export async function down(knex) {
+  await knex.raw('DROP VIEW IF EXISTS push_delivery_jobs_requiring_cancellation');
   await knex.raw('DROP VIEW IF EXISTS push_delivery_claimable_jobs');
 
   await knex.schema.dropTableIfExists('notification_source_activity');

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import {
@@ -8,6 +10,7 @@ import {
   NOTIFICATION_KINDS,
   NOTIFICATION_SEVERITIES,
   NOTIFICATION_SOURCE_ACTIVITY_TYPES,
+  NOTIFICATION_SOURCE_ACTIVITY_STATUSES,
   PUSH_DELIVERY_ATTEMPT_STATUSES,
   PUSH_DELIVERY_STATUSES,
   normalizeISO8601Timestamp,
@@ -16,11 +19,18 @@ import {
   parseNotificationAction,
   parseNotificationEvent,
   parseNotificationListResponse,
+  parseNotificationSourceActivity,
+  parseNotificationUserState,
   parseNotificationPreferences,
   parseNotificationPreferencesResponse,
   parseNotificationTarget,
+  parsePushDeliveryAttempt,
+  parsePushDeliveryJob,
+  parsePushSubscription,
+  parsePushSubscriptionInput,
+  parsePushSubscriptionsResponse,
   type NotificationKind,
-} from '../packages/shared/src/notifications.ts';
+} from '../packages/shared/src/index.ts';
 import {
   down,
   up,
@@ -42,7 +52,7 @@ const migrationsDirectory = fileURLToPath(
 );
 const timestamp = '2026-08-02T08:00:00.000Z';
 const claimedAt = '2026-08-02T08:01:00.000Z';
-const leaseExpiresAt = '2026-08-02T08:06:00.000Z';
+const leaseExpiresAt = '2099-08-02T08:06:00.000Z';
 
 const targetsByKind = {
   plan: {
@@ -124,13 +134,14 @@ function enableForeignKeys(
 ): void {
   connection.pragma('foreign_keys = ON');
   connection.pragma('recursive_triggers = ON');
+  connection.pragma('busy_timeout = 1000');
   done(null, connection);
 }
 
-function createSchemaDatabase(): Knex {
+function createSchemaDatabase(filename = ':memory:'): Knex {
   return knex({
     client: 'better-sqlite3',
-    connection: { filename: ':memory:' },
+    connection: { filename },
     useNullAsDefault: true,
     pool: {
       afterCreate: enableForeignKeys,
@@ -212,16 +223,15 @@ async function insertDeliveryJob(
     createdAt?: string;
   },
 ): Promise<void> {
+  const createdAt = options.createdAt ?? timestamp;
   await db('push_delivery_jobs').insert({
     job_id: options.jobId,
     deduplication_key: 'delivery:' + options.jobId,
     event_id: options.eventId,
     user_id: options.userId ?? 'user-a',
     subscription_id: options.subscriptionId,
-    ...(options.createdAt === undefined ? {} : {
-      created_at: options.createdAt,
-      updated_at: options.createdAt,
-    }),
+    created_at: createdAt,
+    updated_at: createdAt,
   });
 }
 
@@ -244,9 +254,31 @@ async function claimJob(
        FROM push_delivery_claimable_jobs
        WHERE job_id = ?
      )
-       AND status IN ('pending', 'retryable')
      RETURNING *`,
     [claimToken, claimTime, leaseTime, jobId],
+  ) as Promise<Array<Record<string, unknown>>>;
+}
+
+async function claimJobUsingDatabaseTime(
+  db: Knex,
+  jobId: string,
+  claimToken: string,
+  leaseModifier = '+5 minutes',
+): Promise<Array<Record<string, unknown>>> {
+  return db.raw(
+    `UPDATE push_delivery_jobs
+     SET status = 'processing',
+         claim_token = ?,
+         claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+         lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
+         next_retry_at = NULL
+     WHERE job_id = (
+       SELECT job_id
+       FROM push_delivery_claimable_jobs
+       WHERE job_id = ?
+     )
+     RETURNING *`,
+    [claimToken, leaseModifier, jobId],
   ) as Promise<Array<Record<string, unknown>>>;
 }
 
@@ -343,9 +375,25 @@ describe('durable notification schema', { concurrency: false }, () => {
       'failed',
     ]);
     assert.deepStrictEqual(NOTIFICATION_SOURCE_ACTIVITY_TYPES, ['task', 'indexing']);
+    assert.deepStrictEqual(NOTIFICATION_SOURCE_ACTIVITY_STATUSES, [
+      'queued',
+      'processing',
+      'completed',
+      'failed',
+      'cancelled',
+    ]);
   });
 
   test('creates canonical TEXT timestamps, dispatch view, and polling indexes', async () => {
+    const pragmas = {
+      foreignKeys: await db.raw('PRAGMA foreign_keys') as Array<{ foreign_keys: number }>,
+      recursiveTriggers: await db.raw('PRAGMA recursive_triggers') as Array<{
+        recursive_triggers: number;
+      }>,
+    };
+    assert.strictEqual(pragmas.foreignKeys[0]?.foreign_keys, 1);
+    assert.strictEqual(pragmas.recursiveTriggers[0]?.recursive_triggers, 1);
+
     for (const table of notificationTables) {
       assert.strictEqual(await db.schema.hasTable(table), true, table + ' should exist');
     }
@@ -371,6 +419,13 @@ describe('durable notification schema', { concurrency: false }, () => {
     assert.match(view.sql, /subscription\.revoked_at IS NULL/i);
     assert.match(view.sql, /subscription\.expires_at > strftime/i);
     assert.match(view.sql, /recipient\.push_enabled = 1/i);
+
+    const cancellationView = await db('sqlite_master')
+      .where({ type: 'view', name: 'push_delivery_jobs_requiring_cancellation' })
+      .first();
+    assert.ok(cancellationView);
+    assert.match(cancellationView.sql, /subscription\.expires_at <= strftime/i);
+    assert.match(cancellationView.sql, /job\.lease_expires_at <= strftime/i);
 
     const indexNames = [
       'notification_user_states_visible_idx',
@@ -554,6 +609,27 @@ describe('durable notification schema', { concurrency: false }, () => {
       }),
       /notification_source_activity_type_check/i,
     );
+    await assert.rejects(
+      db('notification_source_activity').insert({
+        activity_type: 'task',
+        activity_key: 'invalid-status',
+        repository: 'integry/propr',
+        status: 'running',
+        last_activity_at: timestamp,
+      }),
+      /notification_source_activity_status_check/i,
+    );
+    await assert.rejects(
+      db('notification_source_activity').insert({
+        activity_type: 'task',
+        activity_key: 'contradictory-status',
+        repository: 'integry/propr',
+        status: 'processing',
+        last_activity_at: timestamp,
+        completed_at: timestamp,
+      }),
+      /notification_source_activity_completion_state_check/i,
+    );
   });
 
   test('rejects incomplete targets and unsafe actions at SQL and runtime boundaries', async () => {
@@ -691,6 +767,161 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
   });
 
+  test('keeps immutable SQL action and target validation compatible with runtime parsing', async () => {
+    const actionCorpus: Array<{
+      id: string;
+      action: Record<string, unknown>;
+      valid: boolean;
+    }> = [
+      {
+        id: 'valid-navigation',
+        action: { type: 'navigate', label: 'Open', href: '/tasks/1?tab=logs' },
+        valid: true,
+      },
+      {
+        id: 'valid-external-port',
+        action: {
+          type: 'external_link',
+          label: 'Open',
+          href: 'https://example.test:443/tasks/1',
+        },
+        valid: true,
+      },
+      {
+        id: 'missing-host',
+        action: { type: 'external_link', label: 'Open', href: 'https://?x' },
+        valid: false,
+      },
+      {
+        id: 'credentials',
+        action: {
+          type: 'external_link',
+          label: 'Open',
+          href: 'https://user:secret@example.test/task',
+        },
+        valid: false,
+      },
+      {
+        id: 'malformed-port',
+        action: {
+          type: 'external_link',
+          label: 'Open',
+          href: 'https://example.test:not-a-port/task',
+        },
+        valid: false,
+      },
+      {
+        id: 'out-of-range-port',
+        action: {
+          type: 'external_link',
+          label: 'Open',
+          href: 'https://example.test:65536/task',
+        },
+        valid: false,
+      },
+      {
+        id: 'invalid-numeric-host-notation',
+        action: {
+          type: 'external_link',
+          label: 'Open',
+          href: 'https://0x100000000f/task',
+        },
+        valid: false,
+      },
+      {
+        id: 'invalid-dotted-numeric-host-notation',
+        action: {
+          type: 'external_link',
+          label: 'Open',
+          href: 'https://example.0x100000000f/task',
+        },
+        valid: false,
+      },
+    ];
+
+    for (const { id, action, valid } of actionCorpus) {
+      let runtimeAccepted = true;
+      try {
+        parseNotificationAction(action);
+      } catch {
+        runtimeAccepted = false;
+      }
+      assert.strictEqual(runtimeAccepted, valid, id + ' runtime result');
+
+      const insertion = db('notification_events').insert(createEvent({
+        event_id: 'action-corpus-' + id,
+        action_json: JSON.stringify(action),
+      }));
+      if (valid) {
+        await insertion;
+      } else {
+        await assert.rejects(insertion, /notification_events_action_json_check/i);
+      }
+    }
+
+    const javascriptWhitespaceCodepoints = [
+      9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 8194, 8195, 8196,
+      8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288,
+      65279,
+    ];
+    for (const codepoint of javascriptWhitespaceCodepoints) {
+      const whitespace = String.fromCodePoint(codepoint);
+      const target = {
+        type: 'task',
+        repository: 'integry/propr',
+        taskId: whitespace,
+      };
+      assert.throws(() => parseNotificationTarget(target), /non-empty string/);
+      await assert.rejects(
+        db('notification_events').insert(createEvent({
+          event_id: 'target-whitespace-' + codepoint,
+          target_json: JSON.stringify(target),
+        })),
+        /notification_events_target_contract_check/i,
+      );
+    }
+
+    for (let codepoint = 0; codepoint <= 31; codepoint += 1) {
+      const action = {
+        type: 'navigate',
+        label: 'Open',
+        href: '/tasks/' + String.fromCodePoint(codepoint),
+      };
+      assert.throws(() => parseNotificationAction(action), /application-relative path/);
+      await assert.rejects(
+        db('notification_events').insert(createEvent({
+          event_id: 'navigation-control-' + codepoint,
+          action_json: JSON.stringify(action),
+        })),
+        /notification_events_action_json_check/i,
+      );
+    }
+
+    const incompatibleTargets = [
+      {
+        type: 'task',
+        repository: 'integry\u00a0/propr',
+        taskId: 'task-1',
+      },
+      {
+        type: 'review',
+        repository: 'integry/propr',
+        prNumber: Number.MAX_SAFE_INTEGER + 1,
+      },
+    ];
+    for (const [index, target] of incompatibleTargets.entries()) {
+      assert.throws(() => parseNotificationTarget(target));
+      await assert.rejects(
+        db('notification_events').insert(createEvent({
+          event_id: 'incompatible-target-' + index,
+          kind: target.type,
+          target_json: JSON.stringify(target),
+        })),
+        /notification_events_target_contract_check/i,
+      );
+    }
+  });
+
   test('normalizes timestamps at runtime and rejects noncanonical database values', async () => {
     assert.strictEqual(
       normalizeISO8601Timestamp('2026-08-02T10:00:00+02:00'),
@@ -723,6 +954,191 @@ describe('durable notification schema', { concurrency: false }, () => {
       }),
       /notification_source_activity_last_activity_at_check/i,
     );
+  });
+
+  test('rejects null, empty, and whitespace-only durable identifiers', async () => {
+    const primaryIdentifiers = [
+      ['notification_events', 'event_id'],
+      ['push_subscriptions', 'subscription_id'],
+      ['push_delivery_jobs', 'job_id'],
+      ['push_delivery_attempts', 'attempt_id'],
+    ] as const;
+    for (const [tableName, columnName] of primaryIdentifiers) {
+      const columns = await db.raw('PRAGMA table_info(' + tableName + ')') as Array<{
+        name: string;
+        notnull: number;
+      }>;
+      assert.strictEqual(
+        columns.find(({ name }) => name === columnName)?.notnull,
+        1,
+        tableName + '.' + columnName + ' should be explicitly NOT NULL',
+      );
+    }
+
+    for (const [index, eventId] of [null, '', '   ', '\u00a0'].entries()) {
+      await assert.rejects(
+        db('notification_events').insert({
+          ...createEvent({ event_id: 'identifier-event-' + index }),
+          event_id: eventId,
+        }),
+        /NOT NULL|notification_events_required_text_check/i,
+      );
+    }
+
+    const event = await seedEventAndRecipients(db);
+    for (const userId of [null, '', '   ', '\u00a0']) {
+      await assert.rejects(
+        db('notification_user_states').insert({
+          event_id: event.event_id,
+          user_id: userId,
+          inbox_enabled: true,
+          push_enabled: false,
+        }),
+        /NOT NULL|notification_user_states_identifiers_check/i,
+      );
+      await assert.rejects(
+        db('notification_preferences').insert({
+          user_id: userId,
+          notification_kind: 'task',
+        }),
+        /NOT NULL|notification_preferences_user_id_check/i,
+      );
+    }
+
+    for (const [index, subscriptionId] of [null, '', '   ', '\u00a0'].entries()) {
+      await assert.rejects(
+        db('push_subscriptions').insert({
+          ...createSubscription({ subscription_id: 'identifier-subscription-' + index }),
+          subscription_id: subscriptionId,
+        }),
+        /NOT NULL|push_subscriptions_required_values_check/i,
+      );
+    }
+
+    const subscription = createSubscription({ subscription_id: 'identifier-subscription' });
+    await db('push_subscriptions').insert(subscription);
+    await assert.rejects(
+      db('push_delivery_jobs').insert({
+        job_id: '   ',
+        deduplication_key: 'delivery:identifier-job',
+        event_id: event.event_id,
+        user_id: 'user-a',
+        subscription_id: subscription.subscription_id,
+      }),
+      /push_delivery_jobs_identifiers_check/i,
+    );
+    await assert.rejects(
+      db('push_delivery_jobs').insert({
+        job_id: 'identifier-job',
+        deduplication_key: '\u00a0',
+        event_id: event.event_id,
+        user_id: 'user-a',
+        subscription_id: subscription.subscription_id,
+      }),
+      /push_delivery_jobs_identifiers_check/i,
+    );
+
+    await insertDeliveryJob(db, {
+      jobId: 'identifier-attempt-job',
+      eventId: event.event_id,
+      subscriptionId: subscription.subscription_id,
+    });
+    await claimJob(db, 'identifier-attempt-job', 'identifier-worker');
+    for (const attemptId of [null, '', '   ', '\u00a0']) {
+      await assert.rejects(
+        db('push_delivery_attempts').insert({
+          attempt_id: attemptId,
+          job_id: 'identifier-attempt-job',
+          attempt_number: 1,
+          status: 'delivered',
+          response_status: 201,
+          attempted_at: '2026-08-02T08:02:00.000Z',
+          claim_token: 'identifier-worker',
+        }),
+        /NOT NULL|push_delivery_attempts_text_values_check/i,
+      );
+    }
+  });
+
+  test('enforces associated timestamp ordering and database-managed updated_at', async () => {
+    const event = createEvent({ event_id: 'temporal-event' });
+    await db('notification_events').insert(event);
+    await assert.rejects(
+      db('notification_user_states').insert({
+        event_id: event.event_id,
+        user_id: 'temporal-user',
+        inbox_enabled: true,
+        push_enabled: false,
+        created_at: '2026-08-02T08:10:00.000Z',
+        read_at: timestamp,
+      }),
+      /notification_user_states_temporal_order_check/i,
+    );
+
+    await db('notification_user_states').insert({
+      event_id: event.event_id,
+      user_id: 'temporal-user',
+      inbox_enabled: true,
+      push_enabled: true,
+      created_at: timestamp,
+    });
+    const subscription = createSubscription({
+      subscription_id: 'temporal-subscription',
+      user_id: 'temporal-user',
+    });
+    await db('push_subscriptions').insert(subscription);
+    await insertDeliveryJob(db, {
+      jobId: 'temporal-job',
+      eventId: event.event_id,
+      userId: 'temporal-user',
+      subscriptionId: subscription.subscription_id,
+    });
+    await claimJob(db, 'temporal-job', 'temporal-worker');
+    await assert.rejects(
+      db('push_delivery_attempts').insert({
+        attempt_id: 'backdated-created-attempt',
+        job_id: 'temporal-job',
+        attempt_number: 1,
+        status: 'delivered',
+        response_status: 201,
+        attempted_at: '2026-08-02T08:02:00.000Z',
+        created_at: claimedAt,
+        claim_token: 'temporal-worker',
+      }),
+      /push_delivery_attempts_temporal_order_check/i,
+    );
+
+    await assert.rejects(
+      db('notification_preferences').insert({
+        user_id: 'future-insert',
+        notification_kind: 'task',
+        updated_at: '2099-01-01T00:00:00.000Z',
+      }),
+      /updated_at cannot be in the future/i,
+    );
+    await db('notification_preferences').insert({
+      user_id: 'managed-update',
+      notification_kind: 'task',
+      created_at: '2020-01-01T00:00:00.000Z',
+      updated_at: '2020-01-01T00:00:00.000Z',
+    });
+    await assert.rejects(
+      db('notification_preferences')
+        .where({ user_id: 'managed-update', notification_kind: 'task' })
+        .update({
+          push_enabled: false,
+          updated_at: '2099-01-01T00:00:00.000Z',
+        }),
+      /updated_at is database managed/i,
+    );
+    await db('notification_preferences')
+      .where({ user_id: 'managed-update', notification_kind: 'task' })
+      .update({ push_enabled: false });
+    const preference = await db('notification_preferences')
+      .where({ user_id: 'managed-update', notification_kind: 'task' })
+      .first();
+    assert.ok(preference.updated_at < '2099-01-01T00:00:00.000Z');
+    assert.ok(preference.updated_at > '2020-01-01T00:00:00.000Z');
   });
 
   test('deduplicates immutable events and rejects update and delete', async () => {
@@ -827,6 +1243,32 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
   });
 
+  test('persists only structurally valid HTTPS push endpoints', async () => {
+    await db('push_subscriptions').insert(createSubscription({
+      subscription_id: 'valid-port-endpoint',
+      endpoint: 'https://push.example.test:8443/subscription?token=abc',
+    }));
+
+    const invalidEndpoints = [
+      'https://?x',
+      'https://user:secret@push.example.test/subscription',
+      'https://push.example.test:not-a-port/subscription',
+      'https://push.example.test:65536/subscription',
+      'https://push.example.test/#fragment',
+      'https://push.example.test\\redirect',
+      'http://push.example.test/subscription',
+    ];
+    for (const [index, endpoint] of invalidEndpoints.entries()) {
+      await assert.rejects(
+        db('push_subscriptions').insert(createSubscription({
+          subscription_id: 'invalid-endpoint-' + index,
+          endpoint,
+        })),
+        /push_subscriptions_required_values_check/i,
+      );
+    }
+  });
+
   test('constrains preference booleans and validates one complete response shape', async () => {
     await assert.rejects(
       db('notification_preferences').insert({
@@ -863,6 +1305,227 @@ describe('durable notification schema', { concurrency: false }, () => {
     assert.throws(
       () => parseNotificationPreferences({ task: snapshot.task }),
       /preferences\.plan/,
+    );
+  });
+
+  test('deep-clones JSON-safe metadata and rejects values serialization cannot preserve', async () => {
+    const metadata = {
+      nested: { enabled: true },
+      values: [1, 'two', null],
+    };
+    const parsed = parseNotificationEvent({
+      ...createContractEvent(),
+      metadata,
+    });
+    metadata.nested.enabled = false;
+    assert.deepStrictEqual(parsed.metadata, {
+      nested: { enabled: true },
+      values: [1, 'two', null],
+    });
+    assert.doesNotThrow(() => JSON.stringify(parsed));
+
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const invalidMetadata = [
+      { value: 1n },
+      { value: () => undefined },
+      { value: Number.POSITIVE_INFINITY },
+      { value: new Date(timestamp) },
+      { value: new Array(1) },
+      circular,
+    ];
+    for (const candidate of invalidMetadata) {
+      assert.throws(
+        () => parseNotificationEvent({
+          ...createContractEvent(),
+          metadata: candidate,
+        }),
+        /JSON|finite|acyclic|object/,
+      );
+    }
+
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'non-finite-metadata-number',
+        metadata_json: '{"nested":{"value":1e400}}',
+      })),
+      /metadata numbers must be finite/i,
+    );
+  });
+
+  test('validates every public notification persistence and API boundary', () => {
+    assert.deepStrictEqual(parseNotificationUserState({
+      eventId: 'event-1',
+      userId: 'user-a',
+      inboxEnabled: false,
+      pushEnabled: true,
+      readAt: null,
+      dismissedAt: null,
+      createdAt: timestamp,
+    }).inboxEnabled, false);
+    assert.throws(
+      () => parseNotificationUserState({
+        eventId: 'event-1',
+        userId: 'user-a',
+        inboxEnabled: false,
+        pushEnabled: false,
+        readAt: null,
+        dismissedAt: null,
+        createdAt: timestamp,
+      }),
+      /at least one enabled channel/,
+    );
+    assert.throws(
+      () => parseNotificationUserState({
+        eventId: 'event-1',
+        userId: 'user-a',
+        inboxEnabled: false,
+        pushEnabled: true,
+        readAt: timestamp,
+        dismissedAt: null,
+        createdAt: timestamp,
+      }),
+      /no Inbox timestamps/,
+    );
+
+    const input = parsePushSubscriptionInput({
+      endpoint: 'https://push.example.test/subscription',
+      expirationTime: 1_800_000_000_000,
+      keys: { p256dh: 'p256dh', auth: 'auth' },
+    });
+    assert.strictEqual(input.endpoint, 'https://push.example.test/subscription');
+    for (const endpoint of [
+      'https://?x',
+      'https://user:secret@push.example.test/subscription',
+      'https://push.example.test:invalid/subscription',
+      'http://push.example.test/subscription',
+    ]) {
+      assert.throws(
+        () => parsePushSubscriptionInput({
+          endpoint,
+          expirationTime: null,
+          keys: { p256dh: 'p256dh', auth: 'auth' },
+        }),
+        /URL/,
+      );
+    }
+    assert.throws(
+      () => parsePushSubscriptionInput({
+        endpoint: 'https://push.example.test/subscription',
+        expirationTime: Number.POSITIVE_INFINITY,
+        keys: { p256dh: 'p256dh', auth: 'auth' },
+      }),
+      /epoch-millisecond/,
+    );
+    assert.throws(
+      () => parsePushSubscriptionInput({
+        endpoint: 'https://push.example.test/subscription',
+        expirationTime: null,
+        keys: { p256dh: '***', auth: 'auth' },
+      }),
+      /base64url/,
+    );
+
+    const subscription = parsePushSubscription({
+      id: 'subscription-1',
+      endpoint: input.endpoint,
+      expiresAt: null,
+      revokedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    assert.strictEqual(
+      parsePushSubscriptionsResponse({ subscriptions: [subscription] })
+        .subscriptions.length,
+      1,
+    );
+
+    assert.strictEqual(parsePushDeliveryJob({
+      id: 'job-1',
+      deduplicationKey: 'delivery:job-1',
+      eventId: 'event-1',
+      userId: 'user-a',
+      subscriptionId: 'subscription-1',
+      attemptCount: 0,
+      status: 'pending',
+      nextRetryAt: null,
+      claimToken: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }).status, 'pending');
+    assert.throws(
+      () => parsePushDeliveryJob({
+        id: 'job-1',
+        deduplicationKey: 'delivery:job-1',
+        eventId: 'event-1',
+        userId: 'user-a',
+        subscriptionId: 'subscription-1',
+        attemptCount: 0.5,
+        status: 'pending',
+        nextRetryAt: null,
+        claimToken: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+      /nonnegative integer/,
+    );
+
+    assert.strictEqual(parsePushDeliveryAttempt({
+      id: 'attempt-1',
+      jobId: 'job-1',
+      attemptNumber: 1,
+      status: 'delivered',
+      responseStatus: 201,
+      errorCode: null,
+      errorMessage: null,
+      attemptedAt: timestamp,
+      nextRetryAt: null,
+      claimToken: 'claim-1',
+      createdAt: timestamp,
+    }).status, 'delivered');
+    assert.throws(
+      () => parsePushDeliveryAttempt({
+        id: 'attempt-1',
+        jobId: 'job-1',
+        attemptNumber: 1,
+        status: 'retryable',
+        responseStatus: null,
+        errorCode: null,
+        errorMessage: null,
+        attemptedAt: timestamp,
+        nextRetryAt: leaseExpiresAt,
+        claimToken: 'claim-1',
+        createdAt: timestamp,
+      }),
+      /response status or non-empty error code/,
+    );
+
+    assert.strictEqual(parseNotificationSourceActivity({
+      type: 'task',
+      key: 'task-1',
+      repository: 'integry/propr',
+      status: 'processing',
+      lastActivityAt: timestamp,
+      completedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }).status, 'processing');
+    assert.throws(
+      () => parseNotificationSourceActivity({
+        type: 'task',
+        key: 'task-1',
+        repository: 'integry/propr',
+        status: 'processing',
+        lastActivityAt: timestamp,
+        completedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+      /null for active work/,
     );
   });
 
@@ -945,7 +1608,7 @@ describe('durable notification schema', { concurrency: false }, () => {
           claimed_at: claimedAt,
           lease_expires_at: leaseExpiresAt,
         }),
-      /push_delivery_jobs_state_check/i,
+      /push_delivery_jobs_state_check|invalid push delivery job transition/i,
     );
 
     const firstClaim = await claimJob(db, 'atomic-job', 'worker-a');
@@ -968,17 +1631,6 @@ describe('durable notification schema', { concurrency: false }, () => {
       /invalid push delivery job transition/,
     );
 
-    const reclaimed = await db('push_delivery_jobs')
-      .where({ job_id: 'atomic-job', status: 'processing' })
-      .update({
-        claim_token: 'worker-c',
-        claimed_at: '2026-08-02T08:06:00.000Z',
-        lease_expires_at: '2026-08-02T08:11:00.000Z',
-      });
-    assert.strictEqual(reclaimed, 1);
-    job = await db('push_delivery_jobs').where({ job_id: 'atomic-job' }).first();
-    assert.strictEqual(job.claim_token, 'worker-c');
-
     await assert.rejects(
       db('push_delivery_attempts').insert({
         attempt_id: 'missing-outcome-detail',
@@ -986,7 +1638,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         attempt_number: 1,
         status: 'failed',
         attempted_at: '2026-08-02T08:07:00.000Z',
-        claim_token: 'worker-c',
+        claim_token: 'worker-a',
       }),
       /push_delivery_attempts_outcome_check/i,
     );
@@ -999,10 +1651,106 @@ describe('durable notification schema', { concurrency: false }, () => {
         status: 'delivered',
         response_status: 201,
         attempted_at: '2026-08-02T08:07:00.000Z',
-        claim_token: 'worker-a',
+        claim_token: 'worker-c',
       }),
       /does not own the active claim/,
     );
+  });
+
+  test('uses one database-timed claim statement for pending, retryable, and expired processing jobs', async () => {
+    const temporaryDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'propr-notification-claim-'),
+    );
+    const filename = path.join(temporaryDirectory, 'claims.sqlite');
+    const firstConnection = createSchemaDatabase(filename);
+    const secondConnection = createSchemaDatabase(filename);
+    try {
+      await up(firstConnection);
+      const event = await seedEventAndRecipients(firstConnection);
+      const subscription = createSubscription();
+      await firstConnection('push_subscriptions').insert(subscription);
+      await insertDeliveryJob(firstConnection, {
+        jobId: 'three-state-claim-job',
+        eventId: event.event_id,
+        subscriptionId: subscription.subscription_id,
+      });
+
+      const pendingClaim = await claimJobUsingDatabaseTime(
+        firstConnection,
+        'three-state-claim-job',
+        'pending-worker',
+      );
+      assert.strictEqual(pendingClaim.length, 1);
+
+      await firstConnection.raw(`
+        INSERT INTO push_delivery_attempts (
+          attempt_id,
+          job_id,
+          attempt_number,
+          status,
+          error_code,
+          attempted_at,
+          next_retry_at,
+          claim_token
+        ) VALUES (
+          'three-state-attempt',
+          'three-state-claim-job',
+          1,
+          'retryable',
+          'temporary',
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+0.200 seconds'),
+          'pending-worker'
+        )
+      `);
+      const scheduled = await firstConnection('push_delivery_jobs')
+        .where({ job_id: 'three-state-claim-job' })
+        .first();
+      await assert.rejects(
+        firstConnection('push_delivery_jobs')
+          .where({ job_id: 'three-state-claim-job' })
+          .update({
+            status: 'processing',
+            claim_token: 'future-time-worker',
+            claimed_at: scheduled.next_retry_at,
+            lease_expires_at: leaseExpiresAt,
+            next_retry_at: null,
+          }),
+        /invalid push delivery job transition/,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const retryableClaim = await claimJobUsingDatabaseTime(
+        secondConnection,
+        'three-state-claim-job',
+        'retryable-worker',
+        '+0.200 seconds',
+      );
+      assert.strictEqual(retryableClaim.length, 1);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const [firstReclaim, secondReclaim] = await Promise.all([
+        claimJobUsingDatabaseTime(
+          firstConnection,
+          'three-state-claim-job',
+          'expired-worker-a',
+        ),
+        claimJobUsingDatabaseTime(
+          secondConnection,
+          'three-state-claim-job',
+          'expired-worker-b',
+        ),
+      ]);
+      assert.strictEqual(firstReclaim.length + secondReclaim.length, 1);
+      const stored = await firstConnection('push_delivery_jobs')
+        .where({ job_id: 'three-state-claim-job' })
+        .first();
+      assert.ok(['expired-worker-a', 'expired-worker-b'].includes(stored.claim_token));
+    } finally {
+      await firstConnection.destroy();
+      await secondConnection.destroy();
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   test('separates retry scheduling from append-only attempt audit history', async () => {
@@ -1053,7 +1801,7 @@ describe('durable notification schema', { concurrency: false }, () => {
         next_retry_at: null,
         claim_token: 'retry-worker-2',
         claimed_at: retryAt,
-        lease_expires_at: '2026-08-02T08:15:00.000Z',
+        lease_expires_at: leaseExpiresAt,
       });
     assert.strictEqual(secondClaim, 1);
     await recordAttempt(db, {
@@ -1089,7 +1837,7 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
   });
 
-  test('cancels queued work on revocation and filters naturally expired subscriptions', async () => {
+  test('cancels queued work while preserving in-flight audit claims on revocation', async () => {
     const event = await seedEventAndRecipients(db);
     const subscription = createSubscription({
       subscription_id: 'subscription-revoked',
@@ -1162,22 +1910,61 @@ describe('durable notification schema', { concurrency: false }, () => {
     await db('push_subscriptions')
       .where({ subscription_id: processingSubscription.subscription_id })
       .update({ revoked_at: revokedAt });
-    const processingJob = await db('push_delivery_jobs')
+    let processingJob = await db('push_delivery_jobs')
       .where({ job_id: 'processing-revoked-job' })
       .first();
-    assert.strictEqual(processingJob.status, 'cancelled');
-    await assert.rejects(
-      db('push_delivery_attempts').insert({
-        attempt_id: 'attempt-after-revocation',
-        job_id: 'processing-revoked-job',
-        attempt_number: 1,
-        status: 'delivered',
-        response_status: 201,
-        attempted_at: '2026-08-02T08:04:00.000Z',
-        claim_token: 'processing-worker',
-      }),
-      /does not own the active claim/,
+    assert.strictEqual(processingJob.status, 'processing');
+    assert.strictEqual(processingJob.claim_token, 'processing-worker');
+    await recordAttempt(db, {
+      attemptId: 'attempt-after-revocation',
+      jobId: 'processing-revoked-job',
+      attemptNumber: 1,
+      claimToken: 'processing-worker',
+      status: 'delivered',
+      responseStatus: 201,
+      attemptedAt: '2026-08-02T08:04:00.000Z',
+    });
+    processingJob = await db('push_delivery_jobs')
+      .where({ job_id: 'processing-revoked-job' })
+      .first();
+    assert.strictEqual(processingJob.status, 'delivered');
+    assert.strictEqual(
+      await db('push_delivery_attempts')
+        .where({ attempt_id: 'attempt-after-revocation' })
+        .count({ count: '*' })
+        .first()
+        .then((row) => Number(row?.count)),
+      1,
     );
+
+    const retryableSubscription = createSubscription({
+      subscription_id: 'processing-retryable-subscription',
+    });
+    await db('push_subscriptions').insert(retryableSubscription);
+    await insertDeliveryJob(db, {
+      jobId: 'processing-retryable-revoked-job',
+      eventId: event.event_id,
+      subscriptionId: retryableSubscription.subscription_id,
+    });
+    await claimJob(db, 'processing-retryable-revoked-job', 'retryable-worker');
+    await db('push_subscriptions')
+      .where({ subscription_id: retryableSubscription.subscription_id })
+      .update({ revoked_at: revokedAt });
+    await recordAttempt(db, {
+      attemptId: 'retryable-attempt-after-revocation',
+      jobId: 'processing-retryable-revoked-job',
+      attemptNumber: 1,
+      claimToken: 'retryable-worker',
+      status: 'retryable',
+      attemptedAt: '2026-08-02T08:04:00.000Z',
+      nextRetryAt: leaseExpiresAt,
+      errorCode: 'timeout',
+    });
+    const retryableJob = await db('push_delivery_jobs')
+      .where({ job_id: 'processing-retryable-revoked-job' })
+      .first();
+    assert.strictEqual(retryableJob.status, 'cancelled');
+    assert.strictEqual(retryableJob.attempt_count, 1);
 
     const expiredEvent = await seedEventAndRecipients(db, [{ userId: 'expired-user' }], {
       event_id: 'expired-event',
@@ -1210,6 +1997,28 @@ describe('durable notification schema', { concurrency: false }, () => {
         }),
       /cannot claim delivery for an inactive subscription/,
     );
+    assert.ok(
+      await db('push_delivery_jobs_requiring_cancellation')
+        .where({ job_id: 'expired-job' })
+        .first(),
+    );
+    const cleanup = await db.raw(
+      `UPDATE push_delivery_jobs
+       SET status = 'cancelled',
+           next_retry_at = NULL,
+           claim_token = NULL,
+           claimed_at = NULL,
+           lease_expires_at = NULL
+       WHERE job_id = (
+         SELECT job_id
+         FROM push_delivery_jobs_requiring_cancellation
+         WHERE job_id = ?
+       )
+       RETURNING *`,
+      ['expired-job'],
+    ) as Array<Record<string, unknown>>;
+    assert.strictEqual(cleanup.length, 1);
+    assert.strictEqual(cleanup[0]?.status, 'cancelled');
   });
 
   test('cancels existing jobs when an active subscription becomes expired', async () => {
@@ -1233,6 +2042,77 @@ describe('durable notification schema', { concurrency: false }, () => {
       .where({ job_id: 'newly-expired-job' })
       .first();
     assert.strictEqual(job.status, 'cancelled');
+
+    const processingSubscription = createSubscription({
+      subscription_id: 'newly-expired-processing-subscription',
+      expires_at: '2099-01-01T00:00:00.000Z',
+    });
+    await db('push_subscriptions').insert(processingSubscription);
+    await insertDeliveryJob(db, {
+      jobId: 'newly-expired-processing-job',
+      eventId: event.event_id,
+      subscriptionId: processingSubscription.subscription_id,
+    });
+    await claimJob(db, 'newly-expired-processing-job', 'expiry-worker');
+    await db('push_subscriptions')
+      .where({ subscription_id: processingSubscription.subscription_id })
+      .update({ expires_at: '2020-01-01T00:00:00.000Z' });
+    assert.strictEqual(
+      (await db('push_delivery_jobs')
+        .where({ job_id: 'newly-expired-processing-job' })
+        .first()).status,
+      'processing',
+    );
+    await recordAttempt(db, {
+      attemptId: 'attempt-after-expiry-update',
+      jobId: 'newly-expired-processing-job',
+      attemptNumber: 1,
+      claimToken: 'expiry-worker',
+      status: 'delivered',
+      attemptedAt: '2026-08-02T08:02:00.000Z',
+      responseStatus: 201,
+    });
+    assert.strictEqual(
+      (await db('push_delivery_jobs')
+        .where({ job_id: 'newly-expired-processing-job' })
+        .first()).status,
+      'delivered',
+    );
+
+    await db('push_subscriptions').insert({
+      ...createSubscription({ subscription_id: 'naturally-expiring-subscription' }),
+      expires_at: db.raw(
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+0.200 seconds')",
+      ),
+    });
+    await insertDeliveryJob(db, {
+      jobId: 'naturally-expiring-processing-job',
+      eventId: event.event_id,
+      subscriptionId: 'naturally-expiring-subscription',
+    });
+    assert.strictEqual((await claimJobUsingDatabaseTime(
+      db,
+      'naturally-expiring-processing-job',
+      'naturally-expiring-worker',
+      '+0.200 seconds',
+    )).length, 1);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.ok(
+      await db('push_delivery_jobs_requiring_cancellation')
+        .where({ job_id: 'naturally-expiring-processing-job' })
+        .first(),
+    );
+    const cleaned = await db('push_delivery_jobs')
+      .whereIn('job_id', db('push_delivery_jobs_requiring_cancellation').select('job_id'))
+      .where({ job_id: 'naturally-expiring-processing-job' })
+      .update({
+        status: 'cancelled',
+        next_retry_at: null,
+        claim_token: null,
+        claimed_at: null,
+        lease_expires_at: null,
+      });
+    assert.strictEqual(cleaned, 1);
   });
 
   test('rejects delivery ownership mismatches and attempts without a live claim', async () => {
@@ -1380,6 +2260,13 @@ describe('durable notification schema', { concurrency: false }, () => {
       })
       .onConflict(['activity_type', 'activity_key'])
       .merge(['repository', 'status', 'last_activity_at', 'completed_at']);
+    await db('notification_source_activity')
+      .where({ activity_type: 'task', activity_key: 'task-monotonic' })
+      .update({
+        status: 'processing',
+        last_activity_at: '2026-08-02T08:30:00.000Z',
+        completed_at: '2026-08-02T08:20:00.000Z',
+      });
 
     activity = await db('notification_source_activity')
       .where({ activity_type: 'task', activity_key: 'task-monotonic' })

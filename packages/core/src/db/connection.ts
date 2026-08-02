@@ -8,7 +8,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 type KnexEnvironment = 'development' | 'production' | 'test';
-type BetterSqliteConnection = { pragma: (arg: string) => unknown };
+type BetterSqliteConnection = {
+    pragma: (arg: string, options?: { simple?: boolean }) => unknown;
+};
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30000;
 
@@ -22,6 +24,26 @@ function configureSqliteConnection(conn: BetterSqliteConnection): void {
     conn.pragma('journal_mode = WAL');
     conn.pragma('synchronous = NORMAL');
     conn.pragma('foreign_keys = ON');
+    conn.pragma('recursive_triggers = ON');
+
+    if (conn.pragma('foreign_keys', { simple: true }) !== 1) {
+        throw new Error('SQLite foreign_keys pragma must be enabled');
+    }
+    if (conn.pragma('recursive_triggers', { simple: true }) !== 1) {
+        throw new Error('SQLite recursive_triggers pragma must be enabled');
+    }
+}
+
+function configurePooledSqliteConnection(
+    conn: BetterSqliteConnection,
+    done: (err: Error | null) => void
+): void {
+    try {
+        configureSqliteConnection(conn);
+        done(null);
+    } catch (error) {
+        done(error as Error);
+    }
 }
 
 // Get database filename from env or use default
@@ -59,10 +81,7 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                    configureSqliteConnection(conn);
-                    done(null);
-                }
+                afterCreate: configurePooledSqliteConnection
             }
         },
         production: {
@@ -76,10 +95,7 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                    configureSqliteConnection(conn);
-                    done(null);
-                }
+                afterCreate: configurePooledSqliteConnection
             }
         },
         test: {
@@ -93,10 +109,7 @@ function createKnexConfig(): Record<KnexEnvironment, Knex.Config> {
                 tableName: 'knex_migrations'
             },
             pool: {
-                afterCreate: (conn: BetterSqliteConnection, done: (err: Error | null) => void) => {
-                    configureSqliteConnection(conn);
-                    done(null);
-                }
+                afterCreate: configurePooledSqliteConnection
             }
         }
     };
