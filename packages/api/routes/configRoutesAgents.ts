@@ -1,25 +1,12 @@
 import { Request, Response } from 'express';
 import { db, logger } from '@propr/core';
 import * as configManager from '@propr/core';
-import {
-    AgentRegistry,
-    resolveVersion,
-    computeContentHash,
-    generateAgentBundleImageTag,
-    getAgentCliVersionMatrix,
-    findAgentCliVersionConflicts,
-    AGENT_DEFAULT_VERSIONS
-} from '@propr/core';
-import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
+import { AgentRegistry } from '@propr/core';
+import type { AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
-import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
-import type { AgentConfigStore, AgentPreparationDeps, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
-
-const DEFAULT_PREPARATION_DEPS: AgentPreparationDeps = {
-  resolveVersion,
-  computeContentHash,
-  generateAgentBundleImageTag,
-};
+import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
+import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
+import { DEFAULT_PREPARATION_DEPS, loadProcessedAgents, prepareAgentsUpdate, resolveDefaultAgentAlias } from './configRoutesAgentsPreparation.js';
 async function rollbackAgentConfigState({
   configStore,
   registry,
@@ -52,116 +39,6 @@ async function rollbackAgentConfigState({
     console.error(errorContext ?? 'Failed to roll back agent configuration after agents update failure:', rollbackError);
     return false;
   }
-}
-function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault: string | undefined): string | undefined {
-  const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
-  if (enabledAgents.length === 0) return undefined;
-  if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) return enabledAgents[0].alias;
-  return currentDefault;
-}
-function requiresExplicitVersionSpec(versionType: CliVersionType): boolean {
-  return versionType === 'tag' || versionType === 'specific' || versionType === 'custom';
-}
-function hasVersionSpec(versionSpec: string | undefined): boolean {
-  return typeof versionSpec === 'string' && versionSpec.trim().length > 0;
-}
-function classifyVersionResolutionError(error: unknown): { message: string; status: number } {
-  const message = error instanceof Error ? error.message : 'Unknown version resolution error';
-  if (error instanceof TypeError || /fetch|network|timed?\s*out|ECONN|ENOTFOUND/i.test(message)) {
-    return { message, status: 502 };
-  }
-  if (message.startsWith('NPM registry returned ')
-      || message.startsWith('PyPI request failed ')
-      || message.startsWith('PyPI request timed out ')) {
-    return { message, status: 502 };
-  }
-  if (message.startsWith('Version spec required') || message.startsWith('Unknown tag ') || message.includes('not found for package')) {
-    return { message, status: 400 };
-  }
-  return { message, status: 500 };
-}
-async function prepareAgentsUpdate(
-  agents: unknown,
-  preparationDeps: AgentPreparationDeps = DEFAULT_PREPARATION_DEPS
-): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
-  if (!Array.isArray(agents)) {
-    return { error: 'agents must be an array', status: 400 };
-  }
-  const normalizedAgents = normalizeAgentsConfig(agents);
-  const validationError = validateAgentsConfig(normalizedAgents);
-  if (validationError) {
-    return { error: validationError, status: 400 };
-  }
-
-  const processedAgents: AgentConfig[] = [];
-  for (const agent of normalizedAgents) {
-    const processedAgent = { ...agent };
-
-    if (agent.cliVersionType) {
-      const versionType = agent.cliVersionType as CliVersionType;
-      if (requiresExplicitVersionSpec(versionType) && !hasVersionSpec(agent.cliVersion)) {
-        return { error: `Failed to resolve version for agent '${agent.alias}': version spec is required for ${versionType} version type`, status: 400 };
-      }
-      try {
-        const agentType = agent.type as AgentType;
-        const resolvedVersion = await preparationDeps.resolveVersion(agentType, versionType, agent.cliVersion);
-        processedAgent.cliVersionResolved = resolvedVersion;
-      } catch (versionError) {
-        const { message, status } = classifyVersionResolutionError(versionError);
-        return { error: `Failed to resolve version for agent '${agent.alias}': ${message}`, status };
-      }
-    } else {
-      const agentType = agent.type as AgentType;
-      processedAgent.cliVersionType = 'default';
-      processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
-    }
-
-    processedAgents.push(processedAgent);
-  }
-
-  const versionConflicts = findAgentCliVersionConflicts(processedAgents);
-  if (versionConflicts.length > 0) {
-    const details = versionConflicts
-      .map(conflict => `${conflict.agentType} (${conflict.aliases.join(', ')}: ${conflict.versions.join(' vs ')})`)
-      .join('; ');
-    return {
-      error: `Conflicting CLI versions for the unified agent image: ${details}. Enabled agents of the same type must use the same CLI version.`,
-      status: 400
-    };
-  }
-
-  try {
-    const bundleImage = preparationDeps.generateAgentBundleImageTag(
-      getAgentCliVersionMatrix(processedAgents),
-      preparationDeps.computeContentHash()
-    );
-    for (const agent of processedAgents) {
-      agent.dockerImage = bundleImage;
-    }
-  } catch (error) {
-    return {
-      error: `Failed to derive managed agent image: ${error instanceof Error ? error.message : 'unknown image derivation failure'}`,
-      status: 500,
-    };
-  }
-
-  return { processedAgents };
-}
-async function loadProcessedAgents(
-  agents: AgentConfig[],
-  providedProcessedAgents?: AgentConfig[],
-  preparationDeps: AgentPreparationDeps = DEFAULT_PREPARATION_DEPS
-): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
-  if (providedProcessedAgents) {
-    return { processedAgents: providedProcessedAgents };
-  }
-  const prepared = await prepareAgentsUpdate(agents, preparationDeps);
-  if (prepared.error || !prepared.processedAgents) {
-    return prepared.error
-      ? prepared
-      : { status: 500, error: 'Failed to prepare agent configuration update' };
-  }
-  return { processedAgents: prepared.processedAgents };
 }
 async function persistAgentConfigurationAtomically({
   configStore,

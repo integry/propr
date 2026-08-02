@@ -23,6 +23,13 @@ import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import type { GitHubToken } from './githubTypes.js';
 
 const MAX_CONFLICT_MARKER_SCAN_BYTES = 1024 * 1024;
+function getAgentFailureDetail(result: ClaudeCodeResponse): string {
+    for (const value of [result.error, result.logs, result.rawOutput]) {
+        const detail = value?.trim();
+        if (detail) return detail;
+    }
+    return 'Unknown error';
+}
 async function buildMergeCompletionHistoryMetadata(options: {
     stateManager: WorkerStateManager;
     taskId: string;
@@ -166,11 +173,7 @@ export async function handleMergeWithAgent(options: {
         historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model },
     });
     if (!claudeResult.success) {
-        const failureDetail = claudeResult.error?.trim()
-            || claudeResult.logs?.trim()
-            || claudeResult.rawOutput?.trim()
-            || 'Unknown error';
-        throw new Error(`Agent execution failed during conflict resolution: ${failureDetail}`);
+        throw new Error(`Agent execution failed during conflict resolution: ${getAgentFailureDetail(claudeResult)}`);
     }
 
     await verifyNoConflictMarkers(worktreeInfo, pullRequestNumber, correlatedLogger);

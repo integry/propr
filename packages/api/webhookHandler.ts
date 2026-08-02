@@ -65,6 +65,36 @@ function requireSingleHeader(
   return value;
 }
 
+function verifyWebhookSignature(req: Request, res: Response, webhookSecret: string | undefined): boolean {
+  const rawSignature = req.headers['x-hub-signature-256'];
+  if (Array.isArray(rawSignature) || rawSignature?.includes(',')) {
+    console.error('[webhook] Rejecting multi-valued x-hub-signature-256 header');
+    res.status(401).send('Invalid webhook signature header.');
+    return false;
+  }
+  if (!webhookSecret) {
+    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set GH_WEBHOOK_SECRET in the environment to accept webhooks. This is a security requirement: all webhook deliveries are rejected until a secret is provisioned.');
+    res.status(500).send('Webhook secret not configured.');
+    return false;
+  }
+  if (!rawSignature) {
+    console.error('[webhook] No signature provided');
+    res.status(401).send('No webhook signature provided.');
+    return false;
+  }
+
+  const hmac = crypto.createHmac('sha256', webhookSecret);
+  hmac.update(req.body);
+  const signature = Buffer.from(rawSignature);
+  const expected = Buffer.from(`sha256=${hmac.digest('hex')}`);
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(signature, expected)) {
+    console.error('[webhook] Signature mismatch');
+    res.status(401).send('Webhook signature mismatch.');
+    return false;
+  }
+  return true;
+}
+
 export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
   redis: {
@@ -233,36 +263,7 @@ export async function handleWebhookRequest(
   }
 
   // --- Signature verification ---
-  const rawSignature = req.headers['x-hub-signature-256'];
-  if (Array.isArray(rawSignature) || rawSignature?.includes(',')) {
-    console.error('[webhook] Rejecting multi-valued x-hub-signature-256 header');
-    res.status(401).send('Invalid webhook signature header.');
-    return;
-  }
-  const signature: string | undefined = rawSignature;
-  if (webhookSecret) {
-    if (!signature) {
-      console.error('[webhook] No signature provided');
-      res.status(401).send('No webhook signature provided.');
-      return;
-    }
-    const hmac = crypto.createHmac('sha256', webhookSecret);
-    hmac.update(req.body);
-    const computedSignature = `sha256=${hmac.digest('hex')}`;
-
-    // Guard against length mismatch — timingSafeEqual throws if buffers differ in length
-    const sigBuf = Buffer.from(signature);
-    const expectedBuf = Buffer.from(computedSignature);
-    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-      console.error('[webhook] Signature mismatch');
-      res.status(401).send('Webhook signature mismatch.');
-      return;
-    }
-  } else {
-    console.error('[webhook] GH_WEBHOOK_SECRET is not configured — rejecting request. Set GH_WEBHOOK_SECRET in the environment to accept webhooks. This is a security requirement: all webhook deliveries are rejected until a secret is provisioned.');
-    res.status(500).send('Webhook secret not configured.');
-    return;
-  }
+  if (!verifyWebhookSignature(req, res, webhookSecret)) return;
 
   // --- Validate required headers before any Redis writes ---
   const rawDeliveryId = requireSingleHeader(req, res, 'x-github-delivery');
