@@ -26,8 +26,7 @@ import {
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
-  createAgentRuntimeRoutes,
-  attachmentUpload
+  createAgentRuntimeRoutes, createNotificationRoutes, attachmentUpload
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
@@ -247,7 +246,7 @@ function setupRoutes(): void {
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
-  const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
+  const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue }), notificationRoutes = createNotificationRoutes();
   const register = (method: RouteMethod, path: string, ...handlers: RouteHandler[]): void => {
     app[method](path, ...handlers);
   };
@@ -280,7 +279,7 @@ function setupRoutes(): void {
     ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
-    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
+    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences], ['get', '/api/notifications', notificationRoutes.getNotifications], ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
     ['get', '/api/agent-runtime/packages', agentRuntimeRoutes.getRuntimePackages],
     ['get', '/api/agent-runtime/packages/search', agentRuntimeRoutes.searchRuntimePackages],
     ['post', '/api/agent-runtime/packages/validate', agentRuntimeRoutes.validateRuntimePackages],
