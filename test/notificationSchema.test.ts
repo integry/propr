@@ -536,6 +536,8 @@ describe('durable notification schema', { concurrency: false }, () => {
       'notification_user_states_visible_idx',
       'notification_user_states_unread_idx',
       'push_subscriptions_active_endpoint_idx',
+      'push_subscriptions_expiration_idx',
+      'push_delivery_jobs_subscription_user_idx',
       'push_delivery_jobs_pending_idx',
       'push_delivery_jobs_retry_idx',
       'push_delivery_jobs_processing_lease_idx',
@@ -562,6 +564,14 @@ describe('durable notification schema', { concurrency: false }, () => {
       /CREATE UNIQUE INDEX[\s\S]+WHERE revoked_at IS NULL/i,
     );
     assert.match(
+      indexSql('push_subscriptions_expiration_idx'),
+      /\(expires_at, subscription_id, user_id\)[\s\S]+WHERE revoked_at IS NULL AND expires_at IS NOT NULL/i,
+    );
+    assert.match(
+      indexSql('push_delivery_jobs_subscription_user_idx'),
+      /\(subscription_id, user_id\)/i,
+    );
+    assert.match(
       indexSql('push_delivery_jobs_pending_idx'),
       /WHERE status = 'pending'/i,
     );
@@ -585,6 +595,30 @@ describe('durable notification schema', { concurrency: false }, () => {
     ) as Array<{ detail: string }>;
     assert.ok(
       retryPlan.some(({ detail }) => detail.includes('push_delivery_jobs_retry_idx')),
+    );
+    const subscriptionJobsPlan = await db.raw(
+      `EXPLAIN QUERY PLAN
+       SELECT job_id
+       FROM push_delivery_jobs
+       WHERE subscription_id = ? AND user_id = ?`,
+      ['subscription-plan', 'user-a'],
+    ) as Array<{ detail: string }>;
+    assert.ok(
+      subscriptionJobsPlan.some(({ detail }) =>
+        detail.includes('push_delivery_jobs_subscription_user_idx')),
+    );
+    const expirationPlan = await db.raw(
+      `EXPLAIN QUERY PLAN
+       SELECT subscription_id
+       FROM push_subscriptions
+       WHERE revoked_at IS NULL
+         AND expires_at IS NOT NULL
+         AND expires_at <= ?`,
+      [timestamp],
+    ) as Array<{ detail: string }>;
+    assert.ok(
+      expirationPlan.some(({ detail }) =>
+        detail.includes('push_subscriptions_expiration_idx')),
     );
 
     const dispatcherPlan = await db.raw(
@@ -929,6 +963,17 @@ describe('durable notification schema', { concurrency: false }, () => {
       dismissedAt: timestamp,
     });
     assert.strictEqual(notification.dismissedAt, timestamp);
+    for (const field of ['readAt', 'dismissedAt'] as const) {
+      assert.throws(
+        () => parseNotification({
+          ...createContractEvent(),
+          readAt: null,
+          dismissedAt: null,
+          [field]: eventCreatedAt,
+        }),
+        new RegExp('notification\\.' + field + '.*at or after event createdAt'),
+      );
+    }
     const listResponse = parseNotificationListResponse({
       notifications: [{
         ...createContractEvent(),
@@ -1019,6 +1064,16 @@ describe('durable notification schema', { concurrency: false }, () => {
         },
         valid: false,
       },
+      {
+        id: 'unknown-action-property',
+        action: {
+          type: 'navigate',
+          label: 'Open',
+          href: '/tasks/1',
+          lable: 'Typo',
+        },
+        valid: false,
+      },
     ];
 
     for (const { id, action, valid } of actionCorpus) {
@@ -1092,6 +1147,12 @@ describe('durable notification schema', { concurrency: false }, () => {
         type: 'review',
         repository: 'integry/propr',
         prNumber: Number.MAX_SAFE_INTEGER + 1,
+      },
+      {
+        type: 'task',
+        repository: 'integry/propr',
+        taskId: 'task-1',
+        taskID: 'typo',
       },
     ];
     for (const [index, target] of incompatibleTargets.entries()) {
@@ -1292,6 +1353,19 @@ describe('durable notification schema', { concurrency: false }, () => {
       }),
       /notification_user_states_temporal_order_check/i,
     );
+    for (const field of ['read_at', 'dismissed_at'] as const) {
+      await assert.rejects(
+        db('notification_user_states').insert({
+          event_id: event.event_id,
+          user_id: 'future-' + field,
+          inbox_enabled: true,
+          push_enabled: false,
+          created_at: timestamp,
+          [field]: '2099-01-01T00:00:00.000Z',
+        }),
+        /notification Inbox state timestamps cannot be in the future/i,
+      );
+    }
 
     await db('notification_user_states').insert({
       event_id: event.event_id,
@@ -1300,6 +1374,14 @@ describe('durable notification schema', { concurrency: false }, () => {
       push_enabled: true,
       created_at: timestamp,
     });
+    for (const field of ['read_at', 'dismissed_at'] as const) {
+      await assert.rejects(
+        db('notification_user_states')
+          .where({ event_id: event.event_id, user_id: 'temporal-user' })
+          .update({ [field]: '2099-01-01T00:00:00.000Z' }),
+        /notification Inbox state timestamps cannot be in the future/i,
+      );
+    }
     const subscription = createSubscription({
       subscription_id: 'temporal-subscription',
       user_id: 'temporal-user',
@@ -1773,6 +1855,498 @@ describe('durable notification schema', { concurrency: false }, () => {
     );
   });
 
+  test('covers every shared payload limit at its persistence/runtime boundaries', async () => {
+    type LimitName = keyof typeof NOTIFICATION_PAYLOAD_LIMITS;
+    type StringBoundaryCase = {
+      name: Exclude<LimitName, 'metadataBytes' | 'metadataDepth' | 'metadataNodes'>;
+      minimum: string;
+      maximum: string;
+      overflow: string;
+      parse?: (value: string) => unknown;
+      insert: (value: string, boundary: string) => Promise<unknown>;
+      sqlError: RegExp;
+    };
+
+    const urlPrefix = 'https://example.test/';
+    const insertAttemptBoundary = async (
+      field: 'error_code' | 'error_message',
+      value: string,
+      boundary: string,
+    ): Promise<unknown> => {
+      const stem = field.replace('_', '-') + '-' + boundary;
+      const event = await seedEventAndRecipients(db, undefined, {
+        event_id: 'limit-' + stem + '-event',
+      });
+      const subscription = createSubscription({
+        subscription_id: 'limit-' + stem + '-subscription',
+      });
+      await db('push_subscriptions').insert(subscription);
+      const jobId = 'limit-' + stem + '-job';
+      await insertDeliveryJob(db, {
+        jobId,
+        eventId: event.event_id,
+        subscriptionId: subscription.subscription_id,
+      });
+      const claimToken = 'limit-' + stem + '-claim';
+      await claimJob(db, jobId, claimToken);
+      return db('push_delivery_attempts').insert({
+        attempt_id: 'limit-' + stem + '-attempt',
+        job_id: jobId,
+        attempt_number: 1,
+        status: 'failed',
+        response_status: null,
+        error_code: field === 'error_code' ? value : 'failure',
+        error_message: field === 'error_message' ? value : null,
+        attempted_at: '2026-08-02T08:02:00.000Z',
+        next_retry_at: null,
+        claim_token: claimToken,
+      });
+    };
+    const runtimeFailureAttempt = (
+      field: 'errorCode' | 'errorMessage',
+      value: string,
+    ) => parsePushDeliveryAttempt({
+      id: 'limit-runtime-attempt',
+      jobId: 'limit-runtime-job',
+      attemptNumber: 1,
+      status: 'failed',
+      responseStatus: null,
+      errorCode: field === 'errorCode' ? value : 'failure',
+      errorMessage: field === 'errorMessage' ? value : null,
+      attemptedAt: timestamp,
+      nextRetryAt: null,
+      claimToken: 'limit-runtime-claim',
+      createdAt: timestamp,
+    });
+
+    const stringCases: StringBoundaryCase[] = [
+      {
+        name: 'identifierBytes',
+        minimum: 'i',
+        maximum: 'i'.repeat(NOTIFICATION_PAYLOAD_LIMITS.identifierBytes),
+        overflow: 'i'.repeat(NOTIFICATION_PAYLOAD_LIMITS.identifierBytes + 1),
+        parse: (value) => parseNotificationEvent({
+          ...createContractEvent(),
+          id: value,
+        }),
+        insert: (value) => db('notification_events').insert(createEvent({
+          event_id: value,
+          title: 'Identifier boundary',
+          body: 'Identifier boundary body',
+        })),
+        sqlError: /notification_events_required_text_check/i,
+      },
+      {
+        name: 'deduplicationKeyBytes',
+        minimum: 'd',
+        maximum: 'd'.repeat(NOTIFICATION_PAYLOAD_LIMITS.deduplicationKeyBytes),
+        overflow: 'd'.repeat(NOTIFICATION_PAYLOAD_LIMITS.deduplicationKeyBytes + 1),
+        parse: (value) => parseNotificationEvent({
+          ...createContractEvent(),
+          deduplicationKey: value,
+        }),
+        insert: (value, boundary) => db('notification_events').insert(createEvent({
+          event_id: 'limit-deduplication-' + boundary,
+          deduplication_key: value,
+        })),
+        sqlError: /notification_events_required_text_check/i,
+      },
+      {
+        name: 'repositoryBytes',
+        minimum: 'a/b',
+        maximum: 'a/' + 'r'.repeat(NOTIFICATION_PAYLOAD_LIMITS.repositoryBytes - 2),
+        overflow: 'a/' + 'r'.repeat(NOTIFICATION_PAYLOAD_LIMITS.repositoryBytes - 1),
+        parse: (value) => parseNotificationTarget({
+          type: 'task',
+          repository: value,
+          taskId: 'task-1',
+        }),
+        insert: (value, boundary) => db('notification_events').insert(createEvent({
+          event_id: 'limit-repository-' + boundary,
+          target_json: JSON.stringify({
+            type: 'task',
+            repository: value,
+            taskId: 'task-1',
+          }),
+        })),
+        sqlError: /notification_events_target_contract_check/i,
+      },
+      {
+        name: 'titleBytes',
+        minimum: 't',
+        maximum: 't'.repeat(NOTIFICATION_PAYLOAD_LIMITS.titleBytes),
+        overflow: 't'.repeat(NOTIFICATION_PAYLOAD_LIMITS.titleBytes + 1),
+        parse: (value) => parseNotificationEvent({
+          ...createContractEvent(),
+          title: value,
+        }),
+        insert: (value, boundary) => db('notification_events').insert(createEvent({
+          event_id: 'limit-title-' + boundary,
+          title: value,
+        })),
+        sqlError: /notification_events_required_text_check/i,
+      },
+      {
+        name: 'bodyBytes',
+        minimum: '',
+        maximum: 'b'.repeat(NOTIFICATION_PAYLOAD_LIMITS.bodyBytes),
+        overflow: 'b'.repeat(NOTIFICATION_PAYLOAD_LIMITS.bodyBytes + 1),
+        parse: (value) => parseNotificationEvent({
+          ...createContractEvent(),
+          body: value,
+        }),
+        insert: (value, boundary) => db('notification_events').insert(createEvent({
+          event_id: 'limit-body-' + boundary,
+          body: value,
+        })),
+        sqlError: /notification_events_required_text_check/i,
+      },
+      {
+        name: 'actionLabelBytes',
+        minimum: 'a',
+        maximum: 'a'.repeat(NOTIFICATION_PAYLOAD_LIMITS.actionLabelBytes),
+        overflow: 'a'.repeat(NOTIFICATION_PAYLOAD_LIMITS.actionLabelBytes + 1),
+        parse: (value) => parseNotificationAction({
+          type: 'navigate',
+          label: value,
+          href: '/tasks/1',
+        }),
+        insert: (value, boundary) => db('notification_events').insert(createEvent({
+          event_id: 'limit-action-label-' + boundary,
+          action_json: JSON.stringify({
+            type: 'navigate',
+            label: value,
+            href: '/tasks/1',
+          }),
+        })),
+        sqlError: /notification_events_action_json_check/i,
+      },
+      {
+        name: 'urlBytes',
+        minimum: urlPrefix,
+        maximum: urlPrefix + 'u'.repeat(
+          NOTIFICATION_PAYLOAD_LIMITS.urlBytes - Buffer.byteLength(urlPrefix),
+        ),
+        overflow: urlPrefix + 'u'.repeat(
+          NOTIFICATION_PAYLOAD_LIMITS.urlBytes - Buffer.byteLength(urlPrefix) + 1,
+        ),
+        parse: (value) => parseNotificationAction({
+          type: 'external_link',
+          label: 'Open',
+          href: value,
+        }),
+        insert: (value, boundary) => db('notification_events').insert(createEvent({
+          event_id: 'limit-url-' + boundary,
+          action_json: JSON.stringify({
+            type: 'external_link',
+            label: 'Open',
+            href: value,
+          }),
+        })),
+        sqlError: /notification_events_action_json_check/i,
+      },
+      {
+        name: 'userAgentBytes',
+        minimum: '',
+        maximum: 'u'.repeat(NOTIFICATION_PAYLOAD_LIMITS.userAgentBytes),
+        overflow: 'u'.repeat(NOTIFICATION_PAYLOAD_LIMITS.userAgentBytes + 1),
+        insert: (value, boundary) => db('push_subscriptions').insert({
+          ...createSubscription({
+            subscription_id: 'limit-user-agent-' + boundary,
+          }),
+          user_agent: value,
+        }),
+        sqlError: /push_subscriptions_required_values_check/i,
+      },
+      {
+        name: 'errorCodeBytes',
+        minimum: 'e',
+        maximum: 'e'.repeat(NOTIFICATION_PAYLOAD_LIMITS.errorCodeBytes),
+        overflow: 'e'.repeat(NOTIFICATION_PAYLOAD_LIMITS.errorCodeBytes + 1),
+        parse: (value) => runtimeFailureAttempt('errorCode', value),
+        insert: (value, boundary) => insertAttemptBoundary(
+          'error_code',
+          value,
+          boundary,
+        ),
+        sqlError: /push_delivery_attempts_text_values_check/i,
+      },
+      {
+        name: 'errorMessageBytes',
+        minimum: '',
+        maximum: 'e'.repeat(NOTIFICATION_PAYLOAD_LIMITS.errorMessageBytes),
+        overflow: 'e'.repeat(NOTIFICATION_PAYLOAD_LIMITS.errorMessageBytes + 1),
+        parse: (value) => runtimeFailureAttempt('errorMessage', value),
+        insert: (value, boundary) => insertAttemptBoundary(
+          'error_message',
+          value,
+          boundary,
+        ),
+        sqlError: /push_delivery_attempts_text_values_check/i,
+      },
+    ];
+
+    for (const boundaryCase of stringCases) {
+      if (boundaryCase.parse !== undefined) {
+        assert.doesNotThrow(
+          () => boundaryCase.parse?.(boundaryCase.minimum),
+          boundaryCase.name + ' runtime minimum',
+        );
+        assert.doesNotThrow(
+          () => boundaryCase.parse?.(boundaryCase.maximum),
+          boundaryCase.name + ' runtime maximum',
+        );
+        assert.throws(
+          () => boundaryCase.parse?.(boundaryCase.overflow),
+          /UTF-8 bytes/,
+          boundaryCase.name + ' runtime overflow',
+        );
+      }
+      await boundaryCase.insert(boundaryCase.minimum, 'minimum');
+      await boundaryCase.insert(boundaryCase.maximum, 'maximum');
+      await assert.rejects(
+        boundaryCase.insert(boundaryCase.overflow, 'overflow'),
+        boundaryCase.sqlError,
+        boundaryCase.name + ' SQL overflow',
+      );
+    }
+
+    const metadataForBytes = (serializedBytes: number): Record<string, string> => ({
+      value: 'm'.repeat(serializedBytes - Buffer.byteLength('{"value":""}')),
+    });
+    const maximumMetadata = metadataForBytes(NOTIFICATION_PAYLOAD_LIMITS.metadataBytes);
+    const oversizedMetadata = metadataForBytes(
+      NOTIFICATION_PAYLOAD_LIMITS.metadataBytes + 1,
+    );
+    assert.strictEqual(
+      Buffer.byteLength(JSON.stringify(maximumMetadata)),
+      NOTIFICATION_PAYLOAD_LIMITS.metadataBytes,
+    );
+    assert.doesNotThrow(() => parseNotificationEvent({
+      ...createContractEvent(),
+      metadata: {},
+    }));
+    assert.doesNotThrow(() => parseNotificationEvent({
+      ...createContractEvent(),
+      metadata: maximumMetadata,
+    }));
+    assert.throws(
+      () => parseNotificationEvent({
+        ...createContractEvent(),
+        metadata: oversizedMetadata,
+      }),
+      /metadata no larger/,
+    );
+    await db('notification_events').insert(createEvent({
+      event_id: 'limit-metadata-bytes-minimum',
+      metadata_json: JSON.stringify({}),
+    }));
+    await db('notification_events').insert(createEvent({
+      event_id: 'limit-metadata-bytes-maximum',
+      metadata_json: JSON.stringify(maximumMetadata),
+    }));
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'limit-metadata-bytes-overflow',
+        metadata_json: JSON.stringify(oversizedMetadata),
+      })),
+      /notification_events_metadata_json_check/i,
+    );
+
+    const metadataAtDepth = (wrappers: number): Record<string, unknown> => {
+      let metadata: Record<string, unknown> = { leaf: true };
+      for (let depth = 0; depth < wrappers; depth += 1) {
+        metadata = { nested: metadata };
+      }
+      return metadata;
+    };
+    const maximumDepthMetadata = metadataAtDepth(
+      NOTIFICATION_PAYLOAD_LIMITS.metadataDepth - 1,
+    );
+    const oversizedDepthMetadata = metadataAtDepth(
+      NOTIFICATION_PAYLOAD_LIMITS.metadataDepth,
+    );
+    assert.doesNotThrow(() => parseNotificationEvent({
+      ...createContractEvent(),
+      metadata: maximumDepthMetadata,
+    }));
+    assert.throws(
+      () => parseNotificationEvent({
+        ...createContractEvent(),
+        metadata: oversizedDepthMetadata,
+      }),
+      /nested at most/,
+    );
+    await db('notification_events').insert(createEvent({
+      event_id: 'limit-metadata-depth-maximum',
+      metadata_json: JSON.stringify(maximumDepthMetadata),
+    }));
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'limit-metadata-depth-overflow',
+        metadata_json: JSON.stringify(oversizedDepthMetadata),
+      })),
+      /metadata exceeds structural limits/i,
+    );
+
+    const metadataWithNodes = (nodes: number): Record<string, unknown> => ({
+      values: Array.from({ length: nodes - 2 }, () => null),
+    });
+    const maximumNodeMetadata = metadataWithNodes(
+      NOTIFICATION_PAYLOAD_LIMITS.metadataNodes,
+    );
+    const oversizedNodeMetadata = metadataWithNodes(
+      NOTIFICATION_PAYLOAD_LIMITS.metadataNodes + 1,
+    );
+    assert.doesNotThrow(() => parseNotificationEvent({
+      ...createContractEvent(),
+      metadata: maximumNodeMetadata,
+    }));
+    assert.throws(
+      () => parseNotificationEvent({
+        ...createContractEvent(),
+        metadata: oversizedNodeMetadata,
+      }),
+      /at most 256 nodes|256-node limit/,
+    );
+    await db('notification_events').insert(createEvent({
+      event_id: 'limit-metadata-nodes-maximum',
+      metadata_json: JSON.stringify(maximumNodeMetadata),
+    }));
+    await assert.rejects(
+      db('notification_events').insert(createEvent({
+        event_id: 'limit-metadata-nodes-overflow',
+        metadata_json: JSON.stringify(oversizedNodeMetadata),
+      })),
+      /metadata exceeds structural limits/i,
+    );
+
+    const coveredLimits = new Set<LimitName>([
+      ...stringCases.map(({ name }) => name),
+      'metadataBytes',
+      'metadataDepth',
+      'metadataNodes',
+    ]);
+    assert.deepStrictEqual(
+      [...coveredLimits].sort(),
+      (Object.keys(NOTIFICATION_PAYLOAD_LIMITS) as LimitName[]).sort(),
+    );
+  });
+
+  test('keeps delivery deduplication and claim-token boundaries in runtime/SQL parity', async () => {
+    const event = await seedEventAndRecipients(db, undefined, {
+      event_id: 'delivery-boundary-event',
+    });
+    const runtimeJob = (deduplicationKey: string) => ({
+      id: 'delivery-boundary-job',
+      deduplicationKey,
+      eventId: event.event_id,
+      userId: 'user-a',
+      subscriptionId: 'delivery-boundary-subscription',
+      attemptCount: 0,
+      status: 'pending',
+      nextRetryAt: null,
+      claimToken: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    for (const length of [256, NOTIFICATION_PAYLOAD_LIMITS.deduplicationKeyBytes]) {
+      const deduplicationKey = 'd'.repeat(length);
+      assert.strictEqual(
+        parsePushDeliveryJob(runtimeJob(deduplicationKey)).deduplicationKey,
+        deduplicationKey,
+      );
+      const subscription = createSubscription({
+        subscription_id: 'delivery-boundary-subscription-' + length,
+      });
+      await db('push_subscriptions').insert(subscription);
+      await db('push_delivery_jobs').insert({
+        job_id: 'delivery-boundary-job-' + length,
+        deduplication_key: deduplicationKey,
+        event_id: event.event_id,
+        user_id: 'user-a',
+        subscription_id: subscription.subscription_id,
+        created_at: timestamp,
+        updated_at: timestamp,
+      });
+    }
+
+    const oversizedDeduplicationKey = 'd'.repeat(
+      NOTIFICATION_PAYLOAD_LIMITS.deduplicationKeyBytes + 1,
+    );
+    assert.throws(
+      () => parsePushDeliveryJob(runtimeJob(oversizedDeduplicationKey)),
+      /512 UTF-8 bytes/,
+    );
+    const oversizedSubscription = createSubscription({
+      subscription_id: 'delivery-boundary-subscription-oversized',
+    });
+    await db('push_subscriptions').insert(oversizedSubscription);
+    await assert.rejects(
+      db('push_delivery_jobs').insert({
+        job_id: 'delivery-boundary-job-oversized',
+        deduplication_key: oversizedDeduplicationKey,
+        event_id: event.event_id,
+        user_id: 'user-a',
+        subscription_id: oversizedSubscription.subscription_id,
+        created_at: timestamp,
+        updated_at: timestamp,
+      }),
+      /push_delivery_jobs_identifiers_check/i,
+    );
+
+    const boundedClaimToken = 'c'.repeat(NOTIFICATION_PAYLOAD_LIMITS.identifierBytes);
+    assert.strictEqual((await claimJob(
+      db,
+      'delivery-boundary-job-256',
+      boundedClaimToken,
+    )).length, 1);
+    assert.strictEqual(parsePushDeliveryJob({
+      ...runtimeJob('d'.repeat(256)),
+      attemptCount: 0,
+      status: 'processing',
+      claimToken: boundedClaimToken,
+      claimedAt,
+      leaseExpiresAt,
+    }).claimToken, boundedClaimToken);
+    assert.throws(
+      () => parsePushDeliveryJob({
+        ...runtimeJob('d'.repeat(256)),
+        attemptCount: 0,
+        status: 'processing',
+        claimToken: boundedClaimToken + 'c',
+        claimedAt,
+        leaseExpiresAt,
+      }),
+      /255 UTF-8 bytes/,
+    );
+    assert.strictEqual(parsePushDeliveryAttempt({
+      id: 'delivery-boundary-attempt',
+      jobId: 'delivery-boundary-job-256',
+      attemptNumber: 1,
+      status: 'delivered',
+      responseStatus: 201,
+      errorCode: null,
+      errorMessage: null,
+      attemptedAt: '2026-08-02T08:02:00.000Z',
+      nextRetryAt: null,
+      claimToken: boundedClaimToken,
+      createdAt: '2026-08-02T08:02:00.000Z',
+    }).claimToken, boundedClaimToken);
+    await recordAttempt(db, {
+      attemptId: 'delivery-boundary-attempt',
+      jobId: 'delivery-boundary-job-256',
+      attemptNumber: 1,
+      claimToken: boundedClaimToken,
+      status: 'delivered',
+      responseStatus: 201,
+      attemptedAt: '2026-08-02T08:02:00.000Z',
+    });
+  });
+
   test('validates every public notification persistence and API boundary', () => {
     assert.deepStrictEqual(parseNotificationUserState({
       eventId: 'event-1',
@@ -2046,6 +2620,15 @@ describe('durable notification schema', { concurrency: false }, () => {
     });
 
     await assert.rejects(
+      claimJob(
+        db,
+        'atomic-job',
+        'c'.repeat(NOTIFICATION_PAYLOAD_LIMITS.identifierBytes + 1),
+      ),
+      /push_delivery_jobs_state_check/i,
+    );
+
+    await assert.rejects(
       db('push_delivery_jobs')
         .where({ job_id: 'atomic-job' })
         .update({
@@ -2100,6 +2683,115 @@ describe('durable notification schema', { concurrency: false }, () => {
       }),
       /does not own the active claim/,
     );
+  });
+
+  test('classifies delivered and failure attempts by HTTP response status', async () => {
+    const runtimeAttempt = {
+      id: 'runtime-outcome-attempt',
+      jobId: 'runtime-outcome-job',
+      attemptNumber: 1,
+      attemptedAt: timestamp,
+      claimToken: 'runtime-outcome-claim',
+      createdAt: timestamp,
+    };
+    for (const responseStatus of [200, 299]) {
+      assert.strictEqual(parsePushDeliveryAttempt({
+        ...runtimeAttempt,
+        status: 'delivered',
+        responseStatus,
+        errorCode: null,
+        errorMessage: null,
+        nextRetryAt: null,
+      }).responseStatus, responseStatus);
+    }
+    for (const responseStatus of [199, 300, 500]) {
+      assert.throws(
+        () => parsePushDeliveryAttempt({
+          ...runtimeAttempt,
+          status: 'delivered',
+          responseStatus,
+          errorCode: null,
+          errorMessage: null,
+          nextRetryAt: null,
+        }),
+        /successful delivered outcome/,
+      );
+    }
+    for (const status of ['retryable', 'failed'] as const) {
+      for (const responseStatus of [200, 299]) {
+        assert.throws(
+          () => parsePushDeliveryAttempt({
+            ...runtimeAttempt,
+            status,
+            responseStatus,
+            errorCode: null,
+            errorMessage: null,
+            nextRetryAt: status === 'retryable' ? leaseExpiresAt : null,
+          }),
+          /non-2xx HTTP status/,
+        );
+      }
+    }
+    assert.strictEqual(parsePushDeliveryAttempt({
+      ...runtimeAttempt,
+      status: 'retryable',
+      responseStatus: 300,
+      errorCode: null,
+      errorMessage: null,
+      nextRetryAt: leaseExpiresAt,
+    }).status, 'retryable');
+    assert.strictEqual(parsePushDeliveryAttempt({
+      ...runtimeAttempt,
+      status: 'failed',
+      responseStatus: 500,
+      errorCode: null,
+      errorMessage: null,
+      nextRetryAt: null,
+    }).status, 'failed');
+
+    const event = await seedEventAndRecipients(db, undefined, {
+      event_id: 'http-outcome-event',
+    });
+    const subscription = createSubscription({
+      subscription_id: 'http-outcome-subscription',
+    });
+    await db('push_subscriptions').insert(subscription);
+    await insertDeliveryJob(db, {
+      jobId: 'http-outcome-job',
+      eventId: event.event_id,
+      subscriptionId: subscription.subscription_id,
+    });
+    await claimJob(db, 'http-outcome-job', 'http-outcome-claim');
+
+    const invalidOutcomes = [
+      { status: 'delivered', response_status: 500, next_retry_at: null },
+      { status: 'retryable', response_status: 200, next_retry_at: leaseExpiresAt },
+      { status: 'failed', response_status: 299, next_retry_at: null },
+    ];
+    for (const [index, outcome] of invalidOutcomes.entries()) {
+      await assert.rejects(
+        db('push_delivery_attempts').insert({
+          attempt_id: 'invalid-http-outcome-' + index,
+          job_id: 'http-outcome-job',
+          attempt_number: 1,
+          attempted_at: '2026-08-02T08:02:00.000Z',
+          claim_token: 'http-outcome-claim',
+          error_code: null,
+          error_message: null,
+          ...outcome,
+        }),
+        /push_delivery_attempts_outcome_check/i,
+      );
+    }
+    await recordAttempt(db, {
+      attemptId: 'valid-http-outcome',
+      jobId: 'http-outcome-job',
+      attemptNumber: 1,
+      claimToken: 'http-outcome-claim',
+      status: 'delivered',
+      responseStatus: 204,
+      attemptedAt: '2026-08-02T08:02:00.000Z',
+    });
   });
 
   test('uses one database-timed claim statement for pending, retryable, and expired processing jobs', async () => {
@@ -2293,6 +2985,31 @@ describe('durable notification schema', { concurrency: false }, () => {
 
   test('cancels queued work while preserving in-flight audit claims on revocation', async () => {
     const event = await seedEventAndRecipients(db);
+    const unreferencedActive = createSubscription({
+      subscription_id: 'unreferenced-active-subscription',
+      endpoint: pushEndpointOrigin + '/fcm/send/unreferenced-active',
+    });
+    await db('push_subscriptions').insert(unreferencedActive);
+    await assert.rejects(
+      db('push_subscriptions')
+        .where({ subscription_id: unreferencedActive.subscription_id })
+        .delete(),
+      /push subscription versions cannot be deleted/i,
+    );
+    await assert.rejects(
+      db('push_subscriptions').insert(createSubscription({
+        subscription_id: unreferencedActive.subscription_id,
+        endpoint: pushEndpointOrigin + '/fcm/send/reused-id',
+      })),
+      /UNIQUE constraint failed/i,
+    );
+    await assert.rejects(
+      db('push_subscriptions').insert(createSubscription({
+        subscription_id: 'reused-active-endpoint',
+        endpoint: unreferencedActive.endpoint,
+      })),
+      /UNIQUE constraint failed/i,
+    );
     const subscription = createSubscription({
       subscription_id: 'subscription-revoked',
       endpoint: pushEndpointOrigin + '/fcm/send/versioned-endpoint',
@@ -2348,7 +3065,7 @@ describe('durable notification schema', { concurrency: false }, () => {
       db('push_subscriptions')
         .where({ subscription_id: subscription.subscription_id })
         .delete(),
-      /revoked push subscriptions cannot be deleted/,
+      /push subscription versions cannot be deleted/,
     );
     await db('push_subscriptions').insert(createSubscription({
       subscription_id: 'subscription-version-2',
@@ -2754,11 +3471,39 @@ describe('notification migration runner compatibility', { concurrency: false }, 
         await db.migrate.up({ name: migrationName });
       }
       assert.strictEqual(await db.schema.hasTable('notification_events'), false);
+      await db('system_configs').insert({
+        key: 'legacy-trigger-regression',
+        value: JSON.stringify({ enabled: false }),
+      });
+      await db.raw(`
+        CREATE TABLE legacy_system_config_updates (
+          config_key TEXT NOT NULL
+        )
+      `);
+      await db.raw(`
+        CREATE TRIGGER legacy_system_configs_touch_updated_at
+        AFTER UPDATE OF value ON system_configs
+        BEGIN
+          UPDATE system_configs
+          SET updated_at = '2026-08-02 08:00:00'
+          WHERE key = NEW.key;
+          INSERT INTO legacy_system_config_updates (config_key) VALUES (NEW.key);
+        END
+      `);
 
       const [, upgradeMigrations] = await db.migrate.latest();
       assert.strictEqual(upgradeMigrations[0], notificationMigrationName);
       assert.ok(upgradeMigrations.includes(notificationMigrationName));
       assert.strictEqual(await db.schema.hasTable('push_delivery_attempts'), true);
+      await db('system_configs')
+        .where({ key: 'legacy-trigger-regression' })
+        .update({ value: JSON.stringify({ enabled: true }) });
+      const legacyConfig = await db('system_configs')
+        .where({ key: 'legacy-trigger-regression' })
+        .first();
+      const legacyUpdates = await db('legacy_system_config_updates');
+      assert.strictEqual(legacyConfig.updated_at, '2026-08-02 08:00:00');
+      assert.deepStrictEqual(legacyUpdates, [{ config_key: 'legacy-trigger-regression' }]);
 
       const [, repeatedMigrations] = await db.migrate.latest();
       assert.deepStrictEqual(repeatedMigrations, []);

@@ -33,9 +33,16 @@ export const MAX_CANONICAL_TIMESTAMP_EPOCH_MS = 253_402_300_799_999;
 /**
  * Push-service hosts that notification workers may contact.
  *
+ * The supported endpoint families are FCM (Chromium-family browsers), Mozilla
+ * Autopush (Firefox), and Apple Web Push (Safari, via the suffix list below).
+ * Other browser or vendor endpoints are intentionally unsupported until both
+ * this contract and the persisted SQLite allowlist are expanded.
+ *
  * Delivery clients must also disable redirects. Keeping this list exact makes
  * a stored subscription safe to use without performing requests to arbitrary
  * user-selected hosts or relying on DNS results captured at registration time.
+ * Changing either list requires a schema migration for existing databases;
+ * changing this TypeScript constant alone does not update their CHECK clauses.
  */
 export const WEB_PUSH_ENDPOINT_HOSTS = [
   'fcm.googleapis.com',
@@ -156,7 +163,10 @@ export interface SystemFailureNotificationTarget {
   correlationId?: string;
 }
 
-/** A stable destination that every notification client can interpret. */
+/**
+ * A stable destination that every notification client can interpret.
+ * Target objects are closed contracts; use event metadata for extensions.
+ */
 export type NotificationTarget =
   | PlanNotificationTarget
   | TaskNotificationTarget
@@ -190,7 +200,7 @@ export interface ExternalLinkNotificationAction {
   href: string;
 }
 
-/** A user-visible action with exhaustive type discrimination. */
+/** A closed, user-visible action contract with exhaustive type discrimination. */
 export type NotificationAction =
   | NavigateNotificationAction
   | ExternalLinkNotificationAction;
@@ -386,6 +396,7 @@ interface PushDeliveryAttemptFields {
 export interface DeliveredPushDeliveryAttempt extends PushDeliveryAttemptFields {
   status: 'delivered';
   nextRetryAt: null;
+  /** Successful HTTP response status in the inclusive 200-299 range. */
   responseStatus: number;
   errorCode: null;
   errorMessage: null;
@@ -393,6 +404,7 @@ export interface DeliveredPushDeliveryAttempt extends PushDeliveryAttemptFields 
 
 type PushDeliveryFailureDetails =
   | {
+    /** Non-successful HTTP response status outside the 200-299 range. */
     responseStatus: number;
     errorCode: string | null;
     errorMessage: string | null;
@@ -527,6 +539,18 @@ function parseRecord(value: unknown, path: string): Record<string, unknown> {
     return invalid(path, 'an object');
   }
   return value as Record<string, unknown>;
+}
+
+function assertOnlyKnownProperties(
+  value: Record<string, unknown>,
+  allowedProperties: readonly string[],
+  path: string,
+): void {
+  const allowed = new Set(allowedProperties);
+  const unknownProperty = Object.keys(value).find((property) => !allowed.has(property));
+  if (unknownProperty !== undefined) {
+    invalid(`${path}.${unknownProperty}`, 'a known property');
+  }
 }
 
 function utf8ByteLength(value: string): number {
@@ -756,12 +780,18 @@ export function parseNotificationTarget(
 
   switch (type) {
     case 'plan':
+      assertOnlyKnownProperties(target, ['type', 'repository', 'draftId'], 'target');
       return {
         type,
         repository: parseRepository(target.repository, 'target.repository'),
         draftId: parseString(target.draftId, 'target.draftId'),
       };
     case 'task': {
+      assertOnlyKnownProperties(
+        target,
+        ['type', 'repository', 'taskId', 'issueNumber', 'prNumber'],
+        'target',
+      );
       const issueNumber = parseOptionalPositiveInteger(
         target.issueNumber,
         'target.issueNumber',
@@ -776,6 +806,11 @@ export function parseNotificationTarget(
       };
     }
     case 'review': {
+      assertOnlyKnownProperties(
+        target,
+        ['type', 'repository', 'prNumber', 'taskId'],
+        'target',
+      );
       const taskId = parseOptionalString(target.taskId, 'target.taskId');
       return {
         type,
@@ -785,12 +820,14 @@ export function parseNotificationTarget(
       };
     }
     case 'pull_request':
+      assertOnlyKnownProperties(target, ['type', 'repository', 'prNumber'], 'target');
       return {
         type,
         repository: parseRepository(target.repository, 'target.repository'),
         prNumber: parsePositiveInteger(target.prNumber, 'target.prNumber'),
       };
     case 'indexing': {
+      assertOnlyKnownProperties(target, ['type', 'repository', 'branch'], 'target');
       const branch = parseOptionalString(target.branch, 'target.branch');
       return {
         type,
@@ -799,6 +836,11 @@ export function parseNotificationTarget(
       };
     }
     case 'system_failure': {
+      assertOnlyKnownProperties(
+        target,
+        ['type', 'component', 'correlationId'],
+        'target',
+      );
       const correlationId = parseOptionalString(
         target.correlationId,
         'target.correlationId',
@@ -815,6 +857,7 @@ export function parseNotificationTarget(
 export function parseNotificationAction(value: unknown): NotificationAction {
   const action = parseRecord(value, 'action');
   const type = parseEnum(action.type, NOTIFICATION_ACTION_TYPES, 'action.type');
+  assertOnlyKnownProperties(action, ['type', 'label', 'href'], 'action');
   const label = parseString(
     action.label,
     'action.label',
@@ -1020,6 +1063,12 @@ export function parseNotification(value: unknown): Notification {
   const dismissedAt = record.dismissedAt === null
     ? null
     : parseISO8601Timestamp(record.dismissedAt);
+  if (readAt !== null && readAt < event.createdAt) {
+    return invalid('notification.readAt', 'a timestamp at or after event createdAt');
+  }
+  if (dismissedAt !== null && dismissedAt < event.createdAt) {
+    return invalid('notification.dismissedAt', 'a timestamp at or after event createdAt');
+  }
   return { ...event, readAt, dismissedAt } as Notification;
 }
 
@@ -1199,6 +1248,8 @@ export function parsePushDeliveryJob(value: unknown): PushDeliveryJob {
     deduplicationKey: parseString(
       job.deduplicationKey,
       'pushDeliveryJob.deduplicationKey',
+      false,
+      NOTIFICATION_PAYLOAD_LIMITS.deduplicationKeyBytes,
     ),
     eventId: parseString(job.eventId, 'pushDeliveryJob.eventId'),
     userId: parseString(job.userId, 'pushDeliveryJob.userId'),
@@ -1315,6 +1366,8 @@ export function parsePushDeliveryAttempt(value: unknown): PushDeliveryAttempt {
   if (status === 'delivered') {
     if (
       responseStatus === null
+      || responseStatus < 200
+      || responseStatus > 299
       || errorCode !== null
       || errorMessage !== null
       || nextRetryAt !== null
@@ -1326,6 +1379,12 @@ export function parsePushDeliveryAttempt(value: unknown): PushDeliveryAttempt {
 
   if (responseStatus === null && errorCode === null) {
     return invalid('pushDeliveryAttempt', 'a response status or non-empty error code');
+  }
+  if (responseStatus !== null && responseStatus >= 200 && responseStatus <= 299) {
+    return invalid(
+      'pushDeliveryAttempt.responseStatus',
+      'a non-2xx HTTP status for a retryable or failed outcome',
+    );
   }
   if (status === 'retryable') {
     if (nextRetryAt === null || nextRetryAt <= attemptedAt) {

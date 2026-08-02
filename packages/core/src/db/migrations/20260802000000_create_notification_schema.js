@@ -19,6 +19,10 @@ const JAVASCRIPT_WHITESPACE_CODEPOINTS = [
   8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288, 65279,
 ];
 const CONTROL_CODEPOINTS = [...Array.from({ length: 32 }, (_, index) => index), 127];
+// Supported endpoint families are FCM (Chromium), Mozilla Autopush (Firefox),
+// and Apple Web Push (Safari). This migration snapshots the allowlist into each
+// database CHECK clause. Supporting another vendor hostname requires a later
+// schema migration; changing the shared TypeScript constant is not sufficient.
 const WEB_PUSH_ENDPOINT_HOSTS = [
   'fcm.googleapis.com',
   'updates.push.services.mozilla.com',
@@ -193,6 +197,13 @@ function jsonHasDuplicateKeys(value) {
   )`;
 }
 
+function jsonObjectOnlyHasKeys(value, keys) {
+  return `json_remove(
+    ${value},
+    ${keys.map((key) => `'$.${key}'`).join(', ')}
+  ) = '{}'`;
+}
+
 function jsonDepthExceeds(value, maximumDepth) {
   return `EXISTS (
     WITH RECURSIVE json_depth(id, depth) AS (
@@ -346,13 +357,18 @@ export async function up(knex) {
       `CASE
         WHEN NOT json_valid(target_json) OR json_type(target_json) != 'object' THEN 0
         WHEN kind = 'plan' THEN COALESCE(
-          ${JSON_REPOSITORY_TARGET_CHECK}
+          ${jsonObjectOnlyHasKeys('target_json', ['type', 'repository', 'draftId'])}
+          AND ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.draftId') = 'text'
           AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.draftId')")},
           0
         )
         WHEN kind = 'task' THEN COALESCE(
-          ${JSON_REPOSITORY_TARGET_CHECK}
+          ${jsonObjectOnlyHasKeys(
+            'target_json',
+            ['type', 'repository', 'taskId', 'issueNumber', 'prNumber']
+          )}
+          AND ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.taskId') = 'text'
           AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.taskId')")}
           AND (json_type(target_json, '$.issueNumber') IS NULL OR (
@@ -368,7 +384,11 @@ export async function up(knex) {
           0
         )
         WHEN kind = 'review' THEN COALESCE(
-          ${JSON_REPOSITORY_TARGET_CHECK}
+          ${jsonObjectOnlyHasKeys(
+            'target_json',
+            ['type', 'repository', 'prNumber', 'taskId']
+          )}
+          AND ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.prNumber') = 'integer'
           AND json_extract(target_json, '$.prNumber') > 0
           AND json_extract(target_json, '$.prNumber') <= 9007199254740991
@@ -379,14 +399,22 @@ export async function up(knex) {
           0
         )
         WHEN kind = 'pull_request' THEN COALESCE(
-          ${JSON_REPOSITORY_TARGET_CHECK}
+          ${jsonObjectOnlyHasKeys(
+            'target_json',
+            ['type', 'repository', 'prNumber']
+          )}
+          AND ${JSON_REPOSITORY_TARGET_CHECK}
           AND json_type(target_json, '$.prNumber') = 'integer'
           AND json_extract(target_json, '$.prNumber') > 0
           AND json_extract(target_json, '$.prNumber') <= 9007199254740991,
           0
         )
         WHEN kind = 'indexing' THEN COALESCE(
-          ${JSON_REPOSITORY_TARGET_CHECK}
+          ${jsonObjectOnlyHasKeys(
+            'target_json',
+            ['type', 'repository', 'branch']
+          )}
+          AND ${JSON_REPOSITORY_TARGET_CHECK}
           AND (json_type(target_json, '$.branch') IS NULL OR (
             json_type(target_json, '$.branch') = 'text'
             AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.branch')")}
@@ -394,7 +422,11 @@ export async function up(knex) {
           0
         )
         WHEN kind = 'system_failure' THEN COALESCE(
-          json_type(target_json, '$.component') = 'text'
+          ${jsonObjectOnlyHasKeys(
+            'target_json',
+            ['type', 'component', 'correlationId']
+          )}
+          AND json_type(target_json, '$.component') = 'text'
           AND ${boundedNonBlankTextCheck("json_extract(target_json, '$.component')")}
           AND (json_type(target_json, '$.correlationId') IS NULL OR (
             json_type(target_json, '$.correlationId') = 'text'
@@ -412,7 +444,8 @@ export async function up(knex) {
         WHEN action_json IS NULL THEN 1
         WHEN NOT json_valid(action_json) OR json_type(action_json) != 'object' THEN 0
         ELSE COALESCE(
-          json_type(action_json, '$.label') = 'text'
+          ${jsonObjectOnlyHasKeys('action_json', ['type', 'label', 'href'])}
+          AND json_type(action_json, '$.label') = 'text'
           AND ${boundedNonBlankTextCheck(
             "json_extract(action_json, '$.label')",
             PAYLOAD_LIMITS.actionLabelBytes
@@ -628,6 +661,24 @@ export async function up(knex) {
     END
   `);
   await knex.raw(`
+    CREATE TRIGGER notification_user_states_inbox_times_not_future_insert
+    BEFORE INSERT ON notification_user_states
+    WHEN (NEW.read_at IS NOT NULL AND NEW.read_at > ${ISO_NOW_SQL})
+      OR (NEW.dismissed_at IS NOT NULL AND NEW.dismissed_at > ${ISO_NOW_SQL})
+    BEGIN
+      SELECT RAISE(ABORT, 'notification Inbox state timestamps cannot be in the future');
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER notification_user_states_inbox_times_not_future_update
+    BEFORE UPDATE OF read_at, dismissed_at ON notification_user_states
+    WHEN (NEW.read_at IS NOT NULL AND NEW.read_at > ${ISO_NOW_SQL})
+      OR (NEW.dismissed_at IS NOT NULL AND NEW.dismissed_at > ${ISO_NOW_SQL})
+    BEGIN
+      SELECT RAISE(ABORT, 'notification Inbox state timestamps cannot be in the future');
+    END
+  `);
+  await knex.raw(`
     CREATE TRIGGER notification_user_states_assignment_immutable
     BEFORE UPDATE ON notification_user_states
     WHEN NEW.event_id IS NOT OLD.event_id
@@ -803,6 +854,11 @@ export async function up(knex) {
     ON push_subscriptions (user_id, expires_at, subscription_id)
     WHERE revoked_at IS NULL
   `);
+  await knex.raw(`
+    CREATE INDEX push_subscriptions_expiration_idx
+    ON push_subscriptions (expires_at, subscription_id, user_id)
+    WHERE revoked_at IS NULL AND expires_at IS NOT NULL
+  `);
 
   const subscriptionManagedTimestamp = `CASE
     WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
@@ -868,11 +924,10 @@ export async function up(knex) {
     END
   `);
   await knex.raw(`
-    CREATE TRIGGER push_subscriptions_preserve_revoked_version
+    CREATE TRIGGER push_subscriptions_preserve_version
     BEFORE DELETE ON push_subscriptions
-    WHEN OLD.revoked_at IS NOT NULL
     BEGIN
-      SELECT RAISE(ABORT, 'revoked push subscriptions cannot be deleted');
+      SELECT RAISE(ABORT, 'push subscription versions cannot be deleted');
     END
   `);
   await knex.raw(`
@@ -954,7 +1009,7 @@ export async function up(knex) {
       ) OR (
         status = 'processing'
         AND next_retry_at IS NULL
-        AND ${nonBlankTextCheck('claim_token')}
+        AND ${boundedNonBlankTextCheck('claim_token')}
         AND claimed_at IS NOT NULL
         AND lease_expires_at IS NOT NULL
         AND claimed_at >= created_at
@@ -1031,6 +1086,10 @@ export async function up(knex) {
   await knex.raw(`
     CREATE UNIQUE INDEX push_delivery_jobs_event_subscription_idx
     ON push_delivery_jobs (event_id, subscription_id)
+  `);
+  await knex.raw(`
+    CREATE INDEX push_delivery_jobs_subscription_user_idx
+    ON push_delivery_jobs (subscription_id, user_id)
   `);
   await knex.raw(`
     CREATE INDEX push_delivery_jobs_pending_idx
@@ -1145,18 +1204,20 @@ export async function up(knex) {
     table.check(
       `COALESCE(((
         status = 'delivered'
-        AND response_status IS NOT NULL
+        AND response_status BETWEEN 200 AND 299
         AND error_code IS NULL
         AND error_message IS NULL
         AND next_retry_at IS NULL
       ) OR (
         status = 'retryable'
         AND (response_status IS NOT NULL OR ${nonBlankTextCheck('error_code')})
+        AND (response_status IS NULL OR response_status NOT BETWEEN 200 AND 299)
         AND next_retry_at IS NOT NULL
         AND next_retry_at > attempted_at
       ) OR (
         status = 'failed'
         AND (response_status IS NOT NULL OR ${nonBlankTextCheck('error_code')})
+        AND (response_status IS NULL OR response_status NOT BETWEEN 200 AND 299)
         AND next_retry_at IS NULL
       )), 0)`,
       {},

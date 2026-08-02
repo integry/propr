@@ -1,14 +1,44 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const workspace = fileURLToPath(new URL('../', import.meta.url));
 const tsc = path.join(workspace, 'node_modules/typescript/bin/tsc');
 
-test('builds and exposes the notification contract from @propr/shared', async () => {
-  execFileSync(process.execPath, [tsc, '--project', 'packages/shared/tsconfig.json'], {
+test('builds and exposes the notification contract from @propr/shared', async (context) => {
+  const temporaryDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'propr-notification-entrypoint-'),
+  );
+  context.after(() => fs.rmSync(temporaryDirectory, { recursive: true, force: true }));
+
+  const packageDirectory = path.join(
+    temporaryDirectory,
+    'node_modules',
+    '@propr',
+    'shared',
+  );
+  const packageDist = path.join(packageDirectory, 'dist');
+  fs.mkdirSync(packageDirectory, { recursive: true });
+  fs.copyFileSync(
+    path.join(workspace, 'packages/shared/package.json'),
+    path.join(packageDirectory, 'package.json'),
+  );
+  fs.copyFileSync(
+    path.join(workspace, 'test/fixtures/notificationPublicEntrypoint.ts'),
+    path.join(temporaryDirectory, 'notificationPublicEntrypoint.ts'),
+  );
+
+  execFileSync(process.execPath, [
+    tsc,
+    '--project',
+    'packages/shared/tsconfig.json',
+    '--outDir',
+    packageDist,
+  ], {
     cwd: workspace,
     stdio: 'pipe',
   });
@@ -22,14 +52,14 @@ test('builds and exposes the notification contract from @propr/shared', async ()
     'NodeNext',
     '--moduleResolution',
     'NodeNext',
-    'test/fixtures/notificationPublicEntrypoint.ts',
+    'notificationPublicEntrypoint.ts',
   ], {
-    cwd: workspace,
+    cwd: temporaryDirectory,
     stdio: 'pipe',
   });
 
   const entrypoint = await import(
-    pathToFileURL(path.join(workspace, 'packages/shared/dist/index.js')).href
+    pathToFileURL(path.join(packageDist, 'index.js')).href
   );
   const runtimeExports = [
     'MAX_CANONICAL_TIMESTAMP_EPOCH_MS',
