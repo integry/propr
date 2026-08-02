@@ -14,6 +14,12 @@ interface HostedFleetRoutesDeps {
     queueStatus?: (req: Request, res: Response) => void | Promise<void>;
 }
 
+export function isHostedFleetControlEnabled(
+    fleetSecret: string | undefined = process.env.PROPR_FLEET_CONTROL_SECRET
+): fleetSecret is string {
+    return Boolean(fleetSecret && fleetSecret.length >= 32);
+}
+
 function safeEqual(left: string, right: string): boolean {
     const leftBuffer = Buffer.from(left);
     const rightBuffer = Buffer.from(right);
@@ -31,7 +37,7 @@ export function createHostedFleetRoutes({
 }: HostedFleetRoutesDeps = {}) {
     function isAuthorized(req: Request): boolean {
         const supplied = req.get('x-propr-fleet-secret') ?? '';
-        return Boolean(fleetSecret && fleetSecret.length >= 32 && safeEqual(supplied, fleetSecret));
+        return isHostedFleetControlEnabled(fleetSecret) && safeEqual(supplied, fleetSecret);
     }
 
     async function getBootstrapStatus(req: Request, res: Response): Promise<void> {

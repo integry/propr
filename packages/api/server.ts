@@ -29,6 +29,7 @@ import {
   createAgentRuntimeRoutes,
   createAdminRoutes,
   createHostedFleetRoutes,
+  isHostedFleetControlEnabled,
   createInstanceCatalogRoutes,
   attachmentUpload
 } from './routes/index.js';
@@ -217,10 +218,6 @@ async function initRedis(): Promise<void> {
 function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({ redisClient });
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
-  const hostedFleetRoutes = createHostedFleetRoutes({
-    operationalStatus: statusRoutes.getStatus,
-    queueStatus: queueRoutes.getQueueStats
-  });
   // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
   // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
   // version-gate before the user logs in. This is the one deliberate exception to
@@ -229,11 +226,17 @@ function setupRoutes(): void {
   // compatibility dates). All other /api routes registered after this line are
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
-  // Machine-to-machine bootstrap verification has its own narrow service
-  // credential and deliberately does not depend on a customer's OAuth session.
-  app.get('/api/internal/hosted/bootstrap', hostedFleetRoutes.getBootstrapStatus);
-  app.get('/api/internal/hosted/status', hostedFleetRoutes.getOperationalStatus);
-  app.get('/api/internal/hosted/queue', hostedFleetRoutes.getQueueStatus);
+  if (isHostedFleetControlEnabled()) {
+    const hostedFleetRoutes = createHostedFleetRoutes({
+      operationalStatus: statusRoutes.getStatus,
+      queueStatus: queueRoutes.getQueueStats
+    });
+    // Machine-to-machine bootstrap verification has its own narrow service
+    // credential and deliberately does not depend on a customer's OAuth session.
+    app.get('/api/internal/hosted/bootstrap', hostedFleetRoutes.getBootstrapStatus);
+    app.get('/api/internal/hosted/status', hostedFleetRoutes.getOperationalStatus);
+    app.get('/api/internal/hosted/queue', hostedFleetRoutes.getQueueStatus);
+  }
   app.use('/api', ensureAuthenticated, resolveAuthorization);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });

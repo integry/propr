@@ -3,7 +3,7 @@ import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { up as createInstanceMemberTables } from '../../core/src/db/migrations/20260730000000_create_instance_members.js';
-import { createHostedFleetRoutes } from '../routes/hostedFleetRoutes.js';
+import { createHostedFleetRoutes, isHostedFleetControlEnabled } from '../routes/hostedFleetRoutes.js';
 
 const fleetSecret = 'fleet-control-secret-with-at-least-32-bytes';
 let database: Knex;
@@ -73,6 +73,21 @@ function routes() {
 }
 
 describe('hosted fleet bootstrap status', () => {
+    test('requires a valid fleet control secret before routes are enabled', () => {
+        const previousFleetSecret = process.env.PROPR_FLEET_CONTROL_SECRET;
+        try {
+            delete process.env.PROPR_FLEET_CONTROL_SECRET;
+            assert.equal(isHostedFleetControlEnabled(), false);
+            process.env.PROPR_FLEET_CONTROL_SECRET = 'x'.repeat(31);
+            assert.equal(isHostedFleetControlEnabled(), false);
+            process.env.PROPR_FLEET_CONTROL_SECRET = 'x'.repeat(32);
+            assert.equal(isHostedFleetControlEnabled(), true);
+        } finally {
+            if (previousFleetSecret === undefined) delete process.env.PROPR_FLEET_CONTROL_SECRET;
+            else process.env.PROPR_FLEET_CONTROL_SECRET = previousFleetSecret;
+        }
+    });
+
     test('rejects missing and incorrect service credentials', async () => {
         for (const supplied of [undefined, 'wrong-secret']) {
             const { response, record } = recorder();

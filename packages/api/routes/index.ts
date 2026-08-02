@@ -24,4 +24,4 @@ export { createRepoTodoRoutes } from './repoTodoRoutes.js';
 export { createUserRepoPreferencesRoutes } from './userRepoPreferencesRoutes.js';
 export { createAgentRuntimeRoutes } from './agentRuntimeRoutes.js';
 export { createAdminRoutes } from './adminRoutes.js';
-export { createHostedFleetRoutes } from './hostedFleetRoutes.js';
+export { createHostedFleetRoutes, isHostedFleetControlEnabled } from './hostedFleetRoutes.js';
