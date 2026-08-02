@@ -3,34 +3,18 @@ import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
 import express from 'express';
 import type { Request, Response } from 'express';
-import {
-    closeConnection,
-    NotificationValidationError,
-    PushSubscriptionConflictError,
-    PushSubscriptionQuotaError,
-    PushSubscriptionRateLimitError
-} from '@propr/core';
-import {
-    NOTIFICATION_KINDS,
-    parseNotificationPreferencesResponse,
-    parsePushSubscription
-} from '@propr/shared';
+import { closeConnection, NotificationValidationError, PushSubscriptionConflictError,
+    PushSubscriptionQuotaError, PushSubscriptionRateLimitError } from '@propr/core';
+import { NOTIFICATION_KINDS, parseNotificationPreferencesResponse,
+    parsePushSubscription } from '@propr/shared';
 import { ensureAuthenticated } from '../auth.js';
-import {
-    configureDemoMode,
-    demoModeReadOnlyMiddleware,
-    resetConfiguredDemoMode
-} from '../demoMode.js';
+import { configureDemoMode, demoModeReadOnlyMiddleware, resetConfiguredDemoMode } from '../demoMode.js';
 import { createNotificationRoutes, type NotificationRouteService } from '../routes/notificationRoutes.js';
 
 after(async () => closeConnection());
 
-function responseRecorder(): {
-    response: Response;
-    status: () => number;
-    body: () => unknown;
-    headers: () => Record<string, string>;
-} {
+function responseRecorder(): { response: Response; status: () => number; body: () => unknown;
+    headers: () => Record<string, string> } {
     let statusCode = 200;
     let payload: unknown;
     const responseHeaders: Record<string, string> = {};
@@ -59,9 +43,7 @@ function responseRecorder(): {
     };
 }
 
-function createService(
-    overrides: Partial<NotificationRouteService> = {}
-): NotificationRouteService {
+function createService(overrides: Partial<NotificationRouteService> = {}): NotificationRouteService {
     const timestamp = '2026-08-02T10:00:00.000Z';
     const preferences = parseNotificationPreferencesResponse({
         preferences: Object.fromEntries(NOTIFICATION_KINDS.map((kind) => [kind, {
@@ -104,11 +86,12 @@ function createVapidConfiguration(): { publicKey: string; privateKey: string } {
     };
 }
 
-async function fetchFromApp(
-    app: express.Express,
-    path: string,
-    init?: RequestInit
-): Promise<globalThis.Response> {
+function authenticatedRequest(overrides: Record<string, unknown> = {}): Request {
+    return { user: { id: 'authenticated-user' }, body: {}, query: {}, ...overrides } as unknown as Request;
+}
+
+async function fetchFromApp(app: express.Express, path: string,
+    init?: RequestInit): Promise<globalThis.Response> {
     const server = app.listen(0, '127.0.0.1');
     await new Promise<void>(resolve => server.once('listening', resolve));
     const address = server.address();
@@ -137,11 +120,10 @@ describe('notification routes', () => {
         });
         const { response, status } = responseRecorder();
 
-        await routes.getNotifications({
-            user: { id: 'authenticated-user' },
+        await routes.getNotifications(authenticatedRequest({
             body: { userId: 'browser-supplied-user' },
             query: { limit: '10000', includeDismissed: 'true' }
-        } as unknown as Request, response);
+        }), response);
 
         assert.equal(status(), 200);
         assert.equal(receivedUserId, 'authenticated-user');
@@ -164,12 +146,10 @@ describe('notification routes', () => {
         });
         const { response, status } = responseRecorder();
 
-        await routes.markRead({
-            user: { id: 'authenticated-user' },
+        await routes.markRead(authenticatedRequest({
             params: { id: 'event-1' },
-            body: { userId: 'victim-user' },
-            query: {}
-        } as unknown as Request, response);
+            body: { userId: 'victim-user' }
+        }), response);
 
         assert.deepEqual(received, ['authenticated-user', 'event-1']);
         assert.equal(status(), 404);
@@ -192,10 +172,7 @@ describe('notification routes', () => {
             { includeDismissed: 'sometimes' }
         ]) {
             const { response, status, body } = responseRecorder();
-            await routes.getNotifications({
-                user: { id: 'authenticated-user' },
-                query
-            } as unknown as Request, response);
+            await routes.getNotifications(authenticatedRequest({ query }), response);
             assert.equal(status(), 400);
             assert.equal((body() as { code: string }).code, 'INVALID_NOTIFICATION_QUERY');
         }
@@ -224,10 +201,7 @@ describe('notification routes', () => {
         });
         const { response, status, body } = responseRecorder();
 
-        await routes.getConfiguration({
-            user: { id: 'authenticated-user' },
-            query: {}
-        } as unknown as Request, response);
+        await routes.getConfiguration(authenticatedRequest(), response);
 
         assert.equal(status(), 200);
         assert.deepEqual(body(), {
@@ -238,10 +212,7 @@ describe('notification routes', () => {
         });
         assert.equal(JSON.stringify(body()).includes(vapid.privateKey), false);
         const secondRecorder = responseRecorder();
-        await routes.getConfiguration({
-            user: { id: 'authenticated-user' },
-            query: {}
-        } as unknown as Request, secondRecorder.response);
+        await routes.getConfiguration(authenticatedRequest(), secondRecorder.response);
         assert.equal(configurationReads, 1, 'VAPID key-pair validation is cached per router');
     });
 
@@ -260,10 +231,7 @@ describe('notification routes', () => {
                 getWebPushConfiguration: () => configuration
             });
             const { response, status, body } = responseRecorder();
-            await routes.getConfiguration({
-                user: { id: 'authenticated-user' },
-                query: {}
-            } as unknown as Request, response);
+            await routes.getConfiguration(authenticatedRequest(), response);
 
             assert.equal(status(), 200);
             assert.deepEqual(body(), {
@@ -290,11 +258,7 @@ describe('notification routes', () => {
         };
         const { response, status } = responseRecorder();
 
-        await routes.updatePreferences({
-            user: { id: 'authenticated-user' },
-            body: update,
-            query: {}
-        } as unknown as Request, response);
+        await routes.updatePreferences(authenticatedRequest({ body: update }), response);
 
         assert.equal(status(), 200);
         assert.equal(receivedUserId, 'authenticated-user');
@@ -323,12 +287,10 @@ describe('notification routes', () => {
         const endpoint = 'https://fcm.googleapis.com/fcm/send/subscription-1';
         const subscriptionRecorder = responseRecorder();
 
-        await routes.createPushSubscription({
-            user: { id: 'authenticated-user' },
+        await routes.createPushSubscription(authenticatedRequest({
             body: { userId: 'victim-user', endpoint, expirationTime: null, keys: {} },
-            query: {},
             get: () => 'Example Browser'
-        } as unknown as Request, subscriptionRecorder.response);
+        }), subscriptionRecorder.response);
 
         assert.equal(enrolledUserId, 'authenticated-user');
         assert.equal(enrolledUserAgent, 'Example Browser');
@@ -336,20 +298,16 @@ describe('notification routes', () => {
         assert.equal(JSON.stringify(subscriptionRecorder.body()).includes('keys'), false);
 
         const queryOnlyRecorder = responseRecorder();
-        await routes.revokePushSubscription({
-            user: { id: 'authenticated-user' },
-            body: {},
+        await routes.revokePushSubscription(authenticatedRequest({
             query: { endpoint }
-        } as unknown as Request, queryOnlyRecorder.response);
+        }), queryOnlyRecorder.response);
         assert.equal(queryOnlyRecorder.status(), 400);
         assert.equal(revoked, undefined, 'capability URLs must not be read from query strings');
 
         const revocationRecorder = responseRecorder();
-        await routes.revokePushSubscription({
-            user: { id: 'authenticated-user' },
-            body: { userId: 'victim-user', endpoint },
-            query: {}
-        } as unknown as Request, revocationRecorder.response);
+        await routes.revokePushSubscription(authenticatedRequest({
+            body: { userId: 'victim-user', endpoint }
+        }), revocationRecorder.response);
         assert.deepEqual(revoked, ['authenticated-user', endpoint]);
         assert.equal(revocationRecorder.status(), 204);
     });
@@ -364,11 +322,9 @@ describe('notification routes', () => {
         });
         const { response, status, body } = responseRecorder();
 
-        await routes.updatePreferences({
-            user: { id: 'authenticated-user' },
-            body: { quietHours: { timezone: 'invalid' } },
-            query: {}
-        } as unknown as Request, response);
+        await routes.updatePreferences(authenticatedRequest({
+            body: { quietHours: { timezone: 'invalid' } }
+        }), response);
 
         assert.equal(status(), 400);
         assert.deepEqual(body(), {
@@ -387,15 +343,13 @@ describe('notification routes', () => {
         });
         const { response, status, body } = responseRecorder();
 
-        await routes.createPushSubscription({
-            user: { id: 'authenticated-user' },
+        await routes.createPushSubscription(authenticatedRequest({
             body: {
                 endpoint: 'https://fcm.googleapis.com/fcm/send/already-owned',
                 expirationTime: null,
                 keys: {}
-            },
-            query: {}
-        } as unknown as Request, response);
+            }
+        }), response);
 
         assert.equal(status(), 409);
         assert.deepEqual(body(), {
@@ -413,11 +367,7 @@ describe('notification routes', () => {
             })
         });
         const quotaRecorder = responseRecorder();
-        await quotaRoutes.createPushSubscription({
-            user: { id: 'authenticated-user' },
-            body: {},
-            query: {}
-        } as unknown as Request, quotaRecorder.response);
+        await quotaRoutes.createPushSubscription(authenticatedRequest(), quotaRecorder.response);
         assert.equal(quotaRecorder.status(), 409);
         assert.deepEqual(quotaRecorder.body(), {
             code: 'PUSH_SUBSCRIPTION_QUOTA_EXCEEDED',
@@ -434,11 +384,7 @@ describe('notification routes', () => {
             })
         });
         const rateRecorder = responseRecorder();
-        await rateRoutes.createPushSubscription({
-            user: { id: 'authenticated-user' },
-            body: {},
-            query: {}
-        } as unknown as Request, rateRecorder.response);
+        await rateRoutes.createPushSubscription(authenticatedRequest(), rateRecorder.response);
         assert.equal(rateRecorder.status(), 429);
         assert.equal(rateRecorder.headers()['retry-after'], '42');
         assert.deepEqual(rateRecorder.body(), {
