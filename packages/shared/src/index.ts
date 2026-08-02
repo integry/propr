@@ -191,6 +191,8 @@ export {
   type NotificationTarget,
   type NotificationTargetFor,
   type NotificationActionType,
+  type NavigateNotificationAction,
+  type ExternalLinkNotificationAction,
   type NotificationAction,
   type NotificationEvent,
   type NotificationUserState,

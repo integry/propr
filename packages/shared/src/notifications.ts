@@ -94,13 +94,26 @@ export const NOTIFICATION_ACTION_TYPES = ['navigate', 'external_link'] as const;
 
 export type NotificationActionType = (typeof NOTIFICATION_ACTION_TYPES)[number];
 
-/** A user-visible action carried by Inbox and Web Push responses. */
-export interface NotificationAction {
-  type: NotificationActionType;
+/** An in-application action carried by Inbox and Web Push responses. */
+export interface NavigateNotificationAction {
+  type: 'navigate';
   label: string;
-  /** An application-relative path for `navigate`, or an absolute URL otherwise. */
+  /** An application-relative path, validated at the API boundary. */
   href: string;
 }
+
+/** An action that leaves the application for an absolute URL. */
+export interface ExternalLinkNotificationAction {
+  type: 'external_link';
+  label: string;
+  /** An absolute URL, validated at the API boundary. */
+  href: string;
+}
+
+/** A user-visible action with exhaustive type discrimination. */
+export type NotificationAction =
+  | NavigateNotificationAction
+  | ExternalLinkNotificationAction;
 
 interface NotificationEventFields<K extends NotificationKind> {
   id: string;
@@ -132,6 +145,7 @@ export interface NotificationUserState {
   userId: string;
   readAt: ISO8601Timestamp | null;
   dismissedAt: ISO8601Timestamp | null;
+  /** Recipient assignment time and the primary descending Inbox cursor. */
   createdAt: ISO8601Timestamp;
 }
 
@@ -193,7 +207,10 @@ export const PUSH_DELIVERY_STATUSES = [
 
 export type PushDeliveryStatus = (typeof PUSH_DELIVERY_STATUSES)[number];
 
-/** An auditable Web Push attempt. Retryable rows may carry `nextRetryAt`. */
+/**
+ * An auditable Web Push attempt. Pending rows have not been dispatched;
+ * retryable rows always carry both `attemptedAt` and `nextRetryAt`.
+ */
 export interface PushDeliveryAttempt {
   id: string;
   deduplicationKey: string;
@@ -231,7 +248,10 @@ export interface NotificationSourceActivity {
   updatedAt: ISO8601Timestamp;
 }
 
-/** Cursor-paginated Inbox response. */
+/**
+ * Cursor-paginated Inbox response ordered by recipient assignment time, then
+ * event ID, both descending. The cursor remains opaque to API consumers.
+ */
 export interface NotificationListResponse {
   notifications: Notification[];
   unreadCount: number;

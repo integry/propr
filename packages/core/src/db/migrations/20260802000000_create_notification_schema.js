@@ -35,6 +35,26 @@ export async function up(knex) {
       {},
       'notification_events_severity_check'
     );
+    table.check(
+      "CASE WHEN json_valid(target_json) THEN COALESCE(json_type(target_json) = 'object', 0) ELSE 0 END",
+      {},
+      'notification_events_target_json_check'
+    );
+    table.check(
+      "CASE WHEN json_valid(target_json) THEN COALESCE(json_extract(target_json, '$.type') = kind, 0) ELSE 0 END",
+      {},
+      'notification_events_target_kind_check'
+    );
+    table.check(
+      "CASE WHEN action_json IS NULL THEN 1 WHEN json_valid(action_json) THEN COALESCE(json_type(action_json) = 'object' AND json_extract(action_json, '$.type') IN ('navigate', 'external_link'), 0) ELSE 0 END",
+      {},
+      'notification_events_action_json_check'
+    );
+    table.check(
+      "CASE WHEN metadata_json IS NULL THEN 1 WHEN json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
+      {},
+      'notification_events_metadata_json_check'
+    );
   });
 
   await knex.raw(
@@ -77,11 +97,21 @@ export async function up(knex) {
       .onDelete('RESTRICT');
   });
 
-  // The partial index contains only visible unread rows and supports both the
-  // Inbox page and badge-count queries without scanning historical state.
+  // Recipient assignment time (created_at), rather than event occurrence time,
+  // is the canonical Inbox cursor. Delayed assignments and backfilled events
+  // therefore appear when the recipient actually receives them, and the query
+  // can use one state-table index for its complete ordering.
+  await knex.raw(`
+    CREATE INDEX notification_user_states_visible_idx
+    ON notification_user_states (user_id, created_at DESC, event_id DESC)
+    WHERE dismissed_at IS NULL
+  `);
+
+  // The narrower partial index keeps unread badge counts and unread-only Inbox
+  // pages from scanning visible rows that have already been read.
   await knex.raw(`
     CREATE INDEX notification_user_states_unread_idx
-    ON notification_user_states (user_id, created_at DESC, event_id)
+    ON notification_user_states (user_id, created_at DESC, event_id DESC)
     WHERE read_at IS NULL AND dismissed_at IS NULL
   `);
 
@@ -115,11 +145,14 @@ export async function up(knex) {
     table.text('updated_at').notNullable().defaultTo(isoNow(knex));
   });
 
-  // Endpoint uniqueness makes registration idempotent. Revocation updates the
-  // existing row, preserving its identity and all delivery audit records.
-  await knex.raw(
-    'CREATE UNIQUE INDEX push_subscriptions_endpoint_idx ON push_subscriptions (endpoint)'
-  );
+  // Only an active endpoint is unique. Revoked rows remain immutable identities
+  // for delivery history, while a later registration can version the endpoint
+  // under a different user after account switching.
+  await knex.raw(`
+    CREATE UNIQUE INDEX push_subscriptions_active_endpoint_idx
+    ON push_subscriptions (endpoint)
+    WHERE revoked_at IS NULL
+  `);
   // Supports the composite delivery foreign key that verifies subscription
   // ownership without requiring a separate users table.
   await knex.raw(`
@@ -157,6 +190,11 @@ export async function up(knex) {
       {},
       'push_delivery_attempts_number_check'
     );
+    table.check(
+      "(status = 'pending' AND attempted_at IS NULL AND next_retry_at IS NULL) OR (status = 'retryable' AND attempted_at IS NOT NULL AND next_retry_at IS NOT NULL) OR (status IN ('delivered', 'failed') AND attempted_at IS NOT NULL AND next_retry_at IS NULL)",
+      {},
+      'push_delivery_attempts_timestamps_check'
+    );
 
     table
       .foreign(['event_id', 'user_id'])
@@ -179,10 +217,17 @@ export async function up(knex) {
     CREATE UNIQUE INDEX push_delivery_attempts_event_subscription_attempt_idx
     ON push_delivery_attempts (event_id, subscription_id, attempt_number)
   `);
+  // Pending rows are undispatched and recoverable in insertion order. Retried
+  // attempts use their required schedule timestamp in the separate index.
+  await knex.raw(`
+    CREATE INDEX push_delivery_attempts_pending_idx
+    ON push_delivery_attempts (created_at, attempt_id)
+    WHERE status = 'pending'
+  `);
   await knex.raw(`
     CREATE INDEX push_delivery_attempts_retry_idx
     ON push_delivery_attempts (next_retry_at, attempt_id)
-    WHERE status IN ('pending', 'retryable') AND next_retry_at IS NOT NULL
+    WHERE status = 'retryable' AND next_retry_at IS NOT NULL
   `);
 
   await knex.schema.createTable('notification_source_activity', (table) => {
@@ -202,6 +247,11 @@ export async function up(knex) {
       "activity_type IN ('task', 'indexing')",
       {},
       'notification_source_activity_type_check'
+    );
+    table.check(
+      "CASE WHEN metadata_json IS NULL THEN 1 WHEN json_valid(metadata_json) THEN COALESCE(json_type(metadata_json) = 'object', 0) ELSE 0 END",
+      {},
+      'notification_source_activity_metadata_json_check'
     );
   });
 
