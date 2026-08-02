@@ -3,6 +3,7 @@ import {
     NotificationProjectionService,
     notificationProjectionService
 } from './notificationProjectionService.js';
+import type { NotificationProjectionLease } from './notificationSystemSampler.js';
 
 export const DEFAULT_NOTIFICATION_STALLED_AFTER_MS = 30 * 60 * 1000;
 export const DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS = 60 * 1000;
@@ -35,7 +36,7 @@ export interface NotificationStalledDetectorOptions {
     stalledAfterMs?: number;
     intervalMs?: number;
     now?: () => string | number | Date;
-    acquireLease?: () => Promise<boolean>;
+    acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
 }
 
 export class NotificationStalledDetector {
@@ -43,7 +44,7 @@ export class NotificationStalledDetector {
     private readonly stalledAfterMs: number;
     private readonly intervalMs: number;
     private readonly now: () => string | number | Date;
-    private readonly acquireLease?: () => Promise<boolean>;
+    private readonly acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
     private timer: NodeJS.Timeout | null = null;
     private activeRun: Promise<number> | null = null;
 
@@ -93,14 +94,39 @@ export class NotificationStalledDetector {
     }
 
     private async executeRun(): Promise<number> {
+        let lease: NotificationProjectionLease | undefined;
+        let renewalTimer: NodeJS.Timeout | undefined;
         try {
-            if (this.acquireLease && !await this.acquireLease()) return 0;
+            if (this.acquireLease) {
+                const acquired = await this.acquireLease();
+                if (acquired === false) return 0;
+                if (typeof acquired === 'object') {
+                    lease = acquired;
+                    renewalTimer = setInterval(() => {
+                        void lease!.renew().catch((error) => logger.warn({
+                            error: error instanceof Error ? error.message : String(error)
+                        }, 'Failed to renew notification stalled-activity lease'));
+                    }, lease.renewalIntervalMs ?? Math.max(1000, Math.floor(this.intervalMs / 2)));
+                    renewalTimer.unref();
+                }
+            }
+            if (lease && !await lease.renew()) return 0;
             return await this.projector.detectStalledActivities(this.stalledAfterMs, this.now());
         } catch (error) {
             logger.warn({
                 error: error instanceof Error ? error.message : String(error)
             }, 'Failed to detect stalled notification activity');
             return 0;
+        } finally {
+            if (renewalTimer) clearInterval(renewalTimer);
+            if (lease) {
+                try { await lease.release(); }
+                catch (error) {
+                    logger.warn({
+                        error: error instanceof Error ? error.message : String(error)
+                    }, 'Failed to release notification stalled-activity lease');
+                }
+            }
         }
     }
 }

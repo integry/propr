@@ -18,7 +18,8 @@ export type SystemStatusSnapshot = Record<string, unknown>;
 interface ComponentSnapshot {
     component: string;
     status: string;
-    healthy: boolean;
+    /** null means the observation is unrecognized/transitional, not a confirmed outage. */
+    healthy: boolean | null;
 }
 
 interface ComponentSpec {
@@ -26,57 +27,70 @@ interface ComponentSpec {
     component: string;
     healthyStatuses: readonly string[];
     knownStatuses: readonly string[];
+    unhealthyStatuses: readonly string[];
 }
 
 const COMPONENT_SPECS: readonly ComponentSpec[] = [
-    {
-        key: 'api',
-        component: 'api',
-        healthyStatuses: ['healthy', 'ok'],
-        knownStatuses: ['healthy', 'ok', 'unhealthy', 'failed', 'disconnected']
-    },
+    // API availability requires an observer outside this process. Do not imply
+    // self-outage coverage by projecting the API's constant local "healthy" value.
     {
         key: 'redis',
         component: 'redis',
         healthyStatuses: ['connected'],
-        knownStatuses: ['connected', 'disconnected', 'failed', 'unknown']
+        knownStatuses: ['connected', 'disconnected', 'failed', 'unknown'],
+        unhealthyStatuses: ['disconnected', 'failed']
     },
     {
         key: 'daemon',
         component: 'daemon',
         healthyStatuses: ['running'],
-        knownStatuses: ['running', 'stopped', 'failed', 'unknown']
+        knownStatuses: ['running', 'stopped', 'failed', 'unknown'],
+        unhealthyStatuses: ['stopped', 'failed']
     },
     {
         key: 'worker',
         component: 'worker',
         healthyStatuses: ['running'],
-        knownStatuses: ['running', 'stopped', 'failed', 'unknown']
+        knownStatuses: ['running', 'stopped', 'failed', 'unknown'],
+        unhealthyStatuses: ['stopped', 'failed']
     },
     {
         key: 'githubAuth',
         component: 'github-auth',
         healthyStatuses: ['connected'],
-        knownStatuses: ['connected', 'disconnected', 'failed', 'unknown']
+        knownStatuses: ['connected', 'disconnected', 'failed', 'unknown'],
+        unhealthyStatuses: ['disconnected', 'failed']
     },
     {
         key: 'githubEventIntakeStatus',
         component: 'github-event-intake',
         healthyStatuses: ['connected', 'active'],
-        knownStatuses: ['connected', 'active', 'disconnected', 'failed', 'unknown']
+        knownStatuses: ['connected', 'active', 'disconnected', 'failed', 'unknown'],
+        unhealthyStatuses: ['disconnected', 'failed']
     },
     {
         key: 'indexing',
         component: 'indexing-service',
         healthyStatuses: ['idle', 'active', 'queued', 'indexing', 'completed'],
-        knownStatuses: ['idle', 'active', 'queued', 'indexing', 'completed', 'failed', 'disconnected', 'unknown']
+        knownStatuses: ['idle', 'active', 'queued', 'indexing', 'completed', 'failed', 'disconnected', 'unknown'],
+        unhealthyStatuses: ['failed', 'disconnected']
     }
 ];
 
 function normalizedKnownStatus(value: unknown, knownStatuses: readonly string[]): string {
-    if (typeof value !== 'string') return 'unhealthy';
+    if (typeof value !== 'string') return 'unknown';
     const normalized = value.trim().toLowerCase();
-    return knownStatuses.includes(normalized) ? normalized : 'unhealthy';
+    return knownStatuses.includes(normalized) ? normalized : 'unknown';
+}
+
+function classifiedHealth(
+    status: string,
+    healthyStatuses: readonly string[],
+    unhealthyStatuses: readonly string[]
+): boolean | null {
+    if (healthyStatuses.includes(status)) return true;
+    if (unhealthyStatuses.includes(status)) return false;
+    return null;
 }
 
 function safeComponentSuffix(value: unknown): string {
@@ -97,7 +111,7 @@ function extractComponentSnapshots(snapshot: SystemStatusSnapshot): ComponentSna
         components.push({
             component: 'system',
             status,
-            healthy: status === 'healthy' || status === 'ok'
+            healthy: classifiedHealth(status, ['healthy', 'ok'], ['unhealthy', 'failed'])
         });
     }
 
@@ -107,7 +121,7 @@ function extractComponentSnapshots(snapshot: SystemStatusSnapshot): ComponentSna
         components.push({
             component: spec.component,
             status,
-            healthy: spec.healthyStatuses.includes(status)
+            healthy: classifiedHealth(status, spec.healthyStatuses, spec.unhealthyStatuses)
         });
     }
 
@@ -119,7 +133,7 @@ function extractComponentSnapshots(snapshot: SystemStatusSnapshot): ComponentSna
             components.push({
                 component: `agent:${safeComponentSuffix(agent.id ?? agent.alias ?? 'unknown')}`,
                 status,
-                healthy: status === 'connected'
+                healthy: classifiedHealth(status, ['connected'], ['disconnected', 'failed'])
             });
         }
     }
@@ -130,12 +144,12 @@ function extractComponentSnapshots(snapshot: SystemStatusSnapshot): ComponentSna
         if (typeof image === 'object' && image !== null) {
             const status = normalizedKnownStatus(
                 (image as Record<string, unknown>).status,
-                ['ready', 'unavailable', 'failed', 'unknown']
+                ['ready', 'building', 'pending', 'unavailable', 'failed', 'unknown']
             );
             components.push({
                 component: 'agent-runtime',
                 status,
-                healthy: status === 'ready'
+                healthy: classifiedHealth(status, ['ready'], ['unavailable', 'failed'])
             });
         }
     }
@@ -149,12 +163,14 @@ export interface NotificationSystemProjectionOptions {
 }
 
 export class NotificationSystemProjection {
+    private readonly database: Knex;
     private readonly notifications: NotificationService;
     private readonly store: NotificationProjectionStore;
     private readonly now: () => TimestampInput;
 
     constructor(options: NotificationSystemProjectionOptions = {}) {
         const database = options.database ?? db;
+        this.database = database;
         this.now = options.now ?? (() => new Date());
         this.notifications = options.notificationService ?? new NotificationService({
             database,
@@ -170,7 +186,11 @@ export class NotificationSystemProjection {
         const timestamp = normalizeISO8601Timestamp(
             typeof snapshot.timestamp === 'string' ? snapshot.timestamp : this.now()
         );
-        const knownRecipients = await this.store.getKnownRecipients();
+        const components = extractComponentSnapshots(snapshot);
+        if (components.length === 0) return;
+        const knownRecipients = components.some((component) => component.healthy === false)
+            ? await this.store.getKnownRecipients()
+            : [];
         const requestedUserIds = new Set(recipients.map((recipient) =>
             typeof recipient === 'string' ? recipient : recipient.userId
         ));
@@ -178,29 +198,45 @@ export class NotificationSystemProjection {
             ...recipients,
             ...knownRecipients.filter((userId) => !requestedUserIds.has(userId))
         ];
-        for (const component of extractComponentSnapshots(snapshot)) {
-            const transition = await this.store.updateSystemTransition({ ...component, timestamp });
-            if (!transition.unhealthyEpisodeStarted) continue;
-            await this.notifications.createNotificationEvent({
-                deduplicationKey: buildProjectionDeduplicationKey(
-                    'system',
-                    transition.component,
-                    'unhealthy',
-                    transition.transitionAt
-                ),
-                kind: 'system_failure',
-                severity: 'error',
-                target: { type: 'system_failure', component: transition.component },
-                title: 'System component needs attention',
-                body: `The ${transition.component} component reported ${transition.status}.`,
-                metadata: {
-                    transitionState: transition.status,
-                    transitionAt: transition.transitionAt
-                },
-                occurredAt: transition.transitionAt,
-                recipients: requestedRecipients
-            });
-        }
+        await this.database.transaction(async (transaction) => {
+            for (const component of components) {
+                if (component.healthy === null) {
+                    await this.store.updateUnknownSystemObservation({
+                        component: component.component,
+                        status: component.status,
+                        timestamp
+                    }, transaction);
+                    continue;
+                }
+                const transition = await this.store.updateSystemTransition({
+                    ...component,
+                    healthy: component.healthy!,
+                    timestamp
+                }, transaction);
+                if (transition.healthy) continue;
+                // Reassign on every confirmed unhealthy observation. Event insertion
+                // is idempotent, while newly eligible users join the active episode.
+                await this.notifications.createNotificationEventInTransaction(transaction, {
+                    deduplicationKey: buildProjectionDeduplicationKey(
+                        'system',
+                        transition.component,
+                        'unhealthy',
+                        transition.transitionAt
+                    ),
+                    kind: 'system_failure',
+                    severity: 'error',
+                    target: { type: 'system_failure', component: transition.component },
+                    title: 'System component needs attention',
+                    body: `The ${transition.component} component reported ${transition.status}.`,
+                    metadata: {
+                        transitionState: transition.status,
+                        transitionAt: transition.transitionAt
+                    },
+                    occurredAt: transition.transitionAt,
+                    recipients: requestedRecipients
+                });
+            }
+        });
     }
 }
 

@@ -23,11 +23,17 @@ export function getNotificationSystemCheckIntervalMs(): number {
     );
 }
 
+export interface NotificationProjectionLease {
+    renew(): Promise<boolean>;
+    release(): Promise<void>;
+    renewalIntervalMs?: number;
+}
+
 export interface NotificationSystemSamplerOptions {
     getSnapshot: () => Promise<SystemStatusSnapshot>;
     projector?: Pick<NotificationSystemProjection, 'projectSnapshot'>;
     intervalMs?: number;
-    acquireLease?: () => Promise<boolean>;
+    acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
 }
 
 /** Samples installation health independently from dashboard polling. */
@@ -35,7 +41,7 @@ export class NotificationSystemSampler {
     private readonly getSnapshot: () => Promise<SystemStatusSnapshot>;
     private readonly projector: Pick<NotificationSystemProjection, 'projectSnapshot'>;
     private readonly intervalMs: number;
-    private readonly acquireLease?: () => Promise<boolean>;
+    private readonly acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
     private timer: NodeJS.Timeout | null = null;
     private activeRun: Promise<boolean> | null = null;
 
@@ -78,9 +84,24 @@ export class NotificationSystemSampler {
     }
 
     private async executeRun(): Promise<boolean> {
+        let lease: NotificationProjectionLease | undefined;
+        let renewalTimer: NodeJS.Timeout | undefined;
         try {
-            if (this.acquireLease && !await this.acquireLease()) return false;
+            if (this.acquireLease) {
+                const acquired = await this.acquireLease();
+                if (acquired === false) return false;
+                if (typeof acquired === 'object') {
+                    lease = acquired;
+                    renewalTimer = setInterval(() => {
+                        void lease!.renew().catch((error) => logger.warn({
+                            error: error instanceof Error ? error.message : String(error)
+                        }, 'Failed to renew notification system-health lease'));
+                    }, lease.renewalIntervalMs ?? Math.max(1000, Math.floor(this.intervalMs / 2)));
+                    renewalTimer.unref();
+                }
+            }
             const snapshot = await this.getSnapshot();
+            if (lease && !await lease.renew()) return false;
             await this.projector.projectSnapshot(snapshot);
             return true;
         } catch (error) {
@@ -88,6 +109,16 @@ export class NotificationSystemSampler {
                 error: error instanceof Error ? error.message : String(error)
             }, 'Failed to sample system health for notifications');
             return false;
+        } finally {
+            if (renewalTimer) clearInterval(renewalTimer);
+            if (lease) {
+                try { await lease.release(); }
+                catch (error) {
+                    logger.warn({
+                        error: error instanceof Error ? error.message : String(error)
+                    }, 'Failed to release notification system-health lease');
+                }
+            }
         }
     }
 }

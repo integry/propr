@@ -2,6 +2,7 @@ import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
+import { getEventPublisher } from '../../utils/eventPublisher.js';
 
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
@@ -13,6 +14,8 @@ export interface DockerCommandOptions {
 }
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
+
+const TASK_LIVENESS_HEARTBEAT_MS = 30_000;
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -220,7 +223,12 @@ export function executeDockerCommand(command: string, args: string[], options: D
             }
             return extraOutput ? `${primaryOutput}${primaryOutput ? '\n' : ''}${extraOutput}` : primaryOutput;
         };
-        const redisState = { client: null as Redis | null, interval: null as ReturnType<typeof setInterval> | null, lastLen: 0 };
+        const redisState = {
+            client: null as Redis | null,
+            interval: null as ReturnType<typeof setInterval> | null,
+            lastLen: 0
+        };
+        const livenessInterval = taskId ? initTaskLivenessHeartbeat(taskId) : null;
         if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, getRedisOutput, redisState);
         if (command === 'docker' && args[0] === 'run' && worktreePath) detectContainerId(worktreePath, state, onContainerId);
 
@@ -241,6 +249,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
+            if (livenessInterval) clearInterval(livenessInterval);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
             if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
             if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
@@ -249,6 +258,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         child.on('error', (error: Error) => {
             clearTimeout(timeoutHandle);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
+            if (livenessInterval) clearInterval(livenessInterval);
             if (redisState.interval) clearInterval(redisState.interval);
             if (redisState.client) redisState.client.quit().catch(() => {});
             reject(error);
@@ -256,7 +266,16 @@ export function executeDockerCommand(command: string, args: string[], options: D
     });
 }
 
-function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getStdout: () => string, state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null; lastLen: number }): void {
+function initRedisStreaming(
+    taskId: string,
+    stripAnsi: boolean | undefined,
+    getStdout: () => string,
+    state: {
+        client: Redis | null;
+        interval: ReturnType<typeof setInterval> | null;
+        lastLen: number;
+    }
+): void {
     (async () => {
         try {
             state.client = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
@@ -271,6 +290,19 @@ function initRedisStreaming(taskId: string, stripAnsi: boolean | undefined, getS
             logger.debug({ taskId, redisKey }, 'Started streaming output to Redis');
         } catch (err) { logger.warn({ error: (err as Error).message }, 'Failed to initialize Redis streaming'); }
     })();
+}
+
+function initTaskLivenessHeartbeat(taskId: string): ReturnType<typeof setInterval> {
+    const heartbeat = async () => {
+        try { await getEventPublisher().projectTaskHeartbeat(taskId); }
+        catch (err) {
+            logger.debug({ error: (err as Error).message }, 'Failed to project task liveness heartbeat');
+        }
+    };
+    void heartbeat();
+    const interval = setInterval(() => { void heartbeat(); }, TASK_LIVENESS_HEARTBEAT_MS);
+    interval.unref();
+    return interval;
 }
 
 async function cleanupRedisStreaming(state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null }, taskId: string | undefined, stripAnsi: boolean | undefined, stdout: string): Promise<void> {

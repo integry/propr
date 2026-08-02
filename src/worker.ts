@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@propr/core';
+import { GITHUB_ISSUE_QUEUE_NAME, closeEventPublisher, createWorker } from '@propr/core';
 import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData, MergeConflictJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
@@ -353,10 +353,11 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     const close = async (): Promise<void> => {
         await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
-        await subscriberRedis.quit();
-        await heartbeatRedis.quit();
         await worker.close();
         await runtimeBuildWorker.close();
+        await closeEventPublisher();
+        await subscriberRedis.quit();
+        await heartbeatRedis.quit();
     };
 
     process.on('SIGINT', async () => {

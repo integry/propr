@@ -13,6 +13,8 @@ export interface QueueIndexingResult {
   jobId?: string;
   correlationId?: string;
   baseBranch?: string;
+  transitionAt?: string;
+  runId?: string;
 }
 
 export interface StopIndexingResult {
@@ -291,11 +293,17 @@ export async function queueIndexingJob(
     { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
     { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
   );
-  await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
+  const transition = await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
 
   // Return the normalized branch so callers report/match the same value that was
   // stored on the job and used to update repository status.
-  return { success: true, jobId: job.id, correlationId, baseBranch: effectiveBranch };
+  return {
+    success: true,
+    jobId: job.id,
+    correlationId,
+    baseBranch: effectiveBranch,
+    ...transition
+  };
 }
 
 export async function stopIndexingJob(repository: string, branch?: string): Promise<StopIndexingResult> {

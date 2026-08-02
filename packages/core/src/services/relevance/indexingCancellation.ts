@@ -263,11 +263,20 @@ export async function publishProgress(repository: string, branch: string, progre
 /**
  * Publish an indexing status change (e.g., indexing, completed, failed, idle) to WebSocket clients.
  */
-export async function publishIndexingStatus(repository: string, branch: string, phase: IndexingPhase): Promise<void> {
-  const payload: Pick<IndexingUpdatePayload, 'repository' | 'branch' | 'phase' | 'progress'> = {
+export async function publishIndexingStatus(
+  repository: string,
+  branch: string,
+  phase: IndexingPhase,
+  transition?: { transitionAt: string; runId: string }
+): Promise<void> {
+  const payload: Pick<
+    IndexingUpdatePayload,
+    'repository' | 'branch' | 'phase' | 'progress' | 'transitionAt' | 'runId'
+  > = {
     repository,
     branch,
     phase,
+    ...(transition === undefined ? {} : transition),
   };
 
   if (phase === 'completed') {

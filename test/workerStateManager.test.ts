@@ -73,8 +73,8 @@ const mockLogger = {
 };
 
 await mock.module('../packages/core/src/utils/logger.js', {
+    defaultExport: mockLogger,
     namedExports: {
-        default: mockLogger,
         generateCorrelationId: () => 'generated-correlation-id'
     }
 });
@@ -582,7 +582,7 @@ test('updateTaskState publishes real-time event', async () => {
         previousState: string;
         repository: string;
         issueNumber: number;
-        metadata?: { attempts: number; reason?: string };
+        metadata?: { attempts: number; reason?: string; transitionSequence?: number };
     };
 
     assert.strictEqual(eventPayload.taskId, 'task-event-update');
@@ -591,6 +591,7 @@ test('updateTaskState publishes real-time event', async () => {
     assert.strictEqual(eventPayload.repository, 'event-owner/event-repo');
     assert.strictEqual(eventPayload.issueNumber, 88);
     assert.strictEqual(eventPayload.metadata?.reason, 'Claude execution started');
+    assert.strictEqual(eventPayload.metadata?.transitionSequence, 1);
 
     await stateManager.close();
 });

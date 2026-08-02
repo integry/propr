@@ -436,6 +436,7 @@ export {
     getNotificationSystemCheckIntervalMs
 } from './services/notificationSystemSampler.js';
 export type {
+    NotificationProjectionLease,
     NotificationSystemSamplerOptions
 } from './services/notificationSystemSampler.js';
 export {

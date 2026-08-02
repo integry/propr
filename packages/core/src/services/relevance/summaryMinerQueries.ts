@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { db } from '../../db/connection.js';
 
 // Inline type definitions to avoid circular dependency with summaryMiner.ts
@@ -24,42 +25,65 @@ export async function updateRepositoryStatus(
   status: 'idle' | 'indexing' | 'completed' | 'failed',
   branch: string = 'HEAD',
   commitInfo?: { hash?: string; message?: string; iconPath?: string | null }
-): Promise<void> {
-  const lastIndexedHash = commitInfo?.hash;
-  const lastIndexedCommitMessage = commitInfo?.message;
-  const iconPath = commitInfo?.iconPath;
-  const updateData: Record<string, unknown> = {
-    indexing_status: status,
-    updated_at: db.fn.now()
-  };
-
-  if (status === 'completed') {
-    updateData.last_indexed_at = db.fn.now();
-    if (lastIndexedHash) {
-      updateData.last_indexed_hash = lastIndexedHash;
-    }
-    if (lastIndexedCommitMessage) {
-      updateData.last_indexed_commit_message = lastIndexedCommitMessage;
-    }
-    if (iconPath !== undefined) {
-      updateData.icon_path = iconPath;
-    }
-  }
-
-  await db('repositories')
-    .insert({
-      full_name: fullName,
-      branch,
+): Promise<{ transitionAt: string; runId: string }> {
+  return db.transaction(async (transaction) => {
+    const existing = await transaction('repositories')
+      .select('indexing_status', 'indexing_transition_at', 'indexing_run_id')
+      .where({ full_name: fullName, branch })
+      .first() as {
+        indexing_status?: string;
+        indexing_transition_at?: string | null;
+        indexing_run_id?: string | null;
+      } | undefined;
+    const now = new Date().toISOString();
+    const statusChanged = existing?.indexing_status !== status;
+    const transitionAt = statusChanged || !existing?.indexing_transition_at
+      ? now
+      : existing.indexing_transition_at;
+    const runId = (status === 'indexing' && statusChanged) || !existing?.indexing_run_id
+      ? randomUUID()
+      : existing.indexing_run_id;
+    const lastIndexedHash = commitInfo?.hash;
+    const lastIndexedCommitMessage = commitInfo?.message;
+    const iconPath = commitInfo?.iconPath;
+    const updateData: Record<string, unknown> = {
       indexing_status: status,
-      created_at: db.fn.now(),
-      updated_at: db.fn.now(),
-      last_indexed_hash: lastIndexedHash || null,
-      last_indexed_commit_message: lastIndexedCommitMessage || null,
-      icon_path: iconPath || null,
-      ...(status === 'completed' ? { last_indexed_at: db.fn.now() } : {})
-    })
-    .onConflict(['full_name', 'branch'])
-    .merge(updateData);
+      indexing_transition_at: transitionAt,
+      indexing_run_id: runId,
+      updated_at: now
+    };
+
+    if (status === 'completed') {
+      updateData.last_indexed_at = now;
+      if (lastIndexedHash) {
+        updateData.last_indexed_hash = lastIndexedHash;
+      }
+      if (lastIndexedCommitMessage) {
+        updateData.last_indexed_commit_message = lastIndexedCommitMessage;
+      }
+      if (iconPath !== undefined) {
+        updateData.icon_path = iconPath;
+      }
+    }
+
+    await transaction('repositories')
+      .insert({
+        full_name: fullName,
+        branch,
+        indexing_status: status,
+        indexing_transition_at: transitionAt,
+        indexing_run_id: runId,
+        created_at: now,
+        updated_at: now,
+        last_indexed_hash: lastIndexedHash || null,
+        last_indexed_commit_message: lastIndexedCommitMessage || null,
+        icon_path: iconPath || null,
+        ...(status === 'completed' ? { last_indexed_at: now } : {})
+      })
+      .onConflict(['full_name', 'branch'])
+      .merge(updateData);
+    return { transitionAt, runId };
+  });
 }
 
 /**

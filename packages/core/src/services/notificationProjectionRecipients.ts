@@ -72,11 +72,8 @@ export class NotificationProjectionRecipients {
                 .where({ repository }) as Array<{ user_id: string }>;
             recipients.push(...rows.map((row) => row.user_id));
         }
-        for (const table of ['notification_preferences', 'notification_preference_settings'] as const) {
-            if (!await this.database.schema.hasTable(table)) continue;
-            const rows = await this.database(table).distinct('user_id') as Array<{ user_id: string }>;
-            recipients.push(...rows.map((row) => row.user_id));
-        }
+        // Category/channel preferences only filter an already eligible recipient;
+        // they are installation-wide and must never establish repository access.
         recipients.push(...await this.getRepositoryPreferenceRecipients(repository));
         return uniqueStrings(recipients);
     }

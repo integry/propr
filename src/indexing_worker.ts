@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
 import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
-import { createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
+import { closeEventPublisher, createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
 import type { IndexingJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
@@ -384,6 +384,7 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         logger.info('Indexing Worker received SIGINT, shutting down gracefully...');
         clearInterval(scanInterval);
         await worker.close();
+        await closeEventPublisher();
         process.exit(0);
     });
 
@@ -391,6 +392,7 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         logger.info('Indexing Worker received SIGTERM, shutting down gracefully...');
         clearInterval(scanInterval);
         await worker.close();
+        await closeEventPublisher();
         process.exit(0);
     });
 

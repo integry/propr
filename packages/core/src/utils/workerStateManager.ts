@@ -13,7 +13,8 @@ export { TaskStates, type TaskState, type IssueRef };
 function buildPublishedTaskMetadata(
     issueNumber: number,
     attempts: number,
-    metadata: UpdateMetadata
+    metadata: UpdateMetadata,
+    transitionSequence?: number
 ): Record<string, unknown> {
     const commandMode = typeof metadata.historyMetadata?.commandMode === 'string'
         ? metadata.historyMetadata.commandMode
@@ -29,8 +30,34 @@ function buildPublishedTaskMetadata(
         reason: metadata.reason,
         ...(commandMode === undefined ? {} : { commandMode }),
         ...(prNumber === undefined ? {} : { prNumber }),
-        ...(prUrl === undefined ? {} : { prUrl })
+        ...(prUrl === undefined ? {} : { prUrl }),
+        ...(transitionSequence === undefined ? {} : { transitionSequence })
     };
+}
+
+function insertedSequence(value: unknown): number | undefined {
+    const first = Array.isArray(value) ? value[0] : undefined;
+    const candidate = typeof first === 'object' && first !== null
+        ? (first as Record<string, unknown>).history_id
+        : first;
+    return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate > 0
+        ? candidate
+        : undefined;
+}
+
+function parseMetadataRecord(value: unknown): Record<string, unknown> {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+    }
+    if (typeof value !== 'string') return {};
+    try {
+        const parsed: unknown = JSON.parse(value);
+        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : {};
+    } catch {
+        return {};
+    }
 }
 
 /**
@@ -96,7 +123,8 @@ export class WorkerStateManager {
                 task_id: taskId, state: TaskStates.PENDING,
                 timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
             };
-            await db('task_history').insert(historyData);
+            const insertedHistory = await db('task_history').insert(historyData);
+            const transitionSequence = insertedSequence(insertedHistory);
             correlatedLogger.debug({ taskId }, 'Task state persisted to database');
 
             // Publish real-time event for task creation
@@ -106,6 +134,7 @@ export class WorkerStateManager {
                 state: TaskStates.PENDING,
                 repository,
                 issueNumber: issueRef.number,
+                metadata: transitionSequence === undefined ? undefined : { transitionSequence },
                 timestamp: transitionAt
             });
         } catch (error) {
@@ -164,9 +193,10 @@ export class WorkerStateManager {
                     ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
                     error: metadata.error, worktreeInfo: metadata.worktreeInfo,
                     claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
-                    })
-                };
-                await db('task_history').insert(historyData);
+                })
+            };
+            const insertedHistory = await db('task_history').insert(historyData);
+            const transitionSequence = insertedSequence(insertedHistory);
             correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
 
             // Publish real-time event for task state change
@@ -180,7 +210,8 @@ export class WorkerStateManager {
                 metadata: buildPublishedTaskMetadata(
                     state.issueRef.number,
                     state.attempts,
-                    metadata
+                    metadata,
+                    transitionSequence
                 ),
                 timestamp: transitionAt
             });
@@ -229,6 +260,28 @@ export class WorkerStateManager {
         }, 'Task issue reference updated');
 
         try {
+            const taskRow = await db('tasks')
+                .select('initial_job_data')
+                .where({ task_id: taskId })
+                .first() as { initial_job_data?: unknown } | undefined;
+            const initialJobData = {
+                ...parseMetadataRecord(taskRow?.initial_job_data),
+                ...state.issueRef
+            };
+            const durablePrNumber = typeof state.issueRef.pullRequestNumber === 'number'
+                ? state.issueRef.pullRequestNumber
+                : typeof state.issueRef.prNumber === 'number' ? state.issueRef.prNumber : undefined;
+            await db('tasks')
+                .where({ task_id: taskId })
+                .update({
+                    initial_job_data: JSON.stringify(initialJobData),
+                    ...(durablePrNumber === undefined ? {} : { pr_number: durablePrNumber })
+                });
+            const historyRow = await db('task_history')
+                .select('history_id')
+                .where({ task_id: taskId, state: state.state, timestamp: transitionAt })
+                .orderBy('history_id', 'desc')
+                .first() as { history_id?: number } | undefined;
             const eventPublisher = getEventPublisher();
             await eventPublisher.publishTaskUpdate({
                 taskId,
@@ -238,7 +291,17 @@ export class WorkerStateManager {
                 metadata: {
                     issueRefUpdated: true,
                     updatedFields: Object.keys(issueRefPatch),
-                    transitionAt
+                    transitionAt,
+                    ...(historyRow?.history_id === undefined
+                        ? {}
+                        : { transitionSequence: historyRow.history_id }),
+                    ...(typeof initialJobData.commandMode === 'string'
+                        ? { commandMode: initialJobData.commandMode }
+                        : {}),
+                    ...(durablePrNumber === undefined ? {} : { prNumber: durablePrNumber }),
+                    ...(typeof state.issueRef.prUrl === 'string'
+                        ? { prUrl: state.issueRef.prUrl }
+                        : {})
                 }
             });
         } catch (error) {
@@ -299,6 +362,28 @@ export class WorkerStateManager {
 
             // Publish real-time event for metadata update so UI can refresh
             try {
+                const historyRow = await db('task_history')
+                    .select('history_id', 'metadata')
+                    .where({ task_id: taskId, state: historyState, timestamp: transitionAt })
+                    .orderBy('history_id', 'desc')
+                    .first() as { history_id?: number; metadata?: unknown } | undefined;
+                const durableMetadata = {
+                    ...parseMetadataRecord(historyRow?.metadata),
+                    ...(state.history[historyIndex].metadata ?? {})
+                };
+                if (historyRow?.history_id !== undefined) {
+                    await db('task_history')
+                        .where({ history_id: historyRow.history_id })
+                        .update({ metadata: JSON.stringify(durableMetadata) });
+                }
+                const prResult = parseMetadataRecord(durableMetadata.prResult);
+                const pr = parseMetadataRecord(durableMetadata.pr);
+                const prNumber = typeof prResult.prNumber === 'number'
+                    ? prResult.prNumber
+                    : typeof pr.number === 'number' ? pr.number : undefined;
+                const prUrl = typeof prResult.prUrl === 'string'
+                    ? prResult.prUrl
+                    : typeof pr.url === 'string' ? pr.url : undefined;
                 const eventPublisher = getEventPublisher();
                 await eventPublisher.publishTaskUpdate({
                     taskId,
@@ -308,7 +393,15 @@ export class WorkerStateManager {
                     metadata: {
                         metadataUpdate: true,
                         updatedFields: Object.keys(metadata),
-                        transitionAt
+                        transitionAt,
+                        ...(historyRow?.history_id === undefined
+                            ? {}
+                            : { transitionSequence: historyRow.history_id }),
+                        ...(typeof durableMetadata.commandMode === 'string'
+                            ? { commandMode: durableMetadata.commandMode }
+                            : {}),
+                        ...(prNumber === undefined ? {} : { prNumber }),
+                        ...(prUrl === undefined ? {} : { prUrl })
                     }
                 });
             } catch (error) {

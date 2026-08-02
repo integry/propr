@@ -48,7 +48,8 @@ import {
   NotificationStalledDetector,
   NotificationSystemSampler,
   getNotificationStalledCheckIntervalMs,
-  getNotificationSystemCheckIntervalMs
+  getNotificationSystemCheckIntervalMs,
+  closeEventPublisher
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -225,32 +226,79 @@ async function initRedis(): Promise<void> {
 function createNotificationProjectionLease(
   name: string,
   ttlMs: number
-): () => Promise<boolean> {
+): () => Promise<boolean | {
+  renew: () => Promise<boolean>;
+  release: () => Promise<void>;
+  renewalIntervalMs: number;
+}> {
   const key = `notification:projection-lease:${name}`;
-  const owner = `${process.pid}:${generateCorrelationId()}`;
-  const script = `
-    if redis.call('GET', KEYS[1]) == ARGV[1] then
-      redis.call('PEXPIRE', KEYS[1], ARGV[2])
-      return 1
-    end
+  const acquireScript = `
     if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then
       return 1
     end
     return 0
   `;
+  const renewScript = `
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      redis.call('PEXPIRE', KEYS[1], ARGV[2])
+      return 1
+    end
+    return 0
+  `;
+  const releaseScript = `
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      redis.call('DEL', KEYS[1])
+      return 1
+    end
+    return 0
+  `;
   return async () => {
+    const owner = `${process.pid}:${generateCorrelationId()}`;
     try {
-      const acquired = await redisClient.eval(script, {
+      const acquired = await redisClient.eval(acquireScript, {
         keys: [key],
         arguments: [owner, String(ttlMs)]
       });
-      return Number(acquired) === 1;
+      if (Number(acquired) !== 1) return false;
+      return {
+        renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
+        renew: async () => {
+          try {
+            const renewed = await redisClient.eval(renewScript, {
+              keys: [key],
+              arguments: [owner, String(ttlMs)]
+            });
+            return Number(renewed) === 1;
+          } catch (error) {
+            console.warn(`Could not renew ${name} notification projection lease:`,
+              error instanceof Error ? error.message : String(error));
+            // Once acquired, an unconfirmed renewal must be treated as lease loss;
+            // another replica may legitimately acquire after the old TTL expires.
+            return false;
+          }
+        },
+        release: async () => {
+          try {
+            await redisClient.eval(releaseScript, {
+              keys: [key],
+              arguments: [owner]
+            });
+          } catch (error) {
+            console.warn(`Could not release ${name} notification projection lease:`,
+              error instanceof Error ? error.message : String(error));
+          }
+        }
+      };
     } catch (error) {
       // Projection deduplication remains the safety net when Redis cannot
       // coordinate replicas; fail open so health monitoring is not disabled.
       console.warn(`Could not acquire ${name} notification projection lease:`,
         error instanceof Error ? error.message : String(error));
-      return true;
+      return {
+        renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
+        renew: async () => true,
+        release: async () => undefined
+      };
     }
   };
 }
@@ -468,7 +516,7 @@ async function start(): Promise<void> {
     if (!demoMode) {
       const systemCheckIntervalMs = getNotificationSystemCheckIntervalMs();
       notificationSystemSampler = new NotificationSystemSampler({
-        getSnapshot: statusRoutes.getStatusSnapshot,
+        getSnapshot: statusRoutes.getNotificationHealthSnapshot,
         intervalMs: systemCheckIntervalMs,
         acquireLease: createNotificationProjectionLease(
           'system-health',
@@ -528,6 +576,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'event publisher', close: () => closeEventPublisher() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }

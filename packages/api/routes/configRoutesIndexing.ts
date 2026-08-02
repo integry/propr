@@ -55,7 +55,14 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
 
       // Best-effort optimistic status for newly accepted jobs only.
       try {
-        await publishIndexingStatus(repository, effectiveBranch, 'indexing');
+        await publishIndexingStatus(
+          repository,
+          effectiveBranch,
+          'indexing',
+          result.transitionAt && result.runId
+            ? { transitionAt: result.transitionAt, runId: result.runId }
+            : undefined
+        );
       } catch (pubErr) {
         console.warn('Failed to publish optimistic indexing status:', pubErr);
       }

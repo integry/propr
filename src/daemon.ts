@@ -27,7 +27,8 @@ import {
     loadUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
     loadPrReviewModel,
-    AgentRegistry
+    AgentRegistry,
+    closeEventPublisher
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { logger } from '@propr/core';
@@ -403,6 +404,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             await routingService.stop();
         }
         if (routingStatusPublisher) await routingStatusPublisher.stop();
+        await closeEventPublisher();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();

@@ -193,9 +193,14 @@ async function resolveHeadInfo(repoPath: string, branch: string, log: Logger): P
   }
 }
 
-async function safePublishIndexingStatus(fullName: string, branch: string, status: IndexingPhase): Promise<void> {
+async function safePublishIndexingStatus(
+  fullName: string,
+  branch: string,
+  status: IndexingPhase,
+  transition?: { transitionAt: string; runId: string }
+): Promise<void> {
   try {
-    await publishIndexingStatus(fullName, branch, status);
+    await publishIndexingStatus(fullName, branch, status, transition);
   } catch {
     // best-effort
   }
@@ -233,21 +238,21 @@ async function handleNoFilesToProcess(options: {
   await clearIndexingProgress(fullName, branch);
 
   if (dirResult.failedBatches > 0) {
-    await updateRepositoryStatus(fullName, 'failed', branch);
-    await safePublishIndexingStatus(fullName, branch, 'failed');
+    const transition = await updateRepositoryStatus(fullName, 'failed', branch);
+    await safePublishIndexingStatus(fullName, branch, 'failed', transition);
     log.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
     return;
   }
 
-  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-  await safePublishIndexingStatus(fullName, branch, 'completed');
+  const transition = await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+  await safePublishIndexingStatus(fullName, branch, 'completed', transition);
 }
 
 async function finalizeIndexing(options: IndexingCompletionOptions): Promise<void> {
   const { repoPath, fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, batchResult, dirFailedBatches, log } = options;
   if (batchResult.failedBatches > 0 || dirFailedBatches > 0) {
-    await updateRepositoryStatus(fullName, 'failed', branch);
-    await safePublishIndexingStatus(fullName, branch, 'failed');
+    const transition = await updateRepositoryStatus(fullName, 'failed', branch);
+    await safePublishIndexingStatus(fullName, branch, 'failed', transition);
     log.warn(
       { repoPath, fullName, branch, ...batchResult, dirFailedBatches },
       'Repository indexing completed with failures - will retry on next scan'
@@ -255,8 +260,8 @@ async function finalizeIndexing(options: IndexingCompletionOptions): Promise<voi
     return;
   }
 
-  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-  await safePublishIndexingStatus(fullName, branch, 'completed');
+  const transition = await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
+  await safePublishIndexingStatus(fullName, branch, 'completed', transition);
   log.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
 }
 
@@ -296,10 +301,11 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       // clearing a previously failed repository to idle would hide a real problem.
       const existingStatus = await getRepositoryIndexingStatus(fullName, branch);
       const cooldownStatus = existingStatus === 'failed' ? 'failed' : 'idle';
+      let cooldownTransition: { transitionAt: string; runId: string } | undefined;
       if (existingStatus !== 'failed') {
-        await updateRepositoryStatus(fullName, 'idle', branch);
+        cooldownTransition = await updateRepositoryStatus(fullName, 'idle', branch);
       }
-      await safePublishIndexingStatus(fullName, branch, cooldownStatus);
+      await safePublishIndexingStatus(fullName, branch, cooldownStatus, cooldownTransition);
       await clearIndexingCancellation(fullName, branch);
       await clearIndexingProgress(fullName, branch);
       return;
@@ -464,10 +470,10 @@ async function handleIndexingError(
   if (error instanceof IndexingCancelledError) {
     correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
     // Reset DB status to idle so REST queries reflect the stopped state
-    await updateRepositoryStatus(repoName, 'idle', errorBranch);
+    const transition = await updateRepositoryStatus(repoName, 'idle', errorBranch);
     // Publish idle now that the worker has fully stopped — this is the authoritative
     // terminal event so clients won't see stale progress updates afterward.
-    await safePublishIndexingStatus(repoName, errorBranch, 'idle');
+    await safePublishIndexingStatus(repoName, errorBranch, 'idle', transition);
     return;
   }
 
@@ -479,8 +485,8 @@ async function handleIndexingError(
 
   // Set status to failed
   try {
-    await updateRepositoryStatus(repoName, 'failed', errorBranch);
-    await safePublishIndexingStatus(repoName, errorBranch, 'failed');
+    const transition = await updateRepositoryStatus(repoName, 'failed', errorBranch);
+    await safePublishIndexingStatus(repoName, errorBranch, 'failed', transition);
   } catch (statusError) {
     correlatedLogger.error(
       { error: (statusError as Error).message },

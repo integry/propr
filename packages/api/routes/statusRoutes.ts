@@ -11,6 +11,7 @@ import {
 } from '@propr/shared';
 import {
   AgentRegistry,
+  db as coreDb,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
   loadSummarizationRuntimeState
@@ -24,6 +25,7 @@ interface StatusRoutesDeps {
   agentRegistry?: StatusAgentRegistry;
   loadAgents?: () => Promise<AgentConfig[]>;
   getIndexingQueue?: () => Promise<IndexingStatusQueue>;
+  getRepositoryIndexingStatus?: () => Promise<ServiceStatus | undefined>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
   now?: () => number;
@@ -54,6 +56,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     agentRegistry = AgentRegistry.getInstance() as StatusAgentRegistry,
     loadAgents = loadAgentConfigs,
     getIndexingQueue = loadIndexingQueue,
+    getRepositoryIndexingStatus = loadRepositoryIndexingStatus,
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
     now = Date.now,
@@ -154,7 +157,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
       ? 'connected'
       : 'disconnected';
-    status.indexing = await getIndexingStatus(getIndexingQueue);
+    status.indexing = await getIndexingStatus(getIndexingQueue, getRepositoryIndexingStatus);
     const warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
     const agentRuntime = agentRegistry.getOperationalStatus?.();
     if (agentRuntime) {
@@ -181,7 +184,52 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     }
   }
 
-  return { getCompatibility, getStatus, getStatusSnapshot };
+  /** Lean sampler input: no agent probes, warning scans, or runtime image inspection. */
+  async function getNotificationHealthSnapshot(): Promise<Record<string, unknown>> {
+    if (isDemoMode()) {
+      return {
+        redis: 'connected',
+        daemon: 'running',
+        worker: 'running',
+        githubAuth: 'connected',
+        githubEventIntakeStatus: 'connected',
+        indexing: 'idle',
+        timestamp: new Date(now()).toISOString()
+      };
+    }
+
+    const status: Record<string, unknown> = {
+      redis: 'unknown',
+      daemon: 'unknown',
+      worker: 'unknown',
+      githubAuth: 'unknown',
+      githubEventIntakeStatus: 'unknown',
+      indexing: 'unknown',
+      timestamp: new Date(now()).toISOString()
+    };
+    try {
+      await redisClient.ping();
+      status.redis = 'connected';
+      const daemonHeartbeat = await redisClient.get('system:status:daemon');
+      status.daemon = daemonHeartbeat && now() - parseInt(daemonHeartbeat) < 120000
+        ? 'running'
+        : 'stopped';
+      status.worker = await redisClient.sCard('system:status:workers') > 0 ? 'running' : 'stopped';
+    } catch {
+      status.redis = 'disconnected';
+    }
+    const authMode = resolveAuthMode();
+    status.githubAuth = authMode === 'app' || authMode === 'relay' || authMode === 'demo'
+      ? 'connected'
+      : authMode === 'unknown' ? 'unknown' : 'disconnected';
+    const intakeMode = resolveIntakeMode();
+    const routing = await getRoutingState(redisClient);
+    status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
+    status.indexing = await getIndexingStatus(getIndexingQueue, getRepositoryIndexingStatus);
+    return status;
+  }
+
+  return { getCompatibility, getStatus, getStatusSnapshot, getNotificationHealthSnapshot };
 
   async function getCachedAgentStatuses(): Promise<AgentStatus[]> {
     const currentTime = now();
@@ -446,16 +494,36 @@ function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
   };
 }
 
-async function getIndexingStatus(getIndexingQueue: () => Promise<IndexingStatusQueue>): Promise<ServiceStatus> {
+async function loadRepositoryIndexingStatus(): Promise<ServiceStatus | undefined> {
+  try {
+    if (!await coreDb.schema.hasTable('repositories')) return undefined;
+    const rows = await coreDb('repositories')
+      .distinct('indexing_status') as Array<{ indexing_status?: string }>;
+    const statuses = new Set(rows.map((row) => row.indexing_status));
+    if (statuses.has('failed')) return 'failed';
+    if (statuses.has('indexing')) return 'active';
+    return statuses.size > 0 ? 'idle' : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getIndexingStatus(
+  getIndexingQueue: () => Promise<IndexingStatusQueue>,
+  getRepositoryStatus: () => Promise<ServiceStatus | undefined> = loadRepositoryIndexingStatus
+): Promise<ServiceStatus> {
   try {
     const indexingQueue = await getIndexingQueue();
-    // BullMQ retains failed jobs for diagnostics. Those historical rows are not
-    // the health of the current run and must not manufacture a fresh outage after
-    // every successful indexing job.
+    // BullMQ counts identify live work; retained failed jobs are deliberately not
+    // counted here because the durable repository state below identifies whether
+    // the latest run for any tracked repository is still failed.
     const counts = await indexingQueue.getJobCounts('active', 'waiting', 'delayed');
     if ((counts.active ?? 0) > 0) return 'active';
     if ((counts.waiting ?? 0) > 0 || (counts.delayed ?? 0) > 0) return 'queued';
-    return 'idle';
+    // With no live queue work, the durable repository state describes the most
+    // recent run. A current failure must not disappear merely because BullMQ
+    // moved that job into retained history.
+    return await getRepositoryStatus() ?? 'idle';
   } catch {
     return 'disconnected';
   }

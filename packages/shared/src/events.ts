@@ -100,6 +100,10 @@ export interface IndexingUpdatePayload {
   processedFiles?: number;
   totalDirectories?: number;
   processedDirectories?: number;
+  /** Durable repository status-transition time; unlike repositories.updated_at it is indexing-specific. */
+  transitionAt?: string;
+  /** Stable identity for one indexing run, shared by progress and terminal publications. */
+  runId?: string;
   timestamp: string;
 }
 

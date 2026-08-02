@@ -11,6 +11,7 @@ type StatusRoutesDeps = {
   agentRegistry?: StatusAgentRegistry;
   loadAgents?: () => Promise<AgentConfig[]>;
   getIndexingQueue?: () => Promise<{ getJobCounts: (...statuses: string[]) => Promise<Record<string, number>> }>;
+  getRepositoryIndexingStatus?: () => Promise<'active' | 'idle' | 'failed' | undefined>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
   now?: () => number;
@@ -152,6 +153,7 @@ async function readStatus(overrides: Partial<StatusRoutesDeps> = {}, configureEn
     loadAgents: async () => [],
     agentRegistry: createRegistry(),
     getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
     ...overrides,
   });
 
@@ -494,7 +496,8 @@ test('/api/status maps indexing queue states', async () => {
     [{ active: 1, waiting: 0, delayed: 0, failed: 0 }, 'active'],
     [{ active: 0, waiting: 1, delayed: 0, failed: 0 }, 'queued'],
     [{ active: 0, waiting: 0, delayed: 1, failed: 0 }, 'queued'],
-    // Retained failed jobs are historical diagnostics, not current-run health.
+    // Retained failed jobs alone are historical diagnostics; durable state below
+    // determines whether the latest repository run is still failed.
     [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, 'idle'],
     [{ active: 0, waiting: 0, delayed: 0, failed: 0 }, 'idle'],
   ];
@@ -505,6 +508,44 @@ test('/api/status maps indexing queue states', async () => {
     });
     assert.equal(body.indexing, expected);
   }
+});
+
+test('/api/status preserves a durable current indexing failure after the queue run ends', async () => {
+  const body = await readStatus({
+    getIndexingQueue: async () => createIndexingQueue({ active: 0, waiting: 0, delayed: 0, failed: 1 }),
+    getRepositoryIndexingStatus: async () => 'failed',
+  });
+
+  assert.equal(body.indexing, 'failed');
+});
+
+test('notification health collection skips agent probes and warning scans', async () => {
+  configureStatusEnv();
+  let healthChecks = 0;
+  let warningScans = 0;
+  const config = createAgentConfig();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    loadAgents: async () => [config],
+    agentRegistry: createRegistry([createAgent(config, async () => { healthChecks++; return true; })]),
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
+    loadSummarizationRuntimeState: async () => {
+      warningScans++;
+      return {
+        primary_quota_failures: 0,
+        primary_quota_failures_by_alias: {},
+        cooldowns: {},
+      };
+    },
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+  assert.equal(healthChecks, 0);
+  assert.equal(warningScans, 0);
+  assert.equal('agents' in snapshot, false);
+  assert.equal('warnings' in snapshot, false);
+  assert.equal('api' in snapshot, false);
 });
 
 test('/api/status caps summarization cooldown warnings', async () => {

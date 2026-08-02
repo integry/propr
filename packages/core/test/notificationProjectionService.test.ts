@@ -5,6 +5,7 @@ import { closeConnection, type BetterSqliteConnection } from '../src/db/connecti
 import { up as createNotificationSchema } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addNotificationPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as addProjectionState } from '../src/db/migrations/20260802020000_add_notification_projection_state.js';
+import { up as addIndexingTransitionIdentity } from '../src/db/migrations/20260802030000_add_indexing_transition_identity.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationStalledDetector } from '../src/services/notificationStalledDetector.js';
 import { NotificationSystemProjection } from '../src/services/notificationSystemProjection.js';
@@ -124,6 +125,7 @@ beforeEach(async () => {
     await createNotificationSchema(database);
     await addNotificationPreferenceApis(database);
     await addProjectionState(database);
+    await addIndexingTransitionIdentity(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -191,6 +193,65 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         );
     });
 
+    test('rolls back a task checkpoint when notification insertion fails and retries cleanly', async () => {
+        await seedPlanAndTask();
+        const payload = {
+            eventType: 'task:update' as const,
+            taskId: 'task-1',
+            state: 'failed',
+            repository: 'integry/propr',
+            issueNumber: 1719,
+            timestamp: EVENT_TIME
+        };
+        await database.raw(`
+            CREATE TRIGGER fail_projected_notification
+            BEFORE INSERT ON notification_events
+            BEGIN
+                SELECT RAISE(ABORT, 'injected notification failure');
+            END
+        `);
+
+        await assert.rejects(projection.projectTaskUpdate(payload), /injected notification failure/);
+        assert.equal(await database('notification_source_activity').count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+        await database.raw('DROP TRIGGER fail_projected_notification');
+
+        await projection.projectTaskUpdate(payload);
+        assert.equal((await events()).length, 1);
+        assert.equal((await database('notification_source_activity').first()).status, 'failed');
+    });
+
+    test('rolls back completion and task activity when PR-attention insertion fails', async () => {
+        await seedPlanAndTask({ prNumber: 1720 });
+        const payload = {
+            eventType: 'task:update' as const,
+            taskId: 'task-1',
+            state: 'completed',
+            repository: 'integry/propr',
+            issueNumber: 1719,
+            timestamp: EVENT_TIME,
+            metadata: {
+                prNumber: 1720,
+                prUrl: 'https://github.com/integry/propr/pull/1720'
+            }
+        };
+        await database.raw(`
+            CREATE TRIGGER fail_pr_attention_notification
+            BEFORE INSERT ON notification_events
+            WHEN NEW.kind = 'pull_request'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected PR notification failure');
+            END
+        `);
+
+        await assert.rejects(projection.projectTaskUpdate(payload), /injected PR notification failure/);
+        assert.equal((await events()).length, 0);
+        assert.equal(await database('notification_source_activity').count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+        await database.raw('DROP TRIGGER fail_pr_attention_notification');
+
+        await projection.projectTaskUpdate(payload);
+        assert.deepEqual((await events()).map(event => event.kind).sort(), ['pull_request', 'task']);
+    });
+
     test('uses the review kind for completed reviews and does not emit implementation completion', async () => {
         await seedPlanAndTask({ taskId: 'review-task', issueNumber: 1720, prNumber: 1720 });
         await projection.projectTaskUpdate({
@@ -206,6 +267,32 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         const stored = await events();
         assert.deepEqual(stored.map((event) => event.kind), ['review']);
         assert.equal(JSON.parse(String(stored[0].target_json)).prNumber, 1720);
+    });
+
+    test('classifies replayed review completion from durable task job data', async () => {
+        await database('tasks').insert({
+            task_id: 'durable-review-task',
+            repository: 'integry/propr',
+            issue_number: 1720,
+            task_type: 'pr-comment',
+            initial_job_data: JSON.stringify({ commandMode: 'review', pullRequestNumber: 1720 })
+        });
+        await database('task_drafts').insert({
+            draft_id: 'review-owner-draft',
+            repository: 'integry/propr',
+            user_id: 'review-owner',
+            status: 'review',
+            updated_at: EVENT_TIME
+        });
+
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'durable-review-task',
+            state: 'completed',
+            timestamp: EVENT_TIME
+        });
+
+        assert.deepEqual((await events()).map(event => event.kind), ['review']);
     });
 
     test('tracks task and indexing activity and sanitizes failure bodies', async () => {
@@ -243,7 +330,53 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         );
     });
 
-    test('fans ordinary tasks out to explicit owners and repository subscribers', async () => {
+    test('rolls back an indexing checkpoint when notification insertion fails', async () => {
+        await seedPlanAndTask();
+        await database.raw(`
+            CREATE TRIGGER fail_indexing_notification
+            BEFORE INSERT ON notification_events
+            WHEN NEW.kind = 'indexing'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected indexing notification failure');
+            END
+        `);
+        const payload = {
+            eventType: 'indexing:update' as const,
+            repository: 'integry/propr',
+            branch: 'main',
+            phase: 'failed' as const,
+            transitionAt: EVENT_TIME,
+            runId: 'retryable-indexing-run',
+            timestamp: EVENT_TIME
+        };
+
+        await assert.rejects(
+            projection.projectIndexingUpdate(payload),
+            /injected indexing notification failure/
+        );
+        assert.equal(
+            await database('notification_source_activity')
+                .where({ activity_type: 'indexing' })
+                .count({ count: '*' })
+                .first()
+                .then((row) => Number(row?.count)),
+            0
+        );
+        await database.raw('DROP TRIGGER fail_indexing_notification');
+
+        await projection.projectIndexingUpdate(payload);
+        assert.equal((await events()).length, 1);
+        assert.equal(
+            await database('notification_source_activity')
+                .where({ activity_type: 'indexing', status: 'failed' })
+                .count({ count: '*' })
+                .first()
+                .then((row) => Number(row?.count)),
+            1
+        );
+    });
+
+    test('fans repository activity only to authorized owners and repository subscribers', async () => {
         await database('tasks').insert({
             task_id: 'github-task',
             repository: 'integry/propr',
@@ -271,7 +404,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 
         assert.deepEqual(
             (await database('notification_user_states').pluck('user_id')).sort(),
-            ['notification-subscriber', 'repository-subscriber', 'task-owner']
+            ['repository-subscriber', 'task-owner']
         );
 
         await projection.projectIndexingUpdate({
@@ -286,7 +419,6 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             .where('event.kind', 'indexing')
             .pluck('state.user_id');
         assert.deepEqual(indexingRecipients.sort(), [
-            'notification-subscriber',
             'repository-subscriber'
         ]);
     });
@@ -374,12 +506,92 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.deepEqual(await database('notification_user_states').pluck('user_id'), ['task-owner']);
     });
 
+    test('orders legitimate same-millisecond task transitions by durable history id', async () => {
+        await seedPlanAndTask();
+        const [processingId] = await database('task_history').insert({
+            task_id: 'task-1',
+            state: 'processing',
+            timestamp: EVENT_TIME,
+            metadata: JSON.stringify({})
+        });
+        const [completedId] = await database('task_history').insert({
+            task_id: 'task-1',
+            state: 'completed',
+            timestamp: EVENT_TIME,
+            metadata: JSON.stringify({})
+        });
+
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'processing',
+            timestamp: EVENT_TIME,
+            metadata: { transitionSequence: processingId }
+        });
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'completed',
+            timestamp: EVENT_TIME,
+            metadata: { transitionSequence: completedId }
+        });
+
+        const activity = await database('notification_source_activity').first();
+        assert.equal(activity.status, 'completed');
+        assert.equal(JSON.parse(activity.metadata_json).sourceSequence, completedId);
+        assert.deepEqual((await events()).map(event => event.kind), ['task']);
+    });
+
+    test('creates late PR-attention delivery for equal-transition metadata enrichment', async () => {
+        await seedPlanAndTask();
+        const [historyId] = await database('task_history').insert({
+            task_id: 'task-1',
+            state: 'completed',
+            timestamp: EVENT_TIME,
+            metadata: JSON.stringify({})
+        });
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'completed',
+            timestamp: EVENT_TIME,
+            metadata: { transitionSequence: historyId }
+        });
+        assert.deepEqual((await events()).map(event => event.kind), ['task']);
+
+        await database('tasks').where({ task_id: 'task-1' }).update({ pr_number: 1720 });
+        await database('task_history').where({ history_id: historyId }).update({
+            metadata: JSON.stringify({
+                prResult: {
+                    prNumber: 1720,
+                    prUrl: 'https://github.com/integry/propr/pull/1720'
+                }
+            })
+        });
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'completed',
+            timestamp: '2026-08-02T08:05:00.000Z',
+            metadata: {
+                transitionAt: EVENT_TIME,
+                transitionSequence: historyId,
+                prNumber: 1720,
+                prUrl: 'https://github.com/integry/propr/pull/1720'
+            }
+        });
+
+        assert.deepEqual((await events()).map(event => event.kind).sort(), ['pull_request', 'task']);
+    });
+
     test('does not let a regenerated indexing retry close a newer run', async () => {
         await seedPlanAndTask();
         await database('repositories').insert({
             full_name: 'integry/propr',
             branch: 'main',
             indexing_status: 'failed',
+            indexing_transition_at: EVENT_TIME,
+            indexing_run_id: 'run-old',
             updated_at: EVENT_TIME
         });
         await projection.projectIndexingUpdate({
@@ -387,18 +599,27 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             repository: 'integry/propr',
             branch: 'main',
             phase: 'failed',
+            transitionAt: EVENT_TIME,
+            runId: 'run-old',
             timestamp: '2026-08-02T08:01:00.000Z'
         });
 
         const newerRunAt = '2026-08-02T09:00:00.000Z';
         await database('repositories')
             .where({ full_name: 'integry/propr', branch: 'main' })
-            .update({ indexing_status: 'indexing', updated_at: newerRunAt });
+            .update({
+                indexing_status: 'indexing',
+                indexing_transition_at: newerRunAt,
+                indexing_run_id: 'run-new',
+                updated_at: newerRunAt
+            });
         await projection.projectIndexingUpdate({
             eventType: 'indexing:update',
             repository: 'integry/propr',
             branch: 'main',
             phase: 'indexing',
+            transitionAt: newerRunAt,
+            runId: 'run-new',
             timestamp: newerRunAt
         });
 
@@ -408,6 +629,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             repository: 'integry/propr',
             branch: 'main',
             phase: 'failed',
+            transitionAt: EVENT_TIME,
+            runId: 'run-old',
             timestamp: '2026-08-02T10:00:00.000Z'
         });
 
@@ -416,9 +639,66 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             .where({ activity_type: 'indexing' })
             .orderBy('last_activity_at');
         assert.deepEqual(activities, [
-            { status: 'failed', last_activity_at: EVENT_TIME },
+            { status: 'failed', last_activity_at: '2026-08-02T08:01:00.000Z' },
             { status: 'processing', last_activity_at: newerRunAt }
         ]);
+        assert.equal((await events()).length, 1);
+    });
+
+    test('uses indexing run identity for equal-millisecond transitions', async () => {
+        await seedPlanAndTask();
+        await projection.projectIndexingUpdate({
+            eventType: 'indexing:update',
+            repository: 'integry/propr',
+            branch: 'main',
+            phase: 'indexing',
+            transitionAt: EVENT_TIME,
+            runId: 'same-ms-run',
+            timestamp: EVENT_TIME
+        });
+        await projection.projectIndexingUpdate({
+            eventType: 'indexing:update',
+            repository: 'integry/propr',
+            branch: 'main',
+            phase: 'failed',
+            transitionAt: EVENT_TIME,
+            runId: 'same-ms-run',
+            timestamp: EVENT_TIME
+        });
+
+        const activity = await database('notification_source_activity').first();
+        assert.equal(activity.status, 'failed');
+        assert.deepEqual((await events()).map(event => event.kind), ['indexing']);
+    });
+
+    test('does not duplicate an indexing failure after unrelated repository updates', async () => {
+        await seedPlanAndTask();
+        await database('repositories').insert({
+            full_name: 'integry/propr',
+            branch: 'main',
+            indexing_status: 'failed',
+            indexing_transition_at: EVENT_TIME,
+            indexing_run_id: 'stable-failure-run',
+            updated_at: EVENT_TIME
+        });
+        const payload = {
+            eventType: 'indexing:update' as const,
+            repository: 'integry/propr',
+            branch: 'main',
+            phase: 'failed' as const,
+            transitionAt: EVENT_TIME,
+            runId: 'stable-failure-run',
+            timestamp: '2026-08-02T08:01:00.000Z'
+        };
+        await projection.projectIndexingUpdate(payload);
+        await database('repositories').where({ full_name: 'integry/propr', branch: 'main' }).update({
+            updated_at: '2026-08-02T09:00:00.000Z'
+        });
+        await projection.projectIndexingUpdate({
+            ...payload,
+            timestamp: '2026-08-02T09:01:00.000Z'
+        });
+
         assert.equal((await events()).length, 1);
     });
 
@@ -463,6 +743,126 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         });
         await projection.detectStalledActivities(30 * 60 * 1000, '2026-08-02T10:31:00.000Z');
         assert.equal((await events()).length, 3);
+    });
+
+    test('uses live-details heartbeats and keeps stalled task navigation context', async () => {
+        await seedPlanAndTask({ prNumber: 1720 });
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'claude_execution',
+            repository: 'integry/propr',
+            issueNumber: 1719,
+            timestamp: EVENT_TIME,
+            metadata: { prNumber: 1720 }
+        });
+        await projection.projectTaskHeartbeat({
+            eventType: 'task:live:update',
+            taskId: 'task-1',
+            events: [],
+            todos: [],
+            currentTask: 'still working',
+            tokenUsage: null,
+            timestamp: '2026-08-02T08:45:00.000Z'
+        });
+
+        await projection.detectStalledActivities(30 * 60 * 1000, '2026-08-02T09:00:00.000Z');
+        assert.equal((await events()).length, 0);
+        await projection.detectStalledActivities(30 * 60 * 1000, '2026-08-02T09:20:00.000Z');
+
+        const [event] = await events();
+        assert.equal(JSON.parse(String(event.target_json)).prNumber, 1720);
+        assert.equal(JSON.parse(String(event.action_json)).href, '/tasks/task-1');
+    });
+
+    test('does not let a later liveness observation suppress queued terminal transitions', async () => {
+        await seedPlanAndTask();
+        const [processingSequence] = await database('task_history').insert({
+            task_id: 'task-1',
+            state: 'processing',
+            timestamp: EVENT_TIME,
+            metadata: '{}'
+        });
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'processing',
+            repository: 'integry/propr',
+            issueNumber: 1719,
+            metadata: { transitionSequence: processingSequence },
+            timestamp: EVENT_TIME
+        });
+        await projection.projectTaskHeartbeat({
+            eventType: 'task:live:update',
+            taskId: 'task-1',
+            events: [],
+            todos: [],
+            currentTask: null,
+            tokenUsage: null,
+            timestamp: '2026-08-02T08:31:00.000Z'
+        });
+        const [completionSequence] = await database('task_history').insert({
+            task_id: 'task-1',
+            state: 'completed',
+            timestamp: '2026-08-02T08:30:00.000Z',
+            metadata: '{}'
+        });
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'completed',
+            repository: 'integry/propr',
+            issueNumber: 1719,
+            metadata: {
+                transitionAt: '2026-08-02T08:30:00.000Z',
+                transitionSequence: completionSequence
+            },
+            timestamp: '2026-08-02T08:30:00.000Z'
+        });
+
+        assert.equal((await events()).length, 1);
+        assert.deepEqual(
+            await database('notification_source_activity')
+                .select('status', 'last_activity_at', 'completed_at')
+                .where({ activity_type: 'task', activity_key: 'task-1' })
+                .first(),
+            {
+                status: 'completed',
+                last_activity_at: '2026-08-02T08:31:00.000Z',
+                completed_at: '2026-08-02T08:31:00.000Z'
+            }
+        );
+
+        await projection.projectIndexingUpdate({
+            eventType: 'indexing:update',
+            repository: 'integry/propr',
+            branch: 'main',
+            phase: 'files',
+            transitionAt: EVENT_TIME,
+            runId: 'liveness-race-run',
+            timestamp: '2026-08-02T08:31:00.000Z'
+        });
+        await projection.projectIndexingUpdate({
+            eventType: 'indexing:update',
+            repository: 'integry/propr',
+            branch: 'main',
+            phase: 'failed',
+            transitionAt: '2026-08-02T08:30:00.000Z',
+            runId: 'liveness-race-run',
+            timestamp: '2026-08-02T08:30:00.000Z'
+        });
+        assert.equal((await events()).length, 2);
+        assert.deepEqual(
+            await database('notification_source_activity')
+                .select('status', 'last_activity_at', 'completed_at')
+                .where({ activity_type: 'indexing' })
+                .first(),
+            {
+                status: 'failed',
+                last_activity_at: '2026-08-02T08:31:00.000Z',
+                completed_at: '2026-08-02T08:31:00.000Z'
+            }
+        );
     });
 });
 
@@ -509,7 +909,7 @@ describe('system notification projection', { concurrency: false }, () => {
         const systemProjection = new NotificationSystemProjection({ database });
 
         await systemProjection.projectSnapshot({
-            daemon: 'unknown',
+            daemon: 'failed',
             timestamp: EVENT_TIME
         }, ['polling-user']);
         await systemProjection.projectSnapshot({
@@ -520,7 +920,7 @@ describe('system notification projection', { concurrency: false }, () => {
         assert.equal((await events()).length, 1);
         assert.deepEqual(
             (await database('notification_user_states').pluck('user_id')).sort(),
-            ['polling-user', 'user-1', 'user-2']
+            ['different-polling-user', 'polling-user', 'user-1', 'user-2']
         );
         assert.deepEqual(
             await database('notification_system_health')
@@ -533,6 +933,83 @@ describe('system notification projection', { concurrency: false }, () => {
                 updated_at: '2026-08-02T08:01:00.000Z'
             }
         );
+    });
+
+    test('rolls back a system transition when its outage notification fails', async () => {
+        await seedPlanAndTask();
+        const systemProjection = new NotificationSystemProjection({ database });
+        await database.raw(`
+            CREATE TRIGGER fail_system_notification
+            BEFORE INSERT ON notification_events
+            BEGIN
+                SELECT RAISE(ABORT, 'injected system notification failure');
+            END
+        `);
+
+        await assert.rejects(
+            systemProjection.projectSnapshot({ redis: 'disconnected', timestamp: EVENT_TIME }),
+            /injected system notification failure/
+        );
+        assert.equal(await database('notification_system_health').count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+        await database.raw('DROP TRIGGER fail_system_notification');
+
+        await systemProjection.projectSnapshot({ redis: 'disconnected', timestamp: EVENT_TIME });
+        assert.equal((await events()).length, 1);
+    });
+
+    test('advances the system observation high-water mark for unchanged states', async () => {
+        const systemProjection = new NotificationSystemProjection({ database });
+        await systemProjection.projectSnapshot({
+            daemon: 'running',
+            timestamp: EVENT_TIME
+        });
+        await systemProjection.projectSnapshot({
+            daemon: 'running',
+            timestamp: '2026-08-02T10:00:00.000Z'
+        });
+        await systemProjection.projectSnapshot({
+            daemon: 'stopped',
+            timestamp: '2026-08-02T09:00:00.000Z'
+        });
+
+        assert.equal((await events()).length, 0);
+        assert.deepEqual(
+            await database('notification_system_health')
+                .select('status', 'transition_at', 'updated_at')
+                .where({ component: 'daemon' })
+                .first(),
+            {
+                status: 'running',
+                transition_at: EVENT_TIME,
+                updated_at: '2026-08-02T10:00:00.000Z'
+            }
+        );
+    });
+
+    test('does not manufacture outages for unknown future component states', async () => {
+        const systemProjection = new NotificationSystemProjection({ database });
+        await systemProjection.projectSnapshot({
+            daemon: 'warming-up',
+            agentRuntime: { unifiedAgentImage: { status: 'building' } },
+            timestamp: EVENT_TIME
+        });
+
+        assert.equal((await events()).length, 0);
+        assert.deepEqual(
+            await database('notification_system_health')
+                .select('component', 'status', 'healthy', 'updated_at')
+                .orderBy('component'),
+            [
+                { component: 'agent-runtime', status: 'building', healthy: 1, updated_at: EVENT_TIME },
+                { component: 'daemon', status: 'unknown', healthy: 1, updated_at: EVENT_TIME }
+            ]
+        );
+
+        await systemProjection.projectSnapshot({
+            daemon: 'stopped',
+            timestamp: '2026-08-02T07:59:00.000Z'
+        });
+        assert.equal((await events()).length, 0);
     });
 });
 
@@ -555,6 +1032,53 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.ok(Date.now() - startedAt < 500);
     });
 
+    test('drains tracked in-flight EventPublisher projections during shutdown', async () => {
+        let releaseProjection!: () => void;
+        let markStarted!: () => void;
+        const started = new Promise<void>(resolve => { markStarted = resolve; });
+        const publisher = new EventPublisher({
+            publish: async () => true,
+            projectNotification: async () => {
+                markStarted();
+                await new Promise<void>(resolve => { releaseProjection = resolve; });
+            },
+            projectionDeadlineMs: 10,
+            projectionConcurrency: 1,
+            projectionMaxQueueSize: 2
+        });
+
+        await publisher.publishTaskUpdate({ taskId: 'drained-projection', state: 'processing' });
+        await started;
+        let closed = false;
+        const close = publisher.close().then(() => { closed = true; });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(closed, false);
+        releaseProjection();
+        await close;
+        assert.equal(closed, true);
+    });
+
+    test('caps queued EventPublisher projection work under contention', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let projected = 0;
+        const publisher = new EventPublisher({
+            publish: async () => true,
+            projectNotification: async () => { projected++; await gate; },
+            projectionDeadlineMs: 5,
+            projectionConcurrency: 1,
+            projectionMaxQueueSize: 2
+        });
+
+        await publisher.publishTaskUpdate({ taskId: 'queued-1', state: 'processing' });
+        await publisher.publishTaskUpdate({ taskId: 'queued-2', state: 'processing' });
+        await publisher.publishTaskUpdate({ taskId: 'dropped-at-capacity', state: 'processing' });
+        release();
+        await publisher.close();
+
+        assert.equal(projected, 2);
+    });
+
     test('samples system health without a status-route request', async () => {
         await seedPlanAndTask();
         const sampler = new NotificationSystemSampler({
@@ -566,6 +1090,47 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(await sampler.runOnce(), true);
         assert.equal((await events()).length, 1);
         assert.deepEqual(await database('notification_user_states').pluck('user_id'), ['user-1']);
+    });
+
+    test('renews and releases the replica lease during a slow system scan', async () => {
+        let renewals = 0;
+        let releases = 0;
+        const sampler = new NotificationSystemSampler({
+            getSnapshot: async () => {
+                await new Promise(resolve => setTimeout(resolve, 30));
+                return { redis: 'connected', timestamp: EVENT_TIME };
+            },
+            projector: { projectSnapshot: async () => undefined },
+            intervalMs: 60_000,
+            acquireLease: async () => ({
+                renewalIntervalMs: 5,
+                renew: async () => { renewals++; return true; },
+                release: async () => { releases++; }
+            })
+        });
+
+        assert.equal(await sampler.runOnce(), true);
+        assert.ok(renewals >= 2);
+        assert.equal(releases, 1);
+    });
+
+    test('abandons a sampled snapshot after losing the replica lease', async () => {
+        let projected = 0;
+        let releases = 0;
+        const sampler = new NotificationSystemSampler({
+            getSnapshot: async () => ({ redis: 'disconnected', timestamp: EVENT_TIME }),
+            projector: { projectSnapshot: async () => { projected++; } },
+            intervalMs: 60_000,
+            acquireLease: async () => ({
+                renewalIntervalMs: 60_000,
+                renew: async () => false,
+                release: async () => { releases++; }
+            })
+        });
+
+        assert.equal(await sampler.runOnce(), false);
+        assert.equal(projected, 0);
+        assert.equal(releases, 1);
     });
 
     test('waits for an active stalled-activity scan during shutdown', async () => {

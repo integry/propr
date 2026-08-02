@@ -286,6 +286,21 @@ export class NotificationService {
         input: CreateNotificationEventInput<K>,
         recipients: readonly NotificationRecipient[] = input.recipients ?? []
     ): Promise<NotificationEvent<K>> {
+        return this.database.transaction((transaction) =>
+            this.createNotificationEventInTransaction(transaction, input, recipients)
+        );
+    }
+
+    /**
+     * Persist an event and its recipient snapshot inside a caller-owned transaction.
+     * Projection checkpoints use this entry point so advancing source state and
+     * creating every notification for that transition commit atomically.
+     */
+    async createNotificationEventInTransaction<K extends NotificationKind>(
+        transaction: Knex.Transaction,
+        input: CreateNotificationEventInput<K>,
+        recipients: readonly NotificationRecipient[] = input.recipients ?? []
+    ): Promise<NotificationEvent<K>> {
         if (input.id !== undefined && input.eventId !== undefined && input.id !== input.eventId) {
             throw new TypeError('notification id and eventId must match when both are supplied');
         }
@@ -308,34 +323,32 @@ export class NotificationService {
         }) as NotificationEvent<K>;
         const normalizedRecipients = normalizeRecipients(recipients);
 
-        return this.database.transaction(async (transaction) => {
-            await transaction('notification_events')
-                .insert({
-                    event_id: event.id,
-                    deduplication_key: event.deduplicationKey,
-                    kind: event.kind,
-                    severity: event.severity,
-                    target_json: JSON.stringify(event.target),
-                    title: event.title,
-                    body: event.body,
-                    action_json: event.action === undefined ? null : JSON.stringify(event.action),
-                    metadata_json: event.metadata === undefined ? null : JSON.stringify(event.metadata),
-                    occurred_at: event.occurredAt,
-                    created_at: event.createdAt
-                })
-                .onConflict('deduplication_key')
-                .ignore();
+        await transaction('notification_events')
+            .insert({
+                event_id: event.id,
+                deduplication_key: event.deduplicationKey,
+                kind: event.kind,
+                severity: event.severity,
+                target_json: JSON.stringify(event.target),
+                title: event.title,
+                body: event.body,
+                action_json: event.action === undefined ? null : JSON.stringify(event.action),
+                metadata_json: event.metadata === undefined ? null : JSON.stringify(event.metadata),
+                occurred_at: event.occurredAt,
+                created_at: event.createdAt
+            })
+            .onConflict('deduplication_key')
+            .ignore();
 
-            const storedRow = await transaction<NotificationEventRow>('notification_events')
-                .where({ deduplication_key: event.deduplicationKey })
-                .first();
-            if (!storedRow) {
-                throw new Error('Notification event was not persisted');
-            }
-            const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
-            await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
-            return storedEvent;
-        });
+        const storedRow = await transaction<NotificationEventRow>('notification_events')
+            .where({ deduplication_key: event.deduplicationKey })
+            .first();
+        if (!storedRow) {
+            throw new Error('Notification event was not persisted');
+        }
+        const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
+        await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
+        return storedEvent;
     }
 
     async assignNotificationRecipients(
