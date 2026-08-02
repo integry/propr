@@ -332,6 +332,43 @@ describe('notification preference API migration', { concurrency: false }, () => 
         assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), []);
     });
 
+    test('normalizes historical subscriptions across bounded migration batches', async () => {
+        const rows = Array.from({ length: 501 }, (_, index) => ({
+            subscription_id: `batched-${String(index).padStart(3, '0')}`,
+            user_id: 'batched-user',
+            endpoint: `https://fcm.googleapis.com/fcm/send/batched-${index}`,
+            p256dh_key: null,
+            auth_key: null,
+            expires_at: null,
+            user_agent: null,
+            last_used_at: null,
+            revoked_at: timestamp,
+            created_at: timestamp,
+            updated_at: timestamp
+        }));
+        for (let offset = 0; offset < rows.length; offset += 40) {
+            await database('push_subscriptions').insert(rows.slice(offset, offset + 40));
+        }
+
+        await addNotificationPreferenceApis(database);
+
+        assert.equal(
+            await database('push_subscriptions')
+                .where({ user_id: 'batched-user' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            501
+        );
+        assert.equal(
+            await database('push_subscriptions')
+                .where({ subscription_id: 'batched-500' })
+                .first()
+                .then(row => row?.endpoint),
+            'https://fcm.googleapis.com/fcm/send/batched-500'
+        );
+    });
+
     test('revokes legacy active subscriptions whose P-256 point is off-curve', async () => {
         const offCurvePoint = Buffer.alloc(65);
         offCurvePoint[0] = 0x04;
@@ -417,6 +454,20 @@ describe('notification preference API migration', { concurrency: false }, () => 
                 .update({ p256dh_key: validP256dhKey, auth_key: validAuthKey }),
             /revoked push subscriptions cannot retain encryption keys/i
         );
+        for (const mutation of [
+            { expires_at: '2099-01-01T00:00:00.000Z' },
+            { user_agent: 'Rewritten Browser' },
+            { last_used_at: timestamp },
+            { revoked_at: '2026-08-02T08:00:00.001Z' }
+        ]) {
+            await assert.rejects(
+                database('push_subscriptions')
+                    .where({ subscription_id: 'revoked-subscription' })
+                    .update(mutation),
+                /identity is immutable|invalid push subscription lifecycle/i,
+                'revoked audit metadata must remain immutable'
+            );
+        }
         await database('push_subscriptions')
             .where({ subscription_id: 'revoked-subscription' })
             .update({
@@ -429,6 +480,56 @@ describe('notification preference API migration', { concurrency: false }, () => 
             .first();
         assert.equal(reactivated.revoked_at, null);
         assert.equal(reactivated.p256dh_key, validP256dhKey);
+    });
+
+    test('garbage-collects only revoked subscriptions without delivery references', async () => {
+        await database('notification_preferences').insert({
+            user_id: 'user-a',
+            notification_kind: 'task',
+            inbox_enabled: true,
+            push_enabled: true
+        });
+        await insertDeliveryHistory(database);
+        await addNotificationPreferenceApis(database);
+
+        await database('push_subscriptions')
+            .where({ subscription_id: 'migration-subscription' })
+            .update({ revoked_at: timestamp });
+        await assert.rejects(
+            database('push_subscriptions')
+                .where({ subscription_id: 'migration-subscription' })
+                .delete(),
+            /only unreferenced revoked push subscriptions can be deleted/i
+        );
+
+        await database('push_subscriptions').insert({
+            subscription_id: 'garbage-collectable-subscription',
+            user_id: 'user-a',
+            endpoint: 'https://fcm.googleapis.com/fcm/send/garbage-collectable',
+            p256dh_key: validP256dhKey,
+            auth_key: validAuthKey,
+            expires_at: null,
+            user_agent: null,
+            last_used_at: null,
+            revoked_at: null,
+            created_at: timestamp,
+            updated_at: timestamp
+        });
+        await assert.rejects(
+            database('push_subscriptions')
+                .where({ subscription_id: 'garbage-collectable-subscription' })
+                .delete(),
+            /only unreferenced revoked push subscriptions can be deleted/i
+        );
+        await database('push_subscriptions')
+            .where({ subscription_id: 'garbage-collectable-subscription' })
+            .update({ revoked_at: timestamp });
+        assert.equal(
+            await database('push_subscriptions')
+                .where({ subscription_id: 'garbage-collectable-subscription' })
+                .delete(),
+            1
+        );
     });
 
     test('stores the runtime-normalized form of every accepted endpoint in SQLite', async () => {

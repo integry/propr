@@ -15,7 +15,9 @@ import {
 import {
     NotificationService,
     NotificationValidationError,
-    PushSubscriptionConflictError
+    PushSubscriptionConflictError,
+    PushSubscriptionQuotaError,
+    PushSubscriptionRateLimitError
 } from '../src/services/notificationService.js';
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
@@ -421,6 +423,27 @@ describe('notification service', { concurrency: false }, () => {
         await service.updateNotificationPreferences(userId, {
             preferences: { task: { pushEnabled: false } }
         });
+        assert.equal(
+            await database('push_delivery_jobs')
+                .where({ job_id: 'stored-opt-in-job' })
+                .first()
+                .then(row => row?.status),
+            'cancelled',
+            'an opt-out must atomically cancel already queued delivery'
+        );
+        assert.equal(
+            await database('notification_user_states')
+                .where({ event_id: 'stored-opt-in', user_id: userId })
+                .first()
+                .then(row => row?.push_enabled),
+            1,
+            'the immutable assignment remains an audit snapshot'
+        );
+        await assert.rejects(
+            insertJob('stored-opt-in', 'late-after-opt-out-job'),
+            /push delivery requires an eligible recipient/i,
+            'current preference must be checked when a job is created'
+        );
         await createCandidateEvent('stored-opt-out-again');
         assert.equal(
             await database('notification_user_states')
@@ -675,6 +698,161 @@ describe('notification service', { concurrency: false }, () => {
             (error: unknown) => error instanceof NotificationValidationError
                 && /P-256 curve/.test(error.message)
         );
+        const normalizationExpansion =
+            `https://fcm.googleapis.com/fcm/send/${'ü'.repeat(900)}`;
+        assert.ok(Buffer.byteLength(normalizationExpansion, 'utf8') < 2_048);
+        await assert.rejects(
+            () => service.upsertPushSubscription('expanded-endpoint-user', {
+                endpoint: normalizationExpansion,
+                expirationTime: null,
+                keys: validKeys
+            }),
+            NotificationValidationError,
+            'the normalized URL must be byte-bounded before reaching SQLite'
+        );
+    });
+
+    test('enforces active and retained per-user subscription quotas', async () => {
+        let generated = 0;
+        const limitedService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => `limited-${generated += 1}`,
+            maxActivePushSubscriptionsPerUser: 2,
+            maxStoredPushSubscriptionsPerUser: 3,
+            maxPushSubscriptionEnrollmentsPerWindow: 100,
+            pushSubscriptionRevokedRetentionMs: 0
+        });
+        const enroll = (suffix: string) => limitedService.upsertPushSubscription(
+            'limited-user',
+            {
+                endpoint: `https://fcm.googleapis.com/fcm/send/limited-${suffix}`,
+                expirationTime: null,
+                keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+            }
+        );
+
+        const first = await enroll('one');
+        await enroll('two');
+        await assert.rejects(
+            enroll('three'),
+            (error: unknown) => error instanceof PushSubscriptionQuotaError
+                && error.scope === 'active'
+                && error.limit === 2
+        );
+        await limitedService.revokePushSubscription(
+            'limited-user',
+            'https://fcm.googleapis.com/fcm/send/limited-one'
+        );
+        await enroll('three');
+        assert.equal(
+            await database('push_subscriptions')
+                .where({ subscription_id: first.id })
+                .first(),
+            undefined,
+            'expired-retention revoked history without delivery references is collected'
+        );
+        assert.equal(
+            await database('push_subscriptions')
+                .where({ user_id: 'limited-user' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            2
+        );
+
+        let retainedId = 0;
+        const retainedService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => `retained-${retainedId += 1}`,
+            maxActivePushSubscriptionsPerUser: 2,
+            maxStoredPushSubscriptionsPerUser: 2,
+            maxPushSubscriptionEnrollmentsPerWindow: 100
+        });
+        await retainedService.updateNotificationPreferences('retained-user', {
+            preferences: { task: { pushEnabled: true } }
+        });
+        await retainedService.createNotificationEvent({
+            eventId: 'retained-event',
+            deduplicationKey: 'retained:event',
+            kind: 'task',
+            target: {
+                type: 'task',
+                repository: 'integry/propr',
+                taskId: 'retained-task'
+            },
+            title: 'Retained delivery history',
+            body: 'Referenced subscriptions remain auditable',
+            recipients: [{ userId: 'retained-user', pushEnabled: true }]
+        });
+        for (const suffix of ['one', 'two']) {
+            const endpoint = `https://fcm.googleapis.com/fcm/send/retained-${suffix}`;
+            const subscription = await retainedService.upsertPushSubscription(
+                'retained-user',
+                {
+                    endpoint,
+                    expirationTime: null,
+                    keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+                }
+            );
+            const stored = await database('push_subscriptions')
+                .where({ subscription_id: subscription.id })
+                .first();
+            await database('push_delivery_jobs').insert({
+                job_id: `retained-job-${suffix}`,
+                deduplication_key: `retained:job:${suffix}`,
+                event_id: 'retained-event',
+                user_id: 'retained-user',
+                subscription_id: subscription.id,
+                created_at: stored.created_at,
+                updated_at: stored.created_at
+            });
+            await retainedService.revokePushSubscription('retained-user', endpoint);
+        }
+        await assert.rejects(
+            retainedService.upsertPushSubscription('retained-user', {
+                endpoint: 'https://fcm.googleapis.com/fcm/send/retained-three',
+                expirationTime: null,
+                keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+            }),
+            (error: unknown) => error instanceof PushSubscriptionQuotaError
+                && error.scope === 'stored'
+                && error.limit === 2
+        );
+    });
+
+    test('rate-limits enrollment while keeping active endpoint refresh idempotent', async () => {
+        let rateClock = Date.parse('2026-08-02T11:00:00.000Z');
+        let generated = 0;
+        const rateLimitedService = new NotificationService({
+            database,
+            now: () => new Date(rateClock),
+            generateId: () => `rate-limited-${generated += 1}`,
+            maxActivePushSubscriptionsPerUser: 10,
+            maxStoredPushSubscriptionsPerUser: 10,
+            maxPushSubscriptionEnrollmentsPerWindow: 2,
+            pushSubscriptionEnrollmentWindowMs: 60_000
+        });
+        const input = (suffix: string, p256dh = p256dhKey1) => ({
+            endpoint: `https://fcm.googleapis.com/fcm/send/rate-${suffix}`,
+            expirationTime: null,
+            keys: { p256dh, auth: 'A'.repeat(22) }
+        });
+
+        await rateLimitedService.upsertPushSubscription('rate-user', input('one'));
+        await rateLimitedService.upsertPushSubscription('rate-user', input('two'));
+        await assert.rejects(
+            rateLimitedService.upsertPushSubscription('rate-user', input('three')),
+            (error: unknown) => error instanceof PushSubscriptionRateLimitError
+                && error.retryAfterSeconds === 60
+        );
+        await rateLimitedService.upsertPushSubscription(
+            'rate-user',
+            input('one', p256dhKey2)
+        );
+        rateClock += 60_000;
+        await rateLimitedService.upsertPushSubscription('rate-user', input('three'));
     });
 
     test('bounds User-Agent metadata in one UTF-8-aware pass', async () => {
@@ -910,6 +1088,43 @@ describe('notification service', { concurrency: false }, () => {
             ]);
             fs.rmSync(directory, { recursive: true, force: true });
         }
+    });
+
+    test('does not multiply a configured long SQLite busy timeout', async () => {
+        const busyError = Object.assign(new Error('database is locked'), {
+            code: 'SQLITE_BUSY'
+        });
+        let transactionCalls = 0;
+        const contentionDatabase = new Proxy(database, {
+            get(target, property, receiver) {
+                if (property === 'raw') {
+                    return async (sql: string) => sql === 'PRAGMA busy_timeout'
+                        ? [{ timeout: 30_000 }]
+                        : target.raw(sql);
+                }
+                if (property === 'transaction') {
+                    return async () => {
+                        transactionCalls += 1;
+                        throw busyError;
+                    };
+                }
+                return Reflect.get(target, property, receiver) as unknown;
+            }
+        }) as Knex;
+        const contentionService = new NotificationService({
+            database: contentionDatabase,
+            now: () => '2026-08-02T10:00:00.000Z'
+        });
+
+        await assert.rejects(
+            contentionService.upsertPushSubscription('user-a', {
+                endpoint: 'https://fcm.googleapis.com/fcm/send/long-busy-timeout',
+                expirationTime: null,
+                keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+            }),
+            (error: unknown) => error === busyError
+        );
+        assert.equal(transactionCalls, 1);
     });
 
     test('backs off and surfaces exhausted SQLite contention', async () => {

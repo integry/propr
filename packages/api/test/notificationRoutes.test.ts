@@ -6,7 +6,9 @@ import type { Request, Response } from 'express';
 import {
     closeConnection,
     NotificationValidationError,
-    PushSubscriptionConflictError
+    PushSubscriptionConflictError,
+    PushSubscriptionQuotaError,
+    PushSubscriptionRateLimitError
 } from '@propr/core';
 import {
     NOTIFICATION_KINDS,
@@ -27,9 +29,11 @@ function responseRecorder(): {
     response: Response;
     status: () => number;
     body: () => unknown;
+    headers: () => Record<string, string>;
 } {
     let statusCode = 200;
     let payload: unknown;
+    const responseHeaders: Record<string, string> = {};
     const response = {
         status(code: number) {
             statusCode = code;
@@ -39,11 +43,20 @@ function responseRecorder(): {
             payload = body;
             return response;
         },
+        set(name: string, value: string) {
+            responseHeaders[name.toLowerCase()] = value;
+            return response;
+        },
         end() {
             return response;
         }
     } as unknown as Response;
-    return { response, status: () => statusCode, body: () => payload };
+    return {
+        response,
+        status: () => statusCode,
+        body: () => payload,
+        headers: () => ({ ...responseHeaders })
+    };
 }
 
 function createService(
@@ -201,9 +214,13 @@ describe('notification routes', () => {
 
     test('returns Web Push capability without exposing private VAPID material', async () => {
         const vapid = createVapidConfiguration();
+        let configurationReads = 0;
         const routes = createNotificationRoutes({
             service: createService(),
-            getWebPushConfiguration: () => vapid
+            getWebPushConfiguration: () => {
+                configurationReads += 1;
+                return vapid;
+            }
         });
         const { response, status, body } = responseRecorder();
 
@@ -220,6 +237,12 @@ describe('notification routes', () => {
             }
         });
         assert.equal(JSON.stringify(body()).includes(vapid.privateKey), false);
+        const secondRecorder = responseRecorder();
+        await routes.getConfiguration({
+            user: { id: 'authenticated-user' },
+            query: {}
+        } as unknown as Request, secondRecorder.response);
+        assert.equal(configurationReads, 1, 'VAPID key-pair validation is cached per router');
     });
 
     test('does not advertise malformed, padded, or mismatched VAPID keys', async () => {
@@ -312,6 +335,15 @@ describe('notification routes', () => {
         assert.equal(subscriptionRecorder.status(), 200);
         assert.equal(JSON.stringify(subscriptionRecorder.body()).includes('keys'), false);
 
+        const queryOnlyRecorder = responseRecorder();
+        await routes.revokePushSubscription({
+            user: { id: 'authenticated-user' },
+            body: {},
+            query: { endpoint }
+        } as unknown as Request, queryOnlyRecorder.response);
+        assert.equal(queryOnlyRecorder.status(), 400);
+        assert.equal(revoked, undefined, 'capability URLs must not be read from query strings');
+
         const revocationRecorder = responseRecorder();
         await routes.revokePushSubscription({
             user: { id: 'authenticated-user' },
@@ -369,6 +401,50 @@ describe('notification routes', () => {
         assert.deepEqual(body(), {
             code: 'PUSH_SUBSCRIPTION_CONFLICT',
             error: 'Push subscription endpoint is already enrolled'
+        });
+    });
+
+    test('maps subscription quotas and enrollment rate limits to actionable responses', async () => {
+        const quotaRoutes = createNotificationRoutes({
+            service: createService({
+                upsertPushSubscription: async () => {
+                    throw new PushSubscriptionQuotaError('active', 10);
+                }
+            })
+        });
+        const quotaRecorder = responseRecorder();
+        await quotaRoutes.createPushSubscription({
+            user: { id: 'authenticated-user' },
+            body: {},
+            query: {}
+        } as unknown as Request, quotaRecorder.response);
+        assert.equal(quotaRecorder.status(), 409);
+        assert.deepEqual(quotaRecorder.body(), {
+            code: 'PUSH_SUBSCRIPTION_QUOTA_EXCEEDED',
+            error: 'A user may have at most 10 active push subscriptions',
+            limit: 10,
+            scope: 'active'
+        });
+
+        const rateRoutes = createNotificationRoutes({
+            service: createService({
+                upsertPushSubscription: async () => {
+                    throw new PushSubscriptionRateLimitError(42);
+                }
+            })
+        });
+        const rateRecorder = responseRecorder();
+        await rateRoutes.createPushSubscription({
+            user: { id: 'authenticated-user' },
+            body: {},
+            query: {}
+        } as unknown as Request, rateRecorder.response);
+        assert.equal(rateRecorder.status(), 429);
+        assert.equal(rateRecorder.headers()['retry-after'], '42');
+        assert.deepEqual(rateRecorder.body(), {
+            code: 'PUSH_SUBSCRIPTION_RATE_LIMITED',
+            error: 'Too many push subscription enrollments',
+            retryAfterSeconds: 42
         });
     });
 

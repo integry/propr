@@ -22,6 +22,7 @@ const WEB_PUSH_ENDPOINT_HOSTS = [
   'push.services.mozilla.com',
 ];
 const WEB_PUSH_ENDPOINT_HOST_SUFFIXES = ['.push.apple.com'];
+const PUSH_SUBSCRIPTION_NORMALIZATION_BATCH_SIZE = 500;
 const JAVASCRIPT_WHITESPACE_SQL = [
   "' '",
   ...JAVASCRIPT_WHITESPACE_CODEPOINTS
@@ -122,7 +123,11 @@ function hasValidActiveSubscriptionKeys(row) {
 
 function canonicalPushEndpoint(endpoint, subscriptionId) {
   try {
-    return new URL(endpoint).href;
+    const canonical = new URL(endpoint).href;
+    if (Buffer.byteLength(canonical, 'utf8') > 2048) {
+      throw new Error('canonical endpoint exceeds 2048 bytes');
+    }
+    return canonical;
   } catch {
     throw new Error(`Cannot canonicalize push subscription ${subscriptionId}`);
   }
@@ -288,6 +293,9 @@ async function createPreferenceTriggers(knex) {
 }
 
 async function changePushPreferenceDefault(knex, enabled) {
+  // SQLite implements ALTER COLUMN through a table rebuild. Drop objects that
+  // reference notification_preferences before Knex temporarily removes it.
+  await dropDeliveryPreferenceSchemaObjects(knex);
   await dropPreferenceTriggers(knex);
   await knex.schema.alterTable('notification_preferences', (table) => {
     table.boolean('push_enabled').notNullable().defaultTo(enabled).alter();
@@ -403,12 +411,46 @@ async function createNotificationPreferenceSettings(knex) {
   await createNotificationPreferenceSettingsTriggers(knex);
 }
 
+async function createPushSubscriptionEnrollmentLimits(knex) {
+  if (!(await knex.schema.hasTable('push_subscription_enrollment_limits'))) {
+    await knex.schema.createTable('push_subscription_enrollment_limits', (table) => {
+      table.text('user_id').notNullable().primary();
+      table.text('window_started_at').notNullable();
+      table.integer('enrollment_count').notNullable();
+      table.check(
+        `${boundedNonBlankTextCheck('user_id')}
+          AND typeof(enrollment_count) = 'integer'
+          AND enrollment_count BETWEEN 1 AND 9007199254740991`,
+        {},
+        'push_subscription_enrollment_limits_values_check'
+      );
+      table.check(
+        canonicalTimestampCheck('window_started_at'),
+        {},
+        'push_subscription_enrollment_limits_window_started_at_check'
+      );
+    });
+  }
+  if (!(await knex.schema.hasTable('push_subscription_write_lock'))) {
+    await knex.schema.createTable('push_subscription_write_lock', (table) => {
+      table.integer('lock_key').notNullable().primary();
+      table.check(
+        'lock_key = 1',
+        {},
+        'push_subscription_write_lock_singleton_check'
+      );
+    });
+    await knex('push_subscription_write_lock').insert({ lock_key: 1 });
+  }
+}
+
 async function dropPushSubscriptionSchemaObjects(knex) {
   for (const name of [
     'push_subscriptions_active_endpoint_idx',
     'push_subscriptions_id_user_idx',
     'push_subscriptions_active_user_idx',
     'push_subscriptions_expiration_idx',
+    'push_subscriptions_revoked_gc_idx',
   ]) {
     await knex.raw(`DROP INDEX IF EXISTS ${name}`);
   }
@@ -501,6 +543,11 @@ async function createPushSubscriptionSchemaObjects(knex, mutable) {
     ON push_subscriptions (expires_at, subscription_id, user_id)
     WHERE revoked_at IS NULL AND expires_at IS NOT NULL
   `);
+  await knex.raw(`
+    CREATE INDEX push_subscriptions_revoked_gc_idx
+    ON push_subscriptions (revoked_at, subscription_id, user_id)
+    WHERE revoked_at IS NOT NULL
+  `);
 
   const managedTimestamp = `CASE
     WHEN ${ISO_NOW_SQL} > OLD.updated_at THEN ${ISO_NOW_SQL}
@@ -527,7 +574,33 @@ async function createPushSubscriptionSchemaObjects(knex, mutable) {
     ? `NEW.subscription_id IS NOT OLD.subscription_id
       OR NEW.user_id IS NOT OLD.user_id
       OR NEW.endpoint IS NOT OLD.endpoint
-      OR NEW.created_at IS NOT OLD.created_at`
+      OR NEW.created_at IS NOT OLD.created_at
+      OR (
+        OLD.revoked_at IS NULL
+        AND NEW.revoked_at IS NOT NULL
+        AND (
+          NEW.p256dh_key IS NOT OLD.p256dh_key
+          OR NEW.auth_key IS NOT OLD.auth_key
+          OR NEW.expires_at IS NOT OLD.expires_at
+          OR NEW.user_agent IS NOT OLD.user_agent
+          OR NEW.last_used_at IS NOT OLD.last_used_at
+        )
+      )
+      OR (
+        OLD.revoked_at IS NOT NULL
+        AND NEW.revoked_at IS NOT NULL
+        AND (
+          NEW.expires_at IS NOT OLD.expires_at
+          OR NEW.user_agent IS NOT OLD.user_agent
+          OR NEW.last_used_at IS NOT OLD.last_used_at
+          OR NEW.revoked_at IS NOT OLD.revoked_at
+          OR (
+            (NEW.p256dh_key IS NOT OLD.p256dh_key
+              OR NEW.auth_key IS NOT OLD.auth_key)
+            AND (NEW.p256dh_key IS NOT NULL OR NEW.auth_key IS NOT NULL)
+          )
+        )
+      )`
     : `NEW.subscription_id IS NOT OLD.subscription_id
       OR NEW.user_id IS NOT OLD.user_id
       OR NEW.endpoint IS NOT OLD.endpoint
@@ -552,9 +625,8 @@ async function createPushSubscriptionSchemaObjects(knex, mutable) {
     END
   `);
 
-  const revokedLifecycleCheck = mutable
-    ? '0'
-    : `(OLD.revoked_at IS NOT NULL AND (
+  const revokedLifecycleCheck = `(OLD.revoked_at IS NOT NULL
+      AND NEW.revoked_at IS NOT NULL AND (
         NEW.revoked_at IS NOT OLD.revoked_at
         OR NEW.last_used_at IS NOT OLD.last_used_at
       ))`;
@@ -578,11 +650,19 @@ async function createPushSubscriptionSchemaObjects(knex, mutable) {
       SELECT RAISE(ABORT, 'invalid push subscription lifecycle update');
     END
   `);
+  const deleteGuard = mutable
+    ? `WHEN OLD.revoked_at IS NULL
+      OR EXISTS (
+        SELECT 1 FROM push_delivery_jobs AS job
+        WHERE job.subscription_id = OLD.subscription_id
+      )`
+    : '';
   await knex.raw(`
     CREATE TRIGGER push_subscriptions_preserve_version
     BEFORE DELETE ON push_subscriptions
+    ${deleteGuard}
     BEGIN
-      SELECT RAISE(ABORT, 'push subscription versions cannot be deleted');
+      SELECT RAISE(ABORT, 'only unreferenced revoked push subscriptions can be deleted');
     END
   `);
   await knex.raw(`
@@ -666,74 +746,127 @@ async function createPushSubscriptionSchemaObjects(knex, mutable) {
   `);
 }
 
-function compareLegacySubscriptionAge(left, right) {
-  return left.created_at.localeCompare(right.created_at)
-    || left.subscription_id.localeCompare(right.subscription_id);
-}
-
 async function normalizeLegacyPushSubscriptions(knex) {
-  const rows = await knex('push_subscriptions_legacy')
-    .select(
-      'subscription_id',
-      'endpoint',
-      'p256dh_key',
-      'auth_key',
-      'revoked_at',
-      'created_at',
-      'updated_at'
-    );
   const timestampRows = await knex.raw(`SELECT ${ISO_NOW_SQL} AS migration_timestamp`);
   const migrationTimestamp = timestampRows[0]?.migration_timestamp;
   if (typeof migrationTimestamp !== 'string') {
     throw new Error('Could not obtain a canonical push subscription migration timestamp');
   }
+  const normalizationTable = 'push_subscription_normalization_work';
+  await knex.raw(`DROP TABLE IF EXISTS temp.${normalizationTable}`);
+  await knex.raw(`
+    CREATE TEMP TABLE ${normalizationTable} (
+      subscription_id TEXT NOT NULL PRIMARY KEY,
+      canonical_endpoint TEXT NOT NULL,
+      active_keys_valid INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+  await knex.raw(`
+    CREATE INDEX temp.push_subscription_normalization_endpoint_idx
+    ON ${normalizationTable} (
+      canonical_endpoint, active_keys_valid, created_at, subscription_id
+    )
+  `);
 
-  const normalizedRows = rows.map((row) => ({
-    ...row,
-    canonical_endpoint: canonicalPushEndpoint(row.endpoint, row.subscription_id),
-    active_keys_valid: row.revoked_at === null && hasValidActiveSubscriptionKeys(row),
-  }));
-  const activeByEndpoint = new Map();
-  for (const row of normalizedRows) {
-    if (!row.active_keys_valid) continue;
-    const candidates = activeByEndpoint.get(row.canonical_endpoint) ?? [];
-    candidates.push(row);
-    activeByEndpoint.set(row.canonical_endpoint, candidates);
-  }
+  try {
+    // Endpoint parsing and P-256 validation require runtime libraries. Keep that
+    // work in bounded batches and retain only compact reconciliation metadata in
+    // SQLite instead of materializing all historical subscriptions in JS memory.
+    let lastSubscriptionId;
+    while (true) {
+      const query = knex('push_subscriptions_legacy')
+        .select(
+          'subscription_id',
+          'endpoint',
+          'p256dh_key',
+          'auth_key',
+          'revoked_at',
+          'created_at'
+        )
+        .orderBy('subscription_id', 'asc')
+        .limit(PUSH_SUBSCRIPTION_NORMALIZATION_BATCH_SIZE);
+      if (lastSubscriptionId !== undefined) {
+        query.where('subscription_id', '>', lastSubscriptionId);
+      }
+      const rows = await query;
+      if (rows.length === 0) break;
 
-  // A canonical collision means the old text index admitted multiple spellings
-  // of one browser endpoint. Preserve the earliest valid enrollment as owner and
-  // revoke later aliases; invalid active keys never win ownership.
-  const retainedActiveIds = new Set();
-  for (const candidates of activeByEndpoint.values()) {
-    candidates.sort(compareLegacySubscriptionAge);
-    retainedActiveIds.add(candidates[0].subscription_id);
-  }
+      await knex(normalizationTable).insert(rows.map((row) => ({
+        subscription_id: row.subscription_id,
+        canonical_endpoint: canonicalPushEndpoint(row.endpoint, row.subscription_id),
+        active_keys_valid: row.revoked_at === null && hasValidActiveSubscriptionKeys(row)
+          ? 1
+          : 0,
+        created_at: row.created_at,
+      })));
+      lastSubscriptionId = rows[rows.length - 1].subscription_id;
+    }
 
-  for (const row of normalizedRows) {
-    const wasActive = row.revoked_at === null;
-    const revoke = wasActive && (
-      !row.active_keys_valid || !retainedActiveIds.has(row.subscription_id)
-    );
-    const changedAt = row.updated_at > migrationTimestamp
-      ? row.updated_at
-      : migrationTimestamp;
-    const values = {};
-    if (row.endpoint !== row.canonical_endpoint) {
-      values.endpoint = row.canonical_endpoint;
-      values.updated_at = changedAt;
-    }
-    if (revoke) {
-      values.p256dh_key = null;
-      values.auth_key = null;
-      values.revoked_at = changedAt;
-      values.updated_at = changedAt;
-    }
-    if (Object.keys(values).length > 0) {
-      await knex('push_subscriptions_legacy')
-        .where({ subscription_id: row.subscription_id })
-        .update(values);
-    }
+    await knex.raw(`
+      UPDATE push_subscriptions_legacy
+      SET endpoint = (
+            SELECT work.canonical_endpoint
+            FROM ${normalizationTable} AS work
+            WHERE work.subscription_id = push_subscriptions_legacy.subscription_id
+          ),
+          updated_at = CASE
+            WHEN updated_at > ? THEN updated_at
+            ELSE ?
+          END
+      WHERE EXISTS (
+        SELECT 1
+        FROM ${normalizationTable} AS work
+        WHERE work.subscription_id = push_subscriptions_legacy.subscription_id
+          AND work.canonical_endpoint != push_subscriptions_legacy.endpoint
+      )
+    `, [migrationTimestamp, migrationTimestamp]);
+
+    // A canonical collision means the old text index admitted several spellings
+    // of one browser endpoint. A set-based anti-join retains the earliest valid
+    // enrollment and revokes later aliases; invalid active keys never win.
+    await knex.raw(`
+      UPDATE push_subscriptions_legacy
+      SET p256dh_key = NULL,
+          auth_key = NULL,
+          revoked_at = CASE
+            WHEN updated_at > ? THEN updated_at
+            ELSE ?
+          END,
+          updated_at = CASE
+            WHEN updated_at > ? THEN updated_at
+            ELSE ?
+          END
+      WHERE revoked_at IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM ${normalizationTable} AS current
+          WHERE current.subscription_id = push_subscriptions_legacy.subscription_id
+            AND (
+              current.active_keys_valid = 0
+              OR EXISTS (
+                SELECT 1
+                FROM ${normalizationTable} AS earlier
+                WHERE earlier.canonical_endpoint = current.canonical_endpoint
+                  AND earlier.active_keys_valid = 1
+                  AND (
+                    earlier.created_at < current.created_at
+                    OR (
+                      earlier.created_at = current.created_at
+                      AND earlier.subscription_id < current.subscription_id
+                    )
+                  )
+              )
+            )
+        )
+    `, [
+      migrationTimestamp,
+      migrationTimestamp,
+      migrationTimestamp,
+      migrationTimestamp,
+    ]);
+  } finally {
+    await knex.raw(`DROP TABLE IF EXISTS temp.${normalizationTable}`);
   }
 }
 
@@ -755,6 +888,202 @@ async function cancelJobsForRevokedSubscriptions(knex) {
         OR (status = 'processing' AND lease_expires_at <= ${ISO_NOW_SQL})
       )
   `);
+}
+
+const PUSH_PREFERENCE_DELIVERY_TRIGGERS = [
+  'notification_preferences_cancel_push_opt_out_insert',
+  'notification_preferences_cancel_push_opt_out_update',
+];
+
+async function dropPushPreferenceDeliveryTriggers(knex) {
+  for (const name of PUSH_PREFERENCE_DELIVERY_TRIGGERS) {
+    await knex.raw(`DROP TRIGGER IF EXISTS ${name}`);
+  }
+}
+
+async function createPushPreferenceDeliveryTriggers(knex) {
+  await dropPushPreferenceDeliveryTriggers(knex);
+  const cancelMatchingJobs = `
+    UPDATE push_delivery_jobs
+    SET status = 'cancelled',
+        next_retry_at = NULL,
+        claim_token = NULL,
+        claimed_at = NULL,
+        lease_expires_at = NULL
+    WHERE user_id = NEW.user_id
+      AND EXISTS (
+        SELECT 1
+        FROM notification_events AS event
+        WHERE event.event_id = push_delivery_jobs.event_id
+          AND event.kind = NEW.notification_kind
+      )
+      AND (
+        status IN ('pending', 'retryable')
+        OR (status = 'processing' AND lease_expires_at <= ${ISO_NOW_SQL})
+      );`;
+  await knex.raw(`
+    CREATE TRIGGER notification_preferences_cancel_push_opt_out_insert
+    AFTER INSERT ON notification_preferences
+    WHEN NEW.push_enabled = 0
+    BEGIN
+      ${cancelMatchingJobs}
+    END
+  `);
+  await knex.raw(`
+    CREATE TRIGGER notification_preferences_cancel_push_opt_out_update
+    AFTER UPDATE OF push_enabled ON notification_preferences
+    WHEN OLD.push_enabled = 1 AND NEW.push_enabled = 0
+    BEGIN
+      ${cancelMatchingJobs}
+    END
+  `);
+}
+
+async function cancelJobsForCurrentPushOptOuts(knex) {
+  await knex.raw(`
+    UPDATE push_delivery_jobs
+    SET status = 'cancelled',
+        next_retry_at = NULL,
+        claim_token = NULL,
+        claimed_at = NULL,
+        lease_expires_at = NULL
+    WHERE COALESCE((
+        SELECT preference.push_enabled
+        FROM notification_events AS event
+        LEFT JOIN notification_preferences AS preference
+          ON preference.user_id = push_delivery_jobs.user_id
+          AND preference.notification_kind = event.kind
+        WHERE event.event_id = push_delivery_jobs.event_id
+      ), 0) = 0
+      AND (
+        status IN ('pending', 'retryable')
+        OR (status = 'processing' AND lease_expires_at <= ${ISO_NOW_SQL})
+      )
+  `);
+}
+
+async function createDeliveryPreferenceSchemaObjects(knex, enforceCurrentPreference) {
+  await dropDeliveryPreferenceSchemaObjects(knex);
+
+  const currentPreferenceForNewJob = enforceCurrentPreference
+    ? `COALESCE((
+        SELECT preference.push_enabled
+        FROM notification_events AS current_event
+        LEFT JOIN notification_preferences AS preference
+          ON preference.user_id = NEW.user_id
+          AND preference.notification_kind = current_event.kind
+        WHERE current_event.event_id = NEW.event_id
+      ), 0) = 1`
+    : '1';
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_insert_eligibility
+    BEFORE INSERT ON push_delivery_jobs
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM notification_user_states AS recipient
+      JOIN push_subscriptions AS subscription
+        ON subscription.subscription_id = NEW.subscription_id
+        AND subscription.user_id = NEW.user_id
+      WHERE recipient.event_id = NEW.event_id
+        AND recipient.user_id = NEW.user_id
+        AND recipient.push_enabled = 1
+        AND recipient.created_at <= NEW.created_at
+        AND subscription.created_at <= NEW.created_at
+        AND subscription.revoked_at IS NULL
+        AND (subscription.expires_at IS NULL OR subscription.expires_at > ${ISO_NOW_SQL})
+        AND ${currentPreferenceForNewJob}
+    )
+      OR NEW.created_at > ${ISO_NOW_SQL}
+    BEGIN
+      SELECT RAISE(ABORT, 'push delivery requires an eligible recipient and active subscription');
+    END
+  `);
+
+  await knex.raw(`
+    CREATE TRIGGER push_delivery_jobs_claim_eligibility
+    BEFORE UPDATE ON push_delivery_jobs
+    WHEN NEW.status = 'processing'
+      AND (OLD.status != 'processing' OR NEW.claim_token IS NOT OLD.claim_token)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM notification_user_states AS recipient
+        JOIN push_subscriptions AS subscription
+          ON subscription.subscription_id = NEW.subscription_id
+          AND subscription.user_id = NEW.user_id
+        WHERE recipient.event_id = NEW.event_id
+          AND recipient.user_id = NEW.user_id
+          AND recipient.push_enabled = 1
+          AND subscription.revoked_at IS NULL
+          AND (subscription.expires_at IS NULL OR subscription.expires_at > ${ISO_NOW_SQL})
+          AND ${currentPreferenceForNewJob}
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'cannot claim delivery for an inactive subscription or preference');
+    END
+  `);
+
+  const preferenceJoins = enforceCurrentPreference
+    ? `JOIN notification_events AS current_event
+      ON current_event.event_id = job.event_id
+    JOIN notification_preferences AS current_preference
+      ON current_preference.user_id = job.user_id
+      AND current_preference.notification_kind = current_event.kind
+      AND current_preference.push_enabled = 1`
+    : '';
+  await knex.raw(`
+    CREATE VIEW push_delivery_claimable_jobs AS
+    SELECT job.*
+    FROM push_delivery_jobs AS job
+    JOIN notification_user_states AS recipient
+      ON recipient.event_id = job.event_id
+      AND recipient.user_id = job.user_id
+      AND recipient.push_enabled = 1
+    JOIN push_subscriptions AS subscription
+      ON subscription.subscription_id = job.subscription_id
+      AND subscription.user_id = job.user_id
+      AND subscription.revoked_at IS NULL
+      AND (subscription.expires_at IS NULL OR subscription.expires_at > ${ISO_NOW_SQL})
+    ${preferenceJoins}
+    WHERE (job.status = 'pending' AND job.created_at <= ${ISO_NOW_SQL})
+      OR (job.status = 'retryable' AND job.next_retry_at <= ${ISO_NOW_SQL})
+      OR (job.status = 'processing' AND job.lease_expires_at <= ${ISO_NOW_SQL})
+  `);
+
+  const optedOutCondition = enforceCurrentPreference
+    ? `OR COALESCE((
+        SELECT preference.push_enabled
+        FROM notification_events AS current_event
+        LEFT JOIN notification_preferences AS preference
+          ON preference.user_id = job.user_id
+          AND preference.notification_kind = current_event.kind
+        WHERE current_event.event_id = job.event_id
+      ), 0) = 0`
+    : '';
+  await knex.raw(`
+    CREATE VIEW push_delivery_jobs_requiring_cancellation AS
+    SELECT job.*
+    FROM push_delivery_jobs AS job
+    JOIN push_subscriptions AS subscription
+      ON subscription.subscription_id = job.subscription_id
+      AND subscription.user_id = job.user_id
+    WHERE (
+      subscription.revoked_at IS NOT NULL
+      OR (subscription.expires_at IS NOT NULL
+        AND subscription.expires_at <= ${ISO_NOW_SQL})
+      ${optedOutCondition}
+    )
+      AND (
+        job.status IN ('pending', 'retryable')
+        OR (job.status = 'processing' AND job.lease_expires_at <= ${ISO_NOW_SQL})
+      )
+  `);
+}
+
+async function dropDeliveryPreferenceSchemaObjects(knex) {
+  await knex.raw('DROP VIEW IF EXISTS push_delivery_claimable_jobs');
+  await knex.raw('DROP VIEW IF EXISTS push_delivery_jobs_requiring_cancellation');
+  await knex.raw('DROP TRIGGER IF EXISTS push_delivery_jobs_insert_eligibility');
+  await knex.raw('DROP TRIGGER IF EXISTS push_delivery_jobs_claim_eligibility');
 }
 
 async function rebuildPushSubscriptions(knex, options) {
@@ -837,6 +1166,7 @@ export async function up(knex) {
     // Existing choices are user data. Only the default for future rows changes.
     await changePushPreferenceDefault(transaction, false);
     await createNotificationPreferenceSettings(transaction);
+    await createPushSubscriptionEnrollmentLimits(transaction);
     await rebuildPushSubscriptions(transaction, {
       // Keep the installed schema independent from a process-start flag. The
       // authenticated service remains the policy boundary for loopback
@@ -844,11 +1174,15 @@ export async function up(knex) {
       allowLocalhost: true,
       mutable: true,
     });
+    await createDeliveryPreferenceSchemaObjects(transaction, true);
+    await createPushPreferenceDeliveryTriggers(transaction);
+    await cancelJobsForCurrentPushOptOuts(transaction);
   });
 }
 
 export async function down(knex) {
   await withForeignKeysDisabled(knex, async (transaction) => {
+    await dropPushPreferenceDeliveryTriggers(transaction);
     // Rollback preserves explicitly enrolled localhost rows. When none exist,
     // restore the public-only host policy while retaining canonical endpoint
     // storage. Older runtimes still reject new localhost registrations at their
@@ -860,5 +1194,8 @@ export async function down(knex) {
     });
     await transaction.schema.dropTableIfExists('notification_preference_settings');
     await changePushPreferenceDefault(transaction, true);
+    await createDeliveryPreferenceSchemaObjects(transaction, false);
+    await transaction.schema.dropTableIfExists('push_subscription_enrollment_limits');
+    await transaction.schema.dropTableIfExists('push_subscription_write_lock');
   });
 }

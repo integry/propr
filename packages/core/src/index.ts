@@ -381,6 +381,14 @@ export {
     NotificationEventNotFoundError,
     NotificationValidationError,
     PushSubscriptionConflictError,
+    PushSubscriptionQuotaError,
+    PushSubscriptionRateLimitError,
+    MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER,
+    MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
+    MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW,
+    PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
+    PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS,
+    PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
     notificationService,
     createNotificationEvent,
     assignNotificationRecipients,
@@ -392,7 +400,8 @@ export {
     updateNotificationPreferences,
     updateNotificationPreference,
     upsertPushSubscription,
-    revokePushSubscription
+    revokePushSubscription,
+    garbageCollectPushSubscriptions
 } from './services/notificationService.js';
 export type {
     NotificationRecipientInput,

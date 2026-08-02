@@ -83,6 +83,11 @@ export interface NotificationServiceOptions {
     now?: () => TimestampInput;
     generateId?: () => string;
     allowInsecureLocalhost?: boolean;
+    maxActivePushSubscriptionsPerUser?: number;
+    maxStoredPushSubscriptionsPerUser?: number;
+    maxPushSubscriptionEnrollmentsPerWindow?: number;
+    pushSubscriptionEnrollmentWindowMs?: number;
+    pushSubscriptionRevokedRetentionMs?: number;
 }
 
 interface NotificationEventRow {
@@ -133,26 +138,77 @@ interface PushSubscriptionRow {
     updated_at: string;
 }
 
+interface PushSubscriptionEnrollmentLimitRow {
+    user_id: string;
+    window_started_at: string;
+    enrollment_count: number;
+}
+
+interface PushSubscriptionEnrollmentPreparation {
+    now: ISO8601Timestamp;
+    createsStoredVersion: boolean;
+    excludedSubscriptionId?: string;
+}
+
+interface PushSubscriptionGarbageCollection {
+    now: ISO8601Timestamp;
+    limit: number;
+    userId?: string;
+    includeRecent?: boolean;
+    excludedSubscriptionId?: string;
+}
+
 interface NormalizedRecipient {
     userId: string;
     inboxEnabled: boolean;
     pushEnabled: boolean;
 }
 
-const PUSH_SUBSCRIPTION_WRITE_ATTEMPTS = 5;
+export const MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER = 10;
+export const MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER = 50;
+export const MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW = 20;
+export const PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS = 60 * 60 * 1000;
+export const PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const PUSH_SUBSCRIPTION_GC_BATCH_SIZE = 100;
+
+const PUSH_SUBSCRIPTION_CONSTRAINT_WRITE_ATTEMPTS = 5;
+const PUSH_SUBSCRIPTION_SHORT_BUSY_TIMEOUT_MAX_MS = 5_000;
 const PUSH_SUBSCRIPTION_RETRY_BASE_DELAY_MS = 5;
 const PUSH_SUBSCRIPTION_RETRY_MAX_DELAY_MS = 40;
 
-function isPushSubscriptionWriteRace(error: unknown): boolean {
-    if (!(error instanceof Error)) return false;
-    const code = (error as Error & { code?: string }).code;
+function sqliteErrorCode(error: unknown): string | undefined {
+    return error instanceof Error
+        ? (error as Error & { code?: string }).code
+        : undefined;
+}
+
+function isPushSubscriptionContention(error: unknown): boolean {
+    const code = sqliteErrorCode(error);
     return code === 'SQLITE_BUSY'
         || code === 'SQLITE_BUSY_SNAPSHOT'
         || code === 'SQLITE_LOCKED'
-        || code === 'SQLITE_LOCKED_SHAREDCACHE'
-        || code === 'SQLITE_CONSTRAINT_UNIQUE'
+        || code === 'SQLITE_LOCKED_SHAREDCACHE';
+}
+
+function isPushSubscriptionConstraintRace(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    return sqliteErrorCode(error) === 'SQLITE_CONSTRAINT_UNIQUE'
         || error.message.includes('push_subscriptions_active_endpoint_idx')
         || error.message.includes('UNIQUE constraint failed: push_subscriptions.endpoint');
+}
+
+function positiveIntegerOption(value: number, name: string): number {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new TypeError(`${name} must be a positive integer`);
+    }
+    return value;
+}
+
+function nonnegativeIntegerOption(value: number, name: string): number {
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new TypeError(`${name} must be a nonnegative integer`);
+    }
+    return value;
 }
 
 function isNodeValidatedP256Point(value: string): boolean {
@@ -362,6 +418,11 @@ export class NotificationService {
     private readonly now: () => TimestampInput;
     private readonly generateId: () => string;
     private readonly allowInsecureLocalhost: boolean;
+    private readonly maxActivePushSubscriptionsPerUser: number;
+    private readonly maxStoredPushSubscriptionsPerUser: number;
+    private readonly maxPushSubscriptionEnrollmentsPerWindow: number;
+    private readonly pushSubscriptionEnrollmentWindowMs: number;
+    private readonly pushSubscriptionRevokedRetentionMs: number;
 
     constructor(options: NotificationServiceOptions = {}) {
         this.database = options.database ?? db;
@@ -369,6 +430,39 @@ export class NotificationService {
         this.generateId = options.generateId ?? randomUUID;
         this.allowInsecureLocalhost = options.allowInsecureLocalhost
             ?? parseTruthyEnvValue(process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH);
+        this.maxActivePushSubscriptionsPerUser = positiveIntegerOption(
+            options.maxActivePushSubscriptionsPerUser
+                ?? MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER,
+            'maxActivePushSubscriptionsPerUser'
+        );
+        this.maxStoredPushSubscriptionsPerUser = positiveIntegerOption(
+            options.maxStoredPushSubscriptionsPerUser
+                ?? MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
+            'maxStoredPushSubscriptionsPerUser'
+        );
+        if (
+            this.maxStoredPushSubscriptionsPerUser
+            < this.maxActivePushSubscriptionsPerUser
+        ) {
+            throw new TypeError(
+                'maxStoredPushSubscriptionsPerUser must be at least the active limit'
+            );
+        }
+        this.maxPushSubscriptionEnrollmentsPerWindow = positiveIntegerOption(
+            options.maxPushSubscriptionEnrollmentsPerWindow
+                ?? MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW,
+            'maxPushSubscriptionEnrollmentsPerWindow'
+        );
+        this.pushSubscriptionEnrollmentWindowMs = positiveIntegerOption(
+            options.pushSubscriptionEnrollmentWindowMs
+                ?? PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
+            'pushSubscriptionEnrollmentWindowMs'
+        );
+        this.pushSubscriptionRevokedRetentionMs = nonnegativeIntegerOption(
+            options.pushSubscriptionRevokedRetentionMs
+                ?? PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS,
+            'pushSubscriptionRevokedRetentionMs'
+        );
     }
 
     async createNotificationEvent<K extends NotificationKind>(
@@ -551,10 +645,23 @@ export class NotificationService {
             ? undefined
             : boundedUserAgent(userAgent);
 
+        const contentionAttemptLimit = await this.pushSubscriptionContentionAttemptLimit();
+        let contentionFailures = 0;
         let lastRaceError: unknown;
-        for (let attempt = 0; attempt < PUSH_SUBSCRIPTION_WRITE_ATTEMPTS; attempt += 1) {
+        for (
+            let attempt = 0;
+            attempt < PUSH_SUBSCRIPTION_CONSTRAINT_WRITE_ATTEMPTS;
+            attempt += 1
+        ) {
             try {
                 return await this.database.transaction(async (transaction) => {
+                    // Acquire SQLite's single-writer slot before taking an
+                    // ownership/quota snapshot. Contending enrollments then wait
+                    // once inside the configured busy timeout and read fresh
+                    // state instead of repeatedly failing lock upgrades.
+                    await transaction('push_subscription_write_lock')
+                        .where({ lock_key: 1 })
+                        .update({ lock_key: 1 });
                     const activeOwner = await transaction<PushSubscriptionRow>(
                         'push_subscriptions'
                     )
@@ -577,6 +684,17 @@ export class NotificationService {
                         .orderBy('created_at', 'desc')
                         .orderBy('subscription_id', 'desc')
                         .first();
+                    if (!activeOwner) {
+                        await this.preparePushSubscriptionEnrollment(
+                            transaction,
+                            userId,
+                            {
+                                now,
+                                createsStoredVersion: existing === undefined,
+                                excludedSubscriptionId: existing?.subscription_id
+                            }
+                        );
+                    }
                     if (existing) {
                         await transaction('push_subscriptions')
                             .where({ subscription_id: existing.subscription_id, user_id: userId })
@@ -611,7 +729,19 @@ export class NotificationService {
                     return toPushSubscription(stored);
                 });
             } catch (error) {
-                if (!isPushSubscriptionWriteRace(error)) throw error;
+                // SQLite's configured busy timeout is already the bounded retry
+                // policy for lock contention. Long configured timeouts get no
+                // application retry; short/test timeouts get one retry so an
+                // async better-sqlite3 writer can resume and commit. Contention
+                // never performs the additional reconciliation query.
+                if (isPushSubscriptionContention(error)) {
+                    contentionFailures += 1;
+                    if (contentionFailures >= contentionAttemptLimit) throw error;
+                    lastRaceError = error;
+                    await waitBeforePushSubscriptionRetry(attempt);
+                    continue;
+                }
+                if (!isPushSubscriptionConstraintRace(error)) throw error;
                 lastRaceError = error;
 
                 // The unique partial index is the final ownership authority. A
@@ -628,18 +758,38 @@ export class NotificationService {
                     );
                     if (reconciled) return reconciled;
                 } catch (reconciliationError) {
-                    if (!isPushSubscriptionWriteRace(reconciliationError)) {
+                    if (isPushSubscriptionContention(reconciliationError)) {
+                        throw reconciliationError;
+                    }
+                    if (!isPushSubscriptionConstraintRace(reconciliationError)) {
                         throw reconciliationError;
                     }
                     lastRaceError = reconciliationError;
                 }
 
-                if (attempt < PUSH_SUBSCRIPTION_WRITE_ATTEMPTS - 1) {
+                if (attempt < PUSH_SUBSCRIPTION_CONSTRAINT_WRITE_ATTEMPTS - 1) {
                     await waitBeforePushSubscriptionRetry(attempt);
                 }
             }
         }
         throw lastRaceError;
+    }
+
+    /**
+     * Delete a bounded batch of old, revoked subscriptions that have no delivery
+     * audit references. The database trigger independently enforces both safety
+     * conditions in case a future caller builds a broader query.
+     */
+    async garbageCollectPushSubscriptions(
+        limit = PUSH_SUBSCRIPTION_GC_BATCH_SIZE
+    ): Promise<number> {
+        const boundedLimit = positiveIntegerOption(limit, 'push subscription GC limit');
+        const now = normalizeISO8601Timestamp(this.now());
+        return this.database.transaction((transaction) =>
+            this.deleteGarbageCollectablePushSubscriptions(
+                transaction,
+                { now, limit: boundedLimit }
+            ));
     }
 
     async revokePushSubscription(userId: string, endpoint: string): Promise<boolean> {
@@ -692,6 +842,185 @@ export class NotificationService {
             .first();
         if (!stored) throw new Error('Push subscription was not persisted');
         return toPushSubscription(stored);
+    }
+
+    private async preparePushSubscriptionEnrollment(
+        transaction: Knex.Transaction,
+        userId: string,
+        preparation: PushSubscriptionEnrollmentPreparation
+    ): Promise<void> {
+        const { now, createsStoredVersion, excludedSubscriptionId } = preparation;
+        await this.deleteGarbageCollectablePushSubscriptions(
+            transaction,
+            {
+                now,
+                limit: PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
+                userId,
+                excludedSubscriptionId
+            }
+        );
+
+        const activeCount = await this.countPushSubscriptions(
+            transaction,
+            userId,
+            true
+        );
+        if (activeCount >= this.maxActivePushSubscriptionsPerUser) {
+            throw new PushSubscriptionQuotaError(
+                'active',
+                this.maxActivePushSubscriptionsPerUser
+            );
+        }
+
+        if (createsStoredVersion) {
+            let storedCount = await this.countPushSubscriptions(transaction, userId, false);
+            if (storedCount >= this.maxStoredPushSubscriptionsPerUser) {
+                const requiredCapacity = storedCount
+                    - this.maxStoredPushSubscriptionsPerUser
+                    + 1;
+                await this.deleteGarbageCollectablePushSubscriptions(
+                    transaction,
+                    {
+                        now,
+                        limit: requiredCapacity,
+                        userId,
+                        includeRecent: true
+                    }
+                );
+                storedCount = await this.countPushSubscriptions(transaction, userId, false);
+            }
+            if (storedCount >= this.maxStoredPushSubscriptionsPerUser) {
+                throw new PushSubscriptionQuotaError(
+                    'stored',
+                    this.maxStoredPushSubscriptionsPerUser
+                );
+            }
+        }
+
+        await this.consumePushSubscriptionEnrollment(transaction, userId, now);
+    }
+
+    private async pushSubscriptionContentionAttemptLimit(): Promise<number> {
+        try {
+            const rows = await this.database.raw('PRAGMA busy_timeout') as Array<{
+                timeout?: number;
+                busy_timeout?: number;
+            }>;
+            const timeout = Number(rows[0]?.timeout ?? rows[0]?.busy_timeout);
+            return Number.isFinite(timeout)
+                && timeout >= 0
+                && timeout <= PUSH_SUBSCRIPTION_SHORT_BUSY_TIMEOUT_MAX_MS
+                ? 2
+                : 1;
+        } catch {
+            return 1;
+        }
+    }
+
+    private async countPushSubscriptions(
+        database: Database,
+        userId: string,
+        activeOnly: boolean
+    ): Promise<number> {
+        const query = database('push_subscriptions').where({ user_id: userId });
+        if (activeOnly) query.whereNull('revoked_at');
+        const row = await query.count({ count: '*' }).first() as {
+            count: number | string;
+        } | undefined;
+        const count = Number(row?.count ?? 0);
+        if (!Number.isSafeInteger(count) || count < 0) {
+            throw new Error('Invalid push subscription count returned by database');
+        }
+        return count;
+    }
+
+    private async consumePushSubscriptionEnrollment(
+        transaction: Knex.Transaction,
+        userId: string,
+        now: ISO8601Timestamp
+    ): Promise<void> {
+        const row = await transaction<PushSubscriptionEnrollmentLimitRow>(
+            'push_subscription_enrollment_limits'
+        ).where({ user_id: userId }).first();
+        const nowMs = Date.parse(now);
+        const windowStartedAtMs = row === undefined
+            ? Number.NaN
+            : Date.parse(row.window_started_at);
+        const elapsed = nowMs - windowStartedAtMs;
+        const inCurrentWindow = row !== undefined
+            && Number.isFinite(elapsed)
+            && elapsed >= 0
+            && elapsed < this.pushSubscriptionEnrollmentWindowMs;
+
+        if (
+            inCurrentWindow
+            && row.enrollment_count >= this.maxPushSubscriptionEnrollmentsPerWindow
+        ) {
+            const retryAfterSeconds = Math.max(
+                1,
+                Math.ceil((this.pushSubscriptionEnrollmentWindowMs - elapsed) / 1000)
+            );
+            throw new PushSubscriptionRateLimitError(retryAfterSeconds);
+        }
+
+        if (inCurrentWindow) {
+            await transaction('push_subscription_enrollment_limits')
+                .where({ user_id: userId })
+                .update({ enrollment_count: row.enrollment_count + 1 });
+            return;
+        }
+
+        await transaction('push_subscription_enrollment_limits')
+            .insert({
+                user_id: userId,
+                window_started_at: now,
+                enrollment_count: 1
+            })
+            .onConflict('user_id')
+            .merge({ window_started_at: now, enrollment_count: 1 });
+    }
+
+    private async deleteGarbageCollectablePushSubscriptions(
+        database: Database,
+        collection: PushSubscriptionGarbageCollection
+    ): Promise<number> {
+        const {
+            now,
+            limit,
+            userId,
+            includeRecent = false,
+            excludedSubscriptionId
+        } = collection;
+        const cutoff = normalizeISO8601Timestamp(
+            Date.parse(now) - this.pushSubscriptionRevokedRetentionMs
+        );
+        const candidates = database<PushSubscriptionRow>('push_subscriptions')
+            .select('subscription_id')
+            .whereNotNull('revoked_at')
+            .whereNotIn(
+                'subscription_id',
+                database('push_delivery_jobs').select('subscription_id')
+            );
+        if (!includeRecent) candidates.where('revoked_at', '<=', cutoff);
+        if (userId !== undefined) candidates.where({ user_id: userId });
+        if (excludedSubscriptionId !== undefined) {
+            candidates.whereNot({ subscription_id: excludedSubscriptionId });
+        }
+        const rows = await candidates
+            .orderBy('revoked_at', 'asc')
+            .orderBy('subscription_id', 'asc')
+            .limit(limit);
+        const subscriptionIds = rows.map(({ subscription_id: id }) => id);
+        if (subscriptionIds.length === 0) return 0;
+
+        return database('push_subscriptions')
+            .whereIn('subscription_id', subscriptionIds)
+            .whereNotNull('revoked_at')
+            .whereNotIn(
+                'subscription_id',
+                database('push_delivery_jobs').select('subscription_id')
+            )
+            .delete();
     }
 
     async listNotifications(
@@ -909,6 +1238,32 @@ export class PushSubscriptionConflictError extends Error {
     }
 }
 
+export class PushSubscriptionQuotaError extends Error {
+    readonly code = 'PUSH_SUBSCRIPTION_QUOTA_EXCEEDED';
+    readonly scope: 'active' | 'stored';
+    readonly limit: number;
+
+    constructor(scope: 'active' | 'stored', limit: number) {
+        super(scope === 'active'
+            ? `A user may have at most ${limit} active push subscriptions`
+            : `A user may retain at most ${limit} push subscription records`);
+        this.name = 'PushSubscriptionQuotaError';
+        this.scope = scope;
+        this.limit = limit;
+    }
+}
+
+export class PushSubscriptionRateLimitError extends Error {
+    readonly code = 'PUSH_SUBSCRIPTION_RATE_LIMITED';
+    readonly retryAfterSeconds: number;
+
+    constructor(retryAfterSeconds: number) {
+        super('Too many push subscription enrollments');
+        this.name = 'PushSubscriptionRateLimitError';
+        this.retryAfterSeconds = retryAfterSeconds;
+    }
+}
+
 export class NotificationEventNotFoundError extends Error {
     constructor(eventId: string) {
         super(`Notification event ${eventId} was not found`);
@@ -940,3 +1295,6 @@ export const upsertPushSubscription = notificationService.upsertPushSubscription
     .bind(notificationService) as NotificationService['upsertPushSubscription'];
 export const revokePushSubscription = notificationService.revokePushSubscription
     .bind(notificationService) as NotificationService['revokePushSubscription'];
+export const garbageCollectPushSubscriptions = notificationService
+    .garbageCollectPushSubscriptions
+    .bind(notificationService) as NotificationService['garbageCollectPushSubscriptions'];

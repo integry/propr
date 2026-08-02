@@ -89,18 +89,30 @@ This API currently stores notification delivery policy and browser enrollment;
 it does not include a Web Push dispatcher. Quiet hours therefore do not yet
 suppress outbound requests. A future dispatcher must apply both boundaries in
 the stored IANA timezone at claim time (including retries and DST transitions),
-treat either null boundary as disabled, and retain jobs until the quiet window
-ends. Revocation erases stored keys and cancels queued or expired-lease jobs,
-but it is best-effort for a live lease that may already hold key material. A
-future dispatcher must re-read both the subscription and job immediately before
-network I/O and skip a revoked subscription or cancelled job.
+treat either null boundary as disabled, treat equal non-null boundaries as a
+zero-length window, and retain jobs until the quiet window ends. Preference
+opt-outs atomically cancel pending, retryable, and expired-lease jobs; current
+preferences are also checked when jobs are created or claimed. Revocation erases
+stored keys and cancels the same queued work, but both opt-out and subscription
+refresh/revocation remain best-effort for a live lease that may already hold old
+state. A future dispatcher must re-read the current category preference,
+subscription, and job immediately before network I/O, use the latest refreshed
+keys, and skip an opted-out user, revoked subscription, or cancelled job.
 
 - `GET /api/notifications/config` - Return Web Push availability and the VAPID public key. The private key is never serialized.
 - `GET /api/notifications/preferences` - Return the complete category and quiet-hour snapshot.
 - `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged.
-- `PUT /api/notifications/preferences` - Compatibility alias for the same sparse update; it does not replace the complete resource.
 - `POST /api/notifications/push-subscriptions` - Create or refresh the authenticated user's browser subscription by endpoint.
-- `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` in the JSON body or query string.
+- `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` only in the JSON body; capability URLs are never accepted in query strings.
+
+Enrollment is limited to 10 active and 50 retained subscription rows per user,
+with at most 20 new enrollments/reactivations per hour. Refreshing an already
+active endpoint does not consume the enrollment rate limit. Revoked rows older
+than 30 days are eligible for bounded garbage collection only when no delivery
+job references them; quota pressure may safely collect newer unreferenced
+revocations. Referenced delivery history remains immutable and counts toward the
+retained quota. Rate-limit responses use HTTP 429 with `Retry-After`; quota
+responses use HTTP 409 so clients can prompt the user to revoke another browser.
 
 Subscription endpoints are intentionally limited to FCM, Mozilla Autopush, and
 Apple Web Push vendor hosts. Adding another browser provider requires updating
@@ -112,6 +124,14 @@ available only for isolated local development through
 reachable development or staging server. The SQLite constraint is deliberately
 stable across restarts and permits loopback rows; the authenticated service flag
 is the enrollment policy boundary.
+
+The preference API migration remains startup-blocking and transactional because
+it rebuilds the subscription table while preserving delivery foreign keys. Its
+work is linear in historical subscription count: runtime URL/key validation is
+performed in batches of 500 and collision reconciliation uses set-based SQLite
+updates. Operators with unusually large subscription history should run the
+migration during a maintenance window and budget time for one P-256 validation
+per active legacy row.
 
 For example, this enables Push for task notifications and configures local
 quiet hours without changing any other category:

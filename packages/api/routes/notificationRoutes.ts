@@ -7,10 +7,14 @@ import {
     notificationService,
     parseNotificationListLimit,
     PushSubscriptionConflictError,
+    PushSubscriptionQuotaError,
+    PushSubscriptionRateLimitError,
     type NotificationService
 } from '@propr/core';
 import {
     NOTIFICATION_PAYLOAD_LIMITS,
+    parseNotificationCapabilitiesResponse,
+    parsePushSubscriptionEnrollmentResponse,
     parseNotificationUnreadCountResponse
 } from '@propr/shared';
 
@@ -137,6 +141,24 @@ function handleRouteError(res: Response, error: unknown, operation: string): voi
         });
         return;
     }
+    if (error instanceof PushSubscriptionQuotaError) {
+        res.status(409).json({
+            code: error.code,
+            error: error.message,
+            limit: error.limit,
+            scope: error.scope
+        });
+        return;
+    }
+    if (error instanceof PushSubscriptionRateLimitError) {
+        res.set('Retry-After', String(error.retryAfterSeconds));
+        res.status(429).json({
+            code: error.code,
+            error: error.message,
+            retryAfterSeconds: error.retryAfterSeconds
+        });
+        return;
+    }
 
     console.error(`Failed to ${operation}:`, error);
     res.status(500).json({ error: 'Internal server error' });
@@ -150,6 +172,15 @@ export function createNotificationRoutes(
         publicKey: process.env.VAPID_PUBLIC_KEY,
         privateKey: process.env.VAPID_PRIVATE_KEY
     }));
+    // VAPID configuration is process-static. Validate the key pair once when the
+    // routes are constructed instead of repeating P-256 derivation per request.
+    const vapidPublicKey = validatedVapidPublicKey(getWebPushConfiguration());
+    const capabilityResponse = parseNotificationCapabilitiesResponse({
+        push: {
+            configured: vapidPublicKey !== null,
+            vapidPublicKey
+        }
+    });
 
     async function getNotifications(req: Request, res: Response): Promise<void> {
         const userId = authenticatedUserId(req, res);
@@ -221,14 +252,7 @@ export function createNotificationRoutes(
         const userId = authenticatedUserId(req, res);
         if (!userId) return;
 
-        const configuration = getWebPushConfiguration();
-        const publicKey = validatedVapidPublicKey(configuration);
-        res.json({
-            push: {
-                configured: publicKey !== null,
-                vapidPublicKey: publicKey
-            }
-        });
+        res.json(capabilityResponse);
     }
 
     async function getPreferences(req: Request, res: Response): Promise<void> {
@@ -273,7 +297,7 @@ export function createNotificationRoutes(
                 >[1],
                 userAgent
             );
-            res.json({ subscription });
+            res.json(parsePushSubscriptionEnrollmentResponse({ subscription }));
         } catch (error) {
             handleRouteError(res, error, 'create or refresh push subscription');
         }
@@ -287,7 +311,7 @@ export function createNotificationRoutes(
             const body = typeof req.body === 'object' && req.body !== null
                 ? req.body as Record<string, unknown>
                 : {};
-            const endpoint = body.endpoint ?? req.query.endpoint;
+            const endpoint = body.endpoint;
             if (typeof endpoint !== 'string') {
                 throw new NotificationValidationError(
                     'pushSubscriptionInput.endpoint is required'

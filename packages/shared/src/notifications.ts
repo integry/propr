@@ -287,8 +287,9 @@ export type NotificationPreferences = Record<
 /**
  * User-local quiet-hours policy persisted for a future Web Push dispatcher. A
  * null boundary disables the policy; the timezone is retained so enabling it
- * later does not require guessing. The current notification API is storage-only
- * and does not send or suppress Web Push requests.
+ * later does not require guessing. Equal non-null boundaries define a zero-length
+ * window, so they do not delay delivery. The current notification API is
+ * storage-only and does not send or suppress Web Push requests.
  */
 export interface NotificationQuietHours {
   start: string | null;
@@ -347,8 +348,9 @@ export interface PushSubscription {
   endpoint: string;
   expiresAt: ISO8601Timestamp | null;
   /**
-   * Revocation is best-effort for a delivery whose live lease already loaded
-   * key material. Dispatchers must re-read this state immediately before send.
+   * Revocation and key refresh can race with a delivery whose live lease already
+   * loaded this row. Dispatchers must re-read the subscription immediately
+   * before send, reject revoked rows, and use the latest encryption keys.
    */
   revokedAt: ISO8601Timestamp | null;
   createdAt: ISO8601Timestamp;
@@ -563,6 +565,21 @@ export interface NotificationStateResponse {
 export interface NotificationPreferencesResponse {
   preferences: NotificationPreferences;
   quietHours: NotificationQuietHours;
+}
+
+/** Web Push capability advertised by the authenticated notification API. */
+export interface NotificationPushCapability {
+  configured: boolean;
+  vapidPublicKey: string | null;
+}
+
+export interface NotificationCapabilitiesResponse {
+  push: NotificationPushCapability;
+}
+
+/** Safe enrollment envelope; browser encryption material is never echoed. */
+export interface PushSubscriptionEnrollmentResponse {
+  subscription: PushSubscription;
 }
 
 export interface PushSubscriptionsResponse {
@@ -879,6 +896,7 @@ export function parsePushSubscriptionEndpoint(
   }
 
   const loopback = WEB_PUSH_LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+  let normalized: string;
   if (loopback) {
     if (
       !options.allowInsecureLocalhost
@@ -889,19 +907,27 @@ export function parsePushSubscriptionEndpoint(
     ) {
       return invalid(path, expectation);
     }
-    return url.href;
+    normalized = url.href;
+  } else {
+    normalized = parseSafeAbsoluteUrl(
+      href,
+      path,
+      ['https:'],
+      false,
+      expectation,
+      WEB_PUSH_ENDPOINT_HOSTS,
+      WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
+      true,
+    );
   }
 
-  return parseSafeAbsoluteUrl(
-    href,
-    path,
-    ['https:'],
-    false,
-    expectation,
-    WEB_PUSH_ENDPOINT_HOSTS,
-    WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
-    true,
-  );
+  // URL normalization percent-encodes Unicode and can therefore expand a value
+  // after the input-length check. Keep the API boundary aligned with SQLite's
+  // constraint by checking the exact canonical value that will be persisted.
+  if (utf8ByteLength(normalized) > NOTIFICATION_PAYLOAD_LIMITS.urlBytes) {
+    return invalid(path, expectation);
+  }
+  return normalized;
 }
 
 function parseEnum<T extends readonly string[]>(
@@ -1894,6 +1920,46 @@ export function parseNotificationPreferencesResponse(
   };
 }
 
+export function parseNotificationCapabilitiesResponse(
+  value: unknown,
+): NotificationCapabilitiesResponse {
+  const response = parseRecord(value, 'notificationCapabilitiesResponse');
+  const push = parseRecord(response.push, 'notificationCapabilitiesResponse.push');
+  const configured = parseBoolean(
+    push.configured,
+    'notificationCapabilitiesResponse.push.configured',
+  );
+  let vapidPublicKey: string | null = null;
+  if (push.vapidPublicKey !== null) {
+    vapidPublicKey = parseBase64Url(
+      push.vapidPublicKey,
+      'notificationCapabilitiesResponse.push.vapidPublicKey',
+      65,
+      0x04,
+    );
+    if (vapidPublicKey.includes('=') || !isP256PublicPoint(vapidPublicKey)) {
+      return invalid(
+        'notificationCapabilitiesResponse.push.vapidPublicKey',
+        'a canonical unpadded public point on the P-256 curve',
+      );
+    }
+  }
+  if (configured !== (vapidPublicKey !== null)) {
+    return invalid(
+      'notificationCapabilitiesResponse.push',
+      'configured to match VAPID public-key availability',
+    );
+  }
+  return { push: { configured, vapidPublicKey } };
+}
+
+export function parsePushSubscriptionEnrollmentResponse(
+  value: unknown,
+): PushSubscriptionEnrollmentResponse {
+  const response = parseRecord(value, 'pushSubscriptionEnrollmentResponse');
+  return { subscription: parsePushSubscription(response.subscription) };
+}
+
 export function parsePushSubscriptionsResponse(
   value: unknown,
 ): PushSubscriptionsResponse {
@@ -1968,6 +2034,14 @@ export const notificationStateResponseSchema: RuntimeSchema<NotificationStateRes
 export const notificationPreferencesResponseSchema:
   RuntimeSchema<NotificationPreferencesResponse> = {
   parse: parseNotificationPreferencesResponse,
+};
+export const notificationCapabilitiesResponseSchema:
+  RuntimeSchema<NotificationCapabilitiesResponse> = {
+  parse: parseNotificationCapabilitiesResponse,
+};
+export const pushSubscriptionEnrollmentResponseSchema:
+  RuntimeSchema<PushSubscriptionEnrollmentResponse> = {
+  parse: parsePushSubscriptionEnrollmentResponse,
 };
 export const pushSubscriptionsResponseSchema: RuntimeSchema<PushSubscriptionsResponse> = {
   parse: parsePushSubscriptionsResponse,

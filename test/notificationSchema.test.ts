@@ -24,6 +24,7 @@ import {
   parseISO8601Timestamp,
   parseNotification,
   parseNotificationAction,
+  parseNotificationCapabilitiesResponse,
   parseNotificationEvent,
   parseNotificationListResponse,
   parseNotificationSourceActivity,
@@ -34,6 +35,7 @@ import {
   parsePushDeliveryAttempt,
   parsePushDeliveryJob,
   parsePushSubscription,
+  parsePushSubscriptionEnrollmentResponse,
   parsePushSubscriptionInput,
   parsePushSubscriptionsResponse,
   type NotificationKind,
@@ -2463,6 +2465,17 @@ describe('durable notification schema', { concurrency: false }, () => {
       }),
       /16-byte base64url/,
     );
+    const normalizationExpansion =
+      pushEndpointOrigin + '/fcm/send/' + 'ü'.repeat(900);
+    assert.ok(Buffer.byteLength(normalizationExpansion, 'utf8') < 2_048);
+    assert.throws(
+      () => parsePushSubscriptionInput({
+        endpoint: normalizationExpansion,
+        expirationTime: null,
+        keys: { p256dh: validP256dhKey, auth: validAuthKey },
+      }),
+      /safe HTTPS browser push endpoint URL/,
+    );
 
     const subscription = parsePushSubscription({
       id: 'subscription-1',
@@ -2476,6 +2489,22 @@ describe('durable notification schema', { concurrency: false }, () => {
       parsePushSubscriptionsResponse({ subscriptions: [subscription] })
         .subscriptions.length,
       1,
+    );
+    assert.strictEqual(
+      parsePushSubscriptionEnrollmentResponse({ subscription }).subscription.id,
+      subscription.id,
+    );
+    assert.deepStrictEqual(
+      parseNotificationCapabilitiesResponse({
+        push: { configured: true, vapidPublicKey: validP256dhKey },
+      }),
+      { push: { configured: true, vapidPublicKey: validP256dhKey } },
+    );
+    assert.throws(
+      () => parseNotificationCapabilitiesResponse({
+        push: { configured: false, vapidPublicKey: validP256dhKey },
+      }),
+      /configured to match/,
     );
 
     assert.strictEqual(parsePushDeliveryJob({
