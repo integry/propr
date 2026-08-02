@@ -2,7 +2,8 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
-  updateRepositoryStatus, requestIndexingCancellation, fetchLatestChanges, db
+  updateRepositoryStatus, createIndexingRunIdentity,
+  requestIndexingCancellation, fetchLatestChanges, db
 } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
 import { getEnabledResummarizationTargets } from './indexingRouteHelpers.js';
@@ -20,8 +21,14 @@ export interface QueueIndexingResult {
 export interface StopIndexingResult {
   success: boolean;
   message?: string;
-  cancelledActiveBranches: string[];
-  removedQueuedBranches: string[];
+  cancelledActiveRuns: IndexingStopTransition[];
+  removedQueuedRuns: IndexingStopTransition[];
+}
+
+export interface IndexingStopTransition {
+  branch: string;
+  transitionAt: string;
+  runId: string;
 }
 
 interface QueueResummarizationForRepoOptions {
@@ -51,6 +58,8 @@ interface QueueResummarizationDeps {
   ensureRepoCloned: typeof ensureRepoCloned;
   fetchLatestChanges: typeof fetchLatestChanges;
   getRepoUrl: typeof getRepoUrl;
+  createIndexingRunIdentity: typeof createIndexingRunIdentity;
+  updateRepositoryStatus: typeof updateRepositoryStatus;
 }
 
 interface QueueResummarizationOptions {
@@ -67,6 +76,8 @@ function getQueueResummarizationDeps(overrides: Partial<QueueResummarizationDeps
     ensureRepoCloned,
     fetchLatestChanges,
     getRepoUrl,
+    createIndexingRunIdentity,
+    updateRepositoryStatus,
     ...overrides
   };
 }
@@ -153,24 +164,38 @@ async function queueResummarizationForRepo({
   }
 
   const correlationId = generateCorrelationId();
-  await queue.add(
-    'indexRepository',
-    {
-      repository: repoFullName,
-      repoPath,
-      correlationId,
-      priority: 'normal',
-      fullReindex: true,
-      // Persist the normalized branch so cooldown/dedup/status checks (which all
-      // normalize to HEAD) stay consistent with the stored job payload.
-      baseBranch: effectiveBranch,
-      ignoreCooldown
-    },
-    {
-      jobId: `index-${repoFullName.replace('/', '-')}-${sanitizeJobIdSegment(effectiveBranch)}-prompt-change-${Date.now()}`,
-      priority: 2
-    }
-  );
+  const requestedRun = deps.createIndexingRunIdentity();
+  const transition = await deps.updateRepositoryStatus(repoFullName, 'indexing', effectiveBranch, {
+    ...requestedRun,
+    startNewRun: true
+  });
+  try {
+    await queue.add(
+      'indexRepository',
+      {
+        repository: repoFullName,
+        repoPath,
+        correlationId,
+        priority: 'normal',
+        fullReindex: true,
+        // Persist the normalized branch so cooldown/dedup/status checks (which all
+        // normalize to HEAD) stay consistent with the stored job payload.
+        baseBranch: effectiveBranch,
+        ignoreCooldown,
+        runId: transition.runId,
+        transitionAt: transition.transitionAt
+      },
+      {
+        jobId: `index-${repoFullName.replace('/', '-')}-${sanitizeJobIdSegment(effectiveBranch)}-prompt-change-${Date.now()}`,
+        priority: 2
+      }
+    );
+  } catch (error) {
+    await deps.updateRepositoryStatus(repoFullName, 'idle', effectiveBranch, {
+      runId: transition.runId
+    });
+    throw error;
+  }
   queuedRepoBranches?.add(repoBranchKey);
   return 'queued';
 }
@@ -288,12 +313,30 @@ export async function queueIndexingJob(
 
   const correlationId = generateCorrelationId();
   const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
-  const job = await queue.add(
-    'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
-    { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
-  );
-  const transition = await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
+  const requestedRun = createIndexingRunIdentity();
+  const transition = await updateRepositoryStatus(repository, 'indexing', effectiveBranch, {
+    ...requestedRun,
+    startNewRun: true
+  });
+  let job: Awaited<ReturnType<typeof queue.add>>;
+  try {
+    job = await queue.add(
+      'indexRepository',
+      {
+        repository, repoPath, correlationId, priority: 'high',
+        fullReindex: effectiveFullReindex, baseBranch: effectiveBranch,
+        ignoreCooldown: options.ignoreCooldown,
+        runId: transition.runId,
+        transitionAt: transition.transitionAt
+      },
+      { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
+    );
+  } catch (error) {
+    await updateRepositoryStatus(repository, 'idle', effectiveBranch, {
+      runId: transition.runId
+    });
+    throw error;
+  }
 
   // Return the normalized branch so callers report/match the same value that was
   // stored on the job and used to update repository status.
@@ -302,7 +345,8 @@ export async function queueIndexingJob(
     jobId: job.id,
     correlationId,
     baseBranch: effectiveBranch,
-    ...transition
+    transitionAt: transition.transitionAt,
+    runId: transition.runId
   };
 }
 
@@ -318,29 +362,40 @@ export async function stopIndexingJob(repository: string, branch?: string): Prom
       return true;
     });
 
-    const cancelledActiveBranches: string[] = [];
-    const removedQueuedBranches: string[] = [];
+    const cancelledActiveRuns: IndexingStopTransition[] = [];
+    const removedQueuedRuns: IndexingStopTransition[] = [];
 
-    if (matchingJobs.length > 0) {
-      for (const job of matchingJobs) {
-        const jobBranch = configManager.normalizeSummarizationBranch(job.data.baseBranch);
-        const state = await job.getState();
-        if (state === 'active') {
-          await requestIndexingCancellation(repository, jobBranch);
-          await updateRepositoryStatus(repository, 'idle', jobBranch);
-          cancelledActiveBranches.push(jobBranch);
-          continue;
-        }
-
-        await job.remove();
-        await updateRepositoryStatus(repository, 'idle', jobBranch);
-        removedQueuedBranches.push(jobBranch);
+    for (const job of matchingJobs) {
+      const jobBranch = configManager.normalizeSummarizationBranch(job.data.baseBranch);
+      const runId = job.data.runId;
+      const state = await job.getState();
+      if (state === 'active') {
+        if (!runId) continue;
+        await requestIndexingCancellation(repository, jobBranch, runId);
+        const transition = await updateRepositoryStatus(repository, 'idle', jobBranch, {
+          runId
+        });
+        cancelledActiveRuns.push({
+          branch: jobBranch,
+          runId: transition.runId,
+          transitionAt: transition.transitionAt
+        });
+        continue;
       }
+
+      await job.remove();
+      if (!runId) continue;
+      const transition = await updateRepositoryStatus(repository, 'idle', jobBranch, { runId });
+      removedQueuedRuns.push({
+        branch: jobBranch,
+        runId: transition.runId,
+        transitionAt: transition.transitionAt
+      });
     }
 
-    return { success: true, cancelledActiveBranches, removedQueuedBranches };
+    return { success: true, cancelledActiveRuns, removedQueuedRuns };
   } catch (error) {
     console.error('Error stopping indexing job:', error);
-    return { success: false, message: (error as Error).message, cancelledActiveBranches: [], removedQueuedBranches: [] };
+    return { success: false, message: (error as Error).message, cancelledActiveRuns: [], removedQueuedRuns: [] };
   }
 }

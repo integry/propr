@@ -2406,7 +2406,7 @@ describe('config route follow-up helpers', () => {
     });
 
     test('queueResummarizationForAllRepos uses enabled raw repo names when scheduling jobs', async () => {
-        const queueAdds: Array<{ repository: string }> = [];
+        const queueAdds: Array<{ repository: string; runId?: string; transitionAt?: string }> = [];
         const queued = await queueResummarizationForAllRepos({
             deps: createQueueResummarizationDeps({
                 repos: [
@@ -2424,8 +2424,16 @@ describe('config route follow-up helpers', () => {
             failedClone: 0,
         });
         assert.deepStrictEqual(queueAdds, [
-            { repository: 'acme/alpha' },
-            { repository: 'acme/gamma' },
+            {
+                repository: 'acme/alpha',
+                runId: 'test-indexing-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+            },
+            {
+                repository: 'acme/gamma',
+                runId: 'test-indexing-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+            },
         ]);
     });
 
@@ -2453,7 +2461,7 @@ describe('config route follow-up helpers', () => {
         repos: Array<{ id: string; name: string; enabled: boolean }>;
         existingJobs?: Array<{ data: { repository: string; baseBranch?: string } }>;
         cooldownRepos?: Set<string>;
-        queueAdds?: Array<{ repository: string }>;
+        queueAdds?: Array<{ repository: string; runId?: string; transitionAt?: string }>;
     }) {
         return {
             loadMonitoredReposRaw: async () => options.repos,
@@ -2468,10 +2476,32 @@ describe('config route follow-up helpers', () => {
             ensureRepoCloned: async ({ owner, repoName }: { owner: string; repoName: string }) => `/tmp/${owner}-${repoName}`,
             fetchLatestChanges: async () => ({ success: true }),
             getRepoUrl: ({ repoOwner, repoName }: { repoOwner: string; repoName: string }) => `https://example.com/${repoOwner}/${repoName}.git`,
+            createIndexingRunIdentity: () => ({
+                runId: 'test-indexing-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+            }),
+            updateRepositoryStatus: async (
+                _repository: string,
+                _status: 'idle' | 'indexing' | 'completed' | 'failed',
+                _branch: string,
+                run: { runId?: string; transitionAt?: string } = {},
+            ) => ({
+                runId: run.runId ?? 'test-indexing-run',
+                transitionAt: run.transitionAt ?? '2026-08-02T08:01:00.000Z',
+                applied: true,
+            }),
             getIndexingQueue: async () => ({
                 getJobs: async () => options.existingJobs || [],
-                add: async (_name: string, data: { repository: string }) => {
-                    options.queueAdds?.push({ repository: data.repository });
+                add: async (_name: string, data: {
+                    repository: string;
+                    runId?: string;
+                    transitionAt?: string;
+                }) => {
+                    options.queueAdds?.push({
+                        repository: data.repository,
+                        runId: data.runId,
+                        transitionAt: data.transitionAt,
+                    });
                 },
             } as never),
         };

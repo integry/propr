@@ -7,7 +7,9 @@ import type { IndexingJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
-import { indexRepo, updateRepositoryStatus } from '@propr/core';
+import {
+    indexRepo, updateRepositoryStatus, createIndexingRunIdentity, publishIndexingStatus
+} from '@propr/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
 import type { RepoToMonitor } from '@propr/core';
 import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@propr/core';
@@ -38,18 +40,27 @@ const REINDEX_INTERVAL_MS = parseInt(process.env.INDEXING_REINDEX_INTERVAL_MS ||
  * Process a single indexing job
  */
 async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingResult> {
-    const { repository, repoPath, correlationId, fullReindex, baseBranch = 'HEAD', ignoreCooldown } = job.data;
+    const {
+        repository, repoPath, correlationId, fullReindex, baseBranch = 'HEAD', ignoreCooldown
+    } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
     const startTime = Date.now();
 
     correlatedLogger.info({ repository, repoPath, fullReindex, branch: baseBranch }, 'Starting indexing job...');
 
     try {
-        // Check if summarization is enabled
-        const settings = await loadSummarizationSettings();
-        if (!settings.enabled) {
-            correlatedLogger.info('Summarization is disabled, skipping indexing job');
-            return { status: 'skipped', success: true };
+        let indexingRun = job.data.runId && job.data.transitionAt
+            ? { runId: job.data.runId, transitionAt: job.data.transitionAt }
+            : undefined;
+        if (!indexingRun) {
+            const requestedRun = createIndexingRunIdentity();
+            const transition = await updateRepositoryStatus(repository, 'indexing', baseBranch, {
+                ...requestedRun,
+                startNewRun: true
+            });
+            if (!transition.applied) return { status: 'skipped', success: true };
+            indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
+            await job.updateData({ ...job.data, ...indexingRun });
         }
 
         // Run the indexing
@@ -61,7 +72,8 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
             fullName: repository,
             branch: baseBranch,
             fullReindex,
-            ignoreCooldown
+            ignoreCooldown,
+            ...indexingRun
         });
 
         const duration = Date.now() - startTime;
@@ -184,20 +196,34 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
     const jobCorrelationId = generateCorrelationId();
     const priority = reason === 'previous indexing failed' ? 'high' : 'normal';
 
-    await indexingQueue.add(
-        'indexRepository',
-        {
-            repository: repoName,
-            repoPath,
-            correlationId: jobCorrelationId,
-            priority,
-            baseBranch: branch
-        },
-        {
-            jobId: `index-${repoName.replace('/', '-')}-${branch}-${Date.now()}`,
-            priority: reason === 'previous indexing failed' ? 1 : 5
-        }
-    );
+    const requestedRun = createIndexingRunIdentity();
+    const transition = await updateRepositoryStatus(repoName, 'indexing', branch, {
+        ...requestedRun,
+        startNewRun: true
+    });
+    try {
+        await indexingQueue.add(
+            'indexRepository',
+            {
+                repository: repoName,
+                repoPath,
+                correlationId: jobCorrelationId,
+                priority,
+                baseBranch: branch,
+                runId: transition.runId,
+                transitionAt: transition.transitionAt
+            },
+            {
+                jobId: `index-${repoName.replace('/', '-')}-${branch}-${Date.now()}`,
+                priority: reason === 'previous indexing failed' ? 1 : 5
+            }
+        );
+    } catch (error) {
+        await updateRepositoryStatus(repoName, 'idle', branch, {
+            runId: transition.runId
+        });
+        throw error;
+    }
 
     log.info({ repository: repoName, branch, reason, jobCorrelationId }, 'Queued repository for indexing');
 }
@@ -344,14 +370,17 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
 
     // Handle failed jobs - update repository status
     worker.on('failed', async (job, error) => {
-        if (job?.data?.repository) {
+        if (job?.data?.repository && job.data.runId) {
             const branch = job.data.baseBranch || 'HEAD';
             logger.error(
                 { repository: job.data.repository, branch, error: error.message },
                 'Indexing job failed, marking repository as failed'
             );
             try {
-                await updateRepositoryStatus(job.data.repository, 'failed', branch);
+                const transition = await updateRepositoryStatus(job.data.repository, 'failed', branch, {
+                    runId: job.data.runId
+                });
+                await publishIndexingStatus(job.data.repository, branch, 'failed', transition);
             } catch (updateError) {
                 logger.error(
                     { repository: job.data.repository, branch, error: (updateError as Error).message },

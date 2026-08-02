@@ -4,7 +4,10 @@ import crypto from 'crypto';
 import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
-import { startDirectoryPhase, updateDirectoryProgress, publishProgress, isIndexingCancelled } from './indexingCancellation.js';
+import {
+  startDirectoryPhase, updateDirectoryProgress, publishProgress,
+  isIndexingCancelled, IndexingCancelledError
+} from './indexingCancellation.js';
 import { MODEL_LIMITS } from '../../config/modelLimits.js';
 import type { IndexingProgress } from './indexingCancellation.js';
 import type { SummarizationAgentConfig } from './summaryMinerHelpers.js';
@@ -43,6 +46,7 @@ export interface AggregateDirectoriesOptions {
   fallbackAgentAliasSetting?: string;
   resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string;
+  runId?: string;
 }
 
 interface DirectoryAggregationState {
@@ -66,13 +70,14 @@ interface ProcessDepthOptions {
   getCurrentConfig: () => Promise<SummarizationAgentConfig>;
   initialConfig: SummarizationAgentConfig;
   log: Logger;
+  runId?: string;
 }
 
 /** Aggregates file summaries into directory summaries (bottom-up), batching multiple directories per API call. */
 export async function aggregateDirectories(options: AggregateDirectoriesOptions): Promise<AggregateDirectoriesResult> {
   const {
     fullName, agent, log, modelOverride, agentAliasSetting, resolveSummarizationConfig, branch = 'HEAD',
-    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting
+    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting, runId
   } = options;
   const fileSummaries = await db('file_summaries')
     .where('path', 'like', `${fullName}/%`)
@@ -90,7 +95,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
 
   const totalDirs = Array.from(directories).length;
   log.info({ directoryCount: totalDirs, depthLevels: depths.length }, 'Aggregating directory summaries (batched)');
-  await startDirectoryPhase(fullName, branch, totalDirs);
+  await startDirectoryPhase(fullName, branch, totalDirs, runId);
 
   const dirSummaryCache = new Map<string, string>();
   const { modelId, maxBatchTokens, maxDirsPerBatch } = computeDirectoryBatchBudget(agent, modelOverride, log);
@@ -119,7 +124,8 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
       maxDirsPerBatch,
       getCurrentConfig,
       initialConfig,
-      log
+      log,
+      runId
     });
     mergeDirectoryAggregationResult(state, depthResult);
     if (state.stopProcessing) break;
@@ -139,7 +145,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
 }
 
 async function processDirectoryDepth(options: ProcessDepthOptions): Promise<DirectoryAggregationState> {
-  const { dirsAtDepth, fileSummaries, dirSummaryCache, branch, fullName, maxBatchTokens, maxDirsPerBatch } = options;
+  const { dirsAtDepth, fileSummaries, dirSummaryCache, branch, fullName, maxBatchTokens, maxDirsPerBatch, runId } = options;
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const dirsToProcess: DirectoryInfo[] = [];
 
@@ -148,7 +154,9 @@ async function processDirectoryDepth(options: ProcessDepthOptions): Promise<Dire
     if (dirInfo) {
       dirsToProcess.push(dirInfo);
     } else {
-      state.dirsProcessed += await handleSkippedDirectory(dirPath, branch, dirSummaryCache, fullName);
+      state.dirsProcessed += await handleSkippedDirectory({
+        dirPath, branch, dirSummaryCache, fullName, runId
+      });
     }
   }
 
@@ -156,6 +164,9 @@ async function processDirectoryDepth(options: ProcessDepthOptions): Promise<Dire
   state.totalBatches = batches.length;
 
   for (const batch of batches) {
+    if (await isIndexingCancelled(fullName, branch, runId)) {
+      throw new IndexingCancelledError(fullName);
+    }
     const batchResult = await processDirectoryAggregationBatch(batch, options);
     mergeDirectoryAggregationResult(state, batchResult);
     if (state.stopProcessing) break;
@@ -203,7 +214,7 @@ function mergeDirectoryAggregationResult(state: DirectoryAggregationState, resul
 }
 
 async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options: ProcessDepthOptions): Promise<DirectoryAggregationState> {
-  const { getCurrentConfig, initialConfig, log, fullName, branch, dirSummaryCache } = options;
+  const { getCurrentConfig, initialConfig, log, fullName, branch, dirSummaryCache, runId } = options;
   const currentConfig = await getCurrentConfig();
   logDirectoryBatchAgentIfChanged(log, initialConfig, currentConfig);
   const results = await processDirectoryBatch({
@@ -218,6 +229,9 @@ async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options:
     fullName,
     branch
   });
+  if (await isIndexingCancelled(fullName, branch, runId)) {
+    throw new IndexingCancelledError(fullName);
+  }
   const failedBatches = results.some(r => r.summary) ? 0 : 1;
   let dirsProcessed = 0;
 
@@ -225,7 +239,7 @@ async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options:
     const saved = await saveBatchResult(result, batch, branch, dirSummaryCache);
     if (saved) {
       dirsProcessed++;
-      await tryPublishDirectoryProgress(fullName, branch);
+      await tryPublishDirectoryProgress(fullName, branch, runId);
     }
   }
 
@@ -251,10 +265,19 @@ function logDirectoryBatchAgentIfChanged(log: Logger, initialConfig: Summarizati
   }, 'Using updated summarization agent config for directory batch');
 }
 
-async function handleSkippedDirectory(dirPath: string, branch: string, dirSummaryCache: Map<string, string>, fullName: string): Promise<number> {
-  const existing = await db('directory_summaries').where({ path: dirPath, branch }).first();
-  if (existing) dirSummaryCache.set(dirPath, existing.summary);
-  await tryPublishDirectoryProgress(fullName, branch);
+async function handleSkippedDirectory(input: {
+  dirPath: string;
+  branch: string;
+  dirSummaryCache: Map<string, string>;
+  fullName: string;
+  runId?: string;
+}): Promise<number> {
+  const existing = await db('directory_summaries').where({
+    path: input.dirPath,
+    branch: input.branch
+  }).first();
+  if (existing) input.dirSummaryCache.set(input.dirPath, existing.summary);
+  await tryPublishDirectoryProgress(input.fullName, input.branch, input.runId);
   return 1;
 }
 
@@ -267,9 +290,9 @@ async function saveBatchResult(result: DirectoryResult, batch: DirectoryInfo[], 
   return true;
 }
 
-async function tryPublishDirectoryProgress(fullName: string, branch: string): Promise<void> {
-  const progress = await updateDirectoryProgress(fullName, branch);
-  if (progress && shouldPublishDirectoryProgress(progress) && !await isIndexingCancelled(fullName, branch)) {
+async function tryPublishDirectoryProgress(fullName: string, branch: string, runId?: string): Promise<void> {
+  const progress = await updateDirectoryProgress(fullName, branch, runId);
+  if (progress && shouldPublishDirectoryProgress(progress) && !await isIndexingCancelled(fullName, branch, runId)) {
     try { await publishProgress(fullName, branch, progress); } catch { /* best-effort */ }
   }
 }

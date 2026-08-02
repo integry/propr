@@ -23,15 +23,13 @@ import {
   type EventPayload
 } from '@propr/shared';
 import { projectNotificationUpdateBestEffort } from '../services/notificationProjectionService.js';
+import { settlesWithin } from '../services/notificationSchedulerTiming.js';
+import { NotificationProjectionQueue } from './notificationProjectionQueue.js';
 
 const NOTIFICATION_PROJECTION_DEADLINE_MS = 250;
 const NOTIFICATION_PROJECTION_MAX_QUEUE_SIZE = 512;
 const NOTIFICATION_PROJECTION_CONCURRENCY = 2;
-
-interface NotificationProjectionJob {
-  payload: EventPayload;
-  resolve: () => void;
-}
+const NOTIFICATION_PROJECTION_DRAIN_TIMEOUT_MS = 5 * 1000;
 
 export interface EventPublisherOptions {
   now?: () => Date;
@@ -40,6 +38,7 @@ export interface EventPublisherOptions {
   projectionDeadlineMs?: number;
   projectionMaxQueueSize?: number;
   projectionConcurrency?: number;
+  projectionDrainTimeoutMs?: number;
 }
 
 /**
@@ -53,40 +52,46 @@ class EventPublisher {
   private readonly publishOverride?: EventPublisherOptions['publish'];
   private readonly notificationProjector: NonNullable<EventPublisherOptions['projectNotification']>;
   private readonly projectionDeadlineMs: number;
-  private readonly projectionMaxQueueSize: number;
-  private readonly projectionConcurrency: number;
-  private readonly projectionQueue: NotificationProjectionJob[] = [];
-  private readonly projectionDrainWaiters = new Set<() => void>();
-  private activeProjections = 0;
-  private projectionClosing = false;
+  private readonly projectionQueue: NotificationProjectionQueue;
+  private readonly projectionDrainTimeoutMs: number;
 
   constructor(options: EventPublisherOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.publishOverride = options.publish;
     this.notificationProjector = options.projectNotification ?? projectNotificationUpdateBestEffort;
     this.projectionDeadlineMs = options.projectionDeadlineMs ?? NOTIFICATION_PROJECTION_DEADLINE_MS;
-    this.projectionMaxQueueSize = options.projectionMaxQueueSize ?? NOTIFICATION_PROJECTION_MAX_QUEUE_SIZE;
-    this.projectionConcurrency = options.projectionConcurrency ?? NOTIFICATION_PROJECTION_CONCURRENCY;
+    const projectionMaxQueueSize = options.projectionMaxQueueSize ?? NOTIFICATION_PROJECTION_MAX_QUEUE_SIZE;
+    const projectionConcurrency = options.projectionConcurrency ?? NOTIFICATION_PROJECTION_CONCURRENCY;
+    this.projectionDrainTimeoutMs = options.projectionDrainTimeoutMs ?? NOTIFICATION_PROJECTION_DRAIN_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.projectionDeadlineMs) || this.projectionDeadlineMs <= 0) {
       throw new TypeError('projectionDeadlineMs must be a positive safe integer');
     }
-    if (!Number.isSafeInteger(this.projectionMaxQueueSize) || this.projectionMaxQueueSize <= 0) {
+    if (!Number.isSafeInteger(projectionMaxQueueSize) || projectionMaxQueueSize <= 0) {
       throw new TypeError('projectionMaxQueueSize must be a positive safe integer');
     }
-    if (!Number.isSafeInteger(this.projectionConcurrency) || this.projectionConcurrency <= 0) {
+    if (!Number.isSafeInteger(projectionConcurrency) || projectionConcurrency <= 0) {
       throw new TypeError('projectionConcurrency must be a positive safe integer');
     }
+    if (!Number.isSafeInteger(this.projectionDrainTimeoutMs) || this.projectionDrainTimeoutMs <= 0) {
+      throw new TypeError('projectionDrainTimeoutMs must be a positive safe integer');
+    }
+    this.projectionQueue = new NotificationProjectionQueue({
+      projector: this.notificationProjector,
+      maxSize: projectionMaxQueueSize,
+      concurrency: projectionConcurrency,
+      drainTimeoutMs: this.projectionDrainTimeoutMs
+    });
   }
 
   /** Bound publication latency while retaining work in a tracked, bounded queue. */
   private async projectNotification(payload: EventPayload): Promise<void> {
-    const projection = this.enqueueNotificationProjection(payload);
+    const projection = this.projectionQueue.enqueue(payload);
     if (!projection) {
       logger.warn({
         eventType: payload.eventType,
-        queueSize: this.projectionQueue.length,
-        active: this.activeProjections
-      }, this.projectionClosing
+        queueSize: this.projectionQueue.queueSize,
+        active: this.projectionQueue.activeCount
+      }, this.projectionQueue.isClosing
         ? 'Notification projection rejected during publisher shutdown'
         : 'Notification projection queue is full; dropping best-effort projection');
       return;
@@ -105,53 +110,6 @@ class EventPublisher {
         deadlineMs: this.projectionDeadlineMs
       }, 'Notification projection exceeded the publication deadline and continues in background');
     }
-  }
-
-  private enqueueNotificationProjection(payload: EventPayload): Promise<void> | null {
-    if (
-      this.projectionClosing
-      || this.projectionQueue.length + this.activeProjections >= this.projectionMaxQueueSize
-    ) return null;
-
-    const completion = new Promise<void>((resolve) => {
-      this.projectionQueue.push({ payload, resolve });
-    });
-    this.pumpNotificationProjectionQueue();
-    return completion;
-  }
-
-  private pumpNotificationProjectionQueue(): void {
-    while (
-      this.activeProjections < this.projectionConcurrency
-      && this.projectionQueue.length > 0
-    ) {
-      const job = this.projectionQueue.shift()!;
-      this.activeProjections++;
-      void this.notificationProjector(job.payload)
-        .catch((error) => {
-          logger.warn({
-            eventType: job.payload.eventType,
-            error: error instanceof Error ? error.message : String(error)
-          }, 'Notification projection failed');
-        })
-        .finally(() => {
-          this.activeProjections--;
-          job.resolve();
-          this.pumpNotificationProjectionQueue();
-          this.resolveProjectionDrainWaiters();
-        });
-    }
-  }
-
-  private resolveProjectionDrainWaiters(): void {
-    if (this.activeProjections > 0 || this.projectionQueue.length > 0) return;
-    for (const resolve of this.projectionDrainWaiters) resolve();
-    this.projectionDrainWaiters.clear();
-  }
-
-  private async drainNotificationProjections(): Promise<void> {
-    if (this.activeProjections === 0 && this.projectionQueue.length === 0) return;
-    await new Promise<void>((resolve) => this.projectionDrainWaiters.add(resolve));
   }
 
   /**
@@ -317,6 +275,7 @@ class EventPublisher {
       todos: params.todos,
       currentTask: params.currentTask,
       tokenUsage: params.tokenUsage,
+      activityKind: 'progress',
       timestamp: this.now().toISOString()
     };
     await Promise.all([
@@ -334,6 +293,22 @@ class EventPublisher {
       todos: [],
       currentTask: null,
       tokenUsage: null,
+      activityKind: 'process_liveness',
+      timestamp
+    };
+    await this.projectNotification(payload);
+  }
+
+  /** Record observable executor output without emitting an artificial dashboard update. */
+  async projectTaskProgress(taskId: string, timestamp = this.now().toISOString()): Promise<void> {
+    const payload: TaskLiveUpdatePayload = {
+      eventType: TASK_LIVE_UPDATE,
+      taskId,
+      events: [],
+      todos: [],
+      currentTask: null,
+      tokenUsage: null,
+      activityKind: 'progress',
       timestamp
     };
     await this.projectNotification(payload);
@@ -359,10 +334,22 @@ class EventPublisher {
    * Should be called during application shutdown.
    */
   async close(): Promise<void> {
-    this.projectionClosing = true;
-    await this.drainNotificationProjections();
+    const drain = await this.projectionQueue.close();
+    if (!drain.drained) {
+      logger.warn({ ...drain, drainTimeoutMs: this.projectionDrainTimeoutMs },
+        'EventPublisher stopped with unfinished notification projections');
+    }
     if (this.redis) {
-      await this.redis.quit();
+      const redis = this.redis;
+      const quit = redis.quit().catch((error) => {
+        logger.warn({ error: error instanceof Error ? error.message : String(error) },
+          'Failed to close EventPublisher Redis connection');
+      });
+      if (!await settlesWithin(quit, this.projectionDrainTimeoutMs)) {
+        logger.warn({ drainTimeoutMs: this.projectionDrainTimeoutMs },
+          'EventPublisher Redis close timed out; disconnecting');
+        redis.disconnect();
+      }
       this.redis = null;
       this.isInitialized = false;
       logger.debug('EventPublisher Redis connection closed');

@@ -15,6 +15,8 @@ import {
   db as coreDb,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
+  loadMonitoredReposRaw,
+  normalizeSummarizationBranch,
   loadSummarizationRuntimeState
 } from '@propr/core';
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
@@ -29,6 +31,7 @@ interface StatusRoutesDeps {
   getRepositoryIndexingStatus?: () => Promise<ServiceStatus | undefined>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
+  notificationProbeTimeoutMs?: number;
   now?: () => number;
   loadSummarizationRuntimeState?: typeof loadSummarizationRuntimeState;
 }
@@ -60,6 +63,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     getRepositoryIndexingStatus = loadRepositoryIndexingStatus,
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
+    notificationProbeTimeoutMs = 2000,
     now = Date.now,
     loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState
   } = deps;
@@ -208,14 +212,21 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       indexing: 'unknown',
       timestamp: new Date(now()).toISOString()
     };
+    const probeTimedOut = Symbol('notification health probe timed out');
     try {
-      await redisClient.ping();
+      const ping = await withTimeout(redisClient.ping(), notificationProbeTimeoutMs, probeTimedOut);
+      if (ping === probeTimedOut) throw new Error('Redis notification health ping timed out');
       status.redis = 'connected';
-      const daemonHeartbeat = await redisClient.get('system:status:daemon');
-      status.daemon = daemonHeartbeat && now() - parseInt(daemonHeartbeat) < 120000
-        ? 'running'
-        : 'stopped';
-      status.worker = await redisClient.sCard('system:status:workers') > 0 ? 'running' : 'stopped';
+      const [daemonHeartbeat, activeWorkers] = await Promise.all([
+        withTimeout(redisClient.get('system:status:daemon'), notificationProbeTimeoutMs, probeTimedOut),
+        withTimeout(redisClient.sCard('system:status:workers'), notificationProbeTimeoutMs, probeTimedOut)
+      ]);
+      status.daemon = daemonHeartbeat === probeTimedOut
+        ? 'unknown'
+        : daemonHeartbeat && now() - parseInt(daemonHeartbeat) < 120000 ? 'running' : 'stopped';
+      status.worker = activeWorkers === probeTimedOut
+        ? 'unknown'
+        : activeWorkers > 0 ? 'running' : 'stopped';
     } catch {
       status.redis = 'disconnected';
     }
@@ -224,9 +235,17 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       ? 'connected'
       : authMode === 'unknown' ? 'unknown' : 'disconnected';
     const intakeMode = resolveIntakeMode();
-    const routing = await getRoutingState(redisClient);
-    status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
-    status.indexing = await getIndexingStatus(getIndexingQueue, getRepositoryIndexingStatus);
+    const routing = await withTimeout(
+      getRoutingState(redisClient), notificationProbeTimeoutMs, probeTimedOut
+    );
+    status.githubEventIntakeStatus = routing === probeTimedOut
+      ? 'unknown'
+      : resolveIntakeStatus(intakeMode, routing, status.daemon);
+    status.indexing = await withTimeout(
+      getIndexingStatus(getIndexingQueue, getRepositoryIndexingStatus),
+      notificationProbeTimeoutMs,
+      'unknown'
+    );
     return status;
   }
 
@@ -472,12 +491,12 @@ async function buildRegisteredAgentStatus(agent: Agent, healthTimeoutMs: number)
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+async function withTimeout<T, F>(promise: Promise<T>, timeoutMs: number, fallback: F): Promise<T | F> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       promise,
-      new Promise<T>(resolve => {
+      new Promise<F>(resolve => {
         timeout = setTimeout(() => resolve(fallback), timeoutMs);
       })
     ]);
@@ -498,8 +517,22 @@ function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
 async function loadRepositoryIndexingStatus(): Promise<ServiceStatus | undefined> {
   try {
     if (!await coreDb.schema.hasTable('repositories')) return undefined;
+    const monitored = (await loadMonitoredReposRaw()).filter((repository) =>
+      repository.enabled && typeof repository.name === 'string' && repository.name.includes('/')
+    );
+    if (monitored.length === 0) return undefined;
     const rows = await coreDb('repositories')
-      .distinct('indexing_status') as Array<{ indexing_status?: string }>;
+      .distinct('indexing_status')
+      .where((query) => {
+        for (const repository of monitored) {
+          query.orWhere((candidate) => {
+            candidate.where({
+              full_name: repository.name,
+              branch: normalizeSummarizationBranch(repository.baseBranch)
+            });
+          });
+        }
+      }) as Array<{ indexing_status?: string }>;
     const statuses = new Set(rows.map((row) => row.indexing_status));
     if (statuses.has('failed')) return 'failed';
     if (statuses.has('indexing')) return 'active';

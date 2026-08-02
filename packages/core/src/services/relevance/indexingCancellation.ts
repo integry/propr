@@ -1,14 +1,75 @@
 import { Redis } from 'ioredis';
 import { type IndexingPhase, type IndexingUpdatePayload } from '@propr/shared';
 import { getEventPublisher } from '../../utils/eventPublisher.js';
+import type { IndexingRunIdentity } from './summaryMinerQueries.js';
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
-
 const CANCELLATION_KEY_PREFIX = 'indexing:cancel:';
 const PROGRESS_KEY_PREFIX = 'indexing:progress:';
-const CANCELLATION_TTL_SECONDS = 3600; // 1 hour TTL
-const PROGRESS_TTL_SECONDS = 3600; // 1 hour TTL
+const CANCELLATION_TTL_SECONDS = 3600;
+const PROGRESS_TTL_SECONDS = 3600;
+
+const CLEAR_IF_RUN_MATCHES_SCRIPT = `
+  local value = redis.call('GET', KEYS[1])
+  if not value then return 0 end
+  if ARGV[1] == '' or value == ARGV[1] or value == '*' then
+    return redis.call('DEL', KEYS[1])
+  end
+  return 0
+`;
+
+const CLEAR_PROGRESS_IF_RUN_MATCHES_SCRIPT = `
+  local value = redis.call('GET', KEYS[1])
+  if not value then return 0 end
+  if ARGV[1] == '' then return redis.call('DEL', KEYS[1]) end
+  local progress = cjson.decode(value)
+  if (progress.runId or '') == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+  return 0
+`;
+
+const INIT_PROGRESS_SCRIPT = `
+  local existingRaw = redis.call('GET', KEYS[1])
+  if existingRaw then
+    local existing = cjson.decode(existingRaw)
+    local existingRun = existing.runId or ''
+    local incomingRun = ARGV[2]
+    if existingRun == incomingRun then return existingRaw end
+    if existingRun ~= '' and incomingRun == '' then return existingRaw end
+    local existingTransition = existing.transitionAt or ''
+    if existingRun ~= '' and existingTransition ~= '' and existingTransition >= ARGV[3] then
+      return existingRaw
+    end
+  end
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[4])
+  return ARGV[1]
+`;
+
+const MUTATE_PROGRESS_SCRIPT = `
+  local raw = redis.call('GET', KEYS[1])
+  if not raw then return nil end
+  local progress = cjson.decode(raw)
+  local expectedRun = ARGV[1]
+  if expectedRun ~= '' and (progress.runId or '') ~= expectedRun then return nil end
+  local action = ARGV[2]
+  if action == 'batch' then
+    progress.processedFiles = progress.processedFiles + tonumber(ARGV[3])
+    if ARGV[4] == '1' then progress.completedBatches = progress.completedBatches + 1 end
+    progress.inputTokens = progress.inputTokens + tonumber(ARGV[5])
+    progress.outputTokens = progress.outputTokens + tonumber(ARGV[6])
+  elseif action == 'total-batches' then
+    progress.totalBatches = tonumber(ARGV[3])
+  elseif action == 'start-directories' then
+    progress.phase = 'directories'
+    progress.totalDirectories = tonumber(ARGV[3])
+    progress.processedDirectories = 0
+  elseif action == 'directory' then
+    progress.processedDirectories = progress.processedDirectories + 1
+  end
+  local updated = cjson.encode(progress)
+  redis.call('SET', KEYS[1], updated, 'EX', ARGV[7])
+  return updated
+`;
 
 export interface IndexingProgress {
   totalFiles: number;
@@ -18,10 +79,11 @@ export interface IndexingProgress {
   inputTokens: number;
   outputTokens: number;
   startedAt: number;
-  // Directory aggregation phase
   totalDirectories: number;
   processedDirectories: number;
   phase: 'files' | 'directories' | 'completed';
+  runId?: string;
+  transitionAt?: string;
 }
 
 let redisClient: Redis | null = null;
@@ -42,40 +104,45 @@ function getCancellationKey(repository: string, branch = 'HEAD'): string {
   return `${CANCELLATION_KEY_PREFIX}${repository}:${branch}`;
 }
 
-/**
- * Request cancellation of an indexing job for a repository.
- * The worker will check this flag and stop processing.
- */
-export async function requestIndexingCancellation(repository: string, branch = 'HEAD'): Promise<void> {
-  const redis = getRedis();
-  const key = getCancellationKey(repository, branch);
-  await redis.set(key, '1', 'EX', CANCELLATION_TTL_SECONDS);
+function getProgressKey(repository: string, branch = 'HEAD'): string {
+  return `${PROGRESS_KEY_PREFIX}${repository}:${branch}`;
 }
 
-/**
- * Check if indexing has been cancelled for a repository.
- * Called by the worker during processing.
- */
-export async function isIndexingCancelled(repository: string, branch = 'HEAD'): Promise<boolean> {
-  const redis = getRedis();
-  const key = getCancellationKey(repository, branch);
-  const value = await redis.get(key);
-  return value === '1';
+export async function requestIndexingCancellation(
+  repository: string,
+  branch = 'HEAD',
+  runId?: string
+): Promise<void> {
+  await getRedis().set(
+    getCancellationKey(repository, branch),
+    runId ?? '*',
+    'EX',
+    CANCELLATION_TTL_SECONDS
+  );
 }
 
-/**
- * Clear the cancellation flag for a repository.
- * Called when indexing completes (success, failure, or cancellation).
- */
-export async function clearIndexingCancellation(repository: string, branch = 'HEAD'): Promise<void> {
-  const redis = getRedis();
-  const key = getCancellationKey(repository, branch);
-  await redis.del(key);
+export async function isIndexingCancelled(
+  repository: string,
+  branch = 'HEAD',
+  runId?: string
+): Promise<boolean> {
+  const value = await getRedis().get(getCancellationKey(repository, branch));
+  return value !== null && (runId === undefined || value === '*' || value === runId);
 }
 
-/**
- * Custom error thrown when indexing is cancelled by user.
- */
+export async function clearIndexingCancellation(
+  repository: string,
+  branch = 'HEAD',
+  runId?: string
+): Promise<void> {
+  await getRedis().eval(
+    CLEAR_IF_RUN_MATCHES_SCRIPT,
+    1,
+    getCancellationKey(repository, branch),
+    runId ?? ''
+  );
+}
+
 export class IndexingCancelledError extends Error {
   constructor(repository: string) {
     super(`Indexing cancelled by user for repository: ${repository}`);
@@ -83,18 +150,12 @@ export class IndexingCancelledError extends Error {
   }
 }
 
-// --- Progress Tracking ---
-
-function getProgressKey(repository: string, branch = 'HEAD'): string {
-  return `${PROGRESS_KEY_PREFIX}${repository}:${branch}`;
-}
-
-/**
- * Initialize progress tracking for a repository.
- */
-export async function initIndexingProgress(repository: string, totalFiles: number, branch = 'HEAD'): Promise<void> {
-  const redis = getRedis();
-  const key = getProgressKey(repository, branch);
+export async function initIndexingProgress(
+  repository: string,
+  totalFiles: number,
+  branch = 'HEAD',
+  indexingRun?: IndexingRunIdentity
+): Promise<void> {
   const progress: IndexingProgress = {
     totalFiles,
     processedFiles: 0,
@@ -106,33 +167,55 @@ export async function initIndexingProgress(repository: string, totalFiles: numbe
     totalDirectories: 0,
     processedDirectories: 0,
     phase: 'files',
+    ...(indexingRun ?? {})
   };
-  await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
-
-  // Publish initial progress so clients see totalFiles and phase immediately.
-  // Best-effort: don't let a pub/sub failure abort indexing.
-  try {
-    await publishProgress(repository, branch);
-  } catch {
-    // Swallow — progress publishing is non-critical
-  }
+  const stored = await getRedis().eval(
+    INIT_PROGRESS_SCRIPT,
+    1,
+    getProgressKey(repository, branch),
+    JSON.stringify(progress),
+    indexingRun?.runId ?? '',
+    indexingRun?.transitionAt ?? '',
+    String(PROGRESS_TTL_SECONDS)
+  ) as string;
+  const current = JSON.parse(stored) as IndexingProgress;
+  if (indexingRun && current.runId !== indexingRun.runId) return;
+  try { await publishProgress(repository, branch, current); } catch { /* best-effort */ }
 }
 
-/**
- * Ensure a progress record exists before entering directory-only work.
- * If a record already exists from file processing, keep it intact.
- */
-export async function ensureIndexingProgress(repository: string, branch = 'HEAD'): Promise<void> {
-  const existing = await getIndexingProgress(repository, branch);
+export async function ensureIndexingProgress(
+  repository: string,
+  branch = 'HEAD',
+  indexingRun?: IndexingRunIdentity
+): Promise<void> {
+  const existing = await getIndexingProgress(repository, branch, indexingRun?.runId);
   if (existing) return;
-  await initIndexingProgress(repository, 0, branch);
+  await initIndexingProgress(repository, 0, branch, indexingRun);
 }
 
-/**
- * Update progress after processing a batch.
- * Returns the updated progress so callers can pass it to publishProgress
- * without an extra Redis read.
- */
+async function mutateProgress(input: {
+  repository: string;
+  branch: string;
+  runId?: string;
+  action: 'batch' | 'total-batches' | 'start-directories' | 'directory';
+  values?: [number?, boolean?, number?, number?];
+}): Promise<IndexingProgress | null> {
+  const values = input.values ?? [];
+  const result = await getRedis().eval(
+    MUTATE_PROGRESS_SCRIPT,
+    1,
+    getProgressKey(input.repository, input.branch),
+    input.runId ?? '',
+    input.action,
+    String(values[0] ?? 0),
+    values[1] ? '1' : '0',
+    String(values[2] ?? 0),
+    String(values[3] ?? 0),
+    String(PROGRESS_TTL_SECONDS)
+  ) as string | null;
+  return result ? JSON.parse(result) as IndexingProgress : null;
+}
+
 export async function updateIndexingProgress(
   repository: string,
   update: {
@@ -141,109 +224,83 @@ export async function updateIndexingProgress(
     inputTokens: number;
     outputTokens: number;
   },
-  branch = 'HEAD'
+  branch = 'HEAD',
+  runId?: string
 ): Promise<IndexingProgress | null> {
-  const redis = getRedis();
-  const key = getProgressKey(repository, branch);
-  const existing = await redis.get(key);
-  if (!existing) return null;
-
-  const progress: IndexingProgress = JSON.parse(existing);
-  progress.processedFiles += update.filesProcessed;
-  if (update.batchCompleted) {
-    progress.completedBatches++;
-  }
-  progress.inputTokens += update.inputTokens;
-  progress.outputTokens += update.outputTokens;
-
-  await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
-  return progress;
+  return mutateProgress({
+    repository,
+    branch,
+    runId,
+    action: 'batch',
+    values: [update.filesProcessed, update.batchCompleted, update.inputTokens, update.outputTokens]
+  });
 }
 
-/**
- * Set the total number of batches (known after first pass through files).
- */
-export async function setTotalBatches(repository: string, totalBatches: number, branch = 'HEAD'): Promise<void> {
-  const redis = getRedis();
-  const key = getProgressKey(repository, branch);
-  const existing = await redis.get(key);
-  if (!existing) return;
-
-  const progress: IndexingProgress = JSON.parse(existing);
-  progress.totalBatches = totalBatches;
-  await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
+export async function setTotalBatches(
+  repository: string,
+  totalBatches: number,
+  branch = 'HEAD',
+  runId?: string
+): Promise<void> {
+  await mutateProgress({ repository, branch, runId, action: 'total-batches', values: [totalBatches] });
 }
 
-/**
- * Start the directory aggregation phase.
- */
-export async function startDirectoryPhase(repository: string, branch: string, totalDirectories: number): Promise<void> {
-  const redis = getRedis();
-  const key = getProgressKey(repository, branch);
-  const existing = await redis.get(key);
-  if (!existing) return;
-
-  const progress: IndexingProgress = JSON.parse(existing);
-  progress.phase = 'directories';
-  progress.totalDirectories = totalDirectories;
-  progress.processedDirectories = 0;
-  await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
-
-  // Publish phase transition so clients see directory phase start immediately.
-  // Best-effort: don't let a pub/sub failure abort indexing.
-  try {
-    await publishProgress(repository, branch);
-  } catch {
-    // Swallow — progress publishing is non-critical
-  }
+export async function startDirectoryPhase(
+  repository: string,
+  branch: string,
+  totalDirectories: number,
+  runId?: string
+): Promise<void> {
+  const progress = await mutateProgress({
+    repository,
+    branch,
+    runId,
+    action: 'start-directories',
+    values: [totalDirectories]
+  });
+  if (!progress) return;
+  try { await publishProgress(repository, branch, progress); } catch { /* best-effort */ }
 }
 
-/**
- * Update progress after processing a directory.
- * Returns the updated progress so callers can pass it to publishProgress
- * without an extra Redis read.
- */
-export async function updateDirectoryProgress(repository: string, branch = 'HEAD'): Promise<IndexingProgress | null> {
-  const redis = getRedis();
-  const key = getProgressKey(repository, branch);
-  const existing = await redis.get(key);
-  if (!existing) return null;
-
-  const progress: IndexingProgress = JSON.parse(existing);
-  progress.processedDirectories++;
-  await redis.set(key, JSON.stringify(progress), 'EX', PROGRESS_TTL_SECONDS);
-  return progress;
+export async function updateDirectoryProgress(
+  repository: string,
+  branch = 'HEAD',
+  runId?: string
+): Promise<IndexingProgress | null> {
+  return mutateProgress({ repository, branch, runId, action: 'directory' });
 }
 
-/**
- * Get current indexing progress for a repository.
- */
-export async function getIndexingProgress(repository: string, branch = 'HEAD'): Promise<IndexingProgress | null> {
-  const redis = getRedis();
-  const key = getProgressKey(repository, branch);
-  const data = await redis.get(key);
+export async function getIndexingProgress(
+  repository: string,
+  branch = 'HEAD',
+  runId?: string
+): Promise<IndexingProgress | null> {
+  const data = await getRedis().get(getProgressKey(repository, branch));
   if (!data) return null;
-  return JSON.parse(data);
+  const progress = JSON.parse(data) as IndexingProgress;
+  return runId !== undefined && progress.runId !== runId ? null : progress;
 }
 
-/**
- * Clear progress tracking for a repository.
- */
-export async function clearIndexingProgress(repository: string, branch = 'HEAD'): Promise<void> {
-  const redis = getRedis();
-  const key = getProgressKey(repository, branch);
-  await redis.del(key);
+export async function clearIndexingProgress(
+  repository: string,
+  branch = 'HEAD',
+  runId?: string
+): Promise<void> {
+  await getRedis().eval(
+    CLEAR_PROGRESS_IF_RUN_MATCHES_SCRIPT,
+    1,
+    getProgressKey(repository, branch),
+    runId ?? ''
+  );
 }
 
-/**
- * Publish indexing progress to WebSocket clients via Redis pub/sub.
- * Accepts progress data directly to avoid a redundant Redis read on the hot path.
- * Falls back to reading from Redis if no progress data is provided (e.g. for phase transitions).
- */
-export async function publishProgress(repository: string, branch: string, progressData?: IndexingProgress): Promise<void> {
+export async function publishProgress(
+  repository: string,
+  branch: string,
+  progressData?: IndexingProgress
+): Promise<void> {
   const progress = progressData ?? await getIndexingProgress(repository, branch);
   if (!progress) return;
-
   const totalItems = progress.phase === 'directories' ? progress.totalDirectories : progress.totalFiles;
   const processedItems = progress.phase === 'directories' ? progress.processedDirectories : progress.processedFiles;
   const percentComplete = totalItems > 0 ? Math.round((processedItems / totalItems) * 100) : 0;
@@ -257,17 +314,16 @@ export async function publishProgress(repository: string, branch: string, progre
     processedFiles: progress.processedFiles,
     totalDirectories: progress.totalDirectories,
     processedDirectories: progress.processedDirectories,
+    transitionAt: progress.transitionAt,
+    runId: progress.runId
   });
 }
 
-/**
- * Publish an indexing status change (e.g., indexing, completed, failed, idle) to WebSocket clients.
- */
 export async function publishIndexingStatus(
   repository: string,
   branch: string,
   phase: IndexingPhase,
-  transition?: { transitionAt: string; runId: string }
+  transition?: IndexingRunIdentity
 ): Promise<void> {
   const payload: Pick<
     IndexingUpdatePayload,
@@ -276,12 +332,11 @@ export async function publishIndexingStatus(
     repository,
     branch,
     phase,
-    ...(transition === undefined ? {} : transition),
+    ...(transition === undefined ? {} : {
+      runId: transition.runId,
+      transitionAt: transition.transitionAt
+    })
   };
-
-  if (phase === 'completed') {
-    payload.progress = 100;
-  }
-
+  if (phase === 'completed') payload.progress = 100;
   await getEventPublisher().publishIndexingUpdate(payload);
 }

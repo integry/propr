@@ -12,6 +12,12 @@ export {
   getRepositorySummaries,
   clearRepositorySummaries
 } from './summaryMiner.js';
+export { createIndexingRunIdentity, updateRepositoryStatus } from './summaryMinerQueries.js';
+export type {
+  IndexingRunIdentity,
+  RepositoryStatusTransition,
+  UpdateRepositoryStatusOptions
+} from './summaryMinerQueries.js';
 export {
   scanProcessableGitFiles,
   shouldProcessFilePath,

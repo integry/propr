@@ -144,13 +144,13 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       // Emit idle immediately for both removed queued jobs and cancellation requests.
       // Active workers may still emit a later terminal event after they observe the
       // cancellation flag, but the UI should reflect the stop request right away.
-      const branchesToPublish = new Set([
-        ...result.cancelledActiveBranches,
-        ...result.removedQueuedBranches
-      ]);
-      for (const queuedBranch of branchesToPublish) {
+      const transitionsToPublish = [
+        ...result.cancelledActiveRuns,
+        ...result.removedQueuedRuns
+      ];
+      for (const transition of transitionsToPublish) {
         try {
-          await publishIndexingStatus(repository, queuedBranch, 'idle');
+          await publishIndexingStatus(repository, transition.branch, 'idle', transition);
         } catch {
           // Best-effort — don't fail the stop request if publishing fails
         }

@@ -1,6 +1,9 @@
 import type { Knex } from 'knex';
 import type { TaskProjectionContext } from './notificationProjectionStore.js';
 
+type ProjectionDatabase = Knex | Knex.Transaction;
+const CACHE_TTL_MS = 60_000;
+
 function nonBlankString(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
@@ -12,30 +15,23 @@ function uniqueStrings(values: readonly unknown[]): string[] {
     }))];
 }
 
-function parseRecordJson(value: unknown): Record<string, unknown> {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        return value as Record<string, unknown>;
-    }
-    if (typeof value !== 'string') return {};
-    try {
-        const parsed: unknown = JSON.parse(value);
-        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? parsed as Record<string, unknown>
-            : {};
-    } catch {
-        return {};
-    }
+interface CachedValue<T> {
+    expiresAt: number;
+    value: T;
 }
 
 export class NotificationProjectionRecipients {
-    constructor(private readonly database: Knex) {}
+    private readonly schemaCapabilities = new Map<string, Promise<boolean>>();
+    private knownRecipientsCache?: CachedValue<string[]>;
+
+    constructor(
+        private readonly database: Knex,
+        private readonly now: () => string | number | Date = () => new Date()
+    ) {}
 
     async getTaskRecipients(context: TaskProjectionContext): Promise<string[]> {
-        const recipients: unknown[] = [...(context.ownerUserIds ?? [])];
-        if (
-            await this.database.schema.hasTable('plan_issues')
-            && await this.database.schema.hasTable('task_drafts')
-        ) {
+        const candidates: unknown[] = [...(context.ownerUserIds ?? [])];
+        if (await this.hasTable('plan_issues') && await this.hasTable('task_drafts')) {
             const rows = await this.database('plan_issues as issue')
                 .join('task_drafts as draft', 'draft.draft_id', 'issue.draft_id')
                 .distinct('draft.user_id')
@@ -52,34 +48,40 @@ export class NotificationProjectionRecipients {
                             .where('issue.pr_number', context.prNumber!));
                     }
                 }) as Array<{ user_id: string }>;
-            recipients.push(...rows.map((row) => row.user_id));
+            candidates.push(...rows.map((row) => row.user_id));
         }
-        recipients.push(...await this.getRepositoryRecipients(context.repository));
-        return uniqueStrings(recipients);
+        candidates.push(...await this.getRepositoryCandidateRecipients(context.repository));
+        return this.filterCurrentlyEntitled(context.repository, uniqueStrings(candidates));
     }
 
     async getRepositoryRecipients(repository: string): Promise<string[]> {
-        const recipients: unknown[] = [];
-        if (await this.database.schema.hasTable('task_drafts')) {
-            const rows = await this.database('task_drafts')
-                .distinct('user_id')
-                .where({ repository }) as Array<{ user_id: string }>;
-            recipients.push(...rows.map((row) => row.user_id));
+        const candidates = await this.getRepositoryCandidateRecipients(repository);
+        return this.filterCurrentlyEntitled(repository, candidates);
+    }
+
+    async filterCurrentlyEntitled(
+        repository: string,
+        candidates: readonly string[],
+        database: ProjectionDatabase = this.database
+    ): Promise<string[]> {
+        const userIds = uniqueStrings(candidates);
+        if (userIds.length === 0
+            || !await this.hasTable('notification_repository_entitlements', database)) {
+            return [];
         }
-        if (await this.database.schema.hasTable('repo_todos')) {
-            const rows = await this.database('repo_todos')
-                .distinct('user_id')
-                .where({ repository }) as Array<{ user_id: string }>;
-            recipients.push(...rows.map((row) => row.user_id));
-        }
-        // Category/channel preferences only filter an already eligible recipient;
-        // they are installation-wide and must never establish repository access.
-        recipients.push(...await this.getRepositoryPreferenceRecipients(repository));
-        return uniqueStrings(recipients);
+        const rows = await database('notification_repository_entitlements')
+            .select('user_id')
+            .where({ repository })
+            .whereIn('user_id', userIds)
+            .where('expires_at', '>', new Date(this.now()).toISOString()) as Array<{ user_id: string }>;
+        return uniqueStrings(rows.map((row) => row.user_id));
     }
 
     async getKnownRecipients(): Promise<string[]> {
-        const recipients: unknown[] = [];
+        const nowMs = new Date(this.now()).getTime();
+        if (this.knownRecipientsCache && this.knownRecipientsCache.expiresAt > nowMs) {
+            return [...this.knownRecipientsCache.value];
+        }
         const tables = [
             ['task_drafts', 'user_id'],
             ['notification_preferences', 'user_id'],
@@ -88,37 +90,72 @@ export class NotificationProjectionRecipients {
             ['push_subscriptions', 'user_id'],
             ['notification_user_states', 'user_id']
         ] as const;
-        for (const [table, column] of tables) {
-            if (!await this.database.schema.hasTable(table)) continue;
+        const scans = tables.map(async ([table, column]) => {
+            if (!await this.hasTable(table)) return [];
             const rows = await this.database(table).distinct(column) as Array<Record<string, unknown>>;
-            recipients.push(...rows.map((row) => row[column]));
-        }
-        if (await this.database.schema.hasTable('system_configs')) {
-            const rows = await this.database('system_configs')
-                .select('key')
-                .whereLike('key', 'user_repo_prefs_%') as Array<{ key: string }>;
-            recipients.push(...rows
-                .filter((row) => row.key.startsWith('user_repo_prefs_'))
-                .map((row) => row.key.slice('user_repo_prefs_'.length)));
-        }
-        return uniqueStrings(recipients);
+            return rows.map((row) => row[column]);
+        });
+        const entitlementScan = this.hasTable('notification_repository_entitlements').then(async (present) => {
+            if (!present) return [];
+            const rows = await this.database('notification_repository_entitlements')
+                .distinct('user_id')
+                .where('expires_at', '>', new Date(this.now()).toISOString()) as Array<{ user_id: string }>;
+            return rows.map((row) => row.user_id);
+        });
+        const recipients = uniqueStrings((await Promise.all([...scans, entitlementScan])).flat());
+        this.knownRecipientsCache = { value: recipients, expiresAt: nowMs + CACHE_TTL_MS };
+        return [...recipients];
     }
 
-    private async getRepositoryPreferenceRecipients(repository: string): Promise<string[]> {
-        if (!await this.database.schema.hasTable('system_configs')) return [];
-        const rows = await this.database('system_configs')
-            .select('key', 'value')
-            .whereLike('key', 'user_repo_prefs_%') as Array<{ key: string; value: unknown }>;
-        return uniqueStrings(rows.flatMap((row) => {
-            if (!row.key.startsWith('user_repo_prefs_')) return [];
-            const repositoryPreference = parseRecordJson(row.value)[repository];
-            if (
-                typeof repositoryPreference !== 'object'
-                || repositoryPreference === null
-                || Array.isArray(repositoryPreference)
-                || (repositoryPreference as Record<string, unknown>).hidden === true
-            ) return [];
-            return [row.key.slice('user_repo_prefs_'.length)];
-        }));
+    private async getRepositoryCandidateRecipients(repository: string): Promise<string[]> {
+        const candidates: unknown[] = [];
+        const historicalScans = [
+            ['task_drafts', 'user_id'],
+            ['repo_todos', 'user_id']
+        ] as const;
+        for (const [table, column] of historicalScans) {
+            if (!await this.hasTable(table)) continue;
+            const rows = await this.database(table).distinct(column).where({ repository }) as Array<Record<string, unknown>>;
+            candidates.push(...rows.map((row) => row[column]));
+        }
+        if (await this.hasTable('notification_repository_subscriptions')) {
+            const rows = await this.database('notification_repository_subscriptions')
+                .select('user_id')
+                .where({ repository, hidden: false }) as Array<{ user_id: string }>;
+            candidates.push(...rows.map((row) => row.user_id));
+        }
+        return uniqueStrings(candidates);
+    }
+
+    private async hasTable(
+        table: string,
+        database: ProjectionDatabase = this.database
+    ): Promise<boolean> {
+        let capability = this.schemaCapabilities.get(table);
+        if (!capability) {
+            // Use the caller's transaction for the first check when one is
+            // already open, then reuse the stable positive capability across
+            // later projections instead of querying SQLite for every event.
+            // Knex returns a re-executable thenable here, so adopt it into a
+            // native Promise before caching; otherwise a later await could try
+            // to run the schema query on an already-completed transaction.
+            capability = Promise.resolve().then(() => database.schema.hasTable(table));
+            this.schemaCapabilities.set(table, capability);
+        }
+        try {
+            const present = await capability;
+            // A negative result can become stale when migrations finish during
+            // process startup. Cache stable positive capabilities, but retry a
+            // missing table on the next projection.
+            if (!present && this.schemaCapabilities.get(table) === capability) {
+                this.schemaCapabilities.delete(table);
+            }
+            return present;
+        } catch (error) {
+            if (this.schemaCapabilities.get(table) === capability) {
+                this.schemaCapabilities.delete(table);
+            }
+            throw error;
+        }
     }
 }

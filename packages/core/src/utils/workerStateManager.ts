@@ -272,12 +272,17 @@ export class WorkerStateManager {
             const durablePrNumber = typeof state.issueRef.pullRequestNumber === 'number'
                 ? state.issueRef.pullRequestNumber
                 : typeof state.issueRef.prNumber === 'number' ? state.issueRef.prNumber : undefined;
+            const taskUpdate: Record<string, unknown> = {
+                initial_job_data: JSON.stringify(initialJobData),
+                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                issue_number: state.issueRef.number
+            };
+            if ('pullRequestNumber' in issueRefPatch || 'prNumber' in issueRefPatch) {
+                taskUpdate.pr_number = durablePrNumber ?? null;
+            }
             await db('tasks')
                 .where({ task_id: taskId })
-                .update({
-                    initial_job_data: JSON.stringify(initialJobData),
-                    ...(durablePrNumber === undefined ? {} : { pr_number: durablePrNumber })
-                });
+                .update(taskUpdate);
             const historyRow = await db('task_history')
                 .select('history_id')
                 .where({ task_id: taskId, state: state.state, timestamp: transitionAt })

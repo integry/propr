@@ -157,7 +157,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   await db('task_drafts').where({ draft_id: draftId }).update({
     plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
     generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
-    name: truncateToSentences(draft.initial_prompt), updated_at: reviewTransitionAt
+    name: truncateToSentences(draft.initial_prompt), review_transition_at: reviewTransitionAt,
+    updated_at: reviewTransitionAt
   });
 
   // Emit final completion event so the UI can transition without polling

@@ -176,13 +176,15 @@ export class NotificationSystemProjection {
             database,
             now: this.now
         });
-        this.store = new NotificationProjectionStore(database);
+        this.store = new NotificationProjectionStore(database, this.now);
     }
 
     async projectSnapshot(
         snapshot: SystemStatusSnapshot,
-        recipients: readonly NotificationRecipient[] = []
+        recipients: readonly NotificationRecipient[] = [],
+        shouldContinue: () => boolean = () => true
     ): Promise<void> {
+        if (!shouldContinue()) return;
         const timestamp = normalizeISO8601Timestamp(
             typeof snapshot.timestamp === 'string' ? snapshot.timestamp : this.now()
         );
@@ -191,6 +193,7 @@ export class NotificationSystemProjection {
         const knownRecipients = components.some((component) => component.healthy === false)
             ? await this.store.getKnownRecipients()
             : [];
+        if (!shouldContinue()) return;
         const requestedUserIds = new Set(recipients.map((recipient) =>
             typeof recipient === 'string' ? recipient : recipient.userId
         ));
@@ -200,12 +203,14 @@ export class NotificationSystemProjection {
         ];
         await this.database.transaction(async (transaction) => {
             for (const component of components) {
+                if (!shouldContinue()) throw new Error('Notification system projection lease was lost');
                 if (component.healthy === null) {
                     await this.store.updateUnknownSystemObservation({
                         component: component.component,
                         status: component.status,
                         timestamp
                     }, transaction);
+                    if (!shouldContinue()) throw new Error('Notification system projection lease was lost');
                     continue;
                 }
                 const transition = await this.store.updateSystemTransition({
@@ -213,6 +218,7 @@ export class NotificationSystemProjection {
                     healthy: component.healthy!,
                     timestamp
                 }, transaction);
+                if (!shouldContinue()) throw new Error('Notification system projection lease was lost');
                 if (transition.healthy) continue;
                 // Reassign on every confirmed unhealthy observation. Event insertion
                 // is idempotent, while newly eligible users join the active episode.
@@ -235,6 +241,9 @@ export class NotificationSystemProjection {
                     occurredAt: transition.transitionAt,
                     recipients: requestedRecipients
                 });
+                if (!shouldContinue()) {
+                    throw new Error('Notification system projection lease was lost');
+                }
             }
         });
     }

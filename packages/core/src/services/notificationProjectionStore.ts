@@ -16,7 +16,7 @@ export interface DraftProjectionContext {
     repository: string;
     userId: string;
     status?: string;
-    updatedAt?: ISO8601Timestamp;
+    reviewTransitionAt?: ISO8601Timestamp;
 }
 
 export interface TaskProjectionContext {
@@ -50,6 +50,8 @@ export interface SourceActivityRow {
     last_activity_at: string;
     completed_at: string | null;
     metadata_json: string | null;
+    process_heartbeat_at: string | null;
+    stalled_notified_at: string | null;
 }
 
 export interface SystemTransition {
@@ -161,29 +163,32 @@ function indexingActivityKey(
 export class NotificationProjectionStore {
     private readonly recipients: NotificationProjectionRecipients;
 
-    constructor(private readonly database: Knex) {
-        this.recipients = new NotificationProjectionRecipients(database);
+    constructor(
+        private readonly database: Knex,
+        now: () => string | number | Date = () => new Date()
+    ) {
+        this.recipients = new NotificationProjectionRecipients(database, now);
     }
 
     async getDraftContext(draftId: string): Promise<DraftProjectionContext | null> {
         const row = await this.database('task_drafts')
-            .select('draft_id', 'repository', 'user_id', 'status', 'updated_at')
+            .select('draft_id', 'repository', 'user_id', 'status', 'review_transition_at')
             .where({ draft_id: draftId })
             .first() as {
                 draft_id: string;
                 repository: string;
                 user_id: string;
                 status?: string;
-                updated_at?: unknown;
+                review_transition_at?: unknown;
             } | undefined;
-        const updatedAt = normalizedTimestamp(row?.updated_at);
+        const reviewTransitionAt = normalizedTimestamp(row?.review_transition_at);
         return row
             ? {
                 draftId: row.draft_id,
                 repository: row.repository,
                 userId: row.user_id,
                 ...(typeof row.status === 'string' ? { status: row.status } : {}),
-                ...(updatedAt === undefined ? {} : { updatedAt })
+                ...(reviewTransitionAt === undefined ? {} : { reviewTransitionAt })
             }
             : null;
     }
@@ -338,7 +343,7 @@ export class NotificationProjectionStore {
         // A retry after a newer run began can still recover its previous durable
         // activity identity. This never consults generic repositories.updated_at.
         if (isTerminalActivity(status)) {
-            const previous = await this.database<SourceActivityRow>('notification_source_activity')
+            const previousRows = await this.database<SourceActivityRow>('notification_source_activity')
                 .select('last_activity_at', 'metadata_json')
                 .where({
                     activity_type: 'indexing',
@@ -346,8 +351,9 @@ export class NotificationProjectionStore {
                     branch: branch ?? null,
                     status
                 })
-                .orderBy('last_activity_at', 'desc')
-                .first();
+                .orderBy('last_activity_at', 'desc');
+            const previous = previousRows.find((candidate) => explicitRunId === undefined
+                || nonBlankString(parseRecordJson(candidate.metadata_json).runId) === explicitRunId);
             const previousMetadata = parseRecordJson(previous?.metadata_json);
             const previousTimestamp = normalizedStoredTimestamp(
                 previousMetadata.transitionAt ?? previous?.last_activity_at,
@@ -363,8 +369,13 @@ export class NotificationProjectionStore {
         }
 
         return {
-            timestamp: preferredTimestamp ?? (isTerminalActivity(status) ? durableTimestamp ?? publishedAt : publishedAt),
-            ...(explicitRunId ?? durableRunId ? { runId: (explicitRunId ?? durableRunId)! } : {})
+            timestamp: preferredTimestamp ?? (isTerminalActivity(status)
+                && (explicitRunId === undefined || explicitRunId === durableRunId)
+                ? durableTimestamp ?? publishedAt
+                : publishedAt),
+            ...(explicitRunId ?? (!isTerminalActivity(status) ? durableRunId : undefined)
+                ? { runId: (explicitRunId ?? durableRunId)! }
+                : {})
         };
     }
 
@@ -378,6 +389,14 @@ export class NotificationProjectionStore {
 
     async getKnownRecipients(): Promise<string[]> {
         return this.recipients.getKnownRecipients();
+    }
+
+    async filterCurrentlyEntitled(
+        repository: string,
+        candidates: readonly string[],
+        database: ProjectionDatabase = this.database
+    ): Promise<string[]> {
+        return this.recipients.filterCurrentlyEntitled(repository, candidates, database);
     }
 
     // eslint-disable-next-line complexity -- all ordering decisions must remain inside the atomic checkpoint write
@@ -425,6 +444,8 @@ export class NotificationProjectionStore {
             last_activity_at: lastActivityAt,
             completed_at: isTerminalActivity(input.status) ? lastActivityAt : null,
             metadata_json: JSON.stringify(metadata),
+            process_heartbeat_at: lastActivityAt,
+            stalled_notified_at: null,
             created_at: input.transition.timestamp,
             updated_at: lastActivityAt
         };
@@ -447,7 +468,9 @@ export class NotificationProjectionStore {
                 status: row.status,
                 last_activity_at: row.last_activity_at,
                 completed_at: row.completed_at,
-                metadata_json: row.metadata_json
+                metadata_json: row.metadata_json,
+                process_heartbeat_at: row.process_heartbeat_at,
+                stalled_notified_at: null
             });
         return 'applied';
     }
@@ -455,14 +478,23 @@ export class NotificationProjectionStore {
     async touchTaskActivity(
         taskId: string,
         timestamp: ISO8601Timestamp,
+        activityKind: 'progress' | 'process_liveness' = 'progress',
         database: ProjectionDatabase = this.database
     ): Promise<boolean> {
-        const updated = await database('notification_source_activity')
+        const query = database('notification_source_activity')
             .where({ activity_type: 'task', activity_key: taskId })
             .whereNull('completed_at')
-            .whereIn('status', ['queued', 'processing'])
-            .where('last_activity_at', '<', timestamp)
-            .update({ last_activity_at: timestamp }) as number;
+            .whereIn('status', ['queued', 'processing']);
+        const updated = activityKind === 'process_liveness'
+            ? await query.where((builder) => builder
+                .whereNull('process_heartbeat_at')
+                .orWhere('process_heartbeat_at', '<', timestamp))
+                .update({ process_heartbeat_at: timestamp }) as number
+            : await query.where('last_activity_at', '<', timestamp).update({
+                last_activity_at: timestamp,
+                process_heartbeat_at: timestamp,
+                stalled_notified_at: null
+            }) as number;
         return updated > 0;
     }
 
@@ -475,7 +507,7 @@ export class NotificationProjectionStore {
         transition: IndexingTransitionIdentity;
     }, database: ProjectionDatabase = this.database): Promise<ActivityProjectionDecision> {
         let key = indexingActivityKey(input.repository, input.branch, input.transition);
-        if (input.transition.runId === undefined) {
+        if (input.transition.runId === undefined && !isTerminalActivity(input.status)) {
             const latest = await database<SourceActivityRow>('notification_source_activity')
                 .where({
                     activity_type: 'indexing',
@@ -527,6 +559,8 @@ export class NotificationProjectionStore {
             last_activity_at: lastActivityAt,
             completed_at: incomingIsTerminal ? lastActivityAt : null,
             metadata_json: metadata,
+            process_heartbeat_at: lastActivityAt,
+            stalled_notified_at: null,
             created_at: input.transition.timestamp,
             updated_at: lastActivityAt
         };
@@ -541,7 +575,9 @@ export class NotificationProjectionStore {
                 status: row.status,
                 last_activity_at: row.last_activity_at,
                 completed_at: row.completed_at,
-                metadata_json: row.metadata_json
+                metadata_json: row.metadata_json,
+                process_heartbeat_at: row.process_heartbeat_at,
+                stalled_notified_at: null
             });
         return 'applied';
     }
@@ -550,9 +586,28 @@ export class NotificationProjectionStore {
         return this.database<SourceActivityRow>('notification_source_activity')
             .select('*')
             .whereNull('completed_at')
+            .whereNull('stalled_notified_at')
             .whereIn('status', ['queued', 'processing'])
             .where('last_activity_at', '<=', cutoff)
             .orderBy('last_activity_at', 'asc');
+    }
+
+    async claimStalledActivity(
+        activity: SourceActivityRow,
+        detectedAt: ISO8601Timestamp,
+        database: ProjectionDatabase = this.database
+    ): Promise<boolean> {
+        const updated = await database('notification_source_activity')
+            .where({
+                activity_type: activity.activity_type,
+                activity_key: activity.activity_key,
+                status: activity.status,
+                last_activity_at: activity.last_activity_at
+            })
+            .whereNull('completed_at')
+            .whereNull('stalled_notified_at')
+            .update({ stalled_notified_at: detectedAt }) as number;
+        return updated === 1;
     }
 
     async updateSystemTransition(input: {

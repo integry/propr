@@ -82,7 +82,7 @@ export class NotificationProjectionService {
             database: this.database,
             now: this.now
         });
-        this.store = new NotificationProjectionStore(this.database);
+        this.store = new NotificationProjectionStore(this.database, this.now);
     }
 
     async projectUpdate(payload: EventPayload): Promise<void> {
@@ -109,33 +109,38 @@ export class NotificationProjectionService {
         const publishedAt = normalizeISO8601Timestamp(payload.timestamp);
         const context = await this.store.getDraftContext(payload.draftId);
         if (!context || (context.status !== undefined && context.status !== 'review')) return;
-        const timestamp = context.updatedAt && context.updatedAt <= publishedAt
-            ? context.updatedAt
+        const timestamp = context.reviewTransitionAt && context.reviewTransitionAt <= publishedAt
+            ? context.reviewTransitionAt
             : publishedAt;
-        await this.notifications.createNotificationEvent({
-            deduplicationKey: buildProjectionDeduplicationKey(
-                'draft',
-                context.draftId,
-                'review',
-                timestamp
-            ),
-            kind: 'plan',
-            severity: 'success',
-            target: {
-                type: 'plan',
-                repository: context.repository,
-                draftId: context.draftId
-            },
-            title: 'Plan ready for review',
-            body: `A plan for ${context.repository} is ready for review.`,
-            action: {
-                type: 'navigate',
-                label: 'Review plan',
-                href: `/plans/${encodeURIComponent(context.draftId)}`
-            },
-            metadata: { transitionState: 'review', transitionAt: timestamp },
-            occurredAt: timestamp,
-            recipients: [context.userId]
+        await this.database.transaction(async (transaction) => {
+            const recipients = await this.store.filterCurrentlyEntitled(
+                context.repository,
+                [context.userId],
+                transaction
+            );
+            if (recipients.length === 0) return;
+            await this.notifications.createNotificationEventInTransaction(transaction, {
+                deduplicationKey: buildProjectionDeduplicationKey(
+                    'draft', context.draftId, 'review', timestamp
+                ),
+                kind: 'plan',
+                severity: 'success',
+                target: {
+                    type: 'plan',
+                    repository: context.repository,
+                    draftId: context.draftId
+                },
+                title: 'Plan ready for review',
+                body: `A plan for ${context.repository} is ready for review.`,
+                action: {
+                    type: 'navigate',
+                    label: 'Review plan',
+                    href: `/plans/${encodeURIComponent(context.draftId)}`
+                },
+                metadata: { transitionState: 'review', transitionAt: timestamp },
+                occurredAt: timestamp,
+                recipients
+            });
         });
     }
 
@@ -177,16 +182,22 @@ export class NotificationProjectionService {
                 metadata: safeMetadata
             }, transaction);
             if (decision === 'stale') return;
+            const entitledRecipients = await this.store.filterCurrentlyEntitled(
+                context.repository,
+                recipients,
+                transaction
+            );
+            if (entitledRecipients.length === 0) return;
 
             // Re-run every expected idempotent delivery for a current transition.
             // This repairs equal-timestamp enrichment and any prior failed attempt.
             if (activityStatus === 'failed') {
-                await this.createTaskFailure(context, transition, recipients, transaction);
+                await this.createTaskFailure(context, transition, entitledRecipients, transaction);
             } else if (context.commandMode === 'review') {
-                await this.createReviewCompletion(context, transition, recipients, transaction);
+                await this.createReviewCompletion(context, transition, entitledRecipients, transaction);
             } else {
-                await this.createImplementationCompletion(context, transition, recipients, transaction);
-                await this.createPullRequestAttention(context, transition, recipients, transaction);
+                await this.createImplementationCompletion(context, transition, entitledRecipients, transaction);
+                await this.createPullRequestAttention(context, transition, entitledRecipients, transaction);
             }
         });
     }
@@ -194,12 +205,15 @@ export class NotificationProjectionService {
     async projectTaskHeartbeat(payload: TaskLiveUpdatePayload): Promise<void> {
         await this.store.touchTaskActivity(
             payload.taskId,
-            normalizeISO8601Timestamp(payload.timestamp)
+            normalizeISO8601Timestamp(payload.timestamp),
+            payload.activityKind ?? 'progress'
         );
     }
 
     async projectIndexingUpdate(payload: IndexingUpdatePayload): Promise<void> {
         const publishedAt = normalizeISO8601Timestamp(payload.timestamp);
+        const runId = nonBlankString(payload.runId);
+        if (runId === undefined) return;
         const status = indexingActivityStatus(payload.phase);
         const transition = await this.store.resolveIndexingTransition(
             payload.repository,
@@ -207,7 +221,7 @@ export class NotificationProjectionService {
             status,
             publishedAt,
             stablePayloadTransitionTimestamp(payload.transitionAt, publishedAt),
-            nonBlankString(payload.runId)
+            runId
         );
         const input = {
             repository: payload.repository,
@@ -228,21 +242,59 @@ export class NotificationProjectionService {
         await this.database.transaction(async (transaction) => {
             const decision = await this.store.upsertIndexingActivity(input, transaction);
             if (decision === 'stale') return;
-            await this.createIndexingFailure(payload, transition, recipients, transaction);
+            const entitledRecipients = await this.store.filterCurrentlyEntitled(
+                payload.repository,
+                recipients,
+                transaction
+            );
+            if (entitledRecipients.length === 0) return;
+            await this.createIndexingFailure(payload, transition, entitledRecipients, transaction);
         });
     }
 
-    async detectStalledActivities(stalledAfterMs: number, now: TimestampInput = this.now()): Promise<number> {
+    async detectStalledActivities(
+        stalledAfterMs: number,
+        now: TimestampInput = this.now(),
+        shouldContinue: () => boolean = () => true
+    ): Promise<number> {
         if (!Number.isSafeInteger(stalledAfterMs) || stalledAfterMs <= 0) {
             throw new TypeError('stalledAfterMs must be a positive safe integer');
         }
         const currentTimestamp = normalizeISO8601Timestamp(now);
         const cutoff = normalizeISO8601Timestamp(Date.parse(currentTimestamp) - stalledAfterMs);
         const stalled = await this.store.getStalledActivities(cutoff);
+        let claimed = 0;
         for (const activity of stalled) {
-            await this.createStalledNotification(activity, currentTimestamp);
+            if (!shouldContinue()) break;
+            const { taskContext, recipients } = await this.getStalledRecipients(activity);
+            if (!shouldContinue()) break;
+            const created = await this.database.transaction(async (transaction) => {
+                if (!shouldContinue()) return false;
+                if (!await this.store.claimStalledActivity(activity, currentTimestamp, transaction)) return false;
+                const entitledRecipients = await this.store.filterCurrentlyEntitled(
+                    activity.repository,
+                    recipients,
+                    transaction
+                );
+                if (!shouldContinue()) {
+                    throw new Error('Notification stalled-activity projection lease was lost');
+                }
+                if (entitledRecipients.length === 0) return true;
+                await this.createStalledNotification({
+                    activity,
+                    detectedAt: currentTimestamp,
+                    taskContext,
+                    recipients: entitledRecipients,
+                    transaction
+                });
+                if (!shouldContinue()) {
+                    throw new Error('Notification stalled-activity projection lease was lost');
+                }
+                return true;
+            });
+            if (created) claimed++;
         }
-        return stalled.length;
+        return claimed;
     }
 
     private async createTaskFailure(
@@ -382,11 +434,10 @@ export class NotificationProjectionService {
         });
     }
 
-    private async createStalledNotification(
-        activity: SourceActivityRow,
-        detectedAt: ReturnType<typeof normalizeISO8601Timestamp>
-    ): Promise<void> {
-        const timestamp = normalizeISO8601Timestamp(activity.last_activity_at);
+    private async getStalledRecipients(activity: SourceActivityRow): Promise<{
+        taskContext: TaskProjectionContext;
+        recipients: string[];
+    }> {
         const metadata = parseActivityMetadata(activity);
         const taskContext: TaskProjectionContext = {
             taskId: activity.activity_key,
@@ -397,6 +448,18 @@ export class NotificationProjectionService {
         const recipients = activity.activity_type === 'task'
             ? await this.store.getTaskRecipients(taskContext)
             : await this.store.getRepositoryRecipients(activity.repository);
+        return { taskContext, recipients };
+    }
+
+    private async createStalledNotification(input: {
+        activity: SourceActivityRow;
+        detectedAt: ReturnType<typeof normalizeISO8601Timestamp>;
+        taskContext: TaskProjectionContext;
+        recipients: string[];
+        transaction: Knex.Transaction;
+    }): Promise<void> {
+        const { activity, detectedAt, taskContext, recipients, transaction } = input;
+        const timestamp = normalizeISO8601Timestamp(activity.last_activity_at);
         const branchSuffix = activity.branch ? ` (${activity.branch})` : '';
         const entity = activity.activity_type === 'task'
             ? activity.activity_key
@@ -419,7 +482,7 @@ export class NotificationProjectionService {
             recipients
         };
         if (activity.activity_type === 'task') {
-            await this.notifications.createNotificationEvent({
+            await this.notifications.createNotificationEventInTransaction(transaction, {
                 ...common,
                 kind: 'task',
                 target: taskTarget(taskContext),
@@ -429,7 +492,7 @@ export class NotificationProjectionService {
             });
             return;
         }
-        await this.notifications.createNotificationEvent({
+        await this.notifications.createNotificationEventInTransaction(transaction, {
             ...common,
             kind: 'indexing',
             target: {

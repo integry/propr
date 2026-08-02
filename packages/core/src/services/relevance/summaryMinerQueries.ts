@@ -17,6 +17,24 @@ interface DirectorySummaryResult {
   last_updated_at: Date;
 }
 
+export interface IndexingRunIdentity {
+  runId: string;
+  transitionAt: string;
+}
+
+export interface UpdateRepositoryStatusOptions extends Partial<IndexingRunIdentity> {
+  startNewRun?: boolean;
+  commitInfo?: { hash?: string; message?: string; iconPath?: string | null };
+}
+
+export interface RepositoryStatusTransition extends IndexingRunIdentity {
+  applied: boolean;
+}
+
+export function createIndexingRunIdentity(now: Date = new Date()): IndexingRunIdentity {
+  return { runId: randomUUID(), transitionAt: now.toISOString() };
+}
+
 /**
  * Updates the repository indexing status
  */
@@ -24,9 +42,11 @@ export async function updateRepositoryStatus(
   fullName: string,
   status: 'idle' | 'indexing' | 'completed' | 'failed',
   branch: string = 'HEAD',
-  commitInfo?: { hash?: string; message?: string; iconPath?: string | null }
-): Promise<{ transitionAt: string; runId: string }> {
-  return db.transaction(async (transaction) => {
+  options: UpdateRepositoryStatusOptions = {}
+): Promise<RepositoryStatusTransition> {
+  return db.transaction(
+    // eslint-disable-next-line complexity -- run ownership and ordering form one atomic decision
+    async (transaction) => {
     const existing = await transaction('repositories')
       .select('indexing_status', 'indexing_transition_at', 'indexing_run_id')
       .where({ full_name: fullName, branch })
@@ -36,16 +56,39 @@ export async function updateRepositoryStatus(
         indexing_run_id?: string | null;
       } | undefined;
     const now = new Date().toISOString();
+    const requestedRunId = options.runId;
+    const replacingRun = status === 'indexing' && options.startNewRun === true;
+    if (
+      existing?.indexing_run_id
+      && requestedRunId
+      && existing.indexing_run_id !== requestedRunId
+      && !replacingRun
+    ) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? now,
+        applied: false
+      };
+    }
+
     const statusChanged = existing?.indexing_status !== status;
-    const transitionAt = statusChanged || !existing?.indexing_transition_at
-      ? now
-      : existing.indexing_transition_at;
-    const runId = (status === 'indexing' && statusChanged) || !existing?.indexing_run_id
-      ? randomUUID()
-      : existing.indexing_run_id;
-    const lastIndexedHash = commitInfo?.hash;
-    const lastIndexedCommitMessage = commitInfo?.message;
-    const iconPath = commitInfo?.iconPath;
+    const runId = requestedRunId ?? (
+      status === 'indexing' && (replacingRun || statusChanged) || !existing?.indexing_run_id
+        ? randomUUID()
+        : existing.indexing_run_id
+    );
+    const runChanged = existing?.indexing_run_id !== runId;
+    let transitionAt = runChanged
+      ? options.transitionAt ?? now
+      : statusChanged
+        ? now
+        : existing?.indexing_transition_at ?? options.transitionAt ?? now;
+    if (runChanged && existing?.indexing_transition_at && transitionAt <= existing.indexing_transition_at) {
+      transitionAt = new Date(Date.parse(existing.indexing_transition_at) + 1).toISOString();
+    }
+    const lastIndexedHash = options.commitInfo?.hash;
+    const lastIndexedCommitMessage = options.commitInfo?.message;
+    const iconPath = options.commitInfo?.iconPath;
     const updateData: Record<string, unknown> = {
       indexing_status: status,
       indexing_transition_at: transitionAt,
@@ -82,8 +125,9 @@ export async function updateRepositoryStatus(
       })
       .onConflict(['full_name', 'branch'])
       .merge(updateData);
-    return { transitionAt, runId };
-  });
+    return { transitionAt, runId, applied: true };
+    }
+  );
 }
 
 /**

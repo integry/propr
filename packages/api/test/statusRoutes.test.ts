@@ -14,6 +14,7 @@ type StatusRoutesDeps = {
   getRepositoryIndexingStatus?: () => Promise<'active' | 'idle' | 'failed' | undefined>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
+  notificationProbeTimeoutMs?: number;
   now?: () => number;
   loadSummarizationRuntimeState?: () => Promise<{
     primary_quota_failures: number;
@@ -546,6 +547,41 @@ test('notification health collection skips agent probes and warning scans', asyn
   assert.equal('agents' in snapshot, false);
   assert.equal('warnings' in snapshot, false);
   assert.equal('api' in snapshot, false);
+});
+
+test('notification health collection bounds Redis commands that never settle', async () => {
+  configureStatusEnv();
+  const never = <T>(): Promise<T> => new Promise<T>(() => undefined);
+  const routes = await createRoutes({
+    redisClient: {
+      ping: async () => 'PONG',
+      get: async () => never<string | null>(),
+      sCard: async () => never<number>(),
+    } as never,
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
+    notificationProbeTimeoutMs: 10,
+  });
+  const startedAt = Date.now();
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(snapshot.redis, 'connected');
+  assert.equal(snapshot.daemon, 'unknown');
+  assert.equal(snapshot.worker, 'unknown');
+
+  const pingRoutes = await createRoutes({
+    redisClient: {
+      ping: async () => never<string>(),
+      get: async () => null,
+      sCard: async () => 0,
+    } as never,
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
+    notificationProbeTimeoutMs: 10,
+  });
+  assert.equal((await pingRoutes.getNotificationHealthSnapshot()).redis, 'disconnected');
 });
 
 test('/api/status caps summarization cooldown warnings', async () => {

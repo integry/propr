@@ -8,11 +8,22 @@ import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
+import { replaceNotificationRepositoryEntitlements } from '@propr/core';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
+}
+
+async function clearNotificationRepositoryEntitlements(userId: string | undefined, database: Knex): Promise<void> {
+  if (!userId) return;
+  try {
+    await replaceNotificationRepositoryEntitlements({ userId, repositories: [], database });
+  } catch (error) {
+    console.warn('Failed to clear cached repository notification access:',
+      error instanceof Error ? error.message : String(error));
+  }
 }
 
 /**
@@ -79,7 +90,7 @@ export async function handleAuthError(req: Request, res: Response): Promise<void
 }
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
-  const { redisClient, taskQueue } = deps;
+  const { redisClient, taskQueue, db } = deps;
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -114,7 +125,13 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
+      const userId = req.user?.id;
+      if (!userId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
       if (!accessToken) {
+        await clearNotificationRepositoryEntitlements(userId, db);
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -142,11 +159,13 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
       // Sort alphabetically
       repos.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+      await replaceNotificationRepositoryEntitlements({ userId, repositories: repos, database: db });
 
       res.json({ repos });
     } catch (error) {
       // Check if this is a token expiration/revocation error
       if (isAuthError(error)) {
+        await clearNotificationRepositoryEntitlements(req.user?.id, db);
         await handleAuthError(req, res);
         return;
       }
@@ -177,6 +196,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
+        await clearNotificationRepositoryEntitlements(req.user?.id, db);
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -199,6 +219,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       } catch (error) {
         // Check for auth error on repo info request
         if (isAuthError(error)) {
+          await clearNotificationRepositoryEntitlements(req.user?.id, db);
           await handleAuthError(req, res);
           return;
         }
@@ -230,6 +251,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     } catch (error) {
       // Check if this is a token expiration/revocation error
       if (isAuthError(error)) {
+        await clearNotificationRepositoryEntitlements(req.user?.id, db);
         await handleAuthError(req, res);
         return;
       }

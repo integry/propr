@@ -143,6 +143,8 @@ export interface TaskLiveUpdatePayload {
   todos: TodoItem[];
   currentTask: string | null;
   tokenUsage: TokenUsageInfo | null;
+  /** Distinguishes observable work from a merely alive child process. */
+  activityKind?: 'progress' | 'process_liveness';
   timestamp: string;
 }
 

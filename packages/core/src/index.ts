@@ -176,6 +176,12 @@ export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, Semantic
 export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, IndexingOptions } from './services/relevance/summaryMiner.js';
+export { createIndexingRunIdentity } from './services/relevance/summaryMinerQueries.js';
+export type {
+  IndexingRunIdentity,
+  RepositoryStatusTransition,
+  UpdateRepositoryStatusOptions
+} from './services/relevance/summaryMinerQueries.js';
 export { scanProcessableGitFiles, shouldProcessFilePath, isProcessableFile } from './services/relevance/summaryFileFilter.js';
 export type { GitFileInfo } from './services/relevance/summaryFileFilter.js';
 export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';
@@ -433,7 +439,11 @@ export type {
 export {
     NotificationSystemSampler,
     DEFAULT_NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS,
-    getNotificationSystemCheckIntervalMs
+    DEFAULT_NOTIFICATION_SYSTEM_STARTUP_GRACE_MS,
+    DEFAULT_NOTIFICATION_OPERATION_TIMEOUT_MS,
+    DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS,
+    getNotificationSystemCheckIntervalMs,
+    getNotificationSystemStartupGraceMs
 } from './services/notificationSystemSampler.js';
 export type {
     NotificationProjectionLease,
@@ -449,6 +459,12 @@ export {
 export type {
     NotificationStalledDetectorOptions
 } from './services/notificationStalledDetector.js';
+export {
+    DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS,
+    getNotificationRepositoryEntitlementTtlMs,
+    replaceNotificationRepositoryEntitlements,
+    replaceNotificationRepositorySubscriptions
+} from './services/notificationRepositoryAccess.js';
 export {
     DEFAULT_NOTIFICATION_LIST_LIMIT,
     MAX_NOTIFICATION_LIST_LIMIT,

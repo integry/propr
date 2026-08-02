@@ -229,12 +229,14 @@ export function executeDockerCommand(command: string, args: string[], options: D
             lastLen: 0
         };
         const livenessInterval = taskId ? initTaskLivenessHeartbeat(taskId) : null;
+        const reportTaskProgress = taskId ? createTaskProgressReporter(taskId) : null;
         if (streamToRedis && taskId) initRedisStreaming(taskId, stripAnsi, getRedisOutput, redisState);
         if (command === 'docker' && args[0] === 'run' && worktreePath) detectContainerId(worktreePath, state, onContainerId);
 
         child.stdout?.on('data', (data: Buffer) => {
             const chunk = data.toString(), ts = new Date().toISOString();
             stdout += chunk;
+            if (chunk.length > 0) reportTaskProgress?.();
             for (const line of chunk.split('\n')) {
                 if (!line.trim()) continue;
                 try {
@@ -244,7 +246,11 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 } catch { /* skip */ }
             }
         });
-        child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+        child.stderr?.on('data', (data: Buffer) => {
+            const chunk = data.toString();
+            stderr += chunk;
+            if (chunk.length > 0) reportTaskProgress?.();
+        });
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
@@ -303,6 +309,18 @@ function initTaskLivenessHeartbeat(taskId: string): ReturnType<typeof setInterva
     const interval = setInterval(() => { void heartbeat(); }, TASK_LIVENESS_HEARTBEAT_MS);
     interval.unref();
     return interval;
+}
+
+function createTaskProgressReporter(taskId: string): () => void {
+    let lastReportedAt = 0;
+    return () => {
+        const observedAt = Date.now();
+        if (observedAt - lastReportedAt < TASK_LIVENESS_HEARTBEAT_MS) return;
+        lastReportedAt = observedAt;
+        void getEventPublisher().projectTaskProgress(taskId, new Date(observedAt).toISOString())
+            .catch((err) => logger.debug({ error: (err as Error).message },
+                'Failed to project observable task progress'));
+    };
 }
 
 async function cleanupRedisStreaming(state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null }, taskId: string | undefined, stripAnsi: boolean | undefined, stdout: string): Promise<void> {

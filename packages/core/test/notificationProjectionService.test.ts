@@ -6,17 +6,32 @@ import { up as createNotificationSchema } from '../src/db/migrations/20260802000
 import { up as addNotificationPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as addProjectionState } from '../src/db/migrations/20260802020000_add_notification_projection_state.js';
 import { up as addIndexingTransitionIdentity } from '../src/db/migrations/20260802030000_add_indexing_transition_identity.js';
+import { up as hardenNotificationProjection } from '../src/db/migrations/20260802040000_harden_notification_projection.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
+import { NotificationService } from '../src/services/notificationService.js';
 import { NotificationStalledDetector } from '../src/services/notificationStalledDetector.js';
 import { NotificationSystemProjection } from '../src/services/notificationSystemProjection.js';
 import { NotificationSystemSampler } from '../src/services/notificationSystemSampler.js';
 import { EventPublisher } from '../src/utils/eventPublisher.js';
+import type { TaskProjectionContext } from '../src/services/notificationProjectionStore.js';
 
 const EVENT_TIME = '2026-08-02T08:00:00.000Z';
 const SERVICE_TIME = '2026-08-02T16:00:00.000Z';
 
 let database: Knex;
 let projection: NotificationProjectionService;
+
+async function grantRepositoryEntitlement(
+    userId: string,
+    repository = 'integry/propr'
+): Promise<void> {
+    await database('notification_repository_entitlements').insert({
+        user_id: userId,
+        repository,
+        verified_at: EVENT_TIME,
+        expires_at: '2026-08-03T08:00:00.000Z'
+    }).onConflict(['user_id', 'repository']).merge();
+}
 
 function createDatabase(): Knex {
     return knex({
@@ -88,6 +103,7 @@ async function seedPlanAndTask(options: {
 } = {}): Promise<void> {
     const taskId = options.taskId ?? 'task-1';
     const issueNumber = options.issueNumber ?? 1719;
+    await grantRepositoryEntitlement('user-1');
     await database('task_drafts').insert({
         draft_id: 'draft-1',
         repository: 'integry/propr',
@@ -126,6 +142,7 @@ beforeEach(async () => {
     await addNotificationPreferenceApis(database);
     await addProjectionState(database);
     await addIndexingTransitionIdentity(database);
+    await hardenNotificationProjection(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -160,6 +177,32 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             await database('notification_user_states').pluck('user_id'),
             ['user-1']
         );
+    });
+
+    test('uses the durable draft review transition when unrelated edits change updated_at', async () => {
+        await seedPlanAndTask();
+        await database('task_drafts').where({ draft_id: 'draft-1' }).update({
+            review_transition_at: EVENT_TIME,
+            updated_at: '2026-08-02T09:00:00.000Z'
+        });
+        const payload = {
+            eventType: 'draft:update' as const,
+            draftId: 'draft-1',
+            step: 'complete',
+            status: 'completed' as const,
+            draftStatus: 'review' as const,
+            timestamp: '2026-08-02T10:00:00.000Z'
+        };
+
+        await projection.projectDraftUpdate(payload);
+        await database('task_drafts').where({ draft_id: 'draft-1' }).update({
+            updated_at: '2026-08-02T11:00:00.000Z'
+        });
+        await projection.projectDraftUpdate({ ...payload, timestamp: '2026-08-02T11:00:00.000Z' });
+
+        const stored = await events();
+        assert.equal(stored.length, 1);
+        assert.equal(JSON.parse(String(stored[0].metadata_json)).transitionAt, EVENT_TIME);
     });
 
     test('creates distinct implementation and PR-attention events with a safe PR URL', async () => {
@@ -284,6 +327,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             status: 'review',
             updated_at: EVENT_TIME
         });
+        await grantRepositoryEntitlement('review-owner');
 
         await projection.projectTaskUpdate({
             eventType: 'task:update',
@@ -311,6 +355,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             repository: 'integry/propr',
             branch: 'main',
             phase: 'failed' as const,
+            transitionAt: '2026-08-02T08:01:00.000Z',
+            runId: 'sanitized-failure-run',
             timestamp: '2026-08-02T08:01:00.000Z'
         };
         await projection.projectIndexingUpdate(indexingPayload);
@@ -392,6 +438,14 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             key: 'user_repo_prefs_repository-subscriber',
             value: JSON.stringify({ 'integry/propr': { starred: true } })
         });
+        await grantRepositoryEntitlement('task-owner');
+        await grantRepositoryEntitlement('repository-subscriber');
+        await database('notification_repository_subscriptions').insert({
+            user_id: 'repository-subscriber',
+            repository: 'integry/propr',
+            hidden: false,
+            updated_at: EVENT_TIME
+        });
 
         await projection.projectTaskUpdate({
             eventType: 'task:update',
@@ -412,6 +466,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             repository: 'integry/propr',
             branch: 'main',
             phase: 'failed',
+            transitionAt: '2026-08-02T08:01:00.000Z',
+            runId: 'repository-failure-run',
             timestamp: '2026-08-02T08:01:00.000Z'
         });
         const indexingRecipients = await database('notification_user_states as state')
@@ -421,6 +477,41 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.deepEqual(indexingRecipients.sort(), [
             'repository-subscriber'
         ]);
+    });
+
+    test('does not let preferences or historical rows establish repository access', async () => {
+        await seedPlanAndTask();
+        await database('task_drafts').insert({
+            draft_id: 'revoked-user-draft',
+            repository: 'integry/propr',
+            user_id: 'revoked-user',
+            initial_prompt: null,
+            status: 'draft',
+            updated_at: EVENT_TIME
+        });
+        await database('notification_repository_subscriptions').insert({
+            user_id: 'revoked-user',
+            repository: 'integry/propr',
+            hidden: false,
+            updated_at: EVENT_TIME
+        });
+        await database('notification_repository_entitlements').insert({
+            user_id: 'revoked-user',
+            repository: 'integry/propr',
+            verified_at: EVENT_TIME,
+            expires_at: '2026-08-02T12:00:00.000Z'
+        });
+
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'failed',
+            repository: 'integry/propr',
+            issueNumber: 1719,
+            timestamp: EVENT_TIME
+        });
+
+        assert.deepEqual(await database('notification_user_states').pluck('user_id'), ['user-1']);
     });
 
     test('ignores out-of-order task and indexing transitions', async () => {
@@ -450,6 +541,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             repository: 'integry/propr',
             branch: 'main',
             phase: 'indexing',
+            transitionAt: latest,
+            runId: 'ordering-run',
             timestamp: latest
         });
         await projection.projectIndexingUpdate({
@@ -457,6 +550,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             repository: 'integry/propr',
             branch: 'main',
             phase: 'failed',
+            transitionAt: stale,
+            runId: 'ordering-run',
             timestamp: stale
         });
 
@@ -473,6 +568,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     });
 
     test('uses the durable task-history timestamp across publisher retries', async () => {
+        await grantRepositoryEntitlement('task-owner');
         await database('tasks').insert({
             task_id: 'retry-task',
             repository: 'integry/propr',
@@ -645,6 +741,37 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.equal((await events()).length, 1);
     });
 
+    test('does not let a delayed stop for an old indexing run cancel its replacement', async () => {
+        await projection.projectIndexingUpdate({
+            eventType: 'indexing:update', repository: 'integry/propr', branch: 'main',
+            phase: 'files', transitionAt: EVENT_TIME, runId: 'stopped-run', timestamp: EVENT_TIME
+        });
+        await projection.projectIndexingUpdate({
+            eventType: 'indexing:update', repository: 'integry/propr', branch: 'main',
+            phase: 'indexing', transitionAt: '2026-08-02T09:00:00.000Z',
+            runId: 'replacement-run', timestamp: '2026-08-02T09:00:00.000Z'
+        });
+        await projection.projectIndexingUpdate({
+            eventType: 'indexing:update', repository: 'integry/propr', branch: 'main',
+            phase: 'idle', transitionAt: '2026-08-02T08:30:00.000Z',
+            runId: 'stopped-run', timestamp: '2026-08-02T10:00:00.000Z'
+        });
+
+        const activities = await database('notification_source_activity')
+            .select('status', 'metadata_json')
+            .where({ activity_type: 'indexing' });
+        assert.deepEqual(
+            activities.map((activity) => ({
+                status: activity.status,
+                runId: JSON.parse(String(activity.metadata_json)).runId as string
+            })).sort((left, right) => left.runId.localeCompare(right.runId)),
+            [
+                { status: 'processing', runId: 'replacement-run' },
+                { status: 'cancelled', runId: 'stopped-run' }
+            ]
+        );
+    });
+
     test('uses indexing run identity for equal-millisecond transitions', async () => {
         await seedPlanAndTask();
         await projection.projectIndexingUpdate({
@@ -716,6 +843,13 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         await projection.detectStalledActivities(30 * 60 * 1000, '2026-08-02T09:00:00.000Z');
         await projection.detectStalledActivities(30 * 60 * 1000, '2026-08-02T09:05:00.000Z');
         assert.equal((await events()).length, 1);
+        assert.equal(
+            await database('notification_source_activity')
+                .where({ activity_type: 'task', activity_key: 'task-1' })
+                .first('stalled_notified_at')
+                .then((row) => row?.stalled_notified_at),
+            '2026-08-02T09:00:00.000Z'
+        );
 
         await projection.projectTaskUpdate({
             eventType: 'task:update',
@@ -739,6 +873,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             repository: 'integry/propr',
             branch: 'main',
             phase: 'files',
+            transitionAt: '2026-08-02T10:00:00.000Z',
+            runId: 'stalled-indexing-run',
             timestamp: '2026-08-02T10:00:00.000Z'
         });
         await projection.detectStalledActivities(30 * 60 * 1000, '2026-08-02T10:31:00.000Z');
@@ -773,6 +909,103 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         const [event] = await events();
         assert.equal(JSON.parse(String(event.target_json)).prNumber, 1720);
         assert.equal(JSON.parse(String(event.action_json)).href, '/tasks/task-1');
+    });
+
+    test('does not treat process liveness as observable task progress', async () => {
+        await seedPlanAndTask();
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'processing',
+            repository: 'integry/propr',
+            issueNumber: 1719,
+            timestamp: EVENT_TIME
+        });
+        await projection.projectTaskHeartbeat({
+            eventType: 'task:live:update',
+            taskId: 'task-1',
+            events: [],
+            todos: [],
+            currentTask: null,
+            tokenUsage: null,
+            activityKind: 'process_liveness',
+            timestamp: '2026-08-02T08:45:00.000Z'
+        });
+
+        const activity = await database('notification_source_activity')
+            .where({ activity_type: 'task', activity_key: 'task-1' })
+            .first('last_activity_at', 'process_heartbeat_at');
+        assert.equal(activity.last_activity_at, EVENT_TIME);
+        assert.equal(activity.process_heartbeat_at, '2026-08-02T08:45:00.000Z');
+
+        await projection.detectStalledActivities(30 * 60 * 1000, '2026-08-02T08:31:00.000Z');
+        assert.equal((await events()).length, 1);
+    });
+
+    test('atomically rejects stalled claims changed by a heartbeat or completion during discovery', async () => {
+        await seedPlanAndTask();
+        await database('tasks').insert({
+            task_id: 'task-2',
+            repository: 'integry/propr',
+            issue_number: 1720,
+            task_type: 'issue',
+            initial_job_data: JSON.stringify({ userId: 'user-1' })
+        });
+        for (const taskId of ['task-1', 'task-2']) {
+            await projection.projectTaskUpdate({
+                eventType: 'task:update',
+                taskId,
+                state: 'processing',
+                repository: 'integry/propr',
+                issueNumber: taskId === 'task-1' ? 1719 : 1720,
+                timestamp: EVENT_TIME
+            });
+        }
+
+        const mutableProjection = projection as unknown as {
+            store: {
+                getTaskRecipients(context: TaskProjectionContext): Promise<string[]>;
+            };
+        };
+        const originalGetTaskRecipients = mutableProjection.store.getTaskRecipients.bind(
+            mutableProjection.store
+        );
+        mutableProjection.store.getTaskRecipients = async (context) => {
+            if (context.taskId === 'task-1') {
+                await projection.projectTaskHeartbeat({
+                    eventType: 'task:live:update',
+                    taskId: context.taskId,
+                    events: [],
+                    todos: [],
+                    currentTask: 'new progress',
+                    tokenUsage: null,
+                    timestamp: '2026-08-02T09:01:00.000Z'
+                });
+            } else {
+                await database('notification_source_activity')
+                    .where({ activity_type: 'task', activity_key: context.taskId })
+                    .update({
+                        status: 'completed',
+                        last_activity_at: '2026-08-02T09:01:00.000Z',
+                        completed_at: '2026-08-02T09:01:00.000Z'
+                    });
+            }
+            return originalGetTaskRecipients(context);
+        };
+
+        const claimed = await projection.detectStalledActivities(
+            30 * 60 * 1000,
+            '2026-08-02T09:00:00.000Z'
+        );
+
+        assert.equal(claimed, 0);
+        assert.equal((await events()).length, 0);
+        assert.deepEqual(
+            await database('notification_source_activity')
+                .whereIn('activity_key', ['task-1', 'task-2'])
+                .pluck('stalled_notified_at'),
+            [null, null]
+        );
     });
 
     test('does not let a later liveness observation suppress queued terminal transitions', async () => {
@@ -957,6 +1190,35 @@ describe('system notification projection', { concurrency: false }, () => {
         assert.equal((await events()).length, 1);
     });
 
+    test('rolls back a system notification when lease ownership is lost during insertion', async () => {
+        await seedPlanAndTask();
+        const notificationService = new NotificationService({ database });
+        const createEvent = notificationService.createNotificationEventInTransaction.bind(notificationService);
+        let leaseOwned = true;
+        notificationService.createNotificationEventInTransaction = async (...args) => {
+            const result = await createEvent(...args);
+            leaseOwned = false;
+            return result;
+        };
+        const systemProjection = new NotificationSystemProjection({ database, notificationService });
+
+        await assert.rejects(
+            systemProjection.projectSnapshot(
+                { redis: 'disconnected', timestamp: EVENT_TIME },
+                [],
+                () => leaseOwned
+            ),
+            /lease was lost/
+        );
+
+        assert.equal((await events()).length, 0);
+        assert.equal(
+            await database('notification_system_health').count({ count: '*' }).first()
+                .then((row) => Number(row?.count)),
+            0
+        );
+    });
+
     test('advances the system observation high-water mark for unchanged states', async () => {
         const systemProjection = new NotificationSystemProjection({ database });
         await systemProjection.projectSnapshot({
@@ -1079,6 +1341,108 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(projected, 2);
     });
 
+    test('prioritizes terminal projections when low-value work fills the queue', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const projected: string[] = [];
+        const publisher = new EventPublisher({
+            publish: async () => true,
+            projectNotification: async (payload) => {
+                if (payload.eventType !== 'task:update') return;
+                projected.push(`${payload.taskId}:${payload.state}`);
+                if (payload.taskId === 'active-low-priority') await gate;
+            },
+            projectionDeadlineMs: 5,
+            projectionConcurrency: 1,
+            projectionMaxQueueSize: 2
+        });
+
+        await publisher.publishTaskUpdate({ taskId: 'active-low-priority', state: 'processing' });
+        await publisher.publishTaskUpdate({ taskId: 'queued-low-priority', state: 'processing' });
+        await publisher.publishTaskUpdate({ taskId: 'terminal', state: 'completed' });
+        release();
+        await publisher.close();
+
+        assert.deepEqual(projected, [
+            'active-low-priority:processing',
+            'terminal:completed'
+        ]);
+    });
+
+    test('retains terminal work without exceeding projector concurrency', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let active = 0;
+        let maxActive = 0;
+        const projected: string[] = [];
+        const publisher = new EventPublisher({
+            publish: async () => true,
+            projectNotification: async (payload) => {
+                if (payload.eventType !== 'task:update') return;
+                active++;
+                maxActive = Math.max(maxActive, active);
+                projected.push(`${payload.taskId}:${payload.state}`);
+                if (payload.taskId === 'active-at-capacity') await gate;
+                active--;
+            },
+            projectionDeadlineMs: 5,
+            projectionConcurrency: 1,
+            projectionMaxQueueSize: 1
+        });
+
+        await publisher.publishTaskUpdate({ taskId: 'active-at-capacity', state: 'processing' });
+        await publisher.publishTaskUpdate({ taskId: 'terminal-overflow', state: 'failed' });
+        release();
+        await publisher.close();
+
+        assert.equal(maxActive, 1);
+        assert.deepEqual(projected, [
+            'active-at-capacity:processing',
+            'terminal-overflow:failed'
+        ]);
+    });
+
+    test('does not coalesce observable task progress into process-only liveness', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const projectedKinds: string[] = [];
+        const publisher = new EventPublisher({
+            publish: async () => true,
+            projectNotification: async (payload) => {
+                if (payload.eventType === 'task:update') await gate;
+                if (payload.eventType === 'task:live:update') {
+                    projectedKinds.push(payload.activityKind ?? 'progress');
+                }
+            },
+            projectionDeadlineMs: 5,
+            projectionConcurrency: 1,
+            projectionMaxQueueSize: 3
+        });
+
+        await publisher.publishTaskUpdate({ taskId: 'queue-blocker', state: 'processing' });
+        await publisher.projectTaskProgress('output-producing-task');
+        await publisher.projectTaskHeartbeat('output-producing-task');
+        release();
+        await publisher.close();
+
+        assert.deepEqual(projectedKinds, ['progress']);
+    });
+
+    test('bounds EventPublisher shutdown when a projection never settles', async () => {
+        const publisher = new EventPublisher({
+            publish: async () => true,
+            projectNotification: async () => new Promise<void>(() => undefined),
+            projectionDeadlineMs: 5,
+            projectionDrainTimeoutMs: 10
+        });
+        await publisher.publishTaskUpdate({ taskId: 'stuck-projection', state: 'processing' });
+        const startedAt = Date.now();
+
+        await publisher.close();
+
+        assert.ok(Date.now() - startedAt < 500);
+    });
+
     test('samples system health without a status-route request', async () => {
         await seedPlanAndTask();
         const sampler = new NotificationSystemSampler({
@@ -1090,6 +1454,56 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(await sampler.runOnce(), true);
         assert.equal((await events()).length, 1);
         assert.deepEqual(await database('notification_user_states').pluck('user_id'), ['user-1']);
+    });
+
+    test('honors startup grace before taking the first system-health sample', async () => {
+        let samples = 0;
+        let sampled!: () => void;
+        const firstSample = new Promise<void>(resolve => { sampled = resolve; });
+        const sampler = new NotificationSystemSampler({
+            getSnapshot: async () => {
+                samples++;
+                sampled();
+                return { redis: 'connected', timestamp: EVENT_TIME };
+            },
+            projector: { projectSnapshot: async () => undefined },
+            intervalMs: 60_000,
+            startupGraceMs: 25,
+            operationTimeoutMs: 100
+        });
+
+        sampler.start();
+        await new Promise(resolve => setTimeout(resolve, 5));
+        assert.equal(samples, 0);
+        await Promise.race([
+            firstSample,
+            new Promise<never>((_resolve, reject) => setTimeout(
+                () => reject(new Error('startup-grace sample did not run')),
+                500
+            ))
+        ]);
+        assert.equal(samples, 1);
+        await sampler.stop();
+    });
+
+    test('releases active-run ownership when a system-health probe never settles', async () => {
+        let attempts = 0;
+        const sampler = new NotificationSystemSampler({
+            getSnapshot: async () => {
+                attempts++;
+                return new Promise<never>(() => undefined);
+            },
+            projector: { projectSnapshot: async () => undefined },
+            intervalMs: 60_000,
+            operationTimeoutMs: 10
+        });
+        const startedAt = Date.now();
+
+        assert.equal(await sampler.runOnce(), false);
+        assert.equal(await sampler.runOnce(), false);
+
+        assert.equal(attempts, 2);
+        assert.ok(Date.now() - startedAt < 500);
     });
 
     test('renews and releases the replica lease during a slow system scan', async () => {
@@ -1131,6 +1545,31 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(await sampler.runOnce(), false);
         assert.equal(projected, 0);
         assert.equal(releases, 1);
+    });
+
+    test('invalidates an in-progress projection when its replica lease is lost', async () => {
+        let renewals = 0;
+        let guardAfterRenewal = true;
+        const sampler = new NotificationSystemSampler({
+            getSnapshot: async () => ({ redis: 'disconnected', timestamp: EVENT_TIME }),
+            projector: {
+                projectSnapshot: async (_snapshot, _recipients, shouldContinue) => {
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                    guardAfterRenewal = shouldContinue?.() ?? true;
+                }
+            },
+            intervalMs: 60_000,
+            operationTimeoutMs: 100,
+            acquireLease: async () => ({
+                renewalIntervalMs: 5,
+                renew: async () => ++renewals === 1,
+                release: async () => undefined
+            })
+        });
+
+        assert.equal(await sampler.runOnce(), false);
+        assert.ok(renewals >= 2);
+        assert.equal(guardAfterRenewal, false);
     });
 
     test('waits for an active stalled-activity scan during shutdown', async () => {

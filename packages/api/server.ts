@@ -61,6 +61,8 @@ type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 type RouteHandler = RequestHandler;
 type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
+const NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS = 5_000;
+const SHUTDOWN_TASK_TIMEOUT_MS = 10_000;
 
 const demoMode = configureDemoMode();
 
@@ -86,8 +88,24 @@ function getRedisRuntimeConfig(): { url: string; options: RedisOptions } {
   };
 }
 
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${operation} timed out after ${timeoutMs}ms`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 async function closeResources(tasks: ShutdownTask[]): Promise<void> {
-  const results = await Promise.allSettled(tasks.map(async ({ close }) => close()));
+  const results = await Promise.allSettled(tasks.map(async ({ name, close }) =>
+    withDeadline(close(), SHUTDOWN_TASK_TIMEOUT_MS, `closing ${name}`)
+  ));
   results.forEach((result, index) => {
     if (result.status === 'rejected') {
       console.error(`Failed to close ${tasks[index].name}:`, result.reason);
@@ -255,19 +273,19 @@ function createNotificationProjectionLease(
   return async () => {
     const owner = `${process.pid}:${generateCorrelationId()}`;
     try {
-      const acquired = await redisClient.eval(acquireScript, {
-        keys: [key],
-        arguments: [owner, String(ttlMs)]
-      });
+      const acquired = await withDeadline(redisClient.eval(acquireScript, {
+          keys: [key],
+          arguments: [owner, String(ttlMs)]
+        }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `acquiring ${name} notification projection lease`);
       if (Number(acquired) !== 1) return false;
       return {
         renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
         renew: async () => {
           try {
-            const renewed = await redisClient.eval(renewScript, {
-              keys: [key],
-              arguments: [owner, String(ttlMs)]
-            });
+            const renewed = await withDeadline(redisClient.eval(renewScript, {
+                keys: [key],
+                arguments: [owner, String(ttlMs)]
+              }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `renewing ${name} notification projection lease`);
             return Number(renewed) === 1;
           } catch (error) {
             console.warn(`Could not renew ${name} notification projection lease:`,
@@ -279,10 +297,10 @@ function createNotificationProjectionLease(
         },
         release: async () => {
           try {
-            await redisClient.eval(releaseScript, {
-              keys: [key],
-              arguments: [owner]
-            });
+            await withDeadline(redisClient.eval(releaseScript, {
+                keys: [key],
+                arguments: [owner]
+              }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `releasing ${name} notification projection lease`);
           } catch (error) {
             console.warn(`Could not release ${name} notification projection lease:`,
               error instanceof Error ? error.message : String(error));
