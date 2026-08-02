@@ -73,8 +73,8 @@ const mockLogger = {
 };
 
 await mock.module('../packages/core/src/utils/logger.js', {
+    defaultExport: mockLogger,
     namedExports: {
-        default: mockLogger,
         generateCorrelationId: () => 'generated-correlation-id'
     }
 });

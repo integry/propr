@@ -40,9 +40,7 @@ jobs:
         run: npm ci
 
       - name: Build workspace packages
-        run: |
-          npm run build --workspace=packages/shared
-          npm run build --workspace=packages/core
+        run: npm run test:prepare
 
       - name: Validate docs site
         env:
@@ -59,7 +57,7 @@ jobs:
           NODE_ENV: test
         run: |
           echo "Running full test suite with Redis..."
-          npm run test:full 2>&1 | tee test_output.txt
+          npm run test:full:prepared 2>&1 | tee test_output.txt
           TEST_EXIT_CODE=${PIPESTATUS[0]}
 
           if [ $TEST_EXIT_CODE -eq 0 ]; then

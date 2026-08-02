@@ -98,13 +98,6 @@ await mock.module('../packages/core/src/utils/logger.js', {
     namedExports: {
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
         createCorrelatedLogger: mock.fn(() => mockLoggerInstance),
-        default: {
-            info: mock.fn(),
-            warn: mock.fn(),
-            error: mock.fn(),
-            debug: mock.fn(),
-            withCorrelation: mock.fn(() => mockLoggerInstance),
-        },
     },
 });
 
@@ -175,9 +168,11 @@ await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', {
 
 // Mock retryHandler
 const actualRetryHandler = await import('../packages/core/src/utils/retryHandler.js');
+const { default: retryHandlerDefault, ...retryHandlerNamedExports } = actualRetryHandler;
 await mock.module('../packages/core/src/utils/retryHandler.js', {
+    defaultExport: retryHandlerDefault,
     namedExports: {
-        ...actualRetryHandler,
+        ...retryHandlerNamedExports,
         withRetry: mock.fn(async (fn: () => Promise<unknown>) => fn()),
         retryConfigs: { githubApi: {} },
     },

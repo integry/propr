@@ -75,13 +75,6 @@ await mock.module('../packages/core/src/utils/logger.js', {
     },
     namedExports: {
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
-        default: {
-            info: mock.fn(),
-            warn: mock.fn(),
-            error: mock.fn(),
-            debug: mock.fn(),
-            withCorrelation: mock.fn(() => mockLoggerInstance),
-        },
     }
 });
 
