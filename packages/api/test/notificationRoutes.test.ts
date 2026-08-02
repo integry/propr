@@ -72,7 +72,9 @@ function createService(overrides: Partial<NotificationRouteService> = {}): Notif
             createdAt: timestamp,
             updatedAt: timestamp
         }),
+        listPushSubscriptions: async () => [],
         revokePushSubscription: async () => false,
+        revokePushSubscriptionById: async () => false,
         ...overrides
     };
 }

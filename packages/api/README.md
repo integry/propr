@@ -83,7 +83,10 @@ disabled. Quiet hours default to `{ "start": null, "end": null, "timezone":
 When a trusted producer assigns recipients, its channel eligibility is
 intersected with the stored category preference. In particular, an explicit
 producer `pushEnabled: true` cannot bypass a user opt-out, while an opt-in only
-enables Push for events whose producer also selected that channel.
+enables Push for events whose producer also selected that channel. Object-form
+recipient assignments must always provide `pushEnabled`; the string shorthand
+is explicitly Inbox-only. The repository currently has no production event
+producers, so there are no omitted call sites to migrate.
 
 This API currently stores notification delivery policy and browser enrollment;
 it does not include a Web Push dispatcher. Quiet hours therefore do not yet
@@ -97,22 +100,30 @@ stored keys and cancels the same queued work, but both opt-out and subscription
 refresh/revocation remain best-effort for a live lease that may already hold old
 state. A future dispatcher must re-read the current category preference,
 subscription, and job immediately before network I/O, use the latest refreshed
-keys, and skip an opted-out user, revoked subscription, or cancelled job.
+keys, and skip an opted-out user, revoked subscription, expired subscription, or
+cancelled job. It must also reject loopback destinations independently unless it
+is intentionally running in the same isolated local-development mode.
 
-- `GET /api/notifications/config` - Return Web Push availability and the VAPID public key. The private key is never serialized.
+- `GET /api/notifications/config` - Canonical capability route; return Web Push availability and the VAPID public key. The private key is never serialized. `/api/notifications/capabilities` is a compatibility alias.
 - `GET /api/notifications/preferences` - Return the complete category and quiet-hour snapshot.
 - `PATCH /api/notifications/preferences` - Apply a sparse update; omitted categories and channel values remain unchanged.
+- `GET /api/notifications/push-subscriptions` - List the authenticated user's active browser subscriptions without encryption keys.
 - `POST /api/notifications/push-subscriptions` - Create or refresh the authenticated user's browser subscription by endpoint.
 - `DELETE /api/notifications/push-subscriptions` - Revoke the authenticated user's subscription. Supply `endpoint` only in the JSON body; capability URLs are never accepted in query strings.
+- `DELETE /api/notifications/push-subscriptions/:subscriptionId` - Revoke an owned subscription by the opaque ID returned from the list route.
 
 Enrollment is limited to 10 active and 50 retained subscription rows per user,
 with at most 20 new enrollments/reactivations per hour. Refreshing an already
-active endpoint does not consume the enrollment rate limit. Revoked rows older
-than 30 days are eligible for bounded garbage collection only when no delivery
-job references them; quota pressure may safely collect newer unreferenced
-revocations. Referenced delivery history remains immutable and counts toward the
-retained quota. Rate-limit responses use HTTP 429 with `Retry-After`; quota
-responses use HTTP 409 so clients can prompt the user to revoke another browser.
+active endpoint does not consume the enrollment rate limit, and an unchanged
+refresh takes a read-only path. Expired rows are atomically revoked before
+enrollment, which releases active quota and endpoint ownership, erases keys, and
+cancels queued jobs. The API runs bounded expiration and garbage-collection
+batches at startup and hourly. Revoked rows older than 30 days are deleted only
+when no delivery job references them; quota pressure may safely collect newer
+unreferenced revocations. Referenced delivery history remains immutable and
+counts toward the retained quota. Rate-limit responses use HTTP 429 with
+`Retry-After`; quota responses use HTTP 409 so clients can prompt the user to
+revoke another browser.
 
 Subscription endpoints are intentionally limited to FCM, Mozilla Autopush, and
 Apple Web Push vendor hosts. Adding another browser provider requires updating
@@ -120,10 +131,17 @@ the shared allowlist and shipping a schema migration that updates the persisted
 SQLite `CHECK`; delivery clients must revalidate stored endpoints and disable
 redirects. Insecure `localhost`/`127.0.0.1` enrollment is off by default and is
 available only for isolated local development through
-`PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH=true`. Do not enable it on a remotely
-reachable development or staging server. The SQLite constraint is deliberately
-stable across restarts and permits loopback rows; the authenticated service flag
-is the enrollment policy boundary.
+`PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH=true`. The API additionally requires a
+non-production `NODE_ENV` and a loopback `API_PUBLIC_URL` (or its unset localhost
+default), so the flag is ineffective on remote preview/staging URLs. The SQLite
+constraint is deliberately stable across restarts and permits loopback rows;
+the authenticated service deployment checks are the enrollment policy boundary.
+Missing, malformed, and mismatched VAPID configuration is reported with a
+sanitized startup warning that never includes either key.
+
+Quiet-hour timezone aliases are canonicalized using the server's ICU database
+before storage. Shared response parsing validates the returned identifier's
+shape without consulting the browser's potentially older timezone database.
 
 The preference API migration remains startup-blocking and transactional because
 it rebuilds the subscription table while preserving delivery foreign keys. Its

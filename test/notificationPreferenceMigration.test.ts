@@ -367,6 +367,13 @@ describe('notification preference API migration', { concurrency: false }, () => 
                 .then(row => row?.endpoint),
             'https://fcm.googleapis.com/fcm/send/batched-500'
         );
+        await removeNotificationPreferenceApis(database);
+        assert.equal(
+            await database('push_subscriptions').where({ user_id: 'batched-user' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            501,
+            'rollback scans large histories in bounded batches without dropping rows'
+        );
     });
 
     test('revokes legacy active subscriptions whose P-256 point is off-curve', async () => {

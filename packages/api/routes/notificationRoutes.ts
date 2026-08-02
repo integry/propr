@@ -14,7 +14,9 @@ import {
 import {
     NOTIFICATION_PAYLOAD_LIMITS,
     parseNotificationCapabilitiesResponse,
+    parseNotificationPreferencesResponse,
     parsePushSubscriptionEnrollmentResponse,
+    parsePushSubscriptionsResponse,
     parseNotificationUnreadCountResponse
 } from '@propr/shared';
 
@@ -27,7 +29,9 @@ export type NotificationRouteService = Pick<
     | 'getNotificationPreferences'
     | 'updateNotificationPreferences'
     | 'upsertPushSubscription'
+    | 'listPushSubscriptions'
     | 'revokePushSubscription'
+    | 'revokePushSubscriptionById'
 >;
 
 export interface WebPushServerConfiguration {
@@ -38,6 +42,14 @@ export interface WebPushServerConfiguration {
 export interface NotificationRouteDependencies {
     service?: NotificationRouteService;
     getWebPushConfiguration?: () => WebPushServerConfiguration;
+    logWarning?: (message: string) => void;
+}
+
+type VapidConfigurationIssue = 'missing' | 'malformed' | 'mismatched';
+
+interface VapidValidationResult {
+    publicKey: string | null;
+    issue: VapidConfigurationIssue | null;
 }
 
 function decodeVapidKey(value: unknown, expectedBytes: number): Buffer | null {
@@ -62,21 +74,34 @@ function decodeVapidKey(value: unknown, expectedBytes: number): Buffer | null {
 
 function validatedVapidPublicKey(
     configuration: WebPushServerConfiguration
-): string | null {
+): VapidValidationResult {
+    if (!configuration.publicKey || !configuration.privateKey) {
+        return { publicKey: null, issue: 'missing' };
+    }
     const publicKey = decodeVapidKey(configuration.publicKey, 65);
     const privateKey = decodeVapidKey(configuration.privateKey, 32);
-    if (!publicKey || publicKey[0] !== 0x04 || !privateKey) return null;
+    if (!publicKey || publicKey[0] !== 0x04 || !privateKey) {
+        return { publicKey: null, issue: 'malformed' };
+    }
 
     try {
         const ecdh = createECDH('prime256v1');
         ecdh.setPrivateKey(privateKey);
         const derivedPublicKey = ecdh.getPublicKey(undefined, 'uncompressed');
-        if (!timingSafeEqual(publicKey, derivedPublicKey)) return null;
+        if (!timingSafeEqual(publicKey, derivedPublicKey)) {
+            return { publicKey: null, issue: 'mismatched' };
+        }
     } catch {
-        return null;
+        return { publicKey: null, issue: 'malformed' };
     }
-    return publicKey.toString('base64url');
+    return { publicKey: publicKey.toString('base64url'), issue: null };
 }
+
+const VAPID_WARNING_MESSAGES: Record<VapidConfigurationIssue, string> = {
+    missing: 'VAPID public/private keys are missing or incomplete',
+    malformed: 'VAPID public/private keys are malformed',
+    mismatched: 'VAPID public/private keys do not match'
+};
 
 function authenticatedUserId(req: Request, res: Response): string | null {
     if (typeof req.user?.id !== 'string' || req.user.id.trim().length === 0) {
@@ -114,6 +139,19 @@ function eventIdFromRequest(req: Request): string {
         throw new NotificationQueryValidationError('notification id is invalid');
     }
     return eventId;
+}
+
+function subscriptionIdFromRequest(req: Request): string {
+    const subscriptionId = req.params.subscriptionId;
+    if (
+        typeof subscriptionId !== 'string'
+        || subscriptionId.trim().length === 0
+        || Buffer.byteLength(subscriptionId, 'utf8')
+            > NOTIFICATION_PAYLOAD_LIMITS.identifierBytes
+    ) {
+        throw new NotificationQueryValidationError('push subscription id is invalid');
+    }
+    return subscriptionId;
 }
 
 function withoutClientSuppliedOwner(value: unknown): unknown {
@@ -172,13 +210,20 @@ export function createNotificationRoutes(
         publicKey: process.env.VAPID_PUBLIC_KEY,
         privateKey: process.env.VAPID_PRIVATE_KEY
     }));
+    const logWarning = dependencies.logWarning
+        ?? (dependencies.service === undefined ? console.warn : () => undefined);
     // VAPID configuration is process-static. Validate the key pair once when the
     // routes are constructed instead of repeating P-256 derivation per request.
-    const vapidPublicKey = validatedVapidPublicKey(getWebPushConfiguration());
+    const vapidValidation = validatedVapidPublicKey(getWebPushConfiguration());
+    if (vapidValidation.issue !== null) {
+        logWarning(`[notifications] Web Push disabled: ${
+            VAPID_WARNING_MESSAGES[vapidValidation.issue]
+        }`);
+    }
     const capabilityResponse = parseNotificationCapabilitiesResponse({
         push: {
-            configured: vapidPublicKey !== null,
-            vapidPublicKey
+            configured: vapidValidation.publicKey !== null,
+            vapidPublicKey: vapidValidation.publicKey
         }
     });
 
@@ -260,7 +305,9 @@ export function createNotificationRoutes(
         if (!userId) return;
 
         try {
-            res.json(await service.getNotificationPreferences(userId));
+            res.json(parseNotificationPreferencesResponse(
+                await service.getNotificationPreferences(userId)
+            ));
         } catch (error) {
             handleRouteError(res, error, 'read notification preferences');
         }
@@ -271,11 +318,13 @@ export function createNotificationRoutes(
         if (!userId) return;
 
         try {
-            res.json(await service.updateNotificationPreferences(
-                userId,
-                withoutClientSuppliedOwner(req.body) as Parameters<
-                    NotificationRouteService['updateNotificationPreferences']
-                >[1]
+            res.json(parseNotificationPreferencesResponse(
+                await service.updateNotificationPreferences(
+                    userId,
+                    withoutClientSuppliedOwner(req.body) as Parameters<
+                        NotificationRouteService['updateNotificationPreferences']
+                    >[1]
+                )
             ));
         } catch (error) {
             handleRouteError(res, error, 'update notification preferences');
@@ -303,6 +352,18 @@ export function createNotificationRoutes(
         }
     }
 
+    async function listPushSubscriptions(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        try {
+            const subscriptions = await service.listPushSubscriptions(userId);
+            res.json(parsePushSubscriptionsResponse({ subscriptions }));
+        } catch (error) {
+            handleRouteError(res, error, 'list push subscriptions');
+        }
+    }
+
     async function revokePushSubscription(req: Request, res: Response): Promise<void> {
         const userId = authenticatedUserId(req, res);
         if (!userId) return;
@@ -324,6 +385,21 @@ export function createNotificationRoutes(
         }
     }
 
+    async function revokePushSubscriptionById(req: Request, res: Response): Promise<void> {
+        const userId = authenticatedUserId(req, res);
+        if (!userId) return;
+
+        try {
+            await service.revokePushSubscriptionById(
+                userId,
+                subscriptionIdFromRequest(req)
+            );
+            res.status(204).end();
+        } catch (error) {
+            handleRouteError(res, error, 'revoke push subscription');
+        }
+    }
+
     return {
         getNotifications,
         getUnreadCount,
@@ -335,6 +411,8 @@ export function createNotificationRoutes(
         updatePreferences,
         createPushSubscription,
         upsertPushSubscription: createPushSubscription,
-        revokePushSubscription
+        listPushSubscriptions,
+        revokePushSubscription,
+        revokePushSubscriptionById
     };
 }

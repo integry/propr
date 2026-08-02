@@ -61,7 +61,7 @@ function createDatabase(filename = ':memory:'): Knex {
 async function createEvent(
     eventId: string,
     occurredAt: string,
-    recipients: Array<string | { userId: string; inboxEnabled?: boolean; pushEnabled?: boolean }>
+    recipients: Array<string | { userId: string; inboxEnabled?: boolean; pushEnabled: boolean }>
 ) {
     return service.createNotificationEvent({
         eventId,

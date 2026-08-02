@@ -400,7 +400,9 @@ export {
     updateNotificationPreferences,
     updateNotificationPreference,
     upsertPushSubscription,
+    listPushSubscriptions,
     revokePushSubscription,
+    revokePushSubscriptionById,
     garbageCollectPushSubscriptions
 } from './services/notificationService.js';
 export type {

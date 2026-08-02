@@ -877,7 +877,9 @@ export function parsePushSubscriptionEndpoint(
   options: PushSubscriptionValidationOptions = {},
 ): string {
   const path = 'pushSubscriptionInput.endpoint';
-  const expectation = 'a safe HTTPS browser push endpoint URL';
+  const expectation = options.allowInsecureLocalhost
+    ? 'a safe HTTPS browser push endpoint URL or an HTTP(S) loopback development URL'
+    : 'a safe HTTPS browser push endpoint URL';
   const href = parseString(
     value,
     path,
@@ -1324,19 +1326,30 @@ export function parseNotificationPreference(value: unknown): NotificationPrefere
   };
 }
 
-export function parseIanaTimezone(value: unknown, path = 'timezone'): string {
+function parseIanaTimezoneIdentifier(value: unknown, path: string): string {
   const timezone = parseString(value, path);
-  if (timezone !== timezone.trim()) {
-    return invalid(path, 'an IANA timezone identifier');
-  }
-  try {
-    // Intl uses the runtime's IANA tz database and rejects numeric offsets and
-    // arbitrary labels. Preserve aliases rather than silently rewriting user data.
-    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(0);
-  } catch {
+  const parts = timezone.split('/');
+  if (
+    timezone !== timezone.trim()
+    || !/^[A-Za-z0-9_+.-]+(?:\/[A-Za-z0-9_+.-]+)*$/.test(timezone)
+    || parts.some((part) => part === '.' || part === '..')
+  ) {
     return invalid(path, 'an IANA timezone identifier');
   }
   return timezone;
+}
+
+export function parseIanaTimezone(value: unknown, path = 'timezone'): string {
+  const timezone = parseIanaTimezoneIdentifier(value, path);
+  try {
+    // User input is validated and canonicalized once by the server runtime. API
+    // response parsing below deliberately performs only structural validation so
+    // an older browser's ICU database cannot reject a trusted stored value.
+    return new Intl.DateTimeFormat('en-US', { timeZone: timezone })
+      .resolvedOptions().timeZone;
+  } catch {
+    return invalid(path, 'an IANA timezone identifier');
+  }
 }
 
 export function parseQuietHour(value: unknown, path = 'quietHour'): string {
@@ -1350,7 +1363,10 @@ function parseNullableQuietHour(value: unknown, path: string): string | null {
   return value === null ? null : parseQuietHour(value, path);
 }
 
-export function parseNotificationQuietHours(value: unknown): NotificationQuietHours {
+function parseNotificationQuietHoursWith(
+  value: unknown,
+  parseTimezone: (timezone: unknown, path: string) => string,
+): NotificationQuietHours {
   const quietHours = parseRecord(value, 'notificationQuietHours');
   assertOnlyKnownProperties(
     quietHours,
@@ -1360,11 +1376,15 @@ export function parseNotificationQuietHours(value: unknown): NotificationQuietHo
   return {
     start: parseNullableQuietHour(quietHours.start, 'notificationQuietHours.start'),
     end: parseNullableQuietHour(quietHours.end, 'notificationQuietHours.end'),
-    timezone: parseIanaTimezone(
+    timezone: parseTimezone(
       quietHours.timezone,
       'notificationQuietHours.timezone',
     ),
   };
+}
+
+export function parseNotificationQuietHours(value: unknown): NotificationQuietHours {
+  return parseNotificationQuietHoursWith(value, parseIanaTimezone);
 }
 
 /** Validate a sparse update without manufacturing values for omitted fields. */
@@ -1916,7 +1936,7 @@ export function parseNotificationPreferencesResponse(
     preferences: parseNotificationPreferences(response.preferences),
     quietHours: response.quietHours === undefined
       ? { ...DEFAULT_NOTIFICATION_QUIET_HOURS }
-      : parseNotificationQuietHours(response.quietHours),
+      : parseNotificationQuietHoursWith(response.quietHours, parseIanaTimezoneIdentifier),
   };
 }
 

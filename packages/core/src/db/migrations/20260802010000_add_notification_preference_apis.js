@@ -1118,15 +1118,27 @@ async function rebuildPushSubscriptions(knex, options) {
 }
 
 async function hasLocalhostPushEndpoints(knex) {
-  const rows = await knex('push_subscriptions').select('endpoint');
-  return rows.some(({ endpoint }) => {
-    try {
-      const hostname = new URL(endpoint).hostname.toLowerCase();
-      return hostname === 'localhost' || hostname === '127.0.0.1';
-    } catch {
-      return false;
+  let lastSubscriptionId;
+  while (true) {
+    const query = knex('push_subscriptions')
+      .select('subscription_id', 'endpoint')
+      .orderBy('subscription_id', 'asc')
+      .limit(PUSH_SUBSCRIPTION_NORMALIZATION_BATCH_SIZE);
+    if (lastSubscriptionId !== undefined) {
+      query.where('subscription_id', '>', lastSubscriptionId);
     }
-  });
+    const rows = await query;
+    if (rows.length === 0) return false;
+    if (rows.some(({ endpoint }) => {
+      try {
+        const hostname = new URL(endpoint).hostname.toLowerCase();
+        return hostname === 'localhost' || hostname === '127.0.0.1';
+      } catch {
+        return false;
+      }
+    })) return true;
+    lastSubscriptionId = rows[rows.length - 1].subscription_id;
+  }
 }
 
 async function withForeignKeysDisabled(knex, operation) {
