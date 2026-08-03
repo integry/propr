@@ -454,10 +454,6 @@ export * from './agentLoginApi';
 export type { ChatMessage } from './plannerApi';
 export type { PlanIssueStatus } from './planIssuesApi';
 export type {
-  CommitInfo,
-  DeleteTaskResponse,
-  PostFollowupResponse,
-  RevertParams,
-  RevertPreviewResponse,
-  TriggerReindexAllResponse
+  CommitInfo, DeleteTaskResponse, PostFollowupResponse,
+  RevertParams, RevertPreviewResponse, TriggerReindexAllResponse
 } from './proprTypes';
