@@ -1,7 +1,12 @@
-import { test, describe } from 'node:test';
+import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 import { assembleRefinementPrompt } from '../packages/core/src/services/taskPlanning/refinement.ts';
 import { PlanningFailedError } from '../packages/core/src/services/planning/index.ts';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => {
+  await closeConnection();
+});
 
 const SYS = 'SYSTEM';
 

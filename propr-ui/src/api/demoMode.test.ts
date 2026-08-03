@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import {
   apiFetch,
+  CommittedConfigWriteError,
   getDemoModeStatus,
   handleApiResponse,
   INSTANCE_AUTHORIZATION_CHANGED_EVENT
@@ -137,6 +138,32 @@ describe('demo mode API helpers', () => {
 
     expect(listener).toHaveBeenCalledOnce();
     window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+  });
+
+  it.each([
+    { status: 409, lockLostAfterCommit: true },
+    { status: 500, lockLostAfterCommit: false },
+  ])('preserves committed configuration metadata for HTTP $status responses', async ({ status, lockLostAfterCommit }) => {
+    const response = new Response(JSON.stringify({
+      success: status === 409,
+      committed: true,
+      error: status === 500 ? 'Notification publication failed after saving.' : undefined,
+      warning: status === 409 ? 'The lock was lost after saving.' : undefined,
+      lock_lost_after_commit: lockLostAfterCommit,
+    }), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const error = await handleApiResponse(response).catch(caught => caught);
+
+    expect(error).toBeInstanceOf(CommittedConfigWriteError);
+    expect(error).toMatchObject({
+      committed: true,
+      status,
+      lockLostAfterCommit,
+      responseBody: { committed: true },
+    });
   });
 
   it('continues to allow GET requests in demo mode', async () => {

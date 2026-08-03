@@ -44,4 +44,29 @@ describe('incremental task live updates', () => {
       tokenUsage: null,
     });
   });
+
+  it('keeps distinct events that have stable IDs despite identical legacy content', () => {
+    const payload: IncrementalTaskLiveUpdatePayload = {
+      taskId: 'task-1',
+      events: [
+        { id: 'event-1', type: 'thought', content: 'Same output', timestamp: '2026-08-03T00:00:00.000Z' },
+        { id: 'event-2', type: 'thought', content: 'Same output', timestamp: '2026-08-03T00:00:00.000Z' },
+      ],
+    };
+
+    expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toHaveLength(2);
+  });
+
+  it('uses tool-use IDs without dropping the matching tool result', () => {
+    const payload: IncrementalTaskLiveUpdatePayload = {
+      taskId: 'task-1',
+      events: [
+        { type: 'tool_use', toolName: 'Read', toolUseId: 'call-1', input: { file_path: 'README.md' }, timestamp: '2026-08-03T00:00:00.000Z' },
+        { type: 'tool_use', toolName: 'Read', toolUseId: 'call-2', input: { file_path: 'README.md' }, timestamp: '2026-08-03T00:00:00.000Z' },
+        { type: 'tool_result', toolUseId: 'call-1', result: 'contents', timestamp: '2026-08-03T00:00:00.000Z' },
+      ],
+    };
+
+    expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toEqual(payload.events);
+  });
 });

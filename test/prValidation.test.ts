@@ -1,10 +1,15 @@
-import { test, describe, mock } from 'node:test';
+import { test, describe, after, mock } from 'node:test';
 import assert from 'node:assert';
 import { 
+    closeConnection,
     validatePRCreation, 
     generateEnhancedClaudePrompt, 
     validateRepositoryInfo 
 } from '@propr/core';
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('PR Validation Utils', () => {
     test('generateEnhancedClaudePrompt should include all required repository information', () => {

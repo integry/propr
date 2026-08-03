@@ -1,4 +1,4 @@
-import { test, mock, describe, beforeEach } from 'node:test';
+import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import type { Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent } from './testHelpers.js';
@@ -182,6 +182,8 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 const { processCommentEvent, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 
 // ========== Ultrafix Deps Mock ==========
 
@@ -206,6 +208,11 @@ setUltrafixDeps({
     startLoop: mockStartLoop,
     clearState: mockClearState,
     getPendingReviewState: mockGetPendingReviewState,
+});
+
+after(async () => {
+    await shutdownQueue();
+    await closeConnection();
 });
 
 // ========== Helpers ==========

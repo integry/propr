@@ -38,15 +38,52 @@ REDIS_TAG="${REDIS_TAG:-redis:7-alpine}"
 UI_PORT="${UI_PORT:-14173}"
 DOCS_PORT="${DOCS_PORT:-13000}"
 EXPECTED_VERSION="${EXPECTED_VERSION:-$(node -p "require('./package.json').version")}"
+STACK_CONTAINERS=(
+  "$STACK-api"
+  "$STACK-daemon"
+  "$STACK-worker"
+  "$STACK-ui"
+  "$STACK-docs"
+  "$STACK-redis"
+)
+
+remove_stack_resources() {
+  docker rm -f "${STACK_CONTAINERS[@]}" 2>/dev/null || true
+  if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    docker network rm "$NETWORK" >/dev/null
+  fi
+}
 
 cleanup() {
   echo ""
   echo "▸ cleaning up"
-  docker rm -f "$STACK-api" "$STACK-daemon" "$STACK-worker" "$STACK-ui" "$STACK-docs" "$STACK-redis" 2>/dev/null || true
-  docker network rm "$NETWORK" 2>/dev/null || true
+  remove_stack_resources 2>/dev/null || true
   rm -rf -- "$DATA_DIR"
 }
 trap cleanup EXIT
+
+reconcile_stale_stack() {
+  local resource found=false
+  for resource in "${STACK_CONTAINERS[@]}"; do
+    if docker container inspect "$resource" >/dev/null 2>&1; then
+      found=true
+      break
+    fi
+  done
+  if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    found=true
+  fi
+  if $found; then
+    echo "▸ removing stale resources for validated smoke stack $STACK"
+    if ! remove_stack_resources; then
+      echo "✗ could not remove stale network $NETWORK; inspect its attached containers before retrying" >&2
+      exit 1
+    fi
+  fi
+  # STACK is restricted above, so this target is always a single, narrowly
+  # scoped directory directly beneath /tmp.
+  rm -rf -- "$DATA_DIR"
+}
 
 echo "▸ propr image smoke test"
 echo "  stack:    $STACK"
@@ -57,6 +94,8 @@ echo "  docs tag: $DOCS_TAG"
 echo "  agent tag: $AGENT_TAG"
 echo "  launcher: $LAUNCHER_TAG"
 echo ""
+
+reconcile_stale_stack
 
 # --- Prepare throwaway data dir and fake .env ------------------------------
 mkdir -p "$DATA_DIR"/{data,logs}
@@ -114,7 +153,7 @@ wait_for_http() {
 }
 
 # --- Network ---------------------------------------------------------------
-docker network create "$NETWORK" >/dev/null
+docker network create --label "com.propr.smoke.stack=$STACK" "$NETWORK" >/dev/null
 echo "✓ network created"
 
 # --- Redis -----------------------------------------------------------------

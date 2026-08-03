@@ -9,6 +9,7 @@ import {
     discoverWorkspaceTestRoots,
     selectTestFiles,
     shouldFlushRedis,
+    usesNativeWorkspaceTestRunner,
 } from '../scripts/run-test-suite.mjs';
 
 describe('release test-suite runner', () => {
@@ -21,10 +22,12 @@ describe('release test-suite runner', () => {
             '/repo/test/helper.ts',
             '/repo/test/b.test.js',
             '/repo/test/component.test.tsx',
+            '/repo/test/service.spec.ts',
         ]), [
             '/repo/test/a.test.mjs',
             '/repo/test/b.test.js',
             '/repo/test/component.test.tsx',
+            '/repo/test/service.spec.ts',
             '/repo/test/z.test.ts',
         ]);
     });
@@ -52,17 +55,17 @@ describe('release test-suite runner', () => {
             mkdirSync(join(root, 'packages', 'shared', 'test'), { recursive: true });
             mkdirSync(join(root, 'apps', 'service', 'src'), { recursive: true });
             mkdirSync(join(root, 'apps', 'narrow', 'src'), { recursive: true });
-            mkdirSync(join(root, 'propr-ui', 'src'), { recursive: true });
-            writeJson(join(root, 'package.json'), { workspaces: ['apps/*', 'packages/*', 'propr-ui'] });
+            mkdirSync(join(root, 'web-client', 'src'), { recursive: true });
+            writeJson(join(root, 'package.json'), { workspaces: ['apps/*', 'packages/*', 'web-client'] });
             writeJson(join(root, 'packages', 'shared', 'package.json'), { name: '@propr/shared' });
             writeJson(join(root, 'apps', 'service', 'package.json'), { name: 'service' });
             writeJson(join(root, 'apps', 'narrow', 'package.json'), { name: 'narrow', scripts: { test: 'node --test one.test.ts' } });
-            writeJson(join(root, 'propr-ui', 'package.json'), { name: 'propr-ui', scripts: { test: 'vitest run' } });
+            writeJson(join(root, 'web-client', 'package.json'), { name: 'web-client', scripts: { test: 'vitest run' } });
             writeFileSync(join(root, 'test', 'root.test.ts'), '');
             writeFileSync(join(root, 'packages', 'shared', 'test', 'shared.test.ts'), '');
-            writeFileSync(join(root, 'apps', 'service', 'src', 'service.test.ts'), '');
+            writeFileSync(join(root, 'apps', 'service', 'src', 'service.spec.ts'), '');
             writeFileSync(join(root, 'apps', 'narrow', 'src', 'otherwise-omitted.test.ts'), '');
-            writeFileSync(join(root, 'propr-ui', 'src', 'ui.test.ts'), '');
+            writeFileSync(join(root, 'web-client', 'src', 'ui.test.ts'), '');
 
             assert.deepEqual(discoverWorkspaceTestRoots(root), [
                 join(root, 'apps', 'narrow'),
@@ -72,12 +75,19 @@ describe('release test-suite runner', () => {
             ]);
             assert.deepEqual(discoverTestFiles([], root), [
                 join(root, 'apps', 'narrow', 'src', 'otherwise-omitted.test.ts'),
-                join(root, 'apps', 'service', 'src', 'service.test.ts'),
+                join(root, 'apps', 'service', 'src', 'service.spec.ts'),
                 join(root, 'packages', 'shared', 'test', 'shared.test.ts'),
                 join(root, 'test', 'root.test.ts'),
             ]);
         } finally {
             rmSync(root, { recursive: true, force: true });
         }
+    });
+
+    test('delegates native workspace runners by script instead of package name', () => {
+        assert.equal(usesNativeWorkspaceTestRunner({ name: 'web', scripts: { test: 'vitest run' } }), true);
+        assert.equal(usesNativeWorkspaceTestRunner({ name: 'api', scripts: { test: 'jest --runInBand' } }), true);
+        assert.equal(usesNativeWorkspaceTestRunner({ name: 'service', scripts: { test: 'node --test one.test.ts' } }), false);
+        assert.equal(usesNativeWorkspaceTestRunner({ name: 'shared' }), false);
     });
 });

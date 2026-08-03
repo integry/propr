@@ -1,4 +1,4 @@
-import { test, mock, describe } from 'node:test';
+import { after, test, mock, describe } from 'node:test';
 import assert from 'node:assert';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
@@ -129,7 +129,15 @@ const {
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
 const { handleCheckRunEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandler.js';
+
+after(async () => {
+    resetUltrafixStateRedisForTests();
+    await shutdownQueue();
+    await closeConnection();
+});
 
 // Helper to reset all mocks
 function resetMocks(): void {

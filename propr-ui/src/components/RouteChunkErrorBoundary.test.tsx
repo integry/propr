@@ -44,4 +44,12 @@ describe('RouteChunkErrorBoundary', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(screen.getByText('Recovered route')).toBeInTheDocument();
   });
+
+  it('normalizes arbitrary thrown values before storing boundary state', () => {
+    for (const thrown of [null, undefined, 'route failed', { reason: 'route failed' }]) {
+      const state = RouteChunkErrorBoundary.getDerivedStateFromError(thrown);
+      expect(state.error).toBeInstanceOf(Error);
+      expect(state.error?.message.length).toBeGreaterThan(0);
+    }
+  });
 });

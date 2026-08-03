@@ -19,7 +19,7 @@
     "test": "node --test",
     "test:prepare": "npm run build --workspace=packages/shared && npm run build --workspace=packages/core && npm run build --workspace=packages/cli",
     "test:server": "node scripts/run-test-suite.mjs",
-    "test:full:prepared": "npm run test:server && npm test --workspace=propr-ui",
+    "test:full:prepared": "npm run test:server && npm test --workspaces --if-present",
     "test:full": "npm run test:prepare && npm run test:full:prepared",
     "test:unit": "NODE_ENV=test npx tsx --test test/minimal.test.ts test/modelName.test.ts test/daemonEventIntake.test.ts test/githubEventIntakeMode.test.ts test/intakeModePrerequisites.test.ts test/validateRoutingUrl.test.ts test/routingWebSocketProtocol.test.ts test/routingWebSocketIntakeService.test.ts test/routingStatusPublisher.test.ts test/releaseValidation.test.mjs test/testSuiteRunner.test.mjs packages/api/test/statusRoutes.test.ts packages/api/test/agentRuntimeRoutes.test.ts packages/api/test/instanceAuthorization.test.ts packages/api/test/routeAuthorization.test.ts",
     "test:e2e": "npx tsx --test test/e2e.test.ts",

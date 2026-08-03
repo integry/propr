@@ -118,11 +118,36 @@ jobs:
       - name: Create Failure Issue
         if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PROPR_E2E_API_URL_TO_REDACT: ${{ secrets.PROPR_E2E_API_URL }}
+          PROPR_E2E_TOKEN_TO_REDACT: ${{ secrets.PROPR_E2E_TOKEN }}
         with:
           script: |
             const fs = require('fs');
             const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
             const date = new Date().toISOString().split('T')[0];
+
+            const redactOutput = (value) => {
+              let redacted = String(value);
+              const knownSecrets = [
+                process.env.PROPR_E2E_API_URL_TO_REDACT,
+                process.env.PROPR_E2E_TOKEN_TO_REDACT,
+              ].filter(secret => secret && secret.length > 0);
+              for (const secret of knownSecrets) {
+                redacted = redacted.split(secret).join('[REDACTED]');
+              }
+              const credentialPatterns = [
+                [/(\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|token)?\s*)[^\s,;]+/gi, '$1[REDACTED]'],
+                [/(\bPROPR_E2E_TOKEN\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]'],
+                [/(["'](?:access_?token|api_?key|client_?secret|password)["']\s*:\s*["'])[^"']+(["'])/gi, '$1[REDACTED]$2'],
+                [/\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]'],
+                [/(https?:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi, '$1[REDACTED]@'],
+              ];
+              for (const [pattern, replacement] of credentialPatterns) {
+                redacted = redacted.replace(pattern, replacement);
+              }
+              return redacted;
+            };
 
             let testOutput = '';
             try { testOutput = fs.readFileSync('test_output.txt', 'utf8'); }
@@ -131,6 +156,11 @@ jobs:
             let e2eOutput = '';
             try { e2eOutput = fs.readFileSync('e2e_output.txt', 'utf8'); }
             catch (e) { e2eOutput = 'E2E output file not available or not run.'; }
+
+            // Log masking only protects the Actions log. Redact again before
+            // sending captured process output through the Issues API.
+            testOutput = redactOutput(testOutput);
+            e2eOutput = redactOutput(e2eOutput);
 
             // Truncate outputs if too long
             if (testOutput.length > 30000) {

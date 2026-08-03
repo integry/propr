@@ -13,6 +13,48 @@ export class DemoModeReadOnlyError extends Error {
   }
 }
 
+interface CommittedConfigWriteBody {
+  committed: true;
+  error?: string;
+  warning?: string;
+  lock_lost_after_commit?: boolean;
+  [key: string]: unknown;
+}
+
+interface ApiErrorBody {
+  code?: string;
+  committed?: boolean;
+  error?: string;
+  lock_lost_after_commit?: boolean;
+  message?: string;
+  warning?: string;
+  [key: string]: unknown;
+}
+
+export class CommittedConfigWriteError extends Error {
+  readonly committed = true;
+  readonly status: number;
+  readonly warning?: string;
+  readonly lockLostAfterCommit: boolean;
+  readonly responseBody: CommittedConfigWriteBody;
+
+  constructor(status: number, body: CommittedConfigWriteBody) {
+    super(body.warning || body.error || 'Configuration changes were committed, but the request did not complete normally.');
+    this.name = 'CommittedConfigWriteError';
+    this.status = status;
+    this.warning = body.warning;
+    this.lockLostAfterCommit = body.lock_lost_after_commit === true;
+    this.responseBody = body;
+  }
+}
+
+export const isCommittedConfigWriteError = (error: unknown): error is CommittedConfigWriteError =>
+  error instanceof CommittedConfigWriteError || (
+    error instanceof Error
+    && 'committed' in error
+    && (error as { committed?: unknown }).committed === true
+  );
+
 export const isDemoModeReadOnlyError = (error: unknown): error is DemoModeReadOnlyError =>
   error instanceof DemoModeReadOnlyError || (
     error instanceof Error
@@ -50,15 +92,21 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
     throw new Error('Authentication required');
   }
 
-  let data: { code?: string; error?: string; message?: string } | null = null;
+  let data: ApiErrorBody | null = null;
   try {
-    data = await response.clone().json() as { code?: string; error?: string; message?: string };
+    data = await response.clone().json() as ApiErrorBody;
   } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
   if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
     throw new DemoModeReadOnlyError(data.message || data.error);
   }
   if (data?.code === 'INSUFFICIENT_INSTANCE_PERMISSION') {
     window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
+  }
+  if (data?.committed === true) {
+    throw new CommittedConfigWriteError(response.status, {
+      ...data,
+      committed: true,
+    });
   }
   if (response.status < 500 && (data?.message || data?.error)) {
     throw new Error(data.message || data.error);

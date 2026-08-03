@@ -17,9 +17,17 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Initialize diagnostic log
+        if: always()
+        run: |
+          echo "Build check diagnostics for run ${{ github.run_id }}, attempt ${{ github.run_attempt }}" > build_log.txt
+          echo "Checkout outcome: ${{ steps.checkout.outcome }}" >> build_log.txt
+
       - name: Set up Node.js
+        id: node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
@@ -33,47 +41,74 @@ jobs:
             packages/core/package-lock.json
 
       - name: Check toolchain
+        id: toolchain
         run: |
-          node --version
-          npm --version
+          set -euo pipefail
+          {
+            echo
+            echo "--- Toolchain ---"
+            node --version
+            npm --version
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Install Dependencies
         id: install
-        run: npm ci
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- Dependency installation ---"
+            npm ci
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Run Fast Unit Tests
         id: unit_tests
         run: |
-          echo "Running fast unit tests (no Redis/Docker dependencies)..."
-          npm run test:unit
-          echo "✅ Fast unit tests passed"
+          set -euo pipefail
+          {
+            echo
+            echo "--- Fast unit tests ---"
+            echo "Running fast unit tests (no Redis/Docker dependencies)..."
+            npm run test:unit
+            echo "✅ Fast unit tests passed"
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Run Hosted Tunnel Regression Tests
         id: tunnel_tests
         run: |
-          echo "Running hosted tunnel regression tests..."
-          # Build @propr/shared first: the tsx and UI tests below import from it,
-          # so a stale or missing dist in a clean checkout would fail or use old
-          # output. Build once, up front, before anything that depends on it.
-          npm run build -w @propr/shared
-          PROPR_DEMO_MODE=true npx tsx --test \
-            test/orchestratorConfig.test.mjs \
-            packages/cli/src/commands/tunnelCommand.test.ts \
-            test/orchestratorTunnelLifecycle.test.mjs \
-            test/orchestratorTunnelStatus.test.mjs \
-            test/orchestratorProprUrlsDrift.test.ts \
-            test/routingWebSocketProtocol.test.ts \
-            test/routingWebSocketIntakeService.test.ts \
-            packages/api/test/corsValidation.test.ts
-          npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
-          echo "✅ Hosted tunnel regression tests passed"
+          set -euo pipefail
+          {
+            echo
+            echo "--- Hosted tunnel regression tests ---"
+            echo "Running hosted tunnel regression tests..."
+            # Build @propr/shared first: the tsx and UI tests below import from it,
+            # so a stale or missing dist in a clean checkout would fail or use old
+            # output. Build once, up front, before anything that depends on it.
+            npm run build -w @propr/shared
+            PROPR_DEMO_MODE=true npx tsx --test \
+              test/orchestratorConfig.test.mjs \
+              packages/cli/src/commands/tunnelCommand.test.ts \
+              test/orchestratorTunnelLifecycle.test.mjs \
+              test/orchestratorTunnelStatus.test.mjs \
+              test/orchestratorProprUrlsDrift.test.ts \
+              test/routingWebSocketProtocol.test.ts \
+              test/routingWebSocketIntakeService.test.ts \
+              packages/api/test/corsValidation.test.ts
+            npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
+            echo "✅ Hosted tunnel regression tests passed"
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Verify CLI Release Package
         id: cli_pack
         run: |
-          echo "Verifying propr-cli release package..."
-          npm run cli:pack
-          echo "✅ propr-cli release package verified"
+          set -euo pipefail
+          {
+            echo
+            echo "--- CLI release package ---"
+            echo "Verifying propr-cli release package..."
+            npm run cli:pack
+            echo "✅ propr-cli release package verified"
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Detect Changes
         id: filter
@@ -101,10 +136,10 @@ jobs:
         id: build
         continue-on-error: true
         run: |
-          # Initialize log
+          # Preserve diagnostics from every earlier validation stage.
           touch build_log.txt
           EXIT_CODE=0
-          echo "Starting validation process..." > build_log.txt
+          echo "Starting changed-area validation process..." >> build_log.txt
           SHARED_BUILT=0
           SHARED_FAILED=0
           CORE_PKG_BUILT=0
@@ -353,11 +388,26 @@ jobs:
 
           exit $EXIT_CODE
 
+      - name: Finalize failure diagnostics
+        if: always() && (failure() || steps.build.outcome == 'failure')
+        run: |
+          {
+            echo
+            echo "--- Stage outcomes ---"
+            echo "Node setup: ${{ steps.node.outcome }}"
+            echo "Toolchain: ${{ steps.toolchain.outcome }}"
+            echo "Dependency install: ${{ steps.install.outcome }}"
+            echo "Fast tests: ${{ steps.unit_tests.outcome }}"
+            echo "Hosted tunnel tests: ${{ steps.tunnel_tests.outcome }}"
+            echo "CLI packaging: ${{ steps.cli_pack.outcome }}"
+            echo "Changed-area checks: ${{ steps.build.outcome }}"
+          } >> build_log.txt
+
       - name: Upload failure log
-        if: steps.build.outcome == 'failure'
+        if: always() && (failure() || steps.build.outcome == 'failure')
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: build-check-output-${{ github.run_id }}
+          name: build-check-output-${{ github.run_id }}-${{ github.run_attempt }}
           path: build_log.txt
           if-no-files-found: error
           retention-days: 7
@@ -382,7 +432,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: build-check-output-${{ github.run_id }}
+          name: build-check-output-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Post failure comment
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7

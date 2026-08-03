@@ -10,10 +10,14 @@ import { createClient } from 'redis';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 180_000;
 const TERMINATION_GRACE_MS = 2_000;
-const TEST_FILE_PATTERN = /\.test\.(?:[cm]?[jt]sx?)$/;
+const TEST_FILE_PATTERN = /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/;
 const EXCLUDED_TESTS = new Set(['e2e.test.ts']);
 const IGNORED_DIRECTORIES = new Set(['.git', 'coverage', 'dist', 'node_modules']);
-const DELEGATED_TEST_WORKSPACES = new Set(['propr-ui']);
+
+export function usesNativeWorkspaceTestRunner(workspacePackage) {
+    const testScript = workspacePackage.scripts?.test;
+    return typeof testScript === 'string' && /\b(?:jest|vitest)\b/.test(testScript);
+}
 
 function isLiveTest(entry) {
     const normalized = entry.replaceAll('\\', '/');
@@ -71,9 +75,10 @@ export function discoverWorkspaceTestRoots(root = ROOT) {
 
     for (const workspaceDirectory of workspaceDirectories) {
         const workspacePackage = readPackageJson(workspaceDirectory);
-        // Only explicitly delegated native runners are excluded. The Node suite
-        // owns every other workspace even if a narrow package script is added.
-        if (DELEGATED_TEST_WORKSPACES.has(workspacePackage.name)) continue;
+        // Jest/Vitest suites need their package-native environment and are run
+        // by the workspace phase of test:full:prepared. Node-compatible files
+        // remain owned here, even if a narrow package script is later added.
+        if (usesNativeWorkspaceTestRunner(workspacePackage)) continue;
         roots.push(workspaceDirectory);
     }
 

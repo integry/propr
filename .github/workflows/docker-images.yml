@@ -166,6 +166,7 @@ jobs:
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
+      DOCKER_CONFIG: ${{ runner.temp }}/propr-docker-config-${{ github.run_id }}-${{ github.run_attempt }}-images
       PUSH_LATEST: 'false'
 
     steps:
@@ -173,6 +174,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      - name: Prepare isolated Docker credentials
+        run: install -d -m 700 "$DOCKER_CONFIG"
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -278,6 +282,17 @@ jobs:
           echo "### Release reconciliation" >> "$GITHUB_STEP_SUMMARY"
           echo "Re-run this workflow for the same immutable release tag. Image tags are rebuilt from that tag and safely re-pushed before npm publication can begin." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Remove isolated Docker credentials
+        if: always()
+        run: |
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-docker-config-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          docker logout >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"
+
   publish-cli:
     name: Publish CLI with provenance
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
@@ -379,10 +394,14 @@ jobs:
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
+      DOCKER_CONFIG: ${{ runner.temp }}/propr-docker-config-${{ github.run_id }}-${{ github.run_attempt }}-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Prepare isolated Docker credentials
+        run: install -d -m 700 "$DOCKER_CONFIG"
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -417,4 +436,15 @@ jobs:
         run: |
           echo "Latest promotion failed after the immutable release surfaces completed. Re-run this workflow for the same tag; existing latest tags are restored when possible." >&2
           echo "### Latest-tag reconciliation" >> "$GITHUB_STEP_SUMMARY"
-          echo "Re-run this workflow for the same release tag. Promotion preflights all immutable version/SHA pairs and restores prior latest digests after a partial failure when the registry supports it." >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same release tag. Promotion preflights all immutable version/SHA pairs and restores prior latest digests. If a target had no prior latest tag, the failure output explicitly marks the promotion non-atomic and identifies the newly created tag that requires registry-side deletion." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated Docker credentials
+        if: always()
+        run: |
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-docker-config-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          docker logout >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"

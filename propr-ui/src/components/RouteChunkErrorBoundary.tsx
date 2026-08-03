@@ -17,7 +17,20 @@ const CHUNK_LOAD_ERROR_PATTERNS = [
   /chunkloaderror/i,
 ];
 
-export function isRouteChunkLoadError(error: Error): boolean {
+function normalizeRouteError(thrown: unknown): Error {
+  if (thrown instanceof Error) return thrown;
+  if (typeof thrown === 'string') return new Error(thrown);
+  let description: string;
+  try {
+    description = JSON.stringify(thrown) ?? String(thrown);
+  } catch {
+    description = String(thrown);
+  }
+  return new Error(`A route threw a non-Error value: ${description}`);
+}
+
+export function isRouteChunkLoadError(thrown: unknown): boolean {
+  const error = normalizeRouteError(thrown);
   if (error.name === 'ChunkLoadError') return true;
   return CHUNK_LOAD_ERROR_PATTERNS.some(pattern => pattern.test(`${error.name}: ${error.message}`));
 }
@@ -28,8 +41,8 @@ export default class RouteChunkErrorBoundary extends React.Component<
 > {
   state: RouteChunkErrorBoundaryState = { error: null };
 
-  static getDerivedStateFromError(error: Error): RouteChunkErrorBoundaryState {
-    return { error };
+  static getDerivedStateFromError(error: unknown): RouteChunkErrorBoundaryState {
+    return { error: normalizeRouteError(error) };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {

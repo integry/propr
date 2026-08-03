@@ -1,10 +1,15 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { after, test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 
 process.env.NODE_ENV = 'test';
 import { extractKeywords } from '../packages/core/src/services/relevance/keywordExtractor.js';
 import { formatCommitLog } from '../packages/core/src/services/relevance/gitMiner.js';
 import type { CommitInfo } from '../packages/core/src/services/relevance/gitMiner.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('Keyword Extractor', () => {
     test('extracts CamelCase identifiers', () => {

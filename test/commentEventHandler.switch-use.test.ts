@@ -1,4 +1,4 @@
-import { test, mock, describe, beforeEach } from 'node:test';
+import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
@@ -172,9 +172,16 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 const { processCommentEvent, handleCommentDeleted } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
+
+after(async () => {
+    await shutdownQueue();
+    await closeConnection();
+});
 
 // ========== Helpers ==========
 

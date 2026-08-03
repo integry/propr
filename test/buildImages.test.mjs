@@ -267,4 +267,25 @@ describe('build-images publication reconciliation', () => {
     assert.equal(readState(root).digests[dockerLatest], DIGEST_B);
     assert.equal(readState(root).digests[ghcrLatest], DIGEST_B);
   });
+
+  test('reports a non-atomic result when rollback cannot remove a newly created latest tag', () => {
+    const ghcrRepository = 'registry.example/ghcr/propr-app';
+    const dockerLatest = `${IMAGE_REPOSITORY}:latest`;
+    const ghcrLatest = `${ghcrRepository}:latest`;
+    const root = createFixture({
+      [`${IMAGE_REPOSITORY}:1.2.3`]: DIGEST_A,
+      [`${IMAGE_REPOSITORY}:${FULL_SHA}`]: DIGEST_A,
+      [`${ghcrRepository}:1.2.3`]: DIGEST_A,
+      [`${ghcrRepository}:${FULL_SHA}`]: DIGEST_A,
+    });
+    const result = runBuild(root, ['--promote-latest', '--only', 'app'], {
+      FAIL_CREATE_REF: ghcrLatest,
+      GHCR_NS: 'registry.example/ghcr',
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /NON-ATOMIC PROMOTION/);
+    assert.match(result.stderr, /registry-side reconciliation is required/);
+    assert.equal(readState(root).digests[dockerLatest], DIGEST_A);
+  });
 });

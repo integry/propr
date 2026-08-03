@@ -30,7 +30,11 @@ export { UsageLimitError };
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
 const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
-const ANTIGRAVITY_TRANSCRIPT_ROOT = '/tmp/git-processor/propr-cache/antigravity/transcripts';
+const DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT = '/tmp/git-processor/propr-cache/transcripts/antigravity';
+
+function getAntigravityTranscriptRoot(): string {
+    return process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
+}
 
 export class AntigravityAgent implements Agent {
     readonly config: AgentConfig;
@@ -160,11 +164,14 @@ export class AntigravityAgent implements Agent {
     private createTransientTranscriptPath(taskId?: string): string {
         const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(-80) || 'run';
-        return path.join(ANTIGRAVITY_TRANSCRIPT_ROOT, `${safeTaskId}-${suffix}.jsonl`);
+        const transcriptRoot = getAntigravityTranscriptRoot();
+        fs.mkdirSync(transcriptRoot, { recursive: true });
+        return path.join(transcriptRoot, `${safeTaskId}-${suffix}.jsonl`);
     }
 
     private cleanupTransientTranscript(transcriptPath: string | undefined): void {
-        if (!transcriptPath?.startsWith(`${ANTIGRAVITY_TRANSCRIPT_ROOT}${path.sep}`)) return;
+        const transcriptRoot = path.resolve(getAntigravityTranscriptRoot());
+        if (!transcriptPath || !path.resolve(transcriptPath).startsWith(`${transcriptRoot}${path.sep}`)) return;
         try { fs.rmSync(transcriptPath, { force: true }); }
         catch { /* best-effort cleanup */ }
     }

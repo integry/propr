@@ -39,15 +39,20 @@ const normalizeLiveTodos = (todos: TaskLiveUpdatePayload['todos']): TodoItem[] =
     status: normalizeTodoStatus(todo.status)
   }));
 
-const eventFingerprint = (event: LiveDetails['events'][number]) => JSON.stringify({
-  type: event.type,
-  content: event.content,
-  toolName: event.toolName,
-  input: event.input,
-  toolUseId: event.toolUseId,
-  result: event.result,
-  isError: event.isError,
-});
+const eventFingerprint = (event: LiveDetails['events'][number]) => {
+  if (event.id) return `event:${event.id}`;
+  // A tool use and its result intentionally share toolUseId, so retain the
+  // event type while still distinguishing otherwise identical tool calls.
+  if (event.toolUseId) return `tool:${event.type}:${event.toolUseId}`;
+  return `legacy:${JSON.stringify({
+    type: event.type,
+    content: event.content,
+    toolName: event.toolName,
+    input: event.input,
+    result: event.result,
+    isError: event.isError,
+  })}`;
+};
 
 const appendUniqueEvents = (
   currentEvents: LiveDetails['events'],

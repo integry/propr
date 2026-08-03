@@ -85,7 +85,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: full-test-output-${{ github.run_id }}
+          name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}
           path: test_output.txt
           if-no-files-found: ignore
 
@@ -115,7 +115,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: full-test-output-${{ github.run_id }}
+          name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Post result comment
         continue-on-error: true

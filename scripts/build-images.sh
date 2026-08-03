@@ -347,6 +347,7 @@ prepare_latest_promotions() {
         status=$?
         [[ $status -eq 1 ]] || return "$status"
         prior_digest=""
+        echo "  warning: $target has no prior tag; a later promotion failure cannot remove a newly created tag with Docker buildx alone" >&2
       fi
       PROMOTION_REPOSITORIES+=("$repository")
       PROMOTION_TARGETS+=("$target")
@@ -357,12 +358,13 @@ prepare_latest_promotions() {
 }
 
 rollback_latest_promotions() {
-  local count="$1" index prior_digest
+  local count="$1" index prior_digest rollback_incomplete=false
   echo "Latest promotion failed; restoring previously published latest tags" >&2
   for ((index = count - 1; index >= 0; index--)); do
     prior_digest="${PROMOTION_PRIOR_DIGESTS[$index]}"
     if [[ -z "$prior_digest" ]]; then
-      echo "  ${PROMOTION_TARGETS[$index]} had no prior tag and cannot be restored automatically" >&2
+      echo "  NON-ATOMIC PROMOTION: ${PROMOTION_TARGETS[$index]} had no prior tag and may now remain published; delete that tag through the registry before retrying if its digest changed" >&2
+      rollback_incomplete=true
       continue
     fi
     if ! copy_remote_digest \
@@ -370,8 +372,14 @@ rollback_latest_promotions() {
       "${PROMOTION_TARGETS[$index]}" \
       "$prior_digest"; then
       echo "  failed to restore ${PROMOTION_TARGETS[$index]} to $prior_digest" >&2
+      rollback_incomplete=true
     fi
   done
+  if $rollback_incomplete; then
+    echo "Latest-tag rollback was incomplete; registry-side reconciliation is required for the targets listed above." >&2
+    return 1
+  fi
+  return 0
 }
 
 promote_latest_images() {
@@ -382,7 +390,9 @@ promote_latest_images() {
       "${PROMOTION_REPOSITORIES[$index]}" \
       "${PROMOTION_TARGETS[$index]}" \
       "${PROMOTION_DIGESTS[$index]}"; then
-      rollback_latest_promotions "$((index + 1))"
+      if ! rollback_latest_promotions "$((index + 1))"; then
+        echo "Latest promotion ended in an explicitly non-atomic state." >&2
+      fi
       return 1
     fi
   done
