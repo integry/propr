@@ -177,7 +177,7 @@ export interface DraftContextConfig {
 
 export interface RefinementResult {
   status?: 'in_progress' | 'completed' | 'failed';
-  action?: 'modified' | 'answered' | 'both';
+  action?: 'modified' | 'answered' | 'both' | 'cancelled';
   summary?: string;
   /** Error message when status is 'failed', for display to the user. */
   error?: string;

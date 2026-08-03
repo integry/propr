@@ -425,6 +425,7 @@ export class CodexAgent implements Agent {
             dockerImage,
             // Codex CLI arguments
             'codex', 'exec',
+            '--ephemeral', // ProPR persists run output itself; do not pollute the user's resumable Codex sessions
             ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
             '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
             '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host

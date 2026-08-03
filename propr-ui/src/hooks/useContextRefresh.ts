@@ -112,6 +112,17 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   // Track whether we've auto-paused after the first successful context fetch
   const hasAutoPausedRef = useRef<boolean>(false);
   const pendingPreviewRequestIdRef = useRef<string | null>(null);
+  const previewCompletionRef = useRef<{
+    promise: Promise<boolean>;
+    resolve: (success: boolean) => void;
+  } | null>(null);
+
+  const settlePreview = useCallback((success: boolean) => {
+    const completion = previewCompletionRef.current;
+    previewCompletionRef.current = null;
+    abortControllerRef.current = null;
+    completion?.resolve(success);
+  }, []);
 
   // Reset auto-pause tracking when draftId changes so it re-triggers for new drafts
   useEffect(() => {
@@ -131,10 +142,11 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
+      settlePreview(false);
       if (sourceRefreshTimerRef.current) clearTimeout(sourceRefreshTimerRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     };
-  }, []);
+  }, [settlePreview]);
 
   const markPreviewComplete = useCallback((result: PreviewResult) => {
     pendingPreviewRequestIdRef.current = null;
@@ -153,7 +165,8 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       hasAutoPausedRef.current = true;
       setIsPaused(true);
     }
-  }, []);
+    settlePreview(true);
+  }, [settlePreview]);
 
   const loadCompletedPreview = useCallback(async (previewRequestId: string): Promise<boolean> => {
     const draft = await getDraft(draftId);
@@ -163,13 +176,14 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       setPendingPreviewRequestId(null);
       setPreview(prev => ({ ...prev, isLoading: false, error: previewError }));
       if (previewError.toLowerCase().includes('branch')) onBranchError(previewError);
+      settlePreview(false);
       return true;
     }
     const completedPreview = getCompletedPreviewFromDraft(draft.context_config, previewRequestId);
     if (!completedPreview) return false;
     markPreviewComplete(completedPreview);
     return true;
-  }, [draftId, markPreviewComplete, onBranchError]);
+  }, [draftId, markPreviewComplete, onBranchError, settlePreview]);
 
   const clearCountdown = useCallback(() => {
     if (sourceRefreshTimerRef.current) {
@@ -185,24 +199,30 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
   }, []);
 
   const fetchPreview = useCallback(async () => {
+    if (previewCompletionRef.current) return previewCompletionRef.current.promise;
+
     const currentConfig = configRef.current;
     // Skip preview if no draftId (new mode - draft not created yet)
-    if (!draftId) return;
-    if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) return;
+    if (!draftId) return false;
+    if (!currentConfig.prompt.trim() || !currentConfig.baseBranch) return false;
 
     if (!BRANCH_NAME_REGEX.test(currentConfig.baseBranch)) {
       onBranchError('Invalid branch name format');
-      return;
+      return false;
     }
     onBranchError(null);
 
     clearCountdown();
     setIsContextStale(false);
 
-    if (abortControllerRef.current) abortControllerRef.current.abort();
-
     const controller = new AbortController();
     abortControllerRef.current = controller;
+
+    let resolveCompletion!: (success: boolean) => void;
+    const completionPromise = new Promise<boolean>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    previewCompletionRef.current = { promise: completionPromise, resolve: resolveCompletion };
 
     setPreview(prev => ({ ...prev, isLoading: true, error: null }));
     pendingPreviewRequestIdRef.current = null;
@@ -230,16 +250,22 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       if (isPendingPreview(result)) {
         pendingPreviewRequestIdRef.current = result.previewRequestId;
         setPendingPreviewRequestId(result.previewRequestId);
-      } else {
-        markPreviewComplete(result);
+        return completionPromise;
       }
+      markPreviewComplete(result);
+      return true;
     } catch (err) {
-      if ((err as Error).name === 'AbortError') return;
+      if ((err as Error).name === 'AbortError') {
+        settlePreview(false);
+        return false;
+      }
       const errorMessage = (err as Error).message || 'Failed to fetch preview';
       setPreview(prev => ({ ...prev, isLoading: false, error: errorMessage }));
       if (errorMessage.toLowerCase().includes('branch')) onBranchError(errorMessage);
+      settlePreview(false);
+      return false;
     }
-  }, [draftId, clearCountdown, onBranchError, markPreviewComplete]);
+  }, [draftId, clearCountdown, onBranchError, markPreviewComplete, settlePreview]);
 
   useEffect(() => {
     if (!draftId || !preview.isLoading || !pendingPreviewRequestId) return;
@@ -266,12 +292,14 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
           isLoading: false,
           error: typeof payload.data?.error === 'string' ? payload.data.error : 'Failed to fetch preview'
         }));
+        settlePreview(false);
         return;
       }
       if (payload.status !== 'completed') return;
       if (payload.data?.previewRequestId !== pendingPreviewRequestId) return;
       loadCompletedPreview(pendingPreviewRequestId).catch((error) => {
         setPreview(prev => ({ ...prev, isLoading: false, error: (error as Error).message || 'Failed to load completed preview' }));
+        settlePreview(false);
       });
     });
 
@@ -279,7 +307,7 @@ export function useContextRefresh({ draftId, config, onBranchError }: UseContext
       unsubscribeFromDraft(draftId);
       unsubscribe();
     };
-  }, [draftId, preview.isLoading, pendingPreviewRequestId, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, loadCompletedPreview]);
+  }, [draftId, preview.isLoading, pendingPreviewRequestId, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, loadCompletedPreview, settlePreview]);
 
   const startCountdown = useCallback(() => {
     clearCountdown();

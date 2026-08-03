@@ -52,8 +52,10 @@ describe('AntigravityAgent Docker args', () => {
                 issueNumber: 42
             });
 
-            assert.ok(args.includes(`${geminiPath}:/home/node/.gemini:rw`));
-            assert.ok(!args.includes(`${legacyPath}:/home/node/.gemini:rw`));
+            assert.ok(args.includes(`${geminiPath}:/home/node/.gemini-source:rw`));
+            assert.ok(!args.includes(`${legacyPath}:/home/node/.gemini-source:rw`));
+            assert.ok(args.includes('PROPR_EPHEMERAL_STATE=1'));
+            assert.ok(args.includes('PROPR_ANTIGRAVITY_SOURCE_CONFIG=/home/node/.gemini-source'));
         } finally {
             fs.rmSync(tempHome, { recursive: true, force: true });
         }
@@ -92,6 +94,15 @@ describe('AntigravityAgent Docker args', () => {
         } finally {
             fs.rmSync(tempHome, { recursive: true, force: true });
         }
+    });
+
+    test('entrypoint copies only durable auth into disposable runtime state and exports the transcript', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/antigravity-entrypoint.sh'), 'utf8');
+
+        assert.match(script, /antigravity-oauth-token/);
+        assert.match(script, /Using disposable Antigravity runtime state/);
+        assert.match(script, /PROPR_ANTIGRAVITY_TRANSCRIPT_PATH/);
+        assert.match(script, /transcript\.jsonl/);
     });
 });
 

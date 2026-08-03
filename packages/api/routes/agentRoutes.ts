@@ -13,6 +13,7 @@ import {
   type AgentRegistry,
 } from '@propr/core';
 import { AGENT_DEFAULTS, isManagedAgentConfigPath } from '@propr/shared';
+import { requireManageAgents } from '../permissionGuards.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -132,7 +133,7 @@ function canonicalChatModel(agent: Agent, model: string | undefined): string {
 export function createAgentRoutes() {
   const router = Router();
 
-  router.get('/opencode/models', async (req: Request, res: Response): Promise<void> => {
+  router.get('/opencode/models', requireManageAgents, async (req: Request, res: Response): Promise<void> => {
     try {
       const agentId = typeof req.query.agentId === 'string' ? req.query.agentId : undefined;
       const models = await discoverOpenCodeModels(agentId);
@@ -144,6 +145,8 @@ export function createAgentRoutes() {
     }
   });
 
+  // Chat executes an already-configured agent; it does not mutate installation
+  // agent configuration, so authenticated members may use it.
   router.post('/chat', async (req: Request, res: Response): Promise<void> => {
     try {
       const { queries, prompt, context } = req.body as AgentChatRequest;
