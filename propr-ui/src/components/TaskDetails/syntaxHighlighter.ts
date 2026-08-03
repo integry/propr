@@ -8,6 +8,7 @@ import diff from 'react-syntax-highlighter/dist/esm/languages/prism/diff';
 import docker from 'react-syntax-highlighter/dist/esm/languages/prism/docker';
 import go from 'react-syntax-highlighter/dist/esm/languages/prism/go';
 import graphql from 'react-syntax-highlighter/dist/esm/languages/prism/graphql';
+import ini from 'react-syntax-highlighter/dist/esm/languages/prism/ini';
 import java from 'react-syntax-highlighter/dist/esm/languages/prism/java';
 import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
 import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
@@ -37,6 +38,7 @@ const languages = {
   docker,
   go,
   graphql,
+  ini,
   java,
   javascript,
   json,
@@ -60,18 +62,31 @@ Object.entries(languages).forEach(([name, grammar]) => {
   SyntaxHighlighter.registerLanguage(name, grammar);
 });
 
-SyntaxHighlighter.alias({
+type SyntaxLanguage = keyof typeof languages;
+
+const languageAliases: Record<string, SyntaxLanguage> = {
   'c++': 'cpp',
+  'c#': 'csharp',
   cs: 'csharp',
   html: 'markup',
   js: 'javascript',
+  jsonc: 'json',
   md: 'markdown',
   py: 'python',
   rb: 'ruby',
   sh: 'bash',
   shell: 'bash',
   ts: 'typescript',
+  xml: 'markup',
   yml: 'yaml',
-});
+};
+
+export function resolveSyntaxLanguage(language: string): SyntaxLanguage | 'text' {
+  const normalized = language.trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(languages, normalized)) {
+    return normalized as SyntaxLanguage;
+  }
+  return languageAliases[normalized] ?? 'text';
+}
 
 export { SyntaxHighlighter, vscDarkPlus };

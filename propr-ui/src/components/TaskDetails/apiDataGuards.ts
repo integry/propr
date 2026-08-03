@@ -36,7 +36,6 @@ export function isLogFilesData(value: unknown): value is LogFilesData {
 export function isAnalysisData(value: unknown): value is AnalysisData {
   if (!isRecord(value)) return false;
   const recognizedKeys = ['report', 'analysis', 'content', 'error'];
-  if (!Object.keys(value).every(key => recognizedKeys.includes(key))) return false;
   if (!recognizedKeys.every(key => isOptionalString(value[key]))) return false;
   return recognizedKeys.some(key => hasOwn(value, key)
     && typeof value[key] === 'string'

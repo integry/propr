@@ -24,21 +24,23 @@ describe('draft context config parsing', () => {
     [{ excludedFiles: [42] }],
     [{ contextRepositories: [{ repository: 42, branch: 'main' }] }],
     [{ contextRepositories: [{ repository: 'integry/shared', branch: 42 }] }],
-  ])('rejects malformed typed draft branches %#', (value) => {
-    expect(parseDraftContextConfig(value)).toBeUndefined();
-    expect(parseDraftContextConfig(JSON.stringify(value))).toBeUndefined();
+  ])('drops malformed typed draft branches %#', (value) => {
+    expect(parseDraftContextConfig(value)).toEqual({});
+    expect(parseDraftContextConfig(JSON.stringify(value))).toEqual({});
   });
 
-  it('keeps validated legacy fields and discards unrelated properties', () => {
+  it('keeps valid and forward-compatible fields when another known field is malformed', () => {
     expect(parseDraftContextConfig(JSON.stringify({
       baseBranch: 'release',
       manualFiles: ['src/index.ts'],
       contextRepositories: [{ repository: 'integry/shared', branch: 'main' }],
-      unrelated: { trusted: false },
+      lastPreview: { success: true, stats: { totalTokens: 10 } },
+      futureMetadata: { schemaVersion: 2 },
     }))).toEqual({
       baseBranch: 'release',
       manualFiles: ['src/index.ts'],
       contextRepositories: [{ repository: 'integry/shared', branch: 'main' }],
+      futureMetadata: { schemaVersion: 2 },
     });
   });
 });

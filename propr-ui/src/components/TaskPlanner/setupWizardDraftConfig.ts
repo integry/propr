@@ -144,15 +144,17 @@ export function parseDraftContextConfig(value: unknown): DraftContextConfig | un
 
   if (!isRecord(parsed)) return undefined;
 
-  const validated: Record<string, unknown> = {};
   const validators = Object.entries(DRAFT_CONTEXT_FIELD_VALIDATORS) as Array<[
     keyof DraftContextConfig,
     DraftFieldValidator,
   ]>;
+  const recognizedKeys = new Set<string>(validators.map(([key]) => key));
+  const validated = Object.fromEntries(
+    Object.entries(parsed).filter(([key]) => !recognizedKeys.has(key))
+  );
   for (const [key, validate] of validators) {
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) continue;
-    if (!validate(parsed[key])) return undefined;
-    validated[key] = parsed[key];
+    if (validate(parsed[key])) validated[key] = parsed[key];
   }
   return validated as DraftContextConfig;
 }

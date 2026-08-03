@@ -15,9 +15,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    outputs:
-      build_result: ${{ steps.build.outcome }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -373,7 +370,7 @@ jobs:
     name: Report Build Failure
     needs: validate
     if: >-
-      ${{ always() && needs.validate.outputs.build_result == 'failure' &&
+      ${{ always() && needs.validate.result == 'failure' &&
           github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
@@ -382,6 +379,7 @@ jobs:
 
     steps:
       - name: Download failure log
+        continue-on-error: true
         uses: actions/download-artifact@v6
         with:
           name: build-check-output-${{ github.run_id }}
@@ -397,7 +395,7 @@ jobs:
             if (log.length > 60000) log = log.substring(0, 60000) + '\n\n...(truncated)';
             const body = [
               '### Checks Failed',
-              'Linting or build errors were detected.',
+              'Validation failed during setup, tests, CLI packaging, linting, or build checks.',
               '',
               '<details>',
               '<summary>View Logs</summary>',

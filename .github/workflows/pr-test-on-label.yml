@@ -19,6 +19,11 @@ jobs:
       contents: read
     outputs:
       test_result: ${{ steps.tests.outputs.test_result }}
+      install_result: ${{ steps.install.outcome }}
+      build_result: ${{ steps.build.outcome }}
+      docs_result: ${{ steps.docs.outcome }}
+      redis_result: ${{ steps.redis.outcome }}
+      test_step_result: ${{ steps.tests.outcome }}
 
     steps:
       - name: Checkout repository
@@ -38,17 +43,21 @@ jobs:
             packages/core/package-lock.json
 
       - name: Install Dependencies
+        id: install
         run: npm ci
 
       - name: Build workspace packages
+        id: build
         run: npm run test:prepare
 
       - name: Validate docs site
+        id: docs
         env:
           PROPR_WORKSPACE: ${{ github.workspace }}
         run: ./.propr/setup.sh
 
       - name: Start isolated Redis
+        id: redis
         run: ./scripts/ci-redis.sh start
 
       - name: Run Full Test Suite
@@ -114,18 +123,40 @@ jobs:
         env:
           TEST_JOB_RESULT: ${{ needs.test.result }}
           TEST_STEP_RESULT: ${{ needs.test.outputs.test_result }}
+          INSTALL_RESULT: ${{ needs.test.outputs.install_result }}
+          BUILD_RESULT: ${{ needs.test.outputs.build_result }}
+          DOCS_RESULT: ${{ needs.test.outputs.docs_result }}
+          REDIS_RESULT: ${{ needs.test.outputs.redis_result }}
+          TEST_STEP_OUTCOME: ${{ needs.test.outputs.test_step_result }}
         with:
           script: |
             const fs = require('fs');
             const succeeded = process.env.TEST_JOB_RESULT === 'success' && process.env.TEST_STEP_RESULT === 'success';
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const outcomes = {
+              'Dependency install': process.env.INSTALL_RESULT,
+              'Workspace build': process.env.BUILD_RESULT,
+              'Docs validation': process.env.DOCS_RESULT,
+              'Redis startup': process.env.REDIS_RESULT,
+              'Full test suite': process.env.TEST_STEP_OUTCOME,
+            };
+            const failedStages = Object.entries(outcomes)
+              .filter(([, outcome]) => outcome === 'failure')
+              .map(([stage]) => stage);
+            const summary = succeeded
+              ? 'All tests passed.'
+              : failedStages.length > 0
+                ? `Validation failed during: ${failedStages.join(', ')}.`
+                : 'Validation did not complete successfully.';
             let output = 'Output file not available.';
             try { output = fs.readFileSync('test_output.txt', 'utf8'); } catch {}
             if (output.length > 60000) output = output.substring(0, 60000) + '\n\n...(truncated)';
             const body = [
               '### Full Test Suite Results',
               '',
-              succeeded ? 'All tests passed.' : 'Some tests failed. Please review the output below.',
+              summary,
+              '',
+              ...Object.entries(outcomes).map(([stage, outcome]) => `- ${stage}: ${outcome || 'not run'}`),
               '',
               '<details>',
               '<summary>View Test Output</summary>',

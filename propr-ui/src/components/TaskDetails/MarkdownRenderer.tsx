@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { FileText } from 'lucide-react';
-import { SyntaxHighlighter, vscDarkPlus } from './syntaxHighlighter';
+import { resolveSyntaxLanguage, SyntaxHighlighter, vscDarkPlus } from './syntaxHighlighter';
 
 interface MarkdownRendererProps {
   text: unknown;
@@ -123,7 +123,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
         components={{
           // Code blocks with syntax highlighting - VS Code window style
           code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode }) {
-            const match = /language-(\w+)/.exec(className || '');
+            const match = /language-([^\s]+)/.exec(className || '');
             if (!inline && match) {
               codeBlockCounter++;
               const currentIndex = codeBlockCounter;
@@ -158,7 +158,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
                   <SyntaxHighlighter
                     {...props}
                     style={vscDarkPlus}
-                    language={match[1]}
+                    language={resolveSyntaxLanguage(match[1])}
                     PreTag="div"
                     showLineNumbers={true}
                     lineNumberStyle={{

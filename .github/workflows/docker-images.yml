@@ -43,6 +43,7 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
 
     steps:
       - name: Checkout repository
@@ -82,7 +83,9 @@ jobs:
           EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
           npm run release:verify
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Run lint and typecheck gates
         run: |
@@ -185,6 +188,7 @@ jobs:
           node --version
           npm --version
           docker version
+          docker buildx version
 
       - name: Reverify manual release tag
         if: github.event_name == 'workflow_dispatch'
@@ -266,7 +270,7 @@ jobs:
 
   publish-cli:
     name: Publish CLI with provenance
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: [validate-release, prepare-cli, build-smoke-and-push]
     runs-on: ubuntu-latest
     permissions:
@@ -326,8 +330,8 @@ jobs:
 
   publish-github-release:
     name: Publish GitHub release
-    if: github.ref_type == 'tag'
-    needs: [build-smoke-and-push, publish-cli]
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: [validate-release, build-smoke-and-push, publish-cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -342,13 +346,14 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
         run: |
-          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "${{ github.ref_name }}" release-artifacts/* --clobber --repo "${{ github.repository }}"
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-artifacts/* --clobber --repo "${{ github.repository }}"
           else
-            gh release create "${{ github.ref_name }}" release-artifacts/* \
+            gh release create "$RELEASE_TAG" release-artifacts/* \
               --repo "${{ github.repository }}" \
               --verify-tag \
               --generate-notes \
-              --title "ProPR ${{ github.ref_name }}"
+              --title "ProPR $RELEASE_TAG"
           fi

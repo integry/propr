@@ -29,9 +29,10 @@ describe('release test-suite runner', () => {
         ]);
     });
 
-    test('enables module mocking consistently for every test file', () => {
+    test('enables module mocking and exits isolated workers after their tests finish', () => {
         assert.deepEqual(buildTestArguments('/repo/test/mock.test.ts'), [
             '--experimental-test-module-mocks',
+            '--test-force-exit',
             '--test',
             '/repo/test/mock.test.ts',
         ]);

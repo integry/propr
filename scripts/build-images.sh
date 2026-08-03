@@ -38,7 +38,7 @@ PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
-BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+BUILD_DATE="${BUILD_DATE:-$(git show -s --format=%cI HEAD 2>/dev/null || date -u +'%Y-%m-%dT%H:%M:%SZ')}"
 IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
 IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
 PACKAGE_LICENSE="$(node -p "require('./package.json').license || 'Apache-2.0'")"
@@ -191,6 +191,97 @@ image_description() {
   esac
 }
 
+inspect_remote_digest() {
+  local ref="$1" output digest
+  if ! output="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>&1)"; then
+    if grep -Eqi 'manifest unknown|no such manifest|(^|: )not found([[:space:]]|$)' <<< "$output" \
+      && ! grep -Eqi 'unauthorized|denied|insufficient_scope|authorization' <<< "$output"; then
+      return 1
+    fi
+    echo "Failed to inspect remote image $ref:" >&2
+    echo "$output" >&2
+    return 2
+  fi
+
+  if ! digest="$(node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => {
+      const digest = JSON.parse(input).digest;
+      if (!/^sha256:[0-9a-f]{64}$/.test(digest || "")) process.exit(1);
+      process.stdout.write(digest);
+    });
+  ' <<< "$output")"; then
+    echo "Registry returned an invalid manifest descriptor for $ref" >&2
+    return 2
+  fi
+  printf '%s\n' "$digest"
+}
+
+push_reconciled_image() {
+  local name="$1" tag version_tag sha_tag rebuilt_digest existing_digest status published_digest
+  local -a tags=()
+  mapfile -t tags < <(tags_for "$name")
+
+  for tag in "${tags[@]}"; do
+    if ! docker image inspect "$tag" >/dev/null 2>&1; then
+      echo "Refusing to publish missing local image $tag; build and smoke-test it first" >&2
+      exit 1
+    fi
+  done
+
+  # Publish the commit tag first so its registry digest represents the exact
+  # rebuilt and smoke-tested artifact. Version tags are reconciled against it
+  # before they can be created or reused.
+  for sha_tag in "${tags[@]}"; do
+    [[ "$sha_tag" == *":$GIT_SHA" ]] || continue
+    echo "  pushing reconciliation tag $sha_tag"
+    docker push "$sha_tag"
+  done
+
+  for version_tag in "${tags[@]}"; do
+    [[ "$version_tag" == *":$VERSION" ]] || continue
+    sha_tag="${version_tag%:*}:$GIT_SHA"
+    if ! rebuilt_digest="$(inspect_remote_digest "$sha_tag")"; then
+      echo "Unable to resolve rebuilt artifact digest from $sha_tag" >&2
+      exit 1
+    fi
+
+    if existing_digest="$(inspect_remote_digest "$version_tag")"; then
+      if [[ "$existing_digest" != "$rebuilt_digest" ]]; then
+        echo "Refusing to overwrite immutable release tag $version_tag" >&2
+        echo "  existing digest: $existing_digest" >&2
+        echo "  rebuilt digest:  $rebuilt_digest" >&2
+        exit 1
+      fi
+      echo "  keeping $version_tag (digest already matches rebuilt artifact)"
+      continue
+    else
+      status=$?
+      if [[ $status -ne 1 ]]; then
+        exit "$status"
+      fi
+    fi
+
+    echo "  pushing new release tag $version_tag"
+    docker push "$version_tag"
+    if ! published_digest="$(inspect_remote_digest "$version_tag")" \
+      || [[ "$published_digest" != "$rebuilt_digest" ]]; then
+      echo "Published digest for $version_tag does not match rebuilt artifact $rebuilt_digest" >&2
+      exit 1
+    fi
+  done
+
+  for tag in "${tags[@]}"; do
+    if [[ "$tag" == *":$VERSION" || "$tag" == *":$GIT_SHA" ]]; then
+      continue
+    fi
+    echo "  pushing $tag"
+    docker push "$tag"
+  done
+}
+
 # --- Rewrite launcher manifest ------------------------------------------------
 # The launcher image bakes in the image tags it should pull. Write a fresh
 # manifest so the baked tags match this build.
@@ -277,14 +368,7 @@ build_image() {
   for t in $(tags_for "$name"); do echo "  tag:        $t"; done
 
   if $PUSH_ONLY; then
-    for t in $(tags_for "$name"); do
-      if ! docker image inspect "$t" >/dev/null 2>&1; then
-        echo "Refusing to publish missing local image $t; build and smoke-test it first" >&2
-        exit 1
-      fi
-      echo "  pushing $t"
-      docker push "$t"
-    done
+    push_reconciled_image "$name"
     return
   fi
 
@@ -294,10 +378,7 @@ build_image() {
   else
     docker build "${build_args[@]}" -f "$dockerfile" "${tag_args[@]}" "$context"
     if $PUSH; then
-      for t in $(tags_for "$name"); do
-        echo "  pushing $t"
-        docker push "$t"
-      done
+      push_reconciled_image "$name"
     fi
   fi
 }

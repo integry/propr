@@ -424,7 +424,7 @@ describe('processMergeConflictJob', () => {
         assert.ok(body.includes('not a git repository'));
     });
 
-    test('agent failure: reports stderr/log details instead of unknown error', async () => {
+    test('agent failure: keeps stderr/log details out of public errors', async () => {
         mockMergeResult = { outcome: 'conflicts' as never, conflictedFiles: ['.propr/setup.sh'] } as never;
         mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
         mockAgent.executeTask.mock.mockImplementationOnce(async () => ({
@@ -438,7 +438,7 @@ describe('processMergeConflictJob', () => {
 
         await assert.rejects(
             async () => processMergeConflictJob(job),
-            /setup\.sh: line 1/
+            /detailed output is available in restricted logs/
         );
 
         const patchCall = mockOctokit.request.mock.calls.find(
@@ -448,7 +448,8 @@ describe('processMergeConflictJob', () => {
         );
         assert.ok(patchCall);
         const body = patchCall.arguments[1].body as string;
-        assert.ok(body.includes('setup.sh: line 1'));
+        assert.ok(body.includes('detailed output is available in restricted logs'));
+        assert.ok(!body.includes('setup.sh: line 1'));
         assert.ok(!body.includes('Unknown error'));
     });
 

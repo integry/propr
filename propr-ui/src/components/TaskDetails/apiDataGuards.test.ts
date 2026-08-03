@@ -18,7 +18,7 @@ describe('task details API data guards', () => {
     expect(isAnalysisData({})).toBe(false);
     expect(isAnalysisData({ unrelated: 42 })).toBe(false);
     expect(isAnalysisData({ report: '' })).toBe(false);
-    expect(isAnalysisData({ report: 'summary', unrelated: 42 })).toBe(false);
+    expect(isAnalysisData({ report: 'summary', unrelated: 42 })).toBe(true);
     expect(isAnalysisData({ analysis: ['unexpected'] })).toBe(false);
     expect(isAnalysisData(null)).toBe(false);
   });
