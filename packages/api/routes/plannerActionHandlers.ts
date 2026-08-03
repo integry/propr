@@ -11,9 +11,8 @@ import {
   loadSettings,
   estimateTokens,
   REFINER_SYSTEM_PROMPT,
-  getEventPublisher
+  getEventPublisher, type Plan
 } from '@propr/core';
-import type { Plan } from '@propr/core';
 import {
   checkDbAndAuth,
   sendCheckError,
