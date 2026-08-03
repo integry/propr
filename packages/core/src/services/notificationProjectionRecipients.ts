@@ -108,23 +108,14 @@ export class NotificationProjectionRecipients {
     }
 
     private async getRepositoryCandidateRecipients(repository: string): Promise<string[]> {
-        const candidates: unknown[] = [];
-        const historicalScans = [
-            ['task_drafts', 'user_id'],
-            ['repo_todos', 'user_id']
-        ] as const;
-        for (const [table, column] of historicalScans) {
-            if (!await this.hasTable(table)) continue;
-            const rows = await this.database(table).distinct(column).where({ repository }) as Array<Record<string, unknown>>;
-            candidates.push(...rows.map((row) => row[column]));
-        }
-        if (await this.hasTable('notification_repository_subscriptions')) {
-            const rows = await this.database('notification_repository_subscriptions')
-                .select('user_id')
-                .where({ repository, hidden: false }) as Array<{ user_id: string }>;
-            candidates.push(...rows.map((row) => row.user_id));
-        }
-        return uniqueStrings(candidates);
+        if (!await this.hasTable('notification_repository_subscriptions')) return [];
+        const rows = await this.database('notification_repository_subscriptions')
+            .select('user_id')
+            .where({ repository, hidden: false }) as Array<{ user_id: string }>;
+        // Drafts and repository todos are historical ownership evidence, not an
+        // implicit repository-wide subscription. Task ownership is resolved by
+        // getTaskRecipients() against the specific task/issue/PR instead.
+        return uniqueStrings(rows.map((row) => row.user_id));
     }
 
     private async hasTable(

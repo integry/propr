@@ -112,10 +112,20 @@ export class NotificationSystemSampler {
         if (this.activeRun) return false;
         const run = this.executeRun(this.runGeneration);
         this.activeRun = run;
+        void run.then(
+            () => { if (this.activeRun === run) this.activeRun = null; },
+            () => { if (this.activeRun === run) this.activeRun = null; }
+        );
         try {
-            return await run;
-        } finally {
-            if (this.activeRun === run) this.activeRun = null;
+            return await withNotificationDeadline(
+                run,
+                this.operationTimeoutMs,
+                'notification system-health run'
+            );
+        } catch (error) {
+            logger.warn({ error: error instanceof Error ? error.message : String(error) },
+                'Failed to sample system health for notifications');
+            return false;
         }
     }
 
@@ -136,31 +146,32 @@ export class NotificationSystemSampler {
     private async executeRun(runGeneration: number): Promise<boolean> {
         let lease: NotificationProjectionLease | undefined;
         let renewalTimer: NodeJS.Timeout | undefined;
-        let renewalInFlight = false;
+        let renewalInFlight: Promise<boolean> | null = null;
         let leaseLost = false;
         let runValid = true;
-        const renewLease = async (): Promise<boolean> => {
-            if (!lease || leaseLost || renewalInFlight) return !leaseLost;
-            renewalInFlight = true;
-            try {
-                const renewed = await withNotificationDeadline(
-                    lease.renew(), this.operationTimeoutMs, 'notification system-health lease renewal'
-                );
-                if (!renewed) leaseLost = true;
-            } catch (error) {
-                leaseLost = true;
-                logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                    'Failed to renew notification system-health lease');
-            } finally {
-                renewalInFlight = false;
-            }
-            return !leaseLost;
+        const renewLease = (): Promise<boolean> => {
+            if (!lease || leaseLost) return Promise.resolve(!leaseLost);
+            if (renewalInFlight) return renewalInFlight;
+            const renewal = (async () => {
+                try {
+                    const renewed = await lease.renew();
+                    if (!renewed) leaseLost = true;
+                } catch (error) {
+                    leaseLost = true;
+                    logger.warn({ error: error instanceof Error ? error.message : String(error) },
+                        'Failed to renew notification system-health lease');
+                }
+                return !leaseLost;
+            })();
+            renewalInFlight = renewal;
+            void renewal.then(() => {
+                if (renewalInFlight === renewal) renewalInFlight = null;
+            });
+            return renewal;
         };
         try {
             if (this.acquireLease) {
-                const acquired = await withNotificationDeadline(
-                    this.acquireLease(), this.operationTimeoutMs, 'notification system-health lease acquisition'
-                );
+                const acquired = await this.acquireLease();
                 if (acquired === false) return false;
                 if (typeof acquired === 'object') {
                     lease = acquired;
@@ -169,18 +180,12 @@ export class NotificationSystemSampler {
                     renewalTimer.unref();
                 }
             }
-            const snapshot = await withNotificationDeadline(
-                this.getSnapshot(), this.operationTimeoutMs, 'notification system-health snapshot'
-            );
+            const snapshot = await this.getSnapshot();
             if (lease && !await renewLease()) return false;
-            await withNotificationDeadline(
-                this.projector.projectSnapshot(
-                    snapshot,
-                    [],
-                    () => runValid && !leaseLost && runGeneration === this.runGeneration
-                ),
-                this.operationTimeoutMs,
-                'notification system-health projection'
+            await this.projector.projectSnapshot(
+                snapshot,
+                [],
+                () => runValid && !leaseLost && runGeneration === this.runGeneration
             );
             return !leaseLost && runGeneration === this.runGeneration;
         } catch (error) {
@@ -190,11 +195,10 @@ export class NotificationSystemSampler {
         } finally {
             runValid = false;
             if (renewalTimer) clearInterval(renewalTimer);
+            if (renewalInFlight) await renewalInFlight;
             if (lease) {
                 try {
-                    await withNotificationDeadline(
-                        lease.release(), this.operationTimeoutMs, 'notification system-health lease release'
-                    );
+                    await lease.release();
                 } catch (error) {
                     logger.warn({ error: error instanceof Error ? error.message : String(error) },
                         'Failed to release notification system-health lease');

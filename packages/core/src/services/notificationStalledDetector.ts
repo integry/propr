@@ -34,7 +34,8 @@ export function getNotificationStalledCheckIntervalMs(): number {
 }
 
 export interface NotificationStalledDetectorOptions {
-    projector?: Pick<NotificationProjectionService, 'detectStalledActivities'>;
+    projector?: Pick<NotificationProjectionService, 'detectStalledActivities'>
+        & Partial<Pick<NotificationProjectionService, 'reconcileTerminalTransitions'>>;
     stalledAfterMs?: number;
     intervalMs?: number;
     operationTimeoutMs?: number;
@@ -44,7 +45,8 @@ export interface NotificationStalledDetectorOptions {
 }
 
 export class NotificationStalledDetector {
-    private readonly projector: Pick<NotificationProjectionService, 'detectStalledActivities'>;
+    private readonly projector: Pick<NotificationProjectionService, 'detectStalledActivities'>
+        & Partial<Pick<NotificationProjectionService, 'reconcileTerminalTransitions'>>;
     private readonly stalledAfterMs: number;
     private readonly intervalMs: number;
     private readonly operationTimeoutMs: number;
@@ -88,10 +90,20 @@ export class NotificationStalledDetector {
         if (this.activeRun) return 0;
         const run = this.executeRun(this.runGeneration);
         this.activeRun = run;
+        void run.then(
+            () => { if (this.activeRun === run) this.activeRun = null; },
+            () => { if (this.activeRun === run) this.activeRun = null; }
+        );
         try {
-            return await run;
-        } finally {
-            if (this.activeRun === run) this.activeRun = null;
+            return await withNotificationDeadline(
+                run,
+                this.operationTimeoutMs,
+                'notification stalled-activity run'
+            );
+        } catch (error) {
+            logger.warn({ error: error instanceof Error ? error.message : String(error) },
+                'Failed to detect stalled notification activity');
+            return 0;
         }
     }
 
@@ -110,31 +122,32 @@ export class NotificationStalledDetector {
     private async executeRun(runGeneration: number): Promise<number> {
         let lease: NotificationProjectionLease | undefined;
         let renewalTimer: NodeJS.Timeout | undefined;
-        let renewalInFlight = false;
+        let renewalInFlight: Promise<boolean> | null = null;
         let leaseLost = false;
         let runValid = true;
-        const renewLease = async (): Promise<boolean> => {
-            if (!lease || leaseLost || renewalInFlight) return !leaseLost;
-            renewalInFlight = true;
-            try {
-                const renewed = await withNotificationDeadline(
-                    lease.renew(), this.operationTimeoutMs, 'notification stalled-activity lease renewal'
-                );
-                if (!renewed) leaseLost = true;
-            } catch (error) {
-                leaseLost = true;
-                logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                    'Failed to renew notification stalled-activity lease');
-            } finally {
-                renewalInFlight = false;
-            }
-            return !leaseLost;
+        const renewLease = (): Promise<boolean> => {
+            if (!lease || leaseLost) return Promise.resolve(!leaseLost);
+            if (renewalInFlight) return renewalInFlight;
+            const renewal = (async () => {
+                try {
+                    const renewed = await lease.renew();
+                    if (!renewed) leaseLost = true;
+                } catch (error) {
+                    leaseLost = true;
+                    logger.warn({ error: error instanceof Error ? error.message : String(error) },
+                        'Failed to renew notification stalled-activity lease');
+                }
+                return !leaseLost;
+            })();
+            renewalInFlight = renewal;
+            void renewal.then(() => {
+                if (renewalInFlight === renewal) renewalInFlight = null;
+            });
+            return renewal;
         };
         try {
             if (this.acquireLease) {
-                const acquired = await withNotificationDeadline(
-                    this.acquireLease(), this.operationTimeoutMs, 'notification stalled-activity lease acquisition'
-                );
+                const acquired = await this.acquireLease();
                 if (acquired === false) return 0;
                 if (typeof acquired === 'object') {
                     lease = acquired;
@@ -144,14 +157,16 @@ export class NotificationStalledDetector {
                 }
             }
             if (lease && !await renewLease()) return 0;
-            return await withNotificationDeadline(
-                this.projector.detectStalledActivities(
-                    this.stalledAfterMs,
-                    this.now(),
-                    () => runValid && !leaseLost && runGeneration === this.runGeneration
-                ),
-                this.operationTimeoutMs,
-                'notification stalled-activity projection'
+            const shouldContinue = () => runValid
+                && !leaseLost
+                && runGeneration === this.runGeneration;
+            if (this.projector.reconcileTerminalTransitions) {
+                await this.projector.reconcileTerminalTransitions(shouldContinue);
+            }
+            return await this.projector.detectStalledActivities(
+                this.stalledAfterMs,
+                this.now(),
+                shouldContinue
             );
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -160,11 +175,10 @@ export class NotificationStalledDetector {
         } finally {
             runValid = false;
             if (renewalTimer) clearInterval(renewalTimer);
+            if (renewalInFlight) await renewalInFlight;
             if (lease) {
                 try {
-                    await withNotificationDeadline(
-                        lease.release(), this.operationTimeoutMs, 'notification stalled-activity lease release'
-                    );
+                    await lease.release();
                 } catch (error) {
                     logger.warn({ error: error instanceof Error ? error.message : String(error) },
                         'Failed to release notification stalled-activity lease');

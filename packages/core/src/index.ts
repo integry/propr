@@ -176,7 +176,10 @@ export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, Semantic
 export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, IndexingOptions } from './services/relevance/summaryMiner.js';
-export { createIndexingRunIdentity } from './services/relevance/summaryMinerQueries.js';
+export {
+  createIndexingQueueJobId,
+  createIndexingRunIdentity
+} from './services/relevance/summaryMinerQueries.js';
 export type {
   IndexingRunIdentity,
   RepositoryStatusTransition,

@@ -205,7 +205,17 @@ export class NotificationProjectionStore {
         const historyRows = await this.database('task_history')
             .select('metadata')
             .where({ task_id: taskId })
-            .orderBy('history_id', 'desc') as Array<{ metadata?: unknown }>;
+            .andWhere((query) => query
+                .where('metadata', 'like', '%"commandMode"%')
+                .orWhere('metadata', 'like', '%"commandMeta"%')
+                .orWhere('metadata', 'like', '%"prResult"%')
+                .orWhere('metadata', 'like', '%"pr"%')
+                .orWhere('metadata', 'like', '%"prNumber"%')
+                .orWhere('metadata', 'like', '%"prUrl"%')
+                .orWhere('metadata', 'like', '%"userId"%')
+                .orWhere('metadata', 'like', '%"user_id"%'))
+            .orderBy('history_id', 'desc')
+            .limit(32) as Array<{ metadata?: unknown }>;
         const historyMetadata = historyRows.map((row) => parseRecordJson(row.metadata));
         const payloadMetadata = payload.metadata ?? {};
         const initialJobData = parseRecordJson(task?.initial_job_data);
@@ -271,10 +281,15 @@ export class NotificationProjectionStore {
                 ...(preferredSequence === undefined ? {} : { sequence: preferredSequence })
             };
         }
-        const rows = await this.database('task_history')
+        const query = this.database('task_history')
             .select('history_id', 'timestamp')
-            .where({ task_id: taskId, state })
-            .orderBy('history_id', 'desc') as Array<{ history_id: unknown; timestamp: unknown }>;
+            .where({ task_id: taskId, state });
+        if (preferredSequence !== undefined) query.andWhere({ history_id: preferredSequence });
+        else if (preferredTimestamp !== undefined) query.andWhere({ timestamp: preferredTimestamp });
+        const rows = await query.orderBy('history_id', 'desc').limit(1) as Array<{
+            history_id: unknown;
+            timestamp: unknown;
+        }>;
         const candidates = rows.flatMap((row) => {
             const timestamp = normalizedStoredTimestamp(row.timestamp, publishedAt);
             const sequence = positiveInteger(row.history_id);

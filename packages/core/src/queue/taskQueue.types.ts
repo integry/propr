@@ -127,7 +127,7 @@ export interface IndexingJobData {
     ignoreCooldown?: boolean; // Manual/admin indexing override for summarization cooldowns
     /** Queue-boundary identity; required for newly accepted jobs. */
     runId?: string;
-    /** Time at which indexingRunId became the durable run owner. */
+    /** Minted ordering time; the worker makes this run the durable owner on start. */
     transitionAt?: string;
 }
 

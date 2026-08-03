@@ -31,6 +31,7 @@ import {
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
+import { createNotificationEntitlementRefreshMiddleware } from './routes/githubRoutes.js';
 import {
   generateCorrelationId,
   processWebhookEvent,
@@ -332,6 +333,7 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
   app.use('/api', ensureAuthenticated);
+  app.use('/api', createNotificationEntitlementRefreshMiddleware(db));
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });

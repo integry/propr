@@ -495,7 +495,7 @@ async function withTimeout<T, F>(promise: Promise<T>, timeoutMs: number, fallbac
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      promise,
+      promise.catch(() => fallback),
       new Promise<F>(resolve => {
         timeout = setTimeout(() => resolve(fallback), timeoutMs);
       })
@@ -514,6 +514,8 @@ function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
   };
 }
 
+const REPOSITORY_STATUS_QUERY_CHUNK_SIZE = 200;
+
 async function loadRepositoryIndexingStatus(): Promise<ServiceStatus | undefined> {
   try {
     if (!await coreDb.schema.hasTable('repositories')) return undefined;
@@ -521,20 +523,24 @@ async function loadRepositoryIndexingStatus(): Promise<ServiceStatus | undefined
       repository.enabled && typeof repository.name === 'string' && repository.name.includes('/')
     );
     if (monitored.length === 0) return undefined;
-    const rows = await coreDb('repositories')
-      .distinct('indexing_status')
-      .where((query) => {
-        for (const repository of monitored) {
-          query.orWhere((candidate) => {
-            candidate.where({
-              full_name: repository.name,
-              branch: normalizeSummarizationBranch(repository.baseBranch)
-            });
-          });
-        }
-      }) as Array<{ indexing_status?: string }>;
-    const statuses = new Set(rows.map((row) => row.indexing_status));
-    if (statuses.has('failed')) return 'failed';
+    const monitoredKeys = new Set(monitored.map((repository) =>
+      `${repository.name}\0${normalizeSummarizationBranch(repository.baseBranch)}`
+    ));
+    const repositoryNames = [...new Set(monitored.map((repository) => repository.name))];
+    const statuses = new Set<string | undefined>();
+    for (let offset = 0; offset < repositoryNames.length; offset += REPOSITORY_STATUS_QUERY_CHUNK_SIZE) {
+      const rows = await coreDb('repositories')
+        .select('full_name', 'branch', 'indexing_status')
+        .whereIn('full_name', repositoryNames.slice(offset, offset + REPOSITORY_STATUS_QUERY_CHUNK_SIZE)) as Array<{
+          full_name: string;
+          branch: string;
+          indexing_status?: string;
+        }>;
+      for (const row of rows) {
+        if (monitoredKeys.has(`${row.full_name}\0${row.branch}`)) statuses.add(row.indexing_status);
+      }
+      if (statuses.has('failed')) return 'failed';
+    }
     if (statuses.has('indexing')) return 'active';
     return statuses.size > 0 ? 'idle' : undefined;
   } catch {

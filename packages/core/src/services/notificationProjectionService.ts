@@ -15,6 +15,7 @@ import {
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { NotificationService } from './notificationService.js';
+import { NotificationProjectionReconciler } from './notificationProjectionReconciler.js';
 import {
     NotificationProjectionStore,
     buildProjectionDeduplicationKey,
@@ -73,6 +74,7 @@ export class NotificationProjectionService {
     private readonly database: Knex;
     private readonly notifications: NotificationService;
     private readonly store: NotificationProjectionStore;
+    private readonly reconciler: NotificationProjectionReconciler;
     private readonly now: () => TimestampInput;
 
     constructor(options: NotificationProjectionServiceOptions = {}) {
@@ -83,6 +85,13 @@ export class NotificationProjectionService {
             now: this.now
         });
         this.store = new NotificationProjectionStore(this.database, this.now);
+        this.reconciler = new NotificationProjectionReconciler({
+            database: this.database,
+            now: this.now,
+            projectTaskUpdate: (payload) => this.projectTaskUpdate(payload),
+            projectIndexingUpdate: (payload) => this.projectIndexingUpdate(payload),
+            projectDraftUpdate: (payload) => this.projectDraftUpdate(payload)
+        });
     }
 
     async projectUpdate(payload: EventPayload): Promise<void> {
@@ -173,6 +182,18 @@ export class NotificationProjectionService {
             return;
         }
 
+        // Cancellation is terminal for checkpointing and stale-event isolation,
+        // but it is not a successful implementation or review completion.
+        if (activityStatus === 'cancelled') {
+            await this.database.transaction((transaction) => this.store.upsertTaskActivity({
+                context,
+                status: activityStatus,
+                transition,
+                metadata: safeMetadata
+            }, transaction));
+            return;
+        }
+
         const recipients = await this.store.getTaskRecipients(context);
         await this.database.transaction(async (transaction) => {
             const decision = await this.store.upsertTaskActivity({
@@ -252,6 +273,12 @@ export class NotificationProjectionService {
         });
     }
 
+    async reconcileTerminalTransitions(
+        shouldContinue: () => boolean = () => true
+    ): Promise<number> {
+        return this.reconciler.reconcile(shouldContinue);
+    }
+
     async detectStalledActivities(
         stalledAfterMs: number,
         now: TimestampInput = this.now(),
@@ -270,7 +297,6 @@ export class NotificationProjectionService {
             if (!shouldContinue()) break;
             const created = await this.database.transaction(async (transaction) => {
                 if (!shouldContinue()) return false;
-                if (!await this.store.claimStalledActivity(activity, currentTimestamp, transaction)) return false;
                 const entitledRecipients = await this.store.filterCurrentlyEntitled(
                     activity.repository,
                     recipients,
@@ -279,7 +305,11 @@ export class NotificationProjectionService {
                 if (!shouldContinue()) {
                     throw new Error('Notification stalled-activity projection lease was lost');
                 }
-                if (entitledRecipients.length === 0) return true;
+                // Do not consume the durable stall claim until there is somebody
+                // authorized to receive it. A later entitlement refresh can then
+                // reconsider the same unchanged activity.
+                if (entitledRecipients.length === 0) return false;
+                if (!await this.store.claimStalledActivity(activity, currentTimestamp, transaction)) return false;
                 await this.createStalledNotification({
                     activity,
                     detectedAt: currentTimestamp,
@@ -439,12 +469,19 @@ export class NotificationProjectionService {
         recipients: string[];
     }> {
         const metadata = parseActivityMetadata(activity);
-        const taskContext: TaskProjectionContext = {
+        const fallbackContext: TaskProjectionContext = {
             taskId: activity.activity_key,
             repository: activity.repository,
             issueNumber: typeof metadata.issueNumber === 'number' ? metadata.issueNumber : undefined,
             prNumber: typeof metadata.prNumber === 'number' ? metadata.prNumber : undefined
         };
+        const durableContext = activity.activity_type === 'task'
+            ? await this.store.getTaskContext(activity.activity_key, {
+                repository: activity.repository,
+                issueNumber: fallbackContext.issueNumber
+            })
+            : null;
+        const taskContext = durableContext ?? fallbackContext;
         const recipients = activity.activity_type === 'task'
             ? await this.store.getTaskRecipients(taskContext)
             : await this.store.getRepositoryRecipients(activity.repository);

@@ -8,7 +8,8 @@ import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import {
-    indexRepo, updateRepositoryStatus, createIndexingRunIdentity, publishIndexingStatus
+    indexRepo, updateRepositoryStatus, createIndexingRunIdentity, createIndexingQueueJobId,
+    publishIndexingStatus
 } from '@propr/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
 import type { RepoToMonitor } from '@propr/core';
@@ -197,35 +198,41 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
     const priority = reason === 'previous indexing failed' ? 'high' : 'normal';
 
     const requestedRun = createIndexingRunIdentity();
-    const transition = await updateRepositoryStatus(repoName, 'indexing', branch, {
-        ...requestedRun,
-        startNewRun: true
-    });
+    const jobId = createIndexingQueueJobId(repoName, branch);
+    await indexingQueue.add(
+        'indexRepository',
+        {
+            repository: repoName,
+            repoPath,
+            correlationId: jobCorrelationId,
+            priority,
+            baseBranch: branch,
+            ...requestedRun
+        },
+        {
+            // BullMQ evaluates custom job IDs atomically. All producers use the
+            // same repository/branch key, closing the getJobs()/add() race.
+            jobId,
+            priority: reason === 'previous indexing failed' ? 1 : 5,
+            removeOnComplete: true,
+            removeOnFail: true
+        }
+    );
+    const stored = await indexingQueue.getJob(jobId);
+    if (stored && stored.data.runId !== requestedRun.runId) {
+        log.debug({ repository: repoName, branch, existingRunId: stored.data.runId },
+            'Indexing job won an atomic enqueue race, skipping duplicate');
+        return;
+    }
     try {
-        await indexingQueue.add(
-            'indexRepository',
-            {
-                repository: repoName,
-                repoPath,
-                correlationId: jobCorrelationId,
-                priority,
-                baseBranch: branch,
-                runId: transition.runId,
-                transitionAt: transition.transitionAt
-            },
-            {
-                jobId: `index-${repoName.replace('/', '-')}-${branch}-${Date.now()}`,
-                priority: reason === 'previous indexing failed' ? 1 : 5
-            }
-        );
+        await publishIndexingStatus(repoName, branch, 'indexing', requestedRun);
     } catch (error) {
-        await updateRepositoryStatus(repoName, 'idle', branch, {
-            runId: transition.runId
-        });
-        throw error;
+        log.warn({ repository: repoName, branch, error: (error as Error).message },
+            'Failed to publish accepted indexing run');
     }
 
-    log.info({ repository: repoName, branch, reason, jobCorrelationId }, 'Queued repository for indexing');
+    log.info({ repository: repoName, branch, reason, jobCorrelationId, runId: requestedRun.runId },
+        'Queued repository for indexing');
 }
 
 /**
@@ -353,6 +360,11 @@ async function scanAndQueueRepositories(): Promise<void> {
 
 async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingResult>> {
     const workerId = `indexing-worker:${generateCorrelationId()}`;
+
+    // This process can be started independently of the API/daemon. Ensure the
+    // run-ownership and append-only transition tables exist before accepting
+    // indexing work.
+    await db.migrate.latest();
 
     logger.info({
         queue: INDEXING_QUEUE_NAME,

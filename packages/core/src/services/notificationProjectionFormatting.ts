@@ -29,6 +29,11 @@ export function taskActivityStatus(state: string): NotificationSourceActivitySta
     }
 }
 
+export function isTerminalTaskState(state: string): boolean {
+    const status = taskActivityStatus(state);
+    return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
 export function indexingActivityStatus(phase: string): NotificationSourceActivityStatus {
     switch (phase.toLowerCase()) {
         case 'completed': return 'completed';
@@ -36,6 +41,11 @@ export function indexingActivityStatus(phase: string): NotificationSourceActivit
         case 'idle': return 'cancelled';
         default: return 'processing';
     }
+}
+
+export function isTerminalIndexingPhase(phase: string): boolean {
+    const status = indexingActivityStatus(phase);
+    return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 export function safeTaskMetadata(

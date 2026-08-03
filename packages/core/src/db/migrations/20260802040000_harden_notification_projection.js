@@ -75,6 +75,14 @@ export async function up(knex) {
     table.check("length(trim(repository)) BETWEEN 3 AND 255 AND instr(repository, '/') > 1", {}, 'notification_repository_entitlements_repository_check');
     table.check('expires_at > verified_at', {}, 'notification_repository_entitlements_expiry_check');
   });
+  await knex.schema.createTable('notification_repository_entitlement_snapshots', (table) => {
+    table.text('user_id').primary();
+    table.text('verified_at').notNullable();
+    table.text('expires_at').notNullable();
+    table.index('expires_at', 'notification_repository_entitlement_snapshots_expiry_idx');
+    table.check("length(trim(user_id)) BETWEEN 1 AND 255", {}, 'notification_repository_entitlement_snapshots_user_check');
+    table.check('expires_at > verified_at', {}, 'notification_repository_entitlement_snapshots_expiry_check');
+  });
   await knex.schema.createTable('notification_repository_subscriptions', (table) => {
     table.text('user_id').notNullable();
     table.text('repository').notNullable();
@@ -127,5 +135,6 @@ export async function down(knex) {
     await createSourceTouchTrigger(knex, false);
   }
   await knex.schema.dropTableIfExists('notification_repository_subscriptions');
+  await knex.schema.dropTableIfExists('notification_repository_entitlement_snapshots');
   await knex.schema.dropTableIfExists('notification_repository_entitlements');
 }

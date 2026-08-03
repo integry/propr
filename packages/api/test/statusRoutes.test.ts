@@ -584,6 +584,27 @@ test('notification health collection bounds Redis commands that never settle', a
   assert.equal((await pingRoutes.getNotificationHealthSnapshot()).redis, 'disconnected');
 });
 
+test('notification health collection translates rejected probes into stable values', async () => {
+  configureStatusEnv();
+  const routes = await createRoutes({
+    redisClient: {
+      ping: async () => { throw new Error('redis unavailable'); },
+      get: async () => { throw new Error('redis unavailable'); },
+      sCard: async () => { throw new Error('redis unavailable'); },
+    } as never,
+    getIndexingQueue: async () => { throw new Error('queue unavailable'); },
+    getRepositoryIndexingStatus: async () => { throw new Error('database unavailable'); },
+    notificationProbeTimeoutMs: 10,
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.equal(snapshot.redis, 'disconnected');
+  assert.equal(snapshot.daemon, 'unknown');
+  assert.equal(snapshot.worker, 'unknown');
+  assert.equal(snapshot.indexing, 'disconnected');
+});
+
 test('/api/status caps summarization cooldown warnings', async () => {
   const cooldowns = Object.fromEntries(Array.from({ length: 7 }, (_, index) => [
     `cooldown-${index}`,

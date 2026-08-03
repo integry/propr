@@ -84,6 +84,10 @@ export async function replaceNotificationRepositoryEntitlements(options: {
             verified_at: verifiedAt,
             expires_at: expiresAt
         })));
+        await transaction('notification_repository_entitlement_snapshots')
+            .insert({ user_id: userId, verified_at: verifiedAt, expires_at: expiresAt })
+            .onConflict('user_id')
+            .merge({ verified_at: verifiedAt, expires_at: expiresAt });
     });
 }
 

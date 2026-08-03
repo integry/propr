@@ -22,7 +22,7 @@ import {
   type QueueStatsData,
   type EventPayload
 } from '@propr/shared';
-import { projectNotificationUpdateBestEffort } from '../services/notificationProjectionService.js';
+import { notificationProjectionService } from '../services/notificationProjectionService.js';
 import { settlesWithin } from '../services/notificationSchedulerTiming.js';
 import { NotificationProjectionQueue } from './notificationProjectionQueue.js';
 
@@ -58,7 +58,8 @@ class EventPublisher {
   constructor(options: EventPublisherOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.publishOverride = options.publish;
-    this.notificationProjector = options.projectNotification ?? projectNotificationUpdateBestEffort;
+    this.notificationProjector = options.projectNotification
+      ?? ((payload) => notificationProjectionService.projectUpdate(payload));
     this.projectionDeadlineMs = options.projectionDeadlineMs ?? NOTIFICATION_PROJECTION_DEADLINE_MS;
     const projectionMaxQueueSize = options.projectionMaxQueueSize ?? NOTIFICATION_PROJECTION_MAX_QUEUE_SIZE;
     const projectionConcurrency = options.projectionConcurrency ?? NOTIFICATION_PROJECTION_CONCURRENCY;

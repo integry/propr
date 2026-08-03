@@ -304,7 +304,6 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
 
   const fullName = options.fullName || path.basename(repoPath);
   const branch = options.branch || 'HEAD';
-  const suppliedIndexingRun = Boolean(options.runId && options.transitionAt);
   let indexingRun: IndexingRunIdentity | undefined = options.runId && options.transitionAt
     ? { runId: options.runId, transitionAt: options.transitionAt }
     : undefined;
@@ -367,12 +366,13 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       'Using agent for summarization'
     );
 
-    // 3. Preserve the identity minted before queue acceptance. Direct callers
-    // without one deliberately start a fresh run here.
+    // 3. A queued run acquires durable repository ownership only when its worker
+    // starts. The transition timestamp prevents a delayed older job from replacing
+    // a newer owner.
     const requestedRun = indexingRun ?? createIndexingRunIdentity();
     const startTransition = await updateRepositoryStatus(fullName, 'indexing', branch, {
       ...requestedRun,
-      startNewRun: !suppliedIndexingRun
+      startNewRun: true
     });
     indexingRun = { runId: startTransition.runId, transitionAt: startTransition.transitionAt };
     if (!startTransition.applied) {

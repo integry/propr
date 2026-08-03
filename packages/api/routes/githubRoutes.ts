@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { NextFunction, Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
@@ -8,7 +8,10 @@ import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
-import { replaceNotificationRepositoryEntitlements } from '@propr/core';
+import {
+  getNotificationRepositoryEntitlementTtlMs,
+  replaceNotificationRepositoryEntitlements
+} from '@propr/core';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
@@ -16,10 +19,110 @@ interface GitHubRoutesDeps {
   db: Knex;
 }
 
+const entitlementRefreshes = new Map<string, Promise<void>>();
+
+async function listAccessibleRepositories(accessToken: string): Promise<string[]> {
+  const PaginatedOctokit = Octokit.plugin(paginateRest);
+  const octokit = new PaginatedOctokit({ auth: accessToken });
+  const repositories: string[] = [];
+  for await (const response of octokit.paginate.iterator('GET /user/repos', {
+    per_page: 100,
+    sort: 'full_name',
+    direction: 'asc',
+    affiliation: 'owner,collaborator,organization_member'
+  })) {
+    for (const repository of response.data) {
+      if (repository.full_name) repositories.push(repository.full_name);
+    }
+  }
+  return [...new Set(repositories)].sort((left, right) =>
+    left.toLowerCase().localeCompare(right.toLowerCase()));
+}
+
+async function notificationEntitlementsNeedRefresh(userId: string, database: Knex): Promise<boolean> {
+  const latest = await database('notification_repository_entitlement_snapshots')
+    .select('expires_at')
+    .where({ user_id: userId })
+    .first() as { expires_at?: string } | undefined;
+  if (!latest?.expires_at) return true;
+  const refreshBefore = Date.now() + Math.floor(getNotificationRepositoryEntitlementTtlMs() / 2);
+  const expiresAt = Date.parse(latest.expires_at);
+  return !Number.isFinite(expiresAt) || expiresAt <= refreshBefore;
+}
+
+export async function refreshNotificationRepositoryEntitlements(options: {
+  userId: string;
+  accessToken: string;
+  database: Knex;
+  force?: boolean;
+  listRepositories?: (accessToken: string) => Promise<string[]>;
+}): Promise<void> {
+  const existing = entitlementRefreshes.get(options.userId);
+  if (existing) return existing;
+  const refresh = (async () => {
+    if (!options.force && !await notificationEntitlementsNeedRefresh(options.userId, options.database)) return;
+    const repositories = await (options.listRepositories ?? listAccessibleRepositories)(options.accessToken);
+    await replaceNotificationRepositoryEntitlements({
+      userId: options.userId,
+      repositories,
+      database: options.database
+    });
+  })();
+  entitlementRefreshes.set(options.userId, refresh);
+  try {
+    await refresh;
+  } finally {
+    if (entitlementRefreshes.get(options.userId) === refresh) {
+      entitlementRefreshes.delete(options.userId);
+    }
+  }
+}
+
+export async function persistNotificationRepositoryEntitlementsBestEffort(options: {
+  userId: string;
+  repositories: readonly string[];
+  database: Knex;
+}): Promise<boolean> {
+  try {
+    await replaceNotificationRepositoryEntitlements(options);
+    return true;
+  } catch (error) {
+    // Repository browsing remains available. Notification delivery stays
+    // fail-closed because no new authorization snapshot was committed.
+    console.warn('Failed to persist repository notification access:',
+      error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+/** Refreshes expiring authorization evidence on ordinary authenticated traffic. */
+export function createNotificationEntitlementRefreshMiddleware(database: Knex) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const userId = req.user?.id;
+    const accessToken = req.user?.accessToken;
+    // getRepos performs a forced refresh using the same GitHub response, avoiding
+    // a duplicate paginated request on this route.
+    if (!userId || !accessToken || req.path === '/github/repos') {
+      next();
+      return;
+    }
+    try {
+      await refreshNotificationRepositoryEntitlements({ userId, accessToken, database });
+    } catch (error) {
+      console.warn('Failed to refresh repository notification access:',
+        error instanceof Error ? error.message : String(error));
+    }
+    next();
+  };
+}
+
 async function clearNotificationRepositoryEntitlements(userId: string | undefined, database: Knex): Promise<void> {
   if (!userId) return;
   try {
-    await replaceNotificationRepositoryEntitlements({ userId, repositories: [], database });
+    await database.transaction(async (transaction) => {
+      await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
+      await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
+    });
   } catch (error) {
     console.warn('Failed to clear cached repository notification access:',
       error instanceof Error ? error.message : String(error));
@@ -136,30 +239,12 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         return;
       }
 
-      // Create Octokit instance with user's token and pagination support
-      const PaginatedOctokit = Octokit.plugin(paginateRest);
-      const octokit = new PaginatedOctokit({ auth: accessToken });
-
-      // Fetch all repositories the user has access to with pagination
-      const repos: string[] = [];
-
-      // Use paginate.iterator to fetch all pages of repos
-      for await (const response of octokit.paginate.iterator('GET /user/repos', {
-        per_page: 100,
-        sort: 'full_name',
-        direction: 'asc',
-        affiliation: 'owner,collaborator,organization_member'
-      })) {
-        for (const repo of response.data) {
-          if (repo.full_name) {
-            repos.push(repo.full_name);
-          }
-        }
-      }
-
-      // Sort alphabetically
-      repos.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-      await replaceNotificationRepositoryEntitlements({ userId, repositories: repos, database: db });
+      const repos = await listAccessibleRepositories(accessToken);
+      await persistNotificationRepositoryEntitlementsBestEffort({
+        userId,
+        repositories: repos,
+        database: db
+      });
 
       res.json({ repos });
     } catch (error) {

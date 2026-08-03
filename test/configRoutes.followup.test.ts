@@ -4,7 +4,10 @@ import * as configManager from '../packages/core/src/index.ts';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
 import { normalizeAgentsConfig } from '../packages/api/routes/configHelpers.ts';
 import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
-import { queueResummarizationForAllRepos } from '../packages/api/routes/indexingQueueHelpers.ts';
+import {
+    queueResummarizationForAllRepos,
+    stopIndexingJob
+} from '../packages/api/routes/indexingQueueHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { appendClaudeUserMessageEvents, parseClaudeOutputToConversationResult, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
@@ -2457,12 +2460,149 @@ describe('config route follow-up helpers', () => {
         });
     });
 
+    test('concurrent resummarization requests share one atomic repository job key', async () => {
+        const queueAdds: Array<{ repository: string; runId?: string; transitionAt?: string }> = [];
+        let run = 0;
+        const deps = createQueueResummarizationDeps({
+            repos: [{ id: '1', name: 'acme/alpha', enabled: true }],
+            queueAdds,
+            createRun: () => ({
+                runId: `run-${++run}`,
+                transitionAt: `2026-08-02T08:0${run}:00.000Z`,
+            }),
+        });
+
+        const results = await Promise.all([
+            queueResummarizationForAllRepos({ deps }),
+            queueResummarizationForAllRepos({ deps }),
+        ]);
+
+        assert.strictEqual(results.reduce((total, result) => total + result.queued, 0), 1);
+        assert.strictEqual(results.reduce((total, result) => total + result.skippedAlreadyQueued, 0), 1);
+        assert.strictEqual(queueAdds.length, 2);
+    });
+
+    test('a rejected resummarization enqueue never advances repository state', async () => {
+        const statusMutations: string[] = [];
+        await assert.rejects(
+            queueResummarizationForAllRepos({
+                deps: createQueueResummarizationDeps({
+                    repos: [{ id: '1', name: 'acme/alpha', enabled: true }],
+                    queueAddError: new Error('queue unavailable'),
+                    statusMutations,
+                }),
+            }),
+            /queue unavailable/
+        );
+        assert.deepStrictEqual(statusMutations, []);
+    });
+
+    test('stopIndexingJob cancels and transitions active and queued legacy jobs', async () => {
+        const cancellations: Array<{ repository: string; branch: string; runId?: string }> = [];
+        const transitions: Array<{ branch: string; runId?: string }> = [];
+        const publications: Array<{ branch: string; runId: string }> = [];
+        const removed: string[] = [];
+        const jobs = [
+            {
+                data: { repository: 'acme/alpha', baseBranch: 'main' },
+                getState: async () => 'active',
+                remove: async () => { removed.push('main'); },
+            },
+            {
+                data: { repository: 'acme/alpha', baseBranch: 'dev' },
+                getState: async () => 'waiting',
+                remove: async () => { removed.push('dev'); },
+            },
+        ];
+
+        const result = await stopIndexingJob('acme/alpha', undefined, {
+            getIndexingQueue: async () => ({ getJobs: async () => jobs } as never),
+            requestIndexingCancellation: async (repository, branch, runId) => {
+                cancellations.push({ repository, branch, runId });
+            },
+            updateRepositoryStatus: async (_repository, _status, branch, run = {}) => {
+                transitions.push({ branch, runId: run.runId });
+                return {
+                    applied: true,
+                    transitionAt: `2026-08-02T08:0${transitions.length}:00.000Z`,
+                    runId: run.runId ?? `legacy-${branch}`,
+                };
+            },
+            publishIndexingStatus: async (_repository, branch, _phase, transition) => {
+                publications.push({ branch, runId: transition!.runId });
+            },
+        });
+
+        assert.deepStrictEqual(cancellations, [
+            { repository: 'acme/alpha', branch: 'main', runId: undefined },
+        ]);
+        assert.deepStrictEqual(removed, ['dev']);
+        assert.deepStrictEqual(transitions, [
+            { branch: 'main', runId: undefined },
+            { branch: 'dev', runId: undefined },
+        ]);
+        assert.deepStrictEqual(publications, [
+            { branch: 'main', runId: 'legacy-main' },
+            { branch: 'dev', runId: 'legacy-dev' },
+        ]);
+        assert.deepStrictEqual(result, {
+            success: true,
+            cancelledActiveRuns: [{
+                branch: 'main',
+                runId: 'legacy-main',
+                transitionAt: '2026-08-02T08:01:00.000Z',
+            }],
+            removedQueuedRuns: [{
+                branch: 'dev',
+                runId: 'legacy-dev',
+                transitionAt: '2026-08-02T08:02:00.000Z',
+            }],
+        });
+    });
+
+    test('stopIndexingJob keeps a durable stop successful when projection fails', async () => {
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: { repository: 'acme/api', baseBranch: 'main', runId: 'run-1' },
+                    getState: async () => 'waiting',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            requestIndexingCancellation: async () => undefined,
+            updateRepositoryStatus: async () => ({
+                runId: 'run-1',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+                applied: true,
+            }),
+            publishIndexingStatus: async () => { throw new Error('projection unavailable'); },
+        });
+
+        assert.deepStrictEqual(result, {
+            success: true,
+            cancelledActiveRuns: [],
+            removedQueuedRuns: [{
+                branch: 'main',
+                runId: 'run-1',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+            }],
+        });
+    });
+
     function createQueueResummarizationDeps(options: {
         repos: Array<{ id: string; name: string; enabled: boolean }>;
         existingJobs?: Array<{ data: { repository: string; baseBranch?: string } }>;
         cooldownRepos?: Set<string>;
         queueAdds?: Array<{ repository: string; runId?: string; transitionAt?: string }>;
+        createRun?: () => { runId: string; transitionAt: string };
+        queueAddError?: Error;
+        statusMutations?: string[];
     }) {
+        const queuedById = new Map<string, {
+            repository: string;
+            runId?: string;
+            transitionAt?: string;
+        }>();
         return {
             loadMonitoredReposRaw: async () => options.repos,
             getAuthenticatedOctokit: async () => ({
@@ -2476,27 +2616,39 @@ describe('config route follow-up helpers', () => {
             ensureRepoCloned: async ({ owner, repoName }: { owner: string; repoName: string }) => `/tmp/${owner}-${repoName}`,
             fetchLatestChanges: async () => ({ success: true }),
             getRepoUrl: ({ repoOwner, repoName }: { repoOwner: string; repoName: string }) => `https://example.com/${repoOwner}/${repoName}.git`,
-            createIndexingRunIdentity: () => ({
+            createIndexingRunIdentity: options.createRun ?? (() => ({
                 runId: 'test-indexing-run',
                 transitionAt: '2026-08-02T08:00:00.000Z',
-            }),
+            })),
+            publishIndexingStatus: async () => undefined,
             updateRepositoryStatus: async (
-                _repository: string,
+                repository: string,
                 _status: 'idle' | 'indexing' | 'completed' | 'failed',
                 _branch: string,
                 run: { runId?: string; transitionAt?: string } = {},
-            ) => ({
-                runId: run.runId ?? 'test-indexing-run',
-                transitionAt: run.transitionAt ?? '2026-08-02T08:01:00.000Z',
-                applied: true,
-            }),
+            ) => {
+                options.statusMutations?.push(repository);
+                return {
+                    runId: run.runId ?? 'test-indexing-run',
+                    transitionAt: run.transitionAt ?? '2026-08-02T08:01:00.000Z',
+                    applied: true,
+                };
+            },
             getIndexingQueue: async () => ({
                 getJobs: async () => options.existingJobs || [],
+                getJob: async (jobId: string) => {
+                    const data = queuedById.get(jobId);
+                    return data ? { data } : null;
+                },
                 add: async (_name: string, data: {
                     repository: string;
                     runId?: string;
                     transitionAt?: string;
-                }) => {
+                }, jobOptions: { jobId?: string }) => {
+                    if (options.queueAddError) throw options.queueAddError;
+                    if (jobOptions.jobId && !queuedById.has(jobOptions.jobId)) {
+                        queuedById.set(jobOptions.jobId, data);
+                    }
                     options.queueAdds?.push({
                         repository: data.repository,
                         runId: data.runId,

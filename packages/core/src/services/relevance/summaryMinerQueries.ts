@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { db } from '../../db/connection.js';
 
 // Inline type definitions to avoid circular dependency with summaryMiner.ts
@@ -35,6 +35,12 @@ export function createIndexingRunIdentity(now: Date = new Date()): IndexingRunId
   return { runId: randomUUID(), transitionAt: now.toISOString() };
 }
 
+/** BullMQ's atomic repository/branch ownership key for live indexing work. */
+export function createIndexingQueueJobId(fullName: string, branch: string = 'HEAD'): string {
+  const digest = createHash('sha256').update(`${fullName}\0${branch}`).digest('hex');
+  return `index-repository-${digest}`;
+}
+
 /**
  * Updates the repository indexing status
  */
@@ -58,6 +64,21 @@ export async function updateRepositoryStatus(
     const now = new Date().toISOString();
     const requestedRunId = options.runId;
     const replacingRun = status === 'indexing' && options.startNewRun === true;
+    if (
+      replacingRun
+      && existing?.indexing_run_id
+      && requestedRunId
+      && existing.indexing_run_id !== requestedRunId
+      && existing.indexing_transition_at
+      && options.transitionAt
+      && options.transitionAt <= existing.indexing_transition_at
+    ) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt,
+        applied: false
+      };
+    }
     if (
       existing?.indexing_run_id
       && requestedRunId
@@ -125,6 +146,17 @@ export async function updateRepositoryStatus(
       })
       .onConflict(['full_name', 'branch'])
       .merge(updateData);
+    await transaction('repository_indexing_transitions')
+      .insert({
+        full_name: fullName,
+        branch,
+        run_id: runId,
+        status,
+        transition_at: transitionAt,
+        observed_at: now
+      })
+      .onConflict(['full_name', 'branch', 'run_id', 'status', 'transition_at'])
+      .ignore();
     return { transitionAt, runId, applied: true };
     }
   );
