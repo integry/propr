@@ -260,16 +260,18 @@ test('Antigravity config path uses stored config when no env override is set', (
     });
 });
 
-test('Antigravity labels resolve to Antigravity models', async () => {
+test('Antigravity labels resolve to Antigravity models', async (t) => {
     const registry = AgentRegistry.getInstance() as unknown as {
         initialized: boolean;
         agents: Map<string, Agent>;
         agentsByAlias: Map<string, Agent>;
         defaultAgentAlias: string | null;
+        ensureInitialized(): Promise<void>;
     };
     const config = createAntigravityConfig();
     const fakeAgent = { config } as Agent;
 
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
     registry.initialized = true;
     registry.defaultAgentAlias = config.alias;
     registry.agents = new Map([[config.id, fakeAgent]]);
