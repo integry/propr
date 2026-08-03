@@ -17,6 +17,10 @@ export { UsageLimitError };
 
 const DEFAULT_OPENCODE_ANALYSIS_ROOT = '/tmp/git-processor/opencode-analysis';
 
+function buildFailedExecutionResult(error: Error & { stderr?: string }, executionTimeMs: number, model: string | undefined, prompt: string): AgentExecutionResult {
+    return { success: false, error: error.message, executionTimeMs, logs: error.stderr || error.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: model || 'unknown', prompt };
+}
+
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
     private readonly timeoutMs: number;
@@ -100,10 +104,10 @@ export class OpenCodeAgent implements Agent {
         } catch (error) {
             if (error instanceof UsageLimitError) throw error;
             const executionTime = Date.now() - startTime;
-            const err = error as Error;
+            const err = error as Error & { stderr?: string };
             logger.error({ issueNumber: issueRef.number, repository: repo, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during OpenCode agent execution');
             const persistedPrompt = prompt ?? customPrompt ?? '';
-            const response: AgentExecutionResult = { success: false, error: err.message, executionTimeMs: executionTime, logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: effectiveModel || 'unknown', prompt: persistedPrompt };
+            const response = buildFailedExecutionResult(err, executionTime, effectiveModel, persistedPrompt);
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt: persistedPrompt, issueRef, taskId, prNumber, isRetry, retryReason });
             return response;
         }
