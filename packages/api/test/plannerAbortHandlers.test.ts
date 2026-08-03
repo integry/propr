@@ -89,7 +89,8 @@ describe('planner abort handlers', () => {
     assert.equal(current.generation_trace, 'completed-run');
   });
 
-  test('does not cancel a refinement restarted after the abort request read its snapshot', async () => {
+  test('does not cancel a same-timestamp refinement restart after reading the old run snapshot', async () => {
+    const restartedMetadata = JSON.stringify({ status: 'in_progress', runId: 'refinement-run-2' });
     await database('task_drafts').insert({
       draft_id: 'refinement-restart-race',
       user_id: 'user-1',
@@ -104,8 +105,8 @@ describe('planner abort handlers', () => {
         signalledRunId = runId;
         await database('task_drafts').where({ draft_id: 'refinement-restart-race' }).update({
           status: 'refining',
-          refinement_result: 'restarted-run',
-          updated_at: '2026-08-03 20:00:02.000',
+          refinement_result: restartedMetadata,
+          updated_at: '2026-08-03 20:00:00.000',
         });
       },
       clearAbortSignal: async () => { abortSignalCleared = true; },
@@ -119,7 +120,7 @@ describe('planner abort handlers', () => {
     assert.equal(signalledRunId, 'refinement-run-1');
     assert.equal(abortSignalCleared, false);
     assert.equal(current.status, 'refining');
-    assert.equal(current.refinement_result, 'restarted-run');
+    assert.equal(current.refinement_result, restartedMetadata);
   });
 
   test('surfaces failed reconciliation for a legacy draft-wide abort signal', async t => {

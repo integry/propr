@@ -68,6 +68,7 @@ const languageAliases: Record<string, SyntaxLanguage> = {
   'c++': 'cpp',
   'c#': 'csharp',
   cs: 'csharp',
+  dockerfile: 'docker',
   html: 'markup',
   js: 'javascript',
   jsonc: 'json',

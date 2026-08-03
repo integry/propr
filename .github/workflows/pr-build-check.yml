@@ -139,6 +139,7 @@ jobs:
               - 'src/**'
               - 'Dockerfile*'
               - 'package*.json'
+              - 'packages/core/**'
               - 'packages/shared/**'
             ui:
               - 'propr-ui/**'
@@ -147,6 +148,7 @@ jobs:
               - 'docs/**'
             api:
               - 'packages/api/**'
+              - 'packages/core/**'
               - 'packages/shared/**'
             core_package:
               - 'packages/core/**'
@@ -462,6 +464,7 @@ jobs:
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             let log = 'Log file missing.';
             try { log = fs.readFileSync('build_log.txt', 'utf8'); } catch {}
+            log = log.replace(/~~~/g, '~~\u200b~');
             if (log.length > 60000) log = log.substring(0, 60000) + '\n\n...(truncated)';
             const marker = '<!-- propr-build-check-results -->';
             const body = [

@@ -7,6 +7,7 @@ import {
     buildTestArguments,
     discoverTestFiles,
     discoverWorkspaceTestRoots,
+    runTestProcess,
     selectTestFiles,
     shouldFlushRedis,
     usesNativeWorkspaceTestRunner,
@@ -45,6 +46,24 @@ describe('release test-suite runner', () => {
         assert.equal(shouldFlushRedis('true'), false);
         assert.equal(shouldFlushRedis('off'), false);
         assert.equal(shouldFlushRedis(' FLUSH '), true);
+    });
+
+    test('waits for a timed-out process to close after escalating to SIGKILL', {
+        skip: process.platform === 'win32',
+    }, async () => {
+        const result = await runTestProcess(process.execPath, [
+            '-e',
+            'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);',
+        ], {
+            stdio: 'ignore',
+            timeout: 100,
+        }, () => {}, {
+            terminationGraceMs: 25,
+            forcedExitWaitMs: 500,
+        });
+
+        assert.equal(result.timedOut, true);
+        assert.equal(result.signal, 'SIGKILL');
     });
 
     test('discovers root and workspace tests while delegating native workspace runners', () => {

@@ -10,6 +10,7 @@ import { createClient } from 'redis';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 180_000;
 const TERMINATION_GRACE_MS = 2_000;
+const FORCED_EXIT_WAIT_MS = 2_000;
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/;
 const EXCLUDED_TESTS = new Set(['e2e.test.ts']);
 const IGNORED_DIRECTORIES = new Set(['.git', 'coverage', 'dist', 'node_modules']);
@@ -119,7 +120,9 @@ function signalProcessGroup(child, signal) {
     }
 }
 
-function runTestProcess(command, args, options, onChild) {
+export function runTestProcess(command, args, options, onChild, timing = {}) {
+    const terminationGraceMs = timing.terminationGraceMs ?? TERMINATION_GRACE_MS;
+    const forcedExitWaitMs = timing.forcedExitWaitMs ?? FORCED_EXIT_WAIT_MS;
     return new Promise((resolveProcess) => {
         const child = spawn(command, args, {
             ...options,
@@ -131,12 +134,14 @@ function runTestProcess(command, args, options, onChild) {
         let exitSignal = null;
         let settled = false;
         let hardKillTimer = null;
+        let forcedExitTimer = null;
 
         const finish = (error = null) => {
             if (settled) return;
             settled = true;
             clearTimeout(timeoutTimer);
             if (hardKillTimer) clearTimeout(hardKillTimer);
+            if (forcedExitTimer) clearTimeout(forcedExitTimer);
             onChild(null);
             resolveProcess({ status: exitStatus, signal: exitSignal, timedOut, error });
         };
@@ -145,15 +150,19 @@ function runTestProcess(command, args, options, onChild) {
             signalProcessGroup(child, 'SIGTERM');
             hardKillTimer = setTimeout(() => {
                 signalProcessGroup(child, 'SIGKILL');
-                finish();
-            }, TERMINATION_GRACE_MS);
+                forcedExitTimer = setTimeout(() => finish(), forcedExitWaitMs);
+            }, terminationGraceMs);
         }, options.timeout);
 
         child.once('error', finish);
         child.once('exit', (status, signal) => {
             exitStatus = status;
             exitSignal = signal;
-            if (!timedOut) finish();
+        });
+        child.once('close', (status, signal) => {
+            exitStatus = status;
+            exitSignal = signal;
+            finish();
         });
     });
 }

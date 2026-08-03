@@ -33,9 +33,20 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
       host: process.env.REDIS_HOST || 'redis',
       port: parseInt(process.env.REDIS_PORT || '6379', 10)
     });
-    const aborted = await redis.get(buildPlannerAbortSignalKey(draftId, runId));
-    await redis.quit();
-    return !!aborted;
+    try {
+      return !!(await redis.get(buildPlannerAbortSignalKey(draftId, runId)));
+    } finally {
+      try {
+        await redis.quit();
+      } catch (closeError) {
+        console.error('[refine] Failed to close abort-check Redis connection gracefully:', closeError);
+        try {
+          redis.disconnect();
+        } catch (disconnectError) {
+          console.error('[refine] Failed to disconnect abort-check Redis connection:', disconnectError);
+        }
+      }
+    }
   };
 
   try {

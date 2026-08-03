@@ -916,6 +916,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(res.statusCode, 502);
         assert.deepStrictEqual(res.body, {
+            code: 'AGENT_VERSION_LOOKUP_UNAVAILABLE',
             error: "Failed to resolve version for agent 'new-default': Agent version lookup is temporarily unavailable",
         });
         assert.strictEqual(redisClient.set.mock.calls.length, 0);

@@ -7,7 +7,7 @@ import type { ConfigLockContext } from './configHelpers.js';
 
 export type ApplyAgentsUpdateBody =
   | { success: true; agents: AgentConfig[]; warning?: string; warnings?: string[]; committed?: boolean; out_of_sync?: boolean }
-  | { error: string; success?: never; agents?: never; committed?: boolean; out_of_sync?: boolean };
+  | { code?: string; error: string; success?: never; agents?: never; committed?: boolean; out_of_sync?: boolean };
 
 export interface ApplyAgentsUpdateResult {
   status: number;

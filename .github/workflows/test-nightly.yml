@@ -146,7 +146,7 @@ jobs:
               for (const [pattern, replacement] of credentialPatterns) {
                 redacted = redacted.replace(pattern, replacement);
               }
-              return redacted;
+              return redacted.replace(/~~~/g, '~~\u200b~');
             };
 
             let testOutput = '';

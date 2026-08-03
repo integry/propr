@@ -74,11 +74,15 @@ interface ConditionalAbortDraftOptions {
 }
 
 async function conditionallyAbortDraft({ db, draft, userId, activeStatus, updates }: ConditionalAbortDraftOptions): Promise<number> {
+  const metadataColumn = activeStatus === 'generating' ? 'generation_trace' : 'refinement_result';
   let query = db('task_drafts').where({
     draft_id: draft.draft_id,
     user_id: userId,
     status: activeStatus,
   });
+  query = draft[metadataColumn] == null
+    ? query.whereNull(metadataColumn)
+    : query.where(metadataColumn, draft[metadataColumn]);
   query = draft.updated_at == null
     ? query.whereNull('updated_at')
     : query.where('updated_at', draft.updated_at);

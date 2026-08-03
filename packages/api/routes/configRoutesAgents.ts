@@ -7,6 +7,9 @@ import type { Knex } from 'knex';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
 import { DEFAULT_PREPARATION_DEPS, loadProcessedAgents, prepareAgentsUpdate, resolveDefaultAgentAlias } from './configRoutesAgentsPreparation.js';
+function buildAgentPreparationError(error: string, code?: string): { code?: string; error: string } {
+  return code ? { code, error } : { error };
+}
 async function rollbackAgentConfigState({
   configStore,
   registry,
@@ -169,7 +172,10 @@ export async function applyAgentsUpdate({
   const preparationDeps = { ...DEFAULT_PREPARATION_DEPS, ...preparationOverrides };
   const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents, preparationDeps);
   if (preparedAgents.error) {
-    return { status: preparedAgents.status ?? 400, body: { error: preparedAgents.error } };
+    return {
+      status: preparedAgents.status ?? 400,
+      body: buildAgentPreparationError(preparedAgents.error, preparedAgents.code),
+    };
   }
   const processedAgents = preparedAgents.processedAgents;
   if (!processedAgents) {
@@ -288,7 +294,7 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
     }
     const prepared = await prepareAgentsUpdate(req.body.agents, preparationDeps);
     if (prepared.error) {
-      res.status(prepared.status ?? 400).json({ error: prepared.error });
+      res.status(prepared.status ?? 400).json(buildAgentPreparationError(prepared.error, prepared.code));
       return;
     }
     if (!prepared.processedAgents) {

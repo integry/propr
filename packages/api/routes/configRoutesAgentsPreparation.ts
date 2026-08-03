@@ -10,6 +10,8 @@ import type { AgentConfig, AgentType, CliVersionType } from '@propr/core';
 import { normalizeAgentsConfig, validateAgentsConfig } from './configHelpers.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 
+export const AGENT_VERSION_LOOKUP_UNAVAILABLE_CODE = 'AGENT_VERSION_LOOKUP_UNAVAILABLE';
+
 export const DEFAULT_PREPARATION_DEPS: AgentPreparationDeps = {
   resolveVersion,
   computeContentHash,
@@ -51,16 +53,24 @@ function hasTransientNetworkCode(error: unknown): boolean {
   return false;
 }
 
-function classifyVersionResolutionError(error: unknown): { publicMessage: string; status: number } {
+function classifyVersionResolutionError(error: unknown): { code?: string; publicMessage: string; status: number } {
   const message = error instanceof Error ? error.message : 'Unknown version resolution error';
   if (hasTransientNetworkCode(error)
       || /\b(?:fetch failed|network (?:error|failure|timeout)|request timed out|EAI_AGAIN|ECONN(?:ABORTED|REFUSED|RESET)|ENET(?:DOWN|UNREACH)|ENOTFOUND|ETIMEDOUT)\b/i.test(message)) {
-    return { publicMessage: 'Agent version lookup is temporarily unavailable', status: 502 };
+    return {
+      code: AGENT_VERSION_LOOKUP_UNAVAILABLE_CODE,
+      publicMessage: 'Agent version lookup is temporarily unavailable',
+      status: 502,
+    };
   }
   if (message.startsWith('NPM registry returned ')
       || message.startsWith('PyPI request failed ')
       || message.startsWith('PyPI request timed out ')) {
-    return { publicMessage: 'Agent version lookup is temporarily unavailable', status: 502 };
+    return {
+      code: AGENT_VERSION_LOOKUP_UNAVAILABLE_CODE,
+      publicMessage: 'Agent version lookup is temporarily unavailable',
+      status: 502,
+    };
   }
   if (message.startsWith('Version spec required')
       || message.startsWith('Unknown tag ')
@@ -73,7 +83,7 @@ function classifyVersionResolutionError(error: unknown): { publicMessage: string
 export async function prepareAgentsUpdate(
   agents: unknown,
   preparationDeps: AgentPreparationDeps = DEFAULT_PREPARATION_DEPS,
-): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
+): Promise<{ code?: string; error?: string; processedAgents?: AgentConfig[]; status?: number }> {
   if (!Array.isArray(agents)) {
     return { error: 'agents must be an array', status: 400 };
   }
@@ -103,8 +113,12 @@ export async function prepareAgentsUpdate(
         );
       } catch (versionError) {
         console.error(`Failed to resolve version for agent '${agent.alias}':`, versionError);
-        const { publicMessage, status } = classifyVersionResolutionError(versionError);
-        return { error: `Failed to resolve version for agent '${agent.alias}': ${publicMessage}`, status };
+        const { code, publicMessage, status } = classifyVersionResolutionError(versionError);
+        return {
+          ...(code ? { code } : {}),
+          error: `Failed to resolve version for agent '${agent.alias}': ${publicMessage}`,
+          status,
+        };
       }
     } else {
       const agentType = agent.type as AgentType;
@@ -146,7 +160,7 @@ export async function loadProcessedAgents(
   agents: AgentConfig[],
   providedProcessedAgents?: AgentConfig[],
   preparationDeps: AgentPreparationDeps = DEFAULT_PREPARATION_DEPS,
-): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
+): Promise<{ code?: string; error?: string; processedAgents?: AgentConfig[]; status?: number }> {
   if (providedProcessedAgents) return { processedAgents: providedProcessedAgents };
   const prepared = await prepareAgentsUpdate(agents, preparationDeps);
   if (prepared.error || !prepared.processedAgents) {

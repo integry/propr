@@ -5,7 +5,8 @@ import {
   CommittedConfigWriteError,
   getDemoModeStatus,
   handleApiResponse,
-  INSTANCE_AUTHORIZATION_CHANGED_EVENT
+  INSTANCE_AUTHORIZATION_CHANGED_EVENT,
+  TokenRefreshRetryRequiredError,
 } from './proprApi';
 
 describe('demo mode API helpers', () => {
@@ -53,21 +54,43 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/github/repos', { credentials: 'include' });
   });
 
-  it('does not retry refreshed-token responses for mutating requests', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+  it('retries replayable JSON writes after a token refresh response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    const request = {
+      method: 'POST',
+      body: JSON.stringify({ repository: 'integry/propr' }),
+    };
+
+    const response = await apiFetch('/api/tasks/import', request);
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/tasks/import', request);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/tasks/import', request);
+  });
+
+  it('surfaces an unreplayed token refresh as retry-required without logging out', async () => {
+    const response = new Response(JSON.stringify({
       code: 'TOKEN_REFRESHED',
+      message: 'Token refreshed; retry this upload.',
     }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
-    }));
-
-    const response = await apiFetch('/api/tasks/import', {
-      method: 'POST',
-      body: JSON.stringify({ repository: 'integry/propr' }),
     });
 
-    expect(response.status).toBe(401);
-    expect(fetchMock).toHaveBeenCalledOnce();
+    await expect(handleApiResponse(response)).rejects.toMatchObject({
+      code: 'TOKEN_REFRESHED',
+      message: 'Token refreshed; retry this upload.',
+      name: TokenRefreshRetryRequiredError.name,
+    });
   });
 
   it('retries replayable Request instances after a token refresh response', async () => {
@@ -164,6 +187,33 @@ describe('demo mode API helpers', () => {
       lockLostAfterCommit,
       responseBody: { committed: true },
     });
+  });
+
+  it('surfaces explicitly allowlisted public messages for server errors', async () => {
+    const response = new Response(JSON.stringify({
+      code: 'AGENT_VERSION_LOOKUP_UNAVAILABLE',
+      error: "Failed to resolve version for agent 'codex': Agent version lookup is temporarily unavailable",
+    }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toThrow(
+      "Failed to resolve version for agent 'codex': Agent version lookup is temporarily unavailable"
+    );
+  });
+
+  it('continues to hide unclassified server error bodies', async () => {
+    const response = new Response(JSON.stringify({
+      error: 'Internal database details must not be displayed',
+    }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toThrow(
+      'The server ran into a problem (HTTP 502). Please try again in a moment.'
+    );
   });
 
   it('continues to allow GET requests in demo mode', async () => {

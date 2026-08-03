@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ACTION="${1:-}"
-IMAGE="${CI_REDIS_IMAGE:-redis:7-alpine}"
+IMAGE="${CI_REDIS_IMAGE:-redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2}"
 RUN_KEY="${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}"
 SAFE_RUN_KEY="$(printf '%s' "$RUN_KEY" | tr -c 'A-Za-z0-9_.-' '-')"
 CONTAINER_NAME="propr-ci-redis-${SAFE_RUN_KEY}"

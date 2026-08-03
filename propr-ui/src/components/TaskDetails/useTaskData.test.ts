@@ -58,6 +58,27 @@ describe('incremental task live updates', () => {
     expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toHaveLength(2);
   });
 
+  it('keeps repeated legacy output at different timestamps while deduplicating resends', () => {
+    const firstEvent = {
+      type: 'thought' as const,
+      content: 'Repeated output',
+      timestamp: '2026-08-03T00:00:00.000Z',
+    };
+    const payload: IncrementalTaskLiveUpdatePayload = {
+      taskId: 'task-1',
+      events: [
+        firstEvent,
+        { ...firstEvent },
+        { ...firstEvent, timestamp: '2026-08-03T00:00:01.000Z' },
+      ],
+    };
+
+    expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toEqual([
+      firstEvent,
+      { ...firstEvent, timestamp: '2026-08-03T00:00:01.000Z' },
+    ]);
+  });
+
   it('uses tool-use IDs without dropping the matching tool result', () => {
     const payload: IncrementalTaskLiveUpdatePayload = {
       taskId: 'task-1',
