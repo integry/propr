@@ -6,14 +6,18 @@ import {
   getManagedAgentConfigPath,
   isAgentLoginSupported,
   isManagedAgentConfigPath,
+  type ReasoningLevel,
 } from '@propr/shared';
 import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
 import AgentCredentialSetup from './AgentCredentialSetup';
 import AgentEnabledToggle from './AgentEnabledToggle';
 import {
   createNewAgentFormData,
+  buildAgentConfig,
   getAgentSubmitLabel,
   shouldLoginAfterSave,
+  updateModelReasoningLevel,
+  validateAgentFormData,
   type AgentFormData,
   type CredentialSetup,
 } from './agentCredentialSetupUtils';
@@ -198,32 +202,15 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setFormData(prev => ({ ...prev, supportedModels: [] }));
   };
 
+  const handleReasoningLevelChange = (
+    modelId: string,
+    level: ReasoningLevel | '',
+  ) => {
+    setFormData(prev => updateModelReasoningLevel(prev, modelId, level));
+  };
+
   const validateForm = (): boolean => {
-    const newErrors: Record<string, string> = {};
-
-    // Validate alias
-    if (!formData.alias) {
-      newErrors.alias = 'Alias is required';
-    } else if (!/^[a-z0-9-]+$/.test(formData.alias)) {
-      newErrors.alias = 'Alias must only contain lowercase letters, numbers, and hyphens';
-    } else if (!isEditing && existingAliases.includes(formData.alias)) {
-      newErrors.alias = 'This alias is already in use';
-    } else if (isEditing && agent && formData.alias !== agent.alias && existingAliases.includes(formData.alias)) {
-      newErrors.alias = 'This alias is already in use';
-    }
-
-    // Note: dockerImage is predefined and not editable, so no validation needed
-
-    // Validate configPath
-    if (!formData.configPath) {
-      newErrors.configPath = 'Config path is required';
-    }
-
-    // Validate supportedModels
-    if (formData.supportedModels.length === 0) {
-      newErrors.supportedModels = 'At least one model is required';
-    }
-
+    const newErrors = validateAgentFormData(formData, existingAliases, agent?.alias);
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -236,52 +223,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       return;
     }
 
-    // Filter modelCustomLabels to only include supported models with non-empty labels
-    const cleanedModelCustomLabels: Record<string, string> = {};
-    if (formData.modelCustomLabels) {
-      for (const [modelId, label] of Object.entries(formData.modelCustomLabels)) {
-        const trimmedLabel = label?.trim();
-        if (trimmedLabel && formData.supportedModels.includes(modelId)) {
-          cleanedModelCustomLabels[modelId] = trimmedLabel;
-        }
-      }
-    }
-
-    const cleanedModelReasoningLevels = Object.fromEntries(
-      Object.entries(formData.modelReasoningLevels || {})
-        .filter(([modelId, level]) => level && formData.supportedModels.includes(modelId))
-    );
-
-    // Clean envVars - remove empty values
-    const cleanedEnvVars: Record<string, string> = {};
-    if (formData.envVars) {
-      for (const [key, value] of Object.entries(formData.envVars)) {
-        const trimmedValue = value?.trim();
-        if (trimmedValue) {
-          cleanedEnvVars[key] = trimmedValue;
-        }
-      }
-    }
-
-    const cliVersionType = formData.cliVersionType || 'default';
-    const agentToSave: AgentConfig = {
-      id: formData.id || crypto.randomUUID(),
-      type: formData.type,
-      alias: formData.alias,
-      enabled: formData.enabled,
-      dockerImage: formData.dockerImage,
-      configPath: formData.configPath,
-      supportedModels: formData.supportedModels,
-      defaultModel: formData.defaultModel,
-      modelCustomLabels: Object.keys(cleanedModelCustomLabels).length > 0 ? cleanedModelCustomLabels : undefined,
-      modelReasoningLevels: Object.keys(cleanedModelReasoningLevels).length > 0
-        ? cleanedModelReasoningLevels
-        : undefined,
-      envVars: Object.keys(cleanedEnvVars).length > 0 ? cleanedEnvVars : undefined,
-      cliVersionType,
-      cliVersion: cliVersionType === 'default' ? undefined : formData.cliVersion,
-      cliVersionResolved: formData.cliVersionResolved
-    };
+    const agentToSave = buildAgentConfig(formData);
 
     onSave(agentToSave, {
       loginAfterSave: shouldLoginAfterSave(
@@ -414,10 +356,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               ...prev,
               modelCustomLabels: { ...prev.modelCustomLabels, [modelId]: label }
             }))}
-            onReasoningLevelChange={(modelId, level) => setFormData(prev => {
-              const modelReasoningLevels = { ...prev.modelReasoningLevels }; if (level) modelReasoningLevels[modelId] = level; else delete modelReasoningLevels[modelId];
-              return { ...prev, modelReasoningLevels };
-            })}
+            onReasoningLevelChange={handleReasoningLevelChange}
           />
 
           <AgentEnabledToggle checked={formData.enabled} onChange={enabled => setFormData(prev => ({ ...prev, enabled }))} />

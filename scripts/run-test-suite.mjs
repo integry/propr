@@ -30,7 +30,6 @@ export function selectTestFiles(entries) {
 export function buildTestArguments(testFile) {
     return [
         '--experimental-test-module-mocks',
-        '--test-force-exit',
         '--test',
         testFile,
     ];

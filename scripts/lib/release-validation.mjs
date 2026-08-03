@@ -49,9 +49,16 @@ export function validateRelease({
     }
   }
 
-  const cli = packages.find((pkg) => pkg.name === "@propr/cli");
-  if (cli?.sharedDependency !== `^${version}`) {
-    errors.push(`@propr/cli must depend on @propr/shared@^${version}`);
+  const releasePackages = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  for (const pkg of packages) {
+    for (const [dependencyName, dependencyRange] of Object.entries(pkg.internalDependencies ?? {})) {
+      const dependency = releasePackages.get(dependencyName);
+      if (!dependency) continue;
+      const expectedRange = `^${dependency.version}`;
+      if (dependencyRange !== expectedRange) {
+        errors.push(`${pkg.name} must depend on ${dependencyName}@${expectedRange}; found ${dependencyRange}`);
+      }
+    }
   }
 
   if (launcherManifest.version !== version) {

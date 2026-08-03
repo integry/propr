@@ -12,8 +12,8 @@
     "dev": "tsx watch server.ts"
   },
   "dependencies": {
-    "@propr/core": "*",
-    "@propr/shared": "*",
+    "@propr/core": "^0.8.6",
+    "@propr/shared": "^0.8.6",
     "@types/multer": "^2.0.0",
     "bullmq": "^5.53.0",
     "chokidar": "^3.6.0",

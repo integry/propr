@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test for the production Docker images.
 #
-# Starts a minimal Propr stack (redis + app in api mode) from the locally
-# built prod images, waits for /health to respond, checks the daemon/worker
-# containers don't crash on startup, and tears everything down.
+# Starts the app, UI, and docs images, checks the agent and launcher artifacts,
+# waits for HTTP endpoints to respond, and tears everything down.
 #
 # What this validates:
 #   - Images boot (no missing files, Dockerfile commands work end-to-end)
@@ -23,17 +22,29 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 STACK="${STACK:-propr-smoke}"
+if [[ ! "$STACK" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+  echo "STACK must contain only letters, numbers, dots, underscores, and hyphens" >&2
+  exit 1
+fi
 NETWORK="${STACK}-net"
+DATA_DIR="/tmp/${STACK}-data"
 API_PORT="${API_PORT:-14000}"
 APP_TAG="${APP_TAG:-propr/app:latest}"
+UI_TAG="${UI_TAG:-propr/ui:latest}"
+DOCS_TAG="${DOCS_TAG:-propr/docs:latest}"
+AGENT_TAG="${AGENT_TAG:-propr/agent:latest}"
+LAUNCHER_TAG="${LAUNCHER_TAG:-propr/launcher:latest}"
 REDIS_TAG="${REDIS_TAG:-redis:7-alpine}"
+UI_PORT="${UI_PORT:-14173}"
+DOCS_PORT="${DOCS_PORT:-13000}"
+EXPECTED_VERSION="${EXPECTED_VERSION:-$(node -p "require('./package.json').version")}"
 
 cleanup() {
   echo ""
   echo "▸ cleaning up"
-  docker rm -f "$STACK-api" "$STACK-daemon" "$STACK-worker" "$STACK-redis" 2>/dev/null || true
+  docker rm -f "$STACK-api" "$STACK-daemon" "$STACK-worker" "$STACK-ui" "$STACK-docs" "$STACK-redis" 2>/dev/null || true
   docker network rm "$NETWORK" 2>/dev/null || true
-  rm -rf /tmp/$STACK-data
+  rm -rf -- "$DATA_DIR"
 }
 trap cleanup EXIT
 
@@ -41,10 +52,13 @@ echo "▸ propr image smoke test"
 echo "  stack:    $STACK"
 echo "  api port: $API_PORT"
 echo "  app tag:  $APP_TAG"
+echo "  ui tag:   $UI_TAG"
+echo "  docs tag: $DOCS_TAG"
+echo "  agent tag: $AGENT_TAG"
+echo "  launcher: $LAUNCHER_TAG"
 echo ""
 
 # --- Prepare throwaway data dir and fake .env ------------------------------
-DATA_DIR="/tmp/$STACK-data"
 mkdir -p "$DATA_DIR"/{data,logs}
 
 # Dummy GitHub App private key — structurally valid RSA PEM so openssl-based
@@ -77,11 +91,27 @@ GH_OAUTH_CLIENT_SECRET=smoke-test
 GITHUB_WEBHOOK_SECRET=smoke-test
 EOF
 
-# --- Pre-flight: images exist locally --------------------------------------
-if ! docker image inspect "$APP_TAG" >/dev/null 2>&1; then
-  echo "✗ image $APP_TAG not found locally — run: npm run images:build" >&2
-  exit 1
-fi
+# --- Pre-flight: every publishable image exists locally ---------------------
+for image in "$APP_TAG" "$UI_TAG" "$DOCS_TAG" "$AGENT_TAG" "$LAUNCHER_TAG"; do
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo "✗ image $image not found locally — run: npm run images:build" >&2
+    exit 1
+  fi
+done
+
+wait_for_http() {
+  local label="$1" url="$2" body
+  echo "▸ waiting for $label on $url"
+  for _ in $(seq 1 30); do
+    if body=$(curl -fsS --max-time 2 "$url" 2>/dev/null); then
+      echo "✓ $label responded: ${body:0:120}"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "✗ $label did not respond within 30s" >&2
+  return 1
+}
 
 # --- Network ---------------------------------------------------------------
 docker network create "$NETWORK" >/dev/null
@@ -90,6 +120,14 @@ echo "✓ network created"
 # --- Redis -----------------------------------------------------------------
 docker run -d --name "$STACK-redis" --network "$NETWORK" "$REDIS_TAG" >/dev/null
 echo "✓ redis started"
+
+# --- Static UI and docs -----------------------------------------------------
+docker run -d --name "$STACK-ui" -p "${UI_PORT}:5173" \
+  -e "PROPR_UI_PUBLIC_API_URL=http://localhost:${API_PORT}" \
+  "$UI_TAG" >/dev/null
+docker run -d --name "$STACK-docs" -p "${DOCS_PORT}:3000" "$DOCS_TAG" >/dev/null
+wait_for_http "ui" "http://localhost:${UI_PORT}"
+wait_for_http "docs" "http://localhost:${DOCS_PORT}"
 
 # --- Run migrations (fresh SQLite) -----------------------------------------
 docker run --rm --network "$NETWORK" \
@@ -125,28 +163,35 @@ echo "✓ worker started"
 
 # --- Wait for /health ------------------------------------------------------
 echo ""
-echo "▸ waiting for /health on http://localhost:${API_PORT}"
-ok=false
-for i in $(seq 1 30); do
-  if body=$(curl -fsS --max-time 2 "http://localhost:${API_PORT}/health" 2>/dev/null); then
-    echo "✓ api responded: $body"
-    ok=true
-    break
-  fi
-  sleep 1
-done
-
-if [ "$ok" = "false" ]; then
-  echo "✗ api did not respond within 30s"
+if ! wait_for_http "api" "http://localhost:${API_PORT}/health"; then
   echo ""
   echo "--- api logs ---"
   docker logs --tail 50 "$STACK-api"
   exit 1
 fi
 
+# --- Agent and launcher artifact checks ------------------------------------
+docker run --rm "$AGENT_TAG" sh -c '
+  set -eu
+  for executable in claude codex agy opencode vibe git gh rg python3; do
+    command -v "$executable" >/dev/null
+  done
+' >/dev/null
+echo "✓ agent runtime exposes every bundled CLI"
+
+docker run --rm --entrypoint node \
+  -e "EXPECTED_VERSION=$EXPECTED_VERSION" \
+  "$LAUNCHER_TAG" --input-type=module -e '
+    import fs from "node:fs";
+    const manifest = JSON.parse(fs.readFileSync("/app/manifest.json", "utf8"));
+    if (manifest.version !== process.env.EXPECTED_VERSION) throw new Error("launcher manifest version mismatch");
+    await import("file:///app/orchestrator.mjs");
+  ' >/dev/null
+echo "✓ launcher contains the release manifest and runnable orchestrator"
+
 # --- Crash check: all containers still running after startup grace ---------
 sleep 3
-for c in api daemon worker; do
+for c in api daemon worker ui docs; do
   status=$(docker inspect --format '{{.State.Status}}' "$STACK-$c" 2>/dev/null || echo "missing")
   if [ "$status" != "running" ]; then
     echo "✗ $STACK-$c is $status (expected running)"

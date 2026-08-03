@@ -150,7 +150,7 @@ interface OpenCodeTextPart {
 
 interface OpenCodeTextCandidate {
   text: string;
-  completeness: number;
+  finalized: boolean;
 }
 
 function buildOpenCodeTextCandidate(part: OpenCodeTextPart): OpenCodeTextCandidate | null {
@@ -162,7 +162,7 @@ function buildOpenCodeTextCandidate(part: OpenCodeTextPart): OpenCodeTextCandida
   const isDelta = partType === 'delta' || partType === 'text_delta';
   return {
     text,
-    completeness: (hasFinalText ? 1_000_000 : 0) + (isDelta ? 0 : 100_000) + text.length,
+    finalized: hasFinalText && !isDelta,
   };
 }
 
@@ -174,13 +174,15 @@ function joinOpenCodePartsText(parts: OpenCodeTextPart[], trim = true): string {
     if (seenReferences.has(part)) continue;
     seenReferences.add(part);
     // A single part can expose the same payload through text/content/delta.
-    // Same-ID envelope representations select the richest payload, while
+    // Same-ID envelope representations select finalized payloads first and
+    // otherwise use the latest envelope order, while
     // identical text from distinct part IDs remains meaningful and is kept.
     const candidate = buildOpenCodeTextCandidate(part);
     if (!candidate) continue;
     const existingIndex = part.id ? candidateIndexById.get(part.id) : undefined;
     if (existingIndex !== undefined) {
-      if (candidate.completeness > candidates[existingIndex].completeness) {
+      const existing = candidates[existingIndex];
+      if (candidate.finalized || !existing.finalized) {
         candidates[existingIndex] = candidate;
       }
       continue;

@@ -6,16 +6,31 @@ const validInput = () => ({
   tag: "v1.2.3",
   expectedVersion: "1.2.3",
   packages: [
-    { name: "propr", version: "1.2.3", releaseVersioned: false },
-    { name: "@propr/api", version: "1.2.3", releaseVersioned: true },
+    {
+      name: "propr",
+      version: "1.2.3",
+      releaseVersioned: false,
+      internalDependencies: { "@propr/core": "^1.2.3" },
+    },
+    {
+      name: "@propr/api",
+      version: "1.2.3",
+      releaseVersioned: true,
+      internalDependencies: { "@propr/core": "^1.2.3", "@propr/shared": "^1.2.3" },
+    },
     {
       name: "@propr/cli",
       version: "1.2.3",
       releaseVersioned: true,
-      sharedDependency: "^1.2.3",
+      internalDependencies: { "@propr/shared": "^1.2.3" },
     },
-    { name: "@propr/core", version: "1.2.3", releaseVersioned: true },
-    { name: "@propr/shared", version: "1.2.3", releaseVersioned: true },
+    {
+      name: "@propr/core",
+      version: "1.2.3",
+      releaseVersioned: true,
+      internalDependencies: { "@propr/shared": "^1.2.3" },
+    },
+    { name: "@propr/shared", version: "1.2.3", releaseVersioned: true, internalDependencies: {} },
   ],
   launcherManifest: {
     version: "1.2.3",
@@ -36,7 +51,7 @@ describe("release validation", () => {
     input.tag = "v1.2.4";
     input.expectedVersion = "1.2.5";
     input.packages[1].version = "1.2.2";
-    input.packages[2].sharedDependency = "^1.2.2";
+    input.packages[2].internalDependencies["@propr/shared"] = "^1.2.2";
     input.launcherManifest.version = "1.2.2";
     input.launcherManifest.images.agent = "propr/agent:latest";
     input.changelog = "# Changelog\n\n## [Unreleased]\n";
@@ -57,12 +72,26 @@ describe("release validation", () => {
     assert.deepEqual(validateRelease(input), []);
   });
 
+  it("rejects drift in every internal workspace dependency range", () => {
+    const input = validInput();
+    input.packages[1].internalDependencies["@propr/core"] = "^1.2.2";
+    input.packages[3].internalDependencies["@propr/shared"] = "*";
+
+    const errors = validateRelease(input);
+    assert.ok(errors.some((error) => error.includes("@propr/api must depend on @propr/core@^1.2.3")));
+    assert.ok(errors.some((error) => error.includes("@propr/core must depend on @propr/shared@^1.2.3")));
+  });
+
   it("rejects SemVer build metadata because it cannot be used in Docker tags", () => {
     const input = validInput();
     input.tag = "v1.2.3+build.1";
     input.expectedVersion = "1.2.3+build.1";
     for (const pkg of input.packages) pkg.version = "1.2.3+build.1";
-    input.packages[2].sharedDependency = "^1.2.3+build.1";
+    for (const pkg of input.packages) {
+      for (const dependency of Object.keys(pkg.internalDependencies)) {
+        pkg.internalDependencies[dependency] = "^1.2.3+build.1";
+      }
+    }
     input.launcherManifest.version = "1.2.3+build.1";
     for (const name of ["app", "ui", "docs", "agent"]) {
       input.launcherManifest.images[name] = `propr/${name}:1.2.3+build.1`;
@@ -77,7 +106,11 @@ describe("release validation", () => {
     input.tag = "v1.2.3-rc.1";
     input.expectedVersion = "1.2.3-rc.1";
     for (const pkg of input.packages) pkg.version = "1.2.3-rc.1";
-    input.packages[2].sharedDependency = "^1.2.3-rc.1";
+    for (const pkg of input.packages) {
+      for (const dependency of Object.keys(pkg.internalDependencies)) {
+        pkg.internalDependencies[dependency] = "^1.2.3-rc.1";
+      }
+    }
     input.launcherManifest.version = "1.2.3-rc.1";
     for (const name of ["app", "ui", "docs", "agent"]) {
       input.launcherManifest.images[name] = `propr/${name}:1.2.3-rc.1`;

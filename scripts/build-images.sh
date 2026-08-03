@@ -5,6 +5,7 @@
 #   scripts/build-images.sh                    # build all images, no push
 #   scripts/build-images.sh --push             # build + push to Docker Hub + GHCR
 #   scripts/build-images.sh --push-only        # push images already built and smoke-tested
+#   scripts/build-images.sh --promote-latest   # promote immutable version tags to latest
 #   scripts/build-images.sh --push --dockerhub # push to Docker Hub only
 #   scripts/build-images.sh --push --ghcr      # push to GHCR only
 #   scripts/build-images.sh --platform linux/amd64,linux/arm64 --push  # multi-arch (app/ui/docs only)
@@ -17,7 +18,7 @@
 #
 # Tags produced per image:
 #   <registry>/<name>:<version>   — exact version from package.json
-#   <registry>/<name>:<sha>       — short git SHA
+#   <registry>/<name>:<sha>       — full git commit SHA
 #   <registry>/<name>:latest      — latest, unless PUSH_LATEST=false
 
 set -euo pipefail
@@ -37,7 +38,7 @@ VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-2.23.1}"
 PUSH_LATEST="${PUSH_LATEST:-true}"
 
 VERSION="$(node -p "require('./package.json').version")"
-GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
+GIT_SHA="${GIT_SHA:-$(git rev-parse HEAD 2>/dev/null || echo 'nogit')}"
 BUILD_DATE="${BUILD_DATE:-$(git show -s --format=%cI HEAD 2>/dev/null || date -u +'%Y-%m-%dT%H:%M:%SZ')}"
 IMAGE_SOURCE="${IMAGE_SOURCE:-https://github.com/integry/propr}"
 IMAGE_URL="${IMAGE_URL:-https://github.com/integry/propr}"
@@ -90,6 +91,7 @@ AGENT_BUNDLE_TAG=""
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
 PUSH_ONLY=false
+PROMOTE_LATEST=false
 PUSH_DH=true
 PUSH_GHCR=true
 PLATFORM=""   # empty = native platform
@@ -99,6 +101,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --push) PUSH=true; shift ;;
     --push-only) PUSH=true; PUSH_ONLY=true; shift ;;
+    --promote-latest) PROMOTE_LATEST=true; shift ;;
     --dockerhub) PUSH_GHCR=false; shift ;;
     --ghcr) PUSH_DH=false; shift ;;
     --platform) PLATFORM="$2"; shift 2 ;;
@@ -107,6 +110,15 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
+
+if $PROMOTE_LATEST && { $PUSH || $PUSH_ONLY || [[ -n "$PLATFORM" ]]; }; then
+  echo "--promote-latest cannot be combined with build or push options" >&2
+  exit 1
+fi
+if { $PUSH || $PROMOTE_LATEST; } && [[ ! "$GIT_SHA" =~ ^[0-9a-f]{40,64}$ ]]; then
+  echo "Publishing requires a full Git commit SHA; got '$GIT_SHA'" >&2
+  exit 1
+fi
 
 # --- Image definitions --------------------------------------------------------
 # Each entry: <logical-name>|<dockerfile>|<context>
@@ -127,26 +139,34 @@ should_build() {
 }
 
 # --- Derive tags --------------------------------------------------------------
-tags_for() {
+repositories_for() {
   local name="$1"
+  $PUSH_DH && printf '%s\n' "$DOCKERHUB_NS/$name"
+  $PUSH_GHCR && printf '%s\n' "$GHCR_NS/$GHCR_PREFIX$name"
+}
+
+tags_for() {
+  local name="$1" repository
   local -a tags=()
-  if $PUSH_DH; then
-    tags+=("$DOCKERHUB_NS/$name:$VERSION")
-    tags+=("$DOCKERHUB_NS/$name:$GIT_SHA")
+  while IFS= read -r repository; do
+    tags+=("$repository:$VERSION")
+    tags+=("$repository:$GIT_SHA")
     if [[ "$PUSH_LATEST" == "true" ]]; then
-      tags+=("$DOCKERHUB_NS/$name:latest")
+      tags+=("$repository:latest")
     fi
-    [[ "$name" == "agent" ]] && tags+=("$DOCKERHUB_NS/$name:$AGENT_BUNDLE_TAG")
-  fi
-  if $PUSH_GHCR; then
-    tags+=("$GHCR_NS/$GHCR_PREFIX$name:$VERSION")
-    tags+=("$GHCR_NS/$GHCR_PREFIX$name:$GIT_SHA")
-    if [[ "$PUSH_LATEST" == "true" ]]; then
-      tags+=("$GHCR_NS/$GHCR_PREFIX$name:latest")
-    fi
-    [[ "$name" == "agent" ]] && tags+=("$GHCR_NS/$GHCR_PREFIX$name:$AGENT_BUNDLE_TAG")
-  fi
+    [[ "$name" == "agent" ]] && tags+=("$repository:$AGENT_BUNDLE_TAG")
+  done < <(repositories_for "$name")
   printf '%s\n' "${tags[@]}"
+}
+
+candidate_ref_for() {
+  printf '%s:reconcile-%s\n' "$1" "$GIT_SHA"
+}
+
+immutable_suffixes_for() {
+  local name="$1"
+  printf '%s\n' "$GIT_SHA" "$VERSION"
+  [[ "$name" == "agent" ]] && printf '%s\n' "$AGENT_BUNDLE_TAG"
 }
 
 manifest_ns() {
@@ -193,7 +213,7 @@ image_description() {
 
 inspect_remote_digest() {
   local ref="$1" output digest
-  if ! output="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>&1)"; then
+  if ! output="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>&1)"; then
     if grep -Eqi 'manifest unknown|no such manifest|(^|: )not found([[:space:]]|$)' <<< "$output" \
       && ! grep -Eqi 'unauthorized|denied|insufficient_scope|authorization' <<< "$output"; then
       return 1
@@ -208,77 +228,163 @@ inspect_remote_digest() {
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", chunk => { input += chunk; });
     process.stdin.on("end", () => {
-      const digest = JSON.parse(input).digest;
+      const digest = JSON.parse(input);
       if (!/^sha256:[0-9a-f]{64}$/.test(digest || "")) process.exit(1);
       process.stdout.write(digest);
     });
   ' <<< "$output")"; then
-    echo "Registry returned an invalid manifest descriptor for $ref" >&2
+    echo "Registry returned an invalid manifest digest for $ref" >&2
     return 2
   fi
   printf '%s\n' "$digest"
 }
 
+copy_remote_digest() {
+  local repository="$1" target="$2" digest="$3" published_digest
+  echo "  publishing $target from $repository@$digest"
+  docker buildx imagetools create --prefer-index=false --tag "$target" "$repository@$digest"
+  if ! published_digest="$(inspect_remote_digest "$target")" \
+    || [[ "$published_digest" != "$digest" ]]; then
+    echo "Published digest for $target does not match source artifact $digest" >&2
+    return 1
+  fi
+}
+
+reconcile_immutable_tag() {
+  local repository="$1" target="$2" rebuilt_digest="$3" existing_digest status
+  if existing_digest="$(inspect_remote_digest "$target")"; then
+    if [[ "$existing_digest" != "$rebuilt_digest" ]]; then
+      echo "Refusing to overwrite immutable image tag $target" >&2
+      echo "  existing digest: $existing_digest" >&2
+      echo "  rebuilt digest:  $rebuilt_digest" >&2
+      return 1
+    fi
+    echo "  keeping $target (digest already matches rebuilt artifact)"
+    return 0
+  else
+    status=$?
+    [[ $status -eq 1 ]] || return "$status"
+  fi
+  copy_remote_digest "$repository" "$target" "$rebuilt_digest"
+}
+
+reconcile_repository() {
+  local name="$1" repository="$2" rebuilt_digest="$3" suffix
+  while IFS= read -r suffix; do
+    reconcile_immutable_tag "$repository" "$repository:$suffix" "$rebuilt_digest" || return
+  done < <(immutable_suffixes_for "$name")
+  if [[ "$PUSH_LATEST" == "true" ]]; then
+    copy_remote_digest "$repository" "$repository:latest" "$rebuilt_digest"
+  fi
+}
+
 push_reconciled_image() {
-  local name="$1" tag version_tag sha_tag rebuilt_digest existing_digest status published_digest
-  local -a tags=()
-  mapfile -t tags < <(tags_for "$name")
-
-  for tag in "${tags[@]}"; do
-    if ! docker image inspect "$tag" >/dev/null 2>&1; then
-      echo "Refusing to publish missing local image $tag; build and smoke-test it first" >&2
-      exit 1
+  local name="$1" repository source_ref candidate_ref rebuilt_digest
+  while IFS= read -r repository; do
+    source_ref="$repository:$VERSION"
+    candidate_ref="$(candidate_ref_for "$repository")"
+    if ! docker image inspect "$source_ref" >/dev/null 2>&1; then
+      echo "Refusing to publish missing local image $source_ref; build and smoke-test it first" >&2
+      return 1
     fi
-  done
-
-  # Publish the commit tag first so its registry digest represents the exact
-  # rebuilt and smoke-tested artifact. Version tags are reconciled against it
-  # before they can be created or reused.
-  for sha_tag in "${tags[@]}"; do
-    [[ "$sha_tag" == *":$GIT_SHA" ]] || continue
-    echo "  pushing reconciliation tag $sha_tag"
-    docker push "$sha_tag"
-  done
-
-  for version_tag in "${tags[@]}"; do
-    [[ "$version_tag" == *":$VERSION" ]] || continue
-    sha_tag="${version_tag%:*}:$GIT_SHA"
-    if ! rebuilt_digest="$(inspect_remote_digest "$sha_tag")"; then
-      echo "Unable to resolve rebuilt artifact digest from $sha_tag" >&2
-      exit 1
+    docker tag "$source_ref" "$candidate_ref"
+    echo "  pushing non-consumer reconciliation tag $candidate_ref"
+    docker push "$candidate_ref"
+    if ! rebuilt_digest="$(inspect_remote_digest "$candidate_ref")"; then
+      echo "Unable to resolve rebuilt artifact digest from $candidate_ref" >&2
+      return 1
     fi
+    reconcile_repository "$name" "$repository" "$rebuilt_digest" || return
+  done < <(repositories_for "$name")
+}
 
-    if existing_digest="$(inspect_remote_digest "$version_tag")"; then
-      if [[ "$existing_digest" != "$rebuilt_digest" ]]; then
-        echo "Refusing to overwrite immutable release tag $version_tag" >&2
-        echo "  existing digest: $existing_digest" >&2
-        echo "  rebuilt digest:  $rebuilt_digest" >&2
-        exit 1
+reconcile_pushed_candidates() {
+  local name="$1" repository candidate_ref rebuilt_digest
+  while IFS= read -r repository; do
+    candidate_ref="$(candidate_ref_for "$repository")"
+    if ! rebuilt_digest="$(inspect_remote_digest "$candidate_ref")"; then
+      echo "Unable to resolve multi-platform artifact digest from $candidate_ref" >&2
+      return 1
+    fi
+    reconcile_repository "$name" "$repository" "$rebuilt_digest" || return
+  done < <(repositories_for "$name")
+}
+
+PROMOTION_REPOSITORIES=()
+PROMOTION_TARGETS=()
+PROMOTION_DIGESTS=()
+PROMOTION_PRIOR_DIGESTS=()
+
+prepare_latest_promotions() {
+  local entry name dockerfile context repository version_ref sha_ref target
+  local version_digest sha_digest prior_digest status
+  local -a published_images=("${IMAGES[@]}" "launcher|docker/Dockerfile.launcher|.")
+  for entry in "${published_images[@]}"; do
+    IFS='|' read -r name dockerfile context <<< "$entry"
+    should_build "$name" || continue
+    while IFS= read -r repository; do
+      version_ref="$repository:$VERSION"
+      sha_ref="$repository:$GIT_SHA"
+      target="$repository:latest"
+      if ! version_digest="$(inspect_remote_digest "$version_ref")"; then
+        echo "Cannot promote latest because immutable release image $version_ref is unavailable" >&2
+        return 1
       fi
-      echo "  keeping $version_tag (digest already matches rebuilt artifact)"
-      continue
-    else
-      status=$?
-      if [[ $status -ne 1 ]]; then
-        exit "$status"
+      if ! sha_digest="$(inspect_remote_digest "$sha_ref")"; then
+        echo "Cannot promote latest because immutable commit image $sha_ref is unavailable" >&2
+        return 1
       fi
-    fi
+      if [[ "$version_digest" != "$sha_digest" ]]; then
+        echo "Cannot promote $target because version and commit tags disagree" >&2
+        echo "  version digest: $version_digest" >&2
+        echo "  commit digest:  $sha_digest" >&2
+        return 1
+      fi
+      prior_digest=""
+      if prior_digest="$(inspect_remote_digest "$target")"; then
+        :
+      else
+        status=$?
+        [[ $status -eq 1 ]] || return "$status"
+        prior_digest=""
+      fi
+      PROMOTION_REPOSITORIES+=("$repository")
+      PROMOTION_TARGETS+=("$target")
+      PROMOTION_DIGESTS+=("$version_digest")
+      PROMOTION_PRIOR_DIGESTS+=("$prior_digest")
+    done < <(repositories_for "$name")
+  done
+}
 
-    echo "  pushing new release tag $version_tag"
-    docker push "$version_tag"
-    if ! published_digest="$(inspect_remote_digest "$version_tag")" \
-      || [[ "$published_digest" != "$rebuilt_digest" ]]; then
-      echo "Published digest for $version_tag does not match rebuilt artifact $rebuilt_digest" >&2
-      exit 1
+rollback_latest_promotions() {
+  local count="$1" index prior_digest
+  echo "Latest promotion failed; restoring previously published latest tags" >&2
+  for ((index = count - 1; index >= 0; index--)); do
+    prior_digest="${PROMOTION_PRIOR_DIGESTS[$index]}"
+    if [[ -z "$prior_digest" ]]; then
+      echo "  ${PROMOTION_TARGETS[$index]} had no prior tag and cannot be restored automatically" >&2
+      continue
+    fi
+    if ! copy_remote_digest \
+      "${PROMOTION_REPOSITORIES[$index]}" \
+      "${PROMOTION_TARGETS[$index]}" \
+      "$prior_digest"; then
+      echo "  failed to restore ${PROMOTION_TARGETS[$index]} to $prior_digest" >&2
     fi
   done
+}
 
-  for tag in "${tags[@]}"; do
-    if [[ "$tag" == *":$VERSION" || "$tag" == *":$GIT_SHA" ]]; then
-      continue
+promote_latest_images() {
+  local index
+  prepare_latest_promotions || return
+  for ((index = 0; index < ${#PROMOTION_TARGETS[@]}; index++)); do
+    if ! copy_remote_digest \
+      "${PROMOTION_REPOSITORIES[$index]}" \
+      "${PROMOTION_TARGETS[$index]}" \
+      "${PROMOTION_DIGESTS[$index]}"; then
+      rollback_latest_promotions "$((index + 1))"
+      return 1
     fi
-    echo "  pushing $tag"
-    docker push "$tag"
   done
 }
 
@@ -323,9 +429,15 @@ refresh_notices() {
 
 # --- Build one image ----------------------------------------------------------
 build_image() {
-  local name="$1" dockerfile="$2" context="$3"
+  local name="$1" dockerfile="$2" context="$3" repository
   local -a tag_args=()
-  while IFS= read -r t; do tag_args+=("-t" "$t"); done < <(tags_for "$name")
+  if $PUSH && ! $PUSH_ONLY && [[ -n "$PLATFORM" && "$PLATFORM" == *,* ]]; then
+    while IFS= read -r repository; do
+      tag_args+=("-t" "$(candidate_ref_for "$repository")")
+    done < <(repositories_for "$name")
+  else
+    while IFS= read -r t; do tag_args+=("-t" "$t"); done < <(tags_for "$name")
+  fi
 
   if [[ "$name" == "agent" && -n "$PLATFORM" && "$PLATFORM" != "linux/amd64" ]]; then
     echo "Agent image builds are currently pinned to linux/amd64 because Debian package pins include amd64 binNMU suffixes." >&2
@@ -373,8 +485,10 @@ build_image() {
   fi
 
   if $PUSH && [[ -n "$PLATFORM" && "$PLATFORM" == *,* ]]; then
-    # Multi-arch requires buildx with --push (can't load multi-arch to local daemon).
+    # Multi-arch cannot be loaded into the local daemon. Publish only a staging
+    # reference, then apply the same immutable-tag checks used by native builds.
     docker buildx build "${build_args[@]}" --push -f "$dockerfile" "${tag_args[@]}" "$context"
+    reconcile_pushed_candidates "$name"
   else
     docker build "${build_args[@]}" -f "$dockerfile" "${tag_args[@]}" "$context"
     if $PUSH; then
@@ -384,7 +498,6 @@ build_image() {
 }
 
 # --- Main ---------------------------------------------------------------------
-refresh_notices
 AGENT_BUNDLE_TAG="$(resolve_agent_bundle_tag)"
 
 echo "Propr image build"
@@ -398,7 +511,17 @@ echo "  latest:     $PUSH_LATEST"
 echo "  agent tag:  $AGENT_BUNDLE_TAG"
 [[ -n "$ONLY" ]] && echo "  only:       $ONLY"
 
-write_manifest
+if $PROMOTE_LATEST; then
+  promote_latest_images
+  echo ""
+  echo "✓ latest promotion complete"
+  exit 0
+fi
+
+if ! $PUSH_ONLY; then
+  refresh_notices
+  write_manifest
+fi
 
 for entry in "${IMAGES[@]}"; do
   IFS='|' read -r name dockerfile context <<< "$entry"

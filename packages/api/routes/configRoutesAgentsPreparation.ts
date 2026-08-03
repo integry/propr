@@ -36,22 +36,22 @@ function hasVersionSpec(versionSpec: string | undefined): boolean {
   return typeof versionSpec === 'string' && versionSpec.trim().length > 0;
 }
 
-function classifyVersionResolutionError(error: unknown): { message: string; status: number } {
+function classifyVersionResolutionError(error: unknown): { publicMessage: string; status: number } {
   const message = error instanceof Error ? error.message : 'Unknown version resolution error';
   if (error instanceof TypeError || /fetch|network|timed?\s*out|ECONN|ENOTFOUND/i.test(message)) {
-    return { message, status: 502 };
+    return { publicMessage: 'Agent version lookup is temporarily unavailable', status: 502 };
   }
   if (message.startsWith('NPM registry returned ')
       || message.startsWith('PyPI request failed ')
       || message.startsWith('PyPI request timed out ')) {
-    return { message, status: 502 };
+    return { publicMessage: 'Agent version lookup is temporarily unavailable', status: 502 };
   }
   if (message.startsWith('Version spec required')
       || message.startsWith('Unknown tag ')
       || message.includes('not found for package')) {
-    return { message, status: 400 };
+    return { publicMessage: message, status: 400 };
   }
-  return { message, status: 500 };
+  return { publicMessage: 'Agent version resolution failed', status: 500 };
 }
 
 export async function prepareAgentsUpdate(
@@ -86,8 +86,9 @@ export async function prepareAgentsUpdate(
           agent.cliVersion,
         );
       } catch (versionError) {
-        const { message, status } = classifyVersionResolutionError(versionError);
-        return { error: `Failed to resolve version for agent '${agent.alias}': ${message}`, status };
+        console.error(`Failed to resolve version for agent '${agent.alias}':`, versionError);
+        const { publicMessage, status } = classifyVersionResolutionError(versionError);
+        return { error: `Failed to resolve version for agent '${agent.alias}': ${publicMessage}`, status };
       }
     } else {
       const agentType = agent.type as AgentType;
@@ -115,8 +116,9 @@ export async function prepareAgentsUpdate(
     );
     for (const agent of processedAgents) agent.dockerImage = bundleImage;
   } catch (error) {
+    console.error('Failed to derive managed agent image:', error);
     return {
-      error: `Failed to derive managed agent image: ${error instanceof Error ? error.message : 'unknown image derivation failure'}`,
+      error: 'Failed to derive managed agent image',
       status: 500,
     };
   }

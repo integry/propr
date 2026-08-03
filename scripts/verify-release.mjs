@@ -22,7 +22,13 @@ const packages = packagePaths.map((path) => {
     name: pkg.name,
     version: pkg.version,
     releaseVersioned: path !== "package.json",
-    sharedDependency: pkg.dependencies?.["@propr/shared"],
+    internalDependencies: Object.fromEntries(
+      Object.entries({
+        ...pkg.dependencies,
+        ...pkg.optionalDependencies,
+        ...pkg.peerDependencies,
+      }).filter(([name]) => name.startsWith("@propr/")),
+    ),
   };
 });
 

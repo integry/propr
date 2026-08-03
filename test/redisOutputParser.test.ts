@@ -67,6 +67,21 @@ test('parseRedisOutput keeps generic Codex JSONL events out of Antigravity routi
     assert.strictEqual(parsed.tokenUsage, null);
 });
 
+test('parseRedisOutput counts Codex usage once when turn and result records coexist', () => {
+    const usage = { input_tokens: 120, output_tokens: 30, cached_input_tokens: 40 };
+    const parsed = parseRedisOutput([
+        JSON.stringify({ type: 'turn.completed', usage }),
+        JSON.stringify({ type: 'result', status: 'success', usage }),
+    ]);
+
+    assert.deepStrictEqual(parsed.tokenUsage, {
+        input_tokens: 120,
+        output_tokens: 30,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 40,
+    });
+});
+
 test('parseRedisOutput emits Vibe live events from a partial JSON transcript array', () => {
     const output = `[
   {

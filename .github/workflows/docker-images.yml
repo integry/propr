@@ -47,12 +47,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -125,10 +125,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -153,7 +153,7 @@ jobs:
           "$PREFIX/bin/propr" --version
 
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.package.outputs.tarball }}
@@ -166,16 +166,16 @@ jobs:
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
-      PUSH_LATEST: ${{ github.event_name == 'push' || inputs.push_latest }}
+      PUSH_LATEST: 'false'
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -215,17 +215,27 @@ jobs:
       - name: Build GHCR-tagged images
         run: ./scripts/build-images.sh --ghcr
 
-      - name: Smoke test app image
+      - name: Smoke test GHCR images
         env:
           APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ steps.version.outputs.version }}
+          UI_TAG: ${{ env.GHCR_NS }}/propr-ui:${{ steps.version.outputs.version }}
+          DOCS_TAG: ${{ env.GHCR_NS }}/propr-docs:${{ steps.version.outputs.version }}
+          AGENT_TAG: ${{ env.GHCR_NS }}/propr-agent:${{ steps.version.outputs.version }}
+          LAUNCHER_TAG: ${{ env.GHCR_NS }}/propr-launcher:${{ steps.version.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: npm run images:smoke
 
       - name: Build Docker Hub-tagged images
         run: ./scripts/build-images.sh --dockerhub
 
-      - name: Smoke test Docker Hub app image
+      - name: Smoke test Docker Hub images
         env:
           APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
+          UI_TAG: ${{ env.DOCKERHUB_NS }}/ui:${{ steps.version.outputs.version }}
+          DOCS_TAG: ${{ env.DOCKERHUB_NS }}/docs:${{ steps.version.outputs.version }}
+          AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ steps.version.outputs.version }}
+          LAUNCHER_TAG: ${{ env.DOCKERHUB_NS }}/launcher:${{ steps.version.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: npm run images:smoke
 
       - name: Login to GHCR
@@ -279,10 +289,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
           registry-url: 'https://registry.npmjs.org'
@@ -292,7 +302,7 @@ jobs:
         run: npm install --global 'npm@>=11.5.1 <12'
 
       - name: Download smoke-tested CLI artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-artifacts
@@ -338,7 +348,7 @@ jobs:
 
     steps:
       - name: Download CLI artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-artifacts
@@ -357,3 +367,54 @@ jobs:
               --generate-notes \
               --title "ProPR $RELEASE_TAG"
           fi
+
+  promote-latest:
+    name: Promote latest images
+    if: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || inputs.push_latest }}
+    needs: [validate-release, publish-github-release]
+    runs-on: [self-hosted, linux, x64, propr]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
+      DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are required" >&2
+            exit 1
+          fi
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Promote release images to latest
+        run: ./scripts/build-images.sh --promote-latest
+
+      - name: Show latest-tag reconciliation guidance
+        if: failure()
+        run: |
+          echo "Latest promotion failed after the immutable release surfaces completed. Re-run this workflow for the same tag; existing latest tags are restored when possible." >&2
+          echo "### Latest-tag reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same release tag. Promotion preflights all immutable version/SHA pairs and restores prior latest digests after a partial failure when the registry supports it." >> "$GITHUB_STEP_SUMMARY"

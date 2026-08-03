@@ -83,10 +83,10 @@ export interface LogFileInfo {
 }
 
 export interface LogFilesData {
-  sessionId?: string;
-  logFiles?: LogFileInfo[];
-  error?: string;
-  files?: Record<string, string>;
+  sessionId?: string | null;
+  logFiles?: LogFileInfo[] | null;
+  error?: string | null;
+  files?: Record<string, string> | null;
 }
 
 export interface SelectedLogFileData {
@@ -127,6 +127,10 @@ export interface AnalysisData {
   content?: string;
   error?: string;
 }
+
+export type AnalysisApiData = {
+  [Key in keyof AnalysisData]?: AnalysisData[Key] | null;
+};
 
 export interface ParsedAnalysis {
   recommendations?: string[];

@@ -21,6 +21,8 @@ interface ParseState {
   events: ConversationEvent[];
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
+  codexTurnCompletedUsage: ParseState['tokenUsage'] | null;
+  codexResultUsage: ParseState['tokenUsage'] | null;
   lastOpenCodeCumulativeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
   pendingAssistantMessage: string; pendingAssistantTimestamp: string | null;
   antigravityStreamActive: boolean;
@@ -178,10 +180,26 @@ function processCodexItemUpdated(event: CodexEvent, _timestamp: string, state: P
 
 function processCodexTurnCompleted(event: CodexEvent, _timestamp: string, state: ParseState): boolean {
   if (!event.usage) return false;
-  state.tokenUsage.input_tokens += event.usage.input_tokens ?? 0;
-  state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
-  state.tokenUsage.cache_read_input_tokens += event.usage.cached_input_tokens ?? 0;
+  const usage = {
+    input_tokens: event.usage.input_tokens ?? 0,
+    output_tokens: event.usage.output_tokens ?? 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: event.usage.cached_input_tokens ?? 0,
+  };
+  if (event.type === 'result') {
+    // Legacy result usage is a cumulative fallback. A transcript containing
+    // turn.completed events uses those per-turn records as the authority.
+    state.codexResultUsage = usage;
+    return true;
+  }
+  state.codexTurnCompletedUsage ??= emptyRedisTokenUsage();
+  addRedisTokenUsage(state.codexTurnCompletedUsage, usage);
   return true;
+}
+
+function applyAuthoritativeCodexUsage(state: ParseState): void {
+  const usage = state.codexTurnCompletedUsage ?? state.codexResultUsage;
+  if (usage) addRedisTokenUsage(state.tokenUsage, usage);
 }
 
 function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseState): boolean {
@@ -669,6 +687,8 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     events: [],
     todos: [],
     tokenUsage: emptyRedisTokenUsage(),
+    codexTurnCompletedUsage: null,
+    codexResultUsage: null,
     lastOpenCodeCumulativeTopLevelUsage: null,
     pendingAssistantMessage: '',
     pendingAssistantTimestamp: null,
@@ -694,6 +714,7 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
   for (const line of lines) {
     parseLine(line, state);
   }
+  applyAuthoritativeCodexUsage(state);
 
   // Flush any remaining pending message
   flushPendingMessage(state, new Date().toISOString());

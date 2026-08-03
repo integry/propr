@@ -254,6 +254,24 @@ describe('OpenCode live details parsing', () => {
         ]);
     });
 
+    test('prefers the latest finalized same-ID OpenCode correction even when it is shorter', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'message',
+            message: {
+                role: 'assistant',
+                parts: [
+                    { id: 'part-1', type: 'text', text: 'An earlier answer with stale extra detail.' },
+                    { id: 'part-1', type: 'text', text: 'Corrected answer.' },
+                ],
+            },
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'message', content: 'Corrected answer.', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
     test('parses actual OpenCode tool and token events from Redis output', () => {
         const result = parseRedisOutput([opencodeToolLine, opencodeStepFinishLine]);
 

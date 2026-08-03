@@ -915,7 +915,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(res.statusCode, 502);
         assert.deepStrictEqual(res.body, {
-            error: "Failed to resolve version for agent 'new-default': network timeout",
+            error: "Failed to resolve version for agent 'new-default': Agent version lookup is temporarily unavailable",
         });
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
@@ -966,7 +966,7 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(res.statusCode, 500);
         assert.deepStrictEqual(res.body, {
-            error: 'Failed to derive managed agent image: hash generation failed',
+            error: 'Failed to derive managed agent image',
         });
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
     });
