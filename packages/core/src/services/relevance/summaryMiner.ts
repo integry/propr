@@ -13,7 +13,16 @@ import {
 } from './summaryMinerHelpers.js';
 import type { ProcessBatchesResult } from './summaryMinerHelpers.js';
 import type { AggregateDirectoriesResult } from './summaryMinerDirectories.js';
-import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
+import {
+  clearIndexingCancellation,
+  clearIndexingRuntimeStateBestEffort,
+  isIndexingCancelled,
+  IndexingCancelledError,
+  initIndexingProgress,
+  ensureIndexingProgress,
+  clearIndexingProgress,
+  publishIndexingStatus
+} from './indexingCancellation.js';
 import type { IndexingPhase } from '@propr/shared';
 import {
   updateRepositoryStatus,
@@ -233,6 +242,16 @@ async function safePublishAppliedIndexingStatus(
   await safePublishIndexingStatus(fullName, branch, status, transition);
 }
 
+async function throwIfIndexingCancelled(
+  fullName: string,
+  branch: string,
+  indexingRun: IndexingRunIdentity
+): Promise<void> {
+  if (await isIndexingCancelled(fullName, branch, indexingRun.runId)) {
+    throw new IndexingCancelledError(fullName);
+  }
+}
+
 async function closeSkippedIndexingRun(
   fullName: string,
   branch: string,
@@ -284,14 +303,15 @@ async function handleNoFilesToProcess(options: {
     fullName, agent, log, modelOverride, agentAliasSetting, resolveSummarizationConfig,
     branch, runId: indexingRun.runId
   });
-  await clearIndexingCancellation(fullName, branch, indexingRun.runId);
-  await clearIndexingProgress(fullName, branch, indexingRun.runId);
+  await throwIfIndexingCancelled(fullName, branch, indexingRun);
 
   if (dirResult.failedBatches > 0) {
     const transition = await updateRepositoryStatus(fullName, 'failed', branch, {
       ...indexingRun
     });
     await safePublishAppliedIndexingStatus(fullName, branch, 'failed', transition);
+    await clearIndexingCancellation(fullName, branch, indexingRun.runId);
+    await clearIndexingProgress(fullName, branch, indexingRun.runId);
     log.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
     return;
   }
@@ -301,10 +321,13 @@ async function handleNoFilesToProcess(options: {
     commitInfo: { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath }
   });
   await safePublishAppliedIndexingStatus(fullName, branch, 'completed', transition);
+  await clearIndexingCancellation(fullName, branch, indexingRun.runId);
+  await clearIndexingProgress(fullName, branch, indexingRun.runId);
 }
 
 async function finalizeIndexing(options: IndexingCompletionOptions): Promise<void> {
   const { repoPath, fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, batchResult, dirFailedBatches, log, indexingRun } = options;
+  await throwIfIndexingCancelled(fullName, branch, indexingRun);
   if (batchResult.failedBatches > 0 || dirFailedBatches > 0) {
     const transition = await updateRepositoryStatus(fullName, 'failed', branch, {
       ...indexingRun
@@ -391,18 +414,20 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       'Using agent for summarization'
     );
 
-    // 3. A queued run acquires durable repository ownership only when its worker
-    // starts. The transition timestamp prevents a delayed older job from replacing
-    // a newer owner.
-    const requestedRun = indexingRun ?? createIndexingRunIdentity();
+    // 3. Producers normally establish durable ownership when BullMQ accepts the
+    // job. Direct/legacy callers establish it here; accepted queued runs merely
+    // verify that cancellation or a replacement did not win first.
+    const queuedRun = indexingRun;
+    const requestedRun = queuedRun ?? createIndexingRunIdentity();
     const startTransition = await updateRepositoryStatus(fullName, 'indexing', branch, {
       ...requestedRun,
-      startNewRun: true
+      startNewRun: queuedRun === undefined
     });
     indexingRun = { runId: startTransition.runId, transitionAt: startTransition.transitionAt };
     if (!startTransition.applied) {
       correlatedLogger.warn({ fullName, branch, runId: indexingRun.runId },
         'Skipping superseded indexing job');
+      await clearIndexingRuntimeStateBestEffort(fullName, branch, indexingRun.runId);
       return 'skipped_superseded';
     }
     await safePublishIndexingStatus(fullName, branch, 'indexing', indexingRun);
@@ -548,10 +573,6 @@ async function handleIndexingError(input: {
   const repoName = options.fullName || path.basename(repoPath);
   const errorBranch = options.branch || 'HEAD';
 
-  // Always clear the cancellation flag and progress
-  await clearIndexingCancellation(repoName, errorBranch, indexingRun?.runId);
-  await clearIndexingProgress(repoName, errorBranch, indexingRun?.runId);
-
   // Handle user-initiated cancellation
   if (error instanceof IndexingCancelledError) {
     correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
@@ -562,8 +583,13 @@ async function handleIndexingError(input: {
     // Publish idle now that the worker has fully stopped — this is the authoritative
     // terminal event so clients won't see stale progress updates afterward.
     await safePublishAppliedIndexingStatus(repoName, errorBranch, 'idle', transition);
+    await clearIndexingCancellation(repoName, errorBranch, indexingRun?.runId);
+    await clearIndexingProgress(repoName, errorBranch, indexingRun?.runId);
     return 'skipped_cancelled';
   }
+
+  await clearIndexingCancellation(repoName, errorBranch, indexingRun?.runId);
+  await clearIndexingProgress(repoName, errorBranch, indexingRun?.runId);
 
   const err = error as Error;
   correlatedLogger.error(

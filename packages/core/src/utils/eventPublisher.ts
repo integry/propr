@@ -49,6 +49,9 @@ export interface EventPublisherOptions {
 class EventPublisher {
   private redis: InstanceType<typeof Redis> | null = null;
   private isInitialized = false;
+  private isClosed = false;
+  private initialization: Promise<void> | null = null;
+  private closePromise: Promise<void> | null = null;
   private readonly now: () => Date;
   private readonly publishOverride?: EventPublisherOptions['publish'];
   private readonly notificationProjector: NonNullable<EventPublisherOptions['projectNotification']>;
@@ -89,6 +92,7 @@ class EventPublisher {
 
   /** Bound publication latency while retaining work in a tracked, bounded queue. */
   private async projectNotification(payload: EventPayload): Promise<void> {
+    if (this.isClosed) return;
     const projection = this.projectionQueue.enqueue(payload);
     if (!projection) {
       logger.warn({
@@ -134,27 +138,41 @@ class EventPublisher {
    * This is called lazily on first publish to avoid connection overhead if not needed.
    */
   private async ensureInitialized(): Promise<void> {
-    if (this.isInitialized) return;
-
-    this.redis = new Redis({
-      host: process.env.REDIS_HOST ?? '127.0.0.1',
-      port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-      lazyConnect: true
-    });
-
-    this.redis.on('error', (error: Error) => {
-      logger.warn({ error: error.message }, 'Redis error in EventPublisher');
-    });
-
+    if (this.isClosed || this.isInitialized) return;
+    if (this.initialization) return this.initialization;
+    const initialization = (async () => {
+      const redis = new Redis({
+        host: process.env.REDIS_HOST ?? '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+        lazyConnect: true
+      });
+      this.redis = redis;
+      redis.on('error', (error: Error) => {
+        logger.warn({ error: error.message }, 'Redis error in EventPublisher');
+      });
+      try {
+        await redis.connect();
+        if (this.isClosed) {
+          redis.disconnect();
+          if (this.redis === redis) this.redis = null;
+          return;
+        }
+        this.isInitialized = true;
+        logger.debug('EventPublisher Redis connection established');
+      } catch (error) {
+        if (!this.isClosed) {
+          logger.warn({ error: (error as Error).message }, 'Failed to connect EventPublisher to Redis');
+        }
+        if (this.redis === redis) this.redis = null;
+      }
+    })();
+    this.initialization = initialization;
     try {
-      await this.redis.connect();
-      this.isInitialized = true;
-      logger.debug('EventPublisher Redis connection established');
-    } catch (error) {
-      logger.warn({ error: (error as Error).message }, 'Failed to connect EventPublisher to Redis');
-      this.redis = null;
+      await initialization;
+    } finally {
+      if (this.initialization === initialization) this.initialization = null;
     }
   }
 
@@ -164,9 +182,10 @@ class EventPublisher {
    */
   private async publish(channel: string, payload: EventPayload): Promise<boolean> {
     try {
+      if (this.isClosed) return false;
       if (this.publishOverride) return await this.publishOverride(channel, payload);
       await this.ensureInitialized();
-      if (!this.redis) return false;
+      if (this.isClosed || !this.redis) return false;
 
       const message = JSON.stringify(payload);
       await this.redis.publish(channel, message);
@@ -351,6 +370,13 @@ class EventPublisher {
    * Should be called during application shutdown.
    */
   async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.isClosed = true;
+    this.closePromise = this.closeResources();
+    return this.closePromise;
+  }
+
+  private async closeResources(): Promise<void> {
     const drain = await this.projectionQueue.close();
     if (!drain.drained) {
       logger.warn({ ...drain, drainTimeoutMs: this.projectionDrainTimeoutMs },
@@ -394,7 +420,6 @@ export function getEventPublisher(): EventPublisher {
 export async function closeEventPublisher(): Promise<void> {
   if (eventPublisherInstance) {
     await eventPublisherInstance.close();
-    eventPublisherInstance = null;
   }
 }
 

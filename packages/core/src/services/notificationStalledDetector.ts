@@ -102,7 +102,7 @@ export class NotificationStalledDetector {
                 run,
                 this.operationTimeoutMs,
                 'notification stalled-activity run',
-                () => abortController.abort()
+                () => this.expireActiveRun(run, abortController)
             );
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -130,6 +130,14 @@ export class NotificationStalledDetector {
         this.activeRunAbortController = null;
     }
 
+    private expireActiveRun(run: Promise<number>, abortController: AbortController): void {
+        abortController.abort();
+        if (this.activeRun !== run) return;
+        this.runGeneration++;
+        this.activeRun = null;
+        this.activeRunAbortController = null;
+    }
+
     private async executeRun(runGeneration: number, signal: AbortSignal): Promise<number> {
         let lease: NotificationProjectionLease | undefined;
         let renewalTimer: NodeJS.Timeout | undefined;
@@ -137,7 +145,6 @@ export class NotificationStalledDetector {
         let leaseLost = false;
         let runValid = true;
         let releaseInFlight: Promise<void> | null = null;
-        let cancellationCleanup: Promise<void> | null = null;
         const renewLease = (): Promise<boolean> => {
             const currentLease = lease;
             if (!currentLease || leaseLost || signal.aborted) {
@@ -176,10 +183,7 @@ export class NotificationStalledDetector {
             runValid = false;
             if (renewalTimer) clearInterval(renewalTimer);
             renewalTimer = undefined;
-            cancellationCleanup ??= (async () => {
-                if (renewalInFlight) await renewalInFlight;
-                await releaseLease();
-            })();
+            void releaseLease();
         };
         signal.addEventListener('abort', cancelRemainingWork, { once: true });
         try {
@@ -194,6 +198,7 @@ export class NotificationStalledDetector {
                     renewalTimer.unref();
                 }
             }
+            if (signal.aborted || runGeneration !== this.runGeneration) return 0;
             if (lease && !await renewLease()) return 0;
             const shouldContinue = () => runValid
                 && !leaseLost
@@ -202,6 +207,7 @@ export class NotificationStalledDetector {
             if (this.projector.reconcileTerminalTransitions) {
                 await this.projector.reconcileTerminalTransitions(shouldContinue);
             }
+            if (!shouldContinue()) return 0;
             return await this.projector.detectStalledActivities(
                 this.stalledAfterMs,
                 this.now(),
@@ -215,8 +221,6 @@ export class NotificationStalledDetector {
             runValid = false;
             signal.removeEventListener('abort', cancelRemainingWork);
             if (renewalTimer) clearInterval(renewalTimer);
-            if (cancellationCleanup) await cancellationCleanup;
-            else if (renewalInFlight) await renewalInFlight;
             await releaseLease();
         }
     }

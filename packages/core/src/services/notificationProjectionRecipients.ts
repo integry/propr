@@ -1,5 +1,6 @@
 import type { Knex } from 'knex';
 import type { TaskProjectionContext } from './notificationProjectionStore.js';
+import { getNotificationRepositoryEntitlementTtlMs } from './notificationRepositoryAccess.js';
 
 type ProjectionDatabase = Knex | Knex.Transaction;
 const CACHE_TTL_MS = 60_000;
@@ -23,6 +24,16 @@ interface CachedValue<T> {
     value: T;
 }
 
+export interface ProjectionRecipientResolution {
+    recipients: string[];
+    /** At least one candidate has no current authorization snapshot yet. */
+    deferred: boolean;
+}
+
+function repositoryKey(repository: string): string {
+    return repository.trim().toLowerCase();
+}
+
 export class NotificationProjectionRecipients {
     private readonly schemaCapabilities = new Map<string, Promise<boolean>>();
     private knownRecipientsCache?: CachedValue<string[]>;
@@ -33,33 +44,56 @@ export class NotificationProjectionRecipients {
     ) {}
 
     async getTaskRecipients(context: TaskProjectionContext): Promise<string[]> {
+        return (await this.resolveTaskRecipients(context)).recipients;
+    }
+
+    async resolveTaskRecipients(
+        context: TaskProjectionContext,
+        database: ProjectionDatabase = this.database
+    ): Promise<ProjectionRecipientResolution> {
         const candidates: unknown[] = [...(context.ownerUserIds ?? [])];
-        if (await this.hasTable('plan_issues') && await this.hasTable('task_drafts')) {
-            const rows = await this.database('plan_issues as issue')
+        if (await this.hasTable('plan_issues', database)
+            && await this.hasTable('task_drafts', database)) {
+            const rows = await database('plan_issues as issue')
                 .join('task_drafts as draft', 'draft.draft_id', 'issue.draft_id')
                 .distinct('draft.user_id')
                 .where((query) => {
                     query.where('issue.task_id', context.taskId);
                     if (context.issueNumber !== undefined) {
                         query.orWhere((issueQuery) => issueQuery
-                            .where('issue.repository', context.repository)
+                            .whereRaw('lower(issue.repository) = ?', [repositoryKey(context.repository)])
                             .where('issue.issue_number', context.issueNumber!));
                     }
                     if (context.prNumber !== undefined) {
                         query.orWhere((issueQuery) => issueQuery
-                            .where('issue.repository', context.repository)
+                            .whereRaw('lower(issue.repository) = ?', [repositoryKey(context.repository)])
                             .where('issue.pr_number', context.prNumber!));
                     }
                 }) as Array<{ user_id: string }>;
             candidates.push(...rows.map((row) => row.user_id));
         }
-        candidates.push(...await this.getRepositoryCandidateRecipients(context.repository));
-        return this.filterCurrentlyEntitled(context.repository, uniqueStrings(candidates));
+        candidates.push(...await this.getRepositoryCandidateRecipients(context.repository, database));
+        return this.resolveCurrentlyEntitled(context.repository, uniqueStrings(candidates), database);
     }
 
     async getRepositoryRecipients(repository: string): Promise<string[]> {
-        const candidates = await this.getRepositoryCandidateRecipients(repository);
-        return this.filterCurrentlyEntitled(repository, candidates);
+        return (await this.resolveRepositoryRecipients(repository)).recipients;
+    }
+
+    async resolveRepositoryRecipients(
+        repository: string,
+        database: ProjectionDatabase = this.database
+    ): Promise<ProjectionRecipientResolution> {
+        const candidates = await this.getRepositoryCandidateRecipients(repository, database);
+        return this.resolveCurrentlyEntitled(repository, candidates, database);
+    }
+
+    async resolveExplicitRecipients(
+        repository: string,
+        candidates: readonly string[],
+        database: ProjectionDatabase = this.database
+    ): Promise<ProjectionRecipientResolution> {
+        return this.resolveCurrentlyEntitled(repository, candidates, database);
     }
 
     async filterCurrentlyEntitled(
@@ -73,13 +107,17 @@ export class NotificationProjectionRecipients {
             return [];
         }
         const entitled: string[] = [];
-        const expiresAfter = new Date(this.now()).toISOString();
+        const now = new Date(this.now());
+        const expiresAfter = now.toISOString();
+        const verifiedAfter = new Date(now.getTime() - getNotificationRepositoryEntitlementTtlMs())
+            .toISOString();
         for (let offset = 0; offset < userIds.length; offset += ENTITLEMENT_LOOKUP_CHUNK_SIZE) {
             const rows = await database('notification_repository_entitlements')
                 .select('user_id')
-                .where({ repository })
+                .whereRaw('lower(repository) = ?', [repositoryKey(repository)])
                 .whereIn('user_id', userIds.slice(offset, offset + ENTITLEMENT_LOOKUP_CHUNK_SIZE))
-                .where('expires_at', '>', expiresAfter) as Array<{ user_id: string }>;
+                .where('expires_at', '>', expiresAfter)
+                .where('verified_at', '>', verifiedAfter) as Array<{ user_id: string }>;
             entitled.push(...rows.map((row) => row.user_id));
         }
         return uniqueStrings(entitled);
@@ -115,11 +153,51 @@ export class NotificationProjectionRecipients {
         return [...recipients];
     }
 
-    private async getRepositoryCandidateRecipients(repository: string): Promise<string[]> {
-        if (!await this.hasTable('notification_repository_subscriptions')) return [];
-        const rows = await this.database('notification_repository_subscriptions')
+    private async resolveCurrentlyEntitled(
+        repository: string,
+        candidates: readonly string[],
+        database: ProjectionDatabase
+    ): Promise<ProjectionRecipientResolution> {
+        const userIds = uniqueStrings(candidates);
+        if (userIds.length === 0) return { recipients: [], deferred: false };
+        if (!await this.hasTable('notification_repository_entitlements', database)
+            || !await this.hasTable('notification_repository_entitlement_snapshots', database)) {
+            return { recipients: [], deferred: true };
+        }
+
+        const recipients = await this.filterCurrentlyEntitled(repository, userIds, database);
+        const authorized = new Set(recipients);
+        const unresolved = userIds.filter((userId) => !authorized.has(userId));
+        if (unresolved.length === 0) return { recipients, deferred: false };
+
+        const now = new Date(this.now());
+        const expiresAfter = now.toISOString();
+        const verifiedAfter = new Date(now.getTime() - getNotificationRepositoryEntitlementTtlMs())
+            .toISOString();
+        const authoritative = new Set<string>();
+        for (let offset = 0; offset < unresolved.length; offset += ENTITLEMENT_LOOKUP_CHUNK_SIZE) {
+            const rows = await database('notification_repository_entitlement_snapshots')
+                .select('user_id')
+                .whereIn('user_id', unresolved.slice(offset, offset + ENTITLEMENT_LOOKUP_CHUNK_SIZE))
+                .where('expires_at', '>', expiresAfter)
+                .where('verified_at', '>', verifiedAfter) as Array<{ user_id: string }>;
+            rows.forEach((row) => authoritative.add(row.user_id));
+        }
+        return {
+            recipients,
+            deferred: unresolved.some((userId) => !authoritative.has(userId))
+        };
+    }
+
+    private async getRepositoryCandidateRecipients(
+        repository: string,
+        database: ProjectionDatabase = this.database
+    ): Promise<string[]> {
+        if (!await this.hasTable('notification_repository_subscriptions', database)) return [];
+        const rows = await database('notification_repository_subscriptions')
             .select('user_id')
-            .where({ repository, hidden: false }) as Array<{ user_id: string }>;
+            .whereRaw('lower(repository) = ?', [repositoryKey(repository)])
+            .where({ hidden: false }) as Array<{ user_id: string }>;
         // Drafts and repository todos are historical ownership evidence, not an
         // implicit repository-wide subscription. Task ownership is resolved by
         // getTaskRecipients() against the specific task/issue/PR instead.

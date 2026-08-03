@@ -1,4 +1,4 @@
-import { publishIndexingStatus } from '@propr/core';
+import { logger, publishIndexingStatus } from '@propr/core';
 
 interface PublishIndexingRunOptions {
   publisher: typeof publishIndexingStatus;
@@ -20,7 +20,11 @@ export async function publishIndexingRunBestEffort(
       options.transition
     );
   } catch (error) {
-    console.warn(`Failed to publish ${options.phase} indexing run:`,
-      error instanceof Error ? error.message : String(error));
+    logger.warn({
+      repository: options.repository,
+      branch: options.branch,
+      phase: options.phase,
+      error: error instanceof Error ? error.message : String(error),
+    }, 'Failed to publish indexing run');
   }
 }

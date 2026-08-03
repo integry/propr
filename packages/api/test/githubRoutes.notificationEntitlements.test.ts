@@ -3,6 +3,7 @@ import { after, afterEach, beforeEach, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import { closeConnection } from '../../core/src/db/connection.js';
 import { up as hardenNotificationProjection } from '../../core/src/db/migrations/20260802040000_harden_notification_projection.js';
+import { up as hardenNotificationFollowup } from '../../core/src/db/migrations/20260803020000_harden_notification_followup.js';
 import {
   createNotificationEntitlementRefreshMiddleware,
   persistNotificationRepositoryEntitlementsBestEffort,
@@ -18,6 +19,7 @@ beforeEach(async () => {
     useNullAsDefault: true,
   });
   await hardenNotificationProjection(database);
+  await hardenNotificationFollowup(database);
 });
 
 afterEach(async () => {
@@ -91,6 +93,58 @@ test('an empty access snapshot remains refreshable without repeatedly scanning G
     .then(row => Number(row?.count)), 0);
   assert.equal(await database('notification_repository_entitlement_snapshots').count({ count: '*' }).first()
     .then(row => Number(row?.count)), 1);
+});
+
+test('a reduced entitlement TTL immediately shortens an older snapshot', async () => {
+  const previousTtl = process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
+  try {
+    const verifiedAt = new Date(Date.now() - 30_000).toISOString();
+    await database('notification_repository_entitlement_snapshots').insert({
+      user_id: 'shorter-ttl-user',
+      verified_at: verifiedAt,
+      expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = '10000';
+    let scans = 0;
+    await refreshNotificationRepositoryEntitlements({
+      userId: 'shorter-ttl-user',
+      accessToken: 'token',
+      database,
+      listRepositories: async () => { scans++; return ['Acme/Alpha']; },
+    });
+
+    assert.equal(scans, 1);
+    assert.deepEqual(
+      await database('notification_repository_entitlements').pluck('repository'),
+      ['acme/alpha']
+    );
+  } finally {
+    if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
+    else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
+  }
+});
+
+test('a live database refresh lease coalesces work across API replicas', async () => {
+  await database('notification_repository_entitlement_refresh_leases').insert({
+    user_id: 'leased-user',
+    lease_token: 'other-replica',
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  let scans = 0;
+  const refresh = () => refreshNotificationRepositoryEntitlements({
+    userId: 'leased-user',
+    accessToken: 'token',
+    database,
+    listRepositories: async () => { scans++; return []; },
+  });
+
+  await refresh();
+  assert.equal(scans, 0);
+  await database('notification_repository_entitlement_refresh_leases')
+    .where({ user_id: 'leased-user' })
+    .update({ expires_at: new Date(Date.now() - 1).toISOString() });
+  await refresh();
+  assert.equal(scans, 1);
 });
 
 test('ordinary API middleware does not await a full entitlement refresh', async () => {

@@ -13,11 +13,14 @@ export {
   clearRepositorySummaries
 } from './summaryMiner.js';
 export {
+  INDEXING_FAILED_JOB_RETENTION,
   createIndexingQueueDeduplicationId,
   createIndexingQueueJobId,
   createIndexingRunIdentity,
+  recordSkippedIndexingRun,
   updateRepositoryStatus
 } from './summaryMinerQueries.js';
+export { clearIndexingRuntimeStateBestEffort } from './indexingCancellation.js';
 export type {
   IndexingRunIdentity,
   RepositoryStatusTransition,

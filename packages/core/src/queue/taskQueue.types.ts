@@ -127,8 +127,10 @@ export interface IndexingJobData {
     ignoreCooldown?: boolean; // Manual/admin indexing override for summarization cooldowns
     /** Queue-boundary identity; required for newly accepted jobs. */
     runId?: string;
-    /** Minted ordering time; the worker makes this run the durable owner on start. */
+    /** Run transition time, replaced with the database-authoritative value after acceptance. */
     transitionAt?: string;
+    /** The API/producer persisted run ownership after BullMQ accepted this job. */
+    durablyAccepted?: boolean;
 }
 
 export interface MergeConflictJobData {

@@ -177,9 +177,11 @@ export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
 export type { FileSummary, DirectorySummary, IndexingOptions, IndexingOutcome } from './services/relevance/summaryMiner.js';
 export {
+  INDEXING_FAILED_JOB_RETENTION,
   createIndexingQueueDeduplicationId,
   createIndexingQueueJobId,
-  createIndexingRunIdentity
+  createIndexingRunIdentity,
+  recordSkippedIndexingRun
 } from './services/relevance/summaryMinerQueries.js';
 export type {
   IndexingRunIdentity,
@@ -195,6 +197,7 @@ export {
   requestIndexingCancellation,
   isIndexingCancelled,
   clearIndexingCancellation,
+  clearIndexingRuntimeStateBestEffort,
   IndexingCancelledError,
   initIndexingProgress,
   updateIndexingProgress,
@@ -429,6 +432,7 @@ export {
     projectNotificationUpdateBestEffort
 } from './services/notificationProjectionService.js';
 export type {
+    NotificationProjectionOutcome,
     NotificationProjectionServiceOptions
 } from './services/notificationProjectionService.js';
 export {
@@ -467,6 +471,11 @@ export {
 export type {
     NotificationStalledDetectorOptions
 } from './services/notificationStalledDetector.js';
+export {
+    NotificationOperationTimeoutError,
+    settlesWithin,
+    withNotificationDeadline
+} from './services/notificationSchedulerTiming.js';
 export {
     DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS,
     getNotificationRepositoryEntitlementTtlMs,

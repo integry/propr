@@ -26,10 +26,18 @@ function normalizedUserId(value: string): string {
     return userId;
 }
 
+export function normalizeNotificationRepositoryIdentity(value: string): string | undefined {
+    const repository = value.trim().toLowerCase();
+    return repository.length <= 255 && REPOSITORY_PATTERN.test(repository)
+        ? repository
+        : undefined;
+}
+
 function normalizedRepositories(values: readonly string[]): string[] {
-    return [...new Set(values.map((value) => value.trim()).filter((value) =>
-        value.length <= 255 && REPOSITORY_PATTERN.test(value)
-    ))];
+    return [...new Set(values.flatMap((value) => {
+        const repository = normalizeNotificationRepositoryIdentity(value);
+        return repository === undefined ? [] : [repository];
+    }))];
 }
 
 async function insertInChunks(
@@ -99,14 +107,21 @@ export async function replaceNotificationRepositorySubscriptions(options: {
 }): Promise<void> {
     const database = options.database ?? db;
     const userId = normalizedUserId(options.userId);
-    const repositories = normalizedRepositories(Object.keys(options.preferences));
+    const preferences = new Map<string, { hidden?: boolean }>();
+    for (const [repository, preference] of Object.entries(options.preferences)) {
+        const key = normalizeNotificationRepositoryIdentity(repository);
+        if (key !== undefined) preferences.set(key, preference);
+    }
     const updatedAt = normalizeISO8601Timestamp(options.updatedAt ?? new Date());
     await runAtomically(database, async (transaction) => {
         await transaction('notification_repository_subscriptions').where({ user_id: userId }).delete();
-        await insertInChunks(transaction, 'notification_repository_subscriptions', repositories.map((repository) => ({
+        await insertInChunks(transaction, 'notification_repository_subscriptions', [...preferences].map(([
+            repository,
+            preference
+        ]) => ({
             user_id: userId,
             repository,
-            hidden: options.preferences[repository]?.hidden === true,
+            hidden: preference.hidden === true,
             updated_at: updatedAt
         })));
     });

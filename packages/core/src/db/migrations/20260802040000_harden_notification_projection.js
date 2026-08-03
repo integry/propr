@@ -44,7 +44,7 @@ async function backfillRepositorySubscriptions(knex) {
     const userId = row.key.slice('user_repo_prefs_'.length).trim();
     if (!userId || userId.length > 255) continue;
     for (const [repository, preference] of Object.entries(parsePreferenceMap(row.value))) {
-      const normalizedRepository = repository.trim();
+      const normalizedRepository = repository.trim().toLowerCase();
       if (normalizedRepository.length > 255 || !REPOSITORY_PATTERN.test(normalizedRepository)
           || !preference || typeof preference !== 'object' || Array.isArray(preference)) continue;
       subscriptions.push({

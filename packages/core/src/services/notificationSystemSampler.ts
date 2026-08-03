@@ -71,6 +71,7 @@ export class NotificationSystemSampler {
     private startupTimer: NodeJS.Timeout | null = null;
     private intervalTimer: NodeJS.Timeout | null = null;
     private activeRun: Promise<boolean> | null = null;
+    private activeRunAbortController: AbortController | null = null;
     private runGeneration = 0;
 
     constructor(options: NotificationSystemSamplerOptions) {
@@ -110,17 +111,20 @@ export class NotificationSystemSampler {
 
     async runOnce(): Promise<boolean> {
         if (this.activeRun) return false;
-        const run = this.executeRun(this.runGeneration);
+        const abortController = new AbortController();
+        const run = this.executeRun(this.runGeneration, abortController.signal);
         this.activeRun = run;
+        this.activeRunAbortController = abortController;
         void run.then(
-            () => { if (this.activeRun === run) this.activeRun = null; },
-            () => { if (this.activeRun === run) this.activeRun = null; }
+            () => { this.clearActiveRun(run); },
+            () => { this.clearActiveRun(run); }
         );
         try {
             return await withNotificationDeadline(
                 run,
                 this.operationTimeoutMs,
-                'notification system-health run'
+                'notification system-health run',
+                () => this.expireActiveRun(run, abortController)
             );
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -131,6 +135,7 @@ export class NotificationSystemSampler {
 
     async stop(): Promise<void> {
         this.runGeneration++;
+        this.activeRunAbortController?.abort();
         if (this.startupTimer) clearTimeout(this.startupTimer);
         if (this.intervalTimer) clearInterval(this.intervalTimer);
         this.startupTimer = null;
@@ -143,14 +148,42 @@ export class NotificationSystemSampler {
         logger.info('Notification system-health sampler stopped');
     }
 
-    private async executeRun(runGeneration: number): Promise<boolean> {
+    private clearActiveRun(run: Promise<boolean>): void {
+        if (this.activeRun !== run) return;
+        this.activeRun = null;
+        this.activeRunAbortController = null;
+    }
+
+    private expireActiveRun(run: Promise<boolean>, abortController: AbortController): void {
+        abortController.abort();
+        if (this.activeRun !== run) return;
+        this.runGeneration++;
+        this.activeRun = null;
+        this.activeRunAbortController = null;
+    }
+
+    private async executeRun(runGeneration: number, signal: AbortSignal): Promise<boolean> {
         let lease: NotificationProjectionLease | undefined;
         let renewalTimer: NodeJS.Timeout | undefined;
         let renewalInFlight: Promise<boolean> | null = null;
         let leaseLost = false;
         let runValid = true;
+        let releaseInFlight: Promise<void> | null = null;
+        const releaseLease = (): Promise<void> => {
+            if (releaseInFlight) return releaseInFlight;
+            const currentLease = lease;
+            lease = undefined;
+            if (!currentLease) return Promise.resolve();
+            releaseInFlight = currentLease.release().catch((error) => {
+                logger.warn({ error: error instanceof Error ? error.message : String(error) },
+                    'Failed to release notification system-health lease');
+            });
+            return releaseInFlight;
+        };
         const renewLease = (): Promise<boolean> => {
-            if (!lease || leaseLost) return Promise.resolve(!leaseLost);
+            if (!lease || leaseLost || signal.aborted) {
+                return Promise.resolve(!leaseLost && !signal.aborted);
+            }
             if (renewalInFlight) return renewalInFlight;
             const renewal = (async () => {
                 try {
@@ -169,41 +202,45 @@ export class NotificationSystemSampler {
             });
             return renewal;
         };
+        const cancelRemainingWork = (): void => {
+            runValid = false;
+            if (renewalTimer) clearInterval(renewalTimer);
+            renewalTimer = undefined;
+            void releaseLease();
+        };
+        signal.addEventListener('abort', cancelRemainingWork, { once: true });
         try {
             if (this.acquireLease) {
                 const acquired = await this.acquireLease();
                 if (acquired === false) return false;
                 if (typeof acquired === 'object') {
                     lease = acquired;
+                    if (signal.aborted) return false;
                     renewalTimer = setInterval(() => { void renewLease(); },
                         lease.renewalIntervalMs ?? Math.max(1000, Math.floor(this.intervalMs / 2)));
                     renewalTimer.unref();
                 }
             }
+            if (signal.aborted) return false;
             const snapshot = await this.getSnapshot();
+            if (signal.aborted || runGeneration !== this.runGeneration) return false;
             if (lease && !await renewLease()) return false;
             await this.projector.projectSnapshot(
                 snapshot,
                 [],
-                () => runValid && !leaseLost && runGeneration === this.runGeneration
+                () => runValid && !leaseLost && !signal.aborted
+                    && runGeneration === this.runGeneration
             );
-            return !leaseLost && runGeneration === this.runGeneration;
+            return !leaseLost && !signal.aborted && runGeneration === this.runGeneration;
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
                 'Failed to sample system health for notifications');
             return false;
         } finally {
             runValid = false;
+            signal.removeEventListener('abort', cancelRemainingWork);
             if (renewalTimer) clearInterval(renewalTimer);
-            if (renewalInFlight) await renewalInFlight;
-            if (lease) {
-                try {
-                    await lease.release();
-                } catch (error) {
-                    logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                        'Failed to release notification system-health lease');
-                }
-            }
+            await releaseLease();
         }
     }
 }

@@ -34,6 +34,7 @@ import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js'
 import { createNotificationEntitlementRefreshMiddleware } from './routes/githubRoutes.js';
 import {
   generateCorrelationId,
+  logger,
   processWebhookEvent,
   initializeWebhookHandler,
   buildRedisRuntimeConfig,
@@ -50,6 +51,7 @@ import {
   NotificationSystemSampler,
   getNotificationStalledCheckIntervalMs,
   getNotificationSystemCheckIntervalMs,
+  withNotificationDeadline,
   closeEventPublisher
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
@@ -89,23 +91,9 @@ function getRedisRuntimeConfig(): { url: string; options: RedisOptions } {
   };
 }
 
-async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error(`${operation} timed out after ${timeoutMs}ms`)), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
 async function closeResources(tasks: ShutdownTask[]): Promise<void> {
   const results = await Promise.allSettled(tasks.map(async ({ name, close }) =>
-    withDeadline(close(), SHUTDOWN_TASK_TIMEOUT_MS, `closing ${name}`)
+    withNotificationDeadline(close(), SHUTDOWN_TASK_TIMEOUT_MS, `closing ${name}`)
   ));
   results.forEach((result, index) => {
     if (result.status === 'rejected') {
@@ -274,7 +262,7 @@ function createNotificationProjectionLease(
   return async () => {
     const owner = `${process.pid}:${generateCorrelationId()}`;
     try {
-      const acquired = await withDeadline(redisClient.eval(acquireScript, {
+      const acquired = await withNotificationDeadline(redisClient.eval(acquireScript, {
           keys: [key],
           arguments: [owner, String(ttlMs)]
         }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `acquiring ${name} notification projection lease`);
@@ -283,14 +271,14 @@ function createNotificationProjectionLease(
         renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
         renew: async () => {
           try {
-            const renewed = await withDeadline(redisClient.eval(renewScript, {
+            const renewed = await withNotificationDeadline(redisClient.eval(renewScript, {
                 keys: [key],
                 arguments: [owner, String(ttlMs)]
               }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `renewing ${name} notification projection lease`);
             return Number(renewed) === 1;
           } catch (error) {
-            console.warn(`Could not renew ${name} notification projection lease:`,
-              error instanceof Error ? error.message : String(error));
+            logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
+              'Could not renew notification projection lease');
             // Once acquired, an unconfirmed renewal must be treated as lease loss;
             // another replica may legitimately acquire after the old TTL expires.
             return false;
@@ -298,21 +286,21 @@ function createNotificationProjectionLease(
         },
         release: async () => {
           try {
-            await withDeadline(redisClient.eval(releaseScript, {
+            await withNotificationDeadline(redisClient.eval(releaseScript, {
                 keys: [key],
                 arguments: [owner]
               }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `releasing ${name} notification projection lease`);
           } catch (error) {
-            console.warn(`Could not release ${name} notification projection lease:`,
-              error instanceof Error ? error.message : String(error));
+            logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
+              'Could not release notification projection lease');
           }
         }
       };
     } catch (error) {
       // Projection deduplication remains the safety net when Redis cannot
       // coordinate replicas; fail open so health monitoring is not disabled.
-      console.warn(`Could not acquire ${name} notification projection lease:`,
-        error instanceof Error ? error.message : String(error));
+      logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
+        'Could not acquire notification projection lease');
       return {
         renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
         renew: async () => true,

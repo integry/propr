@@ -48,6 +48,39 @@ export class NotificationProjectionCheckpointStore {
         return deleted;
     }
 
+    async pruneTerminalIndexingActivities(
+        maximumTransitionId: number,
+        completedBefore: string
+    ): Promise<void> {
+        if (!await this.hasTable()
+            || !await this.database.schema.hasTable('repository_indexing_transitions')
+            || !await this.database.schema.hasTable('notification_source_activity')) return;
+        await this.database.raw(`
+            DELETE FROM notification_source_activity
+            WHERE activity_type = 'indexing'
+              AND status IN ('completed', 'failed', 'cancelled')
+              AND COALESCE(
+                json_extract(metadata_json, '$.transitionAt'),
+                completed_at
+              ) < ?
+              AND EXISTS (
+                SELECT 1
+                FROM repository_indexing_transitions AS transition
+                WHERE transition.transition_id <= ?
+                  AND lower(transition.full_name) = lower(notification_source_activity.repository)
+                  AND transition.branch = COALESCE(notification_source_activity.branch, 'HEAD')
+                  AND transition.run_id = json_extract(
+                    notification_source_activity.metadata_json,
+                    '$.runId'
+                  )
+                  AND transition.status = CASE notification_source_activity.status
+                    WHEN 'cancelled' THEN 'idle'
+                    ELSE notification_source_activity.status
+                  END
+              )
+        `, [completedBefore, maximumTransitionId]);
+    }
+
     private async hasTable(): Promise<boolean> {
         this.tableAvailability ??= Promise.resolve()
             .then(() => this.database.schema.hasTable(CHECKPOINT_TABLE));

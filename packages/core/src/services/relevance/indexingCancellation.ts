@@ -1,21 +1,65 @@
 import { Redis } from 'ioredis';
 import { type IndexingPhase, type IndexingUpdatePayload } from '@propr/shared';
 import { getEventPublisher } from '../../utils/eventPublisher.js';
+import logger from '../../utils/logger.js';
 import type { IndexingRunIdentity } from './summaryMinerQueries.js';
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const CANCELLATION_KEY_PREFIX = 'indexing:cancel:';
+const SCOPED_CANCELLATION_KEY_PREFIX = 'indexing:cancel:v2:';
 const PROGRESS_KEY_PREFIX = 'indexing:progress:';
 const CANCELLATION_TTL_SECONDS = 3600;
 const PROGRESS_TTL_SECONDS = 3600;
 
-const CLEAR_IF_RUN_MATCHES_SCRIPT = `
-  local value = redis.call('GET', KEYS[1])
-  if not value then return 0 end
-  if ARGV[1] == '' or value == ARGV[1] or value == '*' then
-    return redis.call('DEL', KEYS[1])
+const REQUEST_CANCELLATION_SCRIPT = `
+  redis.call('SET', KEYS[1], '1', 'EX', ARGV[2])
+  redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[2])
+  return 1
+`;
+
+const IS_CANCELLATION_REQUESTED_SCRIPT = `
+  local legacy = redis.call('GET', KEYS[1])
+  local scoped = redis.call('GET', KEYS[2])
+  local run_id = ARGV[1]
+  local function matches(value)
+    return value and (run_id == '' or value == run_id or value == '*' or value == '1')
   end
+  if not scoped then return matches(legacy) and 1 or 0 end
+  if matches(scoped) then return 1 end
+  if matches(legacy) and redis.call('PTTL', KEYS[1]) > redis.call('PTTL', KEYS[2]) then
+    return 1
+  end
+  return 0
+`;
+
+const CLEAR_CANCELLATION_SCRIPT = `
+  local legacy = redis.call('GET', KEYS[1])
+  local scoped = redis.call('GET', KEYS[2])
+  local run_id = ARGV[1]
+  local function matches(value)
+    return value and (run_id == '' or value == run_id or value == '*' or value == '1')
+  end
+  if run_id == '' then
+    local removed = redis.call('DEL', KEYS[1])
+    return removed + redis.call('DEL', KEYS[2])
+  end
+  if scoped then
+    local legacy_ttl = legacy and redis.call('PTTL', KEYS[1]) or -2
+    local scoped_ttl = redis.call('PTTL', KEYS[2])
+    if matches(scoped) then
+      local removed = redis.call('DEL', KEYS[2])
+      if matches(legacy) and legacy_ttl <= scoped_ttl then
+        removed = removed + redis.call('DEL', KEYS[1])
+      end
+      return removed
+    end
+    if matches(legacy) and legacy_ttl > scoped_ttl then
+      return redis.call('DEL', KEYS[1])
+    end
+    return 0
+  end
+  if matches(legacy) then return redis.call('DEL', KEYS[1]) end
   return 0
 `;
 
@@ -104,6 +148,10 @@ function getCancellationKey(repository: string, branch = 'HEAD'): string {
   return `${CANCELLATION_KEY_PREFIX}${repository}:${branch}`;
 }
 
+function getScopedCancellationKey(repository: string, branch = 'HEAD'): string {
+  return `${SCOPED_CANCELLATION_KEY_PREFIX}${repository}:${branch}`;
+}
+
 function getProgressKey(repository: string, branch = 'HEAD'): string {
   return `${PROGRESS_KEY_PREFIX}${repository}:${branch}`;
 }
@@ -113,11 +161,15 @@ export async function requestIndexingCancellation(
   branch = 'HEAD',
   runId?: string
 ): Promise<void> {
-  await getRedis().set(
+  // Keep writing the legacy wildcard throughout rolling deployments so old
+  // workers still stop. New workers use the v2 key for run-scoped matching.
+  await getRedis().eval(
+    REQUEST_CANCELLATION_SCRIPT,
+    2,
     getCancellationKey(repository, branch),
+    getScopedCancellationKey(repository, branch),
     runId ?? '*',
-    'EX',
-    CANCELLATION_TTL_SECONDS
+    String(CANCELLATION_TTL_SECONDS)
   );
 }
 
@@ -126,8 +178,14 @@ export async function isIndexingCancelled(
   branch = 'HEAD',
   runId?: string
 ): Promise<boolean> {
-  const value = await getRedis().get(getCancellationKey(repository, branch));
-  return value !== null && (runId === undefined || value === '*' || value === runId);
+  const requested = await getRedis().eval(
+    IS_CANCELLATION_REQUESTED_SCRIPT,
+    2,
+    getCancellationKey(repository, branch),
+    getScopedCancellationKey(repository, branch),
+    runId ?? ''
+  );
+  return Number(requested) === 1;
 }
 
 export async function clearIndexingCancellation(
@@ -136,11 +194,28 @@ export async function clearIndexingCancellation(
   runId?: string
 ): Promise<void> {
   await getRedis().eval(
-    CLEAR_IF_RUN_MATCHES_SCRIPT,
-    1,
+    CLEAR_CANCELLATION_SCRIPT,
+    2,
     getCancellationKey(repository, branch),
+    getScopedCancellationKey(repository, branch),
     runId ?? ''
   );
+}
+
+export async function clearIndexingRuntimeStateBestEffort(
+  repository: string,
+  branch: string,
+  runId: string
+): Promise<void> {
+  const cleanup = await Promise.allSettled([
+    clearIndexingCancellation(repository, branch, runId),
+    clearIndexingProgress(repository, branch, runId)
+  ]);
+  const failures = cleanup.filter((result) => result.status === 'rejected');
+  if (failures.length > 0) {
+    logger.warn({ repository, branch, runId, failures: failures.length },
+      'Failed to fully clear indexing runtime state');
+  }
 }
 
 export class IndexingCancelledError extends Error {

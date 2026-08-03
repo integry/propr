@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
@@ -10,6 +11,7 @@ import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
 import {
   getNotificationRepositoryEntitlementTtlMs,
+  logger,
   replaceNotificationRepositoryEntitlements
 } from '@propr/core';
 
@@ -22,6 +24,7 @@ interface GitHubRoutesDeps {
 const entitlementRefreshes = new Map<string, Promise<void>>();
 const entitlementRefreshRetryAfter = new Map<string, number>();
 const ENTITLEMENT_REFRESH_RETRY_DELAY_MS = 60_000;
+const ENTITLEMENT_REFRESH_LEASE_MS = 2 * 60_000;
 const MAX_ENTITLEMENT_REFRESH_BACKOFFS = 1_000;
 
 function recordEntitlementRefreshFailure(userId: string): void {
@@ -53,13 +56,62 @@ async function listAccessibleRepositories(accessToken: string): Promise<string[]
 
 async function notificationEntitlementsNeedRefresh(userId: string, database: Knex): Promise<boolean> {
   const latest = await database('notification_repository_entitlement_snapshots')
-    .select('expires_at')
+    .select('verified_at', 'expires_at')
     .where({ user_id: userId })
-    .first() as { expires_at?: string } | undefined;
-  if (!latest?.expires_at) return true;
-  const refreshBefore = Date.now() + Math.floor(getNotificationRepositoryEntitlementTtlMs() / 2);
+    .first() as { verified_at?: string; expires_at?: string } | undefined;
+  if (!latest?.verified_at || !latest.expires_at) return true;
+  const ttlMs = getNotificationRepositoryEntitlementTtlMs();
+  const refreshBefore = Date.now() + Math.floor(ttlMs / 2);
+  const verifiedAt = Date.parse(latest.verified_at);
   const expiresAt = Date.parse(latest.expires_at);
-  return !Number.isFinite(expiresAt) || expiresAt <= refreshBefore;
+  const currentTtlExpiry = verifiedAt + ttlMs;
+  return !Number.isFinite(verifiedAt)
+    || !Number.isFinite(expiresAt)
+    || Math.min(expiresAt, currentTtlExpiry) <= refreshBefore;
+}
+
+async function acquireEntitlementRefreshLease(
+  userId: string,
+  database: Knex
+): Promise<string | undefined> {
+  if (!await database.schema.hasTable('notification_repository_entitlement_refresh_leases')) {
+    // Rolling upgrades continue to use process-local coalescing until the new
+    // migration is present on this replica's database.
+    return randomUUID();
+  }
+  const leaseToken = randomUUID();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + ENTITLEMENT_REFRESH_LEASE_MS).toISOString();
+  const updated = await database('notification_repository_entitlement_refresh_leases')
+    .where({ user_id: userId })
+    .where('expires_at', '<=', now.toISOString())
+    .update({ lease_token: leaseToken, expires_at: expiresAt });
+  if (updated === 1) return leaseToken;
+  try {
+    await database('notification_repository_entitlement_refresh_leases').insert({
+      user_id: userId,
+      lease_token: leaseToken,
+      expires_at: expiresAt,
+    });
+    return leaseToken;
+  } catch (error) {
+    const existing = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: userId })
+      .first('lease_token');
+    if (existing) return undefined;
+    throw error;
+  }
+}
+
+async function releaseEntitlementRefreshLease(
+  userId: string,
+  leaseToken: string,
+  database: Knex
+): Promise<void> {
+  if (!await database.schema.hasTable('notification_repository_entitlement_refresh_leases')) return;
+  await database('notification_repository_entitlement_refresh_leases')
+    .where({ user_id: userId, lease_token: leaseToken })
+    .delete();
 }
 
 export async function refreshNotificationRepositoryEntitlements(options: {
@@ -76,12 +128,22 @@ export async function refreshNotificationRepositoryEntitlements(options: {
   if (retryAfter > 0) entitlementRefreshRetryAfter.delete(options.userId);
   const refresh = (async () => {
     if (!options.force && !await notificationEntitlementsNeedRefresh(options.userId, options.database)) return;
-    const repositories = await (options.listRepositories ?? listAccessibleRepositories)(options.accessToken);
-    await replaceNotificationRepositoryEntitlements({
-      userId: options.userId,
-      repositories,
-      database: options.database
-    });
+    const leaseToken = await acquireEntitlementRefreshLease(options.userId, options.database);
+    if (!leaseToken) return;
+    try {
+      // Another replica may have refreshed the snapshot while this request was
+      // waiting to acquire the lease.
+      if (!options.force
+          && !await notificationEntitlementsNeedRefresh(options.userId, options.database)) return;
+      const repositories = await (options.listRepositories ?? listAccessibleRepositories)(options.accessToken);
+      await replaceNotificationRepositoryEntitlements({
+        userId: options.userId,
+        repositories,
+        database: options.database
+      });
+    } finally {
+      await releaseEntitlementRefreshLease(options.userId, leaseToken, options.database);
+    }
   })();
   entitlementRefreshes.set(options.userId, refresh);
   try {
@@ -108,8 +170,8 @@ export async function persistNotificationRepositoryEntitlementsBestEffort(option
   } catch (error) {
     // Repository browsing remains available. Notification delivery stays
     // fail-closed because no new authorization snapshot was committed.
-    console.warn('Failed to persist repository notification access:',
-      error instanceof Error ? error.message : String(error));
+    logger.warn({ error: error instanceof Error ? error.message : String(error) },
+      'Failed to persist repository notification access');
     return false;
   }
 }
@@ -134,8 +196,8 @@ export function createNotificationEntitlementRefreshMiddleware(
       return;
     }
     void refresh({ userId, accessToken, database }).catch((error) => {
-      console.warn('Failed to refresh repository notification access:',
-        error instanceof Error ? error.message : String(error));
+      logger.warn({ error: error instanceof Error ? error.message : String(error) },
+        'Failed to refresh repository notification access');
     });
     next();
   };
@@ -149,8 +211,8 @@ async function clearNotificationRepositoryEntitlements(userId: string | undefine
       await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
     });
   } catch (error) {
-    console.warn('Failed to clear cached repository notification access:',
-      error instanceof Error ? error.message : String(error));
+    logger.warn({ error: error instanceof Error ? error.message : String(error) },
+      'Failed to clear cached repository notification access');
   }
 }
 

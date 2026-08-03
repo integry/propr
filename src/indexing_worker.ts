@@ -3,18 +3,20 @@ import { Job, Worker } from 'bullmq';
 import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
 import { closeEventPublisher, createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
-import type { IndexingJobData, JobResult } from '@propr/core';
+import type { IndexingJobData, JobResult, RepositoryStatusTransition } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import {
     indexRepo, updateRepositoryStatus, createIndexingRunIdentity,
     createIndexingQueueDeduplicationId, createIndexingQueueJobId,
-    publishIndexingStatus
+    clearIndexingRuntimeStateBestEffort,
+    INDEXING_FAILED_JOB_RETENTION, publishIndexingStatus
 } from '@propr/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
 import type { RepoToMonitor } from '@propr/core';
 import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@propr/core';
+import { handleIndexingJobFailure } from './indexingWorkerFailure.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in indexing worker');
@@ -60,9 +62,31 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
                 ...requestedRun,
                 startNewRun: true
             });
-            if (!transition.applied) return { status: 'skipped', success: true };
+            if (!transition.applied) {
+                await clearIndexingRuntimeStateBestEffort(repository, baseBranch, requestedRun.runId);
+                return { status: 'skipped', success: true };
+            }
             indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
-            await job.updateData({ ...job.data, ...indexingRun });
+            await job.updateData({ ...job.data, ...indexingRun, durablyAccepted: true });
+        } else {
+            let transition = await updateRepositoryStatus(repository, 'indexing', baseBranch, indexingRun);
+            // Jobs created by an older API acquired ownership only on worker
+            // startup. New jobs must never reopen a run cancelled after enqueue.
+            if (!transition.applied && job.data.durablyAccepted !== true) {
+                transition = await updateRepositoryStatus(repository, 'indexing', baseBranch, {
+                    ...indexingRun,
+                    startNewRun: true
+                });
+            }
+            if (!transition.applied) {
+                await clearIndexingRuntimeStateBestEffort(repository, baseBranch, indexingRun.runId);
+                return { status: 'skipped', success: true };
+            }
+            indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
+            if (job.data.durablyAccepted !== true
+                || job.data.transitionAt !== transition.transitionAt) {
+                await job.updateData({ ...job.data, ...indexingRun, durablyAccepted: true });
+            }
         }
 
         // Run the indexing
@@ -196,7 +220,8 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
     // (the earlier check may be stale due to slow clone operations)
     const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
     const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-        j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
+        j.data.repository.toLowerCase() === repoName.toLowerCase()
+          && (j.data.baseBranch || 'HEAD') === branch
     );
 
     if (alreadyQueued) {
@@ -227,7 +252,7 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
             deduplication: { id: deduplicationId },
             priority: reason === 'previous indexing failed' ? 1 : 5,
             removeOnComplete: true,
-            removeOnFail: true
+            removeOnFail: INDEXING_FAILED_JOB_RETENTION
         }
     );
     if (job.id !== jobId) {
@@ -235,14 +260,35 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
             'Indexing job won an atomic enqueue race, skipping duplicate');
         return;
     }
+    let acceptedRun: RepositoryStatusTransition;
     try {
-        await publishIndexingStatus(repoName, branch, 'indexing', requestedRun);
+        acceptedRun = await updateRepositoryStatus(repoName, 'indexing', branch, {
+            ...requestedRun,
+            startNewRun: true
+        });
+    } catch (error) {
+        await job.remove().catch(() => undefined);
+        throw error;
+    }
+    if (!acceptedRun.applied) {
+        log.debug({ repository: repoName, branch, runId: requestedRun.runId },
+            'Accepted indexing run already reached a terminal state');
+        return;
+    }
+    try {
+        await job.updateData({ ...job.data, ...acceptedRun, durablyAccepted: true });
+    } catch (error) {
+        log.debug({ repository: repoName, branch, runId: acceptedRun.runId, error },
+            'Indexing job left the queue before its accepted identity could be enriched');
+    }
+    try {
+        await publishIndexingStatus(repoName, branch, 'indexing', acceptedRun);
     } catch (error) {
         log.warn({ repository: repoName, branch, error: (error as Error).message },
             'Failed to publish accepted indexing run');
     }
 
-    log.info({ repository: repoName, branch, reason, jobCorrelationId, runId: requestedRun.runId },
+    log.info({ repository: repoName, branch, reason, jobCorrelationId, runId: acceptedRun.runId },
         'Queued repository for indexing');
 }
 
@@ -257,7 +303,8 @@ async function processRepositoryForIndexing(
     const branch = repoConfig.baseBranch || 'HEAD';
 
     const repoStatus = await db('repositories')
-        .where({ full_name: repoName, branch })
+        .whereRaw('lower(full_name) = ?', [repoName.trim().toLowerCase()])
+        .where({ branch })
         .first() as RepoStatus | undefined;
 
     // If currently indexing, perform quick stuck check without cloning
@@ -272,7 +319,8 @@ async function processRepositoryForIndexing(
     // Check if job already queued before cloning to save bandwidth
     const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
     const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-        j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
+        j.data.repository.toLowerCase() === repoName.toLowerCase()
+          && (j.data.baseBranch || 'HEAD') === branch
     );
 
     if (alreadyQueued) {
@@ -391,29 +439,7 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         { concurrency: 1 }
     );
 
-    // Handle failed jobs - update repository status
-    worker.on('failed', async (job, error) => {
-        if (job?.data?.repository && job.data.runId) {
-            const branch = job.data.baseBranch || 'HEAD';
-            logger.error(
-                { repository: job.data.repository, branch, error: error.message },
-                'Indexing job failed, marking repository as failed'
-            );
-            try {
-                const transition = await updateRepositoryStatus(job.data.repository, 'failed', branch, {
-                    runId: job.data.runId
-                });
-                if (transition.applied) {
-                    await publishIndexingStatus(job.data.repository, branch, 'failed', transition);
-                }
-            } catch (updateError) {
-                logger.error(
-                    { repository: job.data.repository, branch, error: (updateError as Error).message },
-                    'Failed to update repository status after job failure'
-                );
-            }
-        }
-    });
+    worker.on('failed', async (job, error) => handleIndexingJobFailure(job, error));
 
     // Start periodic repository scanning
     const scanInterval = setInterval(async () => {

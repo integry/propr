@@ -7,7 +7,11 @@ import {
     type JsonObject,
     type NotificationSourceActivityStatus
 } from '@propr/shared';
-import { NotificationProjectionRecipients } from './notificationProjectionRecipients.js';
+import {
+    NotificationProjectionRecipients,
+    type ProjectionRecipientResolution
+} from './notificationProjectionRecipients.js';
+import { normalizeNotificationRepositoryIdentity } from './notificationRepositoryAccess.js';
 
 type ProjectionDatabase = Knex | Knex.Transaction;
 
@@ -161,8 +165,10 @@ function indexingActivityKey(
     branch: string | undefined,
     transition: IndexingTransitionIdentity
 ): string {
+    const repositoryKey = normalizeNotificationRepositoryIdentity(repository)
+        ?? repository.trim().toLowerCase();
     return `indexing:${createHash('sha256')
-        .update(`${repository}\0${branch ?? ''}\0${transition.runId ?? transition.timestamp}`)
+        .update(`${repositoryKey}\0${branch ?? ''}\0${transition.runId ?? transition.timestamp}`)
         .digest('hex')}`;
 }
 
@@ -344,7 +350,7 @@ export class NotificationProjectionStore {
                 ...(hasTransitionAt ? ['indexing_transition_at'] : []),
                 ...(hasRunId ? ['indexing_run_id'] : [])
             ])
-            .where({ full_name: repository });
+            .whereRaw('lower(full_name) = ?', [repository.trim().toLowerCase()]);
         if (await this.database.schema.hasColumn('repositories', 'branch')) {
             query.andWhere({ branch: branch ?? 'HEAD' });
         }
@@ -366,12 +372,8 @@ export class NotificationProjectionStore {
         if (isTerminalActivity(status)) {
             const previousRows = await this.database<SourceActivityRow>('notification_source_activity')
                 .select('last_activity_at', 'metadata_json')
-                .where({
-                    activity_type: 'indexing',
-                    repository,
-                    branch: branch ?? null,
-                    status
-                })
+                .where({ activity_type: 'indexing', branch: branch ?? null, status })
+                .whereRaw('lower(repository) = ?', [repository.trim().toLowerCase()])
                 .orderBy('last_activity_at', 'desc');
             const previous = previousRows.find((candidate) => explicitRunId === undefined
                 || nonBlankString(parseRecordJson(candidate.metadata_json).runId) === explicitRunId);
@@ -404,8 +406,30 @@ export class NotificationProjectionStore {
         return this.recipients.getTaskRecipients(context);
     }
 
+    async resolveTaskRecipients(
+        context: TaskProjectionContext,
+        database: ProjectionDatabase = this.database
+    ): Promise<ProjectionRecipientResolution> {
+        return this.recipients.resolveTaskRecipients(context, database);
+    }
+
     async getRepositoryRecipients(repository: string): Promise<string[]> {
         return this.recipients.getRepositoryRecipients(repository);
+    }
+
+    async resolveRepositoryRecipients(
+        repository: string,
+        database: ProjectionDatabase = this.database
+    ): Promise<ProjectionRecipientResolution> {
+        return this.recipients.resolveRepositoryRecipients(repository, database);
+    }
+
+    async resolveExplicitRecipients(
+        repository: string,
+        candidates: readonly string[],
+        database: ProjectionDatabase = this.database
+    ): Promise<ProjectionRecipientResolution> {
+        return this.recipients.resolveExplicitRecipients(repository, candidates, database);
     }
 
     async getKnownRecipients(): Promise<string[]> {

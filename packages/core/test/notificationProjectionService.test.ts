@@ -9,6 +9,7 @@ import { up as addIndexingTransitionIdentity } from '../src/db/migrations/202608
 import { up as hardenNotificationProjection } from '../src/db/migrations/20260802040000_harden_notification_projection.js';
 import { up as addIndexingTransitionHistory } from '../src/db/migrations/20260803000000_add_indexing_transition_history.js';
 import { up as addProjectionCheckpoints } from '../src/db/migrations/20260803010000_add_notification_projection_checkpoints.js';
+import { up as hardenNotificationFollowup } from '../src/db/migrations/20260803020000_harden_notification_followup.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
 import { NotificationService } from '../src/services/notificationService.js';
@@ -32,7 +33,7 @@ async function grantRepositoryEntitlement(
     await database('notification_repository_entitlements').insert({
         user_id: userId,
         repository,
-        verified_at: EVENT_TIME,
+        verified_at: SERVICE_TIME,
         expires_at: '2026-08-03T08:00:00.000Z'
     }).onConflict(['user_id', 'repository']).merge();
 }
@@ -155,6 +156,7 @@ beforeEach(async () => {
     await hardenNotificationProjection(database);
     await addIndexingTransitionHistory(database);
     await addProjectionCheckpoints(database);
+    await hardenNotificationFollowup(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -1242,7 +1244,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         const rows = userIds.map((userId) => ({
             user_id: userId,
             repository: 'integry/propr',
-            verified_at: EVENT_TIME,
+            verified_at: SERVICE_TIME,
             expires_at: '2026-08-03T08:00:00.000Z'
         }));
         for (let offset = 0; offset < rows.length; offset += 200) {
@@ -1328,6 +1330,99 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             now: () => SERVICE_TIME
         });
         assert.equal(await restartedProjection.reconcileTerminalTransitions(), 0);
+    });
+
+    test('defers a terminal checkpoint until repository authorization refreshes', async () => {
+        await database('tasks').insert({
+            task_id: 'deferred-terminal-task',
+            repository: 'Integry/ProPR',
+            issue_number: 1734,
+            task_type: 'issue',
+            initial_job_data: JSON.stringify({ userId: 'deferred-owner' })
+        });
+        await database('task_history').insert({
+            task_id: 'deferred-terminal-task',
+            state: 'failed',
+            timestamp: EVENT_TIME,
+            metadata: '{}'
+        });
+        await database('notification_repository_entitlement_snapshots').insert({
+            user_id: 'deferred-owner',
+            verified_at: EVENT_TIME,
+            expires_at: '2026-08-02T09:00:00.000Z'
+        });
+
+        assert.equal(await projection.reconcileTerminalTransitions(), 0);
+        assert.equal((await events()).length, 0);
+        assert.equal(
+            await database('notification_projection_checkpoints')
+                .where({ source: 'terminal-task-history' })
+                .first(),
+            undefined
+        );
+
+        await grantRepositoryEntitlement('deferred-owner', 'integry/propr');
+        await database('notification_repository_entitlement_snapshots')
+            .where({ user_id: 'deferred-owner' })
+            .update({ verified_at: SERVICE_TIME, expires_at: '2026-08-03T08:00:00.000Z' });
+
+        assert.equal(await projection.reconcileTerminalTransitions(), 1);
+        assert.deepEqual(await database('notification_user_states').pluck('user_id'), [
+            'deferred-owner'
+        ]);
+    });
+
+    test('prunes terminal indexing activity only after its durable checkpoint advances', async () => {
+        const previousRetention = process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS;
+        try {
+            process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = '1000';
+            await grantRepositoryEntitlement('indexing-owner');
+            await database('notification_repository_subscriptions').insert({
+                user_id: 'indexing-owner',
+                repository: 'integry/propr',
+                hidden: false,
+                updated_at: EVENT_TIME
+            });
+            await database('repositories').insert({
+                full_name: 'integry/propr',
+                branch: 'main',
+                indexing_status: 'failed',
+                indexing_transition_at: EVENT_TIME,
+                indexing_run_id: 'old-failed-run',
+                updated_at: EVENT_TIME
+            });
+            await database('repository_indexing_transitions').insert({
+                full_name: 'integry/propr',
+                branch: 'main',
+                run_id: 'old-failed-run',
+                status: 'failed',
+                transition_at: EVENT_TIME,
+                observed_at: EVENT_TIME
+            });
+            const pruningProjection = new NotificationProjectionService({
+                database,
+                now: () => SERVICE_TIME
+            });
+
+            assert.equal(await pruningProjection.reconcileTerminalTransitions(), 1);
+            assert.equal(
+                await database('notification_source_activity').count({ count: '*' }).first()
+                    .then((row) => Number(row?.count)),
+                0
+            );
+            assert.equal(
+                await database('repository_indexing_transitions').count({ count: '*' }).first()
+                    .then((row) => Number(row?.count)),
+                0
+            );
+            assert.equal((await events()).length, 1);
+        } finally {
+            if (previousRetention === undefined) {
+                delete process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS;
+            } else {
+                process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = previousRetention;
+            }
+        }
     });
 
     test('quarantines malformed reconciliation timestamps and reaches later rows', async () => {
@@ -1817,6 +1912,21 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.ok(Date.now() - startedAt < 500);
     });
 
+    test('rejects Redis publication and projection after publisher shutdown begins', async () => {
+        let publications = 0;
+        let projections = 0;
+        const publisher = new EventPublisher({
+            publish: async () => { publications++; return true; },
+            projectNotification: async () => { projections++; }
+        });
+
+        await publisher.close();
+        await publisher.publishTaskUpdate({ taskId: 'late-publication', state: 'processing' });
+
+        assert.equal(publications, 0);
+        assert.equal(projections, 0);
+    });
+
     test('samples system health without a status-route request', async () => {
         await seedPlanAndTask();
         const sampler = new NotificationSystemSampler({
@@ -1860,7 +1970,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         await sampler.stop();
     });
 
-    test('retains active-run ownership when a system-health probe never settles', async () => {
+    test('expires a hung system-health generation so a later scan can proceed', async () => {
         let attempts = 0;
         const sampler = new NotificationSystemSampler({
             getSnapshot: async () => {
@@ -1876,7 +1986,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(await sampler.runOnce(), false);
         assert.equal(await sampler.runOnce(), false);
 
-        assert.equal(attempts, 1);
+        assert.equal(attempts, 2);
         assert.ok(Date.now() - startedAt < 500);
     });
 
@@ -1973,7 +2083,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(stopped, true);
     });
 
-    test('retains active-run ownership when a stalled-activity scan never settles', async () => {
+    test('expires a hung stalled-activity generation so a later scan can proceed', async () => {
         let attempts = 0;
         const detector = new NotificationStalledDetector({
             projector: {
@@ -1989,7 +2099,28 @@ describe('notification projection schedulers', { concurrency: false }, () => {
 
         assert.equal(await detector.runOnce(), 0);
         assert.equal(await detector.runOnce(), 0);
-        assert.equal(attempts, 1);
+        assert.equal(attempts, 2);
+    });
+
+    test('releases a stalled-activity lease when an uninterruptible scan times out', async () => {
+        let releases = 0;
+        const detector = new NotificationStalledDetector({
+            projector: {
+                detectStalledActivities: async () => new Promise<never>(() => undefined)
+            },
+            intervalMs: 60_000,
+            stalledAfterMs: 30_000,
+            operationTimeoutMs: 10,
+            acquireLease: async () => ({
+                renewalIntervalMs: 60_000,
+                renew: async () => true,
+                release: async () => { releases++; }
+            })
+        });
+
+        assert.equal(await detector.runOnce(), 0);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(releases, 1);
     });
 
     test('invalidates remaining stalled work when its operation deadline expires', async () => {

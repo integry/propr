@@ -2640,6 +2640,162 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(publications, 0);
     });
 
+    test('stopIndexingJob preserves a terminal result that beats active cancellation', async () => {
+        let skippedRunWrites = 0;
+        let publications = 0;
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: {
+                        repository: 'acme/api',
+                        baseBranch: 'main',
+                        runId: 'completed-run',
+                        transitionAt: '2026-08-02T08:00:00.000Z',
+                    },
+                    getState: async () => 'active',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            requestIndexingCancellation: async () => undefined,
+            updateRepositoryStatus: async () => ({
+                runId: 'completed-run',
+                transitionAt: '2026-08-02T08:01:00.000Z',
+                applied: false,
+            }),
+            recordSkippedIndexingRun: async () => {
+                skippedRunWrites++;
+                return {
+                    runId: 'completed-run',
+                    transitionAt: '2026-08-02T08:01:00.000Z',
+                    applied: false,
+                };
+            },
+            publishIndexingStatus: async () => { publications++; },
+        });
+
+        assert.deepStrictEqual(result, {
+            success: true,
+            cancelledActiveRuns: [],
+            removedQueuedRuns: [],
+        });
+        assert.strictEqual(skippedRunWrites, 1);
+        assert.strictEqual(publications, 0);
+    });
+
+    test('stopIndexingJob closes an active run before its ownership write lands', async () => {
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: {
+                        repository: 'acme/api',
+                        baseBranch: 'main',
+                        runId: 'starting-run',
+                        transitionAt: '2026-08-02T08:00:00.000Z',
+                    },
+                    getState: async () => 'active',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            requestIndexingCancellation: async () => undefined,
+            updateRepositoryStatus: async () => ({
+                runId: 'starting-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+                applied: false,
+            }),
+            recordSkippedIndexingRun: async (_repository, _branch, run) => ({
+                runId: run.runId,
+                transitionAt: '2026-08-02T08:01:00.000Z',
+                applied: true,
+            }),
+            publishIndexingStatus: async () => undefined,
+        });
+
+        assert.deepStrictEqual(result.cancelledActiveRuns, [{
+            branch: 'main',
+            runId: 'starting-run',
+            transitionAt: '2026-08-02T08:01:00.000Z',
+        }]);
+    });
+
+    test('stopIndexingJob records a queued cancellation owned by a previous run', async () => {
+        const skippedRuns: string[] = [];
+        const publications: string[] = [];
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: {
+                        repository: 'acme/api',
+                        baseBranch: 'main',
+                        runId: 'queued-run',
+                        transitionAt: '2026-08-02T08:00:00.000Z',
+                    },
+                    getState: async () => 'waiting',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            requestIndexingCancellation: async () => undefined,
+            updateRepositoryStatus: async () => ({
+                runId: 'queued-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+                applied: false,
+            }),
+            recordSkippedIndexingRun: async (_repository, _branch, run) => {
+                skippedRuns.push(run.runId);
+                return {
+                    runId: run.runId,
+                    transitionAt: '2026-08-02T08:01:00.000Z',
+                    applied: true,
+                };
+            },
+            publishIndexingStatus: async (_repository, _branch, _phase, transition) => {
+                publications.push(transition!.runId);
+            },
+        });
+
+        assert.deepStrictEqual(skippedRuns, ['queued-run']);
+        assert.deepStrictEqual(publications, ['queued-run']);
+        assert.deepStrictEqual(result.removedQueuedRuns, [{
+            branch: 'main',
+            runId: 'queued-run',
+            transitionAt: '2026-08-02T08:01:00.000Z',
+        }]);
+    });
+
+    test('stopIndexingJob follows a waiting job that becomes active during removal', async () => {
+        let stateReads = 0;
+        const cancellations: string[] = [];
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: {
+                        repository: 'acme/api',
+                        baseBranch: 'main',
+                        runId: 'starting-run',
+                        transitionAt: '2026-08-02T08:00:00.000Z',
+                    },
+                    getState: async () => stateReads++ === 0 ? 'waiting' : 'active',
+                    remove: async () => { throw new Error('job is active'); },
+                }],
+            } as never),
+            requestIndexingCancellation: async (_repository, _branch, runId) => {
+                cancellations.push(runId!);
+            },
+            updateRepositoryStatus: async () => ({
+                runId: 'starting-run',
+                transitionAt: '2026-08-02T08:01:00.000Z',
+                applied: true,
+            }),
+            publishIndexingStatus: async () => undefined,
+        });
+
+        assert.deepStrictEqual(cancellations, ['starting-run']);
+        assert.deepStrictEqual(result.cancelledActiveRuns, [{
+            branch: 'main',
+            runId: 'starting-run',
+            transitionAt: '2026-08-02T08:01:00.000Z',
+        }]);
+    });
+
     function createQueueResummarizationDeps(options: {
         repos: Array<{ id: string; name: string; enabled: boolean }>;
         existingJobs?: Array<{ data: { repository: string; baseBranch?: string } }>;

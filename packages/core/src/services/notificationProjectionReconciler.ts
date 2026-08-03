@@ -14,9 +14,7 @@ import {
 const DEFAULT_RECONCILIATION_BATCH_SIZE = 100;
 export const DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RETENTION_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
-const TERMINAL_TASK_STATES = [
-    'completed', 'complete', 'succeeded', 'failed', 'error', 'cancelled', 'canceled'
-] as const;
+const TERMINAL_TASK_STATES = ['completed', 'complete', 'succeeded', 'failed', 'error', 'cancelled', 'canceled'] as const;
 
 const TASK_CHECKPOINT = 'terminal-task-history';
 const INDEXING_HISTORY_CHECKPOINT = 'terminal-indexing-history';
@@ -25,9 +23,9 @@ const DRAFT_CHECKPOINT = 'review-drafts';
 
 interface ReconcilerOptions {
     database: Knex;
-    projectTaskUpdate: (payload: TaskUpdatePayload) => Promise<void>;
-    projectIndexingUpdate: (payload: IndexingUpdatePayload) => Promise<void>;
-    projectDraftUpdate: (payload: DraftUpdatePayload) => Promise<void>;
+    projectTaskUpdate: (payload: TaskUpdatePayload) => Promise<'completed' | 'deferred'>;
+    projectIndexingUpdate: (payload: IndexingUpdatePayload) => Promise<'completed' | 'deferred'>;
+    projectDraftUpdate: (payload: DraftUpdatePayload) => Promise<'completed' | 'deferred'>;
     now?: () => string | number | Date;
     batchSize?: number;
     transitionRetentionMs?: number;
@@ -44,7 +42,7 @@ interface DraftCursor {
     draftId: string;
 }
 
-type ReconciledRepositoryStatus = 'completed' | 'failed' | 'idle';
+type ReconciledRepositoryStatus = 'indexing' | 'completed' | 'failed' | 'idle';
 
 function positiveIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];
@@ -198,7 +196,7 @@ export class NotificationProjectionReconciler {
                 this.taskCursor = row.history_id;
                 continue;
             }
-            await this.projectTaskUpdate({
+            const outcome = await this.projectTaskUpdate({
                 eventType: 'task:update',
                 taskId: row.task_id,
                 state: row.state,
@@ -209,6 +207,7 @@ export class NotificationProjectionReconciler {
                     transitionSequence: row.history_id
                 }
             });
+            if (outcome === 'deferred') break;
             await this.advanceNumericCheckpoint(TASK_CHECKPOINT, row.history_id);
             this.taskCursor = row.history_id;
             repaired++;
@@ -231,7 +230,7 @@ export class NotificationProjectionReconciler {
         const rows = await this.database('repository_indexing_transitions')
             .select('transition_id', 'full_name', 'branch', 'status', 'transition_at', 'run_id')
             .where('transition_id', '>', this.repositoryTransitionCursor)
-            .whereIn('status', ['completed', 'failed', 'idle'])
+            .whereIn('status', ['indexing', 'completed', 'failed', 'idle'])
             .orderBy('transition_id', 'asc')
             .limit(this.batchSize) as Array<{
                 transition_id: number; full_name: string; branch: string;
@@ -252,7 +251,7 @@ export class NotificationProjectionReconciler {
                 this.repositoryTransitionCursor = row.transition_id;
                 continue;
             }
-            await this.projectIndexingUpdate({
+            const outcome = await this.projectIndexingUpdate({
                 eventType: 'indexing:update',
                 repository: row.full_name,
                 branch: row.branch,
@@ -261,6 +260,7 @@ export class NotificationProjectionReconciler {
                 runId: row.run_id,
                 timestamp: this.publicationTimestamp(transitionAt)
             });
+            if (outcome === 'deferred') break;
             await this.advanceNumericCheckpoint(INDEXING_HISTORY_CHECKPOINT, row.transition_id);
             this.repositoryTransitionCursor = row.transition_id;
             repaired++;
@@ -276,7 +276,7 @@ export class NotificationProjectionReconciler {
                 'full_name', 'branch', 'indexing_status', 'indexing_transition_at',
                 'indexing_run_id', 'updated_at'
             )
-            .whereIn('indexing_status', ['completed', 'failed', 'idle'])
+            .whereIn('indexing_status', ['indexing', 'completed', 'failed', 'idle'])
             .whereNotNull('indexing_transition_at')
             .whereNotNull('indexing_run_id');
         if (this.repositoryCursor) {
@@ -319,11 +319,12 @@ export class NotificationProjectionReconciler {
                 this.repositoryCursor = cursor;
                 continue;
             }
-            await this.projectIndexingUpdate({
+            const outcome = await this.projectIndexingUpdate({
                 eventType: 'indexing:update', repository: row.full_name, branch: row.branch,
                 phase: row.indexing_status, transitionAt, runId: row.indexing_run_id,
                 timestamp: this.publicationTimestamp(transitionAt)
             });
+            if (outcome === 'deferred') break;
             await this.advanceTupleCheckpoint(INDEXING_CURRENT_CHECKPOINT, [
                 cursor.updatedAt, cursor.fullName, cursor.branch
             ]);
@@ -368,11 +369,12 @@ export class NotificationProjectionReconciler {
                 this.draftCursor = { updatedAt: row.updated_at, draftId: row.draft_id };
                 continue;
             }
-            await this.projectDraftUpdate({
+            const outcome = await this.projectDraftUpdate({
                 eventType: 'draft:update', draftId: row.draft_id,
                 step: 'notification-reconciliation', status: 'completed', draftStatus: 'review',
                 timestamp: this.publicationTimestamp(transitionAt)
             });
+            if (outcome === 'deferred') break;
             await this.advanceTupleCheckpoint(DRAFT_CHECKPOINT, [row.updated_at, row.draft_id]);
             this.draftCursor = { updatedAt: row.updated_at, draftId: row.draft_id };
             repaired++;
@@ -400,6 +402,10 @@ export class NotificationProjectionReconciler {
         if (!Number.isFinite(nowMs)
             || nowMs - this.lastRetentionPruneAt < RETENTION_PRUNE_INTERVAL_MS) return;
         const cutoff = normalizeISO8601Timestamp(nowMs - this.transitionRetentionMs);
+        await this.checkpoints.pruneTerminalIndexingActivities(
+            this.repositoryTransitionCursor,
+            cutoff
+        );
         await this.checkpoints.pruneIndexingTransitions(this.repositoryTransitionCursor, cutoff);
         this.lastRetentionPruneAt = nowMs;
     }
