@@ -94,6 +94,7 @@ jobs:
     if: >-
       ${{ always() && github.event_name == 'pull_request' &&
           needs.test.result != 'skipped' &&
+          needs.test.result != 'cancelled' &&
           github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
