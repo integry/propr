@@ -12,6 +12,7 @@ import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type 
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { isManagedAgentConfigPath } from '@propr/shared';
+import { resolveAgentTerminationReason } from '../termination.js';
 
 export { UsageLimitError };
 
@@ -60,14 +61,16 @@ export class OpenCodeAgent implements Agent {
                     worktreePath,
                     stdinData: prompt,
                     taskId,
-                    streamToRedis: true
+                    streamToRedis: true,
+                    preserveOutputOnTimeout: true
                 })
             );
 
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const success = result.exitCode === 0 && !parsedOutput.error;
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+            const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
             const errorText = success ? undefined : (parsedOutput.error || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
             const response: AgentExecutionResult = {
                 success,
@@ -83,6 +86,7 @@ export class OpenCodeAgent implements Agent {
                 summary: parsedOutput.summary,
                 prompt,
                 error: errorText,
+                terminationReason,
                 tokenUsage: parsedOutput.tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
@@ -130,7 +134,7 @@ export class OpenCodeAgent implements Agent {
             const analysisText = (parsedOutput.summary || '').trim();
 
             const modelUsed = parsedOutput.modelUsed || effectiveModel;
-            const success = result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
+            const success = !result.timedOut && result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
 
             const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
             if (!suppressLlmLog) {

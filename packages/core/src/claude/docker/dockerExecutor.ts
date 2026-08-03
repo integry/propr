@@ -4,11 +4,21 @@ import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 
 
-export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
+export interface ExecutionResult {
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    messageTimestamps: Map<string, string>;
+    /** Set when ProPR stopped the process after its configured execution deadline. */
+    timedOut?: boolean;
+    timeoutMs?: number;
+}
 export interface RunningTaskContainer { id: string; name: string; }
 
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
+    /** Resolve with buffered output on timeout so implementation jobs can publish partial work. */
+    preserveOutputOnTimeout?: boolean;
     onSessionId?: (sessionId: string, conversationId?: string) => void; onContainerId?: (containerId: string, containerName: string) => void;
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
 }
@@ -223,7 +233,7 @@ export async function findRunningDockerContainerForTask(
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(args) : null;
         const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
@@ -287,7 +297,16 @@ export function executeDockerCommand(command: string, args: string[], options: D
             clearTimeout(timeoutHandle);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
-            if (state.timedOut) { reject(new Error(`Command timed out after ${timeout}ms`)); return; }
+            if (state.timedOut) {
+                const timeoutMessage = `Command timed out after ${timeout}ms`;
+                const timeoutStderr = stderr.trim() ? `${stderr.trimEnd()}\n${timeoutMessage}` : timeoutMessage;
+                if (preserveOutputOnTimeout) {
+                    resolve({ exitCode, stdout, stderr: timeoutStderr, messageTimestamps, timedOut: true, timeoutMs: timeout });
+                } else {
+                    reject(new Error(timeoutMessage));
+                }
+                return;
+            }
             if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
         });

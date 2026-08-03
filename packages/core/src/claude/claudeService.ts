@@ -3,7 +3,7 @@ import os from 'os';
 import logger from '../utils/logger.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
-import type { AnalysisResult } from '../agents/types.js';
+import type { AgentTerminationReason, AnalysisResult } from '../agents/types.js';
 import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
 import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
 import {
@@ -28,6 +28,7 @@ import { DEFAULT_AGENT_DOCKER_IMAGES, DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from 
 import type { ReasoningLevel } from '@propr/shared';
 import { loadSummarizationSettings } from '../config/configManager.js';
 import { resolveConfiguredModel } from '../config/configuredModel.js';
+import { resolveAgentTerminationReason } from '../agents/termination.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -73,6 +74,7 @@ export interface ClaudeCodeResponse {
     summary: string | null;
     prompt?: string;
     error?: string;
+    terminationReason?: AgentTerminationReason;
     tokenUsage?: TokenUsage;
     usageMetrics?: UsageTrackingMetrics | null;
 }
@@ -130,7 +132,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
                 onSessionId,
                 onContainerId,
                 worktreePath,
-                stdinData: prompt // Always pass prompt via stdin
+                stdinData: prompt, // Always pass prompt via stdin
+                preserveOutputOnTimeout: true
             })
         );
 
@@ -138,8 +141,13 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         logger.info({ issueNumber: issueRef.number, executionTime, exitCode: result.exitCode }, 'Claude Code execution completed');
 
         const claudeOutput = parseStreamJsonOutput(result);
+        const terminationReason = resolveAgentTerminationReason({
+            timedOut: result.timedOut,
+            subtype: claudeOutput.finalResult?.subtype,
+            error: result.stderr
+        });
         const response: ClaudeCodeResponse = {
-            success: claudeOutput.success,
+            success: claudeOutput.success && !terminationReason,
             executionTime,
             output: claudeOutput,
             logs: result.stderr || '',
@@ -156,6 +164,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             modifiedFiles: [],
             commitMessage: null,
             summary: claudeOutput.finalResult?.result || null,
+            error: terminationReason ? result.stderr : undefined,
+            terminationReason,
             prompt: prompt,
             tokenUsage: claudeOutput.tokenUsage,
             usageMetrics

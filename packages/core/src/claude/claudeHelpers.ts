@@ -68,8 +68,10 @@ export interface TokenUsage {
 
 export interface ClaudeOutputResult {
     type: string;
+    subtype?: string;
     is_error?: boolean;
     result?: string;
+    num_turns?: number;
     total_cost_usd?: number;
     cost_usd?: number;
     model?: string;
@@ -100,6 +102,7 @@ export interface StorePromptOptions {
 
 interface JsonLineMessage {
     type?: string;
+    subtype?: string;
     message?: {
         id?: string;
         model?: string;
@@ -109,6 +112,7 @@ interface JsonLineMessage {
     conversation_id?: string;
     model?: string;
     result?: string;
+    num_turns?: number;
     is_error?: boolean;
     total_cost_usd?: number;
     cost_usd?: number;
@@ -368,8 +372,10 @@ function processJsonLine(
 function processResultLine(jsonLine: JsonLineMessage, claudeOutput: ClaudeOutput): void {
     claudeOutput.finalResult = {
         type: jsonLine.type || 'result',
+        subtype: jsonLine.subtype,
         is_error: jsonLine.is_error,
         result: jsonLine.result,
+        num_turns: jsonLine.num_turns,
         total_cost_usd: jsonLine.total_cost_usd,
         cost_usd: jsonLine.cost_usd,
         model: jsonLine.model,

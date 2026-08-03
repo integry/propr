@@ -12,6 +12,7 @@ import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { resolveAgentTerminationReason } from '../termination.js';
 
 export { UsageLimitError };
 export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -95,6 +96,7 @@ export class VibeAgent implements Agent {
                     taskId,
                     streamToRedis: true,
                     streamStderrToRedis: true,
+                    preserveOutputOnTimeout: true,
                     streamExtraOutput: () => readLatestVibeSessionMessages(runtimeHomePath)
                 })
             );
@@ -104,7 +106,8 @@ export class VibeAgent implements Agent {
             const conversationLog = parseVibeConversationLog(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
-            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason;
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
 
@@ -122,6 +125,7 @@ export class VibeAgent implements Agent {
                 sessionId: parsedOutput.sessionId,
                 conversationLog,
                 error,
+                terminationReason,
                 tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
@@ -222,7 +226,7 @@ export class VibeAgent implements Agent {
             const parsedOutput = parseVibeOutput(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const analysisText = (parsedOutput.summary || '').trim();
-            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
+            const success = !result.timedOut && isSuccessfulVibeResult(result.exitCode, parsedOutput);
             const usage = formatUsageMetrics(usageMetrics);
 
             if (success && analysisText) {

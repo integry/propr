@@ -110,7 +110,7 @@ export class ClaudeAgent implements Agent {
                 'claude',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
-                    worktreePath, stdinData: prompt, taskId
+                    worktreePath, stdinData: prompt, taskId, preserveOutputOnTimeout: true
                 })
             );
 
@@ -202,6 +202,13 @@ export class ClaudeAgent implements Agent {
 
             const fullConversationLog = ensurePromptInConversationLog(claudeOutput.conversationLog, analysisPrompt);
             const correctedTokenUsage = getCorrectedTokenUsage(claudeOutput.tokenUsage, fullConversationLog);
+
+            if (result.timedOut) {
+                return {
+                    response: '', modelUsed: effectiveModel, executionTimeMs, success: false,
+                    error: result.stderr
+                };
+            }
 
             const outcome = resolveAnalysisOutcome(claudeOutput, result.stderr);
             if (outcome.isSuccess) {

@@ -7,6 +7,7 @@ import {
     getRepoUrl,
     getAuthenticatedOctokit,
     pushBranch,
+    resolveAgentTerminationReason,
     TaskStates,
 } from '@propr/core';
 import type {
@@ -118,20 +119,34 @@ function requirePostExecutionState(state: PostExecutionState): asserts state is 
     if (!state.startingWorkComment) throw new Error('Cannot finish PR comment processing without a starting work comment');
 }
 
-export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string }> {
+export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'complete' | 'partial' | 'failed' {
+    if (result.success) return 'complete';
+    return resolveAgentTerminationReason(result) ? 'partial' : 'failed';
+}
+
+export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
     const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
     requirePostExecutionState(state);
-    if (!state.claudeResult.success) throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
+    const disposition = getPostExecutionDisposition(state.claudeResult);
+    const terminationReason = resolveAgentTerminationReason(state.claudeResult);
+    const partial = disposition === 'partial';
+    if (disposition === 'failed') {
+        throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
+    }
 
     const { commitResult, changesSummary, commitMessage } = await commitAndPush(state, { repoOwner, repoName, pullRequestNumber }, llm);
+    if (partial && !commitResult) {
+        throw new Error(`Agent execution ${terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit'} before producing changes to publish`);
+    }
+    if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
 
     const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
     const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
     const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult);
     const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
-    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url }, 'Successfully applied follow-up changes');
+    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 
     if (unprocessedReviewComments.length > 0) {
         await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
@@ -140,15 +155,17 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: 'PR comment processing completed successfully', commitHash: commitResult?.commitHash,
+        reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
+        commitHash: commitResult?.commitHash,
         historyMetadata: {
             commandMode: job.data.commandMode || 'default',
             githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
             ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
+            ...(partial && { incompleteExecution: { reason: terminationReason } }),
             ...ultrafixHistoryMeta,
         }
     });
 
     await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
-    return { commitHash: commitResult?.commitHash };
+    return { commitHash: commitResult?.commitHash, partial };
 }
