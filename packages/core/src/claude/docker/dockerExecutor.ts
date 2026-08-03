@@ -5,6 +5,7 @@ import logger from '../../utils/logger.js';
 
 
 export interface ExecutionResult { stdout: string; stderr: string; exitCode: number | null; messageTimestamps: Map<string, string>; }
+export interface RunningTaskContainer { id: string; name: string; }
 
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
@@ -13,6 +14,14 @@ export interface DockerCommandOptions {
 }
 
 interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
+
+interface AbortCheckerOptions {
+    taskId: string;
+    abortedRef: { value: boolean };
+    child: ChildProcess;
+    containerIdRef: { value: string | null };
+    namedContainer: string | null;
+}
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
@@ -152,16 +161,17 @@ function resolveDockerPath(command: string): string {
     return 'docker';
 }
 
-function setupAbortChecker(taskId: string, abortedRef: { value: boolean }, child: ChildProcess, containerIdRef: { value: string | null }): ReturnType<typeof setInterval> {
+function setupAbortChecker({ taskId, abortedRef, child, containerIdRef, namedContainer }: AbortCheckerOptions): ReturnType<typeof setInterval> {
     return setInterval(async () => {
         const shouldAbort = await checkAbortSignal(taskId);
         if (shouldAbort && !abortedRef.value && !child.killed) {
             abortedRef.value = true;
-            logger.info({ taskId, containerId: containerIdRef.value }, 'Abort signal detected, terminating execution');
-            if (containerIdRef.value) {
-                const stopResult = await stopDockerContainer(containerIdRef.value, 10);
-                if (stopResult.success) logger.info({ taskId, containerId: containerIdRef.value }, 'Docker container stopped successfully on abort');
-                else logger.warn({ taskId, containerId: containerIdRef.value, error: stopResult.error }, 'Failed to stop Docker container on abort');
+            const containerToStop = containerIdRef.value || namedContainer;
+            logger.info({ taskId, containerId: containerToStop }, 'Abort signal detected, terminating execution');
+            if (containerToStop) {
+                const stopResult = await stopDockerContainer(containerToStop, 10);
+                if (stopResult.success) logger.info({ taskId, containerId: containerToStop }, 'Docker container stopped successfully on abort');
+                else logger.warn({ taskId, containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container on abort');
             }
             child.kill('SIGTERM');
             setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
@@ -174,6 +184,41 @@ function getDockerRunContainerName(args: string[]): string | null {
     const nameIndex = args.indexOf('--name');
     if (nameIndex >= 0 && args[nameIndex + 1]) return args[nameIndex + 1];
     return null;
+}
+
+/**
+ * Finds a running agent container by the task-id suffix used by every agent
+ * container name. This survives worker/Redis restarts because Docker remains
+ * the source of truth for an execution that is still active.
+ */
+export async function findRunningDockerContainerForTask(
+    taskId: string,
+    executor: typeof executeDockerCommand = executeDockerCommand,
+): Promise<RunningTaskContainer | null> {
+    const shortTaskId = taskId.slice(-8);
+    if (!shortTaskId) return null;
+    const escapedSuffix = shortTaskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    try {
+        const result = await executor('docker', [
+            'ps',
+            '--filter', `name=${escapedSuffix}$`,
+            '--format', '{{.ID}}:{{.Names}}',
+        ], { timeout: 10000 });
+        if (result.exitCode !== 0) {
+            logger.warn({ taskId, stderr: result.stderr }, 'Failed to inspect running Docker containers for task');
+            return null;
+        }
+
+        const firstMatch = result.stdout.split('\n').map(line => line.trim()).find(Boolean);
+        if (!firstMatch) return null;
+        const separator = firstMatch.indexOf(':');
+        if (separator < 1) return null;
+        return { id: firstMatch.slice(0, separator), name: firstMatch.slice(separator + 1) };
+    } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Failed to inspect running Docker containers for task');
+        return null;
+    }
 }
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
@@ -209,7 +254,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             child.kill('SIGTERM');
             setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
         }, timeout);
-        const abortCheckInterval = taskId ? setupAbortChecker(taskId, state.aborted, child, state.containerId) : null;
+        const abortCheckInterval = taskId ? setupAbortChecker({ taskId, abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer }) : null;
 
         const getRedisOutput = () => {
             const primaryOutput = streamStderrToRedis ? `${stderr}${stdout ? `\n${stdout}` : ''}` : stdout;

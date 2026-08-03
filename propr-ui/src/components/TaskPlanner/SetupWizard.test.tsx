@@ -238,6 +238,11 @@ describe('SetupWizard', () => {
     expect(mockGetDraft).not.toHaveBeenCalled();
   });
 
+  it('disables generation while a context preview is running', () => {
+    renderSetupWizard({ context_config: {} });
+    expect(screen.getByRole('button', { name: 'Generate' })).toBeDisabled();
+  });
+
   it('anchors edit-mode selector state to the draft branch and persists the full setup snapshot on repo switch', async () => {
     mockCreateDraft.mockResolvedValue(createdDraft);
     renderSetupWizard({ context_config: fullContextConfig });

@@ -1,6 +1,6 @@
 import React from 'react';
 import { ChevronDown, Users, Check } from 'lucide-react';
-import { AgentConfig } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import {
@@ -177,7 +177,7 @@ interface SingleSelectModeProps {
   className: string;
   selectedAgent: string | null;
   selectedModel: string | null;
-  enabledAgents: AgentConfig[];
+  enabledAgents: InstanceCatalogAgent[];
   availableModels: string[];
   onAgentChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onModelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
@@ -219,7 +219,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
         >
           <option value="">Select Agent</option>
           {enabledAgents.map(agent => (
-            <option key={agent.id} value={agent.alias}>
+            <option key={agent.alias} value={agent.alias}>
               {agent.alias}
             </option>
           ))}

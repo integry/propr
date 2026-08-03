@@ -34,6 +34,23 @@ The API and worker use the host Docker socket to launch task containers; the API
 - API access is protected by session auth (GitHub OAuth) and optional bearer-token auth for automation.
 - **Organizations with GitHub IP allow lists**: add your ProPR server's egress IP to the org allow list. The GitHub App deliberately declares no IP allow list of its own: every API call comes from your self-hosted stack at your own address, so inheriting an App-level list would block your own stack.
 
+## Who Can Manage The Instance
+
+Authenticated users have an instance role:
+
+- **Administrator** — can change installation settings, repositories, agents, trusted runtime packages, and access-role assignments.
+- **Member** — can use ProPR's task, plan, repository, and log workflows without changing the installation.
+
+The API enforces permissions independently of the Web UI. Full settings, repository configuration, agent configuration, image metadata, and Agent Tank configuration reads require the corresponding administrator permission. Members receive only a sanitized operational catalog containing enabled repository names and the agent aliases/models needed by task and plan workflows. Member-facing indexing status is independently projected and intersected with the enabled repository-and-branch catalog.
+
+Durable role assignments use the stable numeric GitHub user ID, so a GitHub username change does not transfer that access to another account. A new installation has no implicit administrator: configure at least one username in `PROPR_ADMIN_USERS`, sign in as that user, then use **Web UI → Access** to store the bootstrap role against its numeric GitHub ID and manage other assignments. Outside demo mode, the API refuses to start when neither a bootstrap entry nor a durable administrator exists.
+
+`PROPR_ADMIN_USERS` remains authoritative while configured and can be retained as a break-glass path. It is an independent override rather than a property of a durable assignment, so a user may have both an environment override and a separately editable durable role. It is intentionally username-based, so it does not have the stable-ID guarantee: GitHub usernames can be renamed and eventually reassigned. Remove bootstrap entries after storing durable access, or audit the list whenever an administrator renames or deletes an account. Bootstrap entries are not counted by last-durable-administrator protection because they can be changed outside the database. The role audit retains the most recent 10,000 changes.
+
+Durable authorization is deliberately read from the database on every authenticated API request. This adds one indexed lookup for non-bootstrap users, but makes a demotion or removal effective on that user's next request without a cache-expiry window.
+
+Instance roles and the GitHub trigger whitelist are intentionally separate: a role controls what an authenticated dashboard or CLI user may administer; the whitelist controls who may log in and whose GitHub activity can trigger work.
+
 ## Who Can Trigger Work
 
 Access control is layered, and all of it is enforced by **your** stack — ProPR Connect forwards deliveries without applying policy:

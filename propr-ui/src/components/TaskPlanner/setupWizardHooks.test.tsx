@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
+import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, useGenerationHandlers, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
 import { getRepoBranches, createDraft, generatePlan, updateDraft, type PlannerDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
-vi.mock('../../api/proprApi', () => ({ uploadAttachment: vi.fn(), removeAttachment: vi.fn(), abortGeneration: vi.fn(), getAgents: vi.fn(), getRepoConfig: vi.fn(), getRepoBranches: vi.fn(), createDraft: vi.fn(), updateDraft: vi.fn(), generatePlan: vi.fn() }));
+vi.mock('../../api/proprApi', () => ({ uploadAttachment: vi.fn(), removeAttachment: vi.fn(), abortGeneration: vi.fn(), getInstanceCatalog: vi.fn(), getRepoBranches: vi.fn(), createDraft: vi.fn(), updateDraft: vi.fn(), generatePlan: vi.fn() }));
 vi.mock('../../api/repoIndexingApi', () => ({ getRepositoriesIndexingStatus: vi.fn() }));
 vi.mock('../../api/userRepoPreferencesApi', () => ({ getUserRepoPreferences: vi.fn() }));
 vi.mock('../../hooks/usePlannerSettings', () => ({ savePlannerSettings: vi.fn() }));
@@ -17,6 +17,74 @@ const mockCreateDraft = vi.mocked(createDraft);
 const mockGeneratePlan = vi.mocked(generatePlan);
 const mockUpdateDraft = vi.mocked(updateDraft);
 const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
+
+describe('useGenerationHandlers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGeneratePlan.mockResolvedValue(undefined);
+  });
+
+  it('waits for a stale context preview before starting generation', async () => {
+    const preview = createDeferred<boolean>();
+    const startPolling = vi.fn();
+    const setError = vi.fn();
+    const { result } = renderHook(() => useGenerationHandlers({
+      draft: makeDraft() as never,
+      config: baseConfig,
+      branchError: null,
+      contextHelpers: {
+        isContextStale: true,
+        clearCountdown: vi.fn(),
+        fetchPreview: vi.fn(() => preview.promise),
+      },
+      startPolling,
+      stopPolling: vi.fn(),
+      setError,
+      setGenerationError: vi.fn(),
+    }));
+
+    let generation!: Promise<void>;
+    act(() => {
+      generation = result.current.handleGenerateForExistingDraft();
+    });
+    await act(async () => Promise.resolve());
+
+    expect(startPolling).not.toHaveBeenCalled();
+    expect(mockGeneratePlan).not.toHaveBeenCalled();
+
+    preview.resolve(true);
+    await act(async () => generation);
+
+    expect(startPolling).toHaveBeenCalledOnce();
+    expect(mockGeneratePlan).toHaveBeenCalledOnce();
+    expect(setError).not.toHaveBeenCalledWith(expect.stringContaining('did not complete'));
+  });
+
+  it('does not generate when the required context preview fails', async () => {
+    const startPolling = vi.fn();
+    const setError = vi.fn();
+    const { result } = renderHook(() => useGenerationHandlers({
+      draft: makeDraft() as never,
+      config: baseConfig,
+      branchError: null,
+      contextHelpers: {
+        isContextStale: true,
+        clearCountdown: vi.fn(),
+        fetchPreview: vi.fn().mockResolvedValue(false),
+      },
+      startPolling,
+      stopPolling: vi.fn(),
+      setError,
+      setGenerationError: vi.fn(),
+    }));
+
+    await act(async () => result.current.handleGenerateForExistingDraft());
+
+    expect(startPolling).not.toHaveBeenCalled();
+    expect(mockGeneratePlan).not.toHaveBeenCalled();
+    expect(setError).toHaveBeenCalledWith('Context preview did not complete. Please refresh it before generating.');
+  });
+});
 
 function renderBranchesLoader(repo: string, configuredBaseBranch = '', initialConfig: PlannerConfig = baseConfig) {
   return renderHook(({ currentRepo, currentBaseBranch }) => {

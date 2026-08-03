@@ -15,7 +15,7 @@ import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import {
-    parseAntigravityJsonl, aggregateDeltaMessages, convertEventToClaudeFormat,
+    parseAntigravityJsonl,
     filterAntigravityAnalysisEvents,
     type AntigravityOutputEvent
 } from './utils/antigravityOutputParser.js';
@@ -23,15 +23,14 @@ import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
-const ANTIGRAVITY_CONTAINER_CONFIG_PATH = '/home/node/.gemini';
-const ANTIGRAVITY_CONTAINER_WORKSPACE_PATH = '/home/node/workspace';
+const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
+const ANTIGRAVITY_TRANSCRIPT_ROOT = '/tmp/git-processor/propr-cache/antigravity/transcripts';
 
 export class AntigravityAgent implements Agent {
     readonly config: AgentConfig;
@@ -47,7 +46,7 @@ export class AntigravityAgent implements Agent {
     }
 
     private getContainerConfigPath(): string {
-        return ANTIGRAVITY_CONTAINER_CONFIG_PATH;
+        return ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
     }
 
     private getCliCommand(): string {
@@ -75,6 +74,7 @@ export class AntigravityAgent implements Agent {
         const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, githubToken, environment, taskId, prNumber } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
+        const transcriptPath = this.createTransientTranscriptPath(taskId);
 
         logger.info({
             issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
@@ -85,7 +85,7 @@ export class AntigravityAgent implements Agent {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, modelName: effectiveModel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
@@ -96,9 +96,11 @@ export class AntigravityAgent implements Agent {
             );
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics });
+            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath });
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
+        } finally {
+            this.cleanupTransientTranscript(transcriptPath);
         }
     }
 
@@ -114,11 +116,12 @@ export class AntigravityAgent implements Agent {
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
         prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string) => void;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
+        transcriptPath?: string;
     }): Promise<AgentExecutionResult> {
-        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics } = opts;
+        const { result, executionTime, issueRef, effectiveModel, prompt, worktreePath, worktreeGitContent, onSessionId, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath } = opts;
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Antigravity agent execution completed');
 
-        const parsed = this.resolveSessionOutput(result.stdout, worktreePath, onSessionId);
+        const parsed = this.resolveSessionOutput(result.stdout, transcriptPath, onSessionId);
         const { response, modelUsed } = await parsed;
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
@@ -138,9 +141,9 @@ export class AntigravityAgent implements Agent {
         return agentResult;
     }
 
-    private async resolveSessionOutput(stdout: string, worktreePath: string, onSessionId?: (sessionId: string) => void) {
+    private async resolveSessionOutput(stdout: string, transcriptPath?: string, onSessionId?: (sessionId: string) => void) {
         const parsedOutput = parseAntigravityJsonl(stdout);
-        const sessionOutput = await this.readPersistedSessionOutput(worktreePath, parsedOutput.sessionId);
+        const sessionOutput = await this.readTransientSessionOutput(transcriptPath, parsedOutput.sessionId);
         const sessionId = sessionOutput.sessionId || parsedOutput.sessionId;
         const summary = sessionOutput.summary || parsedOutput.summary;
         const rawConversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
@@ -148,11 +151,42 @@ export class AntigravityAgent implements Agent {
         const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
         const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
         if (sessionId && onSessionId) onSessionId(sessionId);
-        if (sessionId && conversationLog.length > 0) await this.writeConversationFile(sessionId, conversationLog);
         // rawConversationLog (full agentic trace: file views, searches, command
         // output, code edits) is kept for token estimation; conversationLog stays
         // filtered to the displayed assistant responses.
         return { response: { sessionId, summary, conversationLog, rawConversationLog, tokenUsage, modelUsed }, modelUsed };
+    }
+
+    private createTransientTranscriptPath(taskId?: string): string {
+        const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(-80) || 'run';
+        return path.join(ANTIGRAVITY_TRANSCRIPT_ROOT, `${safeTaskId}-${suffix}.jsonl`);
+    }
+
+    private cleanupTransientTranscript(transcriptPath: string | undefined): void {
+        if (!transcriptPath?.startsWith(`${ANTIGRAVITY_TRANSCRIPT_ROOT}${path.sep}`)) return;
+        try { fs.rmSync(transcriptPath, { force: true }); }
+        catch { /* best-effort cleanup */ }
+    }
+
+    private async readTransientSessionOutput(transcriptPath: string | undefined, parsedSessionId?: string): Promise<{ sessionId: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: { input_tokens?: number; output_tokens?: number }; modelUsed?: string }> {
+        if (!transcriptPath) return { sessionId: parsedSessionId, summary: undefined, conversationLog: [] };
+        try {
+            const transcript = await fs.promises.readFile(transcriptPath, 'utf8');
+            const parsed = parseAntigravityJsonl(transcript);
+            return {
+                sessionId: parsed.sessionId || parsedSessionId,
+                summary: parsed.summary,
+                conversationLog: parsed.conversationLog,
+                tokenUsage: parsed.tokenUsage,
+                modelUsed: parsed.modelUsed
+            };
+        } catch (error) {
+            logger.debug({ transcriptPath, error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read transient Antigravity transcript');
+            return { sessionId: parsedSessionId, summary: undefined, conversationLog: [] };
+        } finally {
+            this.cleanupTransientTranscript(transcriptPath);
+        }
     }
 
     private mergeTokenUsage(
@@ -324,8 +358,8 @@ export class AntigravityAgent implements Agent {
         return ['set -e', `exec ${this.getCliCommand()} --dangerously-skip-permissions --print - "$@"`].join('\n');
     }
 
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType } = params;
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath } = params;
         const configPath = this.getHostConfigPath();
         const envVars: string[] = [];
         if (this.config.envVars) { for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`); }
@@ -338,7 +372,10 @@ export class AntigravityAgent implements Agent {
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
             '-v', `${worktreePath}:/home/node/workspace:rw`, '-v', '/tmp/git-processor:/tmp/git-processor:rw', '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true', ...envVars, '-w', '/home/node/workspace',
+            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
+            '-e', 'PROPR_EPHEMERAL_STATE=1', '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${this.getContainerConfigPath()}`,
+            ...(transcriptPath ? ['-e', `PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=${transcriptPath}`] : []),
+            ...envVars, '-w', '/home/node/workspace',
             this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
         ];
         // Note: the prompt is delivered via STDIN (`--print -`), NOT as an argv
@@ -366,47 +403,4 @@ export class AntigravityAgent implements Agent {
         return `${sanitizedPrefix || 'antigravity'}${suffix}`.slice(0, 128);
     }
 
-    private getLastConversationsPath(): string {
-        return path.join(this.getHostConfigPath(), 'antigravity-cli', 'cache', 'last_conversations.json');
-    }
-
-    private async readLastConversationId(worktreePath: string): Promise<string | undefined> {
-        try {
-            const raw = await fs.promises.readFile(this.getLastConversationsPath(), 'utf8');
-            const conversations = JSON.parse(raw) as Record<string, unknown>;
-            for (const key of [ANTIGRAVITY_CONTAINER_WORKSPACE_PATH, worktreePath, path.resolve(worktreePath)]) {
-                const sessionId = conversations[key];
-                if (typeof sessionId === 'string' && sessionId.trim()) return sessionId;
-            }
-        } catch (error) {
-            logger.debug({ error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read Antigravity last conversations cache');
-        }
-        return undefined;
-    }
-
-    private async readPersistedSessionOutput(worktreePath: string, parsedSessionId?: string): Promise<{ sessionId: string | undefined; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: { input_tokens?: number; output_tokens?: number }; modelUsed?: string }> {
-        const sessionId = parsedSessionId || await this.readLastConversationId(worktreePath);
-        if (!sessionId) return { sessionId: undefined, summary: undefined, conversationLog: [] };
-        const transcriptPath = path.join(this.getHostConfigPath(), 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
-        try {
-            const transcript = await fs.promises.readFile(transcriptPath, 'utf8');
-            const parsed = parseAntigravityJsonl(transcript);
-            return { sessionId, summary: parsed.summary, conversationLog: parsed.conversationLog, tokenUsage: parsed.tokenUsage, modelUsed: parsed.modelUsed };
-        } catch (error) {
-            logger.debug({ sessionId, transcriptPath, error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read Antigravity transcript');
-            return { sessionId, summary: undefined, conversationLog: [] };
-        }
-    }
-
-    private async writeConversationFile(sessionId: string, events: AntigravityOutputEvent[]): Promise<void> {
-        try {
-            const projectDir = path.join(os.homedir(), '.claude', 'projects', '-home-node-workspace');
-            await fs.promises.mkdir(projectDir, { recursive: true });
-            const conversationPath = path.join(projectDir, `${sessionId}.jsonl`);
-            const aggregatedEvents = aggregateDeltaMessages(events);
-            const claudeFormatEvents = aggregatedEvents.map(event => convertEventToClaudeFormat(event));
-            await fs.promises.writeFile(conversationPath, claudeFormatEvents.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
-            logger.info({ sessionId, path: conversationPath, eventCount: aggregatedEvents.length, originalCount: events.length }, 'Wrote Antigravity conversation file');
-        } catch (error) { logger.warn({ sessionId, error: (error as Error).message }, 'Failed to write Antigravity conversation file'); }
-    }
 }

@@ -8,7 +8,7 @@ import { AntigravityAgent } from './impl/AntigravityAgent.js';
 import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
-import { ensureAgentBundleImage, ensureAgentDockerImage } from '../claude/docker/dockerExecutor.js';
+import { ensureAgentBundleImage, ensureAgentDockerImage, executeDockerCommand } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
 import { shutdownQueue } from '../queue/taskQueue.js';
 import { computeContentHash, getAgentCliVersionMatrix, getDefaultAgentCliVersionMatrix } from './version/versionService.js';
@@ -266,6 +266,34 @@ export class AgentRegistry {
             await this.refresh();
             return;
         }
+
+        // A background refresh clears and repopulates the registry maps. Keep
+        // serving the old agents only while their images still exist; if they
+        // do not, wait for the in-flight refresh instead of returning an agent
+        // whose next `docker run` would attempt an invalid registry pull.
+        if (this.pendingBackgroundRefresh) {
+            if (this.agents.size === 0 || !(await this.registeredAgentImagesAvailable())) {
+                await this.pendingBackgroundRefresh;
+            }
+            return;
+        }
+
+        // Managed bundle cleanup and development content-hash changes can
+        // remove an image after registry initialization. Verify the cached
+        // image immediately before callers resolve an agent, and synchronously
+        // refresh so execution never reaches Docker with a missing local tag.
+        if (!(await this.registeredAgentImagesAvailable())) {
+            if (!this.pendingBackgroundRefresh) {
+                logger.warn('Refreshing agent registry because a registered agent image is no longer available locally');
+                this.pendingBackgroundRefresh = this.refresh()
+                    .finally(() => {
+                        this.pendingBackgroundRefresh = null;
+                    });
+            }
+            await this.pendingBackgroundRefresh;
+            return;
+        }
+
         const now = Date.now();
         if (now < this.runtimePackageStateCheckAfter) return;
         this.runtimePackageStateCheckAfter = now + RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS;
@@ -278,6 +306,23 @@ export class AgentRegistry {
             .finally(() => {
                 this.pendingBackgroundRefresh = null;
             });
+    }
+
+    private async registeredAgentImagesAvailable(): Promise<boolean> {
+        const images = [...new Set([...this.agents.values()]
+            .map(agent => agent.config.dockerImage)
+            .filter(Boolean))];
+        if (images.length === 0) return true;
+
+        try {
+            const result = await executeDockerCommand('docker', [
+                'image', 'inspect', '--format', '{{.Id}}', ...images
+            ], { timeout: 10000 });
+            return result.exitCode === 0;
+        } catch (error) {
+            logger.warn({ images, error: (error as Error).message }, 'Could not verify registered agent Docker images');
+            return false;
+        }
     }
 
     /**

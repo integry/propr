@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { logger } from '@propr/core';
+import { findRunningDockerContainerForTask, logger } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
@@ -41,6 +41,12 @@ import {
 } from './prTaskTitleHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import {
+    acquirePRProcessingLock,
+    createPRProcessingLockToken,
+    releasePRProcessingLock,
+    startPRProcessingLockHeartbeat,
+} from './prProcessingLock.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -77,7 +83,7 @@ interface ValidationResult {
 
 interface LockParams {
     lockKey: string;
-    correlationId: string;
+    lockToken: string;
     correlatedLogger: Logger;
     job: Job<CommentJobData>;
 }
@@ -128,28 +134,14 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
 }
 
 async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
-    const { lockKey, correlationId, correlatedLogger, job } = lockParams;
+    const { lockKey, lockToken, correlatedLogger, job } = lockParams;
 
-    // Use atomic SET NX to avoid race condition where two jobs both check,
-    // see no lock, and both set - causing the second to overwrite the first
-    const result = await redisClient.set(lockKey, correlationId, 'EX', 3600, 'NX');
-
-    if (result === 'OK') {
+    if (await acquirePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug({ lockKey }, 'PR lock acquired');
         return true;
     }
 
-    // Lock exists - check if it's ours (re-entry case)
-    const currentLock = await redisClient.get(lockKey);
-    if (currentLock === correlationId) {
-        correlatedLogger.debug({ lockKey }, 'Already holding PR lock');
-        // Refresh the TTL
-        await redisClient.expire(lockKey, 3600);
-        return true;
-    }
-
-    // Lock held by another job - reschedule
-    correlatedLogger.info({ lockOwner: currentLock }, 'PR is currently being processed by another job. Rescheduling...');
+    correlatedLogger.info({ lockKey }, 'PR is currently being processed by another execution. Rescheduling...');
     await issueQueue.add(job.name, job.data, { delay: 10000 });
     return false;
 }
@@ -366,9 +358,26 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
+    const lockToken = createPRProcessingLockToken(correlationId);
 
-    const lockAcquired = await acquirePRLock({ lockKey, correlationId, correlatedLogger, job });
+    const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
+
+    const runningContainer = await findRunningDockerContainerForTask(taskId);
+    if (runningContainer) {
+        correlatedLogger.warn({ taskId, containerId: runningContainer.id, containerName: runningContainer.name }, 'Agent execution for this task is already running. Rescheduling without starting another attempt.');
+        await issueQueue.add(job.name, job.data, { delay: 60000 });
+        await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        return { status: 'rescheduled', reason: 'agent_container_already_running' };
+    }
+
+    const stopLockHeartbeat = startPRProcessingLockHeartbeat({
+        redisClient,
+        lockKey,
+        lockToken,
+        onLockLost: () => correlatedLogger.error({ lockKey }, 'Lost PR processing lock while execution is still running'),
+        onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
+    });
 
     try {
         await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments, modelName } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
@@ -394,6 +403,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         if (!(error instanceof UsageLimitError)) throw error;
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
-        await cleanupJob({ stateManager, lockKey, correlationId, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
+        await stopLockHeartbeat();
+        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
     }
 }

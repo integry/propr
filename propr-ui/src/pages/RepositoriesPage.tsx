@@ -10,11 +10,14 @@ import { RepositorySaveStatusFooter } from '../components/RepositorySaveStatusFo
 import { RepositoriesPageHeader } from '../components/RepositoriesPageHeader';
 import { RepositoryListContent } from '../components/RepositoryListContent';
 import { useDemoMode } from '../contexts/DemoModeContext';
+import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 
 const RepositoriesPage: React.FC = () => {
   useDocumentTitle('Repositories');
   const location = useLocation();
   const { isDemoMode } = useDemoMode();
+  const currentUser = useCurrentUser();
+  const isReadOnly = isDemoMode || !userHasPermission(currentUser, 'instance.manage_settings');
 
   const {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
@@ -47,7 +50,7 @@ const RepositoriesPage: React.FC = () => {
   }, [location.state, repos]);
 
   const handleOpenModal = () => {
-    if (isDemoMode) return;
+    if (isReadOnly) return;
     setNewRepo('');
     setNewAlias('');
     setNewBaseBranch('');
@@ -62,7 +65,7 @@ const RepositoriesPage: React.FC = () => {
   };
 
   const handleAddRepoSubmit = () => {
-    if (isDemoMode) return;
+    if (isReadOnly) return;
     if (handleAddRepo(newRepo, newAlias, newBaseBranch)) {
       setNewRepo('');
       setNewAlias('');
@@ -85,7 +88,7 @@ const RepositoriesPage: React.FC = () => {
         showHiddenRepos={showHiddenRepos}
         onToggleShowHidden={handleToggleShowHidden}
         hiddenCount={hiddenCount}
-        isReadOnly={isDemoMode}
+        isReadOnly={isReadOnly}
       />
 
       {/* Mobile Layout */}
@@ -125,7 +128,7 @@ const RepositoriesPage: React.FC = () => {
                 onToggleHidden={handleToggleHidden}
                 onSelect={handleSelectRepo}
                 onRetry={handleRetry}
-                isReadOnly={isDemoMode}
+                isReadOnly={isReadOnly}
               />
             </div>
             <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
@@ -153,7 +156,7 @@ const RepositoriesPage: React.FC = () => {
                   onToggleHidden={handleToggleHidden}
                   onSelect={handleSelectRepo}
                   onRetry={handleRetry}
-                  isReadOnly={isDemoMode}
+                  isReadOnly={isReadOnly}
                 />
               </div>
               <RepositorySaveStatusFooter saveStatus={saveStatus} error={error} />
@@ -185,7 +188,7 @@ const RepositoriesPage: React.FC = () => {
         onBaseBranchChange={setNewBaseBranch}
         onAdd={handleAddRepoSubmit}
         onClose={handleCloseModal}
-        isReadOnly={isDemoMode}
+        isReadOnly={isReadOnly}
       />
     </div>
   );

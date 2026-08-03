@@ -1,7 +1,12 @@
 import { test, describe, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert';
 import type { Job } from 'bullmq';
-import type { Redis } from 'ioredis';
+import {
+    acquirePRProcessingLock,
+    createPRProcessingLockToken,
+    releasePRProcessingLock,
+    renewPRProcessingLock,
+} from '../src/jobs/prProcessingLock.js';
 
 /**
  * Integration tests for PR Comment Job Lock Acquisition
@@ -12,7 +17,7 @@ import type { Redis } from 'ioredis';
  * Key scenarios tested:
  * 1. Lock acquisition with SET NX (atomic operation)
  * 2. Rescheduling behavior when lock is held by another job
- * 3. Re-entry scenarios (same correlationId can continue)
+ * 3. Redelivery scenarios (same correlationId cannot execute twice)
  * 4. Lock cleanup after job completion
  * 5. Concurrent execution prevention
  */
@@ -44,6 +49,7 @@ interface MockRedisClient {
     get: (key: string) => Promise<string | null>;
     expire: (key: string, seconds: number) => Promise<number>;
     del: (key: string) => Promise<number>;
+    eval: (script: string, numberOfKeys: number, ...args: (string | number)[]) => Promise<number>;
     lrange: (key: string, start: number, stop: number) => Promise<string[]>;
     llen: (key: string) => Promise<number>;
     lpush: (key: string, ...values: string[]) => Promise<number>;
@@ -97,6 +103,22 @@ function createMockRedisClient(): MockRedisClient {
             return storage.delete(key) ? 1 : 0;
         },
 
+        async eval(script: string, _numberOfKeys: number, ...args: (string | number)[]): Promise<number> {
+            const [key, expectedValue, ttlSeconds] = args;
+            const entry = storage.get(String(key));
+            if (!entry || entry.value !== String(expectedValue)) return 0;
+
+            if (script.includes("redis.call('expire'")) {
+                entry.expiry = Number(ttlSeconds);
+                return 1;
+            }
+            if (script.includes("redis.call('del'")) {
+                storage.delete(String(key));
+                return 1;
+            }
+            return 0;
+        },
+
         async lrange(_key: string, _start: number, _stop: number): Promise<string[]> {
             return [];
         },
@@ -136,19 +158,7 @@ async function acquirePRLock(
 ): Promise<boolean> {
     const { lockKey, correlationId, job } = lockParams;
 
-    // Use atomic SET NX to avoid race condition where two jobs both check,
-    // see no lock, and both set - causing the second to overwrite the first
-    const result = await redisClient.set(lockKey, correlationId, 'EX', 3600, 'NX');
-
-    if (result === 'OK') {
-        return true;
-    }
-
-    // Lock exists - check if it's ours (re-entry case)
-    const currentLock = await redisClient.get(lockKey);
-    if (currentLock === correlationId) {
-        // Refresh the TTL
-        await redisClient.expire(lockKey, 3600);
+    if (await acquirePRProcessingLock(redisClient, lockKey, correlationId)) {
         return true;
     }
 
@@ -165,12 +175,7 @@ async function releasePRLock(
     lockKey: string,
     correlationId: string
 ): Promise<boolean> {
-    const lockOwner = await redisClient.get(lockKey);
-    if (lockOwner === correlationId) {
-        await redisClient.del(lockKey);
-        return true;
-    }
-    return false;
+    return releasePRProcessingLock(redisClient, lockKey, correlationId);
 }
 
 describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
@@ -340,8 +345,15 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
         });
     });
 
-    describe('Re-entry Scenarios', () => {
-        test('allows re-entry for same correlationId', async () => {
+    describe('Redelivery Scenarios', () => {
+        test('creates a different lock token for each execution of the same job', () => {
+            const firstToken = createPRProcessingLockToken('shared-correlation-id');
+            const secondToken = createPRProcessingLockToken('shared-correlation-id');
+
+            assert.notStrictEqual(firstToken, secondToken, 'Each execution should have a unique lock owner token');
+        });
+
+        test('reschedules a duplicate execution with the same correlationId', async () => {
             const lockKey = 'lock:pr:testowner:testrepo:123';
             const correlationId = 'job-correlation-1';
             const job = {
@@ -361,7 +373,7 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
                 job
             });
 
-            // Re-entry with same correlationId
+            // BullMQ can redeliver the same job with the same correlationId.
             const reentry = await acquirePRLock(redisClient, issueQueue, {
                 lockKey,
                 correlationId,
@@ -369,11 +381,11 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
             });
 
             assert.strictEqual(firstAcquire, true, 'First acquisition should succeed');
-            assert.strictEqual(reentry, true, 'Re-entry should succeed');
-            assert.strictEqual(issueQueue.jobs.length, 0, 'No rescheduling for re-entry');
+            assert.strictEqual(reentry, false, 'Duplicate execution should not acquire the lock');
+            assert.strictEqual(issueQueue.jobs.length, 1, 'Duplicate execution should be rescheduled');
         });
 
-        test('re-entry refreshes TTL', async () => {
+        test('the current execution can refresh its TTL atomically', async () => {
             const lockKey = 'lock:pr:testowner:testrepo:123';
             const correlationId = 'job-correlation-1';
             const job = {
@@ -393,14 +405,14 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
             const entry = redisClient.storage.get(lockKey);
             if (entry) entry.expiry = 100; // Reduced TTL
 
-            // Re-entry should refresh TTL
-            await acquirePRLock(redisClient, issueQueue, { lockKey, correlationId, job });
+            const renewed = await renewPRProcessingLock(redisClient, lockKey, correlationId);
 
             const refreshedEntry = redisClient.storage.get(lockKey);
+            assert.strictEqual(renewed, true, 'Current execution should renew the lock');
             assert.strictEqual(refreshedEntry?.expiry, 3600, 'TTL should be refreshed to 3600');
         });
 
-        test('distinguishes between re-entry and different job', async () => {
+        test('rejects both duplicate and different executions while the lock is held', async () => {
             const lockKey = 'lock:pr:testowner:testrepo:123';
             const originalCorrelationId = 'job-correlation-1';
             const differentCorrelationId = 'job-correlation-2';
@@ -408,7 +420,7 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
             // Original job acquires lock
             await redisClient.set(lockKey, originalCorrelationId, 'EX', 3600, 'NX');
 
-            // Same correlationId (re-entry) - should succeed
+            // A duplicate delivery keeps the same correlationId but is still a separate execution.
             const reentryJob = {
                 name: 'processPullRequestComment',
                 data: {
@@ -442,8 +454,9 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
                 job: differentJob
             });
 
-            assert.strictEqual(reentryResult, true, 'Re-entry should succeed');
+            assert.strictEqual(reentryResult, false, 'Duplicate execution should fail');
             assert.strictEqual(differentResult, false, 'Different correlationId should fail');
+            assert.strictEqual(issueQueue.jobs.length, 2, 'Both blocked executions should be rescheduled');
         });
     });
 
@@ -646,9 +659,8 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
                 acquirePRLock(redisClient, issueQueue, { lockKey, correlationId, job })
             ]);
 
-            // All should succeed (same correlationId = re-entry)
-            assert.ok(results.every(r => r === true), 'All re-entries should succeed');
-            assert.strictEqual(issueQueue.jobs.length, 0, 'No rescheduling for re-entries');
+            assert.strictEqual(results.filter(Boolean).length, 1, 'Only one execution should acquire the lock');
+            assert.strictEqual(issueQueue.jobs.length, 4, 'All duplicate executions should be rescheduled');
         });
 
         test('handles lock release during concurrent attempts', async () => {

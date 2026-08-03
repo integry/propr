@@ -2,6 +2,11 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { debounce } from 'lodash';
 import { updateDraft, refinePlan, getDraftWithPlan, PlanTask, RefinementResult } from '../api/proprApi';
 
+const REFINEMENT_POLL_INTERVAL_MS = 1000;
+// The API recovers an abandoned refinement after 35 minutes. This is a final
+// client-side guard in case the API cannot persist or return that recovery.
+const REFINEMENT_CLIENT_TIMEOUT_MS = 40 * 60 * 1000;
+
 export type SaveStatus = 'saved' | 'saving' | 'error';
 
 export interface DeletedTask {
@@ -255,12 +260,16 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
     const cancelledResult = { success: false, message: 'Refinement cancelled by user.', cancelled: true };
 
     const checkAborted = (): boolean => signal?.aborted ?? false;
+    const finishCancelled = (message = cancelledResult.message) => {
+      setRefinementProgress({ isRefining: false });
+      return { ...cancelledResult, message };
+    };
 
     const handleReviewStatus = (draft: { plan_json: unknown; refinement_result?: unknown }): { success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean } | null => {
       const refinementResult = parseRefinementResult(draft.refinement_result);
 
       if (refinementResult?.action === 'cancelled') {
-        return { success: false, message: refinementResult.summary || 'Refinement cancelled by user.', cancelled: true };
+        return finishCancelled(refinementResult.summary);
       }
 
       // A failed refinement leaves plan_json unchanged, so we must detect the
@@ -306,25 +315,29 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
 
     try {
       if (checkAborted()) {
-        return cancelledResult;
+        return finishCancelled();
       }
 
       setRefinementProgress({ isRefining: true });
 
       await refinePlan(draftId, currentPlan, instruction, signal, generationModel);
 
-      const maxAttempts = 300;
       let hasUpdatedProgress = false;
+      const pollingStartedAt = Date.now();
 
-      for (let i = 0; i < maxAttempts; i++) {
-        if (checkAborted()) {
-          return cancelledResult;
+      // The server owns the execution timeout and persists either completion
+      // or failure. Keep polling while it reports an active refinement so a
+      // slow model response is not presented as a failed operation.
+      while (!checkAborted()) {
+        if (Date.now() - pollingStartedAt >= REFINEMENT_CLIENT_TIMEOUT_MS) {
+          setRefinementProgress({ isRefining: false });
+          return { success: false, message: 'Refinement did not finish in time. Refresh the plan before trying again.' };
         }
 
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, REFINEMENT_POLL_INTERVAL_MS));
 
         if (checkAborted()) {
-          return cancelledResult;
+          return finishCancelled();
         }
 
         const draft = await getDraftWithPlan(draftId);
@@ -341,11 +354,10 @@ export const usePlanRefinement = (draftId: string, initialPlan: PlanTask[]): Use
         }
       }
 
-      setRefinementProgress({ isRefining: false });
-      return { success: false, message: 'Refinement timed out. Please try again.' };
+      return finishCancelled();
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
-        return cancelledResult;
+        return finishCancelled();
       }
       console.error(e);
       setRefinementProgress({ isRefining: false });

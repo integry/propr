@@ -13,6 +13,7 @@ import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.j
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
+import { releasePRProcessingLock } from './prProcessingLock.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -278,7 +279,7 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
 }
 
 export interface CleanupOptions {
-    stateManager: WorkerStateManager; lockKey: string; correlationId: string;
+    stateManager: WorkerStateManager; lockKey: string; lockToken: string;
     localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
     repoOwner: string; repoName: string; pullRequestNumber: number;
     jobBranchName: string | undefined; jobLlm: string | null | undefined;
@@ -287,10 +288,8 @@ export interface CleanupOptions {
 }
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
-    const { lockKey, correlationId, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
-    const lockOwner = await redisClient.get(lockKey);
-    if (lockOwner === correlationId) {
-        await redisClient.del(lockKey);
+    const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
+    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug('Released PR processing lock');
     }
 

@@ -393,7 +393,8 @@ describe('OpenCodeAgent Docker args', () => {
         });
 
         assert.ok(args.includes('/tmp/opencode-analysis-config-test:/home/node/.config/opencode:rw'));
-        assert.ok(args.includes('/tmp/opencode-real-data-test:/home/node/.local/share/opencode:rw'));
+        assert.ok(args.includes('/tmp/opencode-real-data-test:/home/node/.local/share/opencode-source:rw'));
+        assert.ok(args.includes('PROPR_OPENCODE_SOURCE_DATA=/home/node/.local/share/opencode-source'));
     });
 
     test('infers default OpenCode auth data mount from the saved XDG config path', () => {
@@ -406,8 +407,9 @@ describe('OpenCodeAgent Docker args', () => {
 
         const args = buildDockerArgs(agent, 'opencode-deepseek-v4-flash-free');
 
-        assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode:rw`));
-        assert.strictEqual(args[args.lastIndexOf('-e') + 1], 'XDG_DATA_HOME=/home/node/.local/share');
+        assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode-source:rw`));
+        assert.ok(args.includes('XDG_DATA_HOME=/tmp/propr-opencode-data'));
+        assert.ok(args.includes('PROPR_EPHEMERAL_STATE=1'));
         fs.rmSync(home, { recursive: true, force: true });
     });
 
@@ -423,7 +425,7 @@ describe('OpenCodeAgent Docker args', () => {
             ensureConfigPath: () => undefined
         });
 
-        assert.ok(args.includes('/host/opencode-data:/home/node/.local/share/opencode:rw'));
+        assert.ok(args.includes('/host/opencode-data:/home/node/.local/share/opencode-source:rw'));
     });
 
     test('keeps managed OpenCode accounts isolated from provider-wide data overrides', () => {
@@ -443,7 +445,7 @@ describe('OpenCodeAgent Docker args', () => {
             ensureConfigPath: () => undefined
         });
 
-        assert.ok(args.includes(`${managedDataPath}:/home/node/.local/share/opencode:rw`));
+        assert.ok(args.includes(`${managedDataPath}:/home/node/.local/share/opencode-source:rw`));
         assert.ok(!args.some(value => value.includes('/host/shared-opencode-data')));
         assert.ok(args.includes('PROPR_MANAGED_CREDENTIALS=1'));
         fs.rmSync(managedRoot, { recursive: true, force: true });
@@ -453,6 +455,14 @@ describe('OpenCodeAgent Docker args', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
         assert.match(script, /opencode run "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
+    });
+
+    test('entrypoint seeds only durable credentials into disposable OpenCode state', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-entrypoint.sh'), 'utf8');
+
+        assert.match(script, /opencode_credential_files=\("auth\.json" "account\.json"\)/);
+        assert.match(script, /Using disposable OpenCode data directory/);
+        assert.match(script, /could not sync refreshed OpenCode credential file/);
     });
 
     test('always skips permissions for isolated non-interactive runs, like the other agents', () => {

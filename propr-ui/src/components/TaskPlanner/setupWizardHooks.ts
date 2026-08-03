@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getAgents, getRepoConfig, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, AgentConfig, Granularity } from '../../api/proprApi';
+import { uploadAttachment, removeAttachment, generatePlan, abortGeneration, getInstanceCatalog, getRepoBranches, updateDraft, PlannerDraft, PlannerAttachment, Granularity } from '../../api/proprApi';
 import { getRepositoriesIndexingStatus, RepositoryIndexingStatus } from '../../api/repoIndexingApi';
 import { getUserRepoPreferences, UserRepoPreferences } from '../../api/userRepoPreferencesApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
@@ -10,6 +10,7 @@ import { buildGenerationPayload, getDraftSetupSnapshot } from './setupWizardPayl
 import { PROMPT_SAVE_DEBOUNCE, truncateToSentences } from './setupWizardPrompt';
 import { constructDraftWithPlan, getDraftSetupPersistenceWarning, persistDraftSetupSnapshot } from './useAutoDraftCreation';
 import type { RepoSelection } from '../RepositorySelector';
+import type { InstanceCatalogAgent } from '@propr/shared';
 
 export {
   useAutoDraftCreation,
@@ -26,7 +27,7 @@ export interface Repo { name: string; enabled: boolean; baseBranch?: string; sta
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[]; contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 
 interface RepoInfoState { isLoading: boolean; error: string | null; }
-interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<void> }; startPolling: () => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
+interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: () => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
 interface DraftCreationParams { selectedRepo: string; config: PlannerConfig; localFiles: File[]; onDraftCreated?: (draftId: string) => void; navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; todoIds?: string[]; }
 interface GenerateDisabledParams { isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean; isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string; }
 
@@ -38,19 +39,17 @@ const setResolvedBaseBranch = (setConfig: PlannerConfigSetter, baseBranch: strin
 
 async function loadRepositories(savedLastRepository: string | undefined, savedLastBaseBranch: string | undefined): Promise<{ repos: Repo[]; selectedRepo: string; selectedBaseBranch: string }> {
   const [repoData, userPrefs, indexingData] = await Promise.all([
-    getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>,
+    getInstanceCatalog(),
     getUserRepoPreferences().catch(() => ({} as UserRepoPreferences)),
     getRepositoriesIndexingStatus().catch(() => ({ repositories: [] as RepositoryIndexingStatus[] }))
   ]);
   const indexingMap = new Map<string, RepositoryIndexingStatus>();
   for (const status of indexingData.repositories || []) indexingMap.set(status.full_name, status);
-  const validRepos = (repoData.repos_to_monitor || [])
-    .filter((r): r is { name: string; enabled?: boolean; baseBranch?: string } => typeof r === 'object' && r !== null && 'name' in r && typeof (r as { name: unknown }).name === 'string')
-    .map(r => {
-      const prefs = userPrefs[r.name];
-      const indexingStatus = indexingMap.get(r.name);
-      return { name: r.name, enabled: r.enabled !== false, baseBranch: r.baseBranch, starred: prefs?.starred || false, iconPath: indexingStatus?.icon_path || null };
-    });
+  const validRepos = repoData.repositories.map(r => {
+    const prefs = userPrefs[r.name];
+    const indexingStatus = indexingMap.get(r.name);
+    return { name: r.name, enabled: r.enabled, baseBranch: r.baseBranch, starred: prefs?.starred || false, iconPath: indexingStatus?.icon_path || null };
+  });
   const enabledRepos = validRepos.filter(r => r.enabled);
   const selectedRepoEntry = savedLastRepository
     ? enabledRepos.find(r => r.name === savedLastRepository && (r.baseBranch || '') === (savedLastBaseBranch || '')) || enabledRepos.find(r => r.name === savedLastRepository)
@@ -144,8 +143,8 @@ export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | unde
 }
 
 export function useAgentsLoader() {
-  const [agents, setAgents] = useState<AgentConfig[]>([]);
-  useEffect(() => { getAgents().then(data => setAgents(data.agents || [])).catch(err => console.error('Failed to load agents:', err)); }, []);
+  const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
+  useEffect(() => { getInstanceCatalog().then(data => setAgents(data.agents)).catch(err => console.error('Failed to load agents:', err)); }, []);
   return agents;
 }
 
@@ -213,9 +212,16 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
     if (branchError) return void setError('Please fix the branch name before generating');
     setError(null);
     setGenerationError(null);
-    startPolling();
     try {
-      if (contextHelpers.isContextStale) { contextHelpers.clearCountdown(); await contextHelpers.fetchPreview(); }
+      if (contextHelpers.isContextStale) {
+        contextHelpers.clearCountdown();
+        const previewReady = await contextHelpers.fetchPreview();
+        if (!previewReady) {
+          setError('Context preview did not complete. Please refresh it before generating.');
+          return;
+        }
+      }
+      startPolling();
       await generatePlan(draft.draft_id, buildGenerationPayload(config));
     } catch (err) {
       stopPolling();

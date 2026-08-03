@@ -1,4 +1,16 @@
-import type { ReasoningLevel } from '@propr/shared';
+import type { AuthenticatedInstanceUser, ReasoningLevel } from '@propr/shared';
+
+export type CurrentUser = AuthenticatedInstanceUser;
+export type {
+  InstanceCatalogAgent,
+  InstanceCatalogRepository,
+  InstanceCatalogResponse,
+  InstanceMember,
+  InstanceMembersResponse,
+  InstancePermission,
+  InstanceRole,
+  InstanceRoleAuditEntry,
+} from '@propr/shared';
 
 export interface SystemAgentStatus {
   id: string;
