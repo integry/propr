@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LiveDetails } from './types';
 import {
   mergeIncrementalLiveDetails,
+  normalizeLiveTodos,
   type IncrementalTaskLiveUpdatePayload,
 } from './useTaskData';
 
@@ -68,5 +69,24 @@ describe('incremental task live updates', () => {
     };
 
     expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toEqual(payload.events);
+  });
+
+  it('keeps todo IDs stable when distinct items are reordered', () => {
+    const todos = [
+      { content: 'Inspect the parser', status: 'pending' },
+      { content: 'Run the tests', status: 'in_progress' },
+    ];
+    const original = normalizeLiveTodos(todos);
+    const reordered = normalizeLiveTodos([...todos].reverse());
+
+    expect(Object.fromEntries(original.map(todo => [todo.content, todo.id]))).toEqual(
+      Object.fromEntries(reordered.map(todo => [todo.content, todo.id]))
+    );
+  });
+
+  it('preserves IDs supplied by the server', () => {
+    expect(normalizeLiveTodos([
+      { id: 'server-todo-42', content: 'Keep this row', status: 'completed' },
+    ])[0].id).toBe('server-todo-42');
   });
 });

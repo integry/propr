@@ -3,7 +3,7 @@
  */
 
 import { Knex } from 'knex';
-import { generatePlan, getEventPublisher, parseGenerationTrace, buildDraftUpdateTraceSnapshot } from '@propr/core';
+import { generatePlan, getEventPublisher, parseGenerationTrace, buildDraftUpdateTraceSnapshot, runWithPlannerAbortContext } from '@propr/core';
 import type { DraftUpdateGenerationTrace } from '@propr/shared';
 import type { GenerateRequestBody, BackgroundGenerationOptions } from './types.js';
 import { VALID_GRANULARITIES } from './validation.js';
@@ -51,8 +51,10 @@ export async function updateDraftContextConfig(
 }
 
 export function runBackgroundGeneration(options: BackgroundGenerationOptions): void {
-  const { db, draftId, worktreePath, authToken, correlationId } = options;
-  generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId })
+  const { db, draftId, worktreePath, authToken, correlationId, runId } = options;
+  runWithPlannerAbortContext(draftId, runId, () => (
+    generatePlan({ draftId, worktreePath, githubToken: authToken, correlationId })
+  ))
     .then(() => {
       console.log(`[generate] Plan generation completed for draft ${draftId}`);
     })

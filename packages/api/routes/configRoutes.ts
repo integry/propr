@@ -156,6 +156,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           await publishConfigUpdate(subtype);
         },
         lock,
+        publicationContext: subtype,
         committedErrorMessage,
         successBody: { success: true, ...body(validated.value) }
       });
@@ -223,6 +224,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           await publishConfigUpdate('repos_update');
         },
         lock,
+        publicationContext: 'repos_update',
         committedErrorMessage: 'Repository configuration was saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
         successBody: { success: true, repos_to_monitor: processedRepos }
       });
@@ -364,6 +366,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           await publishConfigUpdate('primary_processing_labels_update');
         },
         lock,
+        publicationContext: 'primary_processing_labels_update',
         committedErrorMessage: 'Primary processing labels were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
         successBody: { success: true, primary_processing_labels: labels }
       });

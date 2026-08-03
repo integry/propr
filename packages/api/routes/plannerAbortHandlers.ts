@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { Redis } from 'ioredis';
+import { buildPlannerAbortSignalKey } from '@propr/core';
 import { checkDbAndAuth, sendCheckError } from './plannerHelpers/index.js';
 
 export interface AbortRedisClient {
@@ -13,8 +14,8 @@ export interface AbortRedisClient {
 export type AbortRedisFactory = () => AbortRedisClient;
 
 export interface PlannerAbortHandlerDependencies {
-  clearAbortSignal: (draftId: string) => Promise<void>;
-  setAbortSignal: (draftId: string) => Promise<void>;
+  clearAbortSignal: (draftId: string, runId?: string) => Promise<void>;
+  setAbortSignal: (draftId: string, runId?: string) => Promise<void>;
 }
 
 function createAbortRedis(): AbortRedisClient {
@@ -44,12 +45,24 @@ async function withAbortRedis(operation: (redis: AbortRedisClient) => Promise<un
   }
 }
 
-export async function clearAbortSignal(draftId: string, factory: AbortRedisFactory = createAbortRedis): Promise<void> {
-  await withAbortRedis(redis => redis.del(`planner:abort:${draftId}`), factory);
+export async function clearAbortSignal(
+  draftId: string,
+  runIdOrFactory?: string | AbortRedisFactory,
+  factory: AbortRedisFactory = createAbortRedis,
+): Promise<void> {
+  const runId = typeof runIdOrFactory === 'string' ? runIdOrFactory : undefined;
+  const redisFactory = typeof runIdOrFactory === 'function' ? runIdOrFactory : factory;
+  await withAbortRedis(redis => redis.del(buildPlannerAbortSignalKey(draftId, runId)), redisFactory);
 }
 
-export async function setAbortSignal(draftId: string, factory: AbortRedisFactory = createAbortRedis): Promise<void> {
-  await withAbortRedis(redis => redis.setex(`planner:abort:${draftId}`, 300, '1'), factory);
+export async function setAbortSignal(
+  draftId: string,
+  runIdOrFactory?: string | AbortRedisFactory,
+  factory: AbortRedisFactory = createAbortRedis,
+): Promise<void> {
+  const runId = typeof runIdOrFactory === 'string' ? runIdOrFactory : undefined;
+  const redisFactory = typeof runIdOrFactory === 'function' ? runIdOrFactory : factory;
+  await withAbortRedis(redis => redis.setex(buildPlannerAbortSignalKey(draftId, runId), 300, '1'), redisFactory);
 }
 
 interface ConditionalAbortDraftOptions {
@@ -72,27 +85,31 @@ async function conditionallyAbortDraft({ db, draft, userId, activeStatus, update
   return Number(await query.update(updates));
 }
 
-async function clearAbortSignalBestEffort(
-  signals: PlannerAbortHandlerDependencies,
-  draftId: string,
-): Promise<void> {
+function parseActiveRunId(draft: Record<string, unknown>, activeStatus: 'generating' | 'refining'): string | undefined {
+  const rawMetadata = activeStatus === 'generating' ? draft.generation_trace : draft.refinement_result;
   try {
-    await signals.clearAbortSignal(draftId);
-  } catch (error) {
-    console.error(`Failed to reconcile planner abort signal for draft ${draftId}:`, error);
+    const metadata = typeof rawMetadata === 'string' ? JSON.parse(rawMetadata) : rawMetadata;
+    const runId = (metadata as { runId?: unknown } | null)?.runId;
+    return typeof runId === 'string' && runId.length > 0 ? runId : undefined;
+  } catch {
+    return undefined;
   }
 }
 
 async function transitionDraftOrReconcileSignal(
   options: ConditionalAbortDraftOptions,
   signals: PlannerAbortHandlerDependencies,
+  runId: string | undefined,
 ): Promise<number> {
   try {
     const updatedRows = await conditionallyAbortDraft(options);
-    if (updatedRows !== 1) await clearAbortSignalBestEffort(signals, String(options.draft.draft_id));
+    // Versioned keys can safely expire after a lost database race: no newer run
+    // observes them. Legacy draft-wide keys must be cleared synchronously and a
+    // cleanup failure must reach the client instead of masquerading as a safe 409.
+    if (updatedRows !== 1 && !runId) await signals.clearAbortSignal(String(options.draft.draft_id));
     return updatedRows;
   } catch (error) {
-    await clearAbortSignalBestEffort(signals, String(options.draft.draft_id));
+    if (!runId) await signals.clearAbortSignal(String(options.draft.draft_id));
     throw error;
   }
 }
@@ -114,7 +131,8 @@ export function createAbortGenerationHandler(db: Knex, dependencies: Partial<Pla
         return;
       }
 
-      await signals.setAbortSignal(draftId);
+      const runId = parseActiveRunId(draft, 'generating');
+      await signals.setAbortSignal(draftId, runId);
       const updatedRows = await transitionDraftOrReconcileSignal({
         db,
         draft,
@@ -129,7 +147,7 @@ export function createAbortGenerationHandler(db: Knex, dependencies: Partial<Pla
           }),
           updated_at: db.fn.now()
         }
-      }, signals);
+      }, signals, runId);
       if (updatedRows !== 1) {
         res.status(409).json({ error: 'Draft state changed before generation could be aborted. Current state was preserved.' });
         return;
@@ -161,7 +179,8 @@ export function createAbortRefinementHandler(db: Knex, dependencies: Partial<Pla
         return;
       }
 
-      await signals.setAbortSignal(draftId);
+      const runId = parseActiveRunId(draft, 'refining');
+      await signals.setAbortSignal(draftId, runId);
       const updatedRows = await transitionDraftOrReconcileSignal({
         db,
         draft,
@@ -176,7 +195,7 @@ export function createAbortRefinementHandler(db: Knex, dependencies: Partial<Pla
           }),
           updated_at: db.fn.now()
         }
-      }, signals);
+      }, signals, runId);
       if (updatedRows !== 1) {
         res.status(409).json({ error: 'Draft state changed before refinement could be aborted. Current state was preserved.' });
         return;

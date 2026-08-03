@@ -5,7 +5,7 @@
 
 import { Knex } from 'knex';
 import { Redis } from 'ioredis';
-import { refinePlan } from '@propr/core';
+import { buildPlannerAbortSignalKey, refinePlan, runWithPlannerAbortContext } from '@propr/core';
 import type { Plan } from '@propr/core';
 import { getRefineRepoContext } from './repoSetup.js';
 
@@ -17,6 +17,7 @@ export interface BackgroundRefinementOptions {
   generationModel: string;
   correlationId: string;
   accessToken: string;
+  runId: string;
 }
 
 /**
@@ -24,7 +25,7 @@ export interface BackgroundRefinementOptions {
  * the user aborted the refinement in the meantime.
  */
 export async function runBackgroundRefinement(options: BackgroundRefinementOptions): Promise<void> {
-  const { db, draftId, currentPlan, instruction, generationModel, correlationId, accessToken } = options;
+  const { db, draftId, currentPlan, instruction, generationModel, correlationId, accessToken, runId } = options;
 
   // Helper to check if refinement was aborted
   const checkAborted = async (): Promise<boolean> => {
@@ -32,7 +33,7 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
       host: process.env.REDIS_HOST || 'redis',
       port: parseInt(process.env.REDIS_PORT || '6379', 10)
     });
-    const aborted = await redis.get(`planner:abort:${draftId}`);
+    const aborted = await redis.get(buildPlannerAbortSignalKey(draftId, runId));
     await redis.quit();
     return !!aborted;
   };
@@ -50,7 +51,7 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
     const draft = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
     const originalContext = draft?.generated_context as string | undefined;
 
-    const result = await refinePlan({
+    const result = await runWithPlannerAbortContext(draftId, runId, () => refinePlan({
       currentPlan,
       instruction,
       worktreePath: repoContext.worktreePath,
@@ -60,7 +61,7 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
       originalContext: originalContext || undefined,
       draftId,
       generationModel
-    });
+    }));
 
     // Check if aborted before saving result (race condition protection)
     if (await checkAborted()) {

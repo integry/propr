@@ -32,12 +32,28 @@ const normalizeTodoStatus = (status: string): TodoItem['status'] => {
   return 'pending';
 };
 
-const normalizeLiveTodos = (todos: TaskLiveUpdatePayload['todos']): TodoItem[] =>
-  todos.map((todo, index) => ({
-    id: `${index}-${todo.content}`,
-    content: todo.content,
-    status: normalizeTodoStatus(todo.status)
-  }));
+const stableTodoContentId = (content: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `todo-${(hash >>> 0).toString(36)}`;
+};
+
+export const normalizeLiveTodos = (todos: TaskLiveUpdatePayload['todos']): TodoItem[] => {
+  const occurrences = new Map<string, number>();
+  return todos.map(todo => {
+    const baseId = todo.id?.trim() || stableTodoContentId(todo.content);
+    const occurrence = occurrences.get(baseId) ?? 0;
+    occurrences.set(baseId, occurrence + 1);
+    return {
+      id: occurrence === 0 ? baseId : `${baseId}-${occurrence}`,
+      content: todo.content,
+      status: normalizeTodoStatus(todo.status)
+    };
+  });
+};
 
 const eventFingerprint = (event: LiveDetails['events'][number]) => {
   if (event.id) return `event:${event.id}`;

@@ -119,6 +119,7 @@ export interface ConversationEvent {
 
 /** Todo item from Claude's TodoWrite calls */
 export interface TodoItem {
+  id?: string;
   status: string;
   content: string;
 }

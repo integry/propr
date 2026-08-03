@@ -7,7 +7,7 @@ import type { GenerationTrace } from './planningTypes.js';
 import type { DraftUpdateGenerationTrace, StepStatus } from '@propr/shared';
 import { getEventPublisher } from '../../utils/eventPublisher.js';
 
-type ParsedGenerationTrace = GenerationTrace & Pick<DraftUpdateGenerationTrace, 'error' | 'failedAt'>;
+type ParsedGenerationTrace = GenerationTrace & Pick<DraftUpdateGenerationTrace, 'error' | 'failedAt'> & { runId?: string };
 
 export function sanitizeDraftUpdateStepData(data: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!data) {
@@ -38,6 +38,7 @@ export function parseGenerationTrace(raw: unknown): ParsedGenerationTrace {
 
   return {
     steps: Array.isArray(parsed?.steps) ? parsed.steps : [],
+    ...(typeof parsed?.runId === 'string' ? { runId: parsed.runId } : {}),
     ...(typeof parsed?.error === 'string' ? { error: parsed.error } : {}),
     ...(typeof parsed?.failedAt === 'string' ? { failedAt: parsed.failedAt } : {})
   };

@@ -225,14 +225,17 @@ export function useSettingsState() {
   );
 
   const { setWhitelist, setKeywords, setIgnoreKeywords, setPrimaryLabels } = lists;
-  const loadData = useCallback(async (): Promise<void> => {
+  const loadData = useCallback(async (requireCompleteConfiguration = false): Promise<void> => {
     setLoading(true);
     try {
+      const agentTankSettingsRequest = requireCompleteConfiguration
+        ? getAgentTankSettings()
+        : getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }));
       const results = await Promise.all([
         getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
         getPrLabel(), getPrimaryProcessingLabels(), getAgents(),
         getSummarizationSettings(),
-        getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }))
+        agentTankSettingsRequest
       ]);
       const parsed = parseLoadedData(results);
       configurationReloadRequiredRef.current = false;
@@ -259,7 +262,7 @@ export function useSettingsState() {
       setLoading(false);
     }
   }, [setIgnoreKeywords, setKeywords, setPrimaryLabels, setWhitelist]);
-  reloadConfigurationRef.current = loadData;
+  reloadConfigurationRef.current = () => loadData(true);
 
   // Load all configuration once, and reuse the same authoritative refresh
   // after a server reports that a write committed with a warning.

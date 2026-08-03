@@ -56,7 +56,7 @@ export function extractKeywords(prompt: string): string[] {
   const keywords: string[] = [];
   const seen = new Set<string>();
   const addKeyword = (value: string, preserveCase = false): void => {
-    const normalized = value.replace(/^[`'"([{]+|[`'"\])},;:!?]+$/g, '');
+    const normalized = value.replace(/^[`'"([{]+|[.`'"\])},;:!?]+$/g, '');
     const comparison = normalized.toLowerCase();
     if (comparison.length < MIN_KEYWORD_LENGTH
         || STOP_WORDS.has(comparison)
@@ -70,7 +70,7 @@ export function extractKeywords(prompt: string): string[] {
 
   // Paths and filenames carry the strongest signal. Preserve separators and
   // extensions so path scoring can perform exact and directory matches.
-  for (const match of prompt.matchAll(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+|\b[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,9}\b/g)) {
+  for (const match of prompt.matchAll(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]*[A-Za-z0-9_-]|\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\b/g)) {
     addKeyword(match[0], true);
   }
 

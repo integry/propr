@@ -26,6 +26,26 @@ jobs:
           echo "Build check diagnostics for run ${{ github.run_id }}, attempt ${{ github.run_attempt }}" > build_log.txt
           echo "Checkout outcome: ${{ steps.checkout.outcome }}" >> build_log.txt
 
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
+        with:
+          # Standalone shellcheck below owns the release scripts; disabling
+          # actionlint's embedded shellcheck keeps this step focused on YAML
+          # structure and Actions expressions.
+          args: -color -shellcheck=
+
+      - name: Lint release shell scripts
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --workdir /work \
+            --entrypoint shellcheck \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            --exclude=SC2016 \
+            scripts/build-images.sh \
+            scripts/ci-redis.sh \
+            scripts/smoke-test-images.sh
+
       - name: Set up Node.js
         id: node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -443,7 +463,9 @@ jobs:
             let log = 'Log file missing.';
             try { log = fs.readFileSync('build_log.txt', 'utf8'); } catch {}
             if (log.length > 60000) log = log.substring(0, 60000) + '\n\n...(truncated)';
+            const marker = '<!-- propr-build-check-results -->';
             const body = [
+              marker,
               '### Checks Failed',
               'Validation failed during setup, tests, CLI packaging, linting, or build checks.',
               '',
@@ -457,9 +479,27 @@ jobs:
               '',
               `**[View Workflow](${runUrl})**`,
             ].join('\n');
-            await github.rest.issues.createComment({
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body,
+              per_page: 100,
             });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

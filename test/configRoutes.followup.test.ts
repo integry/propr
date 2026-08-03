@@ -5,6 +5,7 @@ import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/co
 import { normalizeAgentsConfig, resolveConfigStore, withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { queueResummarizationForAllRepos } from '../packages/api/routes/indexingQueueHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
+import { prepareAgentsUpdate } from '../packages/api/routes/configRoutesAgentsPreparation.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { appendClaudeUserMessageEvents, parseClaudeOutputToConversationResult, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
 import { parseOpenCodeOutputToConversationResult } from '../packages/api/routes/liveDetailsOpenCodeParser.ts';
@@ -919,6 +920,30 @@ describe('config route follow-up helpers', () => {
         });
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
+    });
+
+    test('prepareAgentsUpdate does not mislabel local TypeErrors as registry outages', async () => {
+        const result = await prepareAgentsUpdate([
+            {
+                id: 'new-agent',
+                alias: 'new-default',
+                type: 'claude',
+                enabled: true,
+                dockerImage: 'new:image',
+                configPath: '/tmp/claude',
+                supportedModels: [],
+                cliVersionType: 'default',
+            },
+        ], {
+            resolveVersion: async () => {
+                throw new TypeError('Cannot read properties of undefined');
+            },
+            computeContentHash: () => 'content-hash',
+            generateAgentBundleImageTag: () => 'propr/agent:test',
+        });
+
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(result.error, "Failed to resolve version for agent 'new-default': Agent version resolution failed");
     });
 
     test('postAgents reports internal agent image derivation failures as server errors', async () => {

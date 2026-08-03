@@ -61,12 +61,14 @@ describe('planner abort handlers', () => {
       draft_id: 'generation-race',
       user_id: 'user-1',
       status: 'generating',
-      generation_trace: 'active-run',
+      generation_trace: JSON.stringify({ steps: [], runId: 'generation-run-1' }),
       updated_at: '2026-08-03 20:00:00.000',
     });
     let abortSignalCleared = false;
+    let signalledRunId: string | undefined;
     const handler = createAbortGenerationHandler(database, {
-      setAbortSignal: async () => {
+      setAbortSignal: async (_draftId, runId) => {
+        signalledRunId = runId;
         await database('task_drafts').where({ draft_id: 'generation-race' }).update({
           status: 'review',
           generation_trace: 'completed-run',
@@ -81,7 +83,8 @@ describe('planner abort handlers', () => {
 
     const current = await database('task_drafts').where({ draft_id: 'generation-race' }).first();
     assert.equal(response.statusCode, 409);
-    assert.equal(abortSignalCleared, true);
+    assert.equal(signalledRunId, 'generation-run-1');
+    assert.equal(abortSignalCleared, false);
     assert.equal(current.status, 'review');
     assert.equal(current.generation_trace, 'completed-run');
   });
@@ -91,12 +94,14 @@ describe('planner abort handlers', () => {
       draft_id: 'refinement-restart-race',
       user_id: 'user-1',
       status: 'refining',
-      refinement_result: 'first-run',
+      refinement_result: JSON.stringify({ status: 'in_progress', runId: 'refinement-run-1' }),
       updated_at: '2026-08-03 20:00:00.000',
     });
     let abortSignalCleared = false;
+    let signalledRunId: string | undefined;
     const handler = createAbortRefinementHandler(database, {
-      setAbortSignal: async () => {
+      setAbortSignal: async (_draftId, runId) => {
+        signalledRunId = runId;
         await database('task_drafts').where({ draft_id: 'refinement-restart-race' }).update({
           status: 'refining',
           refinement_result: 'restarted-run',
@@ -111,9 +116,39 @@ describe('planner abort handlers', () => {
 
     const current = await database('task_drafts').where({ draft_id: 'refinement-restart-race' }).first();
     assert.equal(response.statusCode, 409);
-    assert.equal(abortSignalCleared, true);
+    assert.equal(signalledRunId, 'refinement-run-1');
+    assert.equal(abortSignalCleared, false);
     assert.equal(current.status, 'refining');
     assert.equal(current.refinement_result, 'restarted-run');
+  });
+
+  test('surfaces failed reconciliation for a legacy draft-wide abort signal', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    await database('task_drafts').insert({
+      draft_id: 'legacy-generation-race',
+      user_id: 'user-1',
+      status: 'generating',
+      generation_trace: 'legacy-active-run',
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    const handler = createAbortGenerationHandler(database, {
+      setAbortSignal: async () => {
+        await database('task_drafts').where({ draft_id: 'legacy-generation-race' }).update({
+          status: 'review',
+          generation_trace: 'completed-run',
+          updated_at: '2026-08-03 20:00:01.000',
+        });
+      },
+      clearAbortSignal: async () => { throw new Error('Redis reconciliation failed'); },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'legacy-generation-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'legacy-generation-race' }).first();
+    assert.equal(response.statusCode, 500);
+    assert.equal(current.status, 'review');
+    assert.equal(current.generation_trace, 'completed-run');
   });
 
   test('reconciles the abort signal when the conditional database transition fails', async t => {
@@ -169,6 +204,24 @@ describe('planner abort handlers', () => {
       await assert.rejects(operation(factory));
       assert.equal(quitCalls, 1);
     }
+  });
+
+  test('uses a run-specific Redis key when a planner run ID is available', async () => {
+    const keys: string[] = [];
+    const factory = () => ({
+      del: async (key: string) => { keys.push(key); return 1; },
+      setex: async (key: string) => { keys.push(key); return 'OK'; },
+      quit: async () => undefined,
+      disconnect: () => undefined,
+    });
+
+    await setAbortSignal('draft-1', 'run-1', factory);
+    await clearAbortSignal('draft-1', 'run-1', factory);
+
+    assert.deepEqual(keys, [
+      'planner:abort:draft-1:run:run-1',
+      'planner:abort:draft-1:run:run-1',
+    ]);
   });
 
   test('disconnects Redis when graceful shutdown fails', async t => {

@@ -76,8 +76,9 @@ export function discoverWorkspaceTestRoots(root = ROOT) {
     for (const workspaceDirectory of workspaceDirectories) {
         const workspacePackage = readPackageJson(workspaceDirectory);
         // Jest/Vitest suites need their package-native environment and are run
-        // by the workspace phase of test:full:prepared. Node-compatible files
-        // remain owned here, even if a narrow package script is later added.
+        // explicitly after this runner by test:full:prepared. Node-compatible
+        // workspace files remain exclusively owned here, even when that workspace
+        // also exposes a narrow Node-based test script.
         if (usesNativeWorkspaceTestRunner(workspacePackage)) continue;
         roots.push(workspaceDirectory);
     }

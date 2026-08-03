@@ -29,6 +29,7 @@ interface ParseState {
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
+  emittedAntigravityToolUseIds: Set<string>;
   emittedOpenCodeToolUseIds: Set<string>;
   emittedOpenCodeToolResultIds: Set<string>;
 }
@@ -227,6 +228,24 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
 /**
  * Process Antigravity events (message, tool_use, tool_result, result)
  */
+function processAntigravityToolUse(
+  event: { tool_name?: string; parameters?: unknown; tool_id?: string },
+  timestamp: string,
+  state: ParseState
+): void {
+  flushPendingMessage(state, timestamp);
+  const id = event.tool_id;
+  if (id && state.emittedAntigravityToolUseIds.has(id)) return;
+  if (id) state.emittedAntigravityToolUseIds.add(id);
+  state.events.push({
+    type: 'tool_use' as const,
+    toolName: event.tool_name,
+    input: event.parameters as Record<string, unknown> | undefined,
+    id,
+    timestamp
+  });
+}
+
 function processAntigravityEvent(
   event: { type?: string; source?: string; role?: string; delta?: boolean; content?: string; tool_name?: string; parameters?: unknown; tool_id?: string; output?: string; result?: unknown; status?: string; stats?: { input_tokens?: number; output_tokens?: number; inputTokens?: number; outputTokens?: number } },
   timestamp: string,
@@ -252,16 +271,7 @@ function processAntigravityEvent(
     return;
   }
   if (event.type === 'tool_use') {
-    flushPendingMessage(state, timestamp);
-    if (!state.antigravityStreamActive) {
-      state.events.push({
-        type: 'tool_use' as const,
-        toolName: event.tool_name,
-        input: event.parameters as Record<string, unknown> | undefined,
-        id: event.tool_id,
-        timestamp
-      });
-    }
+    processAntigravityToolUse(event, timestamp, state);
     return;
   }
   if (event.type === 'tool_result') {
@@ -696,6 +706,7 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
     syntheticTimestampIndex: 0,
     seenEventFingerprints: new Set(),
+    emittedAntigravityToolUseIds: new Set(),
     emittedOpenCodeToolUseIds: new Set(),
     emittedOpenCodeToolResultIds: new Set()
   };

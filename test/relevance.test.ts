@@ -32,6 +32,13 @@ describe('Keyword Extractor', () => {
         assert.ok(keywords.some(k => k.includes('config.json')));
     });
 
+    test('keeps complete multi-extension filenames without sentence punctuation', () => {
+        const keywords = extractKeywords('Update component.test.tsx. Then inspect src/foo.ts.');
+        assert.ok(keywords.includes('component.test.tsx'));
+        assert.ok(keywords.includes('src/foo.ts'));
+        assert.ok(!keywords.includes('src/foo.ts.'));
+    });
+
     test('filters stop words', () => {
         const keywords = extractKeywords('fix the code and update the file');
         assert.ok(!keywords.includes('fix'));

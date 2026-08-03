@@ -4,6 +4,7 @@ interface SaveThenPublishConfigUpdateOptions {
   save: () => Promise<unknown>;
   publish: () => Promise<void>;
   lock?: ConfigLockContext;
+  publicationContext: string;
   committedErrorMessage: string;
   successBody: Record<string, unknown>;
 }
@@ -12,6 +13,7 @@ export async function saveThenPublishConfigUpdate({
   save,
   publish,
   lock,
+  publicationContext,
   committedErrorMessage,
   successBody
 }: SaveThenPublishConfigUpdateOptions): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -27,7 +29,11 @@ export async function saveThenPublishConfigUpdate({
   lock?.markCommitted();
   try {
     await publish();
-  } catch {
+  } catch (error) {
+    console.error('Post-commit configuration publication failed:', {
+      operation: publicationContext,
+      committed: true,
+    }, error);
     return { status: 500, body: { error: committedErrorMessage, committed: true } };
   }
   return { status: 200, body: successBody };

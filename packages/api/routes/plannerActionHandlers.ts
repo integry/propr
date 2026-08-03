@@ -30,7 +30,6 @@ import {
   validateRefineInput,
   GenerateRequestBody
 } from './plannerHelpers/index.js';
-import { clearAbortSignal } from './plannerAbortHandlers.js';
 
 function validateGenerateRequest(body: GenerateRequestBody): string | undefined {
   const { draftId, contextRepositories, excludedFiles } = body;
@@ -110,20 +109,16 @@ export function createGenerateHandler(db: Knex) {
       await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles });
 
       generationClaimed = await claimDraftOperation(db, draftId, 'generating', {
-        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString() })
+        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString(), runId: correlationId })
       });
       if (!generationClaimed) {
         res.status(409).json({ error: 'Another operation is already running for this draft' });
         return;
       }
 
-      // Only the request that won the database claim may clear an old abort
-      // signal. A concurrent loser must not erase an abort for the active run.
-      await clearAbortSignal(draftId);
-
       res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
 
-      runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId });
+      runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId, runId: correlationId });
     } catch (error) {
       console.error('Generate plan error:', error);
       if (generationClaimed && !res.headersSent) {
@@ -216,7 +211,8 @@ export function createRefineHandler(db: Knex) {
         model: generationModel,
         estimatedDuration: estimation.estimatedDurationMs,
         isHistoricalEstimate: estimation.isHistoricalEstimate,
-        sampleCount: estimation.sampleCount
+        sampleCount: estimation.sampleCount,
+        runId: correlationId
       };
 
       refinementClaimed = await claimDraftOperation(db, draftId, 'refining', {
@@ -226,10 +222,6 @@ export function createRefineHandler(db: Knex) {
         res.status(409).json({ error: 'Another operation is already running for this draft' });
         return;
       }
-
-      // Clear an abort from an earlier run only after this request has won the
-      // claim, otherwise a duplicate request could cancel the active abort.
-      await clearAbortSignal(draftId);
 
       // Return 202 Accepted immediately - client should poll for status
       res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
@@ -242,7 +234,8 @@ export function createRefineHandler(db: Knex) {
         instruction,
         generationModel,
         correlationId,
-        accessToken: req.user!.accessToken || ''
+        accessToken: req.user!.accessToken || '',
+        runId: correlationId
       });
     } catch (error) {
       console.error('Refine plan error:', error);

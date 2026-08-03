@@ -36,9 +36,25 @@ function hasVersionSpec(versionSpec: string | undefined): boolean {
   return typeof versionSpec === 'string' && versionSpec.trim().length > 0;
 }
 
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  'ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'EAI_AGAIN', 'ENETDOWN',
+  'ENETUNREACH', 'ENOTFOUND', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+function hasTransientNetworkCode(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 3 && current && typeof current === 'object'; depth += 1) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === 'string' && TRANSIENT_NETWORK_ERROR_CODES.has(candidate.code)) return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
 function classifyVersionResolutionError(error: unknown): { publicMessage: string; status: number } {
   const message = error instanceof Error ? error.message : 'Unknown version resolution error';
-  if (error instanceof TypeError || /fetch|network|timed?\s*out|ECONN|ENOTFOUND/i.test(message)) {
+  if (hasTransientNetworkCode(error)
+      || /\b(?:fetch failed|network (?:error|failure|timeout)|request timed out|EAI_AGAIN|ECONN(?:ABORTED|REFUSED|RESET)|ENET(?:DOWN|UNREACH)|ENOTFOUND|ETIMEDOUT)\b/i.test(message)) {
     return { publicMessage: 'Agent version lookup is temporarily unavailable', status: 502 };
   }
   if (message.startsWith('NPM registry returned ')
