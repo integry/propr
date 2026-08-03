@@ -7,8 +7,9 @@ import { db } from '../db/connection.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
+import type { Knex } from 'knex';
 import {
-  updateTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTrace, updateTraceForRun, parseGenerationTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planning/index.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
@@ -39,6 +40,23 @@ const DEFAULT_GENERATION_MODEL = 'opus';
 const MAX_ATTACHMENT_PERCENT = 0.25;
 const BUDGET_SAFETY_FACTOR = 0.85;
 
+interface GenerationCompletionOptions {
+  database: Knex;
+  draftId: string;
+  runId?: string;
+  expectedTrace: string;
+  updates: Record<string, unknown>;
+}
+
+export async function persistGenerationCompletion(options: GenerationCompletionOptions): Promise<boolean> {
+  const { database, draftId, runId, expectedTrace, updates } = options;
+  if (runId && parseGenerationTrace(expectedTrace).runId !== runId) return false;
+
+  let query = database('task_drafts').where({ draft_id: draftId });
+  if (runId) query = query.where({ status: 'generating', generation_trace: expectedTrace });
+  return Number(await query.update(updates)) === 1;
+}
+
 function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: number): number | undefined {
   if (imageCount <= 0) {
     return undefined;
@@ -49,7 +67,7 @@ function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: numbe
 }
 
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
-  const { draftId, worktreePath, githubToken, correlationId } = options;
+  const { draftId, worktreePath, githubToken, correlationId, runId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!db) throw new Error('Database not available');
@@ -136,7 +154,9 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     correlatedLogger.info({ originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount }, 'Granularity enforcement applied - added trace step');
   }
 
-  const finalTrace = await updateTrace(draftId, 'llm', 'completed');
+  const finalTrace = runId
+    ? await updateTraceForRun(draftId, 'llm', 'completed', runId)
+    : await updateTrace(draftId, 'llm', 'completed');
 
   const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
 
@@ -153,11 +173,20 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     chatHistoryJson = '[]';
   }
 
-  await db('task_drafts').where({ draft_id: draftId }).update({
-    plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
-    generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
-    name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+  const completed = await persistGenerationCompletion({
+    database: db,
+    draftId,
+    runId,
+    expectedTrace: JSON.stringify(finalTrace),
+    updates: {
+      plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
+      generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
+      name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+    }
   });
+  if (runId && !completed) {
+    throw new Error(`Planner generation run ${runId} is no longer active`);
+  }
 
   // Emit final completion event so the UI can transition without polling
   const eventPublisher = getEventPublisher();

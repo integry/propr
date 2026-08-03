@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
     buildTestArguments,
+    discoverNativeWorkspaceTests,
     discoverTestFiles,
     discoverWorkspaceTestRoots,
     runTestProcess,
@@ -92,6 +93,7 @@ describe('release test-suite runner', () => {
                 join(root, 'packages', 'shared'),
                 join(root, 'test'),
             ]);
+            assert.deepEqual(discoverNativeWorkspaceTests(root), ['web-client']);
             assert.deepEqual(discoverTestFiles([], root), [
                 join(root, 'apps', 'narrow', 'src', 'otherwise-omitted.test.ts'),
                 join(root, 'apps', 'service', 'src', 'service.spec.ts'),

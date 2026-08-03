@@ -53,6 +53,8 @@ export interface GeneratePlanOptions {
   worktreePath: string;
   githubToken: string;
   correlationId?: string;
+  /** Active planner run used to guard completion against abort/restart races. */
+  runId?: string;
 }
 
 export interface TokenBudgetResult {

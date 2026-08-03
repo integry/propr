@@ -63,20 +63,27 @@ export function buildDraftUpdateTraceSnapshot(trace: ParsedGenerationTrace): Dra
  * Update the generation trace for a draft with step status and data.
  * Returns the updated trace so callers can use it without re-reading from DB.
  */
-export async function updateTrace(
-  draftId: string,
-  step: string,
-  status: StepStatus,
-  data?: Record<string, unknown>
-): Promise<GenerationTrace> {
+interface UpdateTraceOptions {
+  draftId: string;
+  step: string;
+  status: StepStatus;
+  data?: Record<string, unknown>;
+  expectedRunId?: string;
+}
+
+async function updateTraceWithOptions(options: UpdateTraceOptions): Promise<GenerationTrace> {
+  const { draftId, step, status, data, expectedRunId } = options;
   if (!db) return { steps: [] };
 
   const draft = await db('task_drafts')
     .where({ draft_id: draftId })
-    .select('generation_trace')
+    .select('generation_trace', 'status')
     .first();
 
   const trace = parseGenerationTrace(draft?.generation_trace);
+  if (expectedRunId && (draft?.status !== 'generating' || trace.runId !== expectedRunId)) {
+    throw new Error(`Planner generation run ${expectedRunId} is no longer active`);
+  }
 
   const existingStepIndex = trace.steps.findIndex((s) => s.name === step);
   if (existingStepIndex >= 0) {
@@ -85,12 +92,20 @@ export async function updateTrace(
     trace.steps.push({ name: step, status, data });
   }
 
-  await db('task_drafts')
-    .where({ draft_id: draftId })
-    .update({
+  let updateQuery = db('task_drafts').where({ draft_id: draftId });
+  if (expectedRunId) {
+    updateQuery = updateQuery.where({ status: 'generating' });
+    updateQuery = draft.generation_trace == null
+      ? updateQuery.whereNull('generation_trace')
+      : updateQuery.where('generation_trace', draft.generation_trace);
+  }
+  const updatedRows = await updateQuery.update({
       generation_trace: JSON.stringify(trace),
       updated_at: db.fn.now()
-    });
+  });
+  if (expectedRunId && Number(updatedRows) !== 1) {
+    throw new Error(`Planner generation run ${expectedRunId} is no longer active`);
+  }
 
   // Publish WebSocket event for real-time updates (fire-and-forget)
   const eventPublisher = getEventPublisher();
@@ -107,4 +122,22 @@ export async function updateTrace(
   }
 
   return trace;
+}
+
+export function updateTrace(
+  draftId: string,
+  step: string,
+  status: StepStatus,
+  data?: Record<string, unknown>,
+): Promise<GenerationTrace> {
+  return updateTraceWithOptions({ draftId, step, status, data });
+}
+
+export function updateTraceForRun(
+  draftId: string,
+  step: string,
+  status: StepStatus,
+  expectedRunId: string,
+): Promise<GenerationTrace> {
+  return updateTraceWithOptions({ draftId, step, status, expectedRunId });
 }

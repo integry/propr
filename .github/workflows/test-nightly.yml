@@ -248,6 +248,10 @@ jobs:
               console.log(`Created issue #${issue.data.number}`);
             }
 
+      - name: Remove captured test output
+        if: always()
+        run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt" "$GITHUB_WORKSPACE/e2e_output.txt"
+
       - name: Fail Job
         if: steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
         run: exit 1

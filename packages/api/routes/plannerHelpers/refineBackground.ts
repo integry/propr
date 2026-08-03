@@ -20,15 +20,53 @@ export interface BackgroundRefinementOptions {
   runId: string;
 }
 
+export interface BackgroundRefinementDependencies {
+  checkAborted?: () => Promise<boolean>;
+  getRepoContext?: typeof getRefineRepoContext;
+  refine?: typeof refinePlan;
+}
+
+function parseRefinementRunId(raw: unknown): string | undefined {
+  try {
+    const metadata = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const runId = (metadata as { runId?: unknown } | null)?.runId;
+    return typeof runId === 'string' && runId.length > 0 ? runId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function persistActiveRefinement(
+  db: Knex,
+  draftId: string,
+  runId: string,
+  updates: Record<string, unknown>,
+): Promise<boolean> {
+  const draft = await db('task_drafts')
+    .where({ draft_id: draftId })
+    .select('status', 'refinement_result')
+    .first();
+  if (draft?.status !== 'refining' || parseRefinementRunId(draft.refinement_result) !== runId) return false;
+
+  let query = db('task_drafts').where({ draft_id: draftId, status: 'refining' });
+  query = draft.refinement_result == null
+    ? query.whereNull('refinement_result')
+    : query.where('refinement_result', draft.refinement_result);
+  return Number(await query.update({ ...updates, updated_at: db.fn.now() })) === 1;
+}
+
 /**
  * Persists the refined plan, or a failure record the UI can surface, unless
  * the user aborted the refinement in the meantime.
  */
-export async function runBackgroundRefinement(options: BackgroundRefinementOptions): Promise<void> {
+export async function runBackgroundRefinement(
+  options: BackgroundRefinementOptions,
+  dependencies: BackgroundRefinementDependencies = {},
+): Promise<void> {
   const { db, draftId, currentPlan, instruction, generationModel, correlationId, accessToken, runId } = options;
 
   // Helper to check if refinement was aborted
-  const checkAborted = async (): Promise<boolean> => {
+  const checkAborted = dependencies.checkAborted ?? (async (): Promise<boolean> => {
     const redis = new Redis({
       host: process.env.REDIS_HOST || 'redis',
       port: parseInt(process.env.REDIS_PORT || '6379', 10)
@@ -47,7 +85,9 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
         }
       }
     }
-  };
+  });
+  const loadRepoContext = dependencies.getRepoContext ?? getRefineRepoContext;
+  const executeRefinement = dependencies.refine ?? refinePlan;
 
   try {
     // Check if already aborted before starting
@@ -56,13 +96,13 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
       return;
     }
 
-    const repoContext = await getRefineRepoContext(db, draftId, accessToken);
+    const repoContext = await loadRepoContext(db, draftId, accessToken);
 
     // Fetch original generated context from the draft for richer refinement
     const draft = await db('task_drafts').where({ draft_id: draftId }).select('generated_context').first();
     const originalContext = draft?.generated_context as string | undefined;
 
-    const result = await runWithPlannerAbortContext(draftId, runId, () => refinePlan({
+    const result = await runWithPlannerAbortContext(draftId, runId, () => executeRefinement({
       currentPlan,
       instruction,
       worktreePath: repoContext.worktreePath,
@@ -96,12 +136,15 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
 
     console.log(`[refine] Storing refinement result for draft ${draftId}:`, JSON.stringify(refinementMeta));
 
-    await db('task_drafts').where({ draft_id: draftId }).update({
+    const persisted = await persistActiveRefinement(db, draftId, runId, {
       plan_json: JSON.stringify(result.plan),
       refinement_result: JSON.stringify(refinementMeta),
       status: 'review',
-      updated_at: db.fn.now()
     });
+    if (!persisted) {
+      console.log(`[refine] Refinement run ${runId} is no longer active for draft ${draftId}, not saving result`);
+      return;
+    }
     console.log(`[refine] Plan refinement completed for draft ${draftId} (action: ${result.action})`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -118,10 +161,9 @@ export async function runBackgroundRefinement(options: BackgroundRefinementOptio
         model: generationModel,
         timestamp: new Date().toISOString()
       };
-      await db('task_drafts').where({ draft_id: draftId }).update({
+      await persistActiveRefinement(db, draftId, runId, {
         status: 'review',
         refinement_result: JSON.stringify(failureMeta),
-        updated_at: db.fn.now()
       });
     }
   }

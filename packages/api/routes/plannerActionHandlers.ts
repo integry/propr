@@ -118,7 +118,7 @@ export function createGenerateHandler(db: Knex) {
 
       res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
 
-      runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId, runId: correlationId });
+      void runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId, runId: correlationId });
     } catch (error) {
       console.error('Generate plan error:', error);
       if (generationClaimed && !res.headersSent) {

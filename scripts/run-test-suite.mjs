@@ -66,22 +66,33 @@ function expandWorkspacePattern(root, pattern) {
         .filter(directory => existsSync(join(directory, 'package.json')));
 }
 
-export function discoverWorkspaceTestRoots(root = ROOT) {
+function discoverWorkspaces(root) {
     const rootPackage = readPackageJson(root);
     const workspacePatterns = Array.isArray(rootPackage.workspaces)
         ? rootPackage.workspaces
         : rootPackage.workspaces?.packages ?? [];
-    const workspaceDirectories = workspacePatterns.flatMap(pattern => expandWorkspacePattern(root, pattern));
+    return workspacePatterns
+        .flatMap(pattern => expandWorkspacePattern(root, pattern))
+        .map(directory => ({ directory, package: readPackageJson(directory) }));
+}
+
+export function discoverNativeWorkspaceTests(root = ROOT) {
+    return discoverWorkspaces(root)
+        .filter(workspace => usesNativeWorkspaceTestRunner(workspace.package))
+        .map(workspace => relative(root, workspace.directory).replaceAll('\\', '/'))
+        .sort((a, b) => a.localeCompare(b));
+}
+
+export function discoverWorkspaceTestRoots(root = ROOT) {
     const roots = [join(root, 'test')];
 
-    for (const workspaceDirectory of workspaceDirectories) {
-        const workspacePackage = readPackageJson(workspaceDirectory);
+    for (const { directory, package: workspacePackage } of discoverWorkspaces(root)) {
         // Jest/Vitest suites need their package-native environment and are run
-        // explicitly after this runner by test:full:prepared. Node-compatible
-        // workspace files remain exclusively owned here, even when that workspace
-        // also exposes a narrow Node-based test script.
+        // by this runner after Node-compatible files. Node-compatible workspace
+        // files remain exclusively owned here, even when that workspace also
+        // exposes a narrow Node-based test script.
         if (usesNativeWorkspaceTestRunner(workspacePackage)) continue;
-        roots.push(workspaceDirectory);
+        roots.push(directory);
     }
 
     return [...new Set(roots.filter(existsSync))].sort((a, b) => a.localeCompare(b));
@@ -188,7 +199,8 @@ async function connectRedisIsolation() {
 
 export async function runSuite(requestedFiles = process.argv.slice(2)) {
     const testFiles = discoverTestFiles(requestedFiles);
-    if (testFiles.length === 0) {
+    const nativeWorkspaces = requestedFiles.length === 0 ? discoverNativeWorkspaceTests() : [];
+    if (testFiles.length === 0 && nativeWorkspaces.length === 0) {
         throw new Error('No non-live test files matched');
     }
 
@@ -217,6 +229,7 @@ export async function runSuite(requestedFiles = process.argv.slice(2)) {
 
     try {
         redisClient = await connectRedisIsolation();
+        const totalRuns = testFiles.length + nativeWorkspaces.length;
         for (const [index, testFile] of testFiles.entries()) {
             if (interruptedSignal) break;
             const relativeFile = relative(ROOT, testFile).replaceAll('\\', '/');
@@ -225,7 +238,7 @@ export async function runSuite(requestedFiles = process.argv.slice(2)) {
             if (redisClient) await redisClient.flushDb();
 
             const args = buildTestArguments(testFile);
-            console.log(`\n[${index + 1}/${testFiles.length}] ${relativeFile}`);
+            console.log(`\n[${index + 1}/${totalRuns}] ${relativeFile}`);
 
             const result = await runTestProcess(tsx, args, {
                 cwd: ROOT,
@@ -243,6 +256,28 @@ export async function runSuite(requestedFiles = process.argv.slice(2)) {
                 failures.push({ file: relativeFile, ...result });
             }
         }
+        for (const [nativeIndex, workspace] of nativeWorkspaces.entries()) {
+            if (interruptedSignal) break;
+            const index = testFiles.length + nativeIndex;
+            const testDataDirectory = join(suiteDataDirectory, `${String(index + 1).padStart(3, '0')}-${safeName(workspace)}`);
+            mkdirSync(testDataDirectory, { recursive: true });
+            if (redisClient) await redisClient.flushDb();
+            console.log(`\n[${index + 1}/${totalRuns}] ${workspace} (workspace test script)`);
+
+            const result = await runTestProcess(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
+                'test',
+                `--workspace=${workspace}`,
+            ], {
+                cwd: ROOT,
+                env: { ...process.env, NODE_ENV: 'test', DATA_DIR: testDataDirectory },
+                stdio: 'inherit',
+                timeout,
+            }, child => { activeChild = child; });
+            if (interruptedSignal) break;
+            if (result.status !== 0 || result.timedOut || result.error) {
+                failures.push({ file: `${workspace} (workspace test script)`, ...result });
+            }
+        }
     } finally {
         process.removeListener('SIGINT', handleSigint);
         process.removeListener('SIGTERM', handleSigterm);
@@ -255,7 +290,7 @@ export async function runSuite(requestedFiles = process.argv.slice(2)) {
 
     const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     if (failures.length > 0) {
-        console.error(`\n${failures.length}/${testFiles.length} test files failed after ${durationSeconds}s:`);
+        console.error(`\n${failures.length}/${testFiles.length + nativeWorkspaces.length} test runs failed after ${durationSeconds}s:`);
         for (const failure of failures) {
             const reason = failure.timedOut
                 ? `timed out after ${timeout}ms; process group terminated`
@@ -269,7 +304,7 @@ export async function runSuite(requestedFiles = process.argv.slice(2)) {
         return 1;
     }
 
-    console.log(`\nAll ${testFiles.length} non-live test files passed in ${durationSeconds}s.`);
+    console.log(`\nAll ${testFiles.length} non-live test files and ${nativeWorkspaces.length} native workspace suites passed in ${durationSeconds}s.`);
     return 0;
 }
 

@@ -146,6 +146,8 @@ jobs:
               - 'packages/shared/**'
             docs:
               - 'docs/**'
+            cli:
+              - 'packages/cli/**'
             api:
               - 'packages/api/**'
               - 'packages/core/**'
@@ -352,6 +354,21 @@ jobs:
               if [ $CORE_PKG_FAILED -eq 0 ]; then
                 echo "✅ Core Package Lint passed" >> build_log.txt
               fi
+            fi
+          fi
+
+          # --- CLI ---
+          if [ "${{ steps.filter.outputs.cli }}" == 'true' ]; then
+            echo -e "\n--- CLI: Lint ---" >> build_log.txt
+            CLI_FAILED=0
+            CLI_LINT_OUTPUT=$(npm run lint -w @propr/cli -- --max-warnings 0 2>&1) || {
+              echo "❌ CLI Lint FAILED" >> build_log.txt
+              echo "$CLI_LINT_OUTPUT" >> build_log.txt
+              CLI_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $CLI_FAILED -eq 0 ]; then
+              echo "✅ CLI Lint passed" >> build_log.txt
             fi
           fi
 
