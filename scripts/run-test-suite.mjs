@@ -13,6 +13,7 @@ const TERMINATION_GRACE_MS = 2_000;
 const TEST_FILE_PATTERN = /\.test\.(?:[cm]?[jt]sx?)$/;
 const EXCLUDED_TESTS = new Set(['e2e.test.ts']);
 const IGNORED_DIRECTORIES = new Set(['.git', 'coverage', 'dist', 'node_modules']);
+const DELEGATED_TEST_WORKSPACES = new Set(['propr-ui']);
 
 function isLiveTest(entry) {
     const normalized = entry.replaceAll('\\', '/');
@@ -26,13 +27,9 @@ export function selectTestFiles(entries) {
         .sort((a, b) => a.localeCompare(b));
 }
 
-export function requiresModuleMocks(contents) {
-    return contents.includes('mock.module(');
-}
-
-export function buildTestArguments(testFile, usesModuleMocks) {
+export function buildTestArguments(testFile) {
     return [
-        ...(usesModuleMocks ? ['--experimental-test-module-mocks'] : []),
+        '--experimental-test-module-mocks',
         '--test',
         testFile,
     ];
@@ -74,10 +71,9 @@ export function discoverWorkspaceTestRoots(root = ROOT) {
 
     for (const workspaceDirectory of workspaceDirectories) {
         const workspacePackage = readPackageJson(workspaceDirectory);
-        // Workspaces with their own test command (for example the Vitest UI)
-        // are run by `npm test --workspaces --if-present`. The Node suite owns
-        // every workspace that does not declare a native runner.
-        if (workspacePackage.scripts?.test) continue;
+        // Only explicitly delegated native runners are excluded. The Node suite
+        // owns every other workspace even if a narrow package script is added.
+        if (DELEGATED_TEST_WORKSPACES.has(workspacePackage.name)) continue;
         roots.push(workspaceDirectory);
     }
 
@@ -156,11 +152,13 @@ function runTestProcess(command, args, options, onChild) {
     });
 }
 
-async function connectRedisIsolation(requestedFiles) {
+export function shouldFlushRedis(setting) {
+    return setting?.trim().toLowerCase() === 'flush';
+}
+
+async function connectRedisIsolation() {
     const setting = process.env.PROPR_TEST_REDIS_ISOLATION?.toLowerCase();
-    if (setting === 'off' || setting === 'false' || (requestedFiles.length > 0 && setting !== 'flush')) {
-        return null;
-    }
+    if (!shouldFlushRedis(setting)) return null;
     const client = createClient({
         socket: {
             host: process.env.REDIS_HOST || '127.0.0.1',
@@ -203,7 +201,7 @@ export async function runSuite(requestedFiles = process.argv.slice(2)) {
     process.once('SIGTERM', handleSigterm);
 
     try {
-        redisClient = await connectRedisIsolation(requestedFiles);
+        redisClient = await connectRedisIsolation();
         for (const [index, testFile] of testFiles.entries()) {
             if (interruptedSignal) break;
             const relativeFile = relative(ROOT, testFile).replaceAll('\\', '/');
@@ -211,9 +209,8 @@ export async function runSuite(requestedFiles = process.argv.slice(2)) {
             mkdirSync(testDataDirectory, { recursive: true });
             if (redisClient) await redisClient.flushDb();
 
-            const usesModuleMocks = requiresModuleMocks(readFileSync(testFile, 'utf8'));
-            const args = buildTestArguments(testFile, usesModuleMocks);
-            console.log(`\n[${index + 1}/${testFiles.length}] ${relativeFile}${usesModuleMocks ? ' (module mocks)' : ''}`);
+            const args = buildTestArguments(testFile);
+            console.log(`\n[${index + 1}/${testFiles.length}] ${relativeFile}`);
 
             const result = await runTestProcess(tsx, args, {
                 cwd: ROOT,

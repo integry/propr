@@ -7,6 +7,15 @@ function isCanonicalSemVer(version) {
   return canonical === version;
 }
 
+const RELEASE_IMAGE_NAMES = ["app", "ui", "docs", "agent"];
+
+function getImageBasename(image) {
+  const lastSlash = image.lastIndexOf("/");
+  const lastColon = image.lastIndexOf(":");
+  if (lastColon <= lastSlash) return "";
+  return image.slice(lastSlash + 1, lastColon);
+}
+
 export function validateRelease({
   tag,
   expectedVersion,
@@ -24,6 +33,14 @@ export function validateRelease({
   const version = root.version;
   if (!isCanonicalSemVer(version)) {
     errors.push(`Root package version is not valid release semver: ${version}`);
+  } else {
+    const parsedVersion = semver.parse(version);
+    if (parsedVersion?.prerelease.length) {
+      errors.push(`Release version must not contain prerelease identifiers: ${version}`);
+    }
+    if (parsedVersion?.build.length) {
+      errors.push(`Release version must not contain build metadata: ${version}`);
+    }
   }
 
   for (const pkg of packages.filter((candidate) => candidate.releaseVersioned)) {
@@ -41,10 +58,12 @@ export function validateRelease({
     errors.push(`Launcher manifest version ${launcherManifest.version} does not match propr ${version}`);
   }
 
-  for (const name of ["app", "ui", "docs", "agent"]) {
+  for (const name of RELEASE_IMAGE_NAMES) {
     const image = launcherManifest.images?.[name];
     if (typeof image !== "string" || !image.endsWith(`:${version}`)) {
       errors.push(`Launcher ${name} image must be pinned to :${version}`);
+    } else if (getImageBasename(image) !== name) {
+      errors.push(`Launcher ${name} image must use the ${name} image repository`);
     }
   }
 

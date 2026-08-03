@@ -140,22 +140,55 @@ function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
   });
 }
 
-function joinOpenCodePartsText(parts: Array<{ id?: string; type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
+interface OpenCodeTextPart {
+  id?: string;
+  type?: string;
+  text?: string;
+  delta?: string;
+  content?: unknown;
+}
+
+interface OpenCodeTextCandidate {
+  text: string;
+  completeness: number;
+}
+
+function buildOpenCodeTextCandidate(part: OpenCodeTextPart): OpenCodeTextCandidate | null {
+  const partType = part.type?.toLowerCase();
+  if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return null;
+  const text = joinOpenCodeTextValues([part.text, part.delta, part.content], false);
+  if (!text) return null;
+  const hasFinalText = typeof part.text === 'string' || typeof part.content === 'string';
+  const isDelta = partType === 'delta' || partType === 'text_delta';
+  return {
+    text,
+    completeness: (hasFinalText ? 1_000_000 : 0) + (isDelta ? 0 : 100_000) + text.length,
+  };
+}
+
+function joinOpenCodePartsText(parts: OpenCodeTextPart[], trim = true): string {
   const seenReferences = new Set<object>();
-  const seenIds = new Set<string>();
-  const textParts: string[] = [];
+  const candidateIndexById = new Map<string, number>();
+  const candidates: OpenCodeTextCandidate[] = [];
   for (const part of parts) {
-    if (seenReferences.has(part) || (part.id && seenIds.has(part.id))) continue;
+    if (seenReferences.has(part)) continue;
     seenReferences.add(part);
-    if (part.id) seenIds.add(part.id);
-    const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) continue;
     // A single part can expose the same payload through text/content/delta.
-    // Deduplicate those representations locally, while preserving identical
-    // text from distinct parts (for example repeated code lines).
-    const partText = joinOpenCodeTextValues([part.text, part.delta, part.content], false);
-    if (partText) textParts.push(partText);
+    // Same-ID envelope representations select the richest payload, while
+    // identical text from distinct part IDs remains meaningful and is kept.
+    const candidate = buildOpenCodeTextCandidate(part);
+    if (!candidate) continue;
+    const existingIndex = part.id ? candidateIndexById.get(part.id) : undefined;
+    if (existingIndex !== undefined) {
+      if (candidate.completeness > candidates[existingIndex].completeness) {
+        candidates[existingIndex] = candidate;
+      }
+      continue;
+    }
+    if (part.id) candidateIndexById.set(part.id, candidates.length);
+    candidates.push(candidate);
   }
+  const textParts = candidates.map(candidate => candidate.text);
   if (!trim) return textParts.join('');
 
   return textParts.reduce((combined, value) => {

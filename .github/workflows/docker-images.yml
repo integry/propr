@@ -41,6 +41,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout repository
@@ -57,11 +59,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify manual release tag points to this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: v${{ inputs.expected_version }}
+        run: |
+          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            echo "Manual release requires an existing $RELEASE_TAG tag" >&2
+            exit 1
+          fi
+          TAG_COMMIT="$(git rev-list -n 1 "$RELEASE_TAG")"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "$RELEASE_TAG points to $TAG_COMMIT, not checked-out commit $HEAD_COMMIT" >&2
+            exit 1
+          fi
+
       - name: Verify release metadata
+        id: version
         env:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.expected_version) }}
           EXPECTED_VERSION: ${{ inputs.expected_version }}
-        run: npm run release:verify
+        run: |
+          npm run release:verify
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Run lint and typecheck gates
         run: |
@@ -92,14 +113,12 @@ jobs:
         if: always()
         run: ./scripts/ci-redis.sh stop
 
-  publish-cli:
-    name: Publish CLI with provenance
-    if: github.ref_type == 'tag'
+  prepare-cli:
+    name: Build and Smoke Test CLI
     needs: validate-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Checkout repository
@@ -109,11 +128,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version-file: '.nvmrc'
-          registry-url: 'https://registry.npmjs.org'
-          package-manager-cache: false
-
-      - name: Install npm with trusted-publishing support
-        run: npm install --global 'npm@>=11.5.1 <12'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
@@ -126,11 +141,7 @@ jobs:
         run: |
           TARBALL="$(npm pack --pack-destination "$RUNNER_TEMP" ./dist-publish/propr-cli | tail -1)"
           TARBALL="$RUNNER_TEMP/$TARBALL"
-          VERSION="$(node -p "require('./dist-publish/propr-cli/package.json').version")"
-          INTEGRITY="$(node -e "const fs=require('fs');const crypto=require('crypto');process.stdout.write('sha512-'+crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$TARBALL")"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "integrity=$INTEGRITY" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test packed CLI
         run: |
@@ -141,36 +152,13 @@ jobs:
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v6
         with:
-          name: propr-cli-${{ github.ref_name }}
+          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.package.outputs.tarball }}
           if-no-files-found: error
 
-      - name: Publish CLI to npm if needed
-        env:
-          LOCAL_INTEGRITY: ${{ steps.package.outputs.integrity }}
-          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
-          TARBALL: ${{ steps.package.outputs.tarball }}
-        run: |
-          LOOKUP_ERROR="$RUNNER_TEMP/npm-view-error.txt"
-          if PUBLISHED_INTEGRITY="$(npm view "@propr/cli@$PACKAGE_VERSION" dist.integrity 2>"$LOOKUP_ERROR")"; then
-            if [ "$PUBLISHED_INTEGRITY" != "$LOCAL_INTEGRITY" ]; then
-              echo "@propr/cli@$PACKAGE_VERSION already exists with different package contents" >&2
-              exit 1
-            fi
-            echo "@propr/cli@$PACKAGE_VERSION is already published with the matching artifact"
-          elif grep -Eq 'E404|404 Not Found' "$LOOKUP_ERROR"; then
-            npm publish "$TARBALL" --access public
-          else
-            cat "$LOOKUP_ERROR" >&2
-            exit 1
-          fi
-
   build-smoke-and-push:
     name: Build, Smoke Test, Push
-    needs: [validate-release, publish-cli]
-    if: >-
-      ${{ always() && needs.validate-release.result == 'success' &&
-          (github.ref_type != 'tag' || needs.publish-cli.result == 'success') }}
+    needs: [validate-release, prepare-cli]
     runs-on: [self-hosted, linux, x64, propr]
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
@@ -189,11 +177,26 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'npm'
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Check toolchain
         run: |
           node --version
           npm --version
           docker version
+
+      - name: Reverify manual release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: v${{ inputs.expected_version }}
+        run: |
+          TAG_COMMIT="$(git rev-list -n 1 "$RELEASE_TAG" 2>/dev/null || true)"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [ -z "$TAG_COMMIT" ] || [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "$RELEASE_TAG must still exist and point to checked-out commit $HEAD_COMMIT" >&2
+            exit 1
+          fi
 
       - name: Verify release version
         id: version
@@ -213,6 +216,14 @@ jobs:
           APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ steps.version.outputs.version }}
         run: npm run images:smoke
 
+      - name: Build Docker Hub-tagged images
+        run: ./scripts/build-images.sh --dockerhub
+
+      - name: Smoke test Docker Hub app image
+        env:
+          APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
+        run: npm run images:smoke
+
       - name: Login to GHCR
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -220,9 +231,6 @@ jobs:
         run: |
           TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
           echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Push GHCR images
-        run: ./scripts/build-images.sh --push --ghcr
 
       - name: Login to Docker Hub
         env:
@@ -236,16 +244,11 @@ jobs:
 
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
-      - name: Build Docker Hub-tagged images
-        run: ./scripts/build-images.sh --dockerhub
+      - name: Push smoke-tested GHCR images
+        run: ./scripts/build-images.sh --push-only --ghcr
 
-      - name: Smoke test Docker Hub app image
-        env:
-          APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
-        run: npm run images:smoke
-
-      - name: Push Docker Hub images
-        run: ./scripts/build-images.sh --push --dockerhub
+      - name: Push smoke-tested Docker Hub images
+        run: ./scripts/build-images.sh --push-only --dockerhub
 
       - name: Sync Docker Hub metadata
         continue-on-error: true
@@ -253,6 +256,73 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: npm run images:metadata
+
+      - name: Show image publication reconciliation guidance
+        if: failure()
+        run: |
+          echo "Image publication did not finish. Re-run this workflow for the same immutable release tag; validated images are rebuilt and existing tags are reconciled idempotently." >&2
+          echo "### Release reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same immutable release tag. Image tags are rebuilt from that tag and safely re-pushed before npm publication can begin." >> "$GITHUB_STEP_SUMMARY"
+
+  publish-cli:
+    name: Publish CLI with provenance
+    if: github.ref_type == 'tag'
+    needs: [validate-release, prepare-cli, build-smoke-and-push]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install npm with trusted-publishing support
+        run: npm install --global 'npm@>=11.5.1 <12'
+
+      - name: Download smoke-tested CLI artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts
+
+      - name: Publish CLI to npm if needed
+        env:
+          PACKAGE_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          TARBALL="$(find release-artifacts -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          if [ -z "$TARBALL" ]; then
+            echo "Smoke-tested CLI tarball is missing" >&2
+            exit 1
+          fi
+          LOCAL_INTEGRITY="$(node -e "const fs=require('fs');const crypto=require('crypto');process.stdout.write('sha512-'+crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$TARBALL")"
+          LOOKUP_ERROR="$RUNNER_TEMP/npm-view-error.txt"
+          if PUBLISHED_INTEGRITY="$(npm view "@propr/cli@$PACKAGE_VERSION" dist.integrity 2>"$LOOKUP_ERROR")"; then
+            if [ "$PUBLISHED_INTEGRITY" != "$LOCAL_INTEGRITY" ]; then
+              echo "@propr/cli@$PACKAGE_VERSION already exists with different package contents" >&2
+              exit 1
+            fi
+            echo "@propr/cli@$PACKAGE_VERSION is already published with the matching artifact"
+          elif grep -Eq 'E404|404 Not Found' "$LOOKUP_ERROR"; then
+            npm publish "$TARBALL" --access public
+          else
+            cat "$LOOKUP_ERROR" >&2
+            exit 1
+          fi
+
+      - name: Show CLI publication reconciliation guidance
+        if: failure()
+        run: |
+          echo "CLI publication did not finish. Re-run this workflow for the same tag; npm integrity is checked before any retry publishes." >&2
+          echo "### CLI reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same tag. The npm step accepts an existing package only when its integrity matches the smoke-tested artifact." >> "$GITHUB_STEP_SUMMARY"
 
   publish-github-release:
     name: Publish GitHub release
@@ -266,7 +336,7 @@ jobs:
       - name: Download CLI artifact
         uses: actions/download-artifact@v6
         with:
-          name: propr-cli-${{ github.ref_name }}
+          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-artifacts
 
       - name: Create or update GitHub release

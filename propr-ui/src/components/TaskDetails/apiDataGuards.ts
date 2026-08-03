@@ -6,6 +6,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isOptionalString = (value: unknown): value is string | undefined =>
   value === undefined || typeof value === 'string';
 
+const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
 export function isLogFilesData(value: unknown): value is LogFilesData {
   if (!isRecord(value)) return false;
   if (!isOptionalString(value.sessionId) || !isOptionalString(value.error)) return false;
@@ -22,10 +25,20 @@ export function isLogFilesData(value: unknown): value is LogFilesData {
       && typeof file.type === 'string'
     )) return false;
   }
-  return true;
+  const hasLogFiles = Array.isArray(value.logFiles);
+  const hasError = typeof value.error === 'string' && value.error.trim().length > 0;
+  const hasLegacyFiles = typeof value.sessionId === 'string'
+    && value.sessionId.trim().length > 0
+    && isRecord(value.files);
+  return hasLogFiles || hasError || hasLegacyFiles;
 }
 
 export function isAnalysisData(value: unknown): value is AnalysisData {
   if (!isRecord(value)) return false;
-  return ['report', 'analysis', 'content', 'error'].every(key => isOptionalString(value[key]));
+  const recognizedKeys = ['report', 'analysis', 'content', 'error'];
+  if (!Object.keys(value).every(key => recognizedKeys.includes(key))) return false;
+  if (!recognizedKeys.every(key => isOptionalString(value[key]))) return false;
+  return recognizedKeys.some(key => hasOwn(value, key)
+    && typeof value[key] === 'string'
+    && value[key].trim().length > 0);
 }

@@ -1,4 +1,4 @@
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
 

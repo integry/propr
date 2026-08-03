@@ -37,7 +37,7 @@ const mockNavigate = vi.fn();
 let mockLocationState: Record<string, unknown> | undefined;
 const baseDraft: PlannerDraft = { draft_id: 'draft-1', repository: 'integry/propr', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
 const createdDraft: PlannerDraft = { draft_id: 'draft-2', repository: 'integry/other', initial_prompt: 'Test prompt', status: 'draft', attachments: [], created_at: '2026-05-06T00:00:00Z' };
-const fullContextConfig = { baseBranch: 'main', granularity: 'large', contextLevel: 75, compress: true, contextRepositories: [{ repository: 'integry/shared', branch: 'release' }], generationModel: 'gpt-5.4', manualFiles: ['src/keep.ts'], excludedFiles: ['src/skip.ts'] };
+const fullContextConfig = { baseBranch: 'main', granularity: 'granular', contextLevel: 75, compress: true, contextRepositories: [{ repository: 'integry/shared', branch: 'release' }], generationModel: 'gpt-5.4', manualFiles: ['src/keep.ts'], excludedFiles: ['src/skip.ts'] };
 const renderSetupWizard = (draftOverrides: Record<string, unknown> = {}) => render(<MemoryRouter><SetupWizard draft={{ ...baseDraft, ...draftOverrides }} onGenerateComplete={vi.fn()} /></MemoryRouter>);
 const triggerRepoChange = (repo: string, selection?: Record<string, unknown> & { baseBranch?: string }) => (lastLeftPaneProps?.onRepoChange as ((nextRepo: string, nextSelection?: Record<string, unknown> & { baseBranch?: string }) => Promise<void>))(repo, selection);
 const setGeneratingState = (trace = generationTrace) => {

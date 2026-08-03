@@ -5,7 +5,7 @@ import type {
   RepoConfigResponse,
   SystemSettings,
 } from './proprTypes';
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await apiFetch(`${API_BASE_URL}${path}`, { credentials: 'include' });

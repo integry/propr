@@ -57,7 +57,7 @@ describe("release validation", () => {
     assert.deepEqual(validateRelease(input), []);
   });
 
-  it("accepts valid SemVer build metadata", () => {
+  it("rejects SemVer build metadata because it cannot be used in Docker tags", () => {
     const input = validInput();
     input.tag = "v1.2.3+build.1";
     input.expectedVersion = "1.2.3+build.1";
@@ -69,7 +69,29 @@ describe("release validation", () => {
     }
     input.changelog = "# Changelog\n\n## [1.2.3+build.1] - 2026-08-02\n";
 
-    assert.deepEqual(validateRelease(input), []);
+    assert.ok(validateRelease(input).some((error) => error.includes("build metadata")));
+  });
+
+  it("rejects prereleases so npm and image latest tags cannot be advanced accidentally", () => {
+    const input = validInput();
+    input.tag = "v1.2.3-rc.1";
+    input.expectedVersion = "1.2.3-rc.1";
+    for (const pkg of input.packages) pkg.version = "1.2.3-rc.1";
+    input.packages[2].sharedDependency = "^1.2.3-rc.1";
+    input.launcherManifest.version = "1.2.3-rc.1";
+    for (const name of ["app", "ui", "docs", "agent"]) {
+      input.launcherManifest.images[name] = `propr/${name}:1.2.3-rc.1`;
+    }
+    input.changelog = "# Changelog\n\n## [1.2.3-rc.1] - 2026-08-02\n";
+
+    assert.ok(validateRelease(input).some((error) => error.includes("prerelease identifiers")));
+  });
+
+  it("rejects a launcher image whose repository does not match its role", () => {
+    const input = validInput();
+    input.launcherManifest.images.app = "propr/agent:1.2.3";
+
+    assert.ok(validateRelease(input).some((error) => error.includes("app image repository")));
   });
 
   for (const malformed of [

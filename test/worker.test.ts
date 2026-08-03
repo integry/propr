@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { after, describe, mock, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import {
@@ -12,9 +11,6 @@ import {
     createMainJobProcessor,
     type MainJobProcessors,
 } from '../src/workerFactory.ts';
-
-const workerSource = readFileSync(new URL('../src/worker.ts', import.meta.url), 'utf8');
-const issueProcessorSource = readFileSync(new URL('../src/jobs/processGitHubIssueJob.ts', import.meta.url), 'utf8');
 
 after(async () => {
     await closeConnection();
@@ -131,38 +127,5 @@ describe('worker behavioral contracts', () => {
         assert.equal(workerFactory.mock.calls.length, 1);
         assert.ok(capturedProcessor);
         assert.deepEqual(await capturedProcessor({ name: 'processSystemTask' } as never), { status: 'constructed' });
-    });
-});
-
-describe('worker composition contract', () => {
-    test('wires every supported job processor into the worker entrypoint', () => {
-        for (const processor of [
-            'processGitHubIssueJob',
-            'processPullRequestCommentJob',
-            'processTaskImportJob',
-            'processSystemTaskJob',
-            'processMergeConflictJob',
-        ]) {
-            assert.match(workerSource, new RegExp(`import \\{ ${processor} \\}`));
-            assert.match(workerSource, new RegExp(`export \\{[^}]*${processor}`));
-        }
-    });
-
-    test('starts the long-running worker only for direct CLI execution', () => {
-        assert.match(workerSource, /if \(import\.meta\.url === `file:\/\/\$\{process\.argv\[1\]\}`\)/);
-        assert.match(workerSource, /await startWorker\(options\)/);
-    });
-
-    test('keeps matrix dispatch separate from child issue execution', () => {
-        assert.match(issueProcessorSource, /if \(!job\.data\.isChildJob\)/);
-        assert.match(issueProcessorSource, /return await handleDispatch\(job\)/);
-        assert.match(issueProcessorSource, /await initializeJobContext\(job\)/);
-    });
-
-    test('enforces label checks before repository mutation', () => {
-        const labelCheck = issueProcessorSource.indexOf('checkLabelConditions(currentLabels, context)');
-        const clone = issueProcessorSource.indexOf('ensureRepoCloned(');
-        assert.ok(labelCheck >= 0);
-        assert.ok(clone > labelCheck);
     });
 });

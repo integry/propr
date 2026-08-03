@@ -6,12 +6,17 @@ import type { WorkerStateManager } from '@propr/core';
 import { db, TaskStates } from '@propr/core';
 import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle } from './prTaskTitleHelpers.js';
 
-const MAX_AGENT_FAILURE_DETAIL_LENGTH = 1000;
 const RESTRICTED_FAILURE_DETAIL = 'Agent execution failed; detailed output is available in restricted logs.';
+const SAFE_AGENT_FAILURE_CLASSES: Array<{ pattern: RegExp; summary: string }> = [
+    { pattern: /\b(timeout|timed out|deadline)\b/i, summary: 'Agent execution timed out.' },
+    { pattern: /\b(rate limit|quota|too many requests)\b/i, summary: 'Agent service rate limit reached.' },
+    { pattern: /\b(auth(?:entication|orization)?|unauthorized|forbidden|credential)\b/i, summary: 'Agent authentication failed.' },
+    { pattern: /\b(cancelled|canceled|aborted)\b/i, summary: 'Agent execution was cancelled.' },
+];
 
 /**
- * Returns a bounded, user-safe failure summary. Full agent logs and raw output are
- * persisted separately and must not be copied into task history or comments.
+ * Returns a classified, user-safe failure summary. Full agent errors, logs, and
+ * raw output are persisted separately and must not be copied into task history.
  */
 export function getAgentFailureDetail(result: {
     error?: string | null;
@@ -22,10 +27,8 @@ export function getAgentFailureDetail(result: {
     if (!detail) {
         return result.logs || result.rawOutput ? RESTRICTED_FAILURE_DETAIL : 'Unknown error';
     }
-    if (detail.length <= MAX_AGENT_FAILURE_DETAIL_LENGTH) return detail;
-
-    const suffix = '… [truncated]';
-    return `${detail.slice(0, MAX_AGENT_FAILURE_DETAIL_LENGTH - suffix.length)}${suffix}`;
+    return SAFE_AGENT_FAILURE_CLASSES.find(({ pattern }) => pattern.test(detail))?.summary
+        ?? RESTRICTED_FAILURE_DETAIL;
 }
 
 /**

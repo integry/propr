@@ -4,7 +4,7 @@ set -euo pipefail
 
 ACTION="${1:-}"
 IMAGE="${CI_REDIS_IMAGE:-redis:7-alpine}"
-RUN_KEY="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-job}"
+RUN_KEY="${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}"
 SAFE_RUN_KEY="$(printf '%s' "$RUN_KEY" | tr -c 'A-Za-z0-9_.-' '-')"
 CONTAINER_NAME="propr-ci-redis-${SAFE_RUN_KEY}"
 STATE_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
@@ -47,9 +47,8 @@ stop_redis() {
 start_redis() {
   mkdir -p "$STATE_DIR"
 
-  # A cancelled self-hosted job can leave its container behind. The name is
-  # scoped to the exact run, attempt, and job, so this never touches another
-  # run's Redis instance.
+  # The attempt-independent name lets a rerun remove a container left by a
+  # cancelled attempt without touching another run or job's Redis instance.
   stop_redis
 
   docker run \
@@ -95,6 +94,7 @@ start_redis() {
   write_github_env REDIS_HOST 127.0.0.1
   write_github_env REDIS_PORT "$port"
   write_github_env REDIS_CONTAINER_NAME "$CONTAINER_NAME"
+  write_github_env PROPR_TEST_REDIS_ISOLATION flush
   echo "Redis is healthy on 127.0.0.1:${port} ($CONTAINER_NAME)"
 }
 

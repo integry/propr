@@ -16,16 +16,16 @@ after(async () => {
 });
 
 describe('getAgentFailureDetail', () => {
-    test('bounds explicit error details', () => {
-        const detail = getAgentFailureDetail({ error: `failure: ${'x'.repeat(2000)}` });
+    test('classifies known failures without returning raw error text', () => {
+        const detail = getAgentFailureDetail({ error: 'request timed out while reading /repo/private.ts' });
 
-        assert.strictEqual(detail.length, 1000);
-        assert.ok(detail.endsWith('… [truncated]'));
+        assert.strictEqual(detail, 'Agent execution timed out.');
+        assert.ok(!detail.includes('/repo/private.ts'));
     });
 
-    test('does not expose raw agent logs or output', () => {
-        const secret = 'repository source and secret token';
-        const detail = getAgentFailureDetail({ logs: secret, rawOutput: secret });
+    test('does not expose explicit errors, raw agent logs, or output', () => {
+        const secret = 'repository source and secret token ghp_not-a-real-token';
+        const detail = getAgentFailureDetail({ error: secret, logs: secret, rawOutput: secret });
 
         assert.strictEqual(detail, 'Agent execution failed; detailed output is available in restricted logs.');
         assert.ok(!detail.includes(secret));

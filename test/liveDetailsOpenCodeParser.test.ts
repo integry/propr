@@ -241,6 +241,19 @@ describe('OpenCode live details parsing', () => {
         ]);
     });
 
+    test('prefers a finalized same-ID OpenCode part over an earlier delta', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'part_delta',
+            part: { id: 'part-1', type: 'text_delta', delta: 'Complete ' },
+            parts: [{ id: 'part-1', type: 'text', text: 'Complete answer' }],
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'Complete answer', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
     test('parses actual OpenCode tool and token events from Redis output', () => {
         const result = parseRedisOutput([opencodeToolLine, opencodeStepFinishLine]);
 

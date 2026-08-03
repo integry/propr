@@ -11,10 +11,12 @@ concurrency:
 jobs:
   validate:
     name: Validate Changes
-    runs-on: [self-hosted, linux, x64, propr]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
+    outputs:
+      build_result: ${{ steps.build.outcome }}
 
     steps:
       - name: Checkout repository
@@ -354,49 +356,62 @@ jobs:
 
           exit $EXIT_CODE
 
-      - name: Post Failure Comment
+      - name: Upload failure log
         if: steps.build.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          LOG_FILE=build_log.txt
-          if [ ! -f "$LOG_FILE" ]; then
-            printf '%s\n' 'Log file missing.' > "$LOG_FILE"
-          fi
-
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          log = Path("build_log.txt").read_text()
-          if len(log) > 60000:
-              log = log[:60000] + "\n\n...(truncated)"
-
-          run_url = os.environ["RUN_URL"]
-          body = "\n".join([
-              "### Checks Failed",
-              "Linting or build errors were detected.",
-              "",
-              "<details>",
-              "<summary>View Logs</summary>",
-              "",
-              "~~~text",
-              log,
-              "~~~",
-              "</details>",
-              "",
-              f"**[View Workflow]({run_url})**",
-          ])
-
-          Path("failure_comment.md").write_text(body)
-          PY
-          gh api \
-            --method POST \
-            repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
-            -f body="$(cat failure_comment.md)"
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-check-output-${{ github.run_id }}
+          path: build_log.txt
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Fail Job
         if: steps.build.outcome == 'failure'
         run: exit 1
+
+  comment:
+    name: Report Build Failure
+    needs: validate
+    if: >-
+      ${{ always() && needs.validate.outputs.build_result == 'failure' &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Download failure log
+        uses: actions/download-artifact@v6
+        with:
+          name: build-check-output-${{ github.run_id }}
+
+      - name: Post failure comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let log = 'Log file missing.';
+            try { log = fs.readFileSync('build_log.txt', 'utf8'); } catch {}
+            if (log.length > 60000) log = log.substring(0, 60000) + '\n\n...(truncated)';
+            const body = [
+              '### Checks Failed',
+              'Linting or build errors were detected.',
+              '',
+              '<details>',
+              '<summary>View Logs</summary>',
+              '',
+              '~~~text',
+              log,
+              '~~~',
+              '</details>',
+              '',
+              `**[View Workflow](${runUrl})**`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

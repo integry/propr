@@ -16,4 +16,29 @@ describe('draft context config parsing', () => {
     expect(parseDraftContextConfig('[{"baseBranch":"release"}]')).toBeUndefined();
     expect(parseDraftContextConfig('{broken')).toBeUndefined();
   });
+
+  it.each([
+    [{ baseBranch: 42 }],
+    [{ granularity: 'large' }],
+    [{ manualFiles: 'src/index.ts' }],
+    [{ excludedFiles: [42] }],
+    [{ contextRepositories: [{ repository: 42, branch: 'main' }] }],
+    [{ contextRepositories: [{ repository: 'integry/shared', branch: 42 }] }],
+  ])('rejects malformed typed draft branches %#', (value) => {
+    expect(parseDraftContextConfig(value)).toBeUndefined();
+    expect(parseDraftContextConfig(JSON.stringify(value))).toBeUndefined();
+  });
+
+  it('keeps validated legacy fields and discards unrelated properties', () => {
+    expect(parseDraftContextConfig(JSON.stringify({
+      baseBranch: 'release',
+      manualFiles: ['src/index.ts'],
+      contextRepositories: [{ repository: 'integry/shared', branch: 'main' }],
+      unrelated: { trusted: false },
+    }))).toEqual({
+      baseBranch: 'release',
+      manualFiles: ['src/index.ts'],
+      contextRepositories: [{ repository: 'integry/shared', branch: 'main' }],
+    });
+  });
 });

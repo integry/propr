@@ -4,6 +4,7 @@
 # Usage:
 #   scripts/build-images.sh                    # build all images, no push
 #   scripts/build-images.sh --push             # build + push to Docker Hub + GHCR
+#   scripts/build-images.sh --push-only        # push images already built and smoke-tested
 #   scripts/build-images.sh --push --dockerhub # push to Docker Hub only
 #   scripts/build-images.sh --push --ghcr      # push to GHCR only
 #   scripts/build-images.sh --platform linux/amd64,linux/arm64 --push  # multi-arch (app/ui/docs only)
@@ -88,6 +89,7 @@ AGENT_BUNDLE_TAG=""
 
 # --- Arg parsing --------------------------------------------------------------
 PUSH=false
+PUSH_ONLY=false
 PUSH_DH=true
 PUSH_GHCR=true
 PLATFORM=""   # empty = native platform
@@ -96,6 +98,7 @@ ONLY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --push) PUSH=true; shift ;;
+    --push-only) PUSH=true; PUSH_ONLY=true; shift ;;
     --dockerhub) PUSH_GHCR=false; shift ;;
     --ghcr) PUSH_DH=false; shift ;;
     --platform) PLATFORM="$2"; shift 2 ;;
@@ -272,6 +275,18 @@ build_image() {
   echo "  dockerfile: $dockerfile"
   echo "  context:    $context"
   for t in $(tags_for "$name"); do echo "  tag:        $t"; done
+
+  if $PUSH_ONLY; then
+    for t in $(tags_for "$name"); do
+      if ! docker image inspect "$t" >/dev/null 2>&1; then
+        echo "Refusing to publish missing local image $t; build and smoke-test it first" >&2
+        exit 1
+      fi
+      echo "  pushing $t"
+      docker push "$t"
+    done
+    return
+  fi
 
   if $PUSH && [[ -n "$PLATFORM" && "$PLATFORM" == *,* ]]; then
     # Multi-arch requires buildx with --push (can't load multi-arch to local daemon).

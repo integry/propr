@@ -64,6 +64,34 @@ const appendUniqueEvents = (
   return uniqueNewEvents.length > 0 ? [...currentEvents, ...uniqueNewEvents] : currentEvents;
 };
 
+export type IncrementalTaskLiveUpdatePayload = Pick<TaskLiveUpdatePayload, 'taskId'>
+  & Partial<Omit<TaskLiveUpdatePayload, 'taskId'>>;
+
+const hasUpdateField = (
+  payload: IncrementalTaskLiveUpdatePayload,
+  field: keyof TaskLiveUpdatePayload
+): boolean =>
+  Object.prototype.hasOwnProperty.call(payload, field);
+
+export const mergeIncrementalLiveDetails = (
+  previous: LiveDetails,
+  payload: IncrementalTaskLiveUpdatePayload
+): LiveDetails => {
+  const newEvents: LiveEvent[] = payload.events || [];
+  return {
+    events: appendUniqueEvents(previous.events, newEvents),
+    todos: hasUpdateField(payload, 'todos')
+      ? normalizeLiveTodos(payload.todos ?? [])
+      : previous.todos,
+    currentTask: hasUpdateField(payload, 'currentTask')
+      ? payload.currentTask ?? null
+      : previous.currentTask,
+    tokenUsage: hasUpdateField(payload, 'tokenUsage')
+      ? payload.tokenUsage ?? null
+      : previous.tokenUsage,
+  };
+};
+
 export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [taskInfo, setTaskInfo] = useState<TaskInfo | null>(null);
@@ -166,12 +194,7 @@ export const useTaskData = (taskId: string | undefined) => {
       // Subsequent messages: these are incremental updates (only new events)
       // Append new events to existing ones
       console.log(`[useTaskData] Received incremental update via WebSocket: ${newEvents.length} new events`);
-      setLiveDetails(prev => ({
-        events: appendUniqueEvents(prev.events, newEvents),
-        todos: newTodos,
-        currentTask: payload.currentTask || null,
-        tokenUsage: payload.tokenUsage || null,
-      }));
+      setLiveDetails(prev => mergeIncrementalLiveDetails(prev, payload));
     }
   }, [taskId]);
 

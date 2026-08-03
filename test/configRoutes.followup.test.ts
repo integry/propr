@@ -2394,6 +2394,44 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(saveKeywordsMock.mock.calls[0].arguments[0], ['bug', 'feature']);
     });
 
+    test('postFollowupKeywords rejects a false save result without publishing', async () => {
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => false);
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async () => 1),
+            publish: mock.fn(async () => 1),
+            lPush: mock.fn(async () => 1),
+            lTrim: mock.fn(async () => 1),
+        };
+        const routes = createConfigRoutes({
+            redisClient: redisClient as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['bug'] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Configuration update was not persisted. No update notification was published.',
+        });
+        assert.strictEqual(redisClient.publish.mock.calls.length, 0);
+        assert.strictEqual(redisClient.lPush.mock.calls.length, 0);
+    });
+
     test('postFollowupKeywords reports committed state when publish fails after save', async () => {
         const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
         const redisClient = {

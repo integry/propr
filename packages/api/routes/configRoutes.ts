@@ -2,12 +2,12 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
-import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, resolveConfigStore } from './configHelpers.js';
+import { ConfigRouteError, withConfigLock, SETTINGS_CONFIG_LOCK_KEY, resolveConfigStore } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
-import type { ConfigLockContext } from './configHelpers.js';
+import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
 import { normalizeRepoConfig } from './configRepoValidation.js';
@@ -101,33 +101,6 @@ function createJsonGetHandler<T>(load: () => Promise<T>, body: (value: T) => Rec
     }
   };
 }
-async function saveThenPublishConfigUpdate({
-  save,
-  publish,
-  lock,
-  committedErrorMessage,
-  successBody
-}: {
-  save: () => Promise<void>;
-  publish: () => Promise<void>;
-  lock?: ConfigLockContext;
-  committedErrorMessage: string;
-  successBody: Record<string, unknown>;
-}): Promise<{ status: number; body: Record<string, unknown> }> {
-  await lock?.assertLockHeld();
-  await save();
-  // Persistence is durable once save resolves. Record that before any
-  // post-commit notification so lock loss cannot make a committed write look
-  // safe to retry.
-  lock?.markCommitted();
-  try {
-    await publish();
-  } catch {
-    return { status: 500, body: { error: committedErrorMessage, committed: true } };
-  }
-  return { status: 200, body: successBody };
-}
-
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
   const configStore = resolveConfigStore(deps.configStore);
@@ -178,9 +151,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
     const result = await withConfigLock(redisClient, lockKey, async lock => {
       return saveThenPublishConfigUpdate({
-        save: async () => {
-          await save(validated.value);
-        },
+        save: () => save(validated.value),
         publish: async () => {
           await publishConfigUpdate(subtype);
         },
@@ -238,7 +209,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return saveThenPublishConfigUpdate({
         save: async () => {
           await database.transaction(async trx => {
-            await configStore.saveMonitoredRepos(processedRepos, trx);
+            const saved = await configStore.saveMonitoredRepos(processedRepos, trx);
+            if (saved === false) {
+              throw new ConfigRouteError(500, {
+                error: 'Repository configuration was not persisted. No update notification was published.'
+              });
+            }
             await configStore.clearRemovedRepositoryIndexData(previousRepos, processedRepos, trx);
             await lock.assertLockHeld();
           });
@@ -383,9 +359,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
     const result = await withConfigLock(redisClient, 'config:primary-processing-labels:lock', async lock => {
       return saveThenPublishConfigUpdate({
-        save: async () => {
-          await configStore.savePrimaryProcessingLabels(labels);
-        },
+        save: () => configStore.savePrimaryProcessingLabels(labels),
         publish: async () => {
           await publishConfigUpdate('primary_processing_labels_update');
         },

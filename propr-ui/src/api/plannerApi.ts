@@ -1,4 +1,4 @@
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 // Re-export all types from plannerTypes for backwards compatibility
 export type {

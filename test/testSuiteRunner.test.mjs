@@ -7,8 +7,8 @@ import {
     buildTestArguments,
     discoverTestFiles,
     discoverWorkspaceTestRoots,
-    requiresModuleMocks,
     selectTestFiles,
+    shouldFlushRedis,
 } from '../scripts/run-test-suite.mjs';
 
 describe('release test-suite runner', () => {
@@ -29,18 +29,19 @@ describe('release test-suite runner', () => {
         ]);
     });
 
-    test('enables the experimental flag only for module-mocking tests', () => {
-        assert.equal(requiresModuleMocks("await mock.module('ioredis', {});"), true);
-        assert.equal(requiresModuleMocks("test('plain test', () => {});"), false);
-        assert.deepEqual(buildTestArguments('/repo/test/mock.test.ts', true), [
+    test('enables module mocking consistently for every test file', () => {
+        assert.deepEqual(buildTestArguments('/repo/test/mock.test.ts'), [
             '--experimental-test-module-mocks',
             '--test',
             '/repo/test/mock.test.ts',
         ]);
-        assert.deepEqual(buildTestArguments('/repo/test/plain.test.ts', false), [
-            '--test',
-            '/repo/test/plain.test.ts',
-        ]);
+    });
+
+    test('requires an explicit flush opt-in before Redis isolation is destructive', () => {
+        assert.equal(shouldFlushRedis(undefined), false);
+        assert.equal(shouldFlushRedis('true'), false);
+        assert.equal(shouldFlushRedis('off'), false);
+        assert.equal(shouldFlushRedis(' FLUSH '), true);
     });
 
     test('discovers root and workspace tests while delegating native workspace runners', () => {
@@ -50,22 +51,27 @@ describe('release test-suite runner', () => {
             mkdirSync(join(root, 'test'), { recursive: true });
             mkdirSync(join(root, 'packages', 'shared', 'test'), { recursive: true });
             mkdirSync(join(root, 'apps', 'service', 'src'), { recursive: true });
+            mkdirSync(join(root, 'apps', 'narrow', 'src'), { recursive: true });
             mkdirSync(join(root, 'propr-ui', 'src'), { recursive: true });
             writeJson(join(root, 'package.json'), { workspaces: ['apps/*', 'packages/*', 'propr-ui'] });
             writeJson(join(root, 'packages', 'shared', 'package.json'), { name: '@propr/shared' });
             writeJson(join(root, 'apps', 'service', 'package.json'), { name: 'service' });
-            writeJson(join(root, 'propr-ui', 'package.json'), { name: 'ui', scripts: { test: 'vitest run' } });
+            writeJson(join(root, 'apps', 'narrow', 'package.json'), { name: 'narrow', scripts: { test: 'node --test one.test.ts' } });
+            writeJson(join(root, 'propr-ui', 'package.json'), { name: 'propr-ui', scripts: { test: 'vitest run' } });
             writeFileSync(join(root, 'test', 'root.test.ts'), '');
             writeFileSync(join(root, 'packages', 'shared', 'test', 'shared.test.ts'), '');
             writeFileSync(join(root, 'apps', 'service', 'src', 'service.test.ts'), '');
+            writeFileSync(join(root, 'apps', 'narrow', 'src', 'otherwise-omitted.test.ts'), '');
             writeFileSync(join(root, 'propr-ui', 'src', 'ui.test.ts'), '');
 
             assert.deepEqual(discoverWorkspaceTestRoots(root), [
+                join(root, 'apps', 'narrow'),
                 join(root, 'apps', 'service'),
                 join(root, 'packages', 'shared'),
                 join(root, 'test'),
             ]);
             assert.deepEqual(discoverTestFiles([], root), [
+                join(root, 'apps', 'narrow', 'src', 'otherwise-omitted.test.ts'),
                 join(root, 'apps', 'service', 'src', 'service.test.ts'),
                 join(root, 'packages', 'shared', 'test', 'shared.test.ts'),
                 join(root, 'test', 'root.test.ts'),

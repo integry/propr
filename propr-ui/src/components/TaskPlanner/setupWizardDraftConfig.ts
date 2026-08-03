@@ -36,6 +36,102 @@ type DraftConfigPatch = Partial<DraftConfigSnapshot>;
 const ensureArray = <T,>(value: T[] | unknown): T[] =>
   Array.isArray(value) ? value : [];
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every(entry => typeof entry === 'string');
+
+const isOptionalString = (value: unknown): value is string | undefined =>
+  value === undefined || typeof value === 'string';
+
+function isContextRepository(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.repository === 'string'
+    && value.repository.trim().length > 0
+    && isOptionalString(value.branch)
+    && isOptionalString(value.description);
+}
+
+function isGranularityEnforcement(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.enforced === 'boolean'
+    && typeof value.granularity === 'string'
+    && ['single', 'balanced', 'granular'].includes(value.granularity)
+    && isFiniteNumber(value.originalTaskCount)
+    && isFiniteNumber(value.finalTaskCount)
+    && isOptionalString(value.message);
+}
+
+function isContextCache(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.fileTokenCounts === undefined) return true;
+  return isRecord(value.fileTokenCounts)
+    && Object.values(value.fileTokenCounts).every(isFiniteNumber);
+}
+
+function isPreviewStats(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const required = ['totalTokens', 'costEstimate', 'contextLength', 'fileCount'];
+  const optional = [
+    'maxTokens',
+    'modelMaxContextTokens',
+    'attachmentTokens',
+    'usageEstimatePercent',
+  ];
+  return required.every(key => isFiniteNumber(value[key]))
+    && optional.every(key => value[key] === undefined || isFiniteNumber(value[key]))
+    && isOptionalString(value.modelName);
+}
+
+function isSmartFileSelection(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.path === 'string'
+    && typeof value.reason === 'string'
+    && typeof value.source === 'string'
+    && ['manual', 'auto', 'context-repo'].includes(value.source)
+    && isOptionalString(value.repository)
+    && (value.score === undefined || isFiniteNumber(value.score));
+}
+
+function isLastPreview(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.success === 'boolean'
+    && isPreviewStats(value.stats)
+    && Array.isArray(value.smartSelection)
+    && value.smartSelection.every(isSmartFileSelection)
+    && isStringArray(value.warnings);
+}
+
+type DraftFieldValidator = (value: unknown) => boolean;
+
+const DRAFT_CONTEXT_FIELD_VALIDATORS = {
+  baseBranch: (value: unknown) => typeof value === 'string',
+  granularity: (value: unknown) => typeof value === 'string'
+    && ['single', 'balanced', 'granular'].includes(value),
+  contextLevel: isFiniteNumber,
+  compress: (value: unknown) => typeof value === 'boolean',
+  manualFiles: isStringArray,
+  autoFiles: isStringArray,
+  contextRepositories: (value: unknown) => Array.isArray(value) && value.every(isContextRepository),
+  granularityEnforcement: isGranularityEnforcement,
+  generationModel: (value: unknown) => value === null || typeof value === 'string',
+  excludedFiles: isStringArray,
+  contextCache: isContextCache,
+  lastPreview: isLastPreview,
+  lastPreviewRequestId: (value: unknown) => typeof value === 'string',
+  lastPreviewError: (value: unknown) => typeof value === 'string',
+  useEpic: (value: unknown) => typeof value === 'boolean',
+  autoMerge: (value: unknown) => typeof value === 'boolean',
+  runUltrafix: (value: unknown) => typeof value === 'boolean',
+  ultrafixGoal: (value: unknown) => value === null || isFiniteNumber(value),
+  ultrafixMaxCycles: (value: unknown) => value === null || isFiniteNumber(value),
+  epicLabel: (value: unknown) => typeof value === 'string',
+} satisfies Record<keyof DraftContextConfig, DraftFieldValidator>;
+
 export function parseDraftContextConfig(value: unknown): DraftContextConfig | undefined {
   let parsed = value;
   if (typeof parsed === 'string') {
@@ -46,9 +142,19 @@ export function parseDraftContextConfig(value: unknown): DraftContextConfig | un
     }
   }
 
-  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? parsed as DraftContextConfig
-    : undefined;
+  if (!isRecord(parsed)) return undefined;
+
+  const validated: Record<string, unknown> = {};
+  const validators = Object.entries(DRAFT_CONTEXT_FIELD_VALIDATORS) as Array<[
+    keyof DraftContextConfig,
+    DraftFieldValidator,
+  ]>;
+  for (const [key, validate] of validators) {
+    if (!Object.prototype.hasOwnProperty.call(parsed, key)) continue;
+    if (!validate(parsed[key])) return undefined;
+    validated[key] = parsed[key];
+  }
+  return validated as DraftContextConfig;
 }
 
 export function getDraftContextConfig(
