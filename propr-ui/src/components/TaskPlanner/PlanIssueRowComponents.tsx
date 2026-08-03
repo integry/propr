@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ExternalLink, GitPullRequest, MessageSquare, Play, Loader2, Eye, ChevronDown, StickyNote } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentConfig, getAttachmentUrl } from '../../api/proprApi';
+import { getAttachmentUrl } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import AgentModelSelector from './AgentModelSelector';
@@ -177,7 +178,7 @@ export interface RowActionsProps {
   selectedModels: AgentModelPair[];
   hasAgent: boolean;
   isFirstPending: boolean;
-  agents: AgentConfig[];
+  agents: InstanceCatalogAgent[];
   issue: PlanIssue;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;

@@ -1,4 +1,4 @@
-import express, { Request, Response, RequestHandler } from 'express';
+import express, { Request, Response } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import { createClient, RedisClientType } from 'redis';
@@ -27,6 +27,8 @@ import {
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
   createAgentRuntimeRoutes,
+  createAdminRoutes,
+  createInstanceCatalogRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
@@ -50,10 +52,15 @@ import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
+import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
+import {
+  assertNoDuplicateRoutes,
+  createManagementRouteEntries,
+  createMemberCatalogRouteEntries,
+  registerRouteEntries,
+  type RouteEntry
+} from './routeRegistry.js';
 
-type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
-type RouteHandler = RequestHandler;
-type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
 
 const demoMode = configureDemoMode();
@@ -86,15 +93,6 @@ async function closeResources(tasks: ShutdownTask[]): Promise<void> {
     if (result.status === 'rejected') {
       console.error(`Failed to close ${tasks[index].name}:`, result.reason);
     }
-  });
-}
-
-function assertNoDuplicateRoutes(routes: RouteEntry[]): void {
-  const seen = new Set<string>();
-  routes.forEach(([method, path]) => {
-    const key = `${method} ${path}`;
-    if (seen.has(key)) throw new Error(`Duplicate route registration detected for ${key}`);
-    seen.add(key);
   });
 }
 
@@ -162,7 +160,7 @@ app.use('/api', (_req, res, next) => {
 });
 
 app.use('/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
@@ -225,7 +223,7 @@ function setupRoutes(): void {
   // compatibility dates). All other /api routes registered after this line are
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
-  app.use('/api', ensureAuthenticated);
+  app.use('/api', ensureAuthenticated, resolveAuthorization);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -248,21 +246,14 @@ function setupRoutes(): void {
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
-  const register = (method: RouteMethod, path: string, ...handlers: RouteHandler[]): void => {
-    app[method](path, ...handlers);
-  };
+  const adminRoutes = createAdminRoutes();
+  const instanceCatalogRoutes = createInstanceCatalogRoutes();
+  const agentVersionRoutes = createAgentVersionRoutes();
 
-  const routes: RouteEntry[] = [
+  const operationalRoutes: RouteEntry[] = [
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
     ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask], ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
-    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/config/followup-keywords', configRoutes.getFollowupKeywords], ['post', '/api/config/followup-keywords', configRoutes.postFollowupKeywords], ['get', '/api/config/followup-ignore-keywords', configRoutes.getFollowupIgnoreKeywords],
-    ['post', '/api/config/followup-ignore-keywords', configRoutes.postFollowupIgnoreKeywords], ['get', '/api/config/repos', configRoutes.getRepos], ['post', '/api/config/repos', configRoutes.postRepos], ['get', '/api/config/settings', configRoutes.getSettings],
-    ['post', '/api/config/settings', configRoutes.postSettings], ['get', '/api/config/pr-label', configRoutes.getPrLabel], ['post', '/api/config/pr-label', configRoutes.postPrLabel], ['get', '/api/config/ai-primary-tag', configRoutes.getAiPrimaryTag],
-    ['post', '/api/config/ai-primary-tag', configRoutes.postAiPrimaryTag], ['get', '/api/config/primary-processing-labels', configRoutes.getPrimaryProcessingLabels], ['post', '/api/config/primary-processing-labels', configRoutes.postPrimaryProcessingLabels], ['get', '/api/config/agents', configRoutes.getAgents],
-    ['post', '/api/config/agents', configRoutes.postAgents], ['get', '/api/config/summarization', configRoutes.getSummarizationSettings], ['post', '/api/config/summarization', configRoutes.postSummarizationSettings], ['get', '/api/config/repos/indexing-status', configRoutes.getRepositoriesIndexingStatus],
-    ['post', '/api/config/repos/trigger-indexing', configRoutes.triggerIndexing], ['post', '/api/config/repos/stop-indexing', configRoutes.stopIndexing], ['post', '/api/config/summarization/reindex-all', configRoutes.triggerReindexAll], ['get', '/api/config/agent-tank', configRoutes.getAgentTankSettings],
-    ['post', '/api/config/agent-tank', configRoutes.postAgentTankSettings], ['get', '/api/config/agent-tank/status', configRoutes.getAgentTankStatus], ['get', '/api/config/agent-tank/usage', configRoutes.getAgentTankUsage], ['post', '/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh],
-    ['get', '/api/config/agent-tank/detect', configRoutes.getAgentTankDetect], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
+    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
     ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
     ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
@@ -281,29 +272,20 @@ function setupRoutes(): void {
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
     ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
-    ['get', '/api/agent-runtime/packages', agentRuntimeRoutes.getRuntimePackages],
-    ['get', '/api/agent-runtime/packages/search', agentRuntimeRoutes.searchRuntimePackages],
-    ['post', '/api/agent-runtime/packages/validate', agentRuntimeRoutes.validateRuntimePackages],
-    ['put', '/api/agent-runtime/packages', agentRuntimeRoutes.putRuntimePackages],
-    ['post', '/api/agent-runtime/packages/apply', agentRuntimeRoutes.applyRuntimePackages],
-    ['post', '/api/agents/:agentId/login-sessions', agentLoginRoutes.startLogin],
-    ['get', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.getLogin],
-    ['post', '/api/agents/:agentId/login-sessions/:sessionId/input', agentLoginRoutes.sendInput],
-    ['delete', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.cancelLogin],
+  ];
+  const routes = [
+    ...operationalRoutes,
+    ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
+    ...createManagementRouteEntries({
+      adminRoutes,
+      agentLoginRoutes,
+      agentRuntimeRoutes,
+      agentVersionRoutes,
+      configRoutes,
+    }),
   ];
   assertNoDuplicateRoutes(routes);
-  routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
-
-  const agentVersionRoutes = createAgentVersionRoutes();
-  const agentVersionRouteEntries: RouteEntry[] = [
-    ['get', '/api/agents/versions/:agentType', agentVersionRoutes.getVersions],
-    ['post', '/api/agents/:agentId/build-image', agentVersionRoutes.buildImage],
-    ['delete', '/api/agents/:agentType/images/cleanup', agentVersionRoutes.cleanupImages],
-    ['get', '/api/agents/:agentType/images', agentVersionRoutes.listImages],
-    ['post', '/api/agents/resolve-version', agentVersionRoutes.resolveVersionEndpoint],
-    ['get', '/api/agents/:agentType/image-tag', agentVersionRoutes.getImageTag],
-  ];
-  agentVersionRouteEntries.forEach(([method, path, handler]) => register(method, path, handler));
+  registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
 
   setupWebhookRoute();
@@ -399,6 +381,7 @@ async function start(): Promise<void> {
     console.log('SQLite persistence is enabled');
     try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
+    await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
       try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }

@@ -29,7 +29,7 @@ export const getRepoStatusKey = (fullName: string, branch?: string): string => {
 };
 
 export const getRepositoriesIndexingStatus = async (): Promise<{ repositories: RepositoryIndexingStatus[] }> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/repos/indexing-status`, {
+  const response = await apiFetch(`${API_BASE_URL}/api/repositories/indexing-status`, {
     credentials: 'include'
   });
   await handleApiResponse(response);

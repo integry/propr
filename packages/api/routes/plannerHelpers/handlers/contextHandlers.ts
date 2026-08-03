@@ -19,6 +19,11 @@ import {
 import type { Granularity } from '@propr/core';
 import type { OwnershipResult } from '../types.js';
 import { getRepoAuthToken } from '../auth.js';
+import {
+  claimDraftPreparation,
+  isDraftOperationActive,
+  releaseDraftPreparation
+} from '../operationGuard.js';
 
 interface PreviewContextDeps {
   verifyOwnership: (draftId: string, userId: string, fields: string[]) => Promise<OwnershipResult>;
@@ -82,6 +87,14 @@ async function storePreviewFailure(
   });
 }
 
+function sendPreviewError(res: Response, error: unknown): void {
+  if (error instanceof BranchNotFoundError) {
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
+}
+
 export function createPreviewContextHandler(deps: PreviewContextDeps) {
   return async function previewContext(req: Request, res: Response): Promise<void> {
     const validation = deps.validateInput(req.body);
@@ -90,12 +103,23 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
     const { draftId, prompt, baseBranch, granularity, contextLevel, compress, files, contextRepositories, generationModel: requestGenerationModel, excludedFiles } = req.body;
     const correlationId = generateCorrelationId();
     const previewRequestId = crypto.randomUUID();
+    let preparationClaimed = false;
+    let backgroundStarted = false;
 
     try {
-      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'context_config']);
+      const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'context_config', 'status']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
       const draft = ownership.draft!;
+      preparationClaimed = claimDraftPreparation(draftId, 'context-preview');
+      if (!preparationClaimed) {
+        res.status(409).json({ error: 'Another planner operation is still running for this draft' });
+        return;
+      }
+      if (isDraftOperationActive(draft.status)) {
+        res.status(409).json({ error: 'Another operation is already running for this draft' });
+        return;
+      }
       const [owner, repoName] = (draft.repository as string).split('/');
       if (!owner || !repoName) { res.status(400).json({ error: 'Invalid repository format' }); return; }
 
@@ -122,7 +146,7 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         });
       }
 
-      void generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken: authToken, excludedFiles, previewRequestId })
+      const backgroundPreview = generateContextPreview({ draftId, prompt, baseBranch, granularity: (granularity || 'balanced') as Granularity, contextLevel, compress, files, worktreePath, correlationId, contextModel, generationModel, contextRepositories, githubToken: authToken, excludedFiles, previewRequestId })
         .then(async (result) => {
           const eventPublisher = getEventPublisher();
           const draftWithTrace = deps.db ? await deps.db('task_drafts').where({ draft_id: draftId }).select('generation_trace', 'context_config').first() : null;
@@ -154,12 +178,23 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
             draftStatus: 'generating'
           });
         });
+      backgroundStarted = true;
+      void backgroundPreview
+        .finally(() => {
+          releaseDraftPreparation(draftId, 'context-preview');
+        })
+        .catch((error) => {
+          console.error('Preview context completion error:', error);
+        });
 
       res.status(202).json({ pending: true, draftId, previewRequestId });
     } catch (error) {
       console.error('Preview context error:', error);
-      if (error instanceof BranchNotFoundError) { res.status(400).json({ error: error.message }); return; }
-      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
+      sendPreviewError(res, error);
+    } finally {
+      if (preparationClaimed && !backgroundStarted) {
+        releaseDraftPreparation(draftId, 'context-preview');
+      }
     }
   };
 }

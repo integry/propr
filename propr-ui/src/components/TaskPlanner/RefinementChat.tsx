@@ -209,6 +209,11 @@ export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, i
   const abortControllerRef = useRef<AbortController | null>(null);
   const visibleMessages = getVisibleMessages(syncInitialMessages, syncedMessages, messages);
 
+  useEffect(() => () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
+
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (textarea) {

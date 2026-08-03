@@ -4,6 +4,7 @@ import type { AgentType, ReasoningLevel } from '@propr/shared';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
 export const API_BASE_URL = getApiBaseUrl();
+export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 
 export interface DemoModeStatus {
   demoMode: boolean;
@@ -53,35 +54,38 @@ export * from './proprTypes';
 import type {
   SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
   GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
-  StopExecutionResponse, DeleteTaskResponse, SystemSettings
+  StopExecutionResponse, DeleteTaskResponse, SystemSettings, CurrentUser,
+  InstanceCatalogResponse
 } from './proprTypes';
 
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
 
 export const handleApiResponse = async (response: Response): Promise<Response> => {
+  if (response.ok) return response;
   if (response.status === 401) {
     if (window.location.pathname === '/login') throw new Error('Authentication required');
     window.location.href = '/login';
     throw new Error('Authentication required');
   }
-  if (response.status === 403 || response.status === 405) {
-    let data: { code?: string; error?: string } | null = null;
-    try {
-      data = await response.clone().json() as { code?: string; error?: string };
-    } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
-    if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
-      throw new DemoModeReadOnlyError(data.error);
-    }
-    if (data?.error) throw new Error(data.error);
+
+  let data: { code?: string; error?: string; message?: string } | null = null;
+  try {
+    data = await response.clone().json() as { code?: string; error?: string; message?: string };
+  } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
+  if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
+    throw new DemoModeReadOnlyError(data.message || data.error);
   }
-  if (!response.ok) {
-        throw new Error(
-            response.status >= 500
-                ? `The server ran into a problem (HTTP ${response.status}). Please try again in a moment.`
-                : `The request could not be completed (HTTP ${response.status}).`
-        );
-    }
-  return response;
+  if (data?.code === 'INSUFFICIENT_INSTANCE_PERMISSION') {
+    window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
+  }
+  if (response.status < 500 && (data?.message || data?.error)) {
+    throw new Error(data.message || data.error);
+  }
+  throw new Error(
+    response.status >= 500
+      ? `The server ran into a problem (HTTP ${response.status}). Please try again in a moment.`
+      : `The request could not be completed (HTTP ${response.status}).`
+  );
 };
 
 export const getDemoModeStatus = async (): Promise<DemoModeStatus> => {
@@ -210,6 +214,12 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
 
 export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export const getInstanceCatalog = async (): Promise<InstanceCatalogResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();
 };
@@ -366,7 +376,7 @@ export const deleteTask = async (taskId: string, force?: boolean): Promise<void>
   await handleApiResponse(response);
 };
 
-export const getCurrentUser = async (): Promise<unknown> => {
+export const getCurrentUser = async (): Promise<CurrentUser> => {
   const response = await apiFetch(`${API_BASE_URL}/api/auth/user`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.json();

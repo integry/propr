@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getAgents, getRepoConfig, getTasks, AgentConfig, MonitoredRepo } from '../api/proprApi';
+import { getInstanceCatalog, getTasks } from '../api/proprApi';
 
 /**
  * System readiness state for onboarding guidance
@@ -37,26 +37,24 @@ export function useSystemReadiness(): SystemReadinessState {
       setIsLoading(true);
       setError(null);
 
-      // Fetch agents, repos configuration, and tasks in parallel
-      const [agentsResponse, repoConfigResponse, tasksResponse] = await Promise.all([
-        getAgents(),
-        getRepoConfig(),
+      // The catalog deliberately omits administrator-only configuration such as
+      // credential paths, environment variables, and disabled repositories.
+      const [catalog, tasksResponse] = await Promise.all([
+        getInstanceCatalog(),
         getTasks('all', 1, 0), // Just check if any task exists
       ]);
 
       if (!isMountedRef.current) return;
 
       // Check if at least one enabled agent exists
-      const agents: AgentConfig[] = agentsResponse.agents || [];
-      const enabledAgents = agents.filter((agent) => agent.enabled);
+      const enabledAgents = catalog.agents;
       setHasAgents(enabledAgents.length > 0);
 
       // Check if at least one enabled agent has a default model configured
       setHasDefaultModel(enabledAgents.some((agent) => !!agent.defaultModel));
 
       // Check if at least one repository is configured
-      const repos: MonitoredRepo[] = repoConfigResponse.repos_to_monitor || [];
-      setHasRepos(repos.length > 0);
+      setHasRepos(catalog.repositories.length > 0);
 
       // Check if at least one task exists
       const tasks = (tasksResponse as { total?: number }).total || 0;

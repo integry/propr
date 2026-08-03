@@ -54,6 +54,7 @@ after(async () => {
 
 function skipImageChecks(registry: InstanceType<typeof AgentRegistry>): void {
     (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => 'propr/agent:latest';
+    (registry as unknown as { registeredAgentImagesAvailable: () => Promise<boolean> }).registeredAgentImagesAvailable = async () => true;
 }
 
 function failImageChecks(registry: InstanceType<typeof AgentRegistry>): void {
@@ -136,6 +137,7 @@ test('AgentRegistry refreshes when runtime package state changes', async () => {
     const registry = AgentRegistry.getInstance();
     let image = 'propr/agent:first';
     (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => image;
+    (registry as unknown as { registeredAgentImagesAvailable: () => Promise<boolean> }).registeredAgentImagesAvailable = async () => true;
 
     await registry.refresh();
     assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:first');
@@ -160,6 +162,7 @@ test('AgentRegistry refreshes after runtime package state version capture fails'
     const registry = AgentRegistry.getInstance();
     let image = 'propr/agent:first';
     (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => image;
+    (registry as unknown as { registeredAgentImagesAvailable: () => Promise<boolean> }).registeredAgentImagesAvailable = async () => true;
 
     await registry.refresh();
     assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:first');
@@ -188,6 +191,47 @@ test('AgentRegistry throttles runtime package state checks on repeated initializ
     await registry.ensureInitialized();
 
     assert.strictEqual(checks, 1);
+});
+
+test('AgentRegistry refreshes before use when its registered image was removed', async () => {
+    const registry = AgentRegistry.getInstance();
+    let image = 'propr/agent:first';
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => image;
+
+    await registry.refresh();
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:first');
+
+    image = 'propr/agent:second';
+    let availabilityChecks = 0;
+    (registry as unknown as { registeredAgentImagesAvailable: () => Promise<boolean> }).registeredAgentImagesAvailable = async () => {
+        availabilityChecks += 1;
+        return false;
+    };
+
+    await registry.ensureInitialized();
+
+    assert.strictEqual(availabilityChecks, 1);
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
+});
+
+test('AgentRegistry shares one recovery refresh across concurrent callers', async () => {
+    const registry = AgentRegistry.getInstance();
+    let refreshes = 0;
+    (registry as unknown as { ensureUnifiedAgentImage: () => Promise<string> }).ensureUnifiedAgentImage = async () => {
+        refreshes += 1;
+        return refreshes === 1 ? 'propr/agent:first' : 'propr/agent:second';
+    };
+
+    await registry.refresh();
+    (registry as unknown as { registeredAgentImagesAvailable: () => Promise<boolean> }).registeredAgentImagesAvailable = async () => false;
+
+    await Promise.all([
+        registry.ensureInitialized(),
+        registry.ensureInitialized()
+    ]);
+
+    assert.strictEqual(refreshes, 2, 'initialization plus exactly one shared recovery refresh');
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:second');
 });
 
 test('AgentRegistry prefixes dynamic OpenCode provider models during migration', async () => {
