@@ -12,7 +12,12 @@ export {
   getRepositorySummaries,
   clearRepositorySummaries
 } from './summaryMiner.js';
-export { createIndexingRunIdentity, updateRepositoryStatus } from './summaryMinerQueries.js';
+export {
+  createIndexingQueueDeduplicationId,
+  createIndexingQueueJobId,
+  createIndexingRunIdentity,
+  updateRepositoryStatus
+} from './summaryMinerQueries.js';
 export type {
   IndexingRunIdentity,
   RepositoryStatusTransition,
@@ -26,6 +31,7 @@ export {
 export type {
   FileSummary,
   DirectorySummary,
-  IndexingOptions
+  IndexingOptions,
+  IndexingOutcome
 } from './summaryMiner.js';
 export type { GitFileInfo } from './summaryFileFilter.js';

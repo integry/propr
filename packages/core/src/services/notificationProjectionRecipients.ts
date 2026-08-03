@@ -3,6 +3,9 @@ import type { TaskProjectionContext } from './notificationProjectionStore.js';
 
 type ProjectionDatabase = Knex | Knex.Transaction;
 const CACHE_TTL_MS = 60_000;
+// Leave ample room for the repository and expiry bindings under SQLite's
+// commonly configured placeholder limits.
+const ENTITLEMENT_LOOKUP_CHUNK_SIZE = 200;
 
 function nonBlankString(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
@@ -69,12 +72,17 @@ export class NotificationProjectionRecipients {
             || !await this.hasTable('notification_repository_entitlements', database)) {
             return [];
         }
-        const rows = await database('notification_repository_entitlements')
-            .select('user_id')
-            .where({ repository })
-            .whereIn('user_id', userIds)
-            .where('expires_at', '>', new Date(this.now()).toISOString()) as Array<{ user_id: string }>;
-        return uniqueStrings(rows.map((row) => row.user_id));
+        const entitled: string[] = [];
+        const expiresAfter = new Date(this.now()).toISOString();
+        for (let offset = 0; offset < userIds.length; offset += ENTITLEMENT_LOOKUP_CHUNK_SIZE) {
+            const rows = await database('notification_repository_entitlements')
+                .select('user_id')
+                .where({ repository })
+                .whereIn('user_id', userIds.slice(offset, offset + ENTITLEMENT_LOOKUP_CHUNK_SIZE))
+                .where('expires_at', '>', expiresAfter) as Array<{ user_id: string }>;
+            entitled.push(...rows.map((row) => row.user_id));
+        }
+        return uniqueStrings(entitled);
     }
 
     async getKnownRecipients(): Promise<string[]> {

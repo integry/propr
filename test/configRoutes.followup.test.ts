@@ -2482,6 +2482,30 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(queueAdds.length, 2);
     });
 
+    test('a duplicate enqueue stays rejected when its winning job is removed immediately', async () => {
+        let run = 0;
+        const publications: string[] = [];
+        const deps = createQueueResummarizationDeps({
+            repos: [{ id: '1', name: 'acme/removal-race', enabled: true }],
+            removeWinnerOnDuplicate: true,
+            publications,
+            createRun: () => ({
+                runId: `removal-race-${++run}`,
+                transitionAt: `2026-08-02T08:0${run}:00.000Z`,
+            }),
+        });
+
+        const results = await Promise.all([
+            queueResummarizationForAllRepos({ deps }),
+            queueResummarizationForAllRepos({ deps }),
+        ]);
+
+        assert.strictEqual(results.reduce((total, result) => total + result.queued, 0), 1);
+        assert.strictEqual(results.reduce((total, result) => total + result.skippedAlreadyQueued, 0), 1);
+        assert.strictEqual(publications.length, 1);
+        assert.match(publications[0], /^removal-race-[12]$/);
+    });
+
     test('a rejected resummarization enqueue never advances repository state', async () => {
         const statusMutations: string[] = [];
         await assert.rejects(
@@ -2589,6 +2613,33 @@ describe('config route follow-up helpers', () => {
         });
     });
 
+    test('stopIndexingJob does not publish a rejected stale-run transition', async () => {
+        let publications = 0;
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: { repository: 'acme/api', baseBranch: 'main', runId: 'stale-run' },
+                    getState: async () => 'waiting',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            requestIndexingCancellation: async () => undefined,
+            updateRepositoryStatus: async () => ({
+                runId: 'stale-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+                applied: false,
+            }),
+            publishIndexingStatus: async () => { publications++; },
+        });
+
+        assert.deepStrictEqual(result, {
+            success: true,
+            cancelledActiveRuns: [],
+            removedQueuedRuns: [],
+        });
+        assert.strictEqual(publications, 0);
+    });
+
     function createQueueResummarizationDeps(options: {
         repos: Array<{ id: string; name: string; enabled: boolean }>;
         existingJobs?: Array<{ data: { repository: string; baseBranch?: string } }>;
@@ -2597,12 +2648,10 @@ describe('config route follow-up helpers', () => {
         createRun?: () => { runId: string; transitionAt: string };
         queueAddError?: Error;
         statusMutations?: string[];
+        publications?: string[];
+        removeWinnerOnDuplicate?: boolean;
     }) {
-        const queuedById = new Map<string, {
-            repository: string;
-            runId?: string;
-            transitionAt?: string;
-        }>();
+        const queuedByDeduplicationId = new Map<string, string>();
         return {
             loadMonitoredReposRaw: async () => options.repos,
             getAuthenticatedOctokit: async () => ({
@@ -2620,7 +2669,14 @@ describe('config route follow-up helpers', () => {
                 runId: 'test-indexing-run',
                 transitionAt: '2026-08-02T08:00:00.000Z',
             })),
-            publishIndexingStatus: async () => undefined,
+            publishIndexingStatus: async (
+                _repository: string,
+                _branch: string,
+                _phase: string,
+                transition?: { runId: string },
+            ) => {
+                if (transition) options.publications?.push(transition.runId);
+            },
             updateRepositoryStatus: async (
                 repository: string,
                 _status: 'idle' | 'indexing' | 'completed' | 'failed',
@@ -2636,24 +2692,30 @@ describe('config route follow-up helpers', () => {
             },
             getIndexingQueue: async () => ({
                 getJobs: async () => options.existingJobs || [],
-                getJob: async (jobId: string) => {
-                    const data = queuedById.get(jobId);
-                    return data ? { data } : null;
-                },
                 add: async (_name: string, data: {
                     repository: string;
                     runId?: string;
                     transitionAt?: string;
-                }, jobOptions: { jobId?: string }) => {
+                }, jobOptions: { jobId?: string; deduplication?: { id: string } }) => {
                     if (options.queueAddError) throw options.queueAddError;
-                    if (jobOptions.jobId && !queuedById.has(jobOptions.jobId)) {
-                        queuedById.set(jobOptions.jobId, data);
-                    }
                     options.queueAdds?.push({
                         repository: data.repository,
                         runId: data.runId,
                         transitionAt: data.transitionAt,
                     });
+                    const requestedJobId = jobOptions.jobId!;
+                    const deduplicationId = jobOptions.deduplication!.id;
+                    const existingJobId = queuedByDeduplicationId.get(deduplicationId);
+                    if (existingJobId) {
+                        if (options.removeWinnerOnDuplicate) {
+                            // BullMQ's duplicate result remains the winner's ID even
+                            // if the worker removes that job before the caller resumes.
+                            queuedByDeduplicationId.delete(deduplicationId);
+                        }
+                        return { id: existingJobId };
+                    }
+                    queuedByDeduplicationId.set(deduplicationId, requestedJobId);
+                    return { id: requestedJobId };
                 },
             } as never),
         };

@@ -20,6 +20,18 @@ interface GitHubRoutesDeps {
 }
 
 const entitlementRefreshes = new Map<string, Promise<void>>();
+const entitlementRefreshRetryAfter = new Map<string, number>();
+const ENTITLEMENT_REFRESH_RETRY_DELAY_MS = 60_000;
+const MAX_ENTITLEMENT_REFRESH_BACKOFFS = 1_000;
+
+function recordEntitlementRefreshFailure(userId: string): void {
+  if (!entitlementRefreshRetryAfter.has(userId)
+      && entitlementRefreshRetryAfter.size >= MAX_ENTITLEMENT_REFRESH_BACKOFFS) {
+    const oldestUserId = entitlementRefreshRetryAfter.keys().next().value as string | undefined;
+    if (oldestUserId) entitlementRefreshRetryAfter.delete(oldestUserId);
+  }
+  entitlementRefreshRetryAfter.set(userId, Date.now() + ENTITLEMENT_REFRESH_RETRY_DELAY_MS);
+}
 
 async function listAccessibleRepositories(accessToken: string): Promise<string[]> {
   const PaginatedOctokit = Octokit.plugin(paginateRest);
@@ -59,6 +71,9 @@ export async function refreshNotificationRepositoryEntitlements(options: {
 }): Promise<void> {
   const existing = entitlementRefreshes.get(options.userId);
   if (existing) return existing;
+  const retryAfter = entitlementRefreshRetryAfter.get(options.userId) ?? 0;
+  if (!options.force && retryAfter > Date.now()) return;
+  if (retryAfter > 0) entitlementRefreshRetryAfter.delete(options.userId);
   const refresh = (async () => {
     if (!options.force && !await notificationEntitlementsNeedRefresh(options.userId, options.database)) return;
     const repositories = await (options.listRepositories ?? listAccessibleRepositories)(options.accessToken);
@@ -71,6 +86,10 @@ export async function refreshNotificationRepositoryEntitlements(options: {
   entitlementRefreshes.set(options.userId, refresh);
   try {
     await refresh;
+    entitlementRefreshRetryAfter.delete(options.userId);
+  } catch (error) {
+    recordEntitlementRefreshFailure(options.userId);
+    throw error;
   } finally {
     if (entitlementRefreshes.get(options.userId) === refresh) {
       entitlementRefreshes.delete(options.userId);
@@ -95,9 +114,17 @@ export async function persistNotificationRepositoryEntitlementsBestEffort(option
   }
 }
 
-/** Refreshes expiring authorization evidence on ordinary authenticated traffic. */
-export function createNotificationEntitlementRefreshMiddleware(database: Knex) {
-  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+interface NotificationEntitlementRefreshMiddlewareOptions {
+  refresh?: typeof refreshNotificationRepositoryEntitlements;
+}
+
+/** Schedules authorization refresh without adding GitHub latency to API traffic. */
+export function createNotificationEntitlementRefreshMiddleware(
+  database: Knex,
+  options: NotificationEntitlementRefreshMiddlewareOptions = {}
+) {
+  const refresh = options.refresh ?? refreshNotificationRepositoryEntitlements;
+  return (req: Request, _res: Response, next: NextFunction): void => {
     const userId = req.user?.id;
     const accessToken = req.user?.accessToken;
     // getRepos performs a forced refresh using the same GitHub response, avoiding
@@ -106,12 +133,10 @@ export function createNotificationEntitlementRefreshMiddleware(database: Knex) {
       next();
       return;
     }
-    try {
-      await refreshNotificationRepositoryEntitlements({ userId, accessToken, database });
-    } catch (error) {
+    void refresh({ userId, accessToken, database }).catch((error) => {
       console.warn('Failed to refresh repository notification access:',
         error instanceof Error ? error.message : String(error));
-    }
+    });
     next();
   };
 }

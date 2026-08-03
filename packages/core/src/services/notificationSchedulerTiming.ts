@@ -8,17 +8,18 @@ export class NotificationOperationTimeoutError extends Error {
 export async function withNotificationDeadline<T>(
     promise: Promise<T>,
     timeoutMs: number,
-    operation: string
+    operation: string,
+    onTimeout?: () => void
 ): Promise<T> {
     let timeout: NodeJS.Timeout | undefined;
     try {
         return await Promise.race([
             promise,
             new Promise<never>((_resolve, reject) => {
-                timeout = setTimeout(
-                    () => reject(new NotificationOperationTimeoutError(operation, timeoutMs)),
-                    timeoutMs
-                );
+                timeout = setTimeout(() => {
+                    onTimeout?.();
+                    reject(new NotificationOperationTimeoutError(operation, timeoutMs));
+                }, timeoutMs);
             })
         ]);
     } finally {

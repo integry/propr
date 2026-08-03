@@ -55,6 +55,7 @@ export class NotificationStalledDetector {
     private readonly acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
     private timer: NodeJS.Timeout | null = null;
     private activeRun: Promise<number> | null = null;
+    private activeRunAbortController: AbortController | null = null;
     private runGeneration = 0;
 
     constructor(options: NotificationStalledDetectorOptions = {}) {
@@ -88,17 +89,20 @@ export class NotificationStalledDetector {
 
     async runOnce(): Promise<number> {
         if (this.activeRun) return 0;
-        const run = this.executeRun(this.runGeneration);
+        const abortController = new AbortController();
+        const run = this.executeRun(this.runGeneration, abortController.signal);
         this.activeRun = run;
+        this.activeRunAbortController = abortController;
         void run.then(
-            () => { if (this.activeRun === run) this.activeRun = null; },
-            () => { if (this.activeRun === run) this.activeRun = null; }
+            () => { this.clearActiveRun(run); },
+            () => { this.clearActiveRun(run); }
         );
         try {
             return await withNotificationDeadline(
                 run,
                 this.operationTimeoutMs,
-                'notification stalled-activity run'
+                'notification stalled-activity run',
+                () => abortController.abort()
             );
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -109,6 +113,7 @@ export class NotificationStalledDetector {
 
     async stop(): Promise<void> {
         this.runGeneration++;
+        this.activeRunAbortController?.abort();
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
         const activeRun = this.activeRun;
@@ -119,18 +124,29 @@ export class NotificationStalledDetector {
         logger.info('Notification stalled-task detector stopped');
     }
 
-    private async executeRun(runGeneration: number): Promise<number> {
+    private clearActiveRun(run: Promise<number>): void {
+        if (this.activeRun !== run) return;
+        this.activeRun = null;
+        this.activeRunAbortController = null;
+    }
+
+    private async executeRun(runGeneration: number, signal: AbortSignal): Promise<number> {
         let lease: NotificationProjectionLease | undefined;
         let renewalTimer: NodeJS.Timeout | undefined;
         let renewalInFlight: Promise<boolean> | null = null;
         let leaseLost = false;
         let runValid = true;
+        let releaseInFlight: Promise<void> | null = null;
+        let cancellationCleanup: Promise<void> | null = null;
         const renewLease = (): Promise<boolean> => {
-            if (!lease || leaseLost) return Promise.resolve(!leaseLost);
+            const currentLease = lease;
+            if (!currentLease || leaseLost || signal.aborted) {
+                return Promise.resolve(!leaseLost && !signal.aborted);
+            }
             if (renewalInFlight) return renewalInFlight;
             const renewal = (async () => {
                 try {
-                    const renewed = await lease.renew();
+                    const renewed = await currentLease.renew();
                     if (!renewed) leaseLost = true;
                 } catch (error) {
                     leaseLost = true;
@@ -145,12 +161,34 @@ export class NotificationStalledDetector {
             });
             return renewal;
         };
+        const releaseLease = (): Promise<void> => {
+            if (releaseInFlight) return releaseInFlight;
+            const currentLease = lease;
+            lease = undefined;
+            if (!currentLease) return Promise.resolve();
+            releaseInFlight = currentLease.release().catch((error) => {
+                logger.warn({ error: error instanceof Error ? error.message : String(error) },
+                    'Failed to release notification stalled-activity lease');
+            });
+            return releaseInFlight;
+        };
+        const cancelRemainingWork = (): void => {
+            runValid = false;
+            if (renewalTimer) clearInterval(renewalTimer);
+            renewalTimer = undefined;
+            cancellationCleanup ??= (async () => {
+                if (renewalInFlight) await renewalInFlight;
+                await releaseLease();
+            })();
+        };
+        signal.addEventListener('abort', cancelRemainingWork, { once: true });
         try {
             if (this.acquireLease) {
                 const acquired = await this.acquireLease();
                 if (acquired === false) return 0;
                 if (typeof acquired === 'object') {
                     lease = acquired;
+                    if (signal.aborted) return 0;
                     renewalTimer = setInterval(() => { void renewLease(); },
                         lease.renewalIntervalMs ?? Math.max(1000, Math.floor(this.intervalMs / 2)));
                     renewalTimer.unref();
@@ -159,6 +197,7 @@ export class NotificationStalledDetector {
             if (lease && !await renewLease()) return 0;
             const shouldContinue = () => runValid
                 && !leaseLost
+                && !signal.aborted
                 && runGeneration === this.runGeneration;
             if (this.projector.reconcileTerminalTransitions) {
                 await this.projector.reconcileTerminalTransitions(shouldContinue);
@@ -174,16 +213,11 @@ export class NotificationStalledDetector {
             return 0;
         } finally {
             runValid = false;
+            signal.removeEventListener('abort', cancelRemainingWork);
             if (renewalTimer) clearInterval(renewalTimer);
-            if (renewalInFlight) await renewalInFlight;
-            if (lease) {
-                try {
-                    await lease.release();
-                } catch (error) {
-                    logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                        'Failed to release notification stalled-activity lease');
-                }
-            }
+            if (cancellationCleanup) await cancellationCleanup;
+            else if (renewalInFlight) await renewalInFlight;
+            await releaseLease();
         }
     }
 }

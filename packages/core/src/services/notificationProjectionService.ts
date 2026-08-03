@@ -22,6 +22,7 @@ import {
     isTerminalActivity,
     type IndexingTransitionIdentity,
     type SourceActivityRow,
+    type StalledActivityCursor,
     type TaskProjectionContext,
     type TaskTransitionIdentity
 } from './notificationProjectionStore.js';
@@ -37,6 +38,7 @@ import {
 } from './notificationProjectionFormatting.js';
 
 type TimestampInput = string | number | Date;
+const DEFAULT_STALLED_ACTIVITY_BATCH_SIZE = 100;
 
 function stablePayloadTransitionTimestamp(
     value: unknown,
@@ -68,6 +70,7 @@ export interface NotificationProjectionServiceOptions {
     database?: Knex;
     notificationService?: NotificationService;
     now?: () => TimestampInput;
+    stalledActivityBatchSize?: number;
 }
 
 export class NotificationProjectionService {
@@ -76,10 +79,18 @@ export class NotificationProjectionService {
     private readonly store: NotificationProjectionStore;
     private readonly reconciler: NotificationProjectionReconciler;
     private readonly now: () => TimestampInput;
+    private readonly stalledActivityBatchSize: number;
+    private stalledActivityCursor?: StalledActivityCursor;
 
     constructor(options: NotificationProjectionServiceOptions = {}) {
         this.database = options.database ?? db;
         this.now = options.now ?? (() => new Date());
+        this.stalledActivityBatchSize = options.stalledActivityBatchSize
+            ?? DEFAULT_STALLED_ACTIVITY_BATCH_SIZE;
+        if (!Number.isSafeInteger(this.stalledActivityBatchSize)
+            || this.stalledActivityBatchSize <= 0) {
+            throw new TypeError('stalledActivityBatchSize must be a positive safe integer');
+        }
         this.notifications = options.notificationService ?? new NotificationService({
             database: this.database,
             now: this.now
@@ -289,8 +300,13 @@ export class NotificationProjectionService {
         }
         const currentTimestamp = normalizeISO8601Timestamp(now);
         const cutoff = normalizeISO8601Timestamp(Date.parse(currentTimestamp) - stalledAfterMs);
-        const stalled = await this.store.getStalledActivities(cutoff);
+        const stalled = await this.store.getStalledActivities(
+            cutoff,
+            this.stalledActivityCursor,
+            this.stalledActivityBatchSize
+        );
         let claimed = 0;
+        let processed = 0;
         for (const activity of stalled) {
             if (!shouldContinue()) break;
             const { taskContext, recipients } = await this.getStalledRecipients(activity);
@@ -323,6 +339,18 @@ export class NotificationProjectionService {
                 return true;
             });
             if (created) claimed++;
+            this.stalledActivityCursor = {
+                lastActivityAt: activity.last_activity_at,
+                activityType: activity.activity_type,
+                activityKey: activity.activity_key
+            };
+            processed++;
+        }
+        // Rotate only after a complete final page. Rows that could not yet be
+        // delivered (for example, while entitlements are absent) are revisited
+        // after later rows have had a bounded opportunity to progress.
+        if (processed === stalled.length && stalled.length < this.stalledActivityBatchSize) {
+            this.stalledActivityCursor = undefined;
         }
         return claimed;
     }

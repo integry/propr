@@ -8,7 +8,9 @@ import { up as addProjectionState } from '../src/db/migrations/20260802020000_ad
 import { up as addIndexingTransitionIdentity } from '../src/db/migrations/20260802030000_add_indexing_transition_identity.js';
 import { up as hardenNotificationProjection } from '../src/db/migrations/20260802040000_harden_notification_projection.js';
 import { up as addIndexingTransitionHistory } from '../src/db/migrations/20260803000000_add_indexing_transition_history.js';
+import { up as addProjectionCheckpoints } from '../src/db/migrations/20260803010000_add_notification_projection_checkpoints.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
+import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
 import { NotificationService } from '../src/services/notificationService.js';
 import { NotificationStalledDetector } from '../src/services/notificationStalledDetector.js';
 import { NotificationSystemProjection } from '../src/services/notificationSystemProjection.js';
@@ -152,6 +154,7 @@ beforeEach(async () => {
     await addIndexingTransitionIdentity(database);
     await hardenNotificationProjection(database);
     await addIndexingTransitionHistory(database);
+    await addProjectionCheckpoints(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -894,6 +897,43 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.equal((await events()).length, 3);
     });
 
+    test('processes stalled activities in bounded cursor pages', async () => {
+        await seedPlanAndTask();
+        const boundedProjection = new NotificationProjectionService({
+            database,
+            now: () => SERVICE_TIME,
+            stalledActivityBatchSize: 2
+        });
+        for (let taskNumber = 2; taskNumber <= 5; taskNumber++) {
+            await database('tasks').insert({
+                task_id: `task-${taskNumber}`,
+                repository: 'integry/propr',
+                issue_number: 1718 + taskNumber,
+                task_type: 'issue',
+                initial_job_data: JSON.stringify({ userId: 'user-1' })
+            });
+        }
+        for (let taskNumber = 1; taskNumber <= 5; taskNumber++) {
+            await boundedProjection.projectTaskUpdate({
+                eventType: 'task:update',
+                taskId: `task-${taskNumber}`,
+                state: 'processing',
+                timestamp: EVENT_TIME
+            });
+        }
+
+        assert.equal(await boundedProjection.detectStalledActivities(
+            30 * 60 * 1000, '2026-08-02T09:00:00.000Z'
+        ), 2);
+        assert.equal(await boundedProjection.detectStalledActivities(
+            30 * 60 * 1000, '2026-08-02T09:00:00.000Z'
+        ), 2);
+        assert.equal(await boundedProjection.detectStalledActivities(
+            30 * 60 * 1000, '2026-08-02T09:00:00.000Z'
+        ), 1);
+        assert.equal((await events()).length, 5);
+    });
+
     test('uses live-details heartbeats and keeps stalled task navigation context', async () => {
         await seedPlanAndTask({ prNumber: 1720 });
         await projection.projectTaskUpdate({
@@ -1197,6 +1237,26 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.deepEqual(await database('notification_user_states').pluck('user_id'), ['user-1']);
     });
 
+    test('chunks entitlement filtering beyond SQLite placeholder limits', async () => {
+        const userIds = Array.from({ length: 1_200 }, (_value, index) => `wide-user-${index}`);
+        const rows = userIds.map((userId) => ({
+            user_id: userId,
+            repository: 'integry/propr',
+            verified_at: EVENT_TIME,
+            expires_at: '2026-08-03T08:00:00.000Z'
+        }));
+        for (let offset = 0; offset < rows.length; offset += 200) {
+            await database('notification_repository_entitlements')
+                .insert(rows.slice(offset, offset + 200));
+        }
+        const recipients = new NotificationProjectionRecipients(database, () => SERVICE_TIME);
+
+        const entitled = await recipients.filterCurrentlyEntitled('integry/propr', userIds);
+
+        assert.equal(entitled.length, userIds.length);
+        assert.deepEqual(new Set(entitled), new Set(userIds));
+    });
+
     test('reconciles terminal transitions that were never projected in memory', async () => {
         await seedPlanAndTask();
         await database('task_history').insert({
@@ -1260,8 +1320,56 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
                 .pluck('status'),
             ['completed', 'completed', 'failed']
         );
-        await projection.reconcileTerminalTransitions();
+        assert.equal(await projection.reconcileTerminalTransitions(), 0);
         assert.equal((await events()).length, 3);
+
+        const restartedProjection = new NotificationProjectionService({
+            database,
+            now: () => SERVICE_TIME
+        });
+        assert.equal(await restartedProjection.reconcileTerminalTransitions(), 0);
+    });
+
+    test('quarantines malformed reconciliation timestamps and reaches later rows', async () => {
+        await seedPlanAndTask();
+        await database('task_history').insert([
+            { task_id: 'task-1', state: 'failed', timestamp: 'not-a-task-time', metadata: '{}' },
+            { task_id: 'task-1', state: 'failed', timestamp: EVENT_TIME, metadata: '{}' }
+        ]);
+        await database('repositories').insert({
+            full_name: 'integry/propr',
+            branch: 'main',
+            indexing_status: 'failed',
+            indexing_transition_at: '2026-08-02T08:02:00.000Z',
+            indexing_run_id: 'valid-indexing-run',
+            updated_at: '2026-08-02T08:02:00.000Z'
+        });
+        await database('repository_indexing_transitions').insert([
+            {
+                full_name: 'integry/propr', branch: 'main', run_id: 'malformed-indexing-run',
+                status: 'failed', transition_at: 'not-an-indexing-time', observed_at: EVENT_TIME
+            },
+            {
+                full_name: 'integry/propr', branch: 'main', run_id: 'valid-indexing-run',
+                status: 'failed', transition_at: '2026-08-02T08:02:00.000Z',
+                observed_at: '2026-08-02T08:02:00.000Z'
+            }
+        ]);
+        await database('task_drafts').insert({
+            draft_id: 'draft-malformed',
+            repository: 'integry/propr',
+            user_id: 'user-1',
+            status: 'review',
+            review_transition_at: 'not-a-draft-time',
+            updated_at: '2026-08-02T07:59:00.000Z'
+        });
+
+        assert.equal(await projection.reconcileTerminalTransitions(), 3);
+        assert.deepEqual(
+            (await events()).map((event) => event.kind).sort(),
+            ['indexing', 'plan', 'task']
+        );
+        assert.equal(await projection.reconcileTerminalTransitions(), 0);
     });
 });
 
@@ -1486,7 +1594,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(closed, true);
     });
 
-    test('retains the latest bounded EventPublisher heartbeat work under contention', async () => {
+    test('retains the freshest bounded EventPublisher heartbeat work under contention', async () => {
         let release!: () => void;
         const gate = new Promise<void>(resolve => { release = resolve; });
         const projected: string[] = [];
@@ -1508,14 +1616,51 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         release();
         await publisher.close();
 
-        // Primary pending work remains bounded, while overflow coalesces once per
-        // activity so every latest heartbeat is eventually applied.
+        // The oldest distinct pending heartbeat is evicted when no coalescing key
+        // is shared, keeping the configured queue size as a hard bound.
         assert.deepEqual(projected, [
             'queued-1',
-            'queued-2',
             'queued-3',
             'deferred-at-capacity'
         ]);
+    });
+
+    test('keeps distinct heartbeat overflow within the documented global bound', async () => {
+        let release!: () => void;
+        let started!: () => void;
+        const activeStarted = new Promise<void>(resolve => { started = resolve; });
+        const queue = new NotificationProjectionQueue({
+            projector: async (payload) => {
+                if (payload.eventType === 'task:update' && payload.taskId === 'bound-blocker') {
+                    started();
+                    await new Promise<void>(resolve => { release = resolve; });
+                }
+            },
+            concurrency: 1,
+            maxSize: 3,
+            drainTimeoutMs: 1000
+        });
+        queue.enqueue({
+            eventType: 'task:update', taskId: 'bound-blocker', state: 'processing', timestamp: EVENT_TIME
+        });
+        await activeStarted;
+
+        for (let index = 0; index < 100; index++) {
+            assert.ok(queue.enqueue({
+                eventType: 'task:live:update',
+                taskId: `distinct-heartbeat-${index}`,
+                events: [],
+                todos: [],
+                currentTask: 'working',
+                tokenUsage: null,
+                timestamp: EVENT_TIME
+            }));
+            assert.ok(queue.queueSize <= 3);
+        }
+
+        assert.equal(queue.queueSize, 3);
+        release();
+        assert.equal((await queue.close()).drained, true);
     });
 
     test('prioritizes terminal projections when low-value work fills the queue', async () => {
@@ -1845,5 +1990,32 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(await detector.runOnce(), 0);
         assert.equal(await detector.runOnce(), 0);
         assert.equal(attempts, 1);
+    });
+
+    test('invalidates remaining stalled work when its operation deadline expires', async () => {
+        let continuedAfterDeadline = true;
+        let releases = 0;
+        const detector = new NotificationStalledDetector({
+            projector: {
+                detectStalledActivities: async (_stalledAfterMs, _now, shouldContinue) => {
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                    continuedAfterDeadline = shouldContinue?.() ?? true;
+                    return 0;
+                }
+            },
+            intervalMs: 60_000,
+            stalledAfterMs: 30_000,
+            operationTimeoutMs: 10,
+            acquireLease: async () => ({
+                renewalIntervalMs: 60_000,
+                renew: async () => true,
+                release: async () => { releases++; }
+            })
+        });
+
+        assert.equal(await detector.runOnce(), 0);
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(continuedAfterDeadline, false);
+        assert.equal(releases, 1);
     });
 });

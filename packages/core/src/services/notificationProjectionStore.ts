@@ -54,6 +54,12 @@ export interface SourceActivityRow {
     stalled_notified_at: string | null;
 }
 
+export interface StalledActivityCursor {
+    lastActivityAt: string;
+    activityType: SourceActivityRow['activity_type'];
+    activityKey: string;
+}
+
 export interface SystemTransition {
     component: string;
     status: string;
@@ -597,14 +603,33 @@ export class NotificationProjectionStore {
         return 'applied';
     }
 
-    async getStalledActivities(cutoff: ISO8601Timestamp): Promise<SourceActivityRow[]> {
-        return this.database<SourceActivityRow>('notification_source_activity')
+    async getStalledActivities(
+        cutoff: ISO8601Timestamp,
+        cursor: StalledActivityCursor | undefined,
+        limit: number
+    ): Promise<SourceActivityRow[]> {
+        const query = this.database<SourceActivityRow>('notification_source_activity')
             .select('*')
             .whereNull('completed_at')
             .whereNull('stalled_notified_at')
             .whereIn('status', ['queued', 'processing'])
-            .where('last_activity_at', '<=', cutoff)
-            .orderBy('last_activity_at', 'asc');
+            .where('last_activity_at', '<=', cutoff);
+        if (cursor) {
+            query.andWhere((afterCursor) => afterCursor
+                .where('last_activity_at', '>', cursor.lastActivityAt)
+                .orWhere((sameTimestamp) => sameTimestamp
+                    .where('last_activity_at', '=', cursor.lastActivityAt)
+                    .andWhere((afterIdentity) => afterIdentity
+                        .where('activity_type', '>', cursor.activityType)
+                        .orWhere((sameType) => sameType
+                            .where('activity_type', '=', cursor.activityType)
+                            .where('activity_key', '>', cursor.activityKey)))));
+        }
+        return query
+            .orderBy('last_activity_at', 'asc')
+            .orderBy('activity_type', 'asc')
+            .orderBy('activity_key', 'asc')
+            .limit(limit);
     }
 
     async claimStalledActivity(

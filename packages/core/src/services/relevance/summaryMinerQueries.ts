@@ -35,10 +35,20 @@ export function createIndexingRunIdentity(now: Date = new Date()): IndexingRunId
   return { runId: randomUUID(), transitionAt: now.toISOString() };
 }
 
-/** BullMQ's atomic repository/branch ownership key for live indexing work. */
-export function createIndexingQueueJobId(fullName: string, branch: string = 'HEAD'): string {
+/** BullMQ's atomic repository/branch deduplication key for live indexing work. */
+export function createIndexingQueueDeduplicationId(fullName: string, branch: string = 'HEAD'): string {
   const digest = createHash('sha256').update(`${fullName}\0${branch}`).digest('hex');
   return `index-repository-${digest}`;
+}
+
+/** A run-scoped job ID lets Queue.add() report whether deduplication accepted this run. */
+export function createIndexingQueueJobId(
+  fullName: string,
+  branch: string = 'HEAD',
+  runId?: string
+): string {
+  const deduplicationId = createIndexingQueueDeduplicationId(fullName, branch);
+  return runId ? `${deduplicationId}-${runId}` : deduplicationId;
 }
 
 /**
@@ -160,6 +170,37 @@ export async function updateRepositoryStatus(
     return { transitionAt, runId, applied: true };
     }
   );
+}
+
+/**
+ * Records a queued run's cancellation without replacing another run's current
+ * repository status. Reconciliation can therefore recover the run-scoped
+ * terminal projection without treating a rejected ownership transition as
+ * authoritative.
+ */
+export async function recordSkippedIndexingRun(
+  fullName: string,
+  branch: string,
+  indexingRun: IndexingRunIdentity
+): Promise<RepositoryStatusTransition> {
+  return db.transaction(async (transaction) => {
+    const repositoryExists = await transaction('repositories')
+      .where({ full_name: fullName, branch })
+      .first('full_name');
+    if (!repositoryExists) return { ...indexingRun, applied: false };
+    await transaction('repository_indexing_transitions')
+      .insert({
+        full_name: fullName,
+        branch,
+        run_id: indexingRun.runId,
+        status: 'idle',
+        transition_at: indexingRun.transitionAt,
+        observed_at: new Date().toISOString()
+      })
+      .onConflict(['full_name', 'branch', 'run_id', 'status', 'transition_at'])
+      .ignore();
+    return { ...indexingRun, applied: true };
+  });
 }
 
 /**

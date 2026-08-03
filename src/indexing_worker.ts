@@ -8,7 +8,8 @@ import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import {
-    indexRepo, updateRepositoryStatus, createIndexingRunIdentity, createIndexingQueueJobId,
+    indexRepo, updateRepositoryStatus, createIndexingRunIdentity,
+    createIndexingQueueDeduplicationId, createIndexingQueueJobId,
     publishIndexingStatus
 } from '@propr/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
@@ -68,7 +69,7 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
         // Note: We no longer clear summaries before indexing. If fullReindex is true,
         // indexRepo will process all files but preserve existing summaries as fallback
         // in case of failure. Old summaries for deleted files are cleaned up by indexRepo.
-        await indexRepo(repoPath, {
+        const outcome = await indexRepo(repoPath, {
             correlationId,
             fullName: repository,
             branch: baseBranch,
@@ -78,6 +79,15 @@ async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingRe
         });
 
         const duration = Date.now() - startTime;
+        if (outcome !== 'indexed') {
+            correlatedLogger.info({ repository, duration, outcome }, 'Indexing job skipped');
+            return {
+                status: 'skipped',
+                success: true,
+                duration,
+                reason: outcome
+            };
+        }
         correlatedLogger.info({ repository, duration }, 'Indexing job completed successfully');
 
         return {
@@ -198,8 +208,9 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
     const priority = reason === 'previous indexing failed' ? 'high' : 'normal';
 
     const requestedRun = createIndexingRunIdentity();
-    const jobId = createIndexingQueueJobId(repoName, branch);
-    await indexingQueue.add(
+    const deduplicationId = createIndexingQueueDeduplicationId(repoName, branch);
+    const jobId = createIndexingQueueJobId(repoName, branch, requestedRun.runId);
+    const job = await indexingQueue.add(
         'indexRepository',
         {
             repository: repoName,
@@ -210,17 +221,17 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
             ...requestedRun
         },
         {
-            // BullMQ evaluates custom job IDs atomically. All producers use the
-            // same repository/branch key, closing the getJobs()/add() race.
             jobId,
+            // The stable deduplication ID owns the repository/branch while the
+            // unique job ID identifies which producer BullMQ accepted.
+            deduplication: { id: deduplicationId },
             priority: reason === 'previous indexing failed' ? 1 : 5,
             removeOnComplete: true,
             removeOnFail: true
         }
     );
-    const stored = await indexingQueue.getJob(jobId);
-    if (stored && stored.data.runId !== requestedRun.runId) {
-        log.debug({ repository: repoName, branch, existingRunId: stored.data.runId },
+    if (job.id !== jobId) {
+        log.debug({ repository: repoName, branch, existingJobId: job.id },
             'Indexing job won an atomic enqueue race, skipping duplicate');
         return;
     }
@@ -392,7 +403,9 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
                 const transition = await updateRepositoryStatus(job.data.repository, 'failed', branch, {
                     runId: job.data.runId
                 });
-                await publishIndexingStatus(job.data.repository, branch, 'failed', transition);
+                if (transition.applied) {
+                    await publishIndexingStatus(job.data.repository, branch, 'failed', transition);
+                }
             } catch (updateError) {
                 logger.error(
                     { repository: job.data.repository, branch, error: (updateError as Error).message },

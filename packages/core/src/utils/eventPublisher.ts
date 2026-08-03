@@ -30,6 +30,7 @@ const NOTIFICATION_PROJECTION_DEADLINE_MS = 250;
 const NOTIFICATION_PROJECTION_MAX_QUEUE_SIZE = 512;
 const NOTIFICATION_PROJECTION_CONCURRENCY = 2;
 const NOTIFICATION_PROJECTION_DRAIN_TIMEOUT_MS = 5 * 1000;
+const NOTIFICATION_PROJECTION_WARNING_INTERVAL_MS = 60 * 1000;
 
 export interface EventPublisherOptions {
   now?: () => Date;
@@ -54,6 +55,8 @@ class EventPublisher {
   private readonly projectionDeadlineMs: number;
   private readonly projectionQueue: NotificationProjectionQueue;
   private readonly projectionDrainTimeoutMs: number;
+  private lastProjectionDeadlineWarningAt = 0;
+  private suppressedProjectionDeadlineWarnings = 0;
 
   constructor(options: EventPublisherOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -106,11 +109,24 @@ class EventPublisher {
     ]);
     if (timeout) clearTimeout(timeout);
     if (!completed) {
-      logger.warn({
-        eventType: payload.eventType,
-        deadlineMs: this.projectionDeadlineMs
-      }, 'Notification projection exceeded the publication deadline and continues in background');
+      this.warnProjectionDeadline(payload);
     }
+  }
+
+  private warnProjectionDeadline(payload: EventPayload): void {
+    const now = Date.now();
+    if (this.lastProjectionDeadlineWarningAt > 0
+        && now - this.lastProjectionDeadlineWarningAt < NOTIFICATION_PROJECTION_WARNING_INTERVAL_MS) {
+      this.suppressedProjectionDeadlineWarnings++;
+      return;
+    }
+    logger.warn({
+      eventType: payload.eventType,
+      deadlineMs: this.projectionDeadlineMs,
+      suppressedSinceLastWarning: this.suppressedProjectionDeadlineWarnings
+    }, 'Notification projection exceeded the publication deadline and continues in background');
+    this.lastProjectionDeadlineWarningAt = now;
+    this.suppressedProjectionDeadlineWarnings = 0;
   }
 
   /**

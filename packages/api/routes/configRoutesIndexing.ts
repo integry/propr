@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { publishIndexingStatus } from '@propr/core';
 import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 import type { AgentConfig } from '@propr/core';
@@ -52,20 +51,6 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       // Report the normalized branch the job was actually queued under so clients
       // and status matching stay consistent when baseBranch is omitted/whitespace.
       const effectiveBranch = result.baseBranch ?? 'HEAD';
-
-      // Best-effort optimistic status for newly accepted jobs only.
-      try {
-        await publishIndexingStatus(
-          repository,
-          effectiveBranch,
-          'indexing',
-          result.transitionAt && result.runId
-            ? { transitionAt: result.transitionAt, runId: result.runId }
-            : undefined
-        );
-      } catch (pubErr) {
-        console.warn('Failed to publish optimistic indexing status:', pubErr);
-      }
 
       await logActivityHelper(
         `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository} (branch: ${effectiveBranch})`,
@@ -139,21 +124,6 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       if (!result.success) {
         res.status(500).json({ error: result.message || 'Failed to stop indexing' });
         return;
-      }
-
-      // Emit idle immediately for both removed queued jobs and cancellation requests.
-      // Active workers may still emit a later terminal event after they observe the
-      // cancellation flag, but the UI should reflect the stop request right away.
-      const transitionsToPublish = [
-        ...result.cancelledActiveRuns,
-        ...result.removedQueuedRuns
-      ];
-      for (const transition of transitionsToPublish) {
-        try {
-          await publishIndexingStatus(repository, transition.branch, 'idle', transition);
-        } catch {
-          // Best-effort — don't fail the stop request if publishing fails
-        }
       }
 
       const branchInfo = branch ? ` (branch: ${branch})` : '';

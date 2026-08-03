@@ -175,8 +175,9 @@ export { mineGitHistory, mineGitHistoryWithLLM, getCommitHistory, formatCommitLo
 export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, SemanticMinerResponse, SemanticMiningOptions } from './services/relevance/gitMiner.js';
 export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
-export type { FileSummary, DirectorySummary, IndexingOptions } from './services/relevance/summaryMiner.js';
+export type { FileSummary, DirectorySummary, IndexingOptions, IndexingOutcome } from './services/relevance/summaryMiner.js';
 export {
+  createIndexingQueueDeduplicationId,
   createIndexingQueueJobId,
   createIndexingRunIdentity
 } from './services/relevance/summaryMinerQueries.js';
@@ -430,6 +431,10 @@ export {
 export type {
     NotificationProjectionServiceOptions
 } from './services/notificationProjectionService.js';
+export {
+    DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS,
+    getNotificationIndexingTransitionRetentionMs
+} from './services/notificationProjectionReconciler.js';
 export {
     NotificationSystemProjection,
     notificationSystemProjection,

@@ -2,7 +2,8 @@ import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
-  updateRepositoryStatus, createIndexingRunIdentity, createIndexingQueueJobId,
+  updateRepositoryStatus, createIndexingRunIdentity, createIndexingQueueDeduplicationId,
+  createIndexingQueueJobId,
   requestIndexingCancellation, fetchLatestChanges, publishIndexingStatus, db
 } from '@propr/core';
 import type { IndexingJobData } from '@propr/core';
@@ -15,8 +16,6 @@ export interface QueueIndexingResult {
   jobId?: string;
   correlationId?: string;
   baseBranch?: string;
-  transitionAt?: string;
-  runId?: string;
 }
 
 export interface StopIndexingResult {
@@ -173,8 +172,9 @@ async function queueResummarizationForRepo({
 
   const correlationId = generateCorrelationId();
   const requestedRun = deps.createIndexingRunIdentity();
-  const jobId = createIndexingQueueJobId(repoFullName, effectiveBranch);
-  await queue.add(
+  const deduplicationId = createIndexingQueueDeduplicationId(repoFullName, effectiveBranch);
+  const jobId = createIndexingQueueJobId(repoFullName, effectiveBranch, requestedRun.runId);
+  const job = await queue.add(
     'indexRepository',
     {
       repository: repoFullName,
@@ -190,12 +190,16 @@ async function queueResummarizationForRepo({
     },
     {
       jobId,
+      deduplication: { id: deduplicationId },
       priority: 2,
       removeOnComplete: true,
       removeOnFail: true
     }
   );
-  if (!await acceptedRequestedRun(queue, jobId, requestedRun.runId)) return 'skippedAlreadyQueued';
+  // BullMQ returns the existing job's ID when its atomic deduplication key wins.
+  // The returned run-scoped ID remains decisive even if that job is removed
+  // immediately after Queue.add() completes.
+  if (job.id !== jobId) return 'skippedAlreadyQueued';
   await publishIndexingRunBestEffort({
     publisher: deps.publishIndexingStatus, repository: repoFullName,
     branch: effectiveBranch, phase: 'indexing', transition: requestedRun
@@ -206,17 +210,6 @@ async function queueResummarizationForRepo({
 
 function getRepoBranchKey(repository: string, branch?: string): string {
   return `${repository}:${configManager.normalizeSummarizationBranch(branch)}`;
-}
-
-async function acceptedRequestedRun(
-  queue: Awaited<ReturnType<typeof getIndexingQueue>>,
-  jobId: string,
-  runId: string
-): Promise<boolean> {
-  const stored = await queue.getJob(jobId);
-  // A very small job can finish and be removed before this read. In that case no
-  // overlap remains, and the accepted operation has already reached its worker.
-  return stored === undefined || stored === null || stored.data.runId === runId;
 }
 
 const DELAYED_REINDEX_KEY = 'config:summarization:delayed-reindex';
@@ -324,7 +317,8 @@ export async function queueIndexingJob(
 
   const correlationId = generateCorrelationId();
   const requestedRun = createIndexingRunIdentity();
-  const jobId = createIndexingQueueJobId(repository, effectiveBranch);
+  const deduplicationId = createIndexingQueueDeduplicationId(repository, effectiveBranch);
+  const jobId = createIndexingQueueJobId(repository, effectiveBranch, requestedRun.runId);
   const job = await queue.add(
     'indexRepository',
     {
@@ -335,12 +329,13 @@ export async function queueIndexingJob(
     },
     {
       jobId,
+      deduplication: { id: deduplicationId },
       priority: 1,
       removeOnComplete: true,
       removeOnFail: true
     }
   );
-  if (!await acceptedRequestedRun(queue, jobId, requestedRun.runId)) {
+  if (job.id !== jobId) {
     return { success: false, error: 'Indexing job already queued for this repository and branch' };
   }
   await publishIndexingRunBestEffort({
@@ -354,9 +349,7 @@ export async function queueIndexingJob(
     success: true,
     jobId: job.id,
     correlationId,
-    baseBranch: effectiveBranch,
-    transitionAt: requestedRun.transitionAt,
-    runId: requestedRun.runId
+    baseBranch: effectiveBranch
   };
 }
 
@@ -395,6 +388,7 @@ export async function stopIndexingJob(
         const transition = await deps.updateRepositoryStatus(repository, 'idle', jobBranch, {
           ...(runId ? { runId } : {})
         });
+        if (!transition.applied) continue;
         await publishIndexingRunBestEffort({
           publisher: deps.publishIndexingStatus, repository,
           branch: jobBranch, phase: 'idle', transition
@@ -411,6 +405,7 @@ export async function stopIndexingJob(
       const transition = await deps.updateRepositoryStatus(repository, 'idle', jobBranch, {
         ...(runId ? { runId } : {})
       });
+      if (!transition.applied) continue;
       await publishIndexingRunBestEffort({
         publisher: deps.publishIndexingStatus, repository,
         branch: jobBranch, phase: 'idle', transition

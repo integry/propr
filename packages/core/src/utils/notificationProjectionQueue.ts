@@ -92,17 +92,14 @@ function shouldReplaceCoalescedPayload(current: EventPayload, incoming: EventPay
 
 export class NotificationProjectionQueue {
     private readonly queue: NotificationProjectionJob[] = [];
-    // One coalesced overflow heartbeat per source activity prevents queue
-    // pressure from manufacturing a stall while the bounded primary queue is
-    // occupied by other work.
-    private readonly deferredHeartbeats = new Map<string, NotificationProjectionJob>();
     private readonly drainWaiters = new Set<() => void>();
     private active = 0;
     private closing = false;
 
     constructor(private readonly options: NotificationProjectionQueueOptions) {}
 
-    get queueSize(): number { return this.queue.length + this.deferredHeartbeats.size; }
+    /** Pending work is globally bounded by maxSize; active work is reported separately. */
+    get queueSize(): number { return this.queue.length; }
     get activeCount(): number { return this.active; }
     get isClosing(): boolean { return this.closing; }
 
@@ -111,8 +108,7 @@ export class NotificationProjectionQueue {
         const terminal = isTerminalProjection(payload);
         const coalesceKey = projectionCoalesceKey(payload);
         if (coalesceKey) {
-            const existing = this.queue.find((job) => job.coalesceKey === coalesceKey)
-                ?? this.deferredHeartbeats.get(coalesceKey);
+            const existing = this.queue.find((job) => job.coalesceKey === coalesceKey);
             if (existing) {
                 if (shouldReplaceCoalescedPayload(existing.payload, payload)) existing.payload = payload;
                 // The original job already owns the tracked completion. Returning
@@ -130,35 +126,33 @@ export class NotificationProjectionQueue {
             attempts: 0,
             resolves: [resolveCompletion]
         };
-        const terminalNeedsPriority = terminal
-            && this.queue.length + this.active >= this.options.maxSize
-            && this.queue.some((queued) => !queued.terminal);
-        const saturated = this.queue.length >= this.options.maxSize || terminalNeedsPriority;
-        if (saturated) {
+        if (this.queue.length >= this.options.maxSize) {
             const evictIndex = terminal
                 ? this.queue.findIndex((queued) => !queued.terminal)
                 : this.queue.findIndex((queued) => queued.terminal);
-            // A current heartbeat protects liveness and stalled-alert accuracy.
-            // Terminal work has durable reconciliation, so it is safer to defer
-            // one terminal item than to discard the only fresh activity signal.
-            if (evictIndex < 0 && !terminal && coalesceKey) {
-                this.deferHeartbeat(job);
-                return completion;
-            }
             if (evictIndex >= 0) {
                 const [evicted] = this.queue.splice(evictIndex, 1);
-                if (!evicted.terminal && evicted.coalesceKey) this.deferHeartbeat(evicted);
-                else this.resolveJob(evicted);
+                this.resolveJob(evicted);
                 logger.debug({
                     eventType: evicted.payload.eventType,
                     replacementEventType: payload.eventType
                 }, terminal
-                    ? 'Deferred low-priority notification projection for a terminal transition'
-                    : 'Deferred a recoverable terminal projection to retain current liveness');
-            } else {
+                    ? 'Evicted low-priority notification projection for a terminal transition'
+                    : 'Evicted a recoverable terminal projection to retain current liveness');
+            } else if (terminal) {
                 // Terminal source transitions are recovered by the durable
                 // reconciler; never let unique terminal bursts exceed the bound.
                 return null;
+            } else {
+                // With only distinct heartbeats pending, retain the freshest
+                // liveness evidence and evict the oldest. This is deliberately
+                // lossy, but the queue's maxSize remains a hard memory bound.
+                const evicted = this.queue.shift()!;
+                this.resolveJob(evicted);
+                logger.debug({
+                    eventType: evicted.payload.eventType,
+                    replacementEventType: payload.eventType
+                }, 'Evicted oldest notification heartbeat at queue capacity');
             }
         }
         if (terminal) {
@@ -172,7 +166,7 @@ export class NotificationProjectionQueue {
 
     async close(): Promise<NotificationProjectionQueueCloseResult> {
         this.closing = true;
-        if (this.active === 0 && this.queue.length === 0 && this.deferredHeartbeats.size === 0) {
+        if (this.active === 0 && this.queue.length === 0) {
             return { drained: true, active: 0, queued: 0 };
         }
         let waiter!: () => void;
@@ -191,17 +185,13 @@ export class NotificationProjectionQueue {
         const result = { drained, active: this.active, queued: this.queueSize };
         if (!drained) {
             for (const job of this.queue.splice(0)) this.resolveJob(job);
-            for (const job of this.deferredHeartbeats.values()) this.resolveJob(job);
-            this.deferredHeartbeats.clear();
         }
         return result;
     }
 
     private pump(): void {
-        this.promoteDeferredHeartbeats();
         while (this.active < this.options.concurrency && this.queue.length > 0) {
             this.startJob(this.queue.shift()!);
-            this.promoteDeferredHeartbeats();
         }
     }
 
@@ -231,53 +221,26 @@ export class NotificationProjectionQueue {
     }
 
     private requeue(job: NotificationProjectionJob): boolean {
+        if (job.coalesceKey) {
+            const newer = this.queue.find((queued) => queued.coalesceKey === job.coalesceKey);
+            if (newer) {
+                newer.resolves.push(...job.resolves);
+                return true;
+            }
+        }
         if (this.queue.length >= this.options.maxSize) {
-            // A retried heartbeat is the newest known liveness signal. Prefer
-            // deferring a durably recoverable terminal transition before
-            // replacing another activity's heartbeat.
             const evictIndex = job.terminal
                 ? this.queue.findIndex((queued) => !queued.terminal)
                 : this.queue.findIndex((queued) => queued.terminal);
-            if (evictIndex < 0 && !job.terminal && job.coalesceKey) {
-                this.deferHeartbeat(job);
-                return true;
-            }
+            // A retry is older than every newly queued heartbeat, so do not
+            // displace fresher same-priority liveness work at capacity.
             if (evictIndex < 0) return false;
             const [evicted] = this.queue.splice(evictIndex, 1);
-            if (!evicted.terminal && evicted.coalesceKey) this.deferHeartbeat(evicted);
-            else this.resolveJob(evicted);
+            this.resolveJob(evicted);
         }
         if (job.terminal) this.queue.unshift(job);
         else this.queue.push(job);
         return true;
-    }
-
-    private deferHeartbeat(job: NotificationProjectionJob): void {
-        if (!job.coalesceKey) {
-            this.resolveJob(job);
-            return;
-        }
-        const existing = this.deferredHeartbeats.get(job.coalesceKey);
-        if (!existing) {
-            this.deferredHeartbeats.set(job.coalesceKey, job);
-            return;
-        }
-        if (shouldReplaceCoalescedPayload(existing.payload, job.payload)) {
-            existing.payload = job.payload;
-        }
-        existing.resolves.push(...job.resolves);
-    }
-
-    private promoteDeferredHeartbeats(): void {
-        while (this.queue.length < this.options.maxSize && this.deferredHeartbeats.size > 0) {
-            const entry = this.deferredHeartbeats.entries().next().value as
-                | [string, NotificationProjectionJob]
-                | undefined;
-            if (!entry) return;
-            const [key, job] = entry;
-            this.deferredHeartbeats.delete(key);
-            this.queue.push(job);
-        }
     }
 
     private resolveJob(job: NotificationProjectionJob): void {
@@ -285,7 +248,7 @@ export class NotificationProjectionQueue {
     }
 
     private resolveDrainWaiters(): void {
-        if (this.active > 0 || this.queue.length > 0 || this.deferredHeartbeats.size > 0) return;
+        if (this.active > 0 || this.queue.length > 0) return;
         for (const resolve of this.drainWaiters) resolve();
         this.drainWaiters.clear();
     }

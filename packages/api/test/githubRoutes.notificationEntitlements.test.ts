@@ -4,6 +4,7 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '../../core/src/db/connection.js';
 import { up as hardenNotificationProjection } from '../../core/src/db/migrations/20260802040000_harden_notification_projection.js';
 import {
+  createNotificationEntitlementRefreshMiddleware,
   persistNotificationRepositoryEntitlementsBestEffort,
   refreshNotificationRepositoryEntitlements,
 } from '../routes/githubRoutes.js';
@@ -90,6 +91,50 @@ test('an empty access snapshot remains refreshable without repeatedly scanning G
     .then(row => Number(row?.count)), 0);
   assert.equal(await database('notification_repository_entitlement_snapshots').count({ count: '*' }).first()
     .then(row => Number(row?.count)), 1);
+});
+
+test('ordinary API middleware does not await a full entitlement refresh', async () => {
+  let finishRefresh!: () => void;
+  let refreshFinished = false;
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    refresh: async () => {
+      await new Promise<void>(resolve => { finishRefresh = resolve; });
+      refreshFinished = true;
+    },
+  });
+  let nextCalls = 0;
+
+  middleware({
+    user: { id: 'background-user', accessToken: 'token' },
+    path: '/config/repos',
+  } as never, {} as never, () => { nextCalls++; });
+
+  assert.equal(nextCalls, 1);
+  assert.equal(refreshFinished, false);
+  finishRefresh();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshFinished, true);
+});
+
+test('failed entitlement refreshes are throttled until the retry window', async () => {
+  let scans = 0;
+  const listRepositories = async (): Promise<string[]> => {
+    scans++;
+    throw new Error('GitHub unavailable');
+  };
+  const options = {
+    userId: 'backoff-user', accessToken: 'token', database, listRepositories,
+  };
+
+  await assert.rejects(refreshNotificationRepositoryEntitlements(options), /GitHub unavailable/);
+  await refreshNotificationRepositoryEntitlements(options);
+  assert.equal(scans, 1);
+
+  await assert.rejects(
+    refreshNotificationRepositoryEntitlements({ ...options, force: true }),
+    /GitHub unavailable/
+  );
+  assert.equal(scans, 2);
 });
 
 test('entitlement bookkeeping failure remains best-effort for repository browsing', async () => {
