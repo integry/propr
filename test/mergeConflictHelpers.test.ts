@@ -1,13 +1,36 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '@propr/core';
 
 // Import the helpers directly (no external dependencies needed)
 import {
     buildConflictResolutionPrompt,
     buildMergeConflictCommitMessage,
     buildMergeConflictComment,
+    getAgentFailureDetail,
     mergeConflictJobToCommentJob,
 } from '../src/jobs/mergeConflictHelpers.js';
+
+after(async () => {
+    await closeConnection();
+});
+
+describe('getAgentFailureDetail', () => {
+    test('bounds explicit error details', () => {
+        const detail = getAgentFailureDetail({ error: `failure: ${'x'.repeat(2000)}` });
+
+        assert.strictEqual(detail.length, 1000);
+        assert.ok(detail.endsWith('… [truncated]'));
+    });
+
+    test('does not expose raw agent logs or output', () => {
+        const secret = 'repository source and secret token';
+        const detail = getAgentFailureDetail({ logs: secret, rawOutput: secret });
+
+        assert.strictEqual(detail, 'Agent execution failed; detailed output is available in restricted logs.');
+        assert.ok(!detail.includes(secret));
+    });
+});
 
 describe('buildConflictResolutionPrompt', () => {
     test('includes all conflicted files in the prompt', () => {

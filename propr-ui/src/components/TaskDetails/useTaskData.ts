@@ -19,6 +19,7 @@ import {
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
 import type { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import { isAnalysisData } from './apiDataGuards';
 
 interface TaskHistoryData {
   history?: HistoryItem[];
@@ -230,8 +231,8 @@ export const useTaskData = (taskId: string | undefined) => {
         const analysisData = await getTaskAnalysis(taskId);
         const nextAnalysis = analysisData.analysis;
         setAnalysis(
-          typeof nextAnalysis === 'object' && nextAnalysis !== null
-            ? nextAnalysis as AnalysisData
+          isAnalysisData(nextAnalysis)
+            ? nextAnalysis
             : typeof nextAnalysis === 'string'
               ? { analysis: nextAnalysis }
               : null

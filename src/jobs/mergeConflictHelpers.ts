@@ -6,6 +6,28 @@ import type { WorkerStateManager } from '@propr/core';
 import { db, TaskStates } from '@propr/core';
 import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle } from './prTaskTitleHelpers.js';
 
+const MAX_AGENT_FAILURE_DETAIL_LENGTH = 1000;
+const RESTRICTED_FAILURE_DETAIL = 'Agent execution failed; detailed output is available in restricted logs.';
+
+/**
+ * Returns a bounded, user-safe failure summary. Full agent logs and raw output are
+ * persisted separately and must not be copied into task history or comments.
+ */
+export function getAgentFailureDetail(result: {
+    error?: string | null;
+    logs?: unknown;
+    rawOutput?: unknown;
+}): string {
+    const detail = result.error?.trim();
+    if (!detail) {
+        return result.logs || result.rawOutput ? RESTRICTED_FAILURE_DETAIL : 'Unknown error';
+    }
+    if (detail.length <= MAX_AGENT_FAILURE_DETAIL_LENGTH) return detail;
+
+    const suffix = '… [truncated]';
+    return `${detail.slice(0, MAX_AGENT_FAILURE_DETAIL_LENGTH - suffix.length)}${suffix}`;
+}
+
 /**
  * Builds a prompt that instructs the agent to check for and resolve any merge conflicts
  * after merging the target (base) branch into the PR branch.

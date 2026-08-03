@@ -160,12 +160,13 @@ describe('setupWizardHooks branch resolution', () => {
 
   it('preserves the current base branch when an edit-mode draft is temporarily unavailable', async () => {
     const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    const initialProps: { draft: PlannerDraft | undefined } = { draft: makeDraft() };
     mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
-    const { result, rerender } = renderHook(({ draft }) => {
+    const { result, rerender } = renderHook(({ draft }: { draft: PlannerDraft | undefined }) => {
       const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
-      const state = useRepoInfoLoader(false, draft as never, setConfig);
+      const state = useRepoInfoLoader(false, draft, setConfig);
       return { config, state };
-    }, { initialProps: { draft: makeDraft() as PlannerDraft | undefined } });
+    }, { initialProps });
 
     await waitFor(() => expect(result.current.state.isLoading).toBe(true));
     rerender({ draft: undefined });

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
 import { DEFAULT_INSTRUCTIONS, RepoToMonitor } from '@propr/core';
-import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY } from './configHelpers.js';
+import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, resolveConfigStore } from './configHelpers.js';
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
@@ -114,19 +114,23 @@ async function saveThenPublishConfigUpdate({
   committedErrorMessage: string;
   successBody: Record<string, unknown>;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
+  await lock?.assertLockHeld();
   await save();
+  // Persistence is durable once save resolves. Record that before any
+  // post-commit notification so lock loss cannot make a committed write look
+  // safe to retry.
+  lock?.markCommitted();
   try {
     await publish();
   } catch {
     return { status: 500, body: { error: committedErrorMessage, committed: true } };
   }
-  lock?.markCommitted();
   return { status: 200, body: successBody };
 }
 
 export function createConfigRoutes(deps: ConfigRoutesDeps) {
   const { redisClient } = deps;
-  const configStore = { ...configManager, ...deps.configStore };
+  const configStore = resolveConfigStore(deps.configStore);
   const database = deps.database ?? configManager.db;
   const publishConfigUpdate = async (subtype: string): Promise<void> => {
     try {
@@ -236,6 +240,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           await database.transaction(async trx => {
             await configStore.saveMonitoredRepos(processedRepos, trx);
             await configStore.clearRemovedRepositoryIndexData(previousRepos, processedRepos, trx);
+            await lock.assertLockHeld();
           });
         },
         publish: async () => {

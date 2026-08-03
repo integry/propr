@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       expected_version:
-        description: 'Optional version that must match package.json, for example 0.8.0'
-        required: false
+        description: 'Version that must match package.json and CHANGELOG.md, for example 0.8.0'
+        required: true
         type: string
       ghcr_namespace:
         description: 'GHCR namespace to publish under'
@@ -23,7 +23,7 @@ on:
       push_latest:
         description: 'Also update the latest tags'
         required: true
-        default: true
+        default: false
         type: boolean
 
 concurrency:
@@ -35,13 +35,147 @@ permissions:
   packages: write
 
 jobs:
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.expected_version) }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: npm run release:verify
+
+      - name: Run lint and typecheck gates
+        run: |
+          npm run lint -- --max-warnings 0
+          npm run typecheck
+          npm run lint --workspaces --if-present -- --max-warnings 0
+          npm run typecheck --workspaces --if-present
+
+      - name: Validate docs
+        working-directory: docs
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Build test dependencies
+        run: npm run test:prepare
+
+      - name: Start isolated Redis
+        run: ./scripts/ci-redis.sh start
+
+      - name: Run full server and UI suites
+        env:
+          NODE_ENV: test
+        run: npm run test:full:prepared
+
+      - name: Stop isolated Redis
+        if: always()
+        run: ./scripts/ci-redis.sh stop
+
+  publish-cli:
+    name: Publish CLI with provenance
+    if: github.ref_type == 'tag'
+    needs: validate-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install npm with trusted-publishing support
+        run: npm install --global 'npm@>=11.5.1 <12'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and verify CLI package
+        run: npm run cli:pack
+
+      - name: Pack release artifact
+        id: package
+        run: |
+          TARBALL="$(npm pack --pack-destination "$RUNNER_TEMP" ./dist-publish/propr-cli | tail -1)"
+          TARBALL="$RUNNER_TEMP/$TARBALL"
+          VERSION="$(node -p "require('./dist-publish/propr-cli/package.json').version")"
+          INTEGRITY="$(node -e "const fs=require('fs');const crypto=require('crypto');process.stdout.write('sha512-'+crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$TARBALL")"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "integrity=$INTEGRITY" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test packed CLI
+        run: |
+          PREFIX="$RUNNER_TEMP/propr-cli-install"
+          npm install --global --prefix "$PREFIX" "${{ steps.package.outputs.tarball }}"
+          "$PREFIX/bin/propr" --version
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: propr-cli-${{ github.ref_name }}
+          path: ${{ steps.package.outputs.tarball }}
+          if-no-files-found: error
+
+      - name: Publish CLI to npm if needed
+        env:
+          LOCAL_INTEGRITY: ${{ steps.package.outputs.integrity }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+          TARBALL: ${{ steps.package.outputs.tarball }}
+        run: |
+          LOOKUP_ERROR="$RUNNER_TEMP/npm-view-error.txt"
+          if PUBLISHED_INTEGRITY="$(npm view "@propr/cli@$PACKAGE_VERSION" dist.integrity 2>"$LOOKUP_ERROR")"; then
+            if [ "$PUBLISHED_INTEGRITY" != "$LOCAL_INTEGRITY" ]; then
+              echo "@propr/cli@$PACKAGE_VERSION already exists with different package contents" >&2
+              exit 1
+            fi
+            echo "@propr/cli@$PACKAGE_VERSION is already published with the matching artifact"
+          elif grep -Eq 'E404|404 Not Found' "$LOOKUP_ERROR"; then
+            npm publish "$TARBALL" --access public
+          else
+            cat "$LOOKUP_ERROR" >&2
+            exit 1
+          fi
+
   build-smoke-and-push:
     name: Build, Smoke Test, Push
+    needs: [validate-release, publish-cli]
+    if: >-
+      ${{ always() && needs.validate-release.result == 'success' &&
+          (github.ref_type != 'tag' || needs.publish-cli.result == 'success') }}
     runs-on: [self-hosted, linux, x64, propr]
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
-      PUSH_LATEST: ${{ github.event.inputs.push_latest || 'true' }}
+      PUSH_LATEST: ${{ github.event_name == 'push' || inputs.push_latest }}
 
     steps:
       - name: Checkout repository
@@ -64,8 +198,8 @@ jobs:
       - name: Verify release version
         id: version
         env:
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          EXPECTED_VERSION: ${{ github.event.inputs.expected_version }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.expected_version) }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
           npm run release:verify
           VERSION="$(node -p "require('./package.json').version")"
@@ -120,56 +254,6 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: npm run images:metadata
 
-  publish-cli:
-    name: Publish CLI with provenance
-    if: github.ref_type == 'tag'
-    needs: build-smoke-and-push
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: '.nvmrc'
-          registry-url: 'https://registry.npmjs.org'
-          package-manager-cache: false
-
-      - name: Install npm with trusted-publishing support
-        run: npm install --global 'npm@>=11.5.1 <12'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build and verify CLI package
-        run: npm run cli:pack
-
-      - name: Pack release artifact
-        run: npm pack --pack-destination "$RUNNER_TEMP" ./dist-publish/propr-cli
-
-      - name: Smoke test packed CLI
-        run: |
-          PREFIX="$RUNNER_TEMP/propr-cli-install"
-          TARBALL="$(find "$RUNNER_TEMP" -maxdepth 1 -name 'propr-cli-*.tgz' -print -quit)"
-          npm install --global --prefix "$PREFIX" "$TARBALL"
-          "$PREFIX/bin/propr" --version
-
-      - name: Publish CLI to npm
-        working-directory: dist-publish/propr-cli
-        run: npm publish --access public
-
-      - name: Upload CLI artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: propr-cli-${{ github.ref_name }}
-          path: ${{ runner.temp }}/propr-cli-*.tgz
-          if-no-files-found: error
-
   publish-github-release:
     name: Publish GitHub release
     if: github.ref_type == 'tag'
@@ -185,13 +269,16 @@ jobs:
           name: propr-cli-${{ github.ref_name }}
           path: release-artifacts
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${{ github.ref_name }}"
-          release-artifacts/*
-          --repo "${{ github.repository }}"
-          --verify-tag
-          --generate-notes
-          --title "ProPR ${{ github.ref_name }}"
+        run: |
+          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "${{ github.ref_name }}" release-artifacts/* --clobber --repo "${{ github.repository }}"
+          else
+            gh release create "${{ github.ref_name }}" release-artifacts/* \
+              --repo "${{ github.repository }}" \
+              --verify-tag \
+              --generate-notes \
+              --title "ProPR ${{ github.ref_name }}"
+          fi

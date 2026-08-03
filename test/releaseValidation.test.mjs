@@ -56,4 +56,33 @@ describe("release validation", () => {
 
     assert.deepEqual(validateRelease(input), []);
   });
+
+  it("accepts valid SemVer build metadata", () => {
+    const input = validInput();
+    input.tag = "v1.2.3+build.1";
+    input.expectedVersion = "1.2.3+build.1";
+    for (const pkg of input.packages) pkg.version = "1.2.3+build.1";
+    input.packages[2].sharedDependency = "^1.2.3+build.1";
+    input.launcherManifest.version = "1.2.3+build.1";
+    for (const name of ["app", "ui", "docs", "agent"]) {
+      input.launcherManifest.images[name] = `propr/${name}:1.2.3+build.1`;
+    }
+    input.changelog = "# Changelog\n\n## [1.2.3+build.1] - 2026-08-02\n";
+
+    assert.deepEqual(validateRelease(input), []);
+  });
+
+  for (const malformed of [
+    "1.2.3-alpha..1",
+    "1.2.3-alpha.",
+    "1.2.3-01",
+    "01.2.3",
+  ]) {
+    it(`rejects malformed SemVer ${malformed}`, () => {
+      const input = validInput();
+      input.packages[0].version = malformed;
+
+      assert.ok(validateRelease(input).some((error) => error.includes("not valid release semver")));
+    });
+  }
 });

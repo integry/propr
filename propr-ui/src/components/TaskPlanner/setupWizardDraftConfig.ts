@@ -5,8 +5,6 @@ import type {
 } from '../../api/proprApi';
 import type { PlannerConfig } from './setupWizardHooks';
 
-type DraftWithContextConfig = PlannerDraft & { context_config?: DraftContextConfig };
-
 type DraftConfigSnapshot = Pick<
   PlannerConfig,
   | 'prompt'
@@ -38,6 +36,27 @@ type DraftConfigPatch = Partial<DraftConfigSnapshot>;
 const ensureArray = <T,>(value: T[] | unknown): T[] =>
   Array.isArray(value) ? value : [];
 
+export function parseDraftContextConfig(value: unknown): DraftContextConfig | undefined {
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+
+  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as DraftContextConfig
+    : undefined;
+}
+
+export function getDraftContextConfig(
+  draft: PlannerDraft | undefined
+): DraftContextConfig | undefined {
+  return parseDraftContextConfig(draft?.context_config);
+}
+
 function hasDraftConfigValue<K extends keyof DraftContextConfig>(
   draftConfig: DraftContextConfig | undefined,
   key: K
@@ -50,7 +69,7 @@ export function getDraftConfigSnapshot(
 ): DraftConfigPatch | null {
   if (!draft) return null;
 
-  const draftConfig = (draft as DraftWithContextConfig).context_config;
+  const draftConfig = getDraftContextConfig(draft);
   const snapshot: DraftConfigPatch = {
     prompt: draft.initial_prompt,
     files: ensureArray<PlannerAttachment>(draft.attachments),
@@ -91,7 +110,7 @@ export function getHydratedDraftConfigSnapshot(
 ): DraftConfigSnapshot | null {
   if (!draft) return null;
 
-  const draftConfig = (draft as DraftWithContextConfig).context_config;
+  const draftConfig = getDraftContextConfig(draft);
 
   return {
     prompt: draft.initial_prompt,

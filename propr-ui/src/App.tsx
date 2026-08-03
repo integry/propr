@@ -12,6 +12,7 @@ import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/
 import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
 import type { CurrentUser, InstancePermission } from './api/proprTypes'
+import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
 
 const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
@@ -184,8 +185,9 @@ const AppContent: React.FC = () => {
           <div className="min-h-0 flex-1">
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <Router>
-                <Suspense fallback={<LoadingSpinner />}>
-                  <Routes>
+                <RouteChunkErrorBoundary>
+                  <Suspense fallback={<LoadingSpinner />}>
+                    <Routes>
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="/revert" element={<RevertPage />} />
                     <Route
@@ -304,8 +306,9 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
-                  </Routes>
-                </Suspense>
+                    </Routes>
+                  </Suspense>
+                </RouteChunkErrorBoundary>
               </Router>
             </AuthProvider>
           </div>

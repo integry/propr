@@ -1,8 +1,8 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { test, describe, beforeEach, after, mock } from 'node:test';
 import assert from 'node:assert';
+import * as configManager from '@propr/core';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
-import { normalizeAgentsConfig } from '../packages/api/routes/configHelpers.ts';
-import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
+import { normalizeAgentsConfig, resolveConfigStore, withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { queueResummarizationForAllRepos } from '../packages/api/routes/indexingQueueHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
@@ -14,6 +14,10 @@ import {
     parseStoredOutputContent,
 } from '../packages/api/routes/liveDetailsRoutes.ts';
 import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
+
+after(async () => {
+    await configManager.closeConnection();
+});
 
 describe('config route follow-up helpers', () => {
     let currentSettings: Record<string, unknown>;
@@ -98,6 +102,11 @@ describe('config route follow-up helpers', () => {
         currentUltrafixPauseSeconds = 60;
         failAutoFollowupSave = false;
         configWriteFailure = null;
+    });
+
+    test('resolveConfigStore preserves the production namespace when no overrides are injected', () => {
+        assert.strictEqual(resolveConfigStore(), configManager);
+        assert.notStrictEqual(resolveConfigStore({}), configManager);
     });
 
     test('applyAgentsUpdate reapplies the new default alias to the live registry', async () => {
@@ -2485,7 +2494,7 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(redisState.get('config:keywords:lock'), 'someone-else');
     });
 
-    test('postFollowupKeywords reports lock loss instead of a committed save when publish fails before completion', async () => {
+    test('postFollowupKeywords preserves committed state when publish fails after lock loss', async () => {
         const redisState = new Map<string, string>();
         const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
         const routes = createConfigRoutes({
@@ -2533,11 +2542,51 @@ describe('config route follow-up helpers', () => {
             body: { followup_keywords: ['bug'] },
         } as never, res as never);
 
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Follow-up keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
+            committed: true,
+            warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
+            lock_lost_after_commit: true,
+        });
+    });
+
+    test('postFollowupKeywords refuses to save after ownership is lost', async () => {
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
+        const routes = createConfigRoutes({
+            redisClient: {
+                set: mock.fn(async () => 'OK'),
+                eval: mock.fn(async (_script: string, options: { arguments: string[] }) =>
+                    options.arguments.length === 2 ? 0 : 1),
+                publish: mock.fn(async () => 1),
+                lPush: mock.fn(async () => 1),
+                lTrim: mock.fn(async () => 1),
+            } as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['bug'] },
+        } as never, res as never);
+
         assert.strictEqual(res.statusCode, 409);
         assert.deepStrictEqual(res.body, {
             error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
             lock_lost: true,
         });
+        assert.strictEqual(saveKeywordsMock.mock.calls.length, 0);
     });
 
     test('queueResummarizationForAllRepos uses enabled raw repo names when scheduling jobs', async () => {

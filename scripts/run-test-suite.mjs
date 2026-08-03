@@ -1,21 +1,18 @@
 #!/usr/bin/env node
 
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createClient } from 'redis';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 180_000;
-const TEST_FILE_PATTERN = /\.test\.(?:ts|mjs|js)$/;
+const TERMINATION_GRACE_MS = 2_000;
+const TEST_FILE_PATTERN = /\.test\.(?:[cm]?[jt]sx?)$/;
 const EXCLUDED_TESTS = new Set(['e2e.test.ts']);
-const TEST_ROOTS = [
-    'test',
-    'packages/api/test',
-    'packages/cli/src',
-    'packages/core/test',
-];
+const IGNORED_DIRECTORIES = new Set(['.git', 'coverage', 'dist', 'node_modules']);
 
 function isLiveTest(entry) {
     const normalized = entry.replaceAll('\\', '/');
@@ -37,7 +34,6 @@ export function buildTestArguments(testFile, usesModuleMocks) {
     return [
         ...(usesModuleMocks ? ['--experimental-test-module-mocks'] : []),
         '--test',
-        '--test-force-exit',
         testFile,
     ];
 }
@@ -51,20 +47,59 @@ function parseTimeout(value) {
     return parsed;
 }
 
-function discoverTestFiles(requestedFiles) {
+function readPackageJson(directory) {
+    return JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
+}
+
+function expandWorkspacePattern(root, pattern) {
+    if (!pattern.endsWith('/*')) {
+        const workspace = resolve(root, pattern);
+        return existsSync(join(workspace, 'package.json')) ? [workspace] : [];
+    }
+    const parent = resolve(root, pattern.slice(0, -2));
+    if (!existsSync(parent)) return [];
+    return readdirSync(parent, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => join(parent, entry.name))
+        .filter(directory => existsSync(join(directory, 'package.json')));
+}
+
+export function discoverWorkspaceTestRoots(root = ROOT) {
+    const rootPackage = readPackageJson(root);
+    const workspacePatterns = Array.isArray(rootPackage.workspaces)
+        ? rootPackage.workspaces
+        : rootPackage.workspaces?.packages ?? [];
+    const workspaceDirectories = workspacePatterns.flatMap(pattern => expandWorkspacePattern(root, pattern));
+    const roots = [join(root, 'test')];
+
+    for (const workspaceDirectory of workspaceDirectories) {
+        const workspacePackage = readPackageJson(workspaceDirectory);
+        // Workspaces with their own test command (for example the Vitest UI)
+        // are run by `npm test --workspaces --if-present`. The Node suite owns
+        // every workspace that does not declare a native runner.
+        if (workspacePackage.scripts?.test) continue;
+        roots.push(workspaceDirectory);
+    }
+
+    return [...new Set(roots.filter(existsSync))].sort((a, b) => a.localeCompare(b));
+}
+
+function visitFiles(directory, discovered) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) visitFiles(path, discovered);
+        else if (entry.isFile()) discovered.push(path);
+    }
+}
+
+export function discoverTestFiles(requestedFiles, root = ROOT) {
     if (requestedFiles.length > 0) {
-        return selectTestFiles(requestedFiles.map(file => resolve(ROOT, file)));
+        return selectTestFiles(requestedFiles.map(file => resolve(root, file)));
     }
 
     const discovered = [];
-    const visit = (directory) => {
-        for (const entry of readdirSync(directory, { withFileTypes: true })) {
-            const path = join(directory, entry.name);
-            if (entry.isDirectory()) visit(path);
-            else if (entry.isFile()) discovered.push(path);
-        }
-    };
-    for (const root of TEST_ROOTS) visit(join(ROOT, root));
+    for (const testRoot of discoverWorkspaceTestRoots(root)) visitFiles(testRoot, discovered);
     return selectTestFiles(discovered);
 }
 
@@ -72,7 +107,73 @@ function safeName(testFile) {
     return basename(testFile).replace(/[^a-zA-Z0-9_.-]/g, '_');
 }
 
-export function runSuite(requestedFiles = process.argv.slice(2)) {
+function signalProcessGroup(child, signal) {
+    if (!child.pid) return;
+    try {
+        if (process.platform === 'win32') child.kill(signal);
+        else process.kill(-child.pid, signal);
+    } catch (error) {
+        if (error?.code !== 'ESRCH') throw error;
+    }
+}
+
+function runTestProcess(command, args, options, onChild) {
+    return new Promise((resolveProcess) => {
+        const child = spawn(command, args, {
+            ...options,
+            detached: process.platform !== 'win32',
+        });
+        onChild(child);
+        let timedOut = false;
+        let exitStatus = null;
+        let exitSignal = null;
+        let settled = false;
+        let hardKillTimer = null;
+
+        const finish = (error = null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
+            if (hardKillTimer) clearTimeout(hardKillTimer);
+            onChild(null);
+            resolveProcess({ status: exitStatus, signal: exitSignal, timedOut, error });
+        };
+        const timeoutTimer = setTimeout(() => {
+            timedOut = true;
+            signalProcessGroup(child, 'SIGTERM');
+            hardKillTimer = setTimeout(() => {
+                signalProcessGroup(child, 'SIGKILL');
+                finish();
+            }, TERMINATION_GRACE_MS);
+        }, options.timeout);
+
+        child.once('error', finish);
+        child.once('exit', (status, signal) => {
+            exitStatus = status;
+            exitSignal = signal;
+            if (!timedOut) finish();
+        });
+    });
+}
+
+async function connectRedisIsolation(requestedFiles) {
+    const setting = process.env.PROPR_TEST_REDIS_ISOLATION?.toLowerCase();
+    if (setting === 'off' || setting === 'false' || (requestedFiles.length > 0 && setting !== 'flush')) {
+        return null;
+    }
+    const client = createClient({
+        socket: {
+            host: process.env.REDIS_HOST || '127.0.0.1',
+            port: Number(process.env.REDIS_PORT || 6379),
+            connectTimeout: 5_000,
+        },
+    });
+    client.on('error', error => console.error('Test Redis isolation error:', error.message));
+    await client.connect();
+    return client;
+}
+
+export async function runSuite(requestedFiles = process.argv.slice(2)) {
     const testFiles = discoverTestFiles(requestedFiles);
     if (testFiles.length === 0) {
         throw new Error('No non-live test files matched');
@@ -83,18 +184,38 @@ export function runSuite(requestedFiles = process.argv.slice(2)) {
     const suiteDataDirectory = mkdtempSync(join(tmpdir(), 'propr-test-suite-'));
     const failures = [];
     const startedAt = Date.now();
+    let redisClient = null;
+    let activeChild = null;
+    let interruptedSignal = null;
+    let interruptKillTimer = null;
+    const handleInterrupt = (signal) => {
+        if (interruptedSignal) return;
+        interruptedSignal = signal;
+        if (!activeChild) return;
+        signalProcessGroup(activeChild, signal);
+        interruptKillTimer = setTimeout(() => {
+            if (activeChild) signalProcessGroup(activeChild, 'SIGKILL');
+        }, TERMINATION_GRACE_MS);
+    };
+    const handleSigint = () => handleInterrupt('SIGINT');
+    const handleSigterm = () => handleInterrupt('SIGTERM');
+    process.once('SIGINT', handleSigint);
+    process.once('SIGTERM', handleSigterm);
 
     try {
+        redisClient = await connectRedisIsolation(requestedFiles);
         for (const [index, testFile] of testFiles.entries()) {
-            const relativeFile = testFile.startsWith(`${ROOT}/`) ? testFile.slice(ROOT.length + 1) : testFile;
+            if (interruptedSignal) break;
+            const relativeFile = relative(ROOT, testFile).replaceAll('\\', '/');
             const testDataDirectory = join(suiteDataDirectory, `${String(index + 1).padStart(3, '0')}-${safeName(testFile)}`);
             mkdirSync(testDataDirectory, { recursive: true });
+            if (redisClient) await redisClient.flushDb();
 
             const usesModuleMocks = requiresModuleMocks(readFileSync(testFile, 'utf8'));
             const args = buildTestArguments(testFile, usesModuleMocks);
             console.log(`\n[${index + 1}/${testFiles.length}] ${relativeFile}${usesModuleMocks ? ' (module mocks)' : ''}`);
 
-            const result = spawnSync(tsx, args, {
+            const result = await runTestProcess(tsx, args, {
                 cwd: ROOT,
                 env: {
                     ...process.env,
@@ -103,31 +224,34 @@ export function runSuite(requestedFiles = process.argv.slice(2)) {
                 },
                 stdio: 'inherit',
                 timeout,
-                killSignal: 'SIGTERM',
-            });
+            }, child => { activeChild = child; });
 
-            if (result.status !== 0) {
-                failures.push({
-                    file: relativeFile,
-                    status: result.status,
-                    signal: result.signal,
-                    timedOut: result.error?.code === 'ETIMEDOUT',
-                });
+            if (interruptedSignal) break;
+            if (result.status !== 0 || result.timedOut || result.error) {
+                failures.push({ file: relativeFile, ...result });
             }
         }
     } finally {
+        process.removeListener('SIGINT', handleSigint);
+        process.removeListener('SIGTERM', handleSigterm);
+        if (interruptKillTimer) clearTimeout(interruptKillTimer);
+        if (redisClient) await redisClient.quit();
         rmSync(suiteDataDirectory, { recursive: true, force: true });
     }
+
+    if (interruptedSignal) return interruptedSignal === 'SIGINT' ? 130 : 143;
 
     const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     if (failures.length > 0) {
         console.error(`\n${failures.length}/${testFiles.length} test files failed after ${durationSeconds}s:`);
         for (const failure of failures) {
             const reason = failure.timedOut
-                ? `timed out after ${timeout}ms`
+                ? `timed out after ${timeout}ms; process group terminated`
                 : failure.signal
                     ? `terminated by ${failure.signal}`
-                    : `exit ${failure.status}`;
+                    : failure.error
+                        ? failure.error.message
+                        : `exit ${failure.status}`;
             console.error(`- ${failure.file}: ${reason}`);
         }
         return 1;
@@ -138,10 +262,10 @@ export function runSuite(requestedFiles = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-    try {
-        process.exitCode = runSuite();
-    } catch (error) {
-        console.error(error instanceof Error ? error.message : error);
-        process.exitCode = 1;
-    }
+    runSuite()
+        .then(exitCode => { process.exitCode = exitCode; })
+        .catch(error => {
+            console.error(error instanceof Error ? error.message : error);
+            process.exitCode = 1;
+        });
 }

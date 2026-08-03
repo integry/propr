@@ -209,6 +209,38 @@ describe('OpenCode live details parsing', () => {
         ]);
     });
 
+    test('preserves equal text from distinct OpenCode parts', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'message',
+            message: {
+                role: 'assistant',
+                parts: [
+                    { id: 'part-1', type: 'text', text: 'repeat();' },
+                    { id: 'part-2', type: 'text', text: 'repeat();' },
+                ],
+            },
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'message', content: 'repeat();\nrepeat();', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('deduplicates the same OpenCode part repeated by an envelope', () => {
+        const duplicatedPart = { id: 'part-1', type: 'text', text: 'once' };
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'text',
+            part: duplicatedPart,
+            parts: [duplicatedPart],
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'once', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
     test('parses actual OpenCode tool and token events from Redis output', () => {
         const result = parseRedisOutput([opencodeToolLine, opencodeStepFinishLine]);
 

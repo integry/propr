@@ -155,7 +155,7 @@ export interface DraftContextConfig {
   autoFiles?: string[];
   contextRepositories?: ContextRepository[];
   granularityEnforcement?: GranularityEnforcementMetadata;
-  generationModel?: string;
+  generationModel?: string | null;
   /** Files manually excluded from context by the user */
   excludedFiles?: string[];
   contextCache?: { fileTokenCounts?: Record<string, number> };

@@ -140,20 +140,24 @@ function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
   });
 }
 
-function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
-  const values = parts.flatMap(part => {
+function joinOpenCodePartsText(parts: Array<{ id?: string; type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
+  const seenReferences = new Set<object>();
+  const seenIds = new Set<string>();
+  const textParts: string[] = [];
+  for (const part of parts) {
+    if (seenReferences.has(part) || (part.id && seenIds.has(part.id))) continue;
+    seenReferences.add(part);
+    if (part.id) seenIds.add(part.id);
     const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return [];
-    return [part.text, part.delta, part.content];
-  });
-  if (!trim) return joinOpenCodeTextValues(values, false);
+    if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) continue;
+    // A single part can expose the same payload through text/content/delta.
+    // Deduplicate those representations locally, while preserving identical
+    // text from distinct parts (for example repeated code lines).
+    const partText = joinOpenCodeTextValues([part.text, part.delta, part.content], false);
+    if (partText) textParts.push(partText);
+  }
+  if (!trim) return textParts.join('');
 
-  const seen = new Set<string>();
-  const textParts = values.filter((value): value is string => {
-    if (typeof value !== 'string' || value.length === 0 || seen.has(value)) return false;
-    seen.add(value);
-    return true;
-  });
   return textParts.reduce((combined, value) => {
     if (!combined) return value;
     const separator = /\s$/.test(combined) || /^\s/.test(value) ? '' : '\n';

@@ -1,5 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { addAgent, AGENT_TYPES } from "../packages/cli/src/api/agents.js";
 import { createAgentCommand } from "../packages/cli/src/commands/agentCommands.js";
 import type { ApiClient } from "../packages/cli/src/api/client.js";
@@ -65,7 +67,7 @@ describe("CLI OpenCode agent support", () => {
         alias: "opencode",
         enabled: true,
         dockerImage: "propr/agent:latest",
-        configPath: "/root/.config/opencode",
+        configPath: join(homedir(), ".config", "opencode"),
         supportedModels: ["opencode-deepseek-v4-flash-free"],
         defaultModel: "opencode-deepseek-v4-flash-free",
       }],

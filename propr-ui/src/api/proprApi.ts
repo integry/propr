@@ -1,5 +1,4 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import type { AgentType, ReasoningLevel } from '@propr/shared';
 import type { Task as ApiTask } from './tasks';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
@@ -53,8 +52,7 @@ export * from './proprTypes';
 
 import type {
   SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
-  GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
-  StopExecutionResponse, DeleteTaskResponse, SystemSettings, CurrentUser,
+  GetTasksOptions, StopExecutionResponse, DeleteTaskResponse, CurrentUser,
   InstanceCatalogResponse
 } from './proprTypes';
 
@@ -214,86 +212,8 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
   return response.json();
 };
 
-export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
 export const getInstanceCatalog = async (): Promise<InstanceCatalogResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateRepoConfig = async (repos: MonitoredRepo[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repos_to_monitor: repos }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getAvailableGithubRepos = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/github/repos`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getRepoBranches = async (owner: string, repo: string): Promise<RepoBranchesResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getSettings = async (): Promise<SystemSettings> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface ConfigUpdateResponse {
-  success: boolean;
-  settings?: Record<string, unknown>;
-  warnings?: string[];
-}
-
-export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ settings }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getFollowupKeywords = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateFollowupKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ followup_keywords: keywords }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getFollowupIgnoreKeywords = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateFollowupIgnoreKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ followup_ignore_keywords: keywords }), credentials: 'include'
-  });
   await handleApiResponse(response);
   return response.json();
 };
@@ -314,51 +234,6 @@ export const fetchLogFile = async (logFilePath: string): Promise<string> => {
   const response = await apiFetch(`${API_BASE_URL}${logFilePath}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.text();
-};
-
-export const getPrLabel = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updatePrLabel = async (prLabel: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pr_label: prLabel }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getAiPrimaryTag = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateAiPrimaryTag = async (aiPrimaryTag: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ai_primary_tag: aiPrimaryTag }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getPrimaryProcessingLabels = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ primary_processing_labels: primaryLabels }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
 };
 
 export const stopTaskExecution = async (taskId: string): Promise<StopExecutionResponse> => {
@@ -388,55 +263,7 @@ export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
 
-export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
-
-export interface AgentConfig {
-  id: string;
-  type: AgentType;
-  alias: string;
-  enabled: boolean;
-  dockerImage: string;
-  configPath: string;
-  supportedModels: string[];
-  defaultModel?: string;
-  envVars?: Record<string, string>;
-  modelCustomLabels?: Record<string, string>;
-  modelReasoningLevels?: Record<string, ReasoningLevel>;
-  // CLI Version Configuration
-  cliVersionType?: CliVersionType;
-  cliVersion?: string;
-  cliVersionResolved?: string;
-}
-
-export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface SaveAgentsResponse {
-  success: boolean;
-  agents: AgentConfig[];
-  warnings?: string[];
-}
-
-export const saveAgents = async (agents: AgentConfig[]): Promise<SaveAgentsResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agents }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getOpenCodeModels = async (agentId?: string): Promise<{ models: string[] }> => {
-  const params = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
-  const response = await apiFetch(`${API_BASE_URL}/api/agents/opencode/models${params}`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-
+export * from './configApi';
 export * from './plannerApi';
 export * from './taskStatsApi';
 export * from './agentChatApi';

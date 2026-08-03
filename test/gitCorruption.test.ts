@@ -1,6 +1,10 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
-import { isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from '@propr/core';
+import { closeConnection, isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from '@propr/core';
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('isGitCorruptionError', () => {
     describe('detects corruption patterns', () => {

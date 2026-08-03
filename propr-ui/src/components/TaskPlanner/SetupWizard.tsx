@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Download, Loader2 } from 'lucide-react';
-import { DraftContextConfig, PlannerDraft, createDraft, GenerationTrace, getRepoBranches } from '../../api/proprApi';
+import { PlannerDraft, createDraft, GenerationTrace, getRepoBranches } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
 import { useContextExport } from '../../hooks/useContextExport';
@@ -40,6 +40,7 @@ import {
   useSetupWizardEffects
 } from './setupWizardHooks';
 import { getDraftSetupSnapshot } from './setupWizardPayloads';
+import { getDraftContextConfig } from './setupWizardDraftConfig';
 
 interface SetupWizardProps {
   draft?: PlannerDraft;
@@ -215,10 +216,6 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
 };
 
 interface LocationState { initialPrompt?: string; initialRepository?: string; initialBaseBranch?: string; baseBranchPersistenceWarning?: string | null; todoIds?: string[]; }
-const getDraftContextConfig = (draft: PlannerDraft | undefined): DraftContextConfig | undefined =>
-  typeof draft?.context_config === 'object' && draft.context_config !== null
-    ? draft.context_config
-    : undefined;
 const ensureArray = <T,>(value: T[] | unknown): T[] => Array.isArray(value) ? value : [];
 const updateConfigField = <K extends keyof PlannerConfig>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K) => (value: PlannerConfig[K]) => setConfig(prev => ({ ...prev, [key]: value }));
 const appendConfigArrayValue = <K extends 'contextRepositories' | 'manualFiles' | 'excludedFiles'>(setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>, key: K) => (value: PlannerConfig[K][number]) => setConfig(prev => ({ ...prev, [key]: [...prev[key], value] }));

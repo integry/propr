@@ -1,4 +1,11 @@
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+import semver from "semver";
+
+function isCanonicalSemVer(version) {
+  const parsed = semver.parse(version);
+  if (!parsed) return false;
+  const canonical = `${parsed.version}${parsed.build.length > 0 ? `+${parsed.build.join(".")}` : ""}`;
+  return canonical === version;
+}
 
 export function validateRelease({
   tag,
@@ -15,7 +22,7 @@ export function validateRelease({
   }
 
   const version = root.version;
-  if (!SEMVER_PATTERN.test(version)) {
+  if (!isCanonicalSemVer(version)) {
     errors.push(`Root package version is not valid release semver: ${version}`);
   }
 
@@ -50,7 +57,7 @@ export function validateRelease({
   }
 
   if (tag) {
-    const escapedVersion = version.replaceAll(".", "\\.").replaceAll("-", "\\-");
+    const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const heading = new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m");
     if (!heading.test(changelog)) {
       errors.push(`CHANGELOG.md needs a dated ## [${version}] release section before tagging`);

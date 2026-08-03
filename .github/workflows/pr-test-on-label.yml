@@ -13,11 +13,12 @@ jobs:
   test:
     name: Run Full Test Suite
     if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
-    runs-on: [self-hosted, linux, x64, propr]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
-      pull-requests: write
+    outputs:
+      test_result: ${{ steps.tests.outputs.test_result }}
 
     steps:
       - name: Checkout repository
@@ -70,85 +71,14 @@ jobs:
 
           exit $TEST_EXIT_CODE
 
-      - name: Post Success Comment
-        if: github.event_name == 'pull_request' && steps.tests.outcome == 'success'
-        uses: actions/github-script@v7
+      - name: Upload test output
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
         with:
-          script: |
-            const fs = require('fs');
-            const prNumber = context.issue.number;
-            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
-
-            let output = '';
-            try { output = fs.readFileSync('test_output.txt', 'utf8'); }
-            catch (e) { output = 'Output file not available.'; }
-
-            if (output.length > 60000) {
-              output = output.substring(0, 60000) + "\n\n...(truncated)";
-            }
-
-            const body = [
-              '### Full Test Suite Results',
-              '',
-              'All tests passed.',
-              '',
-              '<details>',
-              '<summary>View Test Output</summary>',
-              '',
-              '~~~text',
-              output,
-              '~~~',
-              '</details>',
-              '',
-              '**[View Workflow](' + runUrl + ')**'
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
-            });
-
-      - name: Post Failure Comment
-        if: github.event_name == 'pull_request' && steps.tests.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const prNumber = context.issue.number;
-            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
-
-            let output = '';
-            try { output = fs.readFileSync('test_output.txt', 'utf8'); }
-            catch (e) { output = 'Output file not available.'; }
-
-            if (output.length > 60000) {
-              output = output.substring(0, 60000) + "\n\n...(truncated)";
-            }
-
-            const body = [
-              '### Full Test Suite Results',
-              '',
-              'Some tests failed. Please review the output below.',
-              '',
-              '<details>',
-              '<summary>View Test Output</summary>',
-              '',
-              '~~~text',
-              output,
-              '~~~',
-              '</details>',
-              '',
-              '**[View Workflow](' + runUrl + ')**'
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
-            });
+          name: full-test-output-${{ github.run_id }}
+          path: test_output.txt
+          if-no-files-found: ignore
 
       - name: Fail Job
         if: steps.tests.outcome == 'failure'
@@ -157,3 +87,58 @@ jobs:
       - name: Stop isolated Redis
         if: always()
         run: ./scripts/ci-redis.sh stop
+
+  comment:
+    name: Report Full Test Result
+    needs: test
+    if: >-
+      ${{ always() && github.event_name == 'pull_request' &&
+          needs.test.result != 'skipped' &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Download test output
+        continue-on-error: true
+        uses: actions/download-artifact@v6
+        with:
+          name: full-test-output-${{ github.run_id }}
+
+      - name: Post result comment
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          TEST_JOB_RESULT: ${{ needs.test.result }}
+          TEST_STEP_RESULT: ${{ needs.test.outputs.test_result }}
+        with:
+          script: |
+            const fs = require('fs');
+            const succeeded = process.env.TEST_JOB_RESULT === 'success' && process.env.TEST_STEP_RESULT === 'success';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let output = 'Output file not available.';
+            try { output = fs.readFileSync('test_output.txt', 'utf8'); } catch {}
+            if (output.length > 60000) output = output.substring(0, 60000) + '\n\n...(truncated)';
+            const body = [
+              '### Full Test Suite Results',
+              '',
+              succeeded ? 'All tests passed.' : 'Some tests failed. Please review the output below.',
+              '',
+              '<details>',
+              '<summary>View Test Output</summary>',
+              '',
+              '~~~text',
+              output,
+              '~~~',
+              '</details>',
+              '',
+              `**[View Workflow](${runUrl})**`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

@@ -8,26 +8,12 @@ import {
   DraftWithPlan,
   DraftContextConfig
 } from '../../api/proprApi';
+import { getDraftContextConfig } from './setupWizardDraftConfig';
 
 export type DraftSetupSnapshot = Pick<
   DraftContextConfig,
   'baseBranch' | 'granularity' | 'contextLevel' | 'compress' | 'contextRepositories' | 'generationModel' | 'manualFiles' | 'excludedFiles'
 >;
-
-const getDraftContextConfig = (draft: PlannerDraft): DraftContextConfig => {
-  if (typeof draft.context_config === 'object' && draft.context_config !== null) {
-    return draft.context_config;
-  }
-  if (typeof draft.context_config === 'string') {
-    try {
-      const parsed = JSON.parse(draft.context_config) as unknown;
-      if (typeof parsed === 'object' && parsed !== null) return parsed as DraftContextConfig;
-    } catch {
-      // Ignore malformed legacy JSON and use a clean config object.
-    }
-  }
-  return {};
-};
 
 function mergeDraftSetupSnapshot(baseBranch?: string, setupSnapshot?: DraftSetupSnapshot): DraftSetupSnapshot | undefined {
   if (!baseBranch && !setupSnapshot) {
@@ -46,7 +32,7 @@ export function constructDraftWithPlan(draft: PlannerDraft, setupSnapshot?: Draf
     ...draft,
     plan_json: [],
     chat_history: [],
-    context_config: { ...getDraftContextConfig(draft), ...setupSnapshot },
+    context_config: { ...(getDraftContextConfig(draft) ?? {}), ...setupSnapshot },
     refinement_result: undefined
   };
 }
@@ -54,7 +40,7 @@ export function constructDraftWithPlan(draft: PlannerDraft, setupSnapshot?: Draf
 export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, setupSnapshot?: DraftSetupSnapshot): T & { context_config?: DraftContextConfig } {
   return {
     ...draft,
-    context_config: { ...getDraftContextConfig(draft), ...setupSnapshot }
+    context_config: { ...(getDraftContextConfig(draft) ?? {}), ...setupSnapshot }
   };
 }
 

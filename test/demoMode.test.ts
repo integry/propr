@@ -1,7 +1,8 @@
-import { afterEach, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import { closeConnection } from '@propr/core';
 import { ensureAuthenticated } from '../packages/api/auth.ts';
 import { demoModeReadOnlyMiddleware, getDemoUser, resetConfiguredDemoMode } from '../packages/api/demoMode.ts';
 
@@ -14,6 +15,10 @@ afterEach(() => {
   } else {
     process.env.PROPR_DEMO_MODE = originalDemoMode;
   }
+});
+
+after(async () => {
+  await closeConnection();
 });
 
 async function fetchFromApp(app: express.Express, path: string, init?: RequestInit): Promise<Response> {

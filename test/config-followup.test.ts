@@ -1,11 +1,15 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { db } from '@propr/core';
+import { closeConnection, db } from '@propr/core';
 import { withConfigLock, ConfigRouteError } from '../packages/api/routes/configHelpers.ts';
 import { applyAgentsUpdate } from '../packages/api/routes/configRoutesAgents.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { parseClaudeOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
+
+after(async () => {
+  await closeConnection();
+});
 
 test('withConfigLock preserves specific config operation failures', async () => {
   const redisClient = {

@@ -16,6 +16,7 @@ import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { agentResultToClaudeResponse, toClaudeResult } from './prCommentJobUtils.js';
 import {
     buildConflictResolutionPrompt,
+    getAgentFailureDetail,
     buildMergeConflictComment,
     buildMergeConflictCommitMessage,
 } from './mergeConflictHelpers.js';
@@ -23,13 +24,6 @@ import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import type { GitHubToken } from './githubTypes.js';
 
 const MAX_CONFLICT_MARKER_SCAN_BYTES = 1024 * 1024;
-function getAgentFailureDetail(result: ClaudeCodeResponse): string {
-    for (const value of [result.error, result.logs, result.rawOutput]) {
-        const detail = value?.trim();
-        if (detail) return detail;
-    }
-    return 'Unknown error';
-}
 async function buildMergeCompletionHistoryMetadata(options: {
     stateManager: WorkerStateManager;
     taskId: string;

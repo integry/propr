@@ -1,9 +1,14 @@
-import { test, describe, mock, beforeEach, afterEach } from 'node:test';
+import { test, describe, mock, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
 import { calculateAdditionalContextBudget } from '../packages/core/src/services/planning/previewUtils.js';
 import { calculateEffectiveAdditionalContextBudget } from '../packages/core/src/services/taskPlanning/tokenBudgets.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
 
 process.env.NODE_ENV = 'test';
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('Context Preview Types', () => {
     test('TaskDraftConfig interface has required fields', () => {
