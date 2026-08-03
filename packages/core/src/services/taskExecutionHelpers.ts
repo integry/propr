@@ -158,6 +158,7 @@ interface PlanTask {
 export interface GenerateTitleOptions {
   draftId: string;
   planJson: PlanTask[];
+  model: string;
   owner: string;
   repoName: string;
   oldName: string;
@@ -190,7 +191,7 @@ Title (plain text only):`;
 }
 
 export async function generateAndSaveTaskTitle(options: GenerateTitleOptions): Promise<void> {
-  const { draftId, planJson, owner, repoName, oldName, correlationId, db } = options;
+  const { draftId, planJson, model, owner, repoName, oldName, correlationId, db } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   const githubToken = await getGitHubInstallationToken();
@@ -205,18 +206,19 @@ export async function generateAndSaveTaskTitle(options: GenerateTitleOptions): P
 
   const prompt = buildTitlePrompt(planJson);
 
-  correlatedLogger.info({ draftId }, 'Generating task title via LLM');
+  correlatedLogger.info({ draftId, model }, 'Generating task title via LLM');
 
   // Build metadata for LLM log tracking
   const titleGenerationMetadata = {
     planTaskCount: planJson.length,
     promptLength: prompt.length,
     oldName,
+    model,
   };
 
   const generatedTitle = await runLightweightLLMAnalysis({
     prompt,
-    model: 'haiku',
+    model,
     correlationId: correlationId || 'finalize-title-gen',
     worktreePath,
     githubToken,

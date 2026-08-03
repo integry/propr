@@ -147,7 +147,7 @@ export interface CallLLMOptions {
   /** Token limit based on user's context level setting */
   tokenLimit: number;
   /** Model to use for plan generation (e.g., 'opus', 'claude:claude-opus-4-5-20251101') */
-  model?: string;
+  model: string;
   /** Optional context from additional repositories (marked as example/reference only) */
   additionalContext?: string;
   /** Granularity setting for task enforcement */

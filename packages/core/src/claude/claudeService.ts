@@ -26,6 +26,8 @@ import type { ExecutionType, ConversationStep } from '../utils/llmMetrics.types.
 import { executeWithUsageTracking, type UsageTrackingMetrics } from '../agents/impl/utils/index.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES, DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../agents/constants.js';
 import type { ReasoningLevel } from '@propr/shared';
+import { loadSummarizationSettings } from '../config/configManager.js';
+import { resolveConfiguredModel } from '../config/configuredModel.js';
 export { UsageLimitError };
 export type { IssueRef, IssueDetails };
 
@@ -189,28 +191,31 @@ const LIGHTWEIGHT_SYSTEM_PROMPT = 'You are a helpful assistant.';
 const LIGHTWEIGHT_TOOLS = '';
 
 export async function generateTaskSummary(options: GenerateTaskSummaryOptions): Promise<string> {
-    const { summaryRequest, worktreePath, githubToken, issueRef, correlationId, modelAlias = 'haiku' } = options;
+    const { summaryRequest, worktreePath, githubToken, issueRef, correlationId, modelAlias } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
-    correlatedLogger.info({ modelAlias, issueRef: issueRef.number }, 'Generating task summary');
-    const model = resolveModelAlias(modelAlias);
+    const summarizationSettings = await loadSummarizationSettings();
+    const configuredModel = modelAlias?.trim() || summarizationSettings.agent_alias?.trim();
+    if (!configuredModel) {
+        throw new Error('No summarization model configured for task summary generation.');
+    }
+    const model = await resolveConfiguredModel(configuredModel);
+    correlatedLogger.info({ model, issueRef: issueRef.number }, 'Generating task summary');
     const summaryPrompt = `Please provide a one-sentence summary for the following request, focusing on the main action. Your output must be ONLY the summary string itself, with no other text.\n\nREQUEST:\n${summaryRequest}\n\nCRITICAL: Do not modify any files. Do not run any commands. Only output the summary.`;
 
     try {
-        const claudeResult = await executeClaudeCode({
-            worktreePath, issueRef, githubToken, customPrompt: summaryPrompt,
-            branchName: 'summary-generation', modelName: model,
-            systemPrompt: LIGHTWEIGHT_SYSTEM_PROMPT, tools: LIGHTWEIGHT_TOOLS
+        const rawSummary = await runLightweightLLMAnalysis({
+            prompt: summaryPrompt,
+            model,
+            correlationId,
+            worktreePath,
+            githubToken,
+            issueRef,
+            executionType: 'title-generation',
         });
-        await recordLLMMetrics(buildLlmMetricsPayload(claudeResult, model), issueRef, { correlationId, executionType: 'title-generation' });
-
-        if (claudeResult.success && (claudeResult.finalResult?.result || claudeResult.summary)) {
-            const rawSummary = claudeResult.finalResult?.result || claudeResult.summary;
-            // Clean: first line only, strip markdown headers and surrounding quotes
-            const summary = rawSummary!.split('\n')[0].replace(/^#+\s*/, '').replace(/^"|"$/g, '').trim();
-            correlatedLogger.info({ summary, model }, 'Successfully generated task summary');
-            return summary;
-        }
-        throw new Error(`Invalid summary response from Claude execution: ${claudeResult.error}`);
+        const summary = rawSummary.split('\n')[0].replace(/^#+\s*/, '').replace(/^"|"$/g, '').trim();
+        if (!summary) throw new Error('Task summary generation returned an empty response.');
+        correlatedLogger.info({ summary, model }, 'Successfully generated task summary');
+        return summary;
     } catch (error) {
         const err = error as Error;
         correlatedLogger.error({ error: err.message, model }, 'Failed to generate task summary');

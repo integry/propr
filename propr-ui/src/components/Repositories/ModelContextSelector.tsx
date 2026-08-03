@@ -35,8 +35,7 @@ function parseAgentModel(value: string): { agent: AgentType | null; model: strin
     const [agent, ...modelParts] = value.split(':');
     return { agent: agent as AgentType, model: modelParts.join(':') };
   }
-  // Legacy format without agent prefix - assume claude
-  return { agent: 'claude', model: value };
+  return { agent: findAgentForModel(value), model: value };
 }
 
 /**
@@ -131,6 +130,7 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
             disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-gray-300'
           }`}
         >
+          <option value="">Use configured context model</option>
           {AGENT_DISPLAY_ORDER.map((agentType) => (
             <optgroup key={agentType} label={AGENT_DISPLAY[agentType].label}>
               {AGENT_MODELS[agentType].map((model: ModelInfo) => (

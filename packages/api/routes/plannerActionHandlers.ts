@@ -13,7 +13,8 @@ import {
   loadSettings,
   estimateTokens,
   REFINER_SYSTEM_PROMPT,
-  getEventPublisher
+  getEventPublisher,
+  resolveConfiguredModel
 } from '@propr/core';
 import type { Plan } from '@propr/core';
 import {
@@ -149,7 +150,7 @@ export function createRefineHandler(db: Knex) {
       const estimatedInputTokens = estimateTokens(roughPrompt);
 
       const settings = await loadSettings();
-      const generationModel = requestedModel || draftGenerationModel || settings.planner_generation_model || 'opus';
+      const generationModel = await resolveConfiguredModel(requestedModel || draftGenerationModel || settings.planner_generation_model);
 
       const estimation = await estimateLlmDuration({
         executionType: 'plan-refinement',

@@ -12,6 +12,7 @@ import {
 } from './planning/index.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
+import { resolveConfiguredModel } from '../config/configuredModel.js';
 
 // Re-export everything from the taskPlanning module
 export * from './taskPlanning/index.js';
@@ -29,12 +30,6 @@ import {
   calculateTokenBudgets, generateContextWithRetry, callLLMForPlan, buildInitialChatHistory,
   type GeneratePlanOptions, type Plan, type TaskDraft
 } from './taskPlanning/index.js';
-
-/** Default model for context analysis (fast, cost-effective) */
-const DEFAULT_CONTEXT_MODEL = 'haiku';
-
-/** Default model for plan generation (high capability) */
-const DEFAULT_GENERATION_MODEL = 'opus';
 
 const MAX_ATTACHMENT_PERCENT = 0.25;
 const BUDGET_SAFETY_FACTOR = 0.85;
@@ -56,8 +51,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Load planner models from settings (used as defaults)
   const settings = await loadSettings();
-  const contextModel = settings.planner_context_model || DEFAULT_CONTEXT_MODEL;
-  const defaultGenerationModel = settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
+  const contextModel = await resolveConfiguredModel(settings.planner_context_model);
+  const defaultGenerationModel = await resolveConfiguredModel(settings.planner_generation_model);
   correlatedLogger.info({ draftId, contextModel, defaultGenerationModel }, 'Starting plan generation');
 
   const draft = await db<TaskDraft>('task_drafts').where({ draft_id: draftId }).first();
@@ -138,7 +133,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   const finalTrace = await updateTrace(draftId, 'llm', 'completed');
 
-  const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
+  const updatedContextConfig = { ...parsedContextConfig, generationModel, granularityEnforcement: enforcementMetadata };
 
   // Build initial chat history with user prompt summary and assistant confirmation
   const chatHistory = buildInitialChatHistory(draft.initial_prompt, validatedPlan.length);

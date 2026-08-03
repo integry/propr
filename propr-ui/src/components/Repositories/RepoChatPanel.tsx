@@ -198,7 +198,7 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
   placeholder = 'Ask a question about this repository...',
   disabled = false,
   repositoryName,
-  defaultModel = 'claude:claude-haiku-4-5-20251001',
+  defaultModel = '',
   defaultContextLevel = 50,
 }) => {
   // Support both controlled and uncontrolled modes

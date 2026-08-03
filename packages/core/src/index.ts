@@ -61,6 +61,7 @@ export { resolvePlanIssueDefaultSelection } from './config/planIssueDefaults.js'
 export type { PlanIssueDefaultSelection } from './config/planIssueDefaultSelection.js';
 export { getPlanIssueDefaultSelection } from './config/planIssueDefaultSelection.js';
 export type { PlanIssueSelectionAgent } from './config/planIssueDefaultSelection.js';
+export { resolveConfiguredModel } from './config/configuredModel.js';
 export { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, resolveLlmLabel, getOpenRouterId, getAgentTypeFromModel, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from './config/modelAliases.js';
 export type { LlmLabelResolution, ReviewAssignment } from './config/modelAliases.js';
 export { CLAUDE_MODELS, CODEX_MODELS, ANTIGRAVITY_MODELS, OPENCODE_MODELS, VIBE_MODELS, ALL_MODELS, AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';

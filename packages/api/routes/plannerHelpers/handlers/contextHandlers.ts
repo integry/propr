@@ -13,7 +13,8 @@ import {
   loadSettings,
   getEventPublisher,
   parseGenerationTrace,
-  buildDraftUpdateTraceSnapshot
+  buildDraftUpdateTraceSnapshot,
+  resolveConfiguredModel
 } from '@propr/core';
 import type { Granularity } from '@propr/core';
 import type { OwnershipResult } from '../types.js';
@@ -106,9 +107,8 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
 
       // Load settings to get the configured context model for semantic scoring and generation model for limits
       const settings = await loadSettings();
-      const contextModel = settings.planner_context_model;
-      // Use request's generationModel if provided, otherwise use global setting
-      const generationModel = requestGenerationModel || settings.planner_generation_model;
+      const contextModel = await resolveConfiguredModel(settings.planner_context_model);
+      const generationModel = await resolveConfiguredModel(requestGenerationModel || settings.planner_generation_model);
 
       // Store context repositories, generationModel, and excludedFiles in draft config if provided
       const hasConfigUpdates = contextRepositories || requestGenerationModel || excludedFiles !== undefined;

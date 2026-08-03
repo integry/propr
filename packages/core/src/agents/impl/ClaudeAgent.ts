@@ -20,7 +20,7 @@ import {
     UsageLimitError,
     type ClaudeOutput
 } from '../../claude/claudeHelpers.js';
-import { resolveModelAlias, NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import {
     assertReasoningLevelCliVersionSupported,
     loadModelReasoningLevel,
@@ -169,7 +169,8 @@ export class ClaudeAgent implements Agent {
             requestedModel: model, taskId, executionType
         }, 'Running lightweight analysis via Claude agent...');
 
-        const effectiveModel = model || resolveModelAlias('haiku');
+        const effectiveModel = model || this.config.defaultModel;
+        if (!effectiveModel) throw new NoDefaultModelConfiguredError();
         const suffix = responseFormat === 'json'
             ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
             : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';

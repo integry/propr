@@ -11,6 +11,7 @@ import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputPar
 import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
+import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 
 export { UsageLimitError };
 export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -177,7 +178,8 @@ export class VibeAgent implements Agent {
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
-        const effectiveModel = model || this.config.defaultModel || 'mistral-medium-3.5';
+        const effectiveModel = model || this.config.defaultModel;
+        if (!effectiveModel) throw new NoDefaultModelConfiguredError();
         const suffix = responseFormat === 'json'
             ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
             : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
