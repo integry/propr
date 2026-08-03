@@ -10,6 +10,26 @@ export const DEFAULT_NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS = 30 * 1000;
 export const DEFAULT_NOTIFICATION_SYSTEM_STARTUP_GRACE_MS = 2 * 60 * 1000;
 export const DEFAULT_NOTIFICATION_OPERATION_TIMEOUT_MS = 10 * 1000;
 export const DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS = 5 * 1000;
+export const MIN_NOTIFICATION_LEASE_RENEWAL_INTERVAL_MS = 1000;
+
+export function getNotificationProjectionLeaseTtlMs(
+    checkIntervalMs: number,
+    operationTimeoutMs = DEFAULT_NOTIFICATION_OPERATION_TIMEOUT_MS
+): number {
+    for (const [name, value] of [
+        ['checkIntervalMs', checkIntervalMs],
+        ['operationTimeoutMs', operationTimeoutMs]
+    ] as const) {
+        if (!Number.isSafeInteger(value) || value <= 0) {
+            throw new TypeError(`${name} must be a positive safe integer`);
+        }
+    }
+    return Math.max(
+        checkIntervalMs * 2,
+        operationTimeoutMs * 2,
+        MIN_NOTIFICATION_LEASE_RENEWAL_INTERVAL_MS * 3
+    );
+}
 
 function positiveIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];

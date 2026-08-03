@@ -8,6 +8,7 @@ import {
     type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
+import type { Knex } from 'knex';
 
 export { TaskStates, type TaskState, type IssueRef };
 
@@ -59,6 +60,28 @@ function parseMetadataRecord(value: unknown): Record<string, unknown> {
     } catch {
         return {};
     }
+}
+
+async function appendTaskNotificationEnrichment(
+    transaction: Knex.Transaction,
+    input: {
+        taskId: string;
+        state: TaskState;
+        transitionAt: string;
+        transitionSequence?: number;
+        changedAt: string;
+        metadata: Record<string, unknown>;
+    }
+): Promise<void> {
+    if (!await transaction.schema.hasTable('task_notification_enrichments')) return;
+    await transaction('task_notification_enrichments').insert({
+        task_id: input.taskId,
+        state: input.state,
+        transition_history_id: input.transitionSequence ?? null,
+        transition_at: input.transitionAt,
+        changed_at: input.changedAt,
+        metadata: JSON.stringify(input.metadata)
+    });
 }
 
 /**
@@ -261,40 +284,34 @@ export class WorkerStateManager {
         }, 'Task issue reference updated');
 
         try {
-            const taskRow = await db('tasks')
-                .select('initial_job_data')
-                .where({ task_id: taskId })
-                .first() as { initial_job_data?: unknown } | undefined;
-            const initialJobData = {
-                ...parseMetadataRecord(taskRow?.initial_job_data),
-                ...state.issueRef
-            };
+            let publicationMetadata: Record<string, unknown> = {};
             const durablePrNumber = typeof state.issueRef.pullRequestNumber === 'number'
                 ? state.issueRef.pullRequestNumber
                 : typeof state.issueRef.prNumber === 'number' ? state.issueRef.prNumber : undefined;
-            const taskUpdate: Record<string, unknown> = {
-                initial_job_data: JSON.stringify(initialJobData),
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issue_number: state.issueRef.number
-            };
-            if ('pullRequestNumber' in issueRefPatch || 'prNumber' in issueRefPatch) {
-                taskUpdate.pr_number = durablePrNumber ?? null;
-            }
-            await db('tasks')
-                .where({ task_id: taskId })
-                .update(taskUpdate);
-            const historyRow = await db('task_history')
-                .select('history_id')
-                .where({ task_id: taskId, state: state.state, timestamp: transitionAt })
-                .orderBy('history_id', 'desc')
-                .first() as { history_id?: number } | undefined;
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: state.state,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issueNumber: state.issueRef.number,
-                metadata: {
+            await db.transaction(async (transaction) => {
+                const taskRow = await transaction('tasks')
+                    .select('initial_job_data')
+                    .where({ task_id: taskId })
+                    .first() as { initial_job_data?: unknown } | undefined;
+                const initialJobData = {
+                    ...parseMetadataRecord(taskRow?.initial_job_data),
+                    ...state.issueRef
+                };
+                const taskUpdate: Record<string, unknown> = {
+                    initial_job_data: JSON.stringify(initialJobData),
+                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                    issue_number: state.issueRef.number
+                };
+                if ('pullRequestNumber' in issueRefPatch || 'prNumber' in issueRefPatch) {
+                    taskUpdate.pr_number = durablePrNumber ?? null;
+                }
+                await transaction('tasks').where({ task_id: taskId }).update(taskUpdate);
+                const historyRow = await transaction('task_history')
+                    .select('history_id')
+                    .where({ task_id: taskId, state: state.state, timestamp: transitionAt })
+                    .orderBy('history_id', 'desc')
+                    .first() as { history_id?: number } | undefined;
+                publicationMetadata = {
                     issueRefUpdated: true,
                     updatedFields: Object.keys(issueRefPatch),
                     transitionAt,
@@ -308,10 +325,27 @@ export class WorkerStateManager {
                     ...(typeof state.issueRef.prUrl === 'string'
                         ? { prUrl: state.issueRef.prUrl }
                         : {})
-                }
+                };
+                await appendTaskNotificationEnrichment(transaction, {
+                    taskId,
+                    state: state.state,
+                    transitionAt,
+                    transitionSequence: historyRow?.history_id,
+                    changedAt: state.updatedAt,
+                    metadata: publicationMetadata
+                });
+            });
+            const eventPublisher = getEventPublisher();
+            await eventPublisher.publishTaskUpdate({
+                taskId,
+                state: state.state,
+                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                issueNumber: state.issueRef.number,
+                metadata: publicationMetadata
             });
         } catch (error) {
-            correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
+            correlatedLogger.warn({ error: (error as Error).message, taskId },
+                'Failed to persist or publish issue reference update');
         }
 
         return state;
@@ -368,35 +402,31 @@ export class WorkerStateManager {
 
             // Publish real-time event for metadata update so UI can refresh
             try {
-                const historyRow = await db('task_history')
-                    .select('history_id', 'metadata')
-                    .where({ task_id: taskId, state: historyState, timestamp: transitionAt })
-                    .orderBy('history_id', 'desc')
-                    .first() as { history_id?: number; metadata?: unknown } | undefined;
-                const durableMetadata = {
-                    ...parseMetadataRecord(historyRow?.metadata),
-                    ...(state.history[historyIndex].metadata ?? {})
-                };
-                if (historyRow?.history_id !== undefined) {
-                    await db('task_history')
-                        .where({ history_id: historyRow.history_id })
-                        .update({ metadata: JSON.stringify(durableMetadata) });
-                }
-                const prResult = parseMetadataRecord(durableMetadata.prResult);
-                const pr = parseMetadataRecord(durableMetadata.pr);
-                const prNumber = typeof prResult.prNumber === 'number'
-                    ? prResult.prNumber
-                    : typeof pr.number === 'number' ? pr.number : undefined;
-                const prUrl = typeof prResult.prUrl === 'string'
-                    ? prResult.prUrl
-                    : typeof pr.url === 'string' ? pr.url : undefined;
-                const eventPublisher = getEventPublisher();
-                await eventPublisher.publishTaskUpdate({
-                    taskId,
-                    state: state.state,
-                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                    issueNumber: state.issueRef.number,
-                    metadata: {
+                let publicationMetadata: Record<string, unknown> = {};
+                await db.transaction(async (transaction) => {
+                    const historyRow = await transaction('task_history')
+                        .select('history_id', 'metadata')
+                        .where({ task_id: taskId, state: historyState, timestamp: transitionAt })
+                        .orderBy('history_id', 'desc')
+                        .first() as { history_id?: number; metadata?: unknown } | undefined;
+                    const durableMetadata = {
+                        ...parseMetadataRecord(historyRow?.metadata),
+                        ...(state.history[historyIndex].metadata ?? {})
+                    };
+                    if (historyRow?.history_id !== undefined) {
+                        await transaction('task_history')
+                            .where({ history_id: historyRow.history_id })
+                            .update({ metadata: JSON.stringify(durableMetadata) });
+                    }
+                    const prResult = parseMetadataRecord(durableMetadata.prResult);
+                    const pr = parseMetadataRecord(durableMetadata.pr);
+                    const prNumber = typeof prResult.prNumber === 'number'
+                        ? prResult.prNumber
+                        : typeof pr.number === 'number' ? pr.number : undefined;
+                    const prUrl = typeof prResult.prUrl === 'string'
+                        ? prResult.prUrl
+                        : typeof pr.url === 'string' ? pr.url : undefined;
+                    publicationMetadata = {
                         metadataUpdate: true,
                         updatedFields: Object.keys(metadata),
                         transitionAt,
@@ -408,10 +438,27 @@ export class WorkerStateManager {
                             : {}),
                         ...(prNumber === undefined ? {} : { prNumber }),
                         ...(prUrl === undefined ? {} : { prUrl })
-                    }
+                    };
+                    await appendTaskNotificationEnrichment(transaction, {
+                        taskId,
+                        state: state.state,
+                        transitionAt,
+                        transitionSequence: historyRow?.history_id,
+                        changedAt: state.updatedAt,
+                        metadata: publicationMetadata
+                    });
+                });
+                const eventPublisher = getEventPublisher();
+                await eventPublisher.publishTaskUpdate({
+                    taskId,
+                    state: state.state,
+                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                    issueNumber: state.issueRef.number,
+                    metadata: publicationMetadata
                 });
             } catch (error) {
-                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
+                correlatedLogger.warn({ error: (error as Error).message, taskId },
+                    'Failed to persist or publish metadata update');
             }
         } else {
             logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');

@@ -454,6 +454,8 @@ export {
     DEFAULT_NOTIFICATION_SYSTEM_STARTUP_GRACE_MS,
     DEFAULT_NOTIFICATION_OPERATION_TIMEOUT_MS,
     DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS,
+    MIN_NOTIFICATION_LEASE_RENEWAL_INTERVAL_MS,
+    getNotificationProjectionLeaseTtlMs,
     getNotificationSystemCheckIntervalMs,
     getNotificationSystemStartupGraceMs
 } from './services/notificationSystemSampler.js';
@@ -481,6 +483,9 @@ export {
     getNotificationRepositoryEntitlementTtlMs,
     replaceNotificationRepositoryEntitlements,
     replaceNotificationRepositorySubscriptions
+} from './services/notificationRepositoryAccess.js';
+export type {
+    NotificationRepositoryEntitlementFence
 } from './services/notificationRepositoryAccess.js';
 export {
     DEFAULT_NOTIFICATION_LIST_LIMIT,

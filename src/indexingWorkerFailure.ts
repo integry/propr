@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import {
     logger,
+    clearIndexingRuntimeStateBestEffort,
     publishIndexingStatus,
     updateRepositoryStatus,
     type IndexingJobData,
@@ -16,6 +17,7 @@ interface IndexingFailureDeps {
     log: Pick<Logger, 'error' | 'warn'>;
     publishIndexingStatus: typeof publishIndexingStatus;
     updateRepositoryStatus: typeof updateRepositoryStatus;
+    clearIndexingRuntimeStateBestEffort: typeof clearIndexingRuntimeStateBestEffort;
 }
 
 export async function handleIndexingJobFailure(
@@ -28,6 +30,7 @@ export async function handleIndexingJobFailure(
         log: logger,
         publishIndexingStatus,
         updateRepositoryStatus,
+        clearIndexingRuntimeStateBestEffort,
         ...overrides,
     };
     const branch = job.data.baseBranch || 'HEAD';
@@ -61,5 +64,11 @@ export async function handleIndexingJobFailure(
             branch,
             error: (updateError as Error).message,
         }, 'Failed to update repository status after job failure');
+    } finally {
+        await deps.clearIndexingRuntimeStateBestEffort(
+            job.data.repository,
+            branch,
+            job.data.runId
+        );
     }
 }

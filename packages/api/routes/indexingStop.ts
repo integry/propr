@@ -31,6 +31,8 @@ interface StopIndexingDeps {
   publishIndexingStatus: typeof publishIndexingStatus;
 }
 
+const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed', 'unknown']);
+
 async function prepareJobStop(
   job: { getState(): Promise<string>; remove(): Promise<void> },
   deps: StopIndexingDeps,
@@ -46,14 +48,21 @@ async function prepareJobStop(
     await job.remove();
     return false;
   } catch (error) {
-    active = await job.getState() === 'active';
-    if (!active) {
+    const state = await job.getState();
+    active = state === 'active';
+    if (TERMINAL_QUEUE_STATES.has(state)) {
       logger.debug({ repository, branch, runId, error },
         'Indexing job reached a terminal queue state while stop raced with startup');
       return undefined;
     }
-    await deps.requestIndexingCancellation(repository, branch, runId);
-    return true;
+    if (active) {
+      await deps.requestIndexingCancellation(repository, branch, runId);
+      return true;
+    }
+    throw new Error(
+      `Could not remove indexing job for ${repository} (${branch}); queue state is still ${state}`,
+      { cause: error }
+    );
   }
 }
 
@@ -82,23 +91,26 @@ export async function stopIndexingJob(
     const removedQueuedRuns: IndexingStopTransition[] = [];
 
     for (const job of matchingJobs) {
+      // Runtime Redis keys and the worker both use the repository identity stored
+      // on the job. The request spelling is only used for case-insensitive lookup.
+      const jobRepository = job.data.repository;
       const jobBranch = configManager.normalizeSummarizationBranch(job.data.baseBranch);
       const runId = job.data.runId;
       const active = await prepareJobStop(job, deps, {
-        repository,
+        repository: jobRepository,
         branch: jobBranch,
         runId,
       });
       if (active === undefined) continue;
 
-      let transition = await deps.updateRepositoryStatus(repository, 'idle', jobBranch, {
+      let transition = await deps.updateRepositoryStatus(jobRepository, 'idle', jobBranch, {
         ...(runId ? { runId } : {}),
       });
       // A job can become active before its producer/worker ownership write.
       // The history helper closes that race, but refuses a cancellation when
       // completed or failed history for this run already won.
       if (!transition.applied && runId && job.data.transitionAt) {
-        transition = await deps.recordSkippedIndexingRun(repository, jobBranch, {
+        transition = await deps.recordSkippedIndexingRun(jobRepository, jobBranch, {
           runId,
           transitionAt: job.data.transitionAt,
         });
@@ -106,7 +118,7 @@ export async function stopIndexingJob(
       if (!transition.applied) continue;
       await publishIndexingRunBestEffort({
         publisher: deps.publishIndexingStatus,
-        repository,
+        repository: jobRepository,
         branch: jobBranch,
         phase: 'idle',
         transition,

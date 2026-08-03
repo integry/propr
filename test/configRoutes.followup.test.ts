@@ -2796,6 +2796,63 @@ describe('config route follow-up helpers', () => {
         }]);
     });
 
+    test('stopIndexingJob uses the job repository spelling for active runtime state', async () => {
+        const cancellations: string[] = [];
+        const statusRepositories: string[] = [];
+        const publicationRepositories: string[] = [];
+        const result = await stopIndexingJob('Acme/API', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: {
+                        repository: 'acme/api',
+                        baseBranch: 'main',
+                        runId: 'case-run',
+                    },
+                    getState: async () => 'active',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            requestIndexingCancellation: async (repository) => { cancellations.push(repository); },
+            updateRepositoryStatus: async (repository) => {
+                statusRepositories.push(repository);
+                return {
+                    runId: 'case-run',
+                    transitionAt: '2026-08-03T10:00:00.000Z',
+                    applied: true,
+                };
+            },
+            publishIndexingStatus: async (repository) => { publicationRepositories.push(repository); },
+        });
+
+        assert.deepStrictEqual(cancellations, ['acme/api']);
+        assert.deepStrictEqual(statusRepositories, ['acme/api']);
+        assert.deepStrictEqual(publicationRepositories, ['acme/api']);
+        assert.strictEqual(result.success, true);
+    });
+
+    test('stopIndexingJob reports failure when a queued job remains queued after removal fails', async () => {
+        let statusWrites = 0;
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: { repository: 'acme/api', baseBranch: 'main', runId: 'waiting-run' },
+                    getState: async () => 'waiting',
+                    remove: async () => { throw new Error('Redis remove failed'); },
+                }],
+            } as never),
+            requestIndexingCancellation: async () => undefined,
+            updateRepositoryStatus: async () => {
+                statusWrites++;
+                throw new Error('must not transition');
+            },
+            publishIndexingStatus: async () => undefined,
+        });
+
+        assert.strictEqual(result.success, false);
+        assert.match(result.message ?? '', /queue state is still waiting/);
+        assert.strictEqual(statusWrites, 0);
+    });
+
     function createQueueResummarizationDeps(options: {
         repos: Array<{ id: string; name: string; enabled: boolean }>;
         existingJobs?: Array<{ data: { repository: string; baseBranch?: string } }>;

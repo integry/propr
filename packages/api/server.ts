@@ -51,6 +51,7 @@ import {
   NotificationSystemSampler,
   getNotificationStalledCheckIntervalMs,
   getNotificationSystemCheckIntervalMs,
+  getNotificationProjectionLeaseTtlMs,
   withNotificationDeadline,
   closeEventPublisher
 } from '@propr/core';
@@ -504,7 +505,7 @@ async function start(): Promise<void> {
         intervalMs: stalledIntervalMs,
         acquireLease: createNotificationProjectionLease(
           'stalled-activity',
-          stalledIntervalMs * 2
+          getNotificationProjectionLeaseTtlMs(stalledIntervalMs)
         )
       });
       notificationStalledDetector.start();
@@ -528,7 +529,7 @@ async function start(): Promise<void> {
         intervalMs: systemCheckIntervalMs,
         acquireLease: createNotificationProjectionLease(
           'system-health',
-          systemCheckIntervalMs * 2
+          getNotificationProjectionLeaseTtlMs(systemCheckIntervalMs)
         )
       });
       notificationSystemSampler.start();

@@ -69,11 +69,11 @@ const COMPONENT_SPECS: readonly ComponentSpec[] = [
         unhealthyStatuses: ['disconnected', 'failed']
     },
     {
-        key: 'indexing',
+        key: 'indexingService',
         component: 'indexing-service',
-        healthyStatuses: ['idle', 'active', 'queued', 'indexing', 'completed'],
-        knownStatuses: ['idle', 'active', 'queued', 'indexing', 'completed', 'failed', 'disconnected', 'unknown'],
-        unhealthyStatuses: ['failed', 'disconnected']
+        healthyStatuses: ['connected'],
+        knownStatuses: ['connected', 'disconnected', 'failed', 'unknown'],
+        unhealthyStatuses: ['disconnected', 'failed']
     }
 ];
 

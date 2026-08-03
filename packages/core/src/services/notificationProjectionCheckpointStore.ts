@@ -3,6 +3,7 @@ import { normalizeISO8601Timestamp } from '@propr/shared';
 
 export type NotificationProjectionCheckpointSource =
     | 'terminal-task-history'
+    | 'task-notification-enrichments'
     | 'terminal-indexing-history'
     | 'terminal-indexing-current'
     | 'review-drafts';

@@ -10,13 +10,17 @@ import { up as hardenNotificationProjection } from '../src/db/migrations/2026080
 import { up as addIndexingTransitionHistory } from '../src/db/migrations/20260803000000_add_indexing_transition_history.js';
 import { up as addProjectionCheckpoints } from '../src/db/migrations/20260803010000_add_notification_projection_checkpoints.js';
 import { up as hardenNotificationFollowup } from '../src/db/migrations/20260803020000_harden_notification_followup.js';
+import { up as addTaskNotificationEnrichments } from '../src/db/migrations/20260803040000_add_task_notification_enrichments.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
 import { NotificationService } from '../src/services/notificationService.js';
 import { NotificationStalledDetector } from '../src/services/notificationStalledDetector.js';
 import { NotificationSystemProjection } from '../src/services/notificationSystemProjection.js';
-import { NotificationSystemSampler } from '../src/services/notificationSystemSampler.js';
-import { EventPublisher } from '../src/utils/eventPublisher.js';
+import {
+    getNotificationProjectionLeaseTtlMs,
+    NotificationSystemSampler
+} from '../src/services/notificationSystemSampler.js';
+import { closeEventPublisher, EventPublisher, getEventPublisher } from '../src/utils/eventPublisher.js';
 import { NotificationProjectionQueue } from '../src/utils/notificationProjectionQueue.js';
 import type { TaskProjectionContext } from '../src/services/notificationProjectionStore.js';
 
@@ -157,6 +161,7 @@ beforeEach(async () => {
     await addIndexingTransitionHistory(database);
     await addProjectionCheckpoints(database);
     await hardenNotificationFollowup(database);
+    await addTaskNotificationEnrichments(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -696,6 +701,41 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         });
 
         assert.deepEqual((await events()).map(event => event.kind).sort(), ['pull_request', 'task']);
+    });
+
+    test('reconciles post-terminal enrichment from its monotonic durable change record', async () => {
+        await seedPlanAndTask();
+        await database('task_drafts').where({ draft_id: 'draft-1' }).update({
+            status: 'processing'
+        });
+        const [historyId] = await database('task_history').insert({
+            task_id: 'task-1', state: 'completed', timestamp: EVENT_TIME, metadata: '{}'
+        });
+        assert.equal(await projection.reconcileTerminalTransitions(), 1);
+        assert.deepEqual((await events()).map(event => event.kind), ['task']);
+
+        await database('tasks').where({ task_id: 'task-1' }).update({ pr_number: 1734 });
+        await database('task_notification_enrichments').insert({
+            task_id: 'task-1',
+            state: 'completed',
+            transition_history_id: historyId,
+            transition_at: EVENT_TIME,
+            changed_at: '2026-08-02T08:05:00.000Z',
+            metadata: JSON.stringify({
+                metadataUpdate: true,
+                prNumber: 1734,
+                prUrl: 'https://github.com/integry/propr/pull/1734',
+            }),
+        });
+
+        // Simulate a process restart after the best-effort publication was lost.
+        const restartedProjection = new NotificationProjectionService({
+            database,
+            now: () => SERVICE_TIME,
+        });
+        assert.equal(await restartedProjection.reconcileTerminalTransitions(), 1);
+        assert.deepEqual((await events()).map(event => event.kind).sort(), ['pull_request', 'task']);
+        assert.equal(await restartedProjection.reconcileTerminalTransitions(), 0);
     });
 
     test('does not let a regenerated indexing retry close a newer run', async () => {
@@ -1469,6 +1509,27 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 });
 
 describe('system notification projection', { concurrency: false }, () => {
+    test('does not promote a repository indexing failure into a service outage', async () => {
+        await seedPlanAndTask();
+        const systemProjection = new NotificationSystemProjection({ database });
+
+        await systemProjection.projectSnapshot({
+            indexing: 'failed',
+            indexingService: 'connected',
+            timestamp: EVENT_TIME
+        });
+        assert.equal((await events()).length, 0);
+
+        await systemProjection.projectSnapshot({
+            indexing: 'failed',
+            indexingService: 'disconnected',
+            timestamp: '2026-08-02T08:01:00.000Z'
+        });
+        const stored = await events();
+        assert.equal(stored.length, 1);
+        assert.equal(JSON.parse(String(stored[0].target_json)).component, 'indexing-service');
+    });
+
     test('deduplicates an outage and starts a new episode after recovery', async () => {
         await seedPlanAndTask();
         const systemProjection = new NotificationSystemProjection({
@@ -1645,6 +1706,19 @@ describe('system notification projection', { concurrency: false }, () => {
 });
 
 describe('notification projection schedulers', { concurrency: false }, () => {
+    test('derives a lease TTL that exceeds renewal clamps and operation deadlines', () => {
+        assert.equal(getNotificationProjectionLeaseTtlMs(100), 20_000);
+        assert.equal(getNotificationProjectionLeaseTtlMs(60_000), 120_000);
+    });
+
+    test('recreates the event-publisher singleton after a completed close', async () => {
+        const first = getEventPublisher();
+        await closeEventPublisher();
+        const second = getEventPublisher();
+        assert.notEqual(second, first);
+        await closeEventPublisher();
+    });
+
     test('bounds notification projection latency on the publication path', async () => {
         let projectionStarted = false;
         const publisher = new EventPublisher({

@@ -4,6 +4,8 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '../../core/src/db/connection.js';
 import { up as hardenNotificationProjection } from '../../core/src/db/migrations/20260802040000_harden_notification_projection.js';
 import { up as hardenNotificationFollowup } from '../../core/src/db/migrations/20260803020000_harden_notification_followup.js';
+import { up as fenceNotificationEntitlements } from '../../core/src/db/migrations/20260803030000_fence_notification_entitlement_refreshes.js';
+import { replaceNotificationRepositoryEntitlements } from '@propr/core';
 import {
   createNotificationEntitlementRefreshMiddleware,
   persistNotificationRepositoryEntitlementsBestEffort,
@@ -20,6 +22,7 @@ beforeEach(async () => {
   });
   await hardenNotificationProjection(database);
   await hardenNotificationFollowup(database);
+  await fenceNotificationEntitlements(database);
 });
 
 afterEach(async () => {
@@ -181,6 +184,10 @@ test('failed entitlement refreshes are throttled until the retry window', async 
   };
 
   await assert.rejects(refreshNotificationRepositoryEntitlements(options), /GitHub unavailable/);
+  const lease = await database('notification_repository_entitlement_refresh_leases')
+    .where({ user_id: 'backoff-user' })
+    .first('retry_after');
+  assert.ok(Date.parse(lease.retry_after) > Date.now());
   await refreshNotificationRepositoryEntitlements(options);
   assert.equal(scans, 1);
 
@@ -189,6 +196,71 @@ test('failed entitlement refreshes are throttled until the retry window', async 
     /GitHub unavailable/
   );
   assert.equal(scans, 2);
+});
+
+test('a newer forced scan fences an older in-process scan', async () => {
+  let releaseOlder!: () => void;
+  let olderStarted!: () => void;
+  let newerStarted!: () => void;
+  const started = new Promise<void>(resolve => { olderStarted = resolve; });
+  const newerScanning = new Promise<void>(resolve => { newerStarted = resolve; });
+  const older = refreshNotificationRepositoryEntitlements({
+    userId: 'serialized-user',
+    accessToken: 'old-token',
+    database,
+    force: true,
+    listRepositories: async () => {
+      olderStarted();
+      await new Promise<void>(resolve => { releaseOlder = resolve; });
+      return ['acme/revoked'];
+    },
+  });
+  await started;
+  const newer = refreshNotificationRepositoryEntitlements({
+    userId: 'serialized-user',
+    accessToken: 'new-token',
+    database,
+    force: true,
+    listRepositories: async () => {
+      newerStarted();
+      return ['acme/current'];
+    },
+  });
+  await newerScanning;
+  releaseOlder();
+  await Promise.all([older, newer]);
+
+  assert.deepEqual(
+    await database('notification_repository_entitlements').pluck('repository'),
+    ['acme/current']
+  );
+});
+
+test('an expired older scan cannot commit after a newer fencing token', async () => {
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  await database('notification_repository_entitlement_refresh_leases').insert({
+    user_id: 'fenced-user',
+    lease_token: 'new-lease',
+    fencing_token: 2,
+    expires_at: expiresAt,
+    retry_after: null,
+  });
+  assert.equal(await replaceNotificationRepositoryEntitlements({
+    userId: 'fenced-user',
+    repositories: ['acme/current'],
+    database,
+    fence: { leaseToken: 'new-lease', fencingToken: 2 },
+  }), true);
+  assert.equal(await replaceNotificationRepositoryEntitlements({
+    userId: 'fenced-user',
+    repositories: ['acme/revoked'],
+    database,
+    fence: { leaseToken: 'old-lease', fencingToken: 1 },
+  }), false);
+  assert.deepEqual(
+    await database('notification_repository_entitlements').pluck('repository'),
+    ['acme/current']
+  );
 });
 
 test('entitlement bookkeeping failure remains best-effort for repository browsing', async () => {

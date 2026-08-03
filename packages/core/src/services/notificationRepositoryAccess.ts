@@ -9,6 +9,11 @@ const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 const INSERT_CHUNK_SIZE = 200;
 type RepositoryAccessDatabase = Knex | Knex.Transaction;
 
+export interface NotificationRepositoryEntitlementFence {
+    leaseToken: string;
+    fencingToken: number;
+}
+
 function positiveIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];
     if (raw === undefined || raw.trim() === '') return fallback;
@@ -50,15 +55,14 @@ async function insertInChunks(
     }
 }
 
-async function runAtomically(
+async function runAtomically<T>(
     database: RepositoryAccessDatabase,
-    callback: (transaction: RepositoryAccessDatabase) => Promise<void>
-): Promise<void> {
+    callback: (transaction: RepositoryAccessDatabase) => Promise<T>
+): Promise<T> {
     if ((database as Knex.Transaction).isTransaction) {
-        await callback(database);
-        return;
+        return callback(database);
     }
-    await (database as Knex).transaction(callback);
+    return (database as Knex).transaction(callback);
 }
 
 export function getNotificationRepositoryEntitlementTtlMs(): number {
@@ -74,7 +78,8 @@ export async function replaceNotificationRepositoryEntitlements(options: {
     database?: RepositoryAccessDatabase;
     verifiedAt?: string | number | Date;
     ttlMs?: number;
-}): Promise<void> {
+    fence?: NotificationRepositoryEntitlementFence;
+}): Promise<boolean> {
     const database = options.database ?? db;
     const userId = normalizedUserId(options.userId);
     const repositories = normalizedRepositories(options.repositories);
@@ -84,7 +89,31 @@ export async function replaceNotificationRepositoryEntitlements(options: {
         throw new TypeError('ttlMs must be a positive safe integer');
     }
     const expiresAt = normalizeISO8601Timestamp(Date.parse(verifiedAt) + ttlMs);
-    await runAtomically(database, async (transaction) => {
+    return runAtomically(database, async (transaction) => {
+        if (options.fence) {
+            const lease = await transaction('notification_repository_entitlement_refresh_leases')
+                .select('lease_token', 'fencing_token', 'expires_at')
+                .where({
+                    user_id: userId,
+                    lease_token: options.fence.leaseToken,
+                    fencing_token: options.fence.fencingToken
+                })
+                .forUpdate()
+                .first() as {
+                    lease_token?: unknown;
+                    fencing_token?: unknown;
+                    expires_at?: unknown;
+                } | undefined;
+            const expiresAtMs = typeof lease?.expires_at === 'string'
+                ? Date.parse(lease.expires_at)
+                : Number.NaN;
+            if (lease?.lease_token !== options.fence.leaseToken
+                || Number(lease.fencing_token) !== options.fence.fencingToken
+                || !Number.isFinite(expiresAtMs)
+                || expiresAtMs <= Date.now()) {
+                return false;
+            }
+        }
         await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
         await insertInChunks(transaction, 'notification_repository_entitlements', repositories.map((repository) => ({
             user_id: userId,
@@ -96,6 +125,7 @@ export async function replaceNotificationRepositoryEntitlements(options: {
             .insert({ user_id: userId, verified_at: verifiedAt, expires_at: expiresAt })
             .onConflict('user_id')
             .merge({ verified_at: verifiedAt, expires_at: expiresAt });
+        return true;
     });
 }
 

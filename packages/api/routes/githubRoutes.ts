@@ -1,5 +1,4 @@
-import { NextFunction, Request, Response } from 'express';
-import { randomUUID } from 'node:crypto';
+import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
@@ -9,11 +8,16 @@ import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
+import { logger } from '@propr/core';
 import {
-  getNotificationRepositoryEntitlementTtlMs,
-  logger,
-  replaceNotificationRepositoryEntitlements
-} from '@propr/core';
+  listAccessibleRepositories,
+  refreshNotificationRepositoryEntitlements,
+} from './notificationEntitlementRefresh.js';
+export {
+  createNotificationEntitlementRefreshMiddleware,
+  persistNotificationRepositoryEntitlementsBestEffort,
+  refreshNotificationRepositoryEntitlements,
+} from './notificationEntitlementRefresh.js';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
@@ -21,194 +25,19 @@ interface GitHubRoutesDeps {
   db: Knex;
 }
 
-const entitlementRefreshes = new Map<string, Promise<void>>();
-const entitlementRefreshRetryAfter = new Map<string, number>();
-const ENTITLEMENT_REFRESH_RETRY_DELAY_MS = 60_000;
-const ENTITLEMENT_REFRESH_LEASE_MS = 2 * 60_000;
-const MAX_ENTITLEMENT_REFRESH_BACKOFFS = 1_000;
-
-function recordEntitlementRefreshFailure(userId: string): void {
-  if (!entitlementRefreshRetryAfter.has(userId)
-      && entitlementRefreshRetryAfter.size >= MAX_ENTITLEMENT_REFRESH_BACKOFFS) {
-    const oldestUserId = entitlementRefreshRetryAfter.keys().next().value as string | undefined;
-    if (oldestUserId) entitlementRefreshRetryAfter.delete(oldestUserId);
-  }
-  entitlementRefreshRetryAfter.set(userId, Date.now() + ENTITLEMENT_REFRESH_RETRY_DELAY_MS);
-}
-
-async function listAccessibleRepositories(accessToken: string): Promise<string[]> {
-  const PaginatedOctokit = Octokit.plugin(paginateRest);
-  const octokit = new PaginatedOctokit({ auth: accessToken });
-  const repositories: string[] = [];
-  for await (const response of octokit.paginate.iterator('GET /user/repos', {
-    per_page: 100,
-    sort: 'full_name',
-    direction: 'asc',
-    affiliation: 'owner,collaborator,organization_member'
-  })) {
-    for (const repository of response.data) {
-      if (repository.full_name) repositories.push(repository.full_name);
-    }
-  }
-  return [...new Set(repositories)].sort((left, right) =>
-    left.toLowerCase().localeCompare(right.toLowerCase()));
-}
-
-async function notificationEntitlementsNeedRefresh(userId: string, database: Knex): Promise<boolean> {
-  const latest = await database('notification_repository_entitlement_snapshots')
-    .select('verified_at', 'expires_at')
-    .where({ user_id: userId })
-    .first() as { verified_at?: string; expires_at?: string } | undefined;
-  if (!latest?.verified_at || !latest.expires_at) return true;
-  const ttlMs = getNotificationRepositoryEntitlementTtlMs();
-  const refreshBefore = Date.now() + Math.floor(ttlMs / 2);
-  const verifiedAt = Date.parse(latest.verified_at);
-  const expiresAt = Date.parse(latest.expires_at);
-  const currentTtlExpiry = verifiedAt + ttlMs;
-  return !Number.isFinite(verifiedAt)
-    || !Number.isFinite(expiresAt)
-    || Math.min(expiresAt, currentTtlExpiry) <= refreshBefore;
-}
-
-async function acquireEntitlementRefreshLease(
-  userId: string,
-  database: Knex
-): Promise<string | undefined> {
-  if (!await database.schema.hasTable('notification_repository_entitlement_refresh_leases')) {
-    // Rolling upgrades continue to use process-local coalescing until the new
-    // migration is present on this replica's database.
-    return randomUUID();
-  }
-  const leaseToken = randomUUID();
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + ENTITLEMENT_REFRESH_LEASE_MS).toISOString();
-  const updated = await database('notification_repository_entitlement_refresh_leases')
-    .where({ user_id: userId })
-    .where('expires_at', '<=', now.toISOString())
-    .update({ lease_token: leaseToken, expires_at: expiresAt });
-  if (updated === 1) return leaseToken;
-  try {
-    await database('notification_repository_entitlement_refresh_leases').insert({
-      user_id: userId,
-      lease_token: leaseToken,
-      expires_at: expiresAt,
-    });
-    return leaseToken;
-  } catch (error) {
-    const existing = await database('notification_repository_entitlement_refresh_leases')
-      .where({ user_id: userId })
-      .first('lease_token');
-    if (existing) return undefined;
-    throw error;
-  }
-}
-
-async function releaseEntitlementRefreshLease(
-  userId: string,
-  leaseToken: string,
-  database: Knex
-): Promise<void> {
-  if (!await database.schema.hasTable('notification_repository_entitlement_refresh_leases')) return;
-  await database('notification_repository_entitlement_refresh_leases')
-    .where({ user_id: userId, lease_token: leaseToken })
-    .delete();
-}
-
-export async function refreshNotificationRepositoryEntitlements(options: {
-  userId: string;
-  accessToken: string;
-  database: Knex;
-  force?: boolean;
-  listRepositories?: (accessToken: string) => Promise<string[]>;
-}): Promise<void> {
-  const existing = entitlementRefreshes.get(options.userId);
-  if (existing) return existing;
-  const retryAfter = entitlementRefreshRetryAfter.get(options.userId) ?? 0;
-  if (!options.force && retryAfter > Date.now()) return;
-  if (retryAfter > 0) entitlementRefreshRetryAfter.delete(options.userId);
-  const refresh = (async () => {
-    if (!options.force && !await notificationEntitlementsNeedRefresh(options.userId, options.database)) return;
-    const leaseToken = await acquireEntitlementRefreshLease(options.userId, options.database);
-    if (!leaseToken) return;
-    try {
-      // Another replica may have refreshed the snapshot while this request was
-      // waiting to acquire the lease.
-      if (!options.force
-          && !await notificationEntitlementsNeedRefresh(options.userId, options.database)) return;
-      const repositories = await (options.listRepositories ?? listAccessibleRepositories)(options.accessToken);
-      await replaceNotificationRepositoryEntitlements({
-        userId: options.userId,
-        repositories,
-        database: options.database
-      });
-    } finally {
-      await releaseEntitlementRefreshLease(options.userId, leaseToken, options.database);
-    }
-  })();
-  entitlementRefreshes.set(options.userId, refresh);
-  try {
-    await refresh;
-    entitlementRefreshRetryAfter.delete(options.userId);
-  } catch (error) {
-    recordEntitlementRefreshFailure(options.userId);
-    throw error;
-  } finally {
-    if (entitlementRefreshes.get(options.userId) === refresh) {
-      entitlementRefreshes.delete(options.userId);
-    }
-  }
-}
-
-export async function persistNotificationRepositoryEntitlementsBestEffort(options: {
-  userId: string;
-  repositories: readonly string[];
-  database: Knex;
-}): Promise<boolean> {
-  try {
-    await replaceNotificationRepositoryEntitlements(options);
-    return true;
-  } catch (error) {
-    // Repository browsing remains available. Notification delivery stays
-    // fail-closed because no new authorization snapshot was committed.
-    logger.warn({ error: error instanceof Error ? error.message : String(error) },
-      'Failed to persist repository notification access');
-    return false;
-  }
-}
-
-interface NotificationEntitlementRefreshMiddlewareOptions {
-  refresh?: typeof refreshNotificationRepositoryEntitlements;
-}
-
-/** Schedules authorization refresh without adding GitHub latency to API traffic. */
-export function createNotificationEntitlementRefreshMiddleware(
-  database: Knex,
-  options: NotificationEntitlementRefreshMiddlewareOptions = {}
-) {
-  const refresh = options.refresh ?? refreshNotificationRepositoryEntitlements;
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    const userId = req.user?.id;
-    const accessToken = req.user?.accessToken;
-    // getRepos performs a forced refresh using the same GitHub response, avoiding
-    // a duplicate paginated request on this route.
-    if (!userId || !accessToken || req.path === '/github/repos') {
-      next();
-      return;
-    }
-    void refresh({ userId, accessToken, database }).catch((error) => {
-      logger.warn({ error: error instanceof Error ? error.message : String(error) },
-        'Failed to refresh repository notification access');
-    });
-    next();
-  };
-}
-
 async function clearNotificationRepositoryEntitlements(userId: string | undefined, database: Knex): Promise<void> {
   if (!userId) return;
   try {
+    const hasRefreshLeases = await database.schema
+      .hasTable('notification_repository_entitlement_refresh_leases');
     await database.transaction(async (transaction) => {
       await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
       await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
+      if (hasRefreshLeases) {
+        // Deleting the lease also fences any in-flight scan for this logged-out user.
+        await transaction('notification_repository_entitlement_refresh_leases')
+          .where({ user_id: userId }).delete();
+      }
     });
   } catch (error) {
     logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -326,12 +155,27 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         return;
       }
 
-      const repos = await listAccessibleRepositories(accessToken);
-      await persistNotificationRepositoryEntitlementsBestEffort({
-        userId,
-        repositories: repos,
-        database: db
-      });
+      let repos: string[] = [];
+      let repositoriesScanned = false;
+      try {
+        await refreshNotificationRepositoryEntitlements({
+          userId,
+          accessToken,
+          database: db,
+          force: true,
+          listRepositories: async (token) => {
+            repos = await listAccessibleRepositories(token);
+            repositoriesScanned = true;
+            return repos;
+          },
+        });
+      } catch (error) {
+        // Keep repository browsing available when the GitHub scan succeeded but
+        // durable entitlement bookkeeping failed. Delivery remains fail-closed.
+        if (!repositoriesScanned) throw error;
+        logger.warn({ error: error instanceof Error ? error.message : String(error) },
+          'Failed to persist repository notification access');
+      }
 
       res.json({ repos });
     } catch (error) {

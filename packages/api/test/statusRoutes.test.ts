@@ -4,6 +4,7 @@ import { after, afterEach, test } from 'node:test';
 import type { Request, Response as ExpressResponse } from 'express';
 import type { Agent, AgentConfig } from '@propr/core';
 import type { RedisClientType } from 'redis';
+import knex from 'knex';
 import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY, PROPR_VERSION } from '@propr/shared';
 
 type StatusRoutesDeps = {
@@ -520,6 +521,30 @@ test('/api/status preserves a durable current indexing failure after the queue r
   assert.equal(body.indexing, 'failed');
 });
 
+test('durable indexing health includes manual repositories regardless of name casing', async () => {
+  const database = knex({
+    client: 'better-sqlite3',
+    connection: { filename: ':memory:' },
+    useNullAsDefault: true,
+  });
+  try {
+    await database.schema.createTable('repositories', table => {
+      table.text('full_name').notNullable();
+      table.text('branch').notNullable();
+      table.text('indexing_status').notNullable();
+    });
+    await database('repositories').insert({
+      full_name: 'Acme/Manual-Only',
+      branch: 'main',
+      indexing_status: 'FAILED',
+    });
+    const { loadRepositoryIndexingStatus } = await import('../routes/statusRoutes.js');
+    assert.equal(await loadRepositoryIndexingStatus(database), 'failed');
+  } finally {
+    await database.destroy();
+  }
+});
+
 test('notification health collection skips agent probes and warning scans', async () => {
   configureStatusEnv();
   let healthChecks = 0;
@@ -547,6 +572,20 @@ test('notification health collection skips agent probes and warning scans', asyn
   assert.equal('agents' in snapshot, false);
   assert.equal('warnings' in snapshot, false);
   assert.equal('api' in snapshot, false);
+});
+
+test('notification health keeps repository failure separate from indexing service health', async () => {
+  configureStatusEnv();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => 'failed',
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.equal(snapshot.indexing, 'failed');
+  assert.equal(snapshot.indexingService, 'connected');
 });
 
 test('notification health collection bounds Redis commands that never settle', async () => {
@@ -603,6 +642,7 @@ test('notification health collection translates rejected probes into stable valu
   assert.equal(snapshot.daemon, 'unknown');
   assert.equal(snapshot.worker, 'unknown');
   assert.equal(snapshot.indexing, 'disconnected');
+  assert.equal(snapshot.indexingService, 'disconnected');
 });
 
 test('/api/status caps summarization cooldown warnings', async () => {

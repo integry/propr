@@ -70,6 +70,8 @@ export interface IndexingOptions {
   ignoreCooldown?: boolean; // manual/admin override for persisted summarization cooldowns
   runId?: string;
   transitionAt?: string;
+  /** BullMQ owns terminal failure after its final attempt. */
+  deferFailureFinalization?: boolean;
 }
 
 export type IndexingOutcome =
@@ -368,17 +370,17 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
     ? { runId: options.runId, transitionAt: options.transitionAt }
     : undefined;
 
-  const { hash: currentHeadHash, commitMessage: currentHeadCommitMessage } = await resolveHeadInfo(repoPath, branch, correlatedLogger);
-
   try {
-    // Phase A: Setup & Staleness Check
-    correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
-
-    // Check if summarization is enabled before considering runtime cooldowns.
+    // Check configuration before touching the repository. A queued job can race
+    // with an operator disabling summarization and must remain a clean skip even
+    // when its checkout has since become unavailable.
     const settings = await loadSummarizationSettings();
     if (!settings.enabled) {
       correlatedLogger.info('Summarization is disabled, skipping indexing');
       await closeSkippedIndexingRun(fullName, branch, indexingRun);
+      if (indexingRun) {
+        await clearIndexingRuntimeStateBestEffort(fullName, branch, indexingRun.runId);
+      }
       return 'skipped_disabled';
     }
 
@@ -389,10 +391,16 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       // failed one) owns the durable repository row, retain that current status
       // and append this cancellation to transition history instead.
       await closeSkippedIndexingRun(fullName, branch, indexingRun);
-      await clearIndexingCancellation(fullName, branch, indexingRun?.runId);
-      await clearIndexingProgress(fullName, branch, indexingRun?.runId);
+      if (indexingRun) {
+        await clearIndexingRuntimeStateBestEffort(fullName, branch, indexingRun.runId);
+      }
       return 'skipped_cooldown';
     }
+
+    // Phase A: Setup & Staleness Check
+    const { hash: currentHeadHash, commitMessage: currentHeadCommitMessage } =
+      await resolveHeadInfo(repoPath, branch, correlatedLogger);
+    correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
     // Discover repository icon early, so we can include it in status updates.
     const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
@@ -583,13 +591,26 @@ async function handleIndexingError(input: {
     // Publish idle now that the worker has fully stopped — this is the authoritative
     // terminal event so clients won't see stale progress updates afterward.
     await safePublishAppliedIndexingStatus(repoName, errorBranch, 'idle', transition);
-    await clearIndexingCancellation(repoName, errorBranch, indexingRun?.runId);
-    await clearIndexingProgress(repoName, errorBranch, indexingRun?.runId);
+    if (indexingRun) {
+      await clearIndexingRuntimeStateBestEffort(repoName, errorBranch, indexingRun.runId);
+    }
     return 'skipped_cancelled';
   }
 
-  await clearIndexingCancellation(repoName, errorBranch, indexingRun?.runId);
-  await clearIndexingProgress(repoName, errorBranch, indexingRun?.runId);
+  // A queue-owned run must stay non-terminal while BullMQ still has attempts.
+  // Preserve a concurrent cancellation request for the next attempt, but reset
+  // partial progress so diagnostics do not report work from the failed attempt.
+  if (options.deferFailureFinalization) {
+    await clearIndexingProgress(repoName, errorBranch, indexingRun?.runId).catch((cleanupError) => {
+      correlatedLogger.warn({ error: (cleanupError as Error).message },
+        'Failed to clear indexing progress after a retryable attempt');
+    });
+    throw error;
+  }
+
+  if (indexingRun) {
+    await clearIndexingRuntimeStateBestEffort(repoName, errorBranch, indexingRun.runId);
+  }
 
   const err = error as Error;
   correlatedLogger.error(

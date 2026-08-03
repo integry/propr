@@ -10,6 +10,13 @@ import {
     NotificationProjectionCheckpointStore,
     type NotificationProjectionCheckpointSource
 } from './notificationProjectionCheckpointStore.js';
+import { reconcileTaskNotificationEnrichments } from './notificationTaskEnrichmentReconciler.js';
+import {
+    checkpointTuple,
+    nonNegativeCheckpoint,
+    normalizedReconciliationTimestamp,
+    parseReconciliationMetadata
+} from './notificationProjectionReconciliationValues.js';
 
 const DEFAULT_RECONCILIATION_BATCH_SIZE = 100;
 export const DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -17,6 +24,7 @@ const RETENTION_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const TERMINAL_TASK_STATES = ['completed', 'complete', 'succeeded', 'failed', 'error', 'cancelled', 'canceled'] as const;
 
 const TASK_CHECKPOINT = 'terminal-task-history';
+const TASK_ENRICHMENT_CHECKPOINT = 'task-notification-enrichments';
 const INDEXING_HISTORY_CHECKPOINT = 'terminal-indexing-history';
 const INDEXING_CURRENT_CHECKPOINT = 'terminal-indexing-current';
 const DRAFT_CHECKPOINT = 'review-drafts';
@@ -60,47 +68,6 @@ export function getNotificationIndexingTransitionRetentionMs(): number {
     );
 }
 
-function parseMetadata(value: unknown): Record<string, unknown> {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        return value as Record<string, unknown>;
-    }
-    if (typeof value !== 'string') return {};
-    try {
-        const parsed: unknown = JSON.parse(value);
-        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? parsed as Record<string, unknown>
-            : {};
-    } catch {
-        return {};
-    }
-}
-
-function normalizedTimestamp(value: unknown): string {
-    if (typeof value !== 'string' && typeof value !== 'number' && !(value instanceof Date)) {
-        throw new TypeError('durable notification transition timestamp is invalid');
-    }
-    return normalizeISO8601Timestamp(value);
-}
-
-function nonNegativeInteger(value: string | undefined): number | undefined {
-    if (value === undefined || !/^\d+$/.test(value)) return undefined;
-    const parsed = Number(value);
-    return Number.isSafeInteger(parsed) ? parsed : undefined;
-}
-
-function stringTuple(value: string | undefined, length: number): string[] | undefined {
-    if (value === undefined) return undefined;
-    try {
-        const parsed: unknown = JSON.parse(value);
-        return Array.isArray(parsed) && parsed.length === length
-            && parsed.every((part) => typeof part === 'string')
-            ? parsed
-            : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
 /** Bounded scans repair missed terminal projections and durably advance each source. */
 export class NotificationProjectionReconciler {
     private readonly database: Knex;
@@ -113,6 +80,7 @@ export class NotificationProjectionReconciler {
     private readonly checkpoints: NotificationProjectionCheckpointStore;
     private cursorLoad?: Promise<void>;
     private taskCursor = 0;
+    private taskEnrichmentCursor = 0;
     private repositoryTransitionCursor = 0;
     private repositoryCursor?: RepositoryCursor;
     private draftCursor?: DraftCursor;
@@ -141,6 +109,7 @@ export class NotificationProjectionReconciler {
     async reconcile(shouldContinue: () => boolean = () => true): Promise<number> {
         await this.ensureCursorsLoaded();
         let repaired = await this.reconcileTasks(shouldContinue);
+        if (shouldContinue()) repaired += await this.reconcileTaskEnrichments(shouldContinue);
         if (shouldContinue()) repaired += await this.reconcileRepositories(shouldContinue);
         if (shouldContinue()) repaired += await this.reconcileDrafts(shouldContinue);
         return repaired;
@@ -152,15 +121,17 @@ export class NotificationProjectionReconciler {
     }
 
     private async loadCursors(): Promise<void> {
-        const [task, indexingHistory, indexingCurrent, draft] = await Promise.all([
+        const [task, taskEnrichment, indexingHistory, indexingCurrent, draft] = await Promise.all([
             this.checkpoints.load(TASK_CHECKPOINT),
+            this.checkpoints.load(TASK_ENRICHMENT_CHECKPOINT),
             this.checkpoints.load(INDEXING_HISTORY_CHECKPOINT),
             this.checkpoints.load(INDEXING_CURRENT_CHECKPOINT),
             this.checkpoints.load(DRAFT_CHECKPOINT)
         ]);
-        this.taskCursor = nonNegativeInteger(task) ?? 0;
-        this.repositoryTransitionCursor = nonNegativeInteger(indexingHistory) ?? 0;
-        const repositoryTuple = stringTuple(indexingCurrent, 3);
+        this.taskCursor = nonNegativeCheckpoint(task) ?? 0;
+        this.taskEnrichmentCursor = nonNegativeCheckpoint(taskEnrichment) ?? 0;
+        this.repositoryTransitionCursor = nonNegativeCheckpoint(indexingHistory) ?? 0;
+        const repositoryTuple = checkpointTuple(indexingCurrent, 3);
         if (repositoryTuple) {
             this.repositoryCursor = {
                 updatedAt: repositoryTuple[0],
@@ -168,7 +139,7 @@ export class NotificationProjectionReconciler {
                 branch: repositoryTuple[2]
             };
         }
-        const draftTuple = stringTuple(draft, 2);
+        const draftTuple = checkpointTuple(draft, 2);
         if (draftTuple) this.draftCursor = { updatedAt: draftTuple[0], draftId: draftTuple[1] };
     }
 
@@ -189,7 +160,7 @@ export class NotificationProjectionReconciler {
             if (!shouldContinue()) break;
             let transitionAt: string;
             try {
-                transitionAt = normalizedTimestamp(row.timestamp);
+                transitionAt = normalizedReconciliationTimestamp(row.timestamp);
             } catch (error) {
                 this.logMalformedTimestamp(TASK_CHECKPOINT, row.history_id, row.timestamp, error);
                 await this.advanceNumericCheckpoint(TASK_CHECKPOINT, row.history_id);
@@ -202,7 +173,7 @@ export class NotificationProjectionReconciler {
                 state: row.state,
                 timestamp: this.publicationTimestamp(transitionAt),
                 metadata: {
-                    ...parseMetadata(row.metadata),
+                    ...parseReconciliationMetadata(row.metadata),
                     transitionAt,
                     transitionSequence: row.history_id
                 }
@@ -213,6 +184,22 @@ export class NotificationProjectionReconciler {
             repaired++;
         }
         return repaired;
+    }
+
+    private async reconcileTaskEnrichments(shouldContinue: () => boolean): Promise<number> {
+        const result = await reconcileTaskNotificationEnrichments({
+            database: this.database,
+            cursor: this.taskEnrichmentCursor,
+            batchSize: this.batchSize,
+            now: this.now,
+            shouldContinue,
+            project: this.projectTaskUpdate,
+            advanceCheckpoint: (cursor) => this.advanceNumericCheckpoint(
+                TASK_ENRICHMENT_CHECKPOINT, cursor
+            )
+        });
+        this.taskEnrichmentCursor = result.cursor;
+        return result.repaired;
     }
 
     private async reconcileRepositories(shouldContinue: () => boolean): Promise<number> {
@@ -242,7 +229,7 @@ export class NotificationProjectionReconciler {
             if (!shouldContinue()) break;
             let transitionAt: string;
             try {
-                transitionAt = normalizedTimestamp(row.transition_at);
+                transitionAt = normalizedReconciliationTimestamp(row.transition_at);
             } catch (error) {
                 this.logMalformedTimestamp(
                     INDEXING_HISTORY_CHECKPOINT, row.transition_id, row.transition_at, error
@@ -305,7 +292,7 @@ export class NotificationProjectionReconciler {
             const cursor = { updatedAt: row.updated_at, fullName: row.full_name, branch: row.branch };
             let transitionAt: string;
             try {
-                transitionAt = normalizedTimestamp(row.indexing_transition_at);
+                transitionAt = normalizedReconciliationTimestamp(row.indexing_transition_at);
             } catch (error) {
                 this.logMalformedTimestamp(
                     INDEXING_CURRENT_CHECKPOINT,
@@ -360,7 +347,7 @@ export class NotificationProjectionReconciler {
             if (!shouldContinue()) break;
             let transitionAt: string;
             try {
-                transitionAt = normalizedTimestamp(row.review_transition_at ?? row.updated_at);
+                transitionAt = normalizedReconciliationTimestamp(row.review_transition_at ?? row.updated_at);
             } catch (error) {
                 this.logMalformedTimestamp(
                     DRAFT_CHECKPOINT, row.draft_id, row.review_transition_at ?? row.updated_at, error

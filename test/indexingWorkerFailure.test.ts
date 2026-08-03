@@ -9,6 +9,7 @@ const silentLogger = {
     error: () => undefined,
     warn: () => undefined,
 };
+const clearRuntimeState = async () => undefined;
 
 function failedJob(attemptsMade: number, attempts = 3) {
     return {
@@ -27,6 +28,7 @@ describe('indexing worker failure finalization', () => {
         let statusWrites = 0;
         await handleIndexingJobFailure(failedJob(1), new Error('temporary'), {
             log: silentLogger,
+            clearIndexingRuntimeStateBestEffort: clearRuntimeState,
             updateRepositoryStatus: async () => {
                 statusWrites++;
                 return {} as RepositoryStatusTransition;
@@ -39,6 +41,7 @@ describe('indexing worker failure finalization', () => {
         let publications = 0;
         await handleIndexingJobFailure(failedJob(3), new Error('late failure'), {
             log: silentLogger,
+            clearIndexingRuntimeStateBestEffort: clearRuntimeState,
             updateRepositoryStatus: async () => ({
                 runId: 'run-1',
                 transitionAt: '2026-08-03T00:00:00.000Z',
@@ -53,6 +56,7 @@ describe('indexing worker failure finalization', () => {
         const publications: string[] = [];
         await handleIndexingJobFailure(failedJob(3), new Error('permanent'), {
             log: silentLogger,
+            clearIndexingRuntimeStateBestEffort: clearRuntimeState,
             updateRepositoryStatus: async () => ({
                 runId: 'run-1',
                 transitionAt: '2026-08-03T00:00:00.000Z',

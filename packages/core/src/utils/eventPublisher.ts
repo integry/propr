@@ -418,9 +418,14 @@ export function getEventPublisher(): EventPublisher {
  * Call during application shutdown.
  */
 export async function closeEventPublisher(): Promise<void> {
-  if (eventPublisherInstance) {
-    await eventPublisherInstance.close();
-  }
+  const closingInstance = eventPublisherInstance;
+  if (!closingInstance) return;
+  // Keep the closed instance installed while its drain is in progress so a
+  // publication racing with shutdown cannot resurrect Redis/projection work.
+  // Once drained, clear only that generation and permit a controlled in-process
+  // restart to construct a fresh publisher.
+  await closingInstance.close();
+  if (eventPublisherInstance === closingInstance) eventPublisherInstance = null;
 }
 
 // Export the class for type usage

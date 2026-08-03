@@ -15,8 +15,6 @@ import {
   db as coreDb,
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
-  loadMonitoredReposRaw,
-  normalizeSummarizationBranch,
   loadSummarizationRuntimeState
 } from '@propr/core';
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
@@ -199,6 +197,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         githubAuth: 'connected',
         githubEventIntakeStatus: 'connected',
         indexing: 'idle',
+        indexingService: 'connected',
         timestamp: new Date(now()).toISOString()
       };
     }
@@ -210,6 +209,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       githubAuth: 'unknown',
       githubEventIntakeStatus: 'unknown',
       indexing: 'unknown',
+      indexingService: 'unknown',
       timestamp: new Date(now()).toISOString()
     };
     const probeTimedOut = Symbol('notification health probe timed out');
@@ -241,11 +241,13 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     status.githubEventIntakeStatus = routing === probeTimedOut
       ? 'unknown'
       : resolveIntakeStatus(intakeMode, routing, status.daemon);
-    status.indexing = await withTimeout(
-      getIndexingStatus(getIndexingQueue, getRepositoryIndexingStatus),
+    const indexingHealth = await withTimeout(
+      getIndexingHealth(getIndexingQueue, getRepositoryIndexingStatus),
       notificationProbeTimeoutMs,
-      'unknown'
+      { activity: 'unknown' as ServiceStatus, service: 'unknown' as ServiceStatus }
     );
+    status.indexing = indexingHealth.activity;
+    status.indexingService = indexingHealth.service;
     return status;
   }
 
@@ -514,37 +516,45 @@ function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
   };
 }
 
-const REPOSITORY_STATUS_QUERY_CHUNK_SIZE = 200;
+export async function loadRepositoryIndexingStatus(
+  database = coreDb
+): Promise<ServiceStatus | undefined> {
+  if (!await database.schema.hasTable('repositories')) return undefined;
+  // Every current repository row is installation-relevant, including manual
+  // indexing runs that are not part of the periodic monitored-repo config.
+  const failed = await database('repositories')
+    .whereRaw('lower(indexing_status) = ?', ['failed'])
+    .first('indexing_status');
+  if (failed) return 'failed';
+  const active = await database('repositories')
+    .whereRaw('lower(indexing_status) = ?', ['indexing'])
+    .first('indexing_status');
+  if (active) return 'active';
+  return await database('repositories').first('indexing_status') ? 'idle' : undefined;
+}
 
-async function loadRepositoryIndexingStatus(): Promise<ServiceStatus | undefined> {
+interface IndexingHealth {
+  activity: ServiceStatus;
+  service: ServiceStatus;
+}
+
+async function getIndexingHealth(
+  getIndexingQueue: () => Promise<IndexingStatusQueue>,
+  getRepositoryStatus: () => Promise<ServiceStatus | undefined>
+): Promise<IndexingHealth> {
   try {
-    if (!await coreDb.schema.hasTable('repositories')) return undefined;
-    const monitored = (await loadMonitoredReposRaw()).filter((repository) =>
-      repository.enabled && typeof repository.name === 'string' && repository.name.includes('/')
-    );
-    if (monitored.length === 0) return undefined;
-    const monitoredKeys = new Set(monitored.map((repository) =>
-      `${repository.name}\0${normalizeSummarizationBranch(repository.baseBranch)}`
-    ));
-    const repositoryNames = [...new Set(monitored.map((repository) => repository.name))];
-    const statuses = new Set<string | undefined>();
-    for (let offset = 0; offset < repositoryNames.length; offset += REPOSITORY_STATUS_QUERY_CHUNK_SIZE) {
-      const rows = await coreDb('repositories')
-        .select('full_name', 'branch', 'indexing_status')
-        .whereIn('full_name', repositoryNames.slice(offset, offset + REPOSITORY_STATUS_QUERY_CHUNK_SIZE)) as Array<{
-          full_name: string;
-          branch: string;
-          indexing_status?: string;
-        }>;
-      for (const row of rows) {
-        if (monitoredKeys.has(`${row.full_name}\0${row.branch}`)) statuses.add(row.indexing_status);
-      }
-      if (statuses.has('failed')) return 'failed';
+    const [indexingQueue, repositoryStatus] = await Promise.all([
+      getIndexingQueue(),
+      getRepositoryStatus(),
+    ]);
+    const counts = await indexingQueue.getJobCounts('active', 'waiting', 'delayed');
+    if ((counts.active ?? 0) > 0) return { activity: 'active', service: 'connected' };
+    if ((counts.waiting ?? 0) > 0 || (counts.delayed ?? 0) > 0) {
+      return { activity: 'queued', service: 'connected' };
     }
-    if (statuses.has('indexing')) return 'active';
-    return statuses.size > 0 ? 'idle' : undefined;
+    return { activity: repositoryStatus ?? 'idle', service: 'connected' };
   } catch {
-    return undefined;
+    return { activity: 'disconnected', service: 'disconnected' };
   }
 }
 
@@ -552,19 +562,5 @@ async function getIndexingStatus(
   getIndexingQueue: () => Promise<IndexingStatusQueue>,
   getRepositoryStatus: () => Promise<ServiceStatus | undefined> = loadRepositoryIndexingStatus
 ): Promise<ServiceStatus> {
-  try {
-    const indexingQueue = await getIndexingQueue();
-    // BullMQ counts identify live work; retained failed jobs are deliberately not
-    // counted here because the durable repository state below identifies whether
-    // the latest run for any tracked repository is still failed.
-    const counts = await indexingQueue.getJobCounts('active', 'waiting', 'delayed');
-    if ((counts.active ?? 0) > 0) return 'active';
-    if ((counts.waiting ?? 0) > 0 || (counts.delayed ?? 0) > 0) return 'queued';
-    // With no live queue work, the durable repository state describes the most
-    // recent run. A current failure must not disappear merely because BullMQ
-    // moved that job into retained history.
-    return await getRepositoryStatus() ?? 'idle';
-  } catch {
-    return 'disconnected';
-  }
+  return (await getIndexingHealth(getIndexingQueue, getRepositoryStatus)).activity;
 }
