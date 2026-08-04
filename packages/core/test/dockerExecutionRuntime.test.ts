@@ -6,6 +6,10 @@ import {
     flushJsonLineMessages
 }
     from '../src/claude/docker/dockerExecutionRuntime.js';
+import {
+    executeDockerCommand,
+    ExecutionAbortedError
+} from '../src/claude/docker/dockerExecutor.js';
 
 test('JSON-line capture retains records fragmented across stdout chunks', () => {
     const state = { sessionIdDetected: false };
@@ -103,4 +107,22 @@ test('Redis streaming cleanup closes the client when its final write fails', asy
     }, 'task-1', false, 'final output');
 
     assert.equal(quitCalls, 1);
+});
+
+test('abort escalation kills a child that ignores SIGTERM', async () => {
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 200);
+    const startedAt = Date.now();
+    try {
+        await assert.rejects(executeDockerCommand(process.execPath, [
+            '-e',
+            'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'
+        ], {
+            signal: controller.signal,
+            timeout: 5_000
+        }), ExecutionAbortedError);
+    } finally {
+        clearTimeout(abortTimer);
+    }
+    assert.ok(Date.now() - startedAt < 3_000);
 });

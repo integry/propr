@@ -1711,6 +1711,33 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         }
     });
 
+    test('retains supported legacy task states across the durable retry boundary', async () => {
+        const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
+        const payload = {
+            eventType: 'task:update' as const,
+            taskId: 'legacy-cancelled-retry',
+            state: 'CANCELED',
+            previousState: 'WAITING',
+            timestamp: EVENT_TIME
+        };
+        await checkpoints.enqueueRetry('terminal-task-history', 'legacy-cancelled', payload);
+        const projected: string[] = [];
+
+        assert.equal(await reconcileNotificationProjectionRetries({
+            checkpoints,
+            batchSize: 10,
+            shouldContinue: () => true,
+            projectTaskUpdate: async (retry) => {
+                projected.push(`${retry.previousState}:${retry.state}`);
+                return 'completed';
+            },
+            projectIndexingUpdate: async () => 'completed',
+            projectDraftUpdate: async () => 'completed'
+        }), 1);
+        assert.deepEqual(projected, ['WAITING:CANCELED']);
+        assert.deepEqual(await checkpoints.loadRetries(10), []);
+    });
+
     test('prunes terminal indexing activity only after its durable checkpoint advances', async () => {
         const previousRetention = process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS;
         try {

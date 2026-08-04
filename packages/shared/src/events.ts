@@ -125,8 +125,9 @@ const INDEXING_PHASES = new Set<IndexingPhase>([
   'indexing', 'files', 'directories', 'completed', 'failed', 'idle'
 ]);
 const TASK_UPDATE_STATES = new Set([
-  'pending', 'processing', 'claude_execution', 'post_processing',
-  'completed', 'failed', 'cancelled'
+  'pending', 'queued', 'waiting', 'delayed', 'processing',
+  'claude_execution', 'post_processing', 'completed', 'complete',
+  'succeeded', 'failed', 'error', 'cancelled', 'canceled'
 ]);
 
 function eventRecord(value: unknown): Record<string, unknown> {
@@ -180,12 +181,12 @@ function requiredEventTimestamp(payload: Record<string, unknown>, field: string)
 
 function validateTaskUpdatePayload(payload: Record<string, unknown>): TaskUpdatePayload {
   requiredEventString(payload, 'taskId');
-  if (!TASK_UPDATE_STATES.has(requiredEventString(payload, 'state'))) {
+  if (!TASK_UPDATE_STATES.has(requiredEventString(payload, 'state').toLowerCase())) {
     throw new TypeError('event payload state is not a supported task state');
   }
   requiredEventTimestamp(payload, 'timestamp');
   if (payload.previousState !== undefined
-      && !TASK_UPDATE_STATES.has(requiredEventString(payload, 'previousState'))) {
+      && !TASK_UPDATE_STATES.has(requiredEventString(payload, 'previousState').toLowerCase())) {
     throw new TypeError('event payload previousState is not a supported task state');
   }
   optionalEventString(payload, 'repository');

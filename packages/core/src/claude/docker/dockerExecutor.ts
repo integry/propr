@@ -93,6 +93,15 @@ export class ExecutionAbortedError extends Error {
     }
 }
 
+function forceKillChildAfter(child: ChildProcess, delayMs: number): void {
+    const timer = setTimeout(() => {
+        // child.killed only records that kill() was called; it becomes true even
+        // when the process ignores SIGTERM. Exit metadata reflects actual closure.
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }, delayMs);
+    timer.unref();
+}
+
 function createAbortRedis(): AbortRedisClient {
     return new Redis({
         host: process.env.REDIS_HOST || 'redis',
@@ -266,7 +275,7 @@ function setupAbortChecker({ taskId, plannerAbortKey, abortedRef, child, contain
             else logger.warn({ taskId, containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container on abort');
         }
         child.kill('SIGTERM');
-        setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+        forceKillChildAfter(child, 5000);
         // Clearing the worker marker is cleanup, so never delay termination on
         // a Redis connection that may be the reason this execution failed closed.
         await clearWorkerAbortSignalWithClient(taskId, redis);
@@ -353,7 +362,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             const containerToStop = state.containerId.value || namedContainer;
             if (containerToStop) void stopDockerContainer(containerToStop, 1);
             child.kill('SIGTERM');
-            setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 1000);
+            forceKillChildAfter(child, 1000);
         };
         options.signal?.addEventListener('abort', abortFromSignal, { once: true });
         if (options.signal?.aborted) abortFromSignal();
@@ -369,7 +378,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 });
             }
             child.kill('SIGTERM');
-            setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+            forceKillChildAfter(child, 5000);
         }, timeout);
         const plannerAbortKey = taskId ? plannerAbortSignalKeyForTask(taskId) : null;
         const abortChecker = taskId && plannerAbortKey
