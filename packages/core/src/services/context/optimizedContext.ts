@@ -77,15 +77,6 @@ export async function packWithSecurityExclusions(
     effectiveConfig = {
       ...effectiveConfig,
       include: result.safeFilePaths,
-      ignore: {
-        ...effectiveConfig.ignore,
-        customPatterns: [
-          ...new Set([
-            ...effectiveConfig.ignore.customPatterns,
-            ...excludedPaths,
-          ]),
-        ],
-      },
       security: {
         enableSecurityCheck: true,
       },

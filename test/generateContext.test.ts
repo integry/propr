@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -10,10 +10,9 @@ import {
 } from '../packages/core/src/services/context/generateContext.ts';
 import { ContextTokenLimitError } from '../packages/core/src/services/context/types.ts';
 
-const REPOMIX_TEMP_PREFIX = 'output-';
-const REPOMIX_TEMP_ROOT_NAME = 'propr-repomix';
+const REPOMIX_TEMP_PREFIX = 'propr-repomix-';
+const LEGACY_REPOMIX_TEMP_ROOT_NAME = 'propr-repomix';
 const OWNERSHIP_MARKER_NAME = '.owner.json';
-const OLD_TIMESTAMP = new Date(Date.now() - 25 * 60 * 60 * 1_000).toISOString();
 
 async function createRepository(files: Record<string, string>): Promise<string> {
   const repoPath = await mkdtemp(path.join(tmpdir(), 'propr-context-test-'));
@@ -28,7 +27,7 @@ async function createOutputRoot(): Promise<string> {
 }
 
 async function listRepomixOutputDirectories(temporaryRoot: string): Promise<string[]> {
-  const entries = await readdir(path.join(temporaryRoot, REPOMIX_TEMP_ROOT_NAME), { withFileTypes: true });
+  const entries = await readdir(temporaryRoot, { withFileTypes: true });
   return entries
     .filter(entry => entry.isDirectory() && entry.name.startsWith(REPOMIX_TEMP_PREFIX))
     .map(entry => entry.name);
@@ -36,33 +35,6 @@ async function listRepomixOutputDirectories(temporaryRoot: string): Promise<stri
 
 async function assertNoOutputDirectories(temporaryRoot: string): Promise<void> {
   assert.deepEqual(await listRepomixOutputDirectories(temporaryRoot), []);
-}
-
-async function createOwnedOutputDirectory(temporaryRoot: string, pid: number): Promise<string> {
-  const serviceTemporaryRoot = path.join(temporaryRoot, REPOMIX_TEMP_ROOT_NAME);
-  await mkdir(serviceTemporaryRoot, { recursive: true });
-  const directoryPath = await mkdtemp(path.join(serviceTemporaryRoot, REPOMIX_TEMP_PREFIX));
-  await writeFile(path.join(directoryPath, OWNERSHIP_MARKER_NAME), JSON.stringify({
-    pid,
-    requestId: `stale-test-${pid}`,
-    createdAt: OLD_TIMESTAMP,
-  }));
-  return directoryPath;
-}
-
-async function waitForMissing(filePath: string): Promise<void> {
-  for (let attempts = 0; attempts < 100; attempts++) {
-    try {
-      await stat(filePath);
-    } catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
-        return;
-      }
-      throw error;
-    }
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  assert.fail(`Timed out waiting for ${filePath} to be removed`);
 }
 
 test('keeps security exclusions through optimization and returns aligned final output', async t => {
@@ -138,9 +110,11 @@ test('cleans temporary output when a single file cannot fit the hard token limit
   await assertNoOutputDirectories(temporaryRoot);
 });
 
-test('removes stale repository output only when its owner is no longer active', async t => {
+test('does not delete pre-existing directories with unverified ownership', async t => {
   const temporaryRoot = await createOutputRoot();
-  const staleDirectory = await createOwnedOutputDirectory(temporaryRoot, 2_147_483_647);
+  const unrelatedDirectory = path.join(temporaryRoot, `${REPOMIX_TEMP_PREFIX}unrelated`);
+  await mkdir(unrelatedDirectory);
+  await writeFile(path.join(unrelatedDirectory, OWNERSHIP_MARKER_NAME), '{"not":"a valid owner"}');
   const repoPath = await createRepository({ 'index.ts': 'export const value = 1;\n' });
   t.after(() => Promise.all([
     rm(temporaryRoot, { recursive: true, force: true }),
@@ -149,23 +123,28 @@ test('removes stale repository output only when its owner is no longer active', 
 
   await generateContext({ repoPath, tokenLimit: 20_000, modelId: 'gpt-5.6', temporaryRoot });
 
-  await waitForMissing(staleDirectory);
-  await assertNoOutputDirectories(temporaryRoot);
+  assert.ok((await stat(unrelatedDirectory)).isDirectory());
+  assert.deepEqual(await listRepomixOutputDirectories(temporaryRoot), [path.basename(unrelatedDirectory)]);
 });
 
-test('does not scavenge a stale-looking output directory owned by an active process', async t => {
+test('does not follow a predictable legacy temporary-root symlink', async t => {
   const temporaryRoot = await createOutputRoot();
-  const activeDirectory = await createOwnedOutputDirectory(temporaryRoot, process.pid);
+  const attackTarget = await mkdtemp(path.join(tmpdir(), 'propr-context-symlink-target-'));
+  await chmod(attackTarget, 0o755);
+  await writeFile(path.join(attackTarget, 'sentinel.txt'), 'must remain isolated');
+  await symlink(attackTarget, path.join(temporaryRoot, LEGACY_REPOMIX_TEMP_ROOT_NAME), 'dir');
   const repoPath = await createRepository({ 'index.ts': 'export const value = 1;\n' });
   t.after(() => Promise.all([
     rm(temporaryRoot, { recursive: true, force: true }),
+    rm(attackTarget, { recursive: true, force: true }),
     rm(repoPath, { recursive: true, force: true }),
   ]));
 
   await generateContext({ repoPath, tokenLimit: 20_000, modelId: 'gpt-5.6', temporaryRoot });
 
-  assert.ok((await stat(activeDirectory)).isDirectory());
-  assert.deepEqual(await listRepomixOutputDirectories(temporaryRoot), [path.basename(activeDirectory)]);
+  assert.equal((await stat(attackTarget)).mode & 0o777, 0o755);
+  assert.deepEqual(await readdir(attackTarget), ['sentinel.txt']);
+  await assertNoOutputDirectories(temporaryRoot);
 });
 
 test('preserves caller priority while filtering safe paths with glob metacharacters', () => {
@@ -175,6 +154,17 @@ test('preserves caller priority while filtering safe paths with glob metacharact
   assert.deepEqual(
     filterExplicitFilesBySafePaths(callerOrder, repomixSafeOrder),
     ['z-priority[1].ts', 'a-lower-priority.ts'],
+  );
+});
+
+test('normalizes explicit paths to Repomix target-relative paths', () => {
+  assert.deepEqual(
+    filterExplicitFilesBySafePaths(
+      ['./src/first.ts', 'src\\second.ts', 'SRC/THIRD.ts', 'src/first.ts'],
+      ['src/third.ts', 'src/second.ts', 'src/first.ts'],
+      true,
+    ),
+    ['src/first.ts', 'src/second.ts', 'src/third.ts'],
   );
 });
 
@@ -199,6 +189,31 @@ test('handles an explicit filename containing glob metacharacters', async t => {
 
   assert.match(result.context, /LITERAL_GLOB_MARKER/);
   assert.deepEqual(result.includedFiles, ['literal[1].ts']);
+});
+
+test('does not turn a suspicious literal filename into an ignore glob', async t => {
+  const temporaryRoot = await createOutputRoot();
+  const fakeGitHubToken = ['ghp_', 'd'.repeat(36)].join('');
+  const repoPath = await createRepository({
+    'secret[1].ts': `export const credential = '${fakeGitHubToken}';\n`,
+    'secret1.ts': 'export const marker = "SAFE_GLOB_NEIGHBOR_MARKER";\n',
+  });
+  t.after(() => Promise.all([
+    rm(temporaryRoot, { recursive: true, force: true }),
+    rm(repoPath, { recursive: true, force: true }),
+  ]));
+
+  const result = await generateContext({
+    repoPath,
+    tokenLimit: 20_000,
+    modelId: 'gpt-5.6',
+    temporaryRoot,
+  });
+
+  assert.match(result.context, /SAFE_GLOB_NEIGHBOR_MARKER/);
+  assert.doesNotMatch(result.context, new RegExp(fakeGitHubToken));
+  assert.deepEqual(result.includedFiles, ['secret1.ts']);
+  assert.deepEqual(result.skippedSecurityFiles?.map(file => file.filePath), ['secret[1].ts']);
 });
 
 test('returns an empty safe result when every selected file is suspicious', async t => {

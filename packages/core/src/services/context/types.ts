@@ -18,7 +18,7 @@ export interface ContextGenerationOptions {
   compress?: boolean;
   /** Model ID for token ratio calculation (tiktoken is accurate for OpenAI, needs adjustment for Claude/Gemini) */
   modelId?: string;
-  /** Base temporary directory under which a service-owned Repomix directory is created. */
+  /** Base temporary directory under which an unpredictable request-owned Repomix directory is created. */
   temporaryRoot?: string;
 }
 

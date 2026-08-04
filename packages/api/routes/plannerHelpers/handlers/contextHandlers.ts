@@ -94,15 +94,6 @@ function sendPreviewError(res: Response, error: unknown): void {
     res.status(400).json({ error: error.message });
     return;
   }
-  if (error instanceof ContextTokenLimitError) {
-    res.status(413).json({
-      error: `${error.message}. Exclude unusually large generated or minified files, or choose a model with a larger context window.`,
-      code: error.code,
-      requestedTokenLimit: error.requestedTokenLimit,
-      tiktokenLimit: error.tiktokenLimit,
-    });
-    return;
-  }
   res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
 }
 

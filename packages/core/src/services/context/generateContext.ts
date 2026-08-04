@@ -5,7 +5,7 @@
 import type { Logger } from 'pino';
 import type { PackResult } from 'repomix';
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import logger from '../../utils/logger.js';
@@ -14,22 +14,63 @@ import { generateOptimizedContext, packWithSecurityExclusions } from './optimize
 import type { ContextGenerationOptions, ContextGenerationResult, RepomixPackConfig, SuspiciousFile } from './types.js';
 import { ContextTokenLimitError, SecurityException } from './types.js';
 
-const TEMP_OUTPUT_ROOT_NAME = 'propr-repomix';
-const TEMP_OUTPUT_PREFIX = 'output-';
+const TEMP_OUTPUT_PREFIX = 'propr-repomix-';
 const OWNERSHIP_MARKER_NAME = '.owner.json';
-const STALE_TEMP_OUTPUT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-const MAX_CLEANUP_CANDIDATES_PER_SWEEP = 32;
-const cleanupStartedAtByRoot = new Map<string, number>();
 
 interface OutputDirectoryOwner {
   pid: number;
   requestId: string;
   createdAt: string;
+  state: 'active' | 'completed';
+  completedAt?: string;
 }
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function finalizeOutputDirectory(
+  outputDirectory: string,
+  owner: OutputDirectoryOwner,
+  contextLogger: Pick<Logger, 'error' | 'warn'>,
+): Promise<void> {
+  const completedAt = new Date().toISOString();
+  try {
+    await writeFile(path.join(outputDirectory, OWNERSHIP_MARKER_NAME), JSON.stringify({
+      ...owner,
+      state: 'completed',
+      completedAt,
+    } satisfies OutputDirectoryOwner), { mode: 0o600 });
+  } catch (markerError) {
+    contextLogger.warn(
+      { outputDirectory, error: getErrorMessage(markerError) },
+      'Failed to mark Repomix output directory as completed before cleanup',
+    );
+  }
+
+  try {
+    await rm(outputDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 50,
+    });
+  } catch (cleanupError) {
+    contextLogger.error(
+      { outputDirectory, error: getErrorMessage(cleanupError) },
+      'Failed to securely clean up Repomix output directory after retries',
+    );
+    throw new Error(`Failed to securely clean up Repomix output directory: ${outputDirectory}`, {
+      cause: cleanupError,
+    });
+  }
+}
+
+function requireGeneratedContext(result: ContextGenerationResult | undefined): ContextGenerationResult {
+  if (!result) {
+    throw new Error('Context generation completed without producing a result');
+  }
+  return result;
 }
 
 /**
@@ -70,110 +111,28 @@ function getFilesForOptimization(
   return allPackedFiles;
 }
 
-export function filterExplicitFilesBySafePaths(filesToInclude: string[], safeFilePaths: string[]): string[] {
-  const safePathSet = new Set(safeFilePaths);
-  return filesToInclude.filter(filePath => safePathSet.has(filePath));
+function normalizeTargetRelativePath(filePath: string, caseInsensitive: boolean): string {
+  const normalizedPath = path.posix.normalize(filePath.replaceAll('\\', '/'));
+  return caseInsensitive ? normalizedPath.toLocaleLowerCase('en-US') : normalizedPath;
 }
 
-function isProcessActive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return false;
-  }
+export function filterExplicitFilesBySafePaths(
+  filesToInclude: string[],
+  safeFilePaths: string[],
+  caseInsensitive = process.platform === 'win32' || process.platform === 'darwin',
+): string[] {
+  const safePathsByNormalizedPath = new Map(
+    safeFilePaths.map(safePath => [normalizeTargetRelativePath(safePath, caseInsensitive), safePath]),
+  );
+  const matchedSafePaths = new Set<string>();
 
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM';
-  }
-}
-
-async function readOutputDirectoryOwner(directoryPath: string): Promise<OutputDirectoryOwner | undefined> {
-  try {
-    const rawOwner = JSON.parse(await readFile(path.join(directoryPath, OWNERSHIP_MARKER_NAME), 'utf8')) as unknown;
-    if (
-      typeof rawOwner !== 'object' ||
-      rawOwner === null ||
-      !('pid' in rawOwner) ||
-      typeof rawOwner.pid !== 'number' ||
-      !('requestId' in rawOwner) ||
-      typeof rawOwner.requestId !== 'string' ||
-      !('createdAt' in rawOwner) ||
-      typeof rawOwner.createdAt !== 'string'
-    ) {
-      return undefined;
+  return filesToInclude.flatMap(filePath => {
+    const safePath = safePathsByNormalizedPath.get(normalizeTargetRelativePath(filePath, caseInsensitive));
+    if (!safePath || matchedSafePaths.has(safePath)) {
+      return [];
     }
-    return rawOwner as OutputDirectoryOwner;
-  } catch {
-    return undefined;
-  }
-}
-
-async function cleanupStaleOutputDirectories(
-  temporaryRoot: string,
-  contextLogger: Pick<Logger, 'debug' | 'warn'>,
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(temporaryRoot, { withFileTypes: true });
-  } catch (error) {
-    contextLogger.warn({ temporaryRoot, error: getErrorMessage(error) }, 'Unable to inspect stale Repomix output directories');
-    return;
-  }
-
-  const staleBefore = Date.now() - STALE_TEMP_OUTPUT_MAX_AGE_MS;
-  const candidates = entries
-    .filter(entry => entry.isDirectory() && entry.name.startsWith(TEMP_OUTPUT_PREFIX))
-    .slice(0, MAX_CLEANUP_CANDIDATES_PER_SWEEP);
-
-  for (const entry of candidates) {
-    const directoryPath = path.join(temporaryRoot, entry.name);
-    try {
-      const stats = await lstat(directoryPath);
-      const owner = await readOutputDirectoryOwner(directoryPath);
-      const ownerCreatedAt = owner ? Date.parse(owner.createdAt) : Number.NaN;
-      const createdAt = Number.isFinite(ownerCreatedAt) ? ownerCreatedAt : stats.mtimeMs;
-      if (createdAt >= staleBefore) {
-        continue;
-      }
-
-      if (owner && isProcessActive(owner.pid)) {
-        contextLogger.debug(
-          { directoryPath, ownerPid: owner.pid, requestId: owner.requestId },
-          'Retained stale-looking Repomix output directory because its owner is active',
-        );
-        continue;
-      }
-
-      await rm(directoryPath, { recursive: true, force: true });
-      contextLogger.debug(
-        { directoryPath, ownerPid: owner?.pid, requestId: owner?.requestId },
-        'Removed stale Repomix output directory',
-      );
-    } catch (error) {
-      contextLogger.warn(
-        { directoryPath, error: getErrorMessage(error) },
-        'Unable to remove stale Repomix output directory',
-      );
-    }
-  }
-}
-
-function scheduleStaleOutputCleanup(
-  temporaryRoot: string,
-  contextLogger: Pick<Logger, 'debug' | 'warn'>,
-): void {
-  const now = Date.now();
-  const lastStartedAt = cleanupStartedAtByRoot.get(temporaryRoot) ?? 0;
-  if (now - lastStartedAt < STALE_CLEANUP_INTERVAL_MS) {
-    return;
-  }
-  cleanupStartedAtByRoot.set(temporaryRoot, now);
-  void cleanupStaleOutputDirectories(temporaryRoot, contextLogger).catch(error => {
-    contextLogger.warn(
-      { temporaryRoot, error: getErrorMessage(error) },
-      'Unexpected failure during stale Repomix output cleanup',
-    );
+    matchedSafePaths.add(safePath);
+    return [safePath];
   });
 }
 
@@ -211,7 +170,6 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     temporaryRoot = tmpdir(),
   } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
-  const serviceTemporaryRoot = path.join(temporaryRoot, TEMP_OUTPUT_ROOT_NAME);
 
   // Convert model token limit to tiktoken limit based on model type
   const tokenRatio = getTokenRatio(modelId);
@@ -219,10 +177,17 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
   correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit, compress }, 'Starting context generation with repomix');
 
-  await mkdir(serviceTemporaryRoot, { recursive: true, mode: 0o700 });
-  await chmod(serviceTemporaryRoot, 0o700);
-  const outputDirectory = await mkdtemp(path.join(serviceTemporaryRoot, TEMP_OUTPUT_PREFIX));
+  // mkdtemp creates the request-owned directory atomically. In particular, it
+  // avoids trusting or chmodding a predictable service path that another local
+  // user could pre-create as a symlink.
+  const outputDirectory = await mkdtemp(path.join(temporaryRoot, TEMP_OUTPUT_PREFIX));
   const outputFilePath = path.join(outputDirectory, 'repomix-output.xml');
+  const owner: OutputDirectoryOwner = {
+    pid: process.pid,
+    requestId: correlationId || randomUUID(),
+    createdAt: new Date().toISOString(),
+    state: 'active',
+  };
 
   const config: RepomixPackConfig = {
     cwd: repoPath,
@@ -289,16 +254,13 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     );
   };
 
+  let generatedContext: ContextGenerationResult | undefined;
+  let operationError: unknown;
+  let operationFailed = false;
   try {
     // Restrict repository content even on hosts with a permissive process umask.
     await chmod(outputDirectory, 0o700);
-    const owner: OutputDirectoryOwner = {
-      pid: process.pid,
-      requestId: correlationId || randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
     await writeFile(path.join(outputDirectory, OWNERSHIP_MARKER_NAME), JSON.stringify(owner), { mode: 0o600 });
-    scheduleStaleOutputCleanup(serviceTemporaryRoot, correlatedLogger);
 
     const initialPack = await packWithSecurityExclusions(repoPath, config, recordSuspiciousFiles);
     let result: PackResult = initialPack.result;
@@ -359,7 +321,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       'Repomix context generation completed'
     );
 
-    return {
+    generatedContext = {
       context: capturedOutput,
       totalFiles: result.totalFiles,
       totalCharacters: result.totalCharacters,
@@ -380,22 +342,30 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         'Security check failed: suspicious files detected'
       );
 
-      throw new SecurityException(
+      operationError = new SecurityException(
         `Security check failed: ${suspiciousFiles.length} file(s) contain potential secrets`,
         suspiciousFiles
       );
+    } else {
+      correlatedLogger.error({ error: getErrorMessage(error) }, 'Failed to generate context with repomix');
+      operationError = error;
     }
+    operationFailed = true;
+  }
 
-    correlatedLogger.error({ error: getErrorMessage(error) }, 'Failed to generate context with repomix');
-    throw error;
-  } finally {
-    try {
-      await rm(outputDirectory, { recursive: true, force: true });
-    } catch (cleanupError) {
-      correlatedLogger.warn(
-        { outputDirectory, error: getErrorMessage(cleanupError) },
-        'Failed to clean up Repomix output directory',
+  try {
+    await finalizeOutputDirectory(outputDirectory, owner, correlatedLogger);
+  } catch (cleanupFailure) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, cleanupFailure],
+        'Context generation failed and its Repomix output directory could not be cleaned up',
       );
     }
+    throw cleanupFailure;
   }
+  if (operationFailed) {
+    throw operationError;
+  }
+  return requireGeneratedContext(generatedContext);
 }
