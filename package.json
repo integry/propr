@@ -93,7 +93,7 @@
     "pino-pretty": "^13.0.0",
     "redis": "^4.6.5",
     "simple-git": "^3.27.0",
-    "undici": "^7.24.4",
+    "undici": "^7.29.0",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
