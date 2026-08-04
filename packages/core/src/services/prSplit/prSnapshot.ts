@@ -254,6 +254,54 @@ function normalizedLines(value: string): string[] {
   return value.replace(/\r\n/g, '\n').split('\n');
 }
 
+interface AppliedPatchHunk {
+  index: number;
+  baseCursor: number;
+  consumed: number;
+  produced: number;
+}
+
+interface PatchHunkInput {
+  patchLines: string[];
+  hunkHeaderIndex: number;
+  base: string[];
+  initialBaseCursor: number;
+  output: string[];
+}
+
+function applyPatchHunk(input: PatchHunkInput): AppliedPatchHunk | null {
+  const { patchLines, hunkHeaderIndex, base, initialBaseCursor, output } = input;
+  let index = hunkHeaderIndex;
+  let baseCursor = initialBaseCursor;
+  let consumed = 0;
+  let produced = 0;
+  while (index + 1 < patchLines.length && !patchLines[index + 1].startsWith('@@')) {
+    const line = patchLines[index + 1];
+    if (line.startsWith('\\ No newline at end of file')) {
+      index += 1;
+      continue;
+    }
+    if (!/^[- +]/.test(line)) break;
+    index += 1;
+    const text = line.slice(1);
+    if (line.startsWith(' ')) {
+      if (base[baseCursor] !== text) return null;
+      output.push(text);
+      baseCursor += 1;
+      consumed += 1;
+      produced += 1;
+    } else if (line.startsWith('-')) {
+      if (base[baseCursor] !== text) return null;
+      baseCursor += 1;
+      consumed += 1;
+    } else {
+      output.push(text);
+      produced += 1;
+    }
+  }
+  return { index, baseCursor, consumed, produced };
+}
+
 function patchReconstructsHead(file: PrSnapshotFile): boolean {
   if (!file.patch || !file.contentComplete) return false;
   const base = normalizedLines(file.baseContent ?? '');
@@ -273,33 +321,16 @@ function patchReconstructsHead(file: PrSnapshotFile): boolean {
     if (hunkStart < baseCursor || hunkStart > base.length) return false;
     output.push(...base.slice(baseCursor, hunkStart));
     baseCursor = hunkStart;
-    let consumed = 0;
-    let produced = 0;
-    while (index + 1 < patchLines.length && !patchLines[index + 1].startsWith('@@')) {
-      const line = patchLines[index + 1];
-      if (line.startsWith('\\ No newline at end of file')) {
-        index += 1;
-        continue;
-      }
-      if (!/^[- +]/.test(line)) break;
-      index += 1;
-      const text = line.slice(1);
-      if (line.startsWith(' ')) {
-        if (base[baseCursor] !== text) return false;
-        output.push(text);
-        baseCursor += 1;
-        consumed += 1;
-        produced += 1;
-      } else if (line.startsWith('-')) {
-        if (base[baseCursor] !== text) return false;
-        baseCursor += 1;
-        consumed += 1;
-      } else {
-        output.push(text);
-        produced += 1;
-      }
-    }
-    if (consumed !== oldCount || produced !== newCount) return false;
+    const applied = applyPatchHunk({
+      patchLines,
+      hunkHeaderIndex: index,
+      base,
+      initialBaseCursor: baseCursor,
+      output,
+    });
+    if (!applied) return false;
+    ({ index, baseCursor } = applied);
+    if (applied.consumed !== oldCount || applied.produced !== newCount) return false;
   }
   if (!sawHunk) return false;
   output.push(...base.slice(baseCursor));

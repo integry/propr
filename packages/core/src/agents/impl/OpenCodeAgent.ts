@@ -26,6 +26,13 @@ function resolveOpenCodeExecutionOutcome(
     return { success: result.exitCode === 0 && !parsedOutput.error && !terminationReason, terminationReason };
 }
 
+function buildAnalysisPrompt(prompt: string, context: string | undefined, responseFormat: 'text' | 'json'): string {
+    const suffix = responseFormat === 'json'
+        ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
+        : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+    return context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+}
+
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
     private readonly timeoutMs: number;
@@ -124,10 +131,7 @@ export class OpenCodeAgent implements Agent {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, signal, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
-        const suffix = responseFormat === 'json'
-            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
-            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
-        const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        const analysisPrompt = buildAnalysisPrompt(prompt, context, responseFormat);
         const analysisWorkspace = this.ensureAnalysisWorkspace();
         const analysisConfigPath = this.createAnalysisConfigSnapshot();
         const analysisDataPath = this.resolveAnalysisDataPath();

@@ -197,6 +197,21 @@ function getDockerRunContainerName(args: string[]): string | null {
     return null;
 }
 
+function spawnCommand(executablePath: string, args: string[], cwd: string | undefined, stdinData: string | undefined): ChildProcess {
+    const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
+    if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
+    else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
+
+    const child = spawn(executablePath, args, spawnOptions);
+    if (stdinData && child.stdin) {
+        child.stdin.on('error', (err) => { logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error'); });
+        child.stdin.write(stdinData);
+        child.stdin.end();
+        logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
+    }
+    return child;
+}
+
 /**
  * Finds a running agent container by the task-id suffix used by every agent
  * container name. This survives worker/Redis restarts because Docker remains
@@ -237,17 +252,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, signal } = options;
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(args) : null;
-        const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
-        if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
-        else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
-
-        const child: ChildProcess = spawn(executablePath, args, spawnOptions);
-        if (stdinData && child.stdin) {
-            child.stdin.on('error', (err) => { logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error'); });
-            child.stdin.write(stdinData);
-            child.stdin.end();
-            logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
-        }
+        const child = spawnCommand(executablePath, args, cwd, stdinData);
 
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
