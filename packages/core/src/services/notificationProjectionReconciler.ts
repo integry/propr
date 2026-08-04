@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- bounded reconciliation sources share checkpoint and retention state */
 import type { Knex } from 'knex';
 import {
     normalizeISO8601Timestamp,
@@ -109,6 +110,7 @@ export class NotificationProjectionReconciler {
         if (shouldContinue()) repaired += await this.reconcileTaskEnrichments(shouldContinue);
         if (shouldContinue()) repaired += await this.reconcileRepositories(shouldContinue);
         if (shouldContinue()) repaired += await this.reconcileDrafts(shouldContinue);
+        if (shouldContinue()) await this.pruneDurableHistory();
         return repaired;
     }
 
@@ -221,7 +223,6 @@ export class NotificationProjectionReconciler {
         const repaired = hasHistory
             ? await this.reconcileRepositoryTransitionHistory(shouldContinue)
             : await this.reconcileCurrentRepositories(shouldContinue);
-        if (hasHistory && shouldContinue()) await this.pruneRepositoryTransitionHistory();
         return repaired;
     }
 
@@ -411,17 +412,25 @@ export class NotificationProjectionReconciler {
         await this.checkpoints.save(source, JSON.stringify(cursor));
     }
 
-    private async pruneRepositoryTransitionHistory(): Promise<void> {
-        if (this.repositoryTransitionCursor <= 0) return;
+    private async pruneDurableHistory(): Promise<void> {
+        if (this.repositoryTransitionCursor <= 0 && this.taskEnrichmentCursor <= 0) return;
         const nowMs = new Date(this.now()).getTime();
         if (!Number.isFinite(nowMs)
             || nowMs - this.lastRetentionPruneAt < RETENTION_PRUNE_INTERVAL_MS) return;
         const cutoff = normalizeISO8601Timestamp(nowMs - this.transitionRetentionMs);
-        await this.checkpoints.pruneTerminalIndexingActivities(
-            this.repositoryTransitionCursor,
-            cutoff
-        );
-        await this.checkpoints.pruneIndexingTransitions(this.repositoryTransitionCursor, cutoff);
+        if (this.repositoryTransitionCursor > 0) {
+            await this.checkpoints.pruneTerminalIndexingActivities(
+                this.repositoryTransitionCursor,
+                cutoff
+            );
+            await this.checkpoints.pruneIndexingTransitions(
+                this.repositoryTransitionCursor,
+                cutoff
+            );
+        }
+        if (this.taskEnrichmentCursor > 0) {
+            await this.checkpoints.pruneTaskEnrichments(this.taskEnrichmentCursor, cutoff);
+        }
         this.lastRetentionPruneAt = nowMs;
     }
 

@@ -10,6 +10,8 @@ export type NotificationProjectionCheckpointSource =
 
 const CHECKPOINT_TABLE = 'notification_projection_checkpoints';
 const RETRY_TABLE = 'notification_projection_retries';
+const RETRY_BACKOFF_BASE_MS = 1_000;
+const RETRY_BACKOFF_CAP_MS = 60 * 60 * 1_000;
 const NUMERIC_CHECKPOINTS = new Set<NotificationProjectionCheckpointSource>([
     'terminal-task-history',
     'task-notification-enrichments',
@@ -99,18 +101,34 @@ export class NotificationProjectionCheckpointStore {
                 transition_key: transitionKey,
                 payload_json: payloadJson,
                 attempt_count: 0,
+                next_attempt_at: timestamp,
                 created_at: timestamp,
                 updated_at: timestamp
             })
             .onConflict(['source', 'transition_key'])
-            .merge({ payload_json: payloadJson, updated_at: timestamp });
+            .merge({
+                attempt_count: this.database.raw(`CASE
+                    WHEN ${RETRY_TABLE}.payload_json <> excluded.payload_json THEN 0
+                    ELSE ${RETRY_TABLE}.attempt_count
+                END`),
+                next_attempt_at: this.database.raw(`CASE
+                    WHEN ${RETRY_TABLE}.payload_json <> excluded.payload_json
+                      THEN excluded.next_attempt_at
+                    ELSE ${RETRY_TABLE}.next_attempt_at
+                END`),
+                payload_json: payloadJson,
+                updated_at: timestamp
+            });
         return true;
     }
 
     async loadRetries(limit: number): Promise<NotificationProjectionRetry[]> {
         if (!await this.hasTable(RETRY_TABLE)) return [];
+        const timestamp = normalizeISO8601Timestamp(this.now());
         const rows = await this.database(RETRY_TABLE)
             .select('source', 'transition_key', 'payload_json', 'attempt_count')
+            .whereRaw('COALESCE(next_attempt_at, updated_at) <= ?', [timestamp])
+            .orderByRaw('COALESCE(next_attempt_at, updated_at) ASC')
             .orderBy('attempt_count', 'asc')
             .orderBy('updated_at', 'asc')
             .orderBy('source', 'asc')
@@ -131,11 +149,21 @@ export class NotificationProjectionCheckpointStore {
 
     async markRetryDeferred(retry: NotificationProjectionRetry): Promise<void> {
         if (!await this.hasTable(RETRY_TABLE)) return;
+        const updatedAt = normalizeISO8601Timestamp(this.now());
+        const attemptCount = Math.min(Number.MAX_SAFE_INTEGER, retry.attemptCount + 1);
+        const exponent = Math.min(30, Math.max(0, attemptCount - 1));
+        const delayMs = Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_BASE_MS * (2 ** exponent));
+        const nextAttemptAt = normalizeISO8601Timestamp(Date.parse(updatedAt) + delayMs);
         await this.database(RETRY_TABLE)
-            .where({ source: retry.source, transition_key: retry.transitionKey })
+            .where({
+                source: retry.source,
+                transition_key: retry.transitionKey,
+                payload_json: retry.payloadJson
+            })
             .update({
-                attempt_count: this.database.raw('attempt_count + 1'),
-                updated_at: normalizeISO8601Timestamp(this.now())
+                attempt_count: attemptCount,
+                next_attempt_at: nextAttemptAt,
+                updated_at: updatedAt
             });
     }
 
@@ -157,6 +185,15 @@ export class NotificationProjectionCheckpointStore {
             .where('observed_at', '<', observedBefore)
             .delete();
         return deleted;
+    }
+
+    async pruneTaskEnrichments(maximumChangeId: number, changedBefore: string): Promise<number> {
+        if (!await this.hasTable(CHECKPOINT_TABLE)
+            || !await this.database.schema.hasTable('task_notification_enrichments')) return 0;
+        return this.database('task_notification_enrichments')
+            .where('change_id', '<=', maximumChangeId)
+            .where('changed_at', '<', changedBefore)
+            .delete();
     }
 
     async pruneTerminalIndexingActivities(

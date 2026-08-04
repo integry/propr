@@ -77,7 +77,18 @@ export async function handleAuthError(
   // Token refresh failed, clear the session to force re-login
   console.warn('Token refresh failed, clearing session for re-authentication');
   const userId = req.user?.id;
-  if (userId) await invalidateEntitlements?.(userId);
+  try {
+    if (userId) await invalidateEntitlements?.(userId);
+  } catch (error) {
+    logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
+      'Could not persist repository notification access invalidation');
+    res.status(503).json({
+      error: 'Session cleanup unavailable',
+      code: 'AUTH_CLEANUP_UNAVAILABLE',
+      message: 'Authorization cleanup could not be persisted. Please retry.',
+    });
+    return;
+  }
 
   await new Promise<void>((resolve) => {
     req.logout((err) => {
@@ -100,6 +111,22 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   const { redisClient, taskQueue, db } = deps;
   const invalidateEntitlements = deps.invalidateNotificationEntitlements
     ?? ((userId: string) => invalidateNotificationRepositoryEntitlements(db, userId));
+
+  async function invalidateEntitlementsOrRespond(userId: string, res: Response): Promise<boolean> {
+    try {
+      await invalidateEntitlements(userId);
+      return true;
+    } catch (error) {
+      logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
+        'Could not persist repository notification access invalidation');
+      res.status(503).json({
+        error: 'Session cleanup unavailable',
+        code: 'AUTH_CLEANUP_UNAVAILABLE',
+        message: 'Authorization cleanup could not be persisted. Please retry.',
+      });
+      return false;
+    }
+  }
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -140,7 +167,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         return;
       }
       if (!accessToken) {
-        await invalidateEntitlements(userId);
+        if (!await invalidateEntitlementsOrRespond(userId, res)) return;
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -201,7 +228,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
-        if (req.user?.id) await invalidateEntitlements(req.user.id);
+        if (req.user?.id
+            && !await invalidateEntitlementsOrRespond(req.user.id, res)) return;
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }

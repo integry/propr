@@ -228,6 +228,23 @@ test('/api/status returns default Claude fallback when no agents are configured'
   }]);
 });
 
+test('/api/status falls back to disconnected agents when the registry snapshot throws', async () => {
+  const config = createAgentConfig();
+  const body = await readStatus({
+    loadAgents: async () => [config],
+    agentRegistry: createRegistry([], {
+      getAllAgents: () => { throw new Error('registry unavailable'); },
+    }),
+  });
+
+  assert.deepEqual(body.agents, [{
+    id: config.id,
+    type: config.type,
+    alias: config.alias,
+    status: 'disconnected',
+  }]);
+});
+
 test('/api/status surfaces unified agent image outages', async () => {
   const body = await readStatus({
     agentRegistry: createRegistry([], {

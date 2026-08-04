@@ -99,22 +99,40 @@ export async function initializeServerRedis(
 export function createNotificationProjectionLease(
   redisClient: RedisClientType,
   name: string,
-  ttlMs: number
+  ttlMs: number,
+  operationTimeoutMs = NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS
 ): () => Promise<boolean | {
   renew: () => Promise<boolean>;
   release: () => Promise<void>;
   renewalIntervalMs: number;
 }> {
+  if (!Number.isSafeInteger(operationTimeoutMs) || operationTimeoutMs <= 0) {
+    throw new TypeError('notification Redis operation timeout must be a positive safe integer');
+  }
   const key = `notification:projection-lease:${name}`;
   const acquireScript = "return redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') and 1 or 0";
   const renewScript = "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('PEXPIRE', KEYS[1], ARGV[2]); return 1 end return 0";
   const releaseScript = "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]); return 1 end return 0";
   return async () => {
     const owner = `${process.pid}:${generateCorrelationId()}`;
+    const releaseOwner = async (message: string): Promise<void> => {
+      try {
+        await withNotificationDeadline(redisClient.eval(releaseScript, {
+          keys: [key], arguments: [owner]
+        }), operationTimeoutMs, `releasing ${name} notification projection lease`);
+      } catch (error) {
+        logger.warn({ name, error: error instanceof Error ? error.message : String(error) }, message);
+      }
+    };
+    const acquisition = redisClient.eval(acquireScript, {
+      keys: [key], arguments: [owner, String(ttlMs)]
+    });
     try {
-      const acquired = await withNotificationDeadline(redisClient.eval(acquireScript, {
-        keys: [key], arguments: [owner, String(ttlMs)]
-      }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `acquiring ${name} notification projection lease`);
+      const acquired = await withNotificationDeadline(
+        acquisition,
+        operationTimeoutMs,
+        `acquiring ${name} notification projection lease`
+      );
       if (Number(acquired) !== 1) return false;
       return {
         renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
@@ -122,7 +140,7 @@ export function createNotificationProjectionLease(
           try {
             const renewed = await withNotificationDeadline(redisClient.eval(renewScript, {
               keys: [key], arguments: [owner, String(ttlMs)]
-            }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `renewing ${name} notification projection lease`);
+            }), operationTimeoutMs, `renewing ${name} notification projection lease`);
             return Number(renewed) === 1;
           } catch (error) {
             logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
@@ -130,25 +148,18 @@ export function createNotificationProjectionLease(
             return false;
           }
         },
-        release: async () => {
-          try {
-            await withNotificationDeadline(redisClient.eval(releaseScript, {
-              keys: [key], arguments: [owner]
-            }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `releasing ${name} notification projection lease`);
-          } catch (error) {
-            logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
-              'Could not release notification projection lease');
-          }
-        }
+        release: () => releaseOwner('Could not release notification projection lease')
       };
     } catch (error) {
       logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
         'Could not acquire notification projection lease');
-      return {
-        renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
-        renew: async () => true,
-        release: async () => undefined
-      };
+      // node-redis commands cannot be cancelled once queued. If this command
+      // completes after our deadline and did acquire the key, release that late
+      // owner instead of leaving an unseen lock until its TTL expires.
+      void acquisition.then((acquired) => Number(acquired) === 1
+        ? releaseOwner('Could not release late notification projection lease acquisition')
+        : undefined, () => undefined);
+      return false;
     }
   };
 }

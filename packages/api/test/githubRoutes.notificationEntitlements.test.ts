@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- entitlement coordination races share one migration-backed fixture */
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, test } from 'node:test';
 import knex, { type Knex } from 'knex';
@@ -5,12 +6,17 @@ import { closeConnection } from '../../core/src/db/connection.js';
 import { up as hardenNotificationProjection } from '../../core/src/db/migrations/20260802040000_harden_notification_projection.js';
 import { up as hardenNotificationFollowup } from '../../core/src/db/migrations/20260803020000_harden_notification_followup.js';
 import { up as fenceNotificationEntitlements } from '../../core/src/db/migrations/20260803030000_fence_notification_entitlement_refreshes.js';
+import { up as fenceEntitlementInvalidation } from '../../core/src/db/migrations/20260804000000_fence_notification_entitlement_invalidation.js';
 import { replaceNotificationRepositoryEntitlements } from '@propr/core';
 import {
   createNotificationEntitlementRefreshMiddleware,
   persistNotificationRepositoryEntitlementsBestEffort,
   refreshNotificationRepositoryEntitlements,
 } from '../routes/githubRoutes.js';
+import {
+  ensureEntitlementRefreshRegistration,
+  type EntitlementRefreshTimerScheduler,
+} from '../routes/notificationEntitlementRefreshScheduler.js';
 
 let database: Knex;
 
@@ -23,6 +29,7 @@ beforeEach(async () => {
   await hardenNotificationProjection(database);
   await hardenNotificationFollowup(database);
   await fenceNotificationEntitlements(database);
+  await fenceEntitlementInvalidation(database);
 });
 
 afterEach(async () => {
@@ -32,6 +39,46 @@ afterEach(async () => {
 after(async () => {
   await closeConnection();
 });
+
+function createManualTimers(): {
+  scheduler: EntitlementRefreshTimerScheduler;
+  runAll(): void;
+} {
+  const timers: Array<{ callback: () => void; cancelled: boolean; unref(): void }> = [];
+  return {
+    scheduler: {
+      setTimeout(callback) {
+        const timer = { callback, cancelled: false, unref: () => undefined };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout(timer) {
+        (timer as typeof timers[number]).cancelled = true;
+      },
+    },
+    runAll() {
+      for (const timer of [...timers]) {
+        if (timer.cancelled) continue;
+        timer.cancelled = true;
+        timer.callback();
+      }
+    },
+  };
+}
+
+async function waitForSignal(signal: Promise<void>, description: string): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      signal,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), 1_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 test('ordinary authenticated refresh creates and renews repository entitlement snapshots', async () => {
   let scans = 0;
@@ -179,16 +226,25 @@ test('ordinary API middleware does not await a full entitlement refresh', async 
 });
 
 test('scheduled entitlement refresh continues after authenticated traffic stops', async () => {
-  const previousTtl = process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-  process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = '20';
   await database('notification_repository_entitlement_snapshots').insert({
     user_id: 'inactive-user',
     verified_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 1_000).toISOString(),
   });
   let refreshes = 0;
+  let markInitial!: () => void;
+  let markScheduled!: () => void;
+  const initial = new Promise<void>(resolve => { markInitial = resolve; });
+  const scheduled = new Promise<void>(resolve => { markScheduled = resolve; });
+  const timers = createManualTimers();
   const middleware = createNotificationEntitlementRefreshMiddleware(database, {
-    refresh: async () => { refreshes++; return true; },
+    timerScheduler: timers.scheduler,
+    refresh: async () => {
+      refreshes++;
+      if (refreshes === 1) markInitial();
+      if (refreshes === 2) markScheduled();
+      return true;
+    },
   });
   try {
     middleware({
@@ -196,18 +252,17 @@ test('scheduled entitlement refresh continues after authenticated traffic stops'
       path: '/config/repos',
     } as never, {} as never, () => undefined);
 
-    await new Promise(resolve => setTimeout(resolve, 35));
-    assert.ok(refreshes >= 2, `expected a scheduled refresh, observed ${refreshes}`);
+    await waitForSignal(initial, 'the initial entitlement refresh');
+    await new Promise(resolve => setImmediate(resolve));
+    timers.runAll();
+    await waitForSignal(scheduled, 'the scheduled entitlement refresh');
+    assert.equal(refreshes, 2);
   } finally {
     middleware.close();
-    if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-    else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
   }
 });
 
 test('scheduled entitlement refresh does not resurrect an invalidated user', async () => {
-  const previousTtl = process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-  process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = '20';
   await database('notification_repository_entitlement_snapshots').insert({
     user_id: 'logged-out-user',
     verified_at: new Date().toISOString(),
@@ -220,7 +275,9 @@ test('scheduled entitlement refresh does not resurrect an invalidated user', asy
     expires_at: new Date(Date.now() + 1_000).toISOString(),
   });
   let refreshes = 0;
+  const timers = createManualTimers();
   const refreshingReplica = createNotificationEntitlementRefreshMiddleware(database, {
+    timerScheduler: timers.scheduler,
     refresh: async () => { refreshes++; return true; },
   });
   const logoutReplica = createNotificationEntitlementRefreshMiddleware(database);
@@ -238,19 +295,112 @@ test('scheduled entitlement refresh does not resurrect an invalidated user', asy
     assert.ok(registration, 'refreshing replica should register its retained token durably');
     await logoutReplica.invalidate('logged-out-user');
 
-    await new Promise(resolve => setTimeout(resolve, 25));
+    timers.runAll();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(refreshes, 0);
     assert.equal(await database('notification_repository_entitlements').count({ count: '*' }).first()
       .then(row => Number(row?.count)), 0);
     assert.equal(await database('notification_repository_entitlement_snapshots').count({ count: '*' }).first()
       .then(row => Number(row?.count)), 0);
     assert.equal(await database('notification_repository_entitlement_refresh_leases')
-      .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+      .whereNotNull('invalidated_at')
+      .count({ count: '*' }).first().then(row => Number(row?.count)), 1);
   } finally {
     refreshingReplica.close();
     logoutReplica.close();
-    if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-    else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
+  }
+});
+
+test('a registration that completes after cross-replica logout cannot clear the tombstone', async () => {
+  let releaseRegistration!: () => void;
+  let markRegistrationStarted!: () => void;
+  const registrationStarted = new Promise<void>(resolve => { markRegistrationStarted = resolve; });
+  const registrationGate = new Promise<void>(resolve => { releaseRegistration = resolve; });
+  let refreshes = 0;
+  const refreshingReplica = createNotificationEntitlementRefreshMiddleware(database, {
+    timerScheduler: createManualTimers().scheduler,
+    ensureRegistration: async (registrationDatabase, userId) => {
+      markRegistrationStarted();
+      await registrationGate;
+      return ensureEntitlementRefreshRegistration(registrationDatabase, userId);
+    },
+    refresh: async () => { refreshes++; return true; },
+  });
+  const logoutReplica = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    refreshingReplica({
+      user: { id: 'registration-race-user', accessToken: 'retained-token' },
+      path: '/config/repos',
+    } as never, {} as never, () => undefined);
+    await waitForSignal(registrationStarted, 'the delayed scheduler registration');
+
+    await logoutReplica.invalidate('registration-race-user');
+    releaseRegistration();
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(refreshes, 0);
+    assert.equal(await ensureEntitlementRefreshRegistration(
+      database,
+      'registration-race-user'
+    ), false);
+    const tombstone = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'registration-race-user' })
+      .first('invalidated_at');
+    assert.equal(typeof tombstone.invalidated_at, 'string');
+  } finally {
+    refreshingReplica.close();
+    logoutReplica.close();
+  }
+});
+
+test('cross-replica logout fences an in-flight repository scan commit', async () => {
+  let releaseScan!: () => void;
+  let markScanStarted!: () => void;
+  const scanStarted = new Promise<void>(resolve => { markScanStarted = resolve; });
+  const logoutReplica = createNotificationEntitlementRefreshMiddleware(database);
+  const scan = refreshNotificationRepositoryEntitlements({
+    userId: 'logout-scan-race-user',
+    accessToken: 'retained-token',
+    database,
+    force: true,
+    listRepositories: async () => {
+      markScanStarted();
+      await new Promise<void>(resolve => { releaseScan = resolve; });
+      return ['acme/revoked'];
+    },
+  });
+  try {
+    await waitForSignal(scanStarted, 'the in-flight entitlement scan');
+    await logoutReplica.invalidate('logout-scan-race-user');
+    releaseScan();
+
+    assert.equal(await scan, false);
+    assert.equal(await database('notification_repository_entitlements')
+      .where({ user_id: 'logout-scan-race-user' })
+      .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+    assert.equal(await database('notification_repository_entitlement_snapshots')
+      .where({ user_id: 'logout-scan-race-user' })
+      .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+  } finally {
+    logoutReplica.close();
+  }
+});
+
+test('a successful login activation clears a prior entitlement tombstone', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    await middleware.invalidate('returning-user');
+    assert.equal(await ensureEntitlementRefreshRegistration(database, 'returning-user'), false);
+
+    await middleware.activate('returning-user');
+
+    assert.equal(await ensureEntitlementRefreshRegistration(database, 'returning-user'), true);
+    const row = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'returning-user' })
+      .first('invalidated_at');
+    assert.equal(row.invalidated_at, null);
+  } finally {
+    middleware.close();
   }
 });
 
@@ -375,4 +525,14 @@ test('entitlement bookkeeping failure remains best-effort for repository browsin
   }), false);
   assert.equal(await database('notification_repository_entitlements').count({ count: '*' }).first()
     .then(row => Number(row?.count)), 0);
+});
+
+test('entitlement invalidation surfaces persistence failures to session cleanup', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  await database.schema.dropTable('notification_repository_entitlements');
+  try {
+    await assert.rejects(middleware.invalidate('logout-failure-user'), /no such table/);
+  } finally {
+    middleware.close();
+  }
 });

@@ -92,7 +92,7 @@ export async function replaceNotificationRepositoryEntitlements(options: {
     return runAtomically(database, async (transaction) => {
         if (options.fence) {
             const lease = await transaction('notification_repository_entitlement_refresh_leases')
-                .select('lease_token', 'fencing_token', 'expires_at')
+                .select('lease_token', 'fencing_token', 'expires_at', 'invalidated_at')
                 .where({
                     user_id: userId,
                     lease_token: options.fence.leaseToken,
@@ -103,12 +103,14 @@ export async function replaceNotificationRepositoryEntitlements(options: {
                     lease_token?: unknown;
                     fencing_token?: unknown;
                     expires_at?: unknown;
+                    invalidated_at?: unknown;
                 } | undefined;
             const expiresAtMs = typeof lease?.expires_at === 'string'
                 ? Date.parse(lease.expires_at)
                 : Number.NaN;
             if (lease?.lease_token !== options.fence.leaseToken
                 || Number(lease.fencing_token) !== options.fence.fencingToken
+                || lease.invalidated_at !== null
                 || !Number.isFinite(expiresAtMs)
                 || expiresAtMs <= Date.now()) {
                 return false;

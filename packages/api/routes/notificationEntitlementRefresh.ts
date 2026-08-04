@@ -10,6 +10,7 @@ import {
 } from '@propr/core';
 import {
   createScheduledEntitlementRefreshMiddleware,
+  type EntitlementRefreshTimerScheduler,
   type NotificationEntitlementRefreshMiddleware,
 } from './notificationEntitlementRefreshScheduler.js';
 
@@ -106,7 +107,8 @@ async function notificationEntitlementsNeedRefresh(userId: string, database: Kne
 async function supportsDurableCoordination(database: Knex): Promise<boolean> {
   return await database.schema.hasTable(LEASE_TABLE)
     && await database.schema.hasColumn(LEASE_TABLE, 'fencing_token')
-    && await database.schema.hasColumn(LEASE_TABLE, 'retry_after');
+    && await database.schema.hasColumn(LEASE_TABLE, 'retry_after')
+    && await database.schema.hasColumn(LEASE_TABLE, 'invalidated_at');
 }
 
 async function acquireEntitlementRefreshLease(options: {
@@ -126,6 +128,7 @@ async function acquireEntitlementRefreshLease(options: {
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + ENTITLEMENT_REFRESH_LEASE_MS).toISOString();
   const update = database(LEASE_TABLE).where({ user_id: userId });
+  update.whereNull('invalidated_at');
   if (!preempt) {
     update.where('expires_at', '<=', nowIso).where((eligible) => eligible
       .whereNull('retry_after').orWhere('retry_after', '<=', nowIso));
@@ -150,12 +153,18 @@ async function acquireEntitlementRefreshLease(options: {
       fencing_token: 1,
       expires_at: expiresAt,
       retry_after: null,
+      invalidated_at: null,
     });
     return { leaseToken, fencingToken: 1, persisted: true };
   } catch (error) {
-    const existing = await database(LEASE_TABLE).where({ user_id: userId }).first('lease_token');
+    const existing = await database(LEASE_TABLE)
+      .where({ user_id: userId })
+      .first('lease_token', 'invalidated_at') as {
+        lease_token?: unknown;
+        invalidated_at?: unknown;
+      } | undefined;
     if (existing) {
-      return preempt
+      return existing.invalidated_at === null && preempt
         ? acquireEntitlementRefreshLease(options)
         : undefined;
     }
@@ -354,6 +363,8 @@ export async function persistNotificationRepositoryEntitlementsBestEffort(option
 interface NotificationEntitlementRefreshMiddlewareOptions {
   refresh?: (options: RefreshNotificationRepositoryEntitlementsOptions) => Promise<unknown>;
   maxScheduledRefreshes?: number;
+  timerScheduler?: EntitlementRefreshTimerScheduler;
+  ensureRegistration?: (database: Knex, userId: string) => Promise<boolean>;
 }
 
 /** Schedules authorization refresh without adding GitHub latency to API traffic. */
@@ -364,5 +375,7 @@ export function createNotificationEntitlementRefreshMiddleware(
   const refresh = options.refresh ?? refreshNotificationRepositoryEntitlements;
   return createScheduledEntitlementRefreshMiddleware(database, refresh, {
     maxScheduledRefreshes: options.maxScheduledRefreshes,
+    timerScheduler: options.timerScheduler,
+    ensureRegistration: options.ensureRegistration,
   });
 }

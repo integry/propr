@@ -21,6 +21,10 @@ test('indexing identity migration canonicalizes repositories and backfills activ
       table.text('full_name').notNullable();
       table.text('branch').notNullable();
       table.text('indexing_status').notNullable();
+      table.text('last_indexed_at');
+      table.text('last_indexed_hash');
+      table.text('last_indexed_commit_message');
+      table.text('icon_path');
       table.text('created_at').notNullable();
       table.text('updated_at').notNullable();
       table.primary(['full_name', 'branch']);
@@ -30,6 +34,10 @@ test('indexing identity migration canonicalizes repositories and backfills activ
         full_name: 'Acme/API', branch: 'main', indexing_status: 'completed',
         created_at: '2026-08-01T00:00:00.000Z',
         updated_at: '2026-08-01T01:00:00.000Z',
+        last_indexed_at: '2026-08-01T00:30:00.000Z',
+        last_indexed_hash: 'preserved-hash',
+        last_indexed_commit_message: 'Preserve this metadata',
+        icon_path: '/icons/acme-api.png',
       },
       {
         full_name: 'acme/api', branch: 'main', indexing_status: 'indexing',
@@ -41,7 +49,9 @@ test('indexing identity migration canonicalizes repositories and backfills activ
     await addIndexingTransitionIdentity(database);
 
     const repository = await database('repositories').first(
-      'full_name', 'branch', 'indexing_status', 'indexing_transition_at', 'indexing_run_id'
+      'full_name', 'branch', 'indexing_status', 'indexing_transition_at', 'indexing_run_id',
+      'last_indexed_at', 'last_indexed_hash', 'last_indexed_commit_message', 'icon_path',
+      'created_at'
     );
     const expectedRunId = `legacy-${createHash('sha256')
       .update(['acme/api', 'main', '2026-08-02T01:00:00.000Z'].join('\0'))
@@ -52,6 +62,11 @@ test('indexing identity migration canonicalizes repositories and backfills activ
       indexing_status: 'indexing',
       indexing_transition_at: '2026-08-02T01:00:00.000Z',
       indexing_run_id: expectedRunId,
+      last_indexed_at: '2026-08-01T00:30:00.000Z',
+      last_indexed_hash: 'preserved-hash',
+      last_indexed_commit_message: 'Preserve this metadata',
+      icon_path: '/icons/acme-api.png',
+      created_at: '2026-08-01T00:00:00.000Z',
     });
     assert.deepEqual(await getActiveRepositoryIndexingRuns('ACME/API', 'main', database), [{
       fullName: 'acme/api',

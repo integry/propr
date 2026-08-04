@@ -57,8 +57,16 @@ function rowTransitionTime(row) {
 }
 
 async function canonicalizeRepositories(knex) {
+  const columnInfo = await knex('repositories').columnInfo();
+  const metadataColumns = [
+    'last_indexed_at',
+    'last_indexed_hash',
+    'last_indexed_commit_message',
+    'icon_path',
+    'created_at',
+  ].filter((column) => column in columnInfo);
   const rows = await knex('repositories').select(
-    'full_name', 'branch', 'indexing_transition_at', 'updated_at'
+    'full_name', 'branch', 'indexing_transition_at', 'updated_at', ...metadataColumns
   );
   const groups = new Map();
   for (const row of rows) {
@@ -73,19 +81,64 @@ async function canonicalizeRepositories(knex) {
     group.sort((left, right) => rowTransitionTime(right) - rowTransitionTime(left)
       || left.full_name.localeCompare(right.full_name));
     const [winner, ...duplicates] = group;
+    const mergedMetadata = mergeRepositoryMetadata(winner, group, metadataColumns);
     for (const duplicate of duplicates) {
       await knex('repositories').where({
         full_name: duplicate.full_name,
         branch: duplicate.branch,
       }).delete();
     }
-    if (winner.full_name !== canonicalName) {
+    if (winner.full_name !== canonicalName || Object.keys(mergedMetadata).length > 0) {
       await knex('repositories').where({
         full_name: winner.full_name,
         branch: winner.branch,
-      }).update({ full_name: canonicalName });
+      }).update({
+        ...(winner.full_name === canonicalName ? {} : { full_name: canonicalName }),
+        ...mergedMetadata,
+      });
     }
   }
+}
+
+function hasMetadata(value) {
+  return value !== null && value !== undefined && (typeof value !== 'string' || value.trim() !== '');
+}
+
+function metadataTime(row) {
+  const parsed = typeof row.last_indexed_at === 'string'
+    ? Date.parse(row.last_indexed_at)
+    : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function firstMetadata(rows, column) {
+  return rows.find((row) => hasMetadata(row[column]))?.[column];
+}
+
+function mergeRepositoryMetadata(winner, group, metadataColumns) {
+  const merged = {};
+  const indexedRows = [...group].sort((left, right) => metadataTime(right) - metadataTime(left)
+    || rowTransitionTime(right) - rowTransitionTime(left));
+  if (metadataColumns.includes('last_indexed_at')) {
+    const lastIndexedAt = firstMetadata(indexedRows, 'last_indexed_at');
+    if (lastIndexedAt !== undefined && winner.last_indexed_at !== lastIndexedAt) {
+      merged.last_indexed_at = lastIndexedAt;
+    }
+  }
+  for (const column of ['last_indexed_hash', 'last_indexed_commit_message']) {
+    if (!metadataColumns.includes(column)) continue;
+    const value = firstMetadata(indexedRows, column);
+    if (value !== undefined && winner[column] !== value) merged[column] = value;
+  }
+  if (metadataColumns.includes('icon_path')) {
+    const iconPath = firstMetadata([winner, ...group.filter((row) => row !== winner)], 'icon_path');
+    if (iconPath !== undefined && winner.icon_path !== iconPath) merged.icon_path = iconPath;
+  }
+  if (metadataColumns.includes('created_at')) {
+    const createdAt = [...group].map((row) => row.created_at).filter(hasMetadata).sort()[0];
+    if (createdAt !== undefined && winner.created_at !== createdAt) merged.created_at = createdAt;
+  }
+  return merged;
 }
 
 async function backfillLegacyActiveRunIds(knex) {

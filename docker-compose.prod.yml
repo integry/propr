@@ -1,7 +1,7 @@
 # Legacy source-build production compose. The supported deployment path is the
 # launcher / prebuilt images (see docs: Production Deployment); this file builds
-# from source and does not start the analysis-worker or indexing-worker
-# services that the standard stack includes.
+# from source and does not start the analysis-worker service that the standard
+# stack includes.
 version: '3.8'
 
 services:
@@ -75,6 +75,8 @@ services:
       redis:
         condition: service_healthy
       daemon:
+        condition: service_started
+      indexing-worker:
         condition: service_started
     networks:
       - propr-network
@@ -166,6 +168,39 @@ services:
     networks:
       - propr-network
     command: ["node", "dist/src/worker.js"]
+
+  indexing-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      GH_APP_ID: ${GH_APP_ID}
+      GH_APP_PRIVATE_KEY: ${GH_APP_PRIVATE_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      ALLOWED_ORGS: ${ALLOWED_ORGS}
+      DB_FILENAME: /usr/src/app/data/propr.sqlite
+      INDEXING_SCAN_INTERVAL_MS: ${INDEXING_SCAN_INTERVAL_MS:-300000}
+      INDEXING_REINDEX_INTERVAL_MS: ${INDEXING_REINDEX_INTERVAL_MS:-86400000}
+      PROPR_MANAGED_CREDENTIALS_DIR: ${HOME:?HOME must be set}/.propr/agent-credentials
+      PROPR_CONTAINERIZED: "1"
+    volumes:
+      - ./logs:/usr/src/app/logs
+      - ./repos:/usr/src/app/repos
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
+      - propr-sqlite-data:/usr/src/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - propr-network
+    command: ["node", "dist/src/indexing_worker.js"]
 
 networks:
   propr-network:

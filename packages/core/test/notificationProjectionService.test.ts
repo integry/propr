@@ -12,6 +12,7 @@ import { up as addProjectionCheckpoints } from '../src/db/migrations/20260803010
 import { up as hardenNotificationFollowup } from '../src/db/migrations/20260803020000_harden_notification_followup.js';
 import { up as addTaskNotificationEnrichments } from '../src/db/migrations/20260803040000_add_task_notification_enrichments.js';
 import { up as hardenProjectionRetries } from '../src/db/migrations/20260803050000_harden_projection_retries_and_indexing_terminals.js';
+import { up as scheduleProjectionRetries } from '../src/db/migrations/20260804010000_schedule_notification_projection_retries.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
 import { NotificationProjectionCheckpointStore } from '../src/services/notificationProjectionCheckpointStore.js';
@@ -166,6 +167,7 @@ beforeEach(async () => {
     await hardenNotificationFollowup(database);
     await addTaskNotificationEnrichments(database);
     await hardenProjectionRetries(database);
+    await scheduleProjectionRetries(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -1412,6 +1414,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         await database('notification_repository_entitlement_snapshots')
             .where({ user_id: 'deferred-owner' })
             .update({ verified_at: SERVICE_TIME, expires_at: '2026-08-03T08:00:00.000Z' });
+        await database('notification_projection_retries').update({ next_attempt_at: SERVICE_TIME });
 
         assert.equal(await projection.reconcileTerminalTransitions(), 1);
         assert.deepEqual(await database('notification_user_states').pluck('user_id'), [
@@ -1450,6 +1453,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             .first('transition_key'), { transition_key: String(blockedHistoryId) });
 
         await grantRepositoryEntitlement('blocked-owner');
+        await database('notification_projection_retries').update({ next_attempt_at: SERVICE_TIME });
         assert.equal(await projection.reconcileTerminalTransitions(), 1);
         assert.deepEqual(
             new Set(await database('notification_user_states').pluck('user_id')),
@@ -1491,6 +1495,44 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             await checkpoints.load('review-drafts'),
             JSON.stringify(['2026-08-03T00:00:00.000Z', 'z'])
         );
+    });
+
+    test('backs off deferred retries and resets priority when their payload changes', async () => {
+        let currentTime = Date.parse(SERVICE_TIME);
+        const checkpoints = new NotificationProjectionCheckpointStore(
+            database,
+            () => new Date(currentTime)
+        );
+        const initialPayload = { eventType: 'task:update', taskId: 'retry-task', state: 'failed' };
+        await checkpoints.enqueueRetry('terminal-task-history', '42', initialPayload);
+        const [initialRetry] = await checkpoints.loadRetries(10);
+        assert.ok(initialRetry);
+
+        await checkpoints.markRetryDeferred(initialRetry);
+        await checkpoints.enqueueRetry('terminal-task-history', '42', initialPayload);
+        assert.deepEqual(await database('notification_projection_retries')
+            .where({ transition_key: '42' })
+            .first('attempt_count', 'next_attempt_at'), {
+            attempt_count: 1,
+            next_attempt_at: '2026-08-02T16:00:01.000Z'
+        });
+        assert.deepEqual(await checkpoints.loadRetries(10), []);
+
+        const enrichedPayload = { ...initialPayload, metadata: { prNumber: 1734 } };
+        await checkpoints.enqueueRetry('terminal-task-history', '42', enrichedPayload);
+        const reset = await database('notification_projection_retries')
+            .where({ transition_key: '42' })
+            .first('attempt_count', 'next_attempt_at', 'payload_json');
+        assert.equal(reset.attempt_count, 0);
+        assert.equal(reset.next_attempt_at, SERVICE_TIME);
+        assert.deepEqual(JSON.parse(reset.payload_json), enrichedPayload);
+        assert.equal((await checkpoints.loadRetries(10)).length, 1);
+
+        await checkpoints.markRetryDeferred((await checkpoints.loadRetries(10))[0]);
+        currentTime += 999;
+        assert.deepEqual(await checkpoints.loadRetries(10), []);
+        currentTime += 1;
+        assert.equal((await checkpoints.loadRetries(10)).length, 1);
     });
 
     test('prunes terminal indexing activity only after its durable checkpoint advances', async () => {
@@ -1544,6 +1586,37 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
                 process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = previousRetention;
             }
         }
+    });
+
+    test('prunes task-enrichment history only after its durable checkpoint advances', async () => {
+        const oldTime = '2026-06-01T08:00:00.000Z';
+        await database('tasks').insert({
+            task_id: 'old-enrichment-task',
+            repository: 'integry/propr',
+            issue_number: 1,
+            task_type: 'issue',
+            initial_job_data: JSON.stringify({ userId: 'old-enrichment-owner' })
+        });
+        const [historyId] = await database('task_history').insert({
+            task_id: 'old-enrichment-task', state: 'completed', timestamp: oldTime, metadata: '{}'
+        });
+        const [changeId] = await database('task_notification_enrichments').insert({
+            task_id: 'old-enrichment-task',
+            state: 'completed',
+            transition_history_id: historyId,
+            transition_at: oldTime,
+            changed_at: oldTime,
+            metadata: JSON.stringify({ prNumber: 1734 })
+        });
+
+        await projection.reconcileTerminalTransitions();
+
+        assert.equal(await database('task_notification_enrichments')
+            .count({ count: '*' }).first().then((row) => Number(row?.count)), 0);
+        assert.deepEqual(await database('notification_projection_checkpoints')
+            .where({ source: 'task-notification-enrichments' }).first('cursor'), {
+            cursor: String(changeId)
+        });
     });
 
     test('quarantines malformed reconciliation timestamps and reaches later rows', async () => {

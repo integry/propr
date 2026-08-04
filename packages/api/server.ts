@@ -5,7 +5,7 @@ import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.js';
+import { setupAuth } from './auth.js';
 import { configureDemoMode, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
@@ -144,9 +144,11 @@ app.use(express.json());
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode, {
+const appEnsureAuthenticated = setupAuth(app, demoMode, {
   invalidateNotificationEntitlements: (userId) =>
-    notificationEntitlementRefreshMiddleware.invalidate(userId)
+    notificationEntitlementRefreshMiddleware.invalidate(userId),
+  activateNotificationEntitlements: (userId) =>
+    notificationEntitlementRefreshMiddleware.activate(userId)
 });
 
 let redisClient: RedisClientType;
@@ -173,7 +175,7 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   // compatibility dates). All other /api routes registered after this line are
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
-  app.use('/api', ensureAuthenticated);
+  app.use('/api', appEnsureAuthenticated);
   app.use('/api', notificationEntitlementRefreshMiddleware);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });

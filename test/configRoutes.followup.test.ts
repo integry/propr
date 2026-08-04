@@ -1,4 +1,4 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { after, test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 import * as configManager from '../packages/core/src/index.ts';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
@@ -18,6 +18,11 @@ import {
     parseStoredOutputContent,
 } from '../packages/api/routes/liveDetailsRoutes.ts';
 import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
+
+after(async () => {
+    await configManager.closeConnection();
+    await configManager.shutdownQueue();
+});
 
 describe('config route follow-up helpers', () => {
     let currentSettings: Record<string, unknown>;
@@ -2843,14 +2848,41 @@ describe('config route follow-up helpers', () => {
             requestIndexingCancellation: async () => undefined,
             updateRepositoryStatus: async () => {
                 statusWrites++;
-                throw new Error('must not transition');
+                return {
+                    runId: 'waiting-run',
+                    transitionAt: '2026-08-03T10:01:00.000Z',
+                    applied: true,
+                };
             },
             publishIndexingStatus: async () => undefined,
         });
 
         assert.strictEqual(result.success, false);
         assert.match(result.message ?? '', /queue state is still waiting/);
-        assert.strictEqual(statusWrites, 0);
+        assert.strictEqual(statusWrites, 1);
+    });
+
+    test('stopIndexingJob leaves a queued job recoverable when the terminal write fails', async () => {
+        let removals = 0;
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: {
+                        repository: 'acme/api',
+                        baseBranch: 'main',
+                        runId: 'recoverable-run',
+                        transitionAt: '2026-08-03T10:00:00.000Z',
+                    },
+                    getState: async () => 'waiting',
+                    remove: async () => { removals++; },
+                }],
+            } as never),
+            updateRepositoryStatus: async () => { throw new Error('SQLite write failed'); },
+        });
+
+        assert.strictEqual(result.success, false);
+        assert.match(result.message ?? '', /SQLite write failed/);
+        assert.strictEqual(removals, 0);
     });
 
     test('stopIndexingJob closes a durable orphan when the queue lost its job', async () => {

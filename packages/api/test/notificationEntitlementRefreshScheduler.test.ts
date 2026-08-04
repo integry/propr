@@ -8,8 +8,12 @@ import { up as hardenNotificationFollowup }
   from '../../core/src/db/migrations/20260803020000_harden_notification_followup.js';
 import { up as fenceNotificationEntitlements }
   from '../../core/src/db/migrations/20260803030000_fence_notification_entitlement_refreshes.js';
+import { up as fenceEntitlementInvalidation }
+  from '../../core/src/db/migrations/20260804000000_fence_notification_entitlement_invalidation.js';
 import { createNotificationEntitlementRefreshMiddleware }
   from '../routes/notificationEntitlementRefresh.js';
+import type { EntitlementRefreshTimerScheduler }
+  from '../routes/notificationEntitlementRefreshScheduler.js';
 
 let database: Knex;
 
@@ -22,19 +26,74 @@ beforeEach(async () => {
   await hardenNotificationProjection(database);
   await hardenNotificationFollowup(database);
   await fenceNotificationEntitlements(database);
+  await fenceEntitlementInvalidation(database);
 });
 
 afterEach(async () => database.destroy());
 
+function createManualTimers(): {
+  scheduler: EntitlementRefreshTimerScheduler;
+  runNext(): boolean;
+  runAll(): void;
+} {
+  const timers: Array<{ callback: () => void; cancelled: boolean; unref(): void }> = [];
+  return {
+    scheduler: {
+      setTimeout(callback) {
+        const timer = { callback, cancelled: false, unref: () => undefined };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout(timer) {
+        (timer as typeof timers[number]).cancelled = true;
+      },
+    },
+    runNext() {
+      const timer = timers.find(candidate => !candidate.cancelled);
+      if (!timer) return false;
+      timer.cancelled = true;
+      timer.callback();
+      return true;
+    },
+    runAll() {
+      for (const timer of [...timers]) {
+        if (timer.cancelled) continue;
+        timer.cancelled = true;
+        timer.callback();
+      }
+    },
+  };
+}
+
+async function waitForSignal(signal: Promise<void>, description: string): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      signal,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), 1_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 for (const initialOutcome of ['false', 'reject'] as const) {
   test(`initial entitlement refresh ${initialOutcome} uses the short retry schedule`, async () => {
-    const previousTtl = process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-    process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = '80';
     const userId = `initial-${initialOutcome}`;
     let refreshes = 0;
+    let markFirst!: () => void;
+    let markSecond!: () => void;
+    const first = new Promise<void>(resolve => { markFirst = resolve; });
+    const second = new Promise<void>(resolve => { markSecond = resolve; });
+    const timers = createManualTimers();
     const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+      timerScheduler: timers.scheduler,
       refresh: async () => {
         refreshes++;
+        if (refreshes === 1) markFirst();
+        if (refreshes === 2) markSecond();
         if (refreshes !== 1) return true;
         if (initialOutcome === 'reject') throw new Error('temporary GitHub failure');
         return false;
@@ -43,19 +102,19 @@ for (const initialOutcome of ['false', 'reject'] as const) {
     try {
       middleware({ user: { id: userId, accessToken: 'token' }, path: '/config/repos' } as never,
         {} as never, () => undefined);
-      await new Promise(resolve => setTimeout(resolve, 35));
-      assert.ok(refreshes >= 2, `expected short retry after ${initialOutcome}`);
+      await waitForSignal(first, 'the initial entitlement refresh');
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(timers.runNext(), true);
+      await waitForSignal(second, `the retry after ${initialOutcome}`);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(refreshes, 2);
     } finally {
       middleware.close();
-      if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-      else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
     }
   });
 }
 
 test('entitlement refresh capacity uses recently observed users as LRU', async () => {
-  const previousTtl = process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-  process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = '40';
   const now = new Date().toISOString();
   await database('notification_repository_entitlement_snapshots').insert(
     ['lru-1', 'lru-2', 'lru-3'].map(userId => ({
@@ -63,23 +122,68 @@ test('entitlement refresh capacity uses recently observed users as LRU', async (
     }))
   );
   const refreshed = new Set<string>();
+  let markExpected!: () => void;
+  const expected = new Promise<void>(resolve => { markExpected = resolve; });
+  const timers = createManualTimers();
   const middleware = createNotificationEntitlementRefreshMiddleware(database, {
     maxScheduledRefreshes: 2,
-    refresh: async ({ userId }) => { refreshed.add(userId); return true; },
+    timerScheduler: timers.scheduler,
+    refresh: async ({ userId }) => {
+      refreshed.add(userId);
+      if (refreshed.has('lru-1') && refreshed.has('lru-3')) markExpected();
+      return true;
+    },
   });
   const observe = (userId: string) => middleware({
     user: { id: userId, accessToken: `token-${userId}` }, path: '/github/repos',
   } as never, {} as never, () => undefined);
   try {
     for (const userId of ['lru-1', 'lru-2', 'lru-1', 'lru-3']) observe(userId);
-    await new Promise(resolve => setTimeout(resolve, 30));
+    timers.runAll();
+    await waitForSignal(expected, 'the retained LRU refreshes');
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(refreshed.has('lru-2'), false);
     assert.equal(refreshed.has('lru-1'), true);
     assert.equal(refreshed.has('lru-3'), true);
   } finally {
     middleware.close();
-    if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
-    else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
+  }
+});
+
+test('ordinary traffic preserves an active repository entitlement refresh', async () => {
+  let releaseRefresh!: () => void;
+  let markStarted!: () => void;
+  let markFinished!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const finished = new Promise<void>(resolve => { markFinished = resolve; });
+  let refreshes = 0;
+  let signal: AbortSignal | undefined;
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    timerScheduler: createManualTimers().scheduler,
+    refresh: async (options) => {
+      refreshes++;
+      signal = options.signal;
+      markStarted();
+      await new Promise<void>(resolve => { releaseRefresh = resolve; });
+      markFinished();
+      return true;
+    },
+  });
+  const request = (token: string) => middleware({
+    user: { id: 'polling-user', accessToken: token }, path: '/config/repos',
+  } as never, {} as never, () => undefined);
+  try {
+    request('token-0');
+    await waitForSignal(started, 'the slow entitlement scan');
+    for (let index = 1; index <= 100; index++) request(`token-${index}`);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(refreshes, 1);
+    assert.equal(signal?.aborted, false);
+    releaseRefresh();
+    await waitForSignal(finished, 'the preserved entitlement scan');
+  } finally {
+    middleware.close();
   }
 });
 
@@ -91,7 +195,9 @@ test('closing entitlement middleware aborts retained OAuth work', async () => {
     refresh: async (options) => {
       signal = options.signal;
       markStarted();
-      return new Promise<never>(() => undefined);
+      return new Promise<boolean>(resolve => {
+        options.signal?.addEventListener('abort', () => resolve(false), { once: true });
+      });
     },
   });
   middleware({

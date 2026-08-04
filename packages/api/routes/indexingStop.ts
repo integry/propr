@@ -7,6 +7,7 @@ import {
   recordSkippedIndexingRun,
   requestIndexingCancellation,
   updateRepositoryStatus,
+  type RepositoryStatusTransition,
   type IndexingJobData,
 } from '@propr/core';
 import { publishIndexingRunBestEffort } from './indexingStatusPublication.js';
@@ -38,10 +39,17 @@ const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed', 'unknown']);
 async function prepareJobStop(
   job: { getState(): Promise<string>; remove(): Promise<void> },
   deps: StopIndexingDeps,
-  context: { repository: string; branch: string; runId: string | undefined }
+  context: { repository: string; branch: string; runId: string | undefined },
+  persistTerminal: () => Promise<void>
 ): Promise<boolean | undefined> {
   const { repository, branch, runId } = context;
-  let active = await job.getState() === 'active';
+  const initialState = await job.getState();
+  let active = initialState === 'active';
+  if (TERMINAL_QUEUE_STATES.has(initialState)) return undefined;
+  // The durable owner transition is recovery evidence. Keep the BullMQ job
+  // intact until this succeeds; a worker that starts concurrently will reject
+  // its stale ownership write after this run has become terminal.
+  await persistTerminal();
   if (active) {
     await deps.requestIndexingCancellation(repository, branch, runId);
     return true;
@@ -55,7 +63,7 @@ async function prepareJobStop(
     if (TERMINAL_QUEUE_STATES.has(state)) {
       logger.debug({ repository, branch, runId, error },
         'Indexing job reached a terminal queue state while stop raced with startup');
-      return undefined;
+      return false;
     }
     if (active) {
       await deps.requestIndexingCancellation(repository, branch, runId);
@@ -66,6 +74,27 @@ async function prepareJobStop(
       { cause: error }
     );
   }
+}
+
+async function persistJobStop(
+  job: { data: IndexingJobData },
+  deps: StopIndexingDeps,
+  repository: string,
+  branch: string
+): Promise<RepositoryStatusTransition> {
+  const runId = job.data.runId;
+  let transition = await deps.updateRepositoryStatus(repository, 'idle', branch, {
+    ...(runId ? { runId } : {}),
+  });
+  // A job can appear before its producer/worker ownership write. Preserve a
+  // run-scoped terminal record, unless completed/failed history already won.
+  if (!transition.applied && runId && job.data.transitionAt) {
+    transition = await deps.recordSkippedIndexingRun(repository, branch, {
+      runId,
+      transitionAt: job.data.transitionAt,
+    });
+  }
+  return transition;
 }
 
 export async function stopIndexingJob(
@@ -92,6 +121,7 @@ export async function stopIndexingJob(
     });
     const cancelledActiveRuns: IndexingStopTransition[] = [];
     const removedQueuedRuns: IndexingStopTransition[] = [];
+    let preparedQueueJobs = 0;
 
     for (const job of matchingJobs) {
       // Runtime Redis keys and the worker both use the repository identity stored
@@ -99,25 +129,17 @@ export async function stopIndexingJob(
       const jobRepository = job.data.repository;
       const jobBranch = configManager.normalizeSummarizationBranch(job.data.baseBranch);
       const runId = job.data.runId;
+      let transition: RepositoryStatusTransition | undefined;
       const active = await prepareJobStop(job, deps, {
         repository: jobRepository,
         branch: jobBranch,
         runId,
+      }, async () => {
+        transition = await persistJobStop(job, deps, jobRepository, jobBranch);
       });
       if (active === undefined) continue;
-
-      let transition = await deps.updateRepositoryStatus(jobRepository, 'idle', jobBranch, {
-        ...(runId ? { runId } : {}),
-      });
-      // A job can become active before its producer/worker ownership write.
-      // The history helper closes that race, but refuses a cancellation when
-      // completed or failed history for this run already won.
-      if (!transition.applied && runId && job.data.transitionAt) {
-        transition = await deps.recordSkippedIndexingRun(jobRepository, jobBranch, {
-          runId,
-          transitionAt: job.data.transitionAt,
-        });
-      }
+      preparedQueueJobs++;
+      if (!transition) throw new Error('Indexing stop did not persist its terminal transition');
       if (!transition.applied) continue;
       await publishIndexingRunBestEffort({
         publisher: deps.publishIndexingStatus,
@@ -136,7 +158,8 @@ export async function stopIndexingJob(
     }
 
     let message: string | undefined;
-    if (cancelledActiveRuns.length + removedQueuedRuns.length === 0) {
+    if (cancelledActiveRuns.length + removedQueuedRuns.length === 0
+        && preparedQueueJobs === 0) {
       const normalizedBranch = branch === undefined
         ? undefined
         : configManager.normalizeSummarizationBranch(branch);

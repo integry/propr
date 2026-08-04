@@ -9,7 +9,7 @@ import type {
 } from '@propr/core';
 
 export type StatusAgentRegistry =
-  Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents' | 'getAgentById' | 'getAgentByAlias'> & {
+  Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents'> & {
     createAgentFromConfig(config: AgentConfig): Agent;
     getOperationalStatus?: () => AgentRegistryOperationalStatus;
   };
@@ -34,24 +34,36 @@ export async function getAgentStatuses(
     return [];
   }
 
+  let registeredAgents: Agent[] = [];
+  let registryAvailable = false;
   try {
     await registry.ensureInitialized();
+    // Capture one internally consistent registry view. Some implementations can
+    // still throw from reads while initialization/runtime health is degraded.
+    registeredAgents = registry.getAllAgents();
+    registryAvailable = true;
   } catch (error) {
-    console.error('Error initializing agent registry for status:', error);
+    console.error('Error reading agent registry for status:', error);
+  }
+
+  if (!registryAvailable) {
+    return configuredAgents.length === 0
+      ? [buildDisconnectedAgentStatus(getDefaultClaudeConfig())]
+      : configuredAgents.filter(agent => agent.enabled).map(buildDisconnectedAgentStatus);
   }
 
   if (configuredAgents.length === 0) {
-    const defaultAgent = registry.getAgentById('default-claude-agent')
-      ?? registry.getAgentByAlias('default');
+    const defaultAgent = registeredAgents.find(agent =>
+      agent.config.id === 'default-claude-agent' || agent.config.alias === 'default');
     if (defaultAgent?.config.type === 'claude') {
       return [await buildRegisteredAgentStatus(defaultAgent, healthTimeoutMs)];
     }
     return [buildDisconnectedAgentStatus(getDefaultClaudeConfig())];
   }
 
-  const registeredById = new Map(registry.getAllAgents().map(agent => [agent.config.id, agent]));
+  const registeredById = new Map(registeredAgents.map(agent => [agent.config.id, agent]));
   const registeredByAlias = new Map(
-    registry.getAllAgents().map(agent => [agent.config.alias, agent])
+    registeredAgents.map(agent => [agent.config.alias, agent])
   );
   return Promise.all(configuredAgents.filter(agent => agent.enabled).map(async (config) => {
     const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);

@@ -15,19 +15,36 @@ import './authTypes.js';
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
 
-interface AuthLifecycleHooks {
+export interface AuthLifecycleHooks {
     invalidateNotificationEntitlements?: (userId: string) => Promise<void>;
+    activateNotificationEntitlements?: (userId: string) => Promise<void>;
 }
 
-let authLifecycleHooks: AuthLifecycleHooks = {};
-
-async function invalidateRequestEntitlements(req: Request): Promise<void> {
+async function invalidateRequestEntitlements(
+    req: Request,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<void> {
     const userId = req.user?.id;
-    if (!userId || !authLifecycleHooks.invalidateNotificationEntitlements) return;
+    if (!userId || !lifecycleHooks.invalidateNotificationEntitlements) return;
+    await lifecycleHooks.invalidateNotificationEntitlements(userId);
+}
+
+async function invalidateBeforeSessionCleanup(
+    req: Request,
+    res: Response,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<boolean> {
     try {
-        await authLifecycleHooks.invalidateNotificationEntitlements(userId);
+        await invalidateRequestEntitlements(req, lifecycleHooks);
+        return true;
     } catch (error) {
         console.error('Failed to invalidate notification entitlements during session cleanup:', error);
+        res.status(503).json({
+            error: 'Session cleanup unavailable',
+            code: 'AUTH_CLEANUP_UNAVAILABLE',
+            message: 'Authorization cleanup could not be persisted. Please retry.'
+        });
+        return false;
     }
 }
 
@@ -67,8 +84,8 @@ export function setupAuth(
     app: Express,
     demoModeAtStartup = isDemoMode(),
     lifecycleHooks: AuthLifecycleHooks = {}
-): void {
-    authLifecycleHooks = lifecycleHooks;
+): ReturnType<typeof createEnsureAuthenticated> {
+    const appEnsureAuthenticated = createEnsureAuthenticated(lifecycleHooks);
     configureDemoMode(demoModeAtStartup);
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
@@ -170,7 +187,7 @@ export function setupAuth(
                 // Reject logins from users not on the access whitelist, before a
                 // session is usable. (No-op when no whitelist is configured.)
                 if (!isUserWhitelisted(req.user?.username)) {
-                    await invalidateRequestEntitlements(req);
+                    if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
                     req.logout(() => {
                         req.session.destroy(() => {
                             clearSessionCookie(res);
@@ -178,6 +195,23 @@ export function setupAuth(
                         });
                     });
                     return;
+                }
+
+                const userId = req.user?.id;
+                if (userId && lifecycleHooks.activateNotificationEntitlements) {
+                    try {
+                        await lifecycleHooks.activateNotificationEntitlements(userId);
+                    } catch (error) {
+                        console.error('Failed to activate notification entitlements after login:', error);
+                        await clearSessionForReauth(req);
+                        clearSessionCookie(res);
+                        res.status(503).json({
+                            error: 'Login activation unavailable',
+                            code: 'AUTH_ACTIVATION_UNAVAILABLE',
+                            message: 'Authorization activation could not be persisted. Please retry login.'
+                        });
+                        return;
+                    }
                 }
 
                 // Check for stored redirect URL (for PR preview environments)
@@ -207,7 +241,7 @@ export function setupAuth(
             return;
         }
 
-        await invalidateRequestEntitlements(req);
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
         req.logout((err) => {
             if (err) {
                 console.error('Logout error:', err);
@@ -222,7 +256,7 @@ export function setupAuth(
         });
     });
 
-    app.get('/api/auth/user', ensureAuthenticated, (req: Request, res: Response) => {
+    app.get('/api/auth/user', appEnsureAuthenticated, (req: Request, res: Response) => {
         res.json(req.user);
     });
 
@@ -230,84 +264,114 @@ export function setupAuth(
         res.json({ demoMode: demoModeAtStartup });
     });
 
+    return appEnsureAuthenticated;
 }
 
-export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if (isDemoMode()) {
-        res.set('X-ProPR-Demo-Mode', 'true');
-        // Demo mode is deployment-wide: browser callers receive the synthetic read-only user.
-        // Stale bearer headers are ignored so public demo visitors are treated consistently.
-        (req as Request & { user: GitHubUser }).user = getDemoUser();
-        return next();
-    }
-
-    // Session-based auth (Passport)
-    if (req.isAuthenticated()) {
-        if (req.user?.githubAuthInvalid) {
-            await invalidateRequestEntitlements(req);
-            await clearSessionForReauth(req);
-            res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
-            return;
+export function createEnsureAuthenticated(
+    lifecycleHooks: AuthLifecycleHooks = {}
+): (req: Request, res: Response, next: NextFunction) => Promise<void> {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        if (isDemoMode()) {
+            res.set('X-ProPR-Demo-Mode', 'true');
+            // Demo mode is deployment-wide: browser callers receive the synthetic read-only user.
+            // Stale bearer headers are ignored so public demo visitors are treated consistently.
+            (req as Request & { user: GitHubUser }).user = getDemoUser();
+            return next();
         }
 
-        if (!isUserWhitelisted(req.user?.username)) {
-            await invalidateRequestEntitlements(req);
-            req.logout(() => {
-                req.session.destroy(() => {
-                    clearSessionCookie(res);
-                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
-                });
-            });
-            return;
-        }
+        return req.isAuthenticated()
+            ? authenticateSessionRequest(req, res, next, lifecycleHooks)
+            : authenticateBearerRequest(req, res, next);
+    };
+}
 
-        if (isGitHubTokenExpired(req)) {
-            const refreshResult = await refreshGitHubTokenWithResult(req, true);
-            if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
-                if (req.user?.githubAuthInvalid) {
-                    await invalidateRequestEntitlements(req);
-                    await clearSessionForReauth(req);
-                }
-                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
-                return;
-            }
-            if (refreshResult.status === 'temporarily-unavailable') {
-                res.status(503).json({ error: 'GitHub token refresh unavailable', code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE', message: 'GitHub authentication could not be refreshed right now. Please retry shortly.' });
-                return;
-            }
-        } else {
-            // Proactively refresh token in background if needed.
-            refreshGitHubTokenIfNeeded(req).catch((err) => {
-                console.error('Background token refresh failed:', err);
-            });
-        }
-        return next();
-    }
-
-    // Bearer token auth (CLI)
-    const bearerEnabled = process.env.ENABLE_BEARER_AUTH !== 'false';
-    const authHeader = req.headers.authorization;
-
-    if (bearerEnabled && authHeader?.startsWith('Bearer ')) {
-        const token = authHeader.slice(7);
-
-        try {
-            const user = await validateGitHubToken(token);
-            if (user) {
-                if (!isUserWhitelisted(user.username)) {
-                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
-                    return;
-                }
-                // Populate req.user so downstream handlers work the same way
-                (req as Request & { user: GitHubUser }).user = user;
-                return next();
-            }
-            res.status(401).json({ error: 'Unauthorized: invalid token' });
-        } catch {
-            res.status(401).json({ error: 'Unauthorized: token validation failed' });
-        }
+async function authenticateSessionRequest(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<void> {
+    if (req.user?.githubAuthInvalid) {
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
+        respondGitHubReauthRequired(res);
         return;
     }
-
-    res.status(401).json({ error: 'Unauthorized' });
+    if (!isUserWhitelisted(req.user?.username)) {
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        req.logout(() => {
+            req.session.destroy(() => {
+                clearSessionCookie(res);
+                res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+            });
+        });
+        return;
+    }
+    if (isGitHubTokenExpired(req)) {
+        await authenticateExpiredSession(req, res, next, lifecycleHooks);
+        return;
+    }
+    refreshGitHubTokenIfNeeded(req).catch((error) => {
+        console.error('Background token refresh failed:', error);
+    });
+    next();
 }
+
+async function authenticateExpiredSession(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<void> {
+    const refreshResult = await refreshGitHubTokenWithResult(req, true);
+    if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
+        if (req.user?.githubAuthInvalid) {
+            if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+            await clearSessionForReauth(req);
+        }
+        respondGitHubReauthRequired(res);
+        return;
+    }
+    if (refreshResult.status === 'temporarily-unavailable') {
+        res.status(503).json({ error: 'GitHub token refresh unavailable', code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE', message: 'GitHub authentication could not be refreshed right now. Please retry shortly.' });
+        return;
+    }
+    next();
+}
+
+async function authenticateBearerRequest(
+    req: Request,
+    res: Response,
+    next: NextFunction
+): Promise<void> {
+    const authHeader = req.headers.authorization;
+    if (process.env.ENABLE_BEARER_AUTH === 'false' || !authHeader?.startsWith('Bearer ')) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+    }
+    try {
+        const user = await validateGitHubToken(authHeader.slice(7));
+        if (!user) {
+            res.status(401).json({ error: 'Unauthorized: invalid token' });
+            return;
+        }
+        if (!isUserWhitelisted(user.username)) {
+            res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+            return;
+        }
+        (req as Request & { user: GitHubUser }).user = user;
+        next();
+    } catch {
+        res.status(401).json({ error: 'Unauthorized: token validation failed' });
+    }
+}
+
+function respondGitHubReauthRequired(res: Response): void {
+    res.status(401).json({
+        error: 'GitHub authentication expired',
+        code: 'GITHUB_REAUTH_REQUIRED',
+        message: 'Your GitHub session has expired. Please log in again.'
+    });
+}
+
+export const ensureAuthenticated = createEnsureAuthenticated();
