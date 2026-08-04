@@ -209,6 +209,82 @@ describe('OpenCode live details parsing', () => {
         ]);
     });
 
+    test('preserves equal text from genuinely distinct OpenCode parts without IDs', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'message',
+            message: {
+                role: 'assistant',
+                parts: [
+                    { type: 'text', text: 'repeat();' },
+                    { type: 'text', text: 'repeat();' },
+                ],
+            },
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'message', content: 'repeat();\nrepeat();', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('deduplicates the same OpenCode part repeated by an envelope', () => {
+        const duplicatedPart = { id: 'part-1', type: 'text', text: 'once' };
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'text',
+            part: duplicatedPart,
+            parts: [duplicatedPart],
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'once', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('deduplicates structurally equal no-ID part and parts envelope payloads', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'text',
+            part: { type: 'text', text: 'once without an ID', metadata: { source: 'assistant' } },
+            parts: [{ metadata: { source: 'assistant' }, text: 'once without an ID', type: 'text' }],
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'once without an ID', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('prefers a finalized same-ID OpenCode part over an earlier delta', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'part_delta',
+            part: { id: 'part-1', type: 'text_delta', delta: 'Complete ' },
+            parts: [{ id: 'part-1', type: 'text', text: 'Complete answer' }],
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'Complete answer', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('prefers the latest finalized same-ID OpenCode correction even when it is shorter', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'message',
+            message: {
+                role: 'assistant',
+                parts: [
+                    { id: 'part-1', type: 'text', text: 'An earlier answer with stale extra detail.' },
+                    { id: 'part-1', type: 'text', text: 'Corrected answer.' },
+                ],
+            },
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'message', content: 'Corrected answer.', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
     test('parses actual OpenCode tool and token events from Redis output', () => {
         const result = parseRedisOutput([opencodeToolLine, opencodeStepFinishLine]);
 

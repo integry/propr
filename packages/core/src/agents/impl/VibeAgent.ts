@@ -11,6 +11,8 @@ import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputPar
 import { getAnalysisSandboxArgs, getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
+import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { resolveAgentTerminationReason } from '../termination.js';
 
 export { UsageLimitError };
 export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -18,6 +20,10 @@ export { getMistralApiKeyFromSettings, readLatestVibeSessionTokenUsage } from '.
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
+
+function buildFailedExecutionResult(error: Error & { stderr?: string }, executionTimeMs: number, model: string | undefined): AgentExecutionResult {
+    return { success: false, error: error.message, executionTimeMs, logs: error.stderr || error.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: model || 'unknown' };
+}
 
 interface VibeDockerArgsParams {
     worktreePath: string;
@@ -94,6 +100,7 @@ export class VibeAgent implements Agent {
                     taskId,
                     streamToRedis: true,
                     streamStderrToRedis: true,
+                    preserveOutputOnTimeout: true,
                     streamExtraOutput: () => readLatestVibeSessionMessages(runtimeHomePath)
                 })
             );
@@ -103,7 +110,8 @@ export class VibeAgent implements Agent {
             const conversationLog = parseVibeConversationLog(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
-            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason;
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
 
@@ -121,6 +129,7 @@ export class VibeAgent implements Agent {
                 sessionId: parsedOutput.sessionId,
                 conversationLog,
                 error,
+                terminationReason,
                 tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
@@ -154,18 +163,9 @@ export class VibeAgent implements Agent {
         } catch (error) {
             if (error instanceof UsageLimitError) throw error;
             const executionTimeMs = Date.now() - startTime;
-            const err = error as Error;
+            const err = error as Error & { stderr?: string };
             logger.error({ issueNumber: issueRef.number, repository, executionTimeMs, error: err.message, agentAlias: this.config.alias }, 'Error during Vibe agent execution');
-            return {
-                success: false,
-                error: err.message,
-                executionTimeMs,
-                logs: (error as { stderr?: string }).stderr || err.message,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: undefined,
-                modelUsed: effectiveModel || 'unknown'
-            };
+            return buildFailedExecutionResult(err, executionTimeMs, effectiveModel);
         } finally {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);
@@ -177,7 +177,8 @@ export class VibeAgent implements Agent {
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
-        const effectiveModel = model || this.config.defaultModel || 'mistral-medium-3.5';
+        const effectiveModel = model || this.config.defaultModel;
+        if (!effectiveModel) throw new NoDefaultModelConfiguredError();
         const suffix = responseFormat === 'json'
             ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
             : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
@@ -220,7 +221,7 @@ export class VibeAgent implements Agent {
             const parsedOutput = parseVibeOutput(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const analysisText = (parsedOutput.summary || '').trim();
-            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput);
+            const success = !result.timedOut && isSuccessfulVibeResult(result.exitCode, parsedOutput);
             const usage = formatUsageMetrics(usageMetrics);
 
             if (success && analysisText) {

@@ -4,6 +4,7 @@ import { loadFileSummaries, loadDirectorySummaries, FileSummaryRow, DirectorySum
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 
 // --- Types ---
 
@@ -169,12 +170,23 @@ export async function scoreSemanticRelevance(
 
       try {
         // Pass modelId to use the configured context analysis model
-        const analysisResult = await agent.analyze(prompt, { model: modelId });
+        const analysisResult = await agent.analyze(prompt, {
+          model: modelId,
+          timeoutMs: resolveContextAnalysisTimeoutMs(),
+          executionType: 'context-analysis',
+          correlationId,
+          repository: repoName,
+          metadata: { callType: 'semantic_scoring', chunkIndex: index },
+          suppressLlmLog: true
+        });
+        if (!analysisResult.success) {
+          throw new Error(analysisResult.error || `Semantic scoring chunk ${index} failed`);
+        }
         const response = analysisResult.response;
         const parsed = parseSemanticResponse(response);
 
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = modelId || agent.config.defaultModel || 'haiku';
+        const modelUsed = modelId || agent.config.defaultModel || 'unknown';
 
         // Log metrics for this chunk
         await logSummarizationCall({
@@ -213,7 +225,7 @@ export async function scoreSemanticRelevance(
         return parsed.files;
       } catch (err) {
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = modelId || agent.config.defaultModel || 'haiku';
+        const modelUsed = modelId || agent.config.defaultModel || 'unknown';
         const errorMessage = (err as Error).message;
 
         correlatedLogger.warn({

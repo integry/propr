@@ -13,6 +13,7 @@ import { updateTrace } from './traceService.js';
 import { buildFullContext, buildSmartSelection, getModelDisplayInfo } from './contextBuilders.js';
 import { regenerateContext } from './contextRegeneration.js';
 import { estimateUsagePercent } from '../../utils/llmEstimation.js';
+import { getOpenRouterId } from '../../config/modelAliases.js';
 import {
   computeContentHash,
   parseDraftAttachments,
@@ -36,7 +37,6 @@ import type {
 } from './planningTypes.js';
 
 const DEFAULT_OUTPUT_TOKENS = 4000;
-const SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
 
 /**
  * In-flight context preview requests.
@@ -223,13 +223,17 @@ async function loadAdditionalContextFromRepos(opts: LoadAdditionalContextOptions
 async function calculateCostEstimate(
   tokens: number,
   warnings: string[],
-  correlatedLogger: MinimalLogger
+  correlatedLogger: MinimalLogger,
+  modelId?: string,
 ): Promise<number> {
   try {
     const { getModelPricing } = await import('../pricingService.js');
-    const pricing = await getModelPricing(SONNET_MODEL_ID);
-    if (pricing) {
-      return tokens * pricing.prompt + DEFAULT_OUTPUT_TOKENS * pricing.completion;
+    if (modelId) {
+      const routedModelId = modelId.includes(':') ? modelId.substring(modelId.indexOf(':') + 1) : modelId;
+      const pricing = await getModelPricing(getOpenRouterId(routedModelId));
+      if (pricing) {
+        return tokens * pricing.prompt + DEFAULT_OUTPUT_TOKENS * pricing.completion;
+      }
     }
     warnings.push('Using fallback pricing - could not fetch current model pricing');
   } catch (err) {
@@ -447,7 +451,7 @@ async function generateContextPreviewInternal(options: GenerateContextPreviewOpt
     reservedOverheadTiktokens, strategy: simulatedSelection.strategy
   }, 'Simulated file selection for context level');
 
-  const costEstimate = await calculateCostEstimate(simulatedTokens, warnings, correlatedLogger);
+  const costEstimate = await calculateCostEstimate(simulatedTokens, warnings, correlatedLogger, generationModel);
   const smartSelection = buildSmartSelection(manualFiles, filteredAutoFilePaths, includedFilesSet, fileScores);
 
   // Load additional context from context repositories

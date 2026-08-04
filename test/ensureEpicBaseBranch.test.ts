@@ -1,8 +1,13 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '@propr/core';
 import { ensureEpicBaseBranchExists } from '../src/jobs/issueJobHelpers.js';
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} } as never;
+
+after(async () => {
+  await closeConnection();
+});
 
 interface Call { endpoint: string; options: Record<string, unknown>; }
 

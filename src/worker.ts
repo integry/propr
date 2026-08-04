@@ -1,8 +1,7 @@
 import 'dotenv/config';
-import { Job, Worker } from 'bullmq';
+import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@propr/core';
-import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData, MergeConflictJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
@@ -23,6 +22,8 @@ import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJo
 import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
+import { createConfiguredMainWorker } from './workerFactory.js';
+import type { MainWorker } from './workerFactory.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -137,8 +138,6 @@ Examples:
   node src/worker.js --reset         # Reset queues and start worker
 `);
 }
-
-type MainWorker = Worker<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData, JobResult>;
 
 export interface StartedWorker {
     worker: MainWorker;
@@ -305,21 +304,18 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         }
     });
 
-    const worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async (job: Job<IssueJobData | CommentJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData>): Promise<JobResult> => {
-        if (job.name === 'processGitHubIssue') {
-            return processGitHubIssueJob(job as Job<IssueJobData>);
-        } else if (job.name === 'processPullRequestComment') {
-            return processPullRequestCommentJob(job as Job<CommentJobData>);
-        } else if (job.name === 'processTaskImport') {
-            return processTaskImportJob(job as Job<TaskImportJobData>);
-        } else if (job.name === 'processSystemTask') {
-            return processSystemTaskJob(job as Job<SystemTaskJobData>);
-        } else if (job.name === 'processMergeConflict') {
-            return processMergeConflictJob(job as Job<MergeConflictJobData>);
-        } else {
-            throw new Error(`Unknown job type: ${job.name}`);
-        }
-    }, { concurrency: workerConcurrency });
+    const worker = await createConfiguredMainWorker({
+        queueName: GITHUB_ISSUE_QUEUE_NAME,
+        concurrency: workerConcurrency,
+        workerFactory: createWorker,
+        processors: {
+            processGitHubIssueJob,
+            processPullRequestCommentJob,
+            processTaskImportJob,
+            processSystemTaskJob,
+            processMergeConflictJob,
+        },
+    });
 
     const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
         AGENT_RUNTIME_BUILD_QUEUE_NAME,

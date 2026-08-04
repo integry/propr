@@ -16,6 +16,7 @@ import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { agentResultToClaudeResponse, toClaudeResult } from './prCommentJobUtils.js';
 import {
     buildConflictResolutionPrompt,
+    getAgentFailureDetail,
     buildMergeConflictComment,
     buildMergeConflictCommitMessage,
 } from './mergeConflictHelpers.js';
@@ -165,7 +166,9 @@ export async function handleMergeWithAgent(options: {
         claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
         historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model },
     });
-    if (!claudeResult.success) throw new Error(`Agent execution failed during conflict resolution: ${claudeResult.error || 'Unknown error'}`);
+    if (!claudeResult.success) {
+        throw new Error(`Agent execution failed during conflict resolution: ${getAgentFailureDetail(claudeResult)}`);
+    }
 
     await verifyNoConflictMarkers(worktreeInfo, pullRequestNumber, correlatedLogger);
     const commitMessage = buildMergeConflictCommitMessage({

@@ -343,7 +343,9 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       if (requestValidationError) { res.status(400).json({ error: requestValidationError }); return; }
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const issueUpdates = buildIssueUpdate(body);
+      const issueUpdates = buildIssueUpdate(body, {
+        existingRunUltrafix: currentIssue.run_ultrafix,
+      });
       const repository = ownership.draft!.repository as string;
       const configUpdates = buildConfigUpdatesFromIssueUpdate(issueUpdates);
       const shouldUpdateConfig = hasConfigUpdates(configUpdates);

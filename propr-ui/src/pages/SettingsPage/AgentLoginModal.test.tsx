@@ -53,7 +53,9 @@ describe('AgentLoginModal', () => {
 
     const link = await screen.findByRole('link', { name: 'https://example.test/device' });
     expect(link).toHaveAttribute('target', '_blank');
-    expect(screen.getByLabelText('Login response or confirmation code')).toHaveFocus();
+    await waitFor(() => {
+      expect(screen.getByLabelText('Login response or confirmation code')).toHaveFocus();
+    });
 
     fireEvent.change(screen.getByLabelText('Login response or confirmation code'), {
       target: { value: 'ABCD-1234' },

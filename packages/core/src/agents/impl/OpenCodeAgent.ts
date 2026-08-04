@@ -12,10 +12,15 @@ import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type 
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { isManagedAgentConfigPath } from '@propr/shared';
+import { resolveAgentTerminationReason } from '../termination.js';
 
 export { UsageLimitError };
 
 const DEFAULT_OPENCODE_ANALYSIS_ROOT = '/tmp/git-processor/opencode-analysis';
+
+function buildFailedExecutionResult(error: Error & { stderr?: string }, executionTimeMs: number, model: string | undefined, prompt: string): AgentExecutionResult {
+    return { success: false, error: error.message, executionTimeMs, logs: error.stderr || error.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: model || 'unknown', prompt };
+}
 
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
@@ -60,14 +65,16 @@ export class OpenCodeAgent implements Agent {
                     worktreePath,
                     stdinData: prompt,
                     taskId,
-                    streamToRedis: true
+                    streamToRedis: true,
+                    preserveOutputOnTimeout: true
                 })
             );
 
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const success = result.exitCode === 0 && !parsedOutput.error;
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+            const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
             const errorText = success ? undefined : (parsedOutput.error || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
             const response: AgentExecutionResult = {
                 success,
@@ -83,6 +90,7 @@ export class OpenCodeAgent implements Agent {
                 summary: parsedOutput.summary,
                 prompt,
                 error: errorText,
+                terminationReason,
                 tokenUsage: parsedOutput.tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
             };
@@ -100,10 +108,10 @@ export class OpenCodeAgent implements Agent {
         } catch (error) {
             if (error instanceof UsageLimitError) throw error;
             const executionTime = Date.now() - startTime;
-            const err = error as Error;
+            const err = error as Error & { stderr?: string };
             logger.error({ issueNumber: issueRef.number, repository: repo, executionTime, error: err.message, agentAlias: this.config.alias }, 'Error during OpenCode agent execution');
             const persistedPrompt = prompt ?? customPrompt ?? '';
-            const response: AgentExecutionResult = { success: false, error: err.message, executionTimeMs: executionTime, logs: (error as { stderr?: string }).stderr || err.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: effectiveModel || 'unknown', prompt: persistedPrompt };
+            const response = buildFailedExecutionResult(err, executionTime, effectiveModel, persistedPrompt);
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed: response.modelUsed, prompt: persistedPrompt, issueRef, taskId, prNumber, isRetry, retryReason });
             return response;
         }
@@ -130,7 +138,7 @@ export class OpenCodeAgent implements Agent {
             const analysisText = (parsedOutput.summary || '').trim();
 
             const modelUsed = parsedOutput.modelUsed || effectiveModel;
-            const success = result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
+            const success = !result.timedOut && result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
 
             const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
             if (!suppressLlmLog) {

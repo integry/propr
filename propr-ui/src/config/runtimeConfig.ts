@@ -119,7 +119,7 @@ export const readStoredHostedTunnelApiBaseUrl = (
   if (!isHostedUiOrigin(hostname) || !storage) return null;
   try {
     const stored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)?.trim();
-    if (isProprProxyUrl(stored)) return stored.replace(/\/+$/, '');
+    if (stored && isProprProxyUrl(stored)) return stored.replace(/\/+$/, '');
     if (stored) storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
   } catch {
     return null;

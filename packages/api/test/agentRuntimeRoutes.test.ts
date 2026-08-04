@@ -3,23 +3,20 @@ import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
 import { closeConnection, type AgentRuntimePackageState } from '@propr/core';
+import type { InstanceAuthorization } from '../authorization.js';
 
 after(async () => closeConnection());
 
 const originalAdminUsers = process.env.PROPR_ADMIN_USERS;
-const originalAdminAnyUser = process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
 const originalRuntimeRequestTimeoutMs = process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
 
 beforeEach(() => {
     process.env.PROPR_ADMIN_USERS = 'admin';
-    delete process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
 });
 
 afterEach(() => {
     if (originalAdminUsers === undefined) delete process.env.PROPR_ADMIN_USERS;
     else process.env.PROPR_ADMIN_USERS = originalAdminUsers;
-    if (originalAdminAnyUser === undefined) delete process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER;
-    else process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER = originalAdminAnyUser;
     if (originalRuntimeRequestTimeoutMs === undefined) delete process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
     else process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS = originalRuntimeRequestTimeoutMs;
 });
@@ -32,6 +29,17 @@ const initialState = (): AgentRuntimePackageState => ({
     images: {},
     updatedAt: '2026-07-15T00:00:00.000Z'
 });
+
+const adminAuthorization: InstanceAuthorization = {
+    role: 'admin',
+    permissions: ['instance.manage_runtime'],
+    source: 'local'
+};
+const memberAuthorization: InstanceAuthorization = {
+    role: 'member',
+    permissions: [],
+    source: 'implicit'
+};
 
 function responseRecorder() {
     const record: { status: number; body?: unknown } = { status: 200 };
@@ -72,7 +80,7 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.putRuntimePackages({ body: { packages: ['chromium'] }, user: { username: 'admin' } } as unknown as Request, response);
+        await routes.putRuntimePackages({ body: { packages: ['chromium'] }, user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 202);
         assert.deepEqual(queued, {
@@ -98,7 +106,7 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' } } as unknown as Request, response);
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 500);
         assert.equal(state.status, 'failed');
@@ -122,7 +130,7 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.putRuntimePackages({ body: { packages: ['not-real'] }, user: { username: 'admin' } } as unknown as Request, response);
+        await routes.putRuntimePackages({ body: { packages: ['not-real'] }, user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 400);
         assert.equal(queued, false);
@@ -141,7 +149,7 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' } } as unknown as Request, response);
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 504);
         assert.equal(queued, false);
@@ -158,7 +166,7 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.searchRuntimePackages({ query: { q: 'chrom' }, user: { username: 'admin' } } as unknown as Request, response);
+        await routes.searchRuntimePackages({ query: { q: 'chrom' }, user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
 
         assert.deepEqual(record.body, { query: 'chrom', suggestions: ['chromium'], sources: [] });
     });
@@ -169,7 +177,7 @@ describe('agent runtime package routes', () => {
         try {
             const routes = createAgentRuntimeRoutes({ runtimeBuildQueue: {} as never });
             const { response, record } = responseRecorder();
-            await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' } } as unknown as Request, response);
+            await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' }, authorization: memberAuthorization } as unknown as Request, response);
             assert.equal(record.status, 403);
         } finally {
             if (previous === undefined) delete process.env.PROPR_ADMIN_USERS;
@@ -182,63 +190,12 @@ describe('agent runtime package routes', () => {
         const routes = createAgentRuntimeRoutes({ runtimeBuildQueue: {} as never });
         const { response, record } = responseRecorder();
 
-        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' } } as unknown as Request, response);
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' }, authorization: memberAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 403);
     });
 
-    test('allows explicit any-authenticated-user runtime administration opt-in', async () => {
-        delete process.env.PROPR_ADMIN_USERS;
-        process.env.PROPR_AGENT_RUNTIME_ADMIN_ANY_USER = 'true';
-        let queued = false;
-        const routes = createAgentRuntimeRoutes({
-            runtimeBuildQueue: { add: async () => { queued = true; } } as never,
-            services: {
-                loadState: async () => ({ ...initialState(), packages: ['jq'], status: 'pending', buildId: 'build-any' }),
-                loadBaseImages: async () => ['propr/agent:bundle-test'],
-                requestBuild: async (packages, baseImages) => ({ buildId: 'build-any', packages: packages as string[], baseImages }),
-                validateAvailability: availablePackages
-            }
-        });
-        const { response, record } = responseRecorder();
-
-        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'member' } } as unknown as Request, response);
-
-        assert.equal(record.status, 202);
-        assert.equal(queued, true);
-    });
-
-    test('redacts runtime build details for non-admin readers', async () => {
-        const previous = process.env.PROPR_ADMIN_USERS;
-        process.env.PROPR_ADMIN_USERS = 'owner';
-        try {
-            const routes = createAgentRuntimeRoutes({
-                runtimeBuildQueue: {} as never,
-                services: {
-                    loadState: async () => ({
-                        ...initialState(),
-                        status: 'failed',
-                        error: 'apt mirror exposed host details',
-                        buildLog: 'full build log'
-                    })
-                }
-            });
-            const { response, record } = responseRecorder();
-
-            await routes.getRuntimePackages({ user: { username: 'member' } } as unknown as Request, response);
-
-            assert.equal(record.status, 200);
-            assert.equal((record.body as AgentRuntimePackageState).status, 'failed');
-            assert.equal((record.body as AgentRuntimePackageState).error, undefined);
-            assert.equal((record.body as AgentRuntimePackageState).buildLog, undefined);
-            assert.equal((record.body as AgentRuntimePackageState & { canManage?: boolean }).canManage, false);
-        } finally {
-            if (previous === undefined) delete process.env.PROPR_ADMIN_USERS;
-            else process.env.PROPR_ADMIN_USERS = previous;
-        }
-    });
-
-    test('requires authentication before returning runtime package state', async () => {
+    test('requires runtime-management permission before returning runtime package state', async () => {
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: {} as never,
             services: {
@@ -252,10 +209,15 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.getRuntimePackages({} as unknown as Request, response);
+        await routes.getRuntimePackages({
+            user: { username: 'member' },
+            authorization: memberAuthorization
+        } as unknown as Request, response);
 
-        assert.equal(record.status, 401);
-        assert.deepEqual(record.body, { error: 'Authentication required' });
+        assert.equal(record.status, 403);
+        assert.deepEqual(record.body, {
+            error: 'Only ProPR installation administrators may change agent runtime packages'
+        });
     });
 
     test('warms the package catalog when an admin loads runtime package state', async () => {
@@ -272,14 +234,14 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.getRuntimePackages({ user: { username: 'admin' } } as unknown as Request, response);
+        await routes.getRuntimePackages({ user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
         await warmedPromise;
 
         assert.equal(record.status, 200);
         assert.deepEqual(warmedImages, ['propr/agent:bundle-test']);
     });
 
-    test('does not warm the package catalog for non-admin readers', async () => {
+    test('does not warm the package catalog when a member is rejected', async () => {
         let warmCalled = false;
         const routes = createAgentRuntimeRoutes({
             runtimeBuildQueue: {} as never,
@@ -291,10 +253,10 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.getRuntimePackages({ user: { username: 'member' } } as unknown as Request, response);
+        await routes.getRuntimePackages({ user: { username: 'member' }, authorization: memberAuthorization } as unknown as Request, response);
         await new Promise(resolve => setImmediate(resolve));
 
-        assert.equal(record.status, 200);
+        assert.equal(record.status, 403);
         assert.equal(warmCalled, false);
     });
 
@@ -316,7 +278,7 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' } } as unknown as Request, response);
+        await routes.putRuntimePackages({ body: { packages: ['jq'] }, user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 202);
         assert.deepEqual(queued, {
@@ -335,7 +297,7 @@ describe('agent runtime package routes', () => {
         });
         const { response, record } = responseRecorder();
 
-        await routes.applyRuntimePackages({ user: { username: 'admin' } } as unknown as Request, response);
+        await routes.applyRuntimePackages({ user: { username: 'admin' }, authorization: adminAuthorization } as unknown as Request, response);
 
         assert.equal(record.status, 500);
         assert.equal((record.body as { error: string }).error, 'state unavailable');

@@ -2,7 +2,7 @@
  * API client for agent CLI version management.
  */
 
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 import type { AgentType } from '../config/modelDefinitions';
 
 export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';

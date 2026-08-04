@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   getRepoConfig,
+  getInstanceCatalog,
   updateRepoConfig,
   getAvailableGithubRepos,
   getRepositoriesIndexingStatus,
@@ -15,6 +16,8 @@ import { triggerRepositoryIndexing, getRepoStatusKey } from '../api/repoIndexing
 import { useSocket } from '../contexts/useSocket';
 import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
+import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
+import { isCommittedConfigWriteError } from '../api/apiClient';
 
 const generateId = (): string => crypto.randomUUID();
 const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_status']>(['idle', 'completed', 'failed']);
@@ -62,6 +65,11 @@ export interface UseRepositoryManagementResult {
 
 export function useRepositoryManagement(): UseRepositoryManagementResult {
   const { isConnected, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onIndexingUpdate } = useSocket();
+  // AppContent keeps the route tree behind its initial auth check, so this value
+  // is resolved before the first repository fetch rather than changing from a
+  // pending null into an administrator after the hook mounts.
+  const currentUser = useCurrentUser();
+  const canManageRepositories = userHasPermission(currentUser, 'instance.manage_settings');
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +79,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const [showHiddenRepos, setShowHiddenRepos] = useState<boolean>(false);
   const [_userRepoPrefs, setUserRepoPrefs] = useState<UserRepoPreferences>({});
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const configurationReloadRequiredRef = useRef(false);
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
   const terminalSocketUpdatesRef = useRef<Set<string>>(new Set());
 
@@ -79,7 +88,9 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       setLoading(true);
       setError(null);
       const [repoData, prefs] = await Promise.all([
-        getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>,
+        canManageRepositories
+          ? getRepoConfig() as Promise<{ repos_to_monitor?: unknown[] }>
+          : getInstanceCatalog().then(catalog => ({ repos_to_monitor: catalog.repositories })),
         getUserRepoPreferences().catch(() => ({} as UserRepoPreferences))
       ]);
       const rawRepos = repoData.repos_to_monitor || [];
@@ -114,12 +125,14 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           return true;
         });
       setRepos(validRepos);
+      configurationReloadRequiredRef.current = false;
     } catch (err) {
       setError((err as Error).message || 'Failed to load repositories');
+      throw err;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canManageRepositories]);
 
   const handleIndexingUpdate = useCallback((payload: IndexingUpdatePayload) => {
     const key = getRepoStatusKey(payload.repository, payload.branch);
@@ -145,13 +158,17 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   }, []);
 
   const loadAvailableRepos = useCallback(async () => {
+    if (!canManageRepositories) {
+      setAvailableRepos([]);
+      return;
+    }
     try {
       const data = await getAvailableGithubRepos();
       setAvailableRepos((data as { repos?: string[] }).repos || []);
     } catch (err) {
       console.error('Failed to load available GitHub repos:', err);
     }
-  }, []);
+  }, [canManageRepositories]);
 
   const loadIndexingStatuses = useCallback(async () => {
     try {
@@ -180,7 +197,11 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }
   }, []);
 
-  useEffect(() => { loadRepos(); loadAvailableRepos(); loadIndexingStatuses(); }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
+  useEffect(() => {
+    void loadRepos().catch(() => undefined);
+    void loadAvailableRepos();
+    void loadIndexingStatuses();
+  }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -194,6 +215,15 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   }, [onIndexingUpdate, handleIndexingUpdate]);
 
   const performAutoSave = useCallback(async (reposToSave: Repo[]) => {
+    if (!canManageRepositories) {
+      setError('Administrator access is required to change repository configuration');
+      return false;
+    }
+    if (configurationReloadRequiredRef.current) {
+      setSaveStatus('error');
+      setError('Reload the current repository configuration before saving again.');
+      return false;
+    }
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     setSaveStatus('saving');
     setError(null);
@@ -210,13 +240,26 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
       return true;
     } catch (err) {
+      let reportedError = err instanceof Error ? err : new Error(String(err));
+      if (isCommittedConfigWriteError(err)) {
+        // The write is durable even though publication/lock finalization failed.
+        // Keep the save pending while replacing optimistic state from the server.
+        try {
+          await loadRepos();
+        } catch (refreshError) {
+          configurationReloadRequiredRef.current = true;
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+          reportedError = new Error(`${err.message} Automatic refresh failed (${refreshMessage}). Reload this page before editing repositories again.`);
+        }
+      }
       setSaveStatus('error');
-      setError((err as Error).message || 'Failed to save repository configuration');
+      setError(reportedError.message || 'Failed to save repository configuration');
       return false;
     }
-  }, []);
+  }, [canManageRepositories, loadRepos]);
 
   const handleStopIndexing = async (repoName: string, baseBranch?: string) => {
+    if (!canManageRepositories) return;
     try {
       const displayName = baseBranch ? `${repoName} (${baseBranch})` : repoName;
       if (!confirm(`Are you sure you want to stop indexing for ${displayName}? Semantic search and smart file selection for this repository will be unavailable until you re-index.`)) return;
@@ -227,6 +270,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   };
 
   const handleReindexRepo = async (repoName: string, baseBranch?: string) => {
+    if (!canManageRepositories) return;
     const statusKey = getRepoStatusKey(repoName, baseBranch);
     pendingOptimisticUpdatesRef.current.add(statusKey);
     setIndexingStatuses(prev => ({
@@ -249,7 +293,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   };
 
   const handleAddRepo = (newRepo: string, newAlias: string, newBaseBranch: string): boolean => {
-    if (!newRepo) return false;
+    if (!canManageRepositories || !newRepo) return false;
     const isDuplicate = repos.some(r => r.name === newRepo && (r.baseBranch || '') === (newBaseBranch || ''));
     if (isDuplicate) {
       const branchInfo = newBaseBranch ? ` with branch "${newBaseBranch}"` : ' with default branch';
@@ -264,12 +308,14 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   };
 
   const handleRemoveRepo = (repoId: string) => {
+    if (!canManageRepositories) return;
     const newRepos = repos.filter(r => r.id !== repoId);
     setRepos(newRepos);
     performAutoSave(newRepos);
   };
 
   const handleToggleRepo = (repoId: string) => {
+    if (!canManageRepositories) return;
     const newRepos = repos.map(repo => repo.id === repoId ? { ...repo, enabled: !repo.enabled } : repo);
     setRepos(newRepos);
     performAutoSave(newRepos);
@@ -306,7 +352,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   };
 
   const handleToggleShowHidden = () => setShowHiddenRepos(prev => !prev);
-  const handleRetry = () => { setError(null); loadRepos(); };
+  const handleRetry = () => { setError(null); void loadRepos().catch(() => undefined); };
 
   const hiddenCount = repos.filter(r => r.hidden).length;
   const filteredRepos = showHiddenRepos ? repos : repos.filter(r => !r.hidden);

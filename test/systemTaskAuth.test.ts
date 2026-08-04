@@ -1,6 +1,6 @@
-import { test, describe, beforeEach, afterEach, mock } from 'node:test';
+import { test, describe, beforeEach, afterEach, after, mock } from 'node:test';
 import assert from 'node:assert';
-import { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS, getUserWhitelist } from '@propr/core';
+import { buildAuthPayload, closeConnection, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS, getUserWhitelist } from '@propr/core';
 import type { SystemTaskJobData } from '@propr/core';
 
 /**
@@ -20,6 +20,10 @@ import type { SystemTaskJobData } from '@propr/core';
  */
 
 const TEST_SECRET = 'test-secret-key-for-unit-tests';
+
+after(async () => {
+    await closeConnection();
+});
 
 const originalEnv: Record<string, string | undefined> = {};
 

@@ -1,4 +1,4 @@
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 import type { SummarizationSettings } from './proprTypes';
 
 export type { SummarizationSettings };

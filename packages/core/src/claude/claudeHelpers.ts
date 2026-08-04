@@ -7,6 +7,7 @@ import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGe
 import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from './docker/repoSetupWrapper.js';
 import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
+import { createContainerExecutionId } from '../agents/impl/utils/containerExecutionId.js';
 
 export class UsageLimitError extends Error {
     resetTimestamp: number;
@@ -68,8 +69,10 @@ export interface TokenUsage {
 
 export interface ClaudeOutputResult {
     type: string;
+    subtype?: string;
     is_error?: boolean;
     result?: string;
+    num_turns?: number;
     total_cost_usd?: number;
     cost_usd?: number;
     model?: string;
@@ -100,6 +103,7 @@ export interface StorePromptOptions {
 
 interface JsonLineMessage {
     type?: string;
+    subtype?: string;
     message?: {
         id?: string;
         model?: string;
@@ -109,6 +113,7 @@ interface JsonLineMessage {
     conversation_id?: string;
     model?: string;
     result?: string;
+    num_turns?: number;
     is_error?: boolean;
     total_cost_usd?: number;
     cost_usd?: number;
@@ -238,8 +243,7 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
     // Generate human-readable container name with unique suffix
     // TaskId format: {repo}-{issue}-{agent}-{model}-{correlationId}
     // Use the LAST 8 chars of taskId (part of correlationId UUID) for uniqueness
-    const timestamp = Date.now().toString(36);
-    const shortId = taskId ? taskId.slice(-8) : timestamp;
+    const shortId = createContainerExecutionId(taskId);
     const containerName = `${agentAlias || 'claude'}-issue-${issueNumber}-${shortId}`;
 
     // Always use stdin for prompt to avoid E2BIG errors with large prompts
@@ -260,6 +264,7 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
         '-w', '/home/node/workspace',
         CLAUDE_DOCKER_IMAGE,
         'claude', '-p', '-', // Read prompt from stdin
+        '--no-session-persistence',
         '--max-turns', CLAUDE_MAX_TURNS.toString(),
         '--output-format', 'stream-json',
         '--verbose',
@@ -367,8 +372,10 @@ function processJsonLine(
 function processResultLine(jsonLine: JsonLineMessage, claudeOutput: ClaudeOutput): void {
     claudeOutput.finalResult = {
         type: jsonLine.type || 'result',
+        subtype: jsonLine.subtype,
         is_error: jsonLine.is_error,
         result: jsonLine.result,
+        num_turns: jsonLine.num_turns,
         total_cost_usd: jsonLine.total_cost_usd,
         cost_usd: jsonLine.cost_usd,
         model: jsonLine.model,
@@ -438,8 +445,7 @@ export async function storePromptInRedis(options: StorePromptOptions): Promise<v
             promptKeys.push(conversationKey);
         }
 
-        const timestamp = Date.now();
-        const issueKey = `execution:prompt:issue:${issueRef.repoOwner}:${issueRef.repoName}:${issueRef.number}:${timestamp}`;
+        const issueKey = `execution:prompt:issue:${issueRef.repoOwner}:${issueRef.repoName}:${issueRef.number}:${Date.now()}`;
         await redis.set(issueKey, JSON.stringify(promptData), 'EX', 86400 * 30);
         promptKeys.push(issueKey);
 

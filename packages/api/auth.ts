@@ -10,6 +10,7 @@ import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
+import { authenticatedUserResponse, resolveAuthorization } from './authorization.js';
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
@@ -199,8 +200,12 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         });
     });
 
-    app.get('/api/auth/user', ensureAuthenticated, (req: Request, res: Response) => {
-        res.json(req.user);
+    app.get('/api/auth/user', ensureAuthenticated, resolveAuthorization, (req: Request, res: Response) => {
+        if (!req.user || !req.authorization) {
+            res.status(500).json({ error: 'Instance authorization was not resolved' });
+            return;
+        }
+        res.json(authenticatedUserResponse(req.user, req.authorization));
     });
 
     app.get('/api/auth/demo-mode', (_req: Request, res: Response) => {

@@ -62,7 +62,7 @@ export const ProcessingTimeChart: React.FC<ProcessingTimeChartProps> = ({ data, 
       <YAxis {...axisProps} />
       <Tooltip
         contentStyle={tooltipStyle}
-        formatter={(value: number) => [`${value.toFixed(1)} min`, 'Avg Time']}
+        formatter={(value: number | undefined) => [value === undefined ? 'N/A' : `${value.toFixed(1)} min`, 'Avg Time']}
       />
       {showLegend && <Legend wrapperStyle={{ color: '#64748B' }} />}
       <Area
@@ -80,6 +80,7 @@ export const ProcessingTimeChart: React.FC<ProcessingTimeChartProps> = ({ data, 
 );
 
 interface PieChartEntry {
+  [key: string]: string | number;
   name: string;
   value: number;
   color: string;
@@ -108,7 +109,7 @@ export const StatusPieChart: React.FC<StatusPieChartProps> = ({ data }) => (
       </Pie>
       <Tooltip
         contentStyle={tooltipStyle}
-        formatter={(value: number, name: string) => [`${value} tasks`, name]}
+        formatter={(value: number | undefined, name: string | undefined) => [value === undefined ? 'N/A' : `${value} tasks`, name ?? 'Tasks']}
       />
       <Legend
         layout="horizontal"

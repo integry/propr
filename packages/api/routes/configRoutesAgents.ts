@@ -1,25 +1,22 @@
 import { Request, Response } from 'express';
 import { db, logger } from '@propr/core';
 import * as configManager from '@propr/core';
-import {
-    AgentRegistry,
-    resolveVersion,
-    computeContentHash,
-    generateAgentBundleImageTag,
-    getAgentCliVersionMatrix,
-    findAgentCliVersionConflicts,
-    AGENT_DEFAULT_VERSIONS
-} from '@propr/core';
-import type { CliVersionType, AgentType, AgentConfig } from '@propr/core';
+import { AgentRegistry } from '@propr/core';
+import type { AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
-import { withConfigLock, validateAgentsConfig, normalizeAgentsConfig, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
+import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
+import { DEFAULT_PREPARATION_DEPS, loadProcessedAgents, prepareAgentsUpdate, resolveDefaultAgentAlias } from './configRoutesAgentsPreparation.js';
+function buildAgentPreparationError(error: string, code?: string): { code?: string; error: string } {
+  return code ? { code, error } : { error };
+}
 async function rollbackAgentConfigState({
   configStore,
   registry,
   previousAgents,
   currentDefault,
   defaultChanged,
+  database,
   lock,
   errorContext
 }: RollbackAgentConfigStateParams): Promise<boolean> {
@@ -28,6 +25,7 @@ async function rollbackAgentConfigState({
       configStore,
       agents: previousAgents,
       settingsPatch: defaultChanged ? { default_agent_alias: currentDefault } : null,
+      database,
       lock
     });
     if (settingsWereUpdated) {
@@ -45,115 +43,17 @@ async function rollbackAgentConfigState({
     return false;
   }
 }
-function resolveDefaultAgentAlias(processedAgents: AgentConfig[], currentDefault: string | undefined): string | undefined {
-  const enabledAgents = processedAgents.filter((a: { enabled: boolean }) => a.enabled);
-  if (enabledAgents.length === 0) return undefined;
-  if (!currentDefault || !enabledAgents.some((a: { alias: string }) => a.alias === currentDefault)) return enabledAgents[0].alias;
-  return currentDefault;
-}
-function requiresExplicitVersionSpec(versionType: CliVersionType): boolean {
-  return versionType === 'tag' || versionType === 'specific' || versionType === 'custom';
-}
-function hasVersionSpec(versionSpec: string | undefined): boolean {
-  return typeof versionSpec === 'string' && versionSpec.trim().length > 0;
-}
-function classifyVersionResolutionError(error: unknown): { message: string; status: number } {
-  const message = error instanceof Error ? error.message : 'Unknown version resolution error';
-  if (error instanceof TypeError || message.includes('fetch')) {
-    return { message, status: 502 };
-  }
-  if (message.startsWith('NPM registry returned ')
-      || message.startsWith('PyPI request failed ')
-      || message.startsWith('PyPI request timed out ')) {
-    return { message, status: 502 };
-  }
-  if (message.startsWith('Version spec required') || message.startsWith('Unknown tag ') || message.includes('not found for package')) {
-    return { message, status: 400 };
-  }
-  return { message, status: 500 };
-}
-async function prepareAgentsUpdate(agents: unknown): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
-  if (!Array.isArray(agents)) {
-    return { error: 'agents must be an array', status: 400 };
-  }
-  const normalizedAgents = normalizeAgentsConfig(agents);
-  const validationError = validateAgentsConfig(normalizedAgents);
-  if (validationError) {
-    return { error: validationError, status: 400 };
-  }
-
-  const processedAgents: AgentConfig[] = [];
-  for (const agent of normalizedAgents) {
-    const processedAgent = { ...agent };
-
-    if (agent.cliVersionType) {
-      const versionType = agent.cliVersionType as CliVersionType;
-      if (requiresExplicitVersionSpec(versionType) && !hasVersionSpec(agent.cliVersion)) {
-        return { error: `Failed to resolve version for agent '${agent.alias}': version spec is required for ${versionType} version type`, status: 400 };
-      }
-      try {
-        const agentType = agent.type as AgentType;
-        const resolvedVersion = await resolveVersion(agentType, versionType, agent.cliVersion);
-        processedAgent.cliVersionResolved = resolvedVersion;
-      } catch (versionError) {
-        const { message, status } = classifyVersionResolutionError(versionError);
-        return { error: `Failed to resolve version for agent '${agent.alias}': ${message}`, status };
-      }
-    } else {
-      const agentType = agent.type as AgentType;
-      processedAgent.cliVersionType = 'default';
-      processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
-    }
-
-    processedAgents.push(processedAgent);
-  }
-
-  const versionConflicts = findAgentCliVersionConflicts(processedAgents);
-  if (versionConflicts.length > 0) {
-    const details = versionConflicts
-      .map(conflict => `${conflict.agentType} (${conflict.aliases.join(', ')}: ${conflict.versions.join(' vs ')})`)
-      .join('; ');
-    return {
-      error: `Conflicting CLI versions for the unified agent image: ${details}. Enabled agents of the same type must use the same CLI version.`,
-      status: 400
-    };
-  }
-
-  try {
-    const bundleImage = generateAgentBundleImageTag(getAgentCliVersionMatrix(processedAgents), computeContentHash());
-    for (const agent of processedAgents) {
-      agent.dockerImage = bundleImage;
-    }
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : 'Invalid unified agent version configuration', status: 400 };
-  }
-
-  return { processedAgents };
-}
-async function loadProcessedAgents(
-  agents: AgentConfig[],
-  providedProcessedAgents?: AgentConfig[]
-): Promise<{ error?: string; processedAgents?: AgentConfig[]; status?: number }> {
-  if (providedProcessedAgents) {
-    return { processedAgents: providedProcessedAgents };
-  }
-  const prepared = await prepareAgentsUpdate(agents);
-  if (prepared.error || !prepared.processedAgents) {
-    return prepared.error
-      ? prepared
-      : { status: 500, error: 'Failed to prepare agent configuration update' };
-  }
-  return { processedAgents: prepared.processedAgents };
-}
 async function persistAgentConfigurationAtomically({
   configStore,
   agents,
   settingsPatch,
+  database,
   lock
 }: {
   configStore: AgentConfigStore;
   agents: AgentConfig[];
   settingsPatch: Record<string, unknown> | null;
+  database: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }): Promise<PersistAgentConfigurationResult> {
   let trx: Knex.Transaction | null = null;
@@ -165,7 +65,7 @@ async function persistAgentConfigurationAtomically({
       settingsPatch
     );
     const settingsWereUpdated = mergedSettings !== null;
-    trx = await db.transaction();
+    trx = await database.transaction();
     const transaction = trx;
     await upsertConfigValue(transaction, 'agents', agents);
     if (settingsWereUpdated) {
@@ -195,6 +95,7 @@ async function applyCommittedAgentsUpdate({
   newDefault,
   settingsWereUpdated,
   defaultChanged,
+  database,
   lock
 }: {
   configStore: AgentConfigStore;
@@ -204,6 +105,7 @@ async function applyCommittedAgentsUpdate({
   newDefault: string | undefined;
   settingsWereUpdated: boolean;
   defaultChanged: boolean;
+  database: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }): Promise<ApplyAgentsUpdateResult | void> {
   try {
@@ -221,6 +123,7 @@ async function applyCommittedAgentsUpdate({
       previousAgents,
       currentDefault,
       defaultChanged,
+      database,
       lock,
       errorContext: 'Failed to roll back agent configuration after live apply failure:'
     });
@@ -261,12 +164,18 @@ export async function applyAgentsUpdate({
   publishConfigUpdate,
   logActivityHelper,
   configStore = configManager,
+  database = db,
   registry = AgentRegistry.getInstance(),
+  preparationDeps: preparationOverrides,
   lock
 }: ApplyAgentsUpdateParams): Promise<ApplyAgentsUpdateResult> {
-  const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents);
+  const preparationDeps = { ...DEFAULT_PREPARATION_DEPS, ...preparationOverrides };
+  const preparedAgents = await loadProcessedAgents(agents, providedProcessedAgents, preparationDeps);
   if (preparedAgents.error) {
-    return { status: preparedAgents.status ?? 400, body: { error: preparedAgents.error } };
+    return {
+      status: preparedAgents.status ?? 400,
+      body: buildAgentPreparationError(preparedAgents.error, preparedAgents.code),
+    };
   }
   const processedAgents = preparedAgents.processedAgents;
   if (!processedAgents) {
@@ -284,6 +193,7 @@ export async function applyAgentsUpdate({
       configStore,
       agents: processedAgents,
       settingsPatch: defaultChanged ? { default_agent_alias: newDefault } : null,
+      database,
       lock
     });
     const liveApplyResult = await applyCommittedAgentsUpdate({
@@ -294,6 +204,7 @@ export async function applyAgentsUpdate({
       newDefault,
       settingsWereUpdated,
       defaultChanged,
+      database,
       lock
     });
     if (liveApplyResult) {
@@ -356,11 +267,21 @@ export async function applyAgentsUpdate({
 }
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {
-  const { redisClient, publishConfigUpdate, logActivityHelper, applyAgentsUpdateFn } = deps;
+  const {
+    redisClient,
+    publishConfigUpdate,
+    logActivityHelper,
+    applyAgentsUpdateFn,
+    configStore = configManager,
+    database = db,
+    registry = AgentRegistry.getInstance(),
+    preparationDeps: preparationOverrides,
+  } = deps;
+  const preparationDeps = { ...DEFAULT_PREPARATION_DEPS, ...preparationOverrides };
   const effectiveApplyFn = applyAgentsUpdateFn ?? applyAgentsUpdate;
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
-      res.json({ agents: await configManager.loadAgents() });
+      res.json({ agents: await configStore.loadAgents() });
     } catch (error) {
       console.error('Error in /api/config/agents GET:', error);
       res.status(500).json({ error: 'Failed to load agents configuration' });
@@ -371,9 +292,9 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
     }
-    const prepared = await prepareAgentsUpdate(req.body.agents);
+    const prepared = await prepareAgentsUpdate(req.body.agents, preparationDeps);
     if (prepared.error) {
-      res.status(prepared.status ?? 400).json({ error: prepared.error });
+      res.status(prepared.status ?? 400).json(buildAgentPreparationError(prepared.error, prepared.code));
       return;
     }
     if (!prepared.processedAgents) {
@@ -383,7 +304,18 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
 
     // Agent updates share the settings lock because they may also rewrite default_agent_alias.
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      return effectiveApplyFn({ agents: req.body.agents, processedAgents: prepared.processedAgents, username: req.user?.username, publishConfigUpdate, logActivityHelper, lock });
+      return effectiveApplyFn({
+        agents: req.body.agents,
+        processedAgents: prepared.processedAgents,
+        username: req.user?.username,
+        publishConfigUpdate,
+        logActivityHelper,
+        configStore,
+        database,
+        registry,
+        preparationDeps,
+        lock,
+      });
     });
 
     if (!result || typeof result.status !== 'number' || !result.body) {

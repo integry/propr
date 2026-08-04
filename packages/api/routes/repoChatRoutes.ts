@@ -12,7 +12,8 @@ import {
   getMessagesForRepository,
   saveMessage,
   deleteMessage as deleteMessageFromDb,
-  clearMessagesForRepository
+  clearMessagesForRepository,
+  resolveConfiguredModel
 } from '@propr/core';
 
 interface ChatMessage {
@@ -226,7 +227,7 @@ ${summaryResult.context || 'No codebase summaries available. The repository may 
 
       // Get model settings - use requested model or fall back to settings
       const settings = await loadSettings();
-      const model = requestedModel || settings.planner_context_model || 'haiku';
+      const model = await resolveConfiguredModel(requestedModel || settings.planner_context_model);
 
       // Estimate input tokens and duration for the request
       const estimatedInputTokens = estimateTokens(fullPrompt);

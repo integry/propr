@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ScrollText, ListTodo, BookMarked, Bot, Cpu } from 'lucide-react';
-import { getCurrentUser, logout } from '../api/proprApi';
+import { ScrollText, ListTodo, BookMarked, Bot, Cpu, ShieldCheck } from 'lucide-react';
+import { logout } from '../api/proprApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
 import { useToast } from './ui/useToast';
@@ -11,6 +11,7 @@ import AgentTankSidebar from './AgentTankSidebar';
 import { useSocket } from '../contexts/useSocket';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { QueueStatsUpdatePayload, IndexingUpdatePayload, DraftUpdatePayload } from '@propr/shared';
+import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -22,13 +23,6 @@ interface NavItem {
   icon: React.FC<{ className?: string }>;
 }
 
-interface User {
-  id: string;
-  username: string;
-  displayName: string;
-  avatarUrl?: string;
-}
-
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const { addToast } = useToast();
@@ -36,7 +30,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { isConnected, subscribeToQueueStats, unsubscribeFromQueueStats, subscribeToIndexingUpdates, unsubscribeFromIndexingUpdates, onQueueStatsUpdate, onIndexingUpdate, onDraftUpdate } = useSocket();
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
-  const [user, setUser] = useState<User | null>(null);
+  const user = useCurrentUser();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   // Track repository indexing statuses for toast notifications
   const repoStatusesRef = useRef<Map<string, string>>(new Map());
@@ -57,9 +51,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Plans', href: '/plans', icon: ScrollText },
     { name: 'Tasks', href: '/tasks', icon: ListTodo },
     { name: 'Repositories', href: '/repositories', icon: BookMarked },
-    { name: 'Coding Agents', href: '/ai-agents', icon: Bot },
+    ...(userHasPermission(user, 'instance.manage_agents')
+      ? [{ name: 'Coding Agents', href: '/ai-agents', icon: Bot }]
+      : []),
     { name: 'LLM Log', href: '/llm-logs', icon: Cpu },
-    { name: 'Settings', href: '/settings', icon: SettingsIcon },
+    ...(userHasPermission(user, 'instance.manage_settings')
+      ? [{ name: 'Settings', href: '/settings', icon: SettingsIcon }]
+      : []),
+    ...(userHasPermission(user, 'instance.manage_members')
+      ? [{ name: 'Access', href: '/admin/members', icon: ShieldCheck }]
+      : []),
   ];
 
   const isActive = (path: string): boolean => {
@@ -126,19 +127,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       // A plan generation finished
       setGeneratingPlansCount(prev => Math.max(0, prev - 1));
     }
-  }, []);
-
-  // Fetch user data on mount (one-time fetch, no polling needed)
-  useEffect(() => {
-    const fetchUser = async () => {
-      try {
-        const userData = await getCurrentUser();
-        setUser(userData as User);
-      } catch (err) {
-        console.error('Error fetching user:', err);
-      }
-    };
-    fetchUser();
   }, []);
 
   // Subscribe to WebSocket events when connected
@@ -238,7 +226,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </Link>
             ))}
           </nav>
-          <AgentTankSidebar />
+          {userHasPermission(user, 'instance.manage_agents') && <AgentTankSidebar />}
           <footer className="px-4 py-3 border-t border-gray-100 text-[11px] leading-tight text-gray-400 space-y-1">
             <div>
               <a

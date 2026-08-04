@@ -1,4 +1,4 @@
-import { AgentConfig, SystemSettings } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanIssue } from '../../api/planIssuesApi';
 
 export interface PlanIssueDefaultSelection {
@@ -6,13 +6,13 @@ export interface PlanIssueDefaultSelection {
   modelName: string | null;
 }
 
-function getModelForAgent(agent: AgentConfig | undefined): string | null {
+function getModelForAgent(agent: InstanceCatalogAgent | undefined): string | null {
   return agent?.defaultModel ?? agent?.supportedModels?.[0] ?? null;
 }
 
 export function resolvePlanIssueDefaultSelection(
-  agents: AgentConfig[],
-  defaultAgentAlias?: SystemSettings['default_agent_alias']
+  agents: InstanceCatalogAgent[],
+  defaultAgentAlias?: string
 ): PlanIssueDefaultSelection {
   const enabledAgents = agents.filter(agent => agent.enabled);
   const configuredAgent = defaultAgentAlias

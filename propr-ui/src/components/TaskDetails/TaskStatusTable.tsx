@@ -6,7 +6,7 @@ import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest
 interface TaskStatusTableProps {
   history: HistoryItem[];
   compact?: boolean;
-  commandMode?: 'default' | 'review' | 'fix';
+  commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
 }
 
 const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {

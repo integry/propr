@@ -116,17 +116,25 @@ export class SocketService {
     });
 
     socket.on('subscribe:task:live', async (taskId: string) => {
-      socket.join(`task:live:${taskId}`);
-      console.log(`[SocketService] Client ${socket.id} subscribed to task:live:${taskId}`);
-      await this.taskWatcherManager.startTaskWatcher(taskId);
-      // Send initial full state on subscription (isInitial=true)
-      await this.taskWatcherManager.sendTaskLiveUpdate(taskId, true);
+      try {
+        socket.join(`task:live:${taskId}`);
+        console.log(`[SocketService] Client ${socket.id} subscribed to task:live:${taskId}`);
+        await this.taskWatcherManager.startTaskWatcher(taskId);
+        // Send initial full state on subscription (isInitial=true)
+        await this.taskWatcherManager.sendTaskLiveUpdate(taskId, true);
+      } catch (error) {
+        console.error(`[SocketService] Failed to start live task subscription for ${taskId}:`, error);
+      }
     });
 
     socket.on('unsubscribe:task:live', async (taskId: string) => {
-      socket.leave(`task:live:${taskId}`);
-      console.log(`[SocketService] Client ${socket.id} unsubscribed from task:live:${taskId}`);
-      await this.taskWatcherManager.stopTaskWatcherIfEmpty(taskId);
+      try {
+        socket.leave(`task:live:${taskId}`);
+        console.log(`[SocketService] Client ${socket.id} unsubscribed from task:live:${taskId}`);
+        await this.taskWatcherManager.stopTaskWatcherIfEmpty(taskId);
+      } catch (error) {
+        console.error(`[SocketService] Failed to stop live task subscription for ${taskId}:`, error);
+      }
     });
   }
 

@@ -1,12 +1,12 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { AgentConfig } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { AgentModelPairWithDisplay } from './agentModelSelectorUtils';
 import { MultiSelectMode, SingleSelectMode } from './AgentModelSelectorParts';
 
 interface AgentModelSelectorProps {
-  agents: AgentConfig[];
+  agents: InstanceCatalogAgent[];
   selectedAgent: string | null;
   selectedModel: string | null;
   onAgentChange: (agentAlias: string | null) => void;

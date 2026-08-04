@@ -53,6 +53,7 @@ describe('mergeBaseIntoBranch', () => {
         resetMocks();
         // Default: all git commands succeed
         mockGitInstance.raw.mock.mockImplementation(async () => '');
+        mockGitInstance.status.mock.mockImplementation(async () => ({ conflicted: [] }));
     });
 
     test('returns clean outcome when merge succeeds without conflicts', async () => {

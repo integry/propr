@@ -56,6 +56,24 @@ export {
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 
+export {
+  INSTANCE_PERMISSIONS,
+  type AuthenticatedInstanceUser,
+  type InstanceAuthorizationSource,
+  type InstanceMember,
+  type InstanceMemberSource,
+  type InstanceMembersResponse,
+  type InstancePermission,
+  type InstanceRole,
+  type InstanceRoleAuditEntry,
+} from './instanceAuthorization.js';
+
+export {
+  type InstanceCatalogAgent,
+  type InstanceCatalogRepository,
+  type InstanceCatalogResponse,
+} from './instanceCatalog.js';
+
 // Export user whitelist helpers
 export {
   getGithubUserWhitelist,

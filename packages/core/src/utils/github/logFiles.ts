@@ -9,6 +9,7 @@ import { getDetailedUsageStats, calculateCostWithCachePricing } from '../tokenCa
 import type { DetailedUsageStats, ClaudeResult as TokenCalcClaudeResult } from '../tokenCalculation.js';
 import { formatSubscriptionUsage } from './formatSubscriptionUsage.js';
 import type { SubscriptionUsageMetrics } from './formatSubscriptionUsage.js';
+import { describeAgentTermination, resolveAgentTerminationReason } from '../../agents/termination.js';
 
 interface IssueRef {
     number: number;
@@ -39,6 +40,9 @@ interface ClaudeResult {
     rawOutput?: string;
     finalResult?: FinalResult;
     summary?: string;
+    error?: string;
+    terminationReason?: 'timeout' | 'max_turns';
+    modifiedFiles?: string[];
     tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
     usageMetrics?: SubscriptionUsageMetrics | null;
 }
@@ -283,7 +287,17 @@ export async function createLogFiles(claudeResultInput: unknown, issueRef: Issue
     return files;
 }
 
-function buildStatusText(isSuccess: boolean): { header: string; status: string } {
+function buildStatusText(claudeResult: ClaudeResult): { header: string; status: string } {
+    const terminationReason = resolveAgentTerminationReason({
+        success: claudeResult.success,
+        terminationReason: claudeResult.terminationReason,
+        subtype: claudeResult.finalResult?.subtype,
+        error: claudeResult.error
+    });
+    if (!claudeResult.success && terminationReason) {
+        return { header: 'Incomplete', status: 'Partial work published for review' };
+    }
+    const isSuccess = claudeResult?.success || false;
     return {
         header: isSuccess ? 'Completed' : 'Failed',
         status: isSuccess ? 'Success' : 'Failed'
@@ -321,12 +335,11 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
 }
 
 async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<string> {
-    const isSuccess = claudeResult?.success || false;
     const executionTimeStr = formatDuration(claudeResult?.executionTime || 0);
     const detailedStats = getDetailedUsageStats(claudeResult as unknown as TokenCalcClaudeResult);
     const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
     const cost = await calculateExecutionCost(claudeResult, detailedStats);
-    const { header, status } = buildStatusText(isSuccess);
+    const { header, status } = buildStatusText(claudeResult);
 
     const date = new Date(timestamp);
     const formattedTimestamp = date.toLocaleString('en-US', {
@@ -359,6 +372,31 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
 }
 
 function buildSummarySection(claudeResult: ClaudeResult): string {
+    const terminationReason = resolveAgentTerminationReason({
+        success: claudeResult.success,
+        terminationReason: claudeResult.terminationReason,
+        subtype: claudeResult.finalResult?.subtype,
+        error: claudeResult.error
+    });
+    if (terminationReason) {
+        const changedFiles = claudeResult.modifiedFiles || [];
+        let section = `> [!WARNING]\n> **This implementation may be incomplete.** ${describeAgentTermination(terminationReason)} Partial changes were preserved instead of discarded.\n\n`;
+        section += '**Work completed before interruption:**\n';
+        if (claudeResult.summary?.trim()) {
+            section += `${redactSecrets(claudeResult.summary.trim()).slice(0, 6000)}\n\n`;
+        } else if (changedFiles.length > 0) {
+            section += `Changes were committed in ${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}:\n`;
+            section += changedFiles.slice(0, 20).map(file => `- \`${file}\``).join('\n');
+            if (changedFiles.length > 20) section += `\n- …and ${changedFiles.length - 20} more`;
+            section += '\n\n';
+        } else {
+            section += 'See the committed diff for the changes completed before execution stopped.\n\n';
+        }
+        section += '**Remaining work:**\n';
+        section += 'The agent stopped before validating every requirement. Review the partial diff against the original request and complete any unaddressed implementation, tests, or documentation before merging.\n\n';
+        return section;
+    }
+
     let section = '';
     if (claudeResult?.summary) section += `**Summary:**\n${redactSecrets(claudeResult.summary)}\n\n`;
     if (claudeResult?.finalResult?.subtype === 'error_max_turns') {

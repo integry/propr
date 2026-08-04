@@ -1,6 +1,6 @@
-import { test, describe, beforeEach, afterEach, mock } from 'node:test';
+import { test, describe, beforeEach, afterEach, after, mock } from 'node:test';
 import assert from 'node:assert';
-import { generateAuthToken } from '@propr/core';
+import { closeConnection, generateAuthToken } from '@propr/core';
 import type { SystemTaskJobData, JobResult } from '@propr/core';
 
 /**
@@ -13,6 +13,10 @@ import type { SystemTaskJobData, JobResult } from '@propr/core';
  */
 
 const TEST_SECRET = 'test-secret-for-worker-tests';
+
+after(async () => {
+    await closeConnection();
+});
 
 // Track call order to prove auth runs before git operations
 let callOrder: string[] = [];
@@ -453,6 +457,7 @@ describe('processSystemTaskJob — fork PR handling', () => {
                     data: {
                         head: {
                             ref: 'feature-branch',
+                            sha: 'head1234567890abcdef1234567890abcdef123456',
                             repo: {
                                 owner: { login: 'testorg' },
                                 name: 'testrepo',

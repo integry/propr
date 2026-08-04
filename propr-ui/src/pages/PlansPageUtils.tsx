@@ -1,5 +1,4 @@
-import React from 'react';
-import { CheckCircle, Clock, Loader2, GitPullRequest, XCircle, AlertCircle, Play, Settings2, GitMerge, GitPullRequestArrow } from 'lucide-react';
+import { CheckCircle, Clock, Loader2, XCircle, AlertCircle, Play, Settings2, GitMerge, GitPullRequestArrow } from 'lucide-react';
 import { IssueSummary } from '../api/proprApi';
 
 /**

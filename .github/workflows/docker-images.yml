@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       expected_version:
-        description: 'Optional version that must match package.json, for example 0.8.0'
-        required: false
+        description: 'Version that must match package.json and CHANGELOG.md, for example 0.8.0'
+        required: true
         type: string
       ghcr_namespace:
         description: 'GHCR namespace to publish under'
@@ -23,7 +23,7 @@ on:
       push_latest:
         description: 'Also update the latest tags'
         required: true
-        default: true
+        default: false
         type: boolean
 
 concurrency:
@@ -35,52 +35,215 @@ permissions:
   packages: write
 
 jobs:
-  build-smoke-and-push:
-    name: Build, Smoke Test, Push
-    runs-on: [self-hosted, linux, x64, propr]
-    env:
-      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
-      DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
-      PUSH_LATEST: ${{ github.event.inputs.push_latest || 'true' }}
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify manual release tag points to this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: v${{ inputs.expected_version }}
+        run: |
+          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            echo "Manual release requires an existing $RELEASE_TAG tag" >&2
+            exit 1
+          fi
+          TAG_COMMIT="$(git rev-list -n 1 "$RELEASE_TAG")"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "$RELEASE_TAG points to $TAG_COMMIT, not checked-out commit $HEAD_COMMIT" >&2
+            exit 1
+          fi
+
+      - name: Verify release metadata
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.expected_version) }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: |
+          npm run release:verify
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Run lint and typecheck gates
+        run: |
+          npm run lint -- --max-warnings 0
+          npm run typecheck
+          npm run lint --workspaces --if-present -- --max-warnings 0
+          npm run typecheck --workspaces --if-present
+
+      - name: Validate docs
+        working-directory: docs
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Build test dependencies
+        run: npm run test:prepare
+
+      - name: Start isolated Redis
+        run: ./scripts/ci-redis.sh start
+
+      - name: Run full server and UI suites
+        env:
+          NODE_ENV: test
+        run: npm run test:full:prepared
+
+      - name: Stop isolated Redis
+        if: always()
+        run: ./scripts/ci-redis.sh stop
+
+  prepare-cli:
+    name: Build and Smoke Test CLI
+    needs: validate-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and verify CLI package
+        run: npm run cli:pack
+
+      - name: Pack release artifact
+        id: package
+        run: |
+          TARBALL="$(npm pack --pack-destination "$RUNNER_TEMP" ./dist-publish/propr-cli | tail -1)"
+          TARBALL="$RUNNER_TEMP/$TARBALL"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test packed CLI
+        run: |
+          PREFIX="$RUNNER_TEMP/propr-cli-install"
+          npm install --global --prefix "$PREFIX" "${{ steps.package.outputs.tarball }}"
+          "$PREFIX/bin/propr" --version
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.package.outputs.tarball }}
+          if-no-files-found: error
+
+  build-smoke-and-push:
+    name: Build, Smoke Test, Push
+    needs: [validate-release, prepare-cli]
+    runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 180
+    env:
+      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
+      DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
+      PUSH_LATEST: 'false'
+
+    steps:
+      - name: Prepare isolated Docker credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-images"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Check toolchain
         run: |
           node --version
           npm --version
           docker version
+          docker buildx version
+
+      - name: Reverify manual release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: v${{ inputs.expected_version }}
+        run: |
+          TAG_COMMIT="$(git rev-list -n 1 "$RELEASE_TAG" 2>/dev/null || true)"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [ -z "$TAG_COMMIT" ] || [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "$RELEASE_TAG must still exist and point to checked-out commit $HEAD_COMMIT" >&2
+            exit 1
+          fi
 
       - name: Verify release version
         id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.expected_version) }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
+          npm run release:verify
           VERSION="$(node -p "require('./package.json').version")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            TAG_VERSION="${GITHUB_REF_NAME#v}"
-            if [ "$TAG_VERSION" != "$VERSION" ]; then
-              echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}" >&2
-              exit 1
-            fi
-          fi
-
-          EXPECTED_VERSION="${{ github.event.inputs.expected_version }}"
-          if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "$VERSION" ]; then
-            echo "Expected version ${EXPECTED_VERSION} does not match package.json version ${VERSION}" >&2
-            exit 1
-          fi
 
       - name: Build GHCR-tagged images
         run: ./scripts/build-images.sh --ghcr
 
-      - name: Smoke test app image
+      - name: Smoke test GHCR images
         env:
           APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ steps.version.outputs.version }}
+          UI_TAG: ${{ env.GHCR_NS }}/propr-ui:${{ steps.version.outputs.version }}
+          DOCS_TAG: ${{ env.GHCR_NS }}/propr-docs:${{ steps.version.outputs.version }}
+          AGENT_TAG: ${{ env.GHCR_NS }}/propr-agent:${{ steps.version.outputs.version }}
+          LAUNCHER_TAG: ${{ env.GHCR_NS }}/propr-launcher:${{ steps.version.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: npm run images:smoke
+
+      - name: Build Docker Hub-tagged images
+        run: ./scripts/build-images.sh --dockerhub
+
+      - name: Smoke test Docker Hub images
+        env:
+          APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
+          UI_TAG: ${{ env.DOCKERHUB_NS }}/ui:${{ steps.version.outputs.version }}
+          DOCS_TAG: ${{ env.DOCKERHUB_NS }}/docs:${{ steps.version.outputs.version }}
+          AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ steps.version.outputs.version }}
+          LAUNCHER_TAG: ${{ env.DOCKERHUB_NS }}/launcher:${{ steps.version.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: npm run images:smoke
 
       - name: Login to GHCR
@@ -90,9 +253,6 @@ jobs:
         run: |
           TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
           echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Push GHCR images
-        run: ./scripts/build-images.sh --push --ghcr
 
       - name: Login to Docker Hub
         env:
@@ -106,16 +266,11 @@ jobs:
 
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
-      - name: Build Docker Hub-tagged images
-        run: ./scripts/build-images.sh --dockerhub
+      - name: Push smoke-tested GHCR images
+        run: ./scripts/build-images.sh --push-only --ghcr
 
-      - name: Smoke test Docker Hub app image
-        env:
-          APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
-        run: npm run images:smoke
-
-      - name: Push Docker Hub images
-        run: ./scripts/build-images.sh --push --dockerhub
+      - name: Push smoke-tested Docker Hub images
+        run: ./scripts/build-images.sh --push-only --dockerhub
 
       - name: Sync Docker Hub metadata
         continue-on-error: true
@@ -123,3 +278,182 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: npm run images:metadata
+
+      - name: Show image publication reconciliation guidance
+        if: failure()
+        run: |
+          echo "Image publication did not finish. Re-run this workflow for the same immutable release tag; validated images are rebuilt and existing tags are reconciled idempotently." >&2
+          echo "### Release reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same immutable release tag. Image tags are rebuilt from that tag and safely re-pushed before npm publication can begin." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated Docker credentials
+        if: always()
+        run: |
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-docker-config-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          docker logout >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"
+
+  publish-cli:
+    name: Publish CLI with provenance
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: [validate-release, prepare-cli, build-smoke-and-push]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install npm with trusted-publishing support
+        run: npm install --global 'npm@>=11.5.1 <12'
+
+      - name: Download smoke-tested CLI artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts
+
+      - name: Publish CLI to npm if needed
+        env:
+          PACKAGE_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          TARBALL="$(find release-artifacts -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          if [ -z "$TARBALL" ]; then
+            echo "Smoke-tested CLI tarball is missing" >&2
+            exit 1
+          fi
+          LOCAL_INTEGRITY="$(node -e "const fs=require('fs');const crypto=require('crypto');process.stdout.write('sha512-'+crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$TARBALL")"
+          LOOKUP_ERROR="$RUNNER_TEMP/npm-view-error.txt"
+          if PUBLISHED_INTEGRITY="$(npm view "@propr/cli@$PACKAGE_VERSION" dist.integrity 2>"$LOOKUP_ERROR")"; then
+            if [ "$PUBLISHED_INTEGRITY" != "$LOCAL_INTEGRITY" ]; then
+              echo "@propr/cli@$PACKAGE_VERSION already exists with different package contents" >&2
+              exit 1
+            fi
+            echo "@propr/cli@$PACKAGE_VERSION is already published with the matching artifact"
+          elif grep -Eq 'E404|404 Not Found' "$LOOKUP_ERROR"; then
+            npm publish "$TARBALL" --access public
+          else
+            cat "$LOOKUP_ERROR" >&2
+            exit 1
+          fi
+
+      - name: Show CLI publication reconciliation guidance
+        if: failure()
+        run: |
+          echo "CLI publication did not finish. Re-run this workflow for the same tag; npm integrity is checked before any retry publishes." >&2
+          echo "### CLI reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same tag. The npm step accepts an existing package only when its integrity matches the smoke-tested artifact." >> "$GITHUB_STEP_SUMMARY"
+
+  publish-github-release:
+    name: Publish GitHub release
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: [validate-release, build-smoke-and-push, publish-cli]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download CLI artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-artifacts/* --clobber --repo "${{ github.repository }}"
+          else
+            gh release create "$RELEASE_TAG" release-artifacts/* \
+              --repo "${{ github.repository }}" \
+              --verify-tag \
+              --generate-notes \
+              --title "ProPR $RELEASE_TAG"
+          fi
+
+  promote-latest:
+    name: Promote latest images
+    if: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || inputs.push_latest }}
+    needs: [validate-release, publish-github-release]
+    runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
+      DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
+
+    steps:
+      - name: Prepare isolated Docker credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-latest"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are required" >&2
+            exit 1
+          fi
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Promote release images to latest
+        run: ./scripts/build-images.sh --promote-latest
+
+      - name: Show latest-tag reconciliation guidance
+        if: failure()
+        run: |
+          echo "Latest promotion failed after the immutable release surfaces completed. Re-run this workflow for the same tag; existing latest tags are restored when possible." >&2
+          echo "### Latest-tag reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same release tag. Promotion preflights all immutable version/SHA pairs and restores prior latest digests. If a target had no prior latest tag, the failure output explicitly marks the promotion non-atomic and identifies the newly created tag that requires registry-side deletion." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated Docker credentials
+        if: always()
+        run: |
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-docker-config-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          docker logout >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"

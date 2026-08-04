@@ -1,5 +1,6 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '../packages/core/src/db/connection.js';
 
 // Import from the pure statusMachine module - no side effects, no mocks needed
 import {
@@ -9,6 +10,10 @@ import {
     TERMINAL_STATUSES,
     type PlanIssueStatus
 } from '../packages/core/src/webhook/statusMachine.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('determinePRStatusUpdate', () => {
     describe('terminal states (merged, closed) should return null', () => {

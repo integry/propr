@@ -38,6 +38,16 @@ export default defineConfig({
     }
   },
   build: {
-    sourcemap: true
+    sourcemap: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'charts-vendor': ['recharts'],
+          'markdown-vendor': ['react-markdown', 'remark-breaks', 'remark-gfm'],
+          'motion-vendor': ['framer-motion'],
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+        },
+      },
+    },
   }
 })

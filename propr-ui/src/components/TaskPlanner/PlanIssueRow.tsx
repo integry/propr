@@ -1,8 +1,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ExternalLink } from 'lucide-react';
-import { PlanIssue, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentConfig } from '../../api/proprApi';
+import { PlanIssue, AgentModelPair } from '../../api/planIssuesApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
 import {
   StatusBadge,
@@ -15,7 +15,7 @@ import { getContainerClassName, getTitleClassName } from './planIssueRowUtils';
 interface PlanIssueRowProps {
   issue: PlanIssue;
   issueTitle?: string;
-  agents: AgentConfig[];
+  agents: InstanceCatalogAgent[];
   onImplement: (issueNumber: number, models?: AgentModelPair[]) => void;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;

@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentConfig, SystemSettings, getAgents, getSettings } from '../../api/proprApi';
+import { getInstanceCatalog } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
-import { DraftUpdatePayload } from '@propr/shared';
-import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData } from './planIssuesManagerUtils';
+import { DraftUpdatePayload, type InstanceCatalogAgent } from '@propr/shared';
+import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { applyPlanIssueDefaults, resolvePlanIssueDefaultSelection } from './planIssueDefaultSelection';
 export type { IssueCreationProgress } from './planIssuesManagerUtils';
 
@@ -24,8 +24,8 @@ interface UsePlanIssuesManagerProps {
 
 export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete }: UsePlanIssuesManagerProps) {
   const [issues, setIssues] = useState<PlanIssue[]>([]);
-  const [agents, setAgents] = useState<AgentConfig[]>([]);
-  const [settings, setSettings] = useState<SystemSettings | null>(null);
+  const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
+  const [defaultAgentAlias, setDefaultAgentAlias] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
@@ -60,8 +60,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   }, [tasks]);
 
   const defaultSelection = useMemo(
-    () => resolvePlanIssueDefaultSelection(agents, settings?.default_agent_alias),
-    [agents, settings?.default_agent_alias]
+    () => resolvePlanIssueDefaultSelection(agents, defaultAgentAlias),
+    [agents, defaultAgentAlias]
   );
 
   const issuesWithDefaults = useMemo(
@@ -127,32 +127,24 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     }
   }, [draftId]);
 
-  const fetchAgents = useCallback(async () => {
+  const fetchCatalog = useCallback(async () => {
     try {
-      const { agents: fetchedAgents } = await getAgents();
-      setAgents(fetchedAgents);
+      const catalog = await getInstanceCatalog();
+      setAgents(catalog.agents);
+      setDefaultAgentAlias(catalog.defaultAgentAlias);
     } catch (err) {
-      console.error('Failed to fetch agents:', err);
-    }
-  }, []);
-
-  const fetchSettings = useCallback(async () => {
-    try {
-      setSettings(await getSettings());
-    } catch (err) {
-      console.error('Failed to fetch settings:', err);
-      setSettings(null);
+      console.error('Failed to fetch the instance catalog:', err);
     }
   }, []);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      await Promise.all([fetchIssues(), fetchAgents(), fetchSettings()]);
+      await Promise.all([fetchIssues(), fetchCatalog()]);
       setLoading(false);
     };
     load();
-  }, [fetchIssues, fetchAgents, fetchSettings]);
+  }, [fetchIssues, fetchCatalog]);
 
   useEffect(() => {
     if (!globalAgent && defaultSelection.agentAlias) {

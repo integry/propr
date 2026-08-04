@@ -14,6 +14,7 @@ import { getQueueStats } from '../api/proprApi';
 import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewResponse } from '../api/taskStatsApi';
 import { Loader2, ChevronRight } from 'lucide-react';
 import { useSocket } from '../contexts/useSocket';
+import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 
 interface QueueStats {
   active: number;
@@ -113,10 +114,13 @@ export const StatsGrid: React.FC<StatsGridProps> = ({ queueStats, taskStats, ove
 
 const Dashboard: React.FC = () => {
   useDocumentTitle('Dashboard');
+  const currentUser = useCurrentUser();
+  const canManageAgents = userHasPermission(currentUser, 'instance.manage_agents');
+  const canManageSettings = userHasPermission(currentUser, 'instance.manage_settings');
 
   // System readiness state for onboarding
   const { hasAgents, hasDefaultModel, hasRepos, hasTasks, isLoading: readinessLoading } = useSystemReadiness();
-  const showOnboarding = !readinessLoading && (!hasAgents || !hasRepos || !hasTasks);
+  const showOnboarding = canManageSettings && !readinessLoading && (!hasAgents || !hasRepos || !hasTasks);
 
   // Lifted state for KPIs
   const [taskStats, setTaskStats] = useState<TaskStatsResponse | null>(null);
@@ -186,7 +190,7 @@ const Dashboard: React.FC = () => {
   return (
     <div className="bg-white min-h-full">
       {/* Error alert when no AI agent is configured */}
-      {!readinessLoading && (!hasAgents || !hasDefaultModel) && (
+      {canManageAgents && !readinessLoading && (!hasAgents || !hasDefaultModel) && (
         <div className="px-6 pt-6">
           <NoDefaultModelAlert hasAgents={hasAgents} hasDefaultModel={hasDefaultModel} />
         </div>
@@ -200,9 +204,11 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Agent Tank Detection Banner - shown when detected but not enabled */}
-      <div className="px-6 pt-4">
-        <AgentTankDetectionBanner />
-      </div>
+      {canManageAgents && (
+        <div className="px-6 pt-4">
+          <AgentTankDetectionBanner />
+        </div>
+      )}
 
       {/* Main Content - Studio Split Layout */}
       <div className="flex flex-col lg:flex-row">
