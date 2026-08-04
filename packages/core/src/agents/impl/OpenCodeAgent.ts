@@ -150,9 +150,7 @@ export class OpenCodeAgent implements Agent {
             const success = !result.timedOut && result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
 
             const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
-            if (!suppressLlmLog) {
-                await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
-            }
+            await this.persistAnalysisLogUnlessSuppressed(suppressLlmLog, { executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
             return success
                 ? { response: analysisText, modelUsed, executionTimeMs, success: true, sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage }
                 : { response: analysisText, modelUsed, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage };
@@ -160,9 +158,7 @@ export class OpenCodeAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
             logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'OpenCode lightweight analysis failed');
-            if (!suppressLlmLog) {
-                await this.persistAnalysisLogSafely({ executionType, modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message, taskId, correlationId, repository, metadata, taskNumber, prNumber });
-            }
+            await this.persistAnalysisLogUnlessSuppressed(suppressLlmLog, { executionType, modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message, taskId, correlationId, repository, metadata, taskNumber, prNumber });
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
         } finally {
             this.cleanupAnalysisWorkspace(analysisWorkspace);
@@ -259,6 +255,13 @@ export class OpenCodeAgent implements Agent {
         } catch (persistError) {
             logger.warn({ agentAlias: this.config.alias, error: (persistError as Error).message }, 'Failed to persist OpenCode analysis log');
         }
+    }
+
+    private async persistAnalysisLogUnlessSuppressed(
+        suppressLlmLog: boolean | undefined,
+        opts: Parameters<OpenCodeAgent['persistAnalysisLogSafely']>[0]
+    ): Promise<void> {
+        if (!suppressLlmLog) await this.persistAnalysisLogSafely(opts);
     }
 
     private ensureAnalysisWorkspace(): string {

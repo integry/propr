@@ -191,6 +191,14 @@ function setupAbortChecker({ taskId, abortedRef, child, containerIdRef, namedCon
     }, 2000);
 }
 
+function setupTaskAbortChecker(
+    taskId: string | undefined,
+    options: Omit<AbortCheckerOptions, 'taskId'>
+): ReturnType<typeof setInterval> | null {
+    if (!taskId) return null;
+    return setupAbortChecker({ taskId, ...options });
+}
+
 function getDockerRunContainerName(args: string[]): string | null {
     const nameIndex = args.indexOf('--name');
     if (nameIndex >= 0 && args[nameIndex + 1]) return args[nameIndex + 1];
@@ -273,7 +281,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 if (child.exitCode === null) child.kill('SIGKILL');
             }, 5000);
         }, timeout);
-        const abortCheckInterval = taskId ? setupAbortChecker({ taskId, abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer }) : null;
+        const abortCheckInterval = setupTaskAbortChecker(taskId, { abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer });
         let signalForceKillHandle: ReturnType<typeof setTimeout> | undefined;
         const abortHandler = () => {
             if (state.aborted.value) return;

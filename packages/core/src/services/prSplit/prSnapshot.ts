@@ -269,6 +269,23 @@ interface PatchHunkInput {
   output: string[];
 }
 
+interface PatchHunkHeader {
+  hunkStart: number;
+  oldCount: number;
+  newCount: number;
+}
+
+function parsePatchHunkHeader(line: string): PatchHunkHeader | null {
+  const header = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+  if (!header) return null;
+  const oldStart = Number(header[1]);
+  return {
+    hunkStart: oldStart === 0 ? 0 : oldStart - 1,
+    oldCount: header[2] === undefined ? 1 : Number(header[2]),
+    newCount: header[4] === undefined ? 1 : Number(header[4]),
+  };
+}
+
 function applyPatchHunk(input: PatchHunkInput): AppliedPatchHunk | null {
   const { patchLines, hunkHeaderIndex, base, initialBaseCursor, output } = input;
   let index = hunkHeaderIndex;
@@ -311,13 +328,10 @@ function patchReconstructsHead(file: PrSnapshotFile): boolean {
   let baseCursor = 0;
   let sawHunk = false;
   for (let index = 0; index < patchLines.length; index += 1) {
-    const header = patchLines[index].match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    const header = parsePatchHunkHeader(patchLines[index]);
     if (!header) continue;
     sawHunk = true;
-    const oldStart = Number(header[1]);
-    const oldCount = header[2] === undefined ? 1 : Number(header[2]);
-    const newCount = header[4] === undefined ? 1 : Number(header[4]);
-    const hunkStart = oldStart === 0 ? 0 : oldStart - 1;
+    const { hunkStart, oldCount, newCount } = header;
     if (hunkStart < baseCursor || hunkStart > base.length) return false;
     output.push(...base.slice(baseCursor, hunkStart));
     baseCursor = hunkStart;
