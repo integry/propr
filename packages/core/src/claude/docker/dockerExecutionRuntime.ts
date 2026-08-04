@@ -1,7 +1,6 @@
 import { execSync, spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';
-import { getEventPublisher } from '../../utils/eventPublisher.js';
 import logger from '../../utils/logger.js';
 
 const TASK_LIVENESS_HEARTBEAT_MS = 30_000;
@@ -38,6 +37,11 @@ interface MessageCaptureContext {
 interface CommandSpawnOptions {
     cwd?: string;
     stdinData?: string;
+}
+
+async function getTaskEventPublisher() {
+    const { getEventPublisher } = await import('../../utils/eventPublisher.js');
+    return getEventPublisher();
 }
 
 function stripAnsiCodes(text: string): string {
@@ -156,7 +160,8 @@ export function initRedisStreaming(
 export function initTaskLivenessHeartbeat(taskId: string): ReturnType<typeof setInterval> {
     const heartbeat = async () => {
         try {
-            await getEventPublisher().projectTaskHeartbeat(taskId);
+            const publisher = await getTaskEventPublisher();
+            await publisher.projectTaskHeartbeat(taskId);
         } catch (err) {
             logger.debug({ error: (err as Error).message }, 'Failed to project task liveness heartbeat');
         }
@@ -173,7 +178,11 @@ export function createTaskProgressReporter(taskId: string): () => void {
         const observedAt = Date.now();
         if (observedAt - lastReportedAt < TASK_LIVENESS_HEARTBEAT_MS) return;
         lastReportedAt = observedAt;
-        void getEventPublisher().projectTaskProgress(taskId, new Date(observedAt).toISOString())
+        void getTaskEventPublisher()
+            .then(publisher => publisher.projectTaskProgress(
+                taskId,
+                new Date(observedAt).toISOString()
+            ))
             .catch((err) => logger.debug(
                 { error: (err as Error).message },
                 'Failed to project observable task progress'

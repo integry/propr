@@ -40,13 +40,7 @@ test('BullMQ preserves one indexing run across queue-data and indexing retries',
             };
             return { ...durableRun, applied: true };
         },
-        getActiveRepositoryIndexingRuns: async () => durableRun ? [{
-            fullName: 'acme/api', branch: 'main', ...durableRun,
-        }] : [],
-        createIndexingRunIdentity: () => ({
-            runId: 'retry-run',
-            transitionAt: '2026-08-03T10:00:00.000Z',
-        }),
+        createLegacyIndexingRunIdForJob: () => 'retry-run',
         clearIndexingRuntimeStateBestEffort: async () => undefined,
     });
     let firstQueueDataWrite = true;
