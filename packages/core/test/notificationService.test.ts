@@ -21,6 +21,8 @@ import {
 } from '../src/services/notificationService.js';
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as allowNotificationEventEnrichment }
+    from '../src/db/migrations/20260804050000_allow_notification_event_enrichment.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -85,6 +87,7 @@ beforeEach(async () => {
     database = createDatabase();
     await up(database);
     await addPreferenceApis(database);
+    await allowNotificationEventEnrichment(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -97,6 +100,38 @@ afterEach(async () => database.destroy());
 after(async () => closeConnection());
 
 describe('notification service', { concurrency: false }, () => {
+    test('enriches presentation fields when target and metadata are unchanged', async () => {
+        const baseInput = {
+            eventId: 'presentation-enrichment',
+            deduplicationKey: 'presentation-enrichment',
+            kind: 'task' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'presentation-task'
+            },
+            title: 'Initial title',
+            body: 'Initial body',
+            occurredAt: '2026-08-02T08:00:00.000Z'
+        };
+        await service.createNotificationEvent(baseInput);
+
+        const enriched = await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                title: 'Improved title',
+                body: 'Improved body',
+                action: { type: 'navigate', label: 'Open task', href: '/tasks/presentation-task' }
+            })
+        );
+
+        assert.equal(enriched.title, 'Improved title');
+        assert.equal(enriched.body, 'Improved body');
+        assert.deepEqual(enriched.action, {
+            type: 'navigate', label: 'Open task', href: '/tasks/presentation-task'
+        });
+    });
+
     test('returns the original event and assigns new recipients on a duplicate', async () => {
         const original = await service.createNotificationEvent({
             eventId: 'original-event',

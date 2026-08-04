@@ -2855,6 +2855,8 @@ describe('config route follow-up helpers', () => {
         assert.deepStrictEqual(statusMutations, []);
     });
 
+    const noActiveRepositoryIndexingRuns = async () => [];
+
     test('stopIndexingJob cancels and transitions active and queued legacy jobs', async () => {
         const cancellations: Array<{ repository: string; branch: string; runId?: string }> = [];
         const transitions: Array<{ branch: string; runId?: string }> = [];
@@ -2876,6 +2878,7 @@ describe('config route follow-up helpers', () => {
         ];
 
         const result = await stopIndexingJob('acme/alpha', undefined, {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({ getJobs: async () => jobs } as never),
             createLegacyIndexingRunIdForJob: (_repository, branch) => `legacy-${branch}`,
             requestIndexingCancellation: async (repository, branch, runId) => {
@@ -2921,8 +2924,48 @@ describe('config route follow-up helpers', () => {
         });
     });
 
+    test('stopIndexingJob closes durable orphans after handling queued runs', async () => {
+        const statusWrites: string[] = [];
+        const result = await stopIndexingJob('acme/alpha', undefined, {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: { repository: 'acme/alpha', baseBranch: 'main', runId: 'queued-run' },
+                    getState: async () => 'waiting',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            getActiveRepositoryIndexingRuns: async () => [{
+                fullName: 'acme/alpha', branch: 'main', runId: 'queued-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+            }, {
+                fullName: 'acme/alpha', branch: 'dev', runId: 'orphaned-run',
+                transitionAt: '2026-08-02T08:01:00.000Z',
+            }],
+            updateRepositoryStatus: async (_repository, _status, branch, options) => {
+                statusWrites.push(options.runId!);
+                return {
+                    runId: options.runId!,
+                    transitionAt: branch === 'main'
+                        ? '2026-08-02T08:02:00.000Z'
+                        : '2026-08-02T08:03:00.000Z',
+                    applied: true,
+                };
+            },
+            publishIndexingStatus: async () => undefined,
+        });
+
+        assert.deepStrictEqual(statusWrites, ['queued-run', 'orphaned-run']);
+        assert.deepStrictEqual(result.removedQueuedRuns, [{
+            branch: 'main', runId: 'queued-run', transitionAt: '2026-08-02T08:02:00.000Z',
+        }]);
+        assert.deepStrictEqual(result.cancelledActiveRuns, [{
+            branch: 'dev', runId: 'orphaned-run', transitionAt: '2026-08-02T08:03:00.000Z',
+        }]);
+    });
+
     test('stopIndexingJob keeps a durable stop successful when projection fails', async () => {
         const result = await stopIndexingJob('acme/api', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     data: { repository: 'acme/api', baseBranch: 'main', runId: 'run-1' },
@@ -2953,6 +2996,7 @@ describe('config route follow-up helpers', () => {
     test('stopIndexingJob does not publish a rejected stale-run transition', async () => {
         let publications = 0;
         const result = await stopIndexingJob('acme/api', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     data: { repository: 'acme/api', baseBranch: 'main', runId: 'stale-run' },
@@ -2981,6 +3025,7 @@ describe('config route follow-up helpers', () => {
         const queuedAt = '2026-08-02T07:59:00.000Z';
         let recordedTransitionAt: string | undefined;
         const result = await stopIndexingJob('acme/api', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     id: 'legacy-queued-job',
@@ -3016,6 +3061,7 @@ describe('config route follow-up helpers', () => {
         let skippedRunWrites = 0;
         let publications = 0;
         const result = await stopIndexingJob('acme/api', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     data: {
@@ -3056,6 +3102,7 @@ describe('config route follow-up helpers', () => {
 
     test('stopIndexingJob closes an active run before its ownership write lands', async () => {
         const result = await stopIndexingJob('acme/api', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     data: {
@@ -3093,6 +3140,7 @@ describe('config route follow-up helpers', () => {
         const skippedRuns: string[] = [];
         const publications: string[] = [];
         const result = await stopIndexingJob('acme/api', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     data: {
@@ -3137,6 +3185,7 @@ describe('config route follow-up helpers', () => {
         let stateReads = 0;
         const cancellations: string[] = [];
         const result = await stopIndexingJob('acme/api', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     data: {
@@ -3173,6 +3222,7 @@ describe('config route follow-up helpers', () => {
         const statusRepositories: string[] = [];
         const publicationRepositories: string[] = [];
         const result = await stopIndexingJob('Acme/API', 'main', {
+            getActiveRepositoryIndexingRuns: noActiveRepositoryIndexingRuns,
             getIndexingQueue: async () => ({
                 getJobs: async () => [{
                     data: {

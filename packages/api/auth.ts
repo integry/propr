@@ -2,9 +2,8 @@ import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
-import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
-import { logger } from '@propr/core';
+import { logger, withNotificationDeadline } from '@propr/core';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenWithResult } from './authGithubTokens.js';
@@ -13,6 +12,7 @@ import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
 import { getSessionAuthGeneration } from './authSessionGeneration.js';
 import { authenticatedUserResponse, resolveAuthorization } from './authorization.js';
+import { createSessionRedisClient } from './serverRuntime.js';
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
@@ -24,17 +24,25 @@ export interface AuthLifecycleHooks {
     updateNotificationCredential?: (userId: string, accessToken: string) => void;
 }
 
-function invalidateRequestEntitlements(
+const AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS = 5_000;
+
+async function invalidateRequestEntitlements(
     req: Request,
     lifecycleHooks: AuthLifecycleHooks
-): void {
+): Promise<void> {
     const userId = req.user?.id;
     if (!userId || !lifecycleHooks.invalidateNotificationEntitlements) return;
-    const authGeneration = getSessionAuthGeneration(req);
-    void lifecycleHooks.invalidateNotificationEntitlements(userId, authGeneration).catch((error) => {
+    try {
+        const authGeneration = getSessionAuthGeneration(req);
+        await withNotificationDeadline(
+            lifecycleHooks.invalidateNotificationEntitlements(userId, authGeneration),
+            AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
+            'persisting notification entitlement invalidation'
+        );
+    } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : String(error) },
             'Failed to invalidate notification entitlements during session cleanup');
-    });
+    }
 }
 
 export function getSessionCookieDomain(): string | undefined {
@@ -87,9 +95,7 @@ export function setupAuth(
     if (!demoModeAtStartup) {
         // Create Redis client for session store
         // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
-        const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
-        const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
-        const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
+        const redisClient = createSessionRedisClient();
         redisClient.on('error', (err) => {
             logger.error({ error: err instanceof Error ? err.message : String(err) },
                 'Session Redis client error');
@@ -180,13 +186,13 @@ export function setupAuth(
                 // Reject logins from users not on the access whitelist, before a
                 // session is usable. (No-op when no whitelist is configured.)
                 if (!isUserWhitelisted(req.user?.username)) {
-                    invalidateRequestEntitlements(req, lifecycleHooks);
-                    req.logout(() => {
-                        req.session.destroy(() => {
-                            clearSessionCookie(res);
-                            res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
-                        });
-                    });
+                    try {
+                        await invalidateRequestEntitlements(req, lifecycleHooks);
+                    } finally {
+                        await clearSessionForReauth(req);
+                    }
+                    clearSessionCookie(res);
+                    res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
                     return;
                 }
 
@@ -240,19 +246,13 @@ export function setupAuth(
             return;
         }
 
-        invalidateRequestEntitlements(req, lifecycleHooks);
-        req.logout((err) => {
-            if (err) {
-                logger.error({ error: err.message }, 'Passport logout failed');
-            }
-            req.session.destroy((sessionErr) => {
-                if (sessionErr) {
-                    logger.error({ error: sessionErr.message }, 'Session destruction failed after logout');
-                }
-                clearSessionCookie(res);
-                res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
-            });
-        });
+        try {
+            await invalidateRequestEntitlements(req, lifecycleHooks);
+        } finally {
+            await clearSessionForReauth(req);
+        }
+        clearSessionCookie(res);
+        res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
     });
 
     app.get('/api/auth/user', appEnsureAuthenticated, resolveAuthorization, (req: Request, res: Response) => {
@@ -295,20 +295,23 @@ async function authenticateSessionRequest(
     lifecycleHooks: AuthLifecycleHooks
 ): Promise<void> {
     if (req.user?.githubAuthInvalid) {
-        invalidateRequestEntitlements(req, lifecycleHooks);
-        await clearSessionForReauth(req);
+        try {
+            await invalidateRequestEntitlements(req, lifecycleHooks);
+        } finally {
+            await clearSessionForReauth(req);
+        }
         clearSessionCookie(res);
         respondGitHubReauthRequired(res);
         return;
     }
     if (!isUserWhitelisted(req.user?.username)) {
-        invalidateRequestEntitlements(req, lifecycleHooks);
-        req.logout(() => {
-            req.session.destroy(() => {
-                clearSessionCookie(res);
-                res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
-            });
-        });
+        try {
+            await invalidateRequestEntitlements(req, lifecycleHooks);
+        } finally {
+            await clearSessionForReauth(req);
+        }
+        clearSessionCookie(res);
+        res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
         return;
     }
     if (isGitHubTokenExpired(req)) {
@@ -336,8 +339,11 @@ async function authenticateExpiredSession(
 ): Promise<void> {
     const refreshResult = await refreshGitHubTokenWithResult(req, true);
     if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
-        invalidateRequestEntitlements(req, lifecycleHooks);
-        await clearSessionForReauth(req);
+        try {
+            await invalidateRequestEntitlements(req, lifecycleHooks);
+        } finally {
+            await clearSessionForReauth(req);
+        }
         clearSessionCookie(res);
         respondGitHubReauthRequired(res);
         return;

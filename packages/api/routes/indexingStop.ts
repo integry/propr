@@ -38,6 +38,10 @@ interface StopIndexingDeps {
 
 const TERMINAL_QUEUE_STATES = new Set(['completed', 'failed', 'unknown']);
 
+function indexingRunIdentity(repository: string, branch: string, runId: string): string {
+  return `${repository.trim().toLowerCase()}\0${configManager.normalizeSummarizationBranch(branch)}\0${runId}`;
+}
+
 async function prepareJobStop(
   job: { getState(): Promise<string>; remove(): Promise<void> },
   deps: StopIndexingDeps,
@@ -136,7 +140,7 @@ export async function stopIndexingJob(
     });
     const cancelledActiveRuns: IndexingStopTransition[] = [];
     const removedQueuedRuns: IndexingStopTransition[] = [];
-    let preparedQueueJobs = 0;
+    const handledRunIdentities = new Set<string>();
 
     for (const job of matchingJobs) {
       // Runtime Redis keys and the worker both use the repository identity stored
@@ -164,8 +168,10 @@ export async function stopIndexingJob(
         }, deps);
       });
       if (active === undefined) continue;
-      preparedQueueJobs++;
       if (!transition) throw new Error('Indexing stop did not persist its terminal transition');
+      if (runId) {
+        handledRunIdentities.add(indexingRunIdentity(jobRepository, jobBranch, runId));
+      }
       if (!transition.applied) continue;
       await publishIndexingRunBestEffort({
         publisher: deps.publishIndexingStatus,
@@ -184,41 +190,46 @@ export async function stopIndexingJob(
     }
 
     let message: string | undefined;
-    if (cancelledActiveRuns.length + removedQueuedRuns.length === 0
-        && preparedQueueJobs === 0) {
-      const normalizedBranch = branch === undefined
-        ? undefined
-        : configManager.normalizeSummarizationBranch(branch);
-      const durableRuns = await deps.getActiveRepositoryIndexingRuns(
-        repository,
-        normalizedBranch
+    const queueStopCount = cancelledActiveRuns.length + removedQueuedRuns.length;
+    const normalizedBranch = branch === undefined
+      ? undefined
+      : configManager.normalizeSummarizationBranch(branch);
+    const durableRuns = await deps.getActiveRepositoryIndexingRuns(
+      repository,
+      normalizedBranch
+    );
+    let orphanedStopCount = 0;
+    for (const run of durableRuns) {
+      if (handledRunIdentities.has(indexingRunIdentity(
+        run.fullName,
+        run.branch,
+        run.runId
+      ))) continue;
+      const transition = await deps.updateRepositoryStatus(
+        run.fullName,
+        'idle',
+        run.branch,
+        { runId: run.runId }
       );
-      for (const run of durableRuns) {
-        const transition = await deps.updateRepositoryStatus(
-          run.fullName,
-          'idle',
-          run.branch,
-          { runId: run.runId }
-        );
-        if (!transition.applied) continue;
-        await publishIndexingRunBestEffort({
-          publisher: deps.publishIndexingStatus,
-          repository: run.fullName,
-          branch: run.branch,
-          phase: 'idle',
-          transition,
-        });
-        cancelledActiveRuns.push({
-          branch: run.branch,
-          runId: transition.runId,
-          transitionAt: transition.transitionAt,
-        });
-      }
-      if (cancelledActiveRuns.length > 0) {
-        message = `Stopped ${cancelledActiveRuns.length} orphaned durable indexing run(s)`;
-      } else if (matchingJobs.length === 0) {
-        message = 'No queued or durable active indexing run matched the request';
-      }
+      if (!transition.applied) continue;
+      await publishIndexingRunBestEffort({
+        publisher: deps.publishIndexingStatus,
+        repository: run.fullName,
+        branch: run.branch,
+        phase: 'idle',
+        transition,
+      });
+      cancelledActiveRuns.push({
+        branch: run.branch,
+        runId: transition.runId,
+        transitionAt: transition.transitionAt,
+      });
+      orphanedStopCount++;
+    }
+    if (queueStopCount === 0 && orphanedStopCount > 0) {
+      message = `Stopped ${orphanedStopCount} orphaned durable indexing run(s)`;
+    } else if (matchingJobs.length === 0 && orphanedStopCount === 0) {
+      message = 'No queued or durable active indexing run matched the request';
     }
 
     return {

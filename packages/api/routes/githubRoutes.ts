@@ -9,7 +9,7 @@ import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
 import { getSessionAuthGeneration } from '../authSessionGeneration.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
-import { logger } from '@propr/core';
+import { logger, withNotificationDeadline } from '@propr/core';
 import {
   invalidateNotificationRepositoryEntitlements,
   listAccessibleRepositories,
@@ -29,6 +29,8 @@ interface GitHubRoutesDeps {
   refreshNotificationEntitlements?: typeof refreshNotificationRepositoryEntitlements;
   listNotificationRepositories?: typeof listAccessibleRepositories;
 }
+
+const AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS = 5_000;
 
 /**
  * Check if an error is a GitHub authentication error (401)
@@ -80,26 +82,31 @@ export async function handleAuthError(
   // Token refresh failed, clear the session to force re-login
   logger.warn('GitHub token refresh failed; clearing session for re-authentication');
   const userId = req.user?.id;
-  const authGeneration = userId ? getSessionAuthGeneration(req) : undefined;
-  if (userId && authGeneration) {
-    void invalidateEntitlements?.(userId, authGeneration).catch((error) => {
+  try {
+    if (userId && invalidateEntitlements) {
+      await withNotificationDeadline(
+        invalidateEntitlements(userId, getSessionAuthGeneration(req)),
+        AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
+        'persisting notification entitlement invalidation after GitHub auth error'
+      );
+    }
+  } catch (error) {
       logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
         'Could not persist repository notification access invalidation');
-    });
-  }
-
-  await new Promise<void>((resolve) => {
-    req.logout((err) => {
-      if (err) logger.error({ error: err.message }, 'Passport logout failed after GitHub auth error');
-      req.session.destroy((destroyErr) => {
-        if (destroyErr) {
-          logger.error({ error: destroyErr.message },
-            'Session destruction failed after GitHub auth error');
-        }
-        resolve();
+  } finally {
+    await new Promise<void>((resolve) => {
+      req.logout((err) => {
+        if (err) logger.error({ error: err.message }, 'Passport logout failed after GitHub auth error');
+        req.session.destroy((destroyErr) => {
+          if (destroyErr) {
+            logger.error({ error: destroyErr.message },
+              'Session destruction failed after GitHub auth error');
+          }
+          resolve();
+        });
       });
     });
-  });
+  }
 
   res.status(401).json({
     error: 'GitHub authentication expired',

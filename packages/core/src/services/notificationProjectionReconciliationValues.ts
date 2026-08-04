@@ -2,6 +2,7 @@ import { normalizeISO8601Timestamp } from '@propr/shared';
 import logger from '../utils/logger.js';
 
 export const DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_DATE_TIMESTAMP_MS = 8_640_000_000_000_000;
 
 function positiveIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];
@@ -13,10 +14,15 @@ function positiveIntegerEnv(name: string, fallback: number): number {
 }
 
 export function getNotificationIndexingTransitionRetentionMs(): number {
-    return positiveIntegerEnv(
-        'NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS',
+    const name = 'NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS';
+    const retentionMs = positiveIntegerEnv(
+        name,
         DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS
     );
+    if (Date.now() - retentionMs >= -MAX_DATE_TIMESTAMP_MS) return retentionMs;
+    logger.warn({ name, value: process.env[name] },
+        'Ignoring notification retention outside the supported Date range');
+    return DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS;
 }
 
 export function parseReconciliationMetadata(value: unknown): Record<string, unknown> {

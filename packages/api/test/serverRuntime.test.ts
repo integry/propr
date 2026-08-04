@@ -2,9 +2,48 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import type { RedisClientType } from 'redis';
 import { closeConnection } from '../../core/src/db/connection.js';
-import { createNotificationProjectionLease } from '../serverRuntime.js';
+import {
+  createNotificationProjectionLease,
+  getSessionRedisClientOptions,
+  getSessionRedisRuntimeConfig,
+} from '../serverRuntime.js';
 
 after(async () => closeConnection());
+
+test('session Redis inherits credentials, TLS, and database selection', () => {
+  const names = [
+    'REDIS_URL', 'SESSION_REDIS_URL', 'SESSION_REDIS_HOST', 'SESSION_REDIS_PORT',
+    'REDIS_TLS_REJECT_UNAUTHORIZED'
+  ] as const;
+  const previous = new Map(names.map(name => [name, process.env[name]]));
+  try {
+    process.env.REDIS_URL = 'rediss://session-user:secret@redis.internal:6380/4';
+    process.env.REDIS_TLS_REJECT_UNAUTHORIZED = 'false';
+    delete process.env.SESSION_REDIS_URL;
+    process.env.SESSION_REDIS_HOST = 'session-redis.internal';
+    process.env.SESSION_REDIS_PORT = '6381';
+
+    const url = new URL(getSessionRedisRuntimeConfig().url);
+    assert.equal(url.protocol, 'rediss:');
+    assert.equal(url.username, 'session-user');
+    assert.equal(url.password, 'secret');
+    assert.equal(url.hostname, 'session-redis.internal');
+    assert.equal(url.port, '6381');
+    assert.equal(url.pathname, '/4');
+    const clientOptions = getSessionRedisClientOptions(4321);
+    assert.ok(clientOptions);
+    assert.deepEqual(clientOptions.socket, {
+      connectTimeout: 4321,
+      tls: true,
+      rejectUnauthorized: false,
+    });
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
 
 test('notification projection lease validates its Redis TTL', () => {
   const redisClient = { eval: async () => 1 } as unknown as RedisClientType;

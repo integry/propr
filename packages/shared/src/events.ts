@@ -111,6 +111,139 @@ export interface IndexingUpdatePayload {
   timestamp: string;
 }
 
+export type ProjectionEventPayload =
+  | TaskUpdatePayload
+  | DraftUpdatePayload
+  | IndexingUpdatePayload;
+
+const STEP_STATUSES = new Set<StepStatus>(['pending', 'in_progress', 'completed', 'failed']);
+const DRAFT_STATUSES = new Set<DraftStatus>([
+  'draft', 'generating', 'refining', 'review', 'approved', 'executed',
+  'executing', 'pr_created', 'merged', 'failed'
+]);
+const INDEXING_PHASES = new Set<IndexingPhase>([
+  'indexing', 'files', 'directories', 'completed', 'failed', 'idle'
+]);
+
+function eventRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError('event payload must be an object');
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiredEventString(
+  payload: Record<string, unknown>,
+  field: string
+): string {
+  const value = payload[field];
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new TypeError(`event payload ${field} must be a non-blank string`);
+  }
+  return value;
+}
+
+function optionalEventString(payload: Record<string, unknown>, field: string): void {
+  if (payload[field] !== undefined) requiredEventString(payload, field);
+}
+
+function optionalEventNumber(
+  payload: Record<string, unknown>,
+  field: string,
+  integer = false
+): void {
+  const value = payload[field];
+  if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value)
+      || (integer && !Number.isSafeInteger(value)))) {
+    throw new TypeError(`event payload ${field} must be a finite${integer ? ' integer' : ''}`);
+  }
+}
+
+function optionalEventRecord(payload: Record<string, unknown>, field: string): void {
+  const value = payload[field];
+  if (value !== undefined && (typeof value !== 'object' || value === null
+      || Array.isArray(value))) {
+    throw new TypeError(`event payload ${field} must be an object`);
+  }
+}
+
+function requiredEventTimestamp(payload: Record<string, unknown>, field: string): void {
+  const value = requiredEventString(payload, field);
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new TypeError(`event payload ${field} must be a valid timestamp`);
+  }
+}
+
+function validateTaskUpdatePayload(payload: Record<string, unknown>): TaskUpdatePayload {
+  requiredEventString(payload, 'taskId');
+  requiredEventString(payload, 'state');
+  requiredEventTimestamp(payload, 'timestamp');
+  optionalEventString(payload, 'previousState');
+  optionalEventString(payload, 'repository');
+  optionalEventNumber(payload, 'issueNumber', true);
+  optionalEventRecord(payload, 'metadata');
+  return payload as unknown as TaskUpdatePayload;
+}
+
+function validateDraftUpdatePayload(payload: Record<string, unknown>): DraftUpdatePayload {
+  requiredEventString(payload, 'draftId');
+  requiredEventString(payload, 'step');
+  requiredEventTimestamp(payload, 'timestamp');
+  if (!STEP_STATUSES.has(payload.status as StepStatus)) {
+    throw new TypeError('event payload status is not a supported step status');
+  }
+  optionalEventString(payload, 'runId');
+  optionalEventRecord(payload, 'data');
+  if (payload.draftStatus !== undefined
+      && !DRAFT_STATUSES.has(payload.draftStatus as DraftStatus)) {
+    throw new TypeError('event payload draftStatus is not supported');
+  }
+  if (payload.generationTrace !== undefined) {
+    const trace = eventRecord(payload.generationTrace);
+    if (!Array.isArray(trace.steps)) {
+      throw new TypeError('event payload generationTrace.steps must be an array');
+    }
+    for (const stepValue of trace.steps) {
+      const step = eventRecord(stepValue);
+      requiredEventString(step, 'name');
+      if (!STEP_STATUSES.has(step.status as StepStatus)) {
+        throw new TypeError('event payload generation trace status is not supported');
+      }
+      optionalEventRecord(step, 'data');
+    }
+    optionalEventString(trace, 'runId');
+    optionalEventString(trace, 'error');
+    optionalEventString(trace, 'failedAt');
+  }
+  return payload as unknown as DraftUpdatePayload;
+}
+
+function validateIndexingUpdatePayload(payload: Record<string, unknown>): IndexingUpdatePayload {
+  requiredEventString(payload, 'repository');
+  requiredEventTimestamp(payload, 'timestamp');
+  if (!INDEXING_PHASES.has(payload.phase as IndexingPhase)) {
+    throw new TypeError('event payload phase is not a supported indexing phase');
+  }
+  optionalEventString(payload, 'branch');
+  optionalEventString(payload, 'transitionAt');
+  optionalEventString(payload, 'runId');
+  for (const field of [
+    'progress', 'totalFiles', 'processedFiles', 'totalDirectories', 'processedDirectories'
+  ]) optionalEventNumber(payload, field);
+  return payload as unknown as IndexingUpdatePayload;
+}
+
+/** Runtime schema for durable projection payloads crossing the JSON boundary. */
+export function parseProjectionEventPayload(value: unknown): ProjectionEventPayload {
+  const payload = eventRecord(value);
+  switch (payload.eventType) {
+    case TASK_UPDATE: return validateTaskUpdatePayload(payload);
+    case DRAFT_UPDATE: return validateDraftUpdatePayload(payload);
+    case INDEXING_UPDATE: return validateIndexingUpdatePayload(payload);
+    default: throw new TypeError('event payload eventType is not a projection event');
+  }
+}
+
 /** Event for a single parsed conversation event from Claude log */
 export interface ConversationEvent {
   type: 'thought' | 'tool_use' | 'tool_result';

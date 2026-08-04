@@ -20,6 +20,10 @@ import { NotificationProjectionRecipients } from '../src/services/notificationPr
 import { NotificationProjectionCheckpointStore } from '../src/services/notificationProjectionCheckpointStore.js';
 import { reconcileNotificationProjectionRetries }
     from '../src/services/notificationProjectionRetryReconciler.js';
+import {
+    DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS,
+    getNotificationIndexingTransitionRetentionMs
+} from '../src/services/notificationProjectionReconciliationValues.js';
 import { NotificationService } from '../src/services/notificationService.js';
 import {
     DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS,
@@ -1609,8 +1613,12 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 
     test('backs off a throwing retry and continues with later independent rows', async () => {
         const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
-        const first = { eventType: 'task:update', taskId: 'broken-retry', state: 'failed' } as const;
-        const second = { eventType: 'task:update', taskId: 'ready-retry', state: 'failed' } as const;
+        const first = {
+            eventType: 'task:update', taskId: 'broken-retry', state: 'failed', timestamp: EVENT_TIME
+        } as const;
+        const second = {
+            eventType: 'task:update', taskId: 'ready-retry', state: 'failed', timestamp: EVENT_TIME
+        } as const;
         await checkpoints.enqueueRetry('terminal-task-history', '1', first);
         await checkpoints.enqueueRetry('terminal-task-history', '2', second);
 
@@ -1631,6 +1639,26 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             .orderBy('transition_key').select('transition_key', 'attempt_count'), [{
             transition_key: '1', attempt_count: 1
         }]);
+    });
+
+    test('discards structurally invalid durable retries instead of deferring forever', async () => {
+        const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
+        await checkpoints.enqueueRetry('terminal-task-history', 'malformed', {
+            eventType: 'task:update', taskId: 'missing-state-and-timestamp'
+        });
+        let projections = 0;
+
+        assert.equal(await reconcileNotificationProjectionRetries({
+            checkpoints,
+            batchSize: 10,
+            shouldContinue: () => true,
+            projectTaskUpdate: async () => { projections++; return 'completed'; },
+            projectIndexingUpdate: async () => { projections++; return 'completed'; },
+            projectDraftUpdate: async () => { projections++; return 'completed'; }
+        }), 0);
+        assert.equal(projections, 0);
+        assert.equal(await database('notification_projection_retries')
+            .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
     });
 
     test('prunes terminal indexing activity only after its durable checkpoint advances', async () => {
@@ -1958,6 +1986,23 @@ describe('system notification projection', { concurrency: false }, () => {
 });
 
 describe('notification projection schedulers', { concurrency: false }, () => {
+    test('rejects indexing retention outside the supported Date range', () => {
+        const previous = process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS;
+        try {
+            process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = String(Number.MAX_SAFE_INTEGER);
+            assert.equal(
+                getNotificationIndexingTransitionRetentionMs(),
+                DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS
+            );
+        } finally {
+            if (previous === undefined) {
+                delete process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS;
+            } else {
+                process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = previous;
+            }
+        }
+    });
+
     test('backs off immediate projection retries after transient failures', async () => {
         let attempts = 0;
         const startedAt = Date.now();

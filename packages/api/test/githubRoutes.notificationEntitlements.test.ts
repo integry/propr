@@ -8,6 +8,7 @@ import { up as hardenNotificationFollowup } from '../../core/src/db/migrations/2
 import { up as fenceNotificationEntitlements } from '../../core/src/db/migrations/20260803030000_fence_notification_entitlement_refreshes.js';
 import { up as fenceEntitlementInvalidation } from '../../core/src/db/migrations/20260804000000_fence_notification_entitlement_invalidation.js';
 import { up as fenceSessionGenerations } from '../../core/src/db/migrations/20260804020000_fence_notification_session_generations.js';
+import { up as retainSessionGenerations } from '../../core/src/db/migrations/20260804060000_retain_notification_entitlement_generations.js';
 import { replaceNotificationRepositoryEntitlements } from '@propr/core';
 import {
   createGitHubRoutes,
@@ -34,6 +35,7 @@ beforeEach(async () => {
   await fenceNotificationEntitlements(database);
   await fenceEntitlementInvalidation(database);
   await fenceSessionGenerations(database);
+  await retainSessionGenerations(database);
 });
 
 afterEach(async () => {
@@ -476,6 +478,11 @@ test('an older session cannot invalidate a newer login generation', async () => 
 
     await middleware.invalidate('generation-race-user', 'older-generation');
 
+    await assert.rejects(
+      middleware.activate('generation-race-user', 'older-generation'),
+      /already been invalidated/
+    );
+
     assert.equal(await database('notification_repository_entitlements')
       .where({ user_id: 'generation-race-user' }).count({ count: '*' }).first()
       .then(row => Number(row?.count)), 1);
@@ -488,6 +495,10 @@ test('an older session cannot invalidate a newer login generation', async () => 
       auth_generation: 'newer-generation',
       invalidated_at: null,
     });
+    assert.equal(await database('notification_repository_entitlement_generations')
+      .where({ user_id: 'generation-race-user', auth_generation: 'older-generation' })
+      .whereNotNull('invalidated_at')
+      .count({ count: '*' }).first().then(row => Number(row?.count)), 1);
   } finally {
     await middleware.close();
   }

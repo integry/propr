@@ -1,4 +1,4 @@
-import { execSync, spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
@@ -29,7 +29,7 @@ interface JsonLineMessage {
 }
 
 interface MessageCaptureContext {
-    state: { sessionIdDetected: boolean };
+    state: { sessionIdDetected: boolean; jsonLineBuffer?: string };
     messageTimestamps: Map<string, string>;
     onSessionId?: (sessionId: string, conversationId?: string) => void;
 }
@@ -105,7 +105,9 @@ export function captureJsonLineMessages(
     timestamp: string,
     context: MessageCaptureContext
 ): void {
-    for (const line of chunk.split('\n')) {
+    const lines = `${context.state.jsonLineBuffer ?? ''}${chunk}`.split('\n');
+    context.state.jsonLineBuffer = lines.pop() ?? '';
+    for (const line of lines) {
         if (!line.trim()) continue;
         try {
             const message: JsonLineMessage = JSON.parse(line);
@@ -219,8 +221,9 @@ export function detectContainerId(
     setTimeout(() => {
         if (state.containerIdDetected) return;
         try {
-            const output = execSync(
-                `/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`,
+            const output = execFileSync(
+                '/usr/bin/docker',
+                ['ps', '--filter', `volume=${worktreePath}`, '--format', '{{.ID}}:{{.Names}}', '--latest'],
                 { encoding: 'utf8', timeout: 5000 }
             ).trim();
             if (!output) return;

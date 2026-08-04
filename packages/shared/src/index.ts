@@ -44,6 +44,8 @@ export {
   type DraftStatus,
   type StepStatus,
   type DraftUpdateGenerationTrace,
+  type ProjectionEventPayload,
+  parseProjectionEventPayload,
 } from './events.js';
 
 // Export usage configuration and metrics types

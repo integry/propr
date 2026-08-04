@@ -48,6 +48,41 @@ export function getRedisRuntimeConfig(): RedisRuntimeConfig {
   };
 }
 
+/** Session storage inherits the complete runtime Redis URL unless explicitly overridden. */
+export function getSessionRedisRuntimeConfig(): RedisRuntimeConfig {
+  const runtimeConfig = getRedisRuntimeConfig();
+  if (process.env.SESSION_REDIS_URL) {
+    return { ...runtimeConfig, url: process.env.SESSION_REDIS_URL };
+  }
+  const url = new URL(runtimeConfig.url);
+  if (process.env.SESSION_REDIS_HOST) url.hostname = process.env.SESSION_REDIS_HOST;
+  if (process.env.SESSION_REDIS_PORT) url.port = process.env.SESSION_REDIS_PORT;
+  return { ...runtimeConfig, url: url.toString() };
+}
+
+export function getSessionRedisClientOptions(
+  connectTimeoutMs?: number
+): Parameters<typeof createClient>[0] {
+  const runtimeConfig = getSessionRedisRuntimeConfig();
+  const tls = new URL(runtimeConfig.url).protocol === 'rediss:';
+  const socket = connectTimeoutMs === undefined && !tls ? undefined : {
+    ...(connectTimeoutMs === undefined ? {} : { connectTimeout: connectTimeoutMs }),
+    ...(tls ? {
+      tls: true,
+      rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false',
+    } : {}),
+  };
+  return {
+    url: runtimeConfig.url,
+    ...(socket === undefined ? {} : { socket }),
+  };
+}
+
+/** Creates the Redis client shared by Express sessions and restart recovery. */
+export function createSessionRedisClient(connectTimeoutMs?: number) {
+  return createClient(getSessionRedisClientOptions(connectTimeoutMs));
+}
+
 export async function closeResources(tasks: ShutdownTask[]): Promise<void> {
   const results = await Promise.allSettled(tasks.map(async ({ name, close }) =>
     withNotificationDeadline(close(), SHUTDOWN_TASK_TIMEOUT_MS, `closing ${name}`)

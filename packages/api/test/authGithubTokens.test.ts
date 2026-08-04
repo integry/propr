@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- auth lifecycle ordering shares stateful request fixtures */
 import assert from 'node:assert/strict';
 import { after, afterEach, test } from 'node:test';
 import { closeConnection } from '@propr/core';
@@ -344,6 +345,31 @@ test('failed entitlement invalidation does not prevent session cleanup', async (
   assert.equal(req.destroyCalls, 1);
 });
 
+test('session cleanup waits for durable entitlement invalidation to settle', async () => {
+  configureDemoMode(false);
+  let releaseInvalidation!: () => void;
+  let markInvalidationStarted!: () => void;
+  const invalidationStarted = new Promise<void>(resolve => { markInvalidationStarted = resolve; });
+  const invalidationGate = new Promise<void>(resolve => { releaseInvalidation = resolve; });
+  const middleware = createEnsureAuthenticated({
+    invalidateNotificationEntitlements: async () => {
+      markInvalidationStarted();
+      await invalidationGate;
+    },
+  });
+  const req = createRequest(createUser({ githubAuthInvalid: true }));
+  const { response } = createJsonResponse();
+
+  const authentication = middleware(req, response, (() => undefined) as NextFunction);
+  await invalidationStarted;
+  assert.equal(req.logoutCalls, 0);
+  assert.equal(req.destroyCalls, 0);
+  releaseInvalidation();
+  await authentication;
+  assert.equal(req.logoutCalls, 1);
+  assert.equal(req.destroyCalls, 1);
+});
+
 test('GitHub route auth error emits TOKEN_REFRESHED after a successful refresh', async () => {
   const req = createRequest(createUser());
   const { response, status, body } = createJsonResponse();
@@ -408,6 +434,34 @@ test('GitHub route clears the session when durable entitlement invalidation fail
     code: 'TOKEN_EXPIRED',
     message: 'Your GitHub session has expired. Please log in again.',
   });
+  assert.equal(req.logoutCalls, 1);
+  assert.equal(req.destroyCalls, 1);
+});
+
+test('GitHub auth-error cleanup waits for durable entitlement invalidation', async () => {
+  const req = createRequest(createUser());
+  const { response } = createJsonResponse();
+  let releaseInvalidation!: () => void;
+  let markInvalidationStarted!: () => void;
+  const invalidationStarted = new Promise<void>(resolve => { markInvalidationStarted = resolve; });
+  const invalidationGate = new Promise<void>(resolve => { releaseInvalidation = resolve; });
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    error: 'bad_refresh_token',
+    error_description: 'The refresh token is invalid.',
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const cleanup = handleAuthError(req, response, async () => {
+    markInvalidationStarted();
+    await invalidationGate;
+  });
+  await invalidationStarted;
+  assert.equal(req.logoutCalls, 0);
+  assert.equal(req.destroyCalls, 0);
+  releaseInvalidation();
+  await cleanup;
   assert.equal(req.logoutCalls, 1);
   assert.equal(req.destroyCalls, 1);
 });

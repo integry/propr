@@ -3,6 +3,7 @@ import { logger } from '@propr/core';
 
 export const ENTITLEMENT_REFRESH_LEASE_TABLE =
   'notification_repository_entitlement_refresh_leases';
+const ENTITLEMENT_GENERATION_TABLE = 'notification_repository_entitlement_generations';
 const REGISTRATION_TOKEN = 'notification-scheduler-registration';
 const INVALIDATION_TOKEN = 'notification-logout-tombstone';
 const tombstoneSupport = new WeakMap<object, Promise<boolean>>();
@@ -37,7 +38,8 @@ async function supportsEntitlementInvalidationTombstones(database: Knex): Promis
       && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'fencing_token')
       && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'retry_after')
       && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'invalidated_at')
-      && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'auth_generation'))();
+      && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'auth_generation')
+      && await database.schema.hasTable(ENTITLEMENT_GENERATION_TABLE))();
     tombstoneSupport.set(database, supported);
     void supported.then(
       (value) => { if (!value && tombstoneSupport.get(database) === supported) {
@@ -65,6 +67,19 @@ export async function activateNotificationRepositoryEntitlements(
   }
   const expiresAt = new Date(0).toISOString();
   await database.transaction(async (transaction) => {
+    const activatedAt = new Date().toISOString();
+    await transaction(ENTITLEMENT_GENERATION_TABLE).insert({
+      user_id: userId,
+      auth_generation: generation,
+      activated_at: activatedAt,
+      invalidated_at: null,
+    }).onConflict(['user_id', 'auth_generation']).ignore();
+    const generationState = await transaction(ENTITLEMENT_GENERATION_TABLE)
+      .where({ user_id: userId, auth_generation: generation })
+      .first('invalidated_at') as { invalidated_at?: unknown } | undefined;
+    if (!generationState || generationState.invalidated_at !== null) {
+      throw new Error('Authenticated session generation has already been invalidated');
+    }
     await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE).insert({
       user_id: userId,
       lease_token: REGISTRATION_TOKEN,
@@ -107,6 +122,15 @@ export async function invalidateNotificationRepositoryEntitlements(
       && await supportsEntitlementInvalidationTombstones(database);
     return await database.transaction(async (transaction) => {
       if (hasTombstones) {
+        const invalidatedAt = new Date().toISOString();
+        await transaction(ENTITLEMENT_GENERATION_TABLE).insert({
+          user_id: userId,
+          auth_generation: generation,
+          activated_at: invalidatedAt,
+          invalidated_at: invalidatedAt,
+        }).onConflict(['user_id', 'auth_generation']).merge({
+          invalidated_at: invalidatedAt,
+        });
         const current = await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE)
           .where({ user_id: userId })
           .forUpdate()

@@ -3,6 +3,7 @@ import type {
     IndexingUpdatePayload,
     TaskUpdatePayload
 } from '@propr/shared';
+import { parseProjectionEventPayload } from '@propr/shared';
 import logger from '../utils/logger.js';
 import {
     NotificationProjectionCheckpointStore,
@@ -23,16 +24,14 @@ interface RetryReconcilerOptions {
 
 function parseRetryPayload(retry: NotificationProjectionRetry): ProjectionRetryPayload | undefined {
     try {
-        const payload = JSON.parse(retry.payloadJson) as { eventType?: unknown };
+        const payload = parseProjectionEventPayload(JSON.parse(retry.payloadJson));
         const expectedEventType = retry.source === 'terminal-task-history'
             || retry.source === 'task-notification-enrichments'
             ? 'task:update'
             : retry.source === 'review-drafts'
                 ? 'draft:update'
                 : 'indexing:update';
-        return payload?.eventType === expectedEventType
-            ? payload as ProjectionRetryPayload
-            : undefined;
+        return payload.eventType === expectedEventType ? payload : undefined;
     } catch {
         return undefined;
     }

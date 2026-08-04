@@ -272,19 +272,15 @@ function buildEnrichedNotificationEvent<K extends NotificationKind>(
     const mergedMetadata = input.metadata === undefined && stored.metadata === undefined
         ? undefined
         : { ...(stored.metadata ?? {}), ...(input.metadata ?? {}) };
-    const hasRicherPresentation = JSON.stringify(mergedTarget) !== JSON.stringify(stored.target)
-        || JSON.stringify(mergedMetadata) !== JSON.stringify(stored.metadata);
-    const enrichedAction = hasRicherPresentation
-        ? input.action ?? stored.action
-        : stored.action;
+    const enrichedAction = input.action ?? stored.action;
     return parseNotificationEvent({
         id: stored.id,
         deduplicationKey: input.deduplicationKey,
         kind: input.kind,
         severity: input.severity ?? 'info',
         target: mergedTarget,
-        title: hasRicherPresentation ? input.title : stored.title,
-        body: hasRicherPresentation ? input.body : stored.body,
+        title: input.title,
+        body: input.body,
         ...(enrichedAction === undefined ? {} : { action: enrichedAction }),
         ...(mergedMetadata === undefined ? {} : { metadata: mergedMetadata }),
         occurredAt: input.occurredAt === undefined

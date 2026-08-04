@@ -257,6 +257,55 @@ test('the first terminal task transition fences competing and late callbacks', a
   }
 });
 
+test('terminal fencing archives post-terminal history and cascade evidence', async () => {
+  const database = await createDatabase();
+  try {
+    await database('tasks').insert(taskData('legacy-terminal-corruption'));
+    const [pendingId] = await database('task_history').insert({
+      task_id: 'legacy-terminal-corruption', state: 'pending',
+      timestamp: '2026-08-04T01:00:00.000Z', transition_key: 'pending',
+    });
+    const [completedId] = await database('task_history').insert({
+      task_id: 'legacy-terminal-corruption', state: 'completed',
+      timestamp: '2026-08-04T02:00:00.000Z', transition_key: 'completed',
+    });
+    const [lateProgressId] = await database('task_history').insert({
+      task_id: 'legacy-terminal-corruption', state: 'processing',
+      timestamp: '2026-08-04T03:00:00.000Z', transition_key: 'late-progress',
+    });
+    const [duplicateTerminalId] = await database('task_history').insert({
+      task_id: 'legacy-terminal-corruption', state: 'failed',
+      timestamp: '2026-08-04T04:00:00.000Z', transition_key: 'failed',
+    });
+    const [changeId] = await database('task_notification_enrichments').insert({
+      task_id: 'legacy-terminal-corruption', state: 'failed',
+      transition_history_id: duplicateTerminalId,
+      transition_at: '2026-08-04T04:00:00.000Z',
+      changed_at: '2026-08-04T04:01:00.000Z', metadata: '{}', change_key: 'failed-evidence',
+    });
+
+    await fenceTerminalTaskTransitions(database);
+
+    assert.deepEqual(await database('task_history')
+      .where({ task_id: 'legacy-terminal-corruption' })
+      .orderBy('history_id').pluck('history_id'), [pendingId, completedId]);
+    assert.equal(await database('task_notification_enrichments')
+      .where({ change_id: changeId }).first(), undefined);
+    const auditRows = await database('task_terminal_transition_cleanup_audit')
+      .where({ task_id: 'legacy-terminal-corruption' })
+      .orderBy(['record_type', 'record_id']);
+    assert.deepEqual(auditRows.map(row => row.record_type), [
+      'task_history', 'task_history', 'task_notification_enrichment'
+    ]);
+    assert.deepEqual(auditRows.slice(0, 2).map(row => JSON.parse(row.payload_json).history_id), [
+      lateProgressId, duplicateTerminalId
+    ]);
+    assert.equal(JSON.parse(auditRows[2].payload_json).change_id, changeId);
+  } finally {
+    await database.destroy();
+  }
+});
+
 test('same-state fallback transitions receive a distinct operation identity', () => {
   const metadata = { reason: 'Observed the same state' };
   const first = buildTaskTransitionKey('same-state-task', 'task-created:same-state-task',

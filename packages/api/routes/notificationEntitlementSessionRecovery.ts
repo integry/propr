@@ -1,7 +1,7 @@
 import type { Knex } from 'knex';
-import { createClient } from 'redis';
 import { isNotificationTimerDelay, logger, withNotificationDeadline } from '@propr/core';
 import { createSessionAuthGeneration } from '../authSessionGeneration.js';
+import { createSessionRedisClient } from '../serverRuntime.js';
 
 const LEASE_TABLE = 'notification_repository_entitlement_refresh_leases';
 const SESSION_PREFIX = 'propr:session:';
@@ -107,12 +107,7 @@ export async function loadRecoverableEntitlementCredentials(
       || !isNotificationTimerDelay(totalTimeoutMs)) {
     throw new TypeError('notification entitlement recovery deadlines must be schedulable');
   }
-  const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
-  const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
-  const client = createClient({
-    url: `redis://${sessionRedisHost}:${sessionRedisPort}`,
-    socket: { connectTimeout: operationTimeoutMs },
-  });
+  const client = createSessionRedisClient(operationTimeoutMs);
   client.on('error', (error) => logger.warn({
     error: error instanceof Error ? error.message : String(error),
   }, 'Session Redis error during notification entitlement recovery'));
