@@ -2,7 +2,8 @@
  * Context-related HTTP handlers.
  */
 
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../../../requestTypes.js';
 import { Knex } from 'knex';
 import crypto from 'crypto';
 import {
@@ -232,7 +233,7 @@ interface DownloadContextDeps {
 }
 
 export function createDownloadContextHandler(deps: DownloadContextDeps) {
-  return async function downloadContext(req: Request, res: Response): Promise<void> {
+  return async function downloadContext(req: FlatRequest, res: Response): Promise<void> {
     const { draftId } = req.params;
     if (!draftId) {
       res.status(400).json({ error: 'draftId is required' });

@@ -2,7 +2,8 @@
  * Attachment-related HTTP handlers.
  */
 
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest as Request } from '../../../requestTypes.js';
 import { AttachmentService } from '@propr/core';
 import type { MulterFile } from '@propr/core';
 import type { OwnershipResult } from '../types.js';

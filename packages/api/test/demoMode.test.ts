@@ -15,6 +15,7 @@ import { createRepoTodoRoutes } from '../routes/repoTodoRoutes.js';
 import { createQueueRoutes } from '../routes/queueRoutes.js';
 import { createStatusRoutes } from '../routes/statusRoutes.js';
 import { normalizeRepoConfig } from '../routes/configRepoValidation.js';
+import type { FlatRequest } from '../requestTypes.js';
 
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 const originalFrontendUrl = process.env.FRONTEND_URL;
@@ -313,7 +314,7 @@ test('demo repository metadata resolves persisted repositories without configure
   const routes = createGitHubRoutes({ redisClient: {} as never, taskQueue: {} as never, db });
   const { response, body, status } = createJsonResponse();
 
-  await routes.getBranches({ params: { owner: 'integry', repo: 'indexed' }, user: getDemoUser() } as unknown as Request, response);
+  await routes.getBranches({ params: { owner: 'integry', repo: 'indexed' }, user: getDemoUser() } as unknown as FlatRequest, response);
 
   assert.equal(status(), 200);
   assert.deepEqual(body(), { branches: ['release'], defaultBranch: 'release' });
@@ -366,7 +367,7 @@ test('planner demo reads use the curated database without owner or repository al
   ].sort());
 
   const otherOwnerResponse = createJsonResponse();
-  await routes.getDraft({ params: { id: otherOwnerDraftId }, user: getDemoUser() } as unknown as Request, otherOwnerResponse.response);
+  await routes.getDraft({ params: { id: otherOwnerDraftId }, user: getDemoUser() } as unknown as FlatRequest, otherOwnerResponse.response);
 
   assert.equal(otherOwnerResponse.status(), 200);
   assert.equal((otherOwnerResponse.body() as { draft_id: string }).draft_id, otherOwnerDraftId);
@@ -394,7 +395,7 @@ test('repo todo demo reads use the curated database without owner filters', asyn
 
   await routes.getCategories({ query: { repository: 'integry/propr' }, user: getDemoUser() } as unknown as Request, categoryResponse.response);
   await routes.getTodos({ query: { repository: 'integry/propr' }, user: getDemoUser() } as unknown as Request, todoResponse.response);
-  await routes.getTodo({ params: { todoId: otherTodoId }, user: getDemoUser() } as unknown as Request, singleTodoResponse.response);
+  await routes.getTodo({ params: { todoId: otherTodoId }, user: getDemoUser() } as unknown as FlatRequest, singleTodoResponse.response);
 
   assert.deepEqual(
     (categoryResponse.body() as { categories: Array<{ categoryId: string }> }).categories.map(category => category.categoryId).sort(),
