@@ -109,7 +109,7 @@ describe('useRepositoryManagement', () => {
     mockGetUserRepoPreferences.mockResolvedValue({});
     mockStopRepositoryIndexing.mockResolvedValue({ success: true });
     mockTriggerRepositoryIndexing.mockResolvedValue({ success: true });
-    mockUpdateRepoConfig.mockResolvedValue({});
+    mockUpdateRepoConfig.mockResolvedValue({ success: true, repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] });
   });
 
   afterEach(() => {

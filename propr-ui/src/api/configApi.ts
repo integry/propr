@@ -24,10 +24,40 @@ async function postJson<T>(path: string, body: Record<string, unknown>): Promise
   return response.json();
 }
 
+export interface RepoConfigUpdateResponse extends RepoConfigResponse {
+  success: boolean;
+}
+
+export interface GithubReposResponse {
+  repos: string[];
+}
+
+export interface FollowupKeywordsResponse {
+  followup_keywords: string[];
+}
+
+export interface FollowupIgnoreKeywordsResponse {
+  followup_ignore_keywords: string[];
+}
+
+export interface PrLabelResponse {
+  pr_label: string;
+}
+
+export interface AiPrimaryTagResponse {
+  ai_primary_tag: string;
+}
+
+export interface PrimaryProcessingLabelsResponse {
+  primary_processing_labels: string[];
+}
+
+type ConfigWriteResponse<T> = T & { success: boolean };
+
 export const getRepoConfig = (): Promise<RepoConfigResponse> => getJson('/api/config/repos');
-export const updateRepoConfig = (repos: MonitoredRepo[]): Promise<unknown> =>
+export const updateRepoConfig = (repos: MonitoredRepo[]): Promise<RepoConfigUpdateResponse> =>
   postJson('/api/config/repos', { repos_to_monitor: repos });
-export const getAvailableGithubRepos = (): Promise<unknown> => getJson('/api/github/repos');
+export const getAvailableGithubRepos = (): Promise<GithubReposResponse> => getJson('/api/github/repos');
 export const getRepoBranches = (owner: string, repo: string): Promise<RepoBranchesResponse> =>
   getJson(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
 export const getSettings = (): Promise<SystemSettings> => getJson('/api/config/settings');
@@ -40,20 +70,20 @@ export interface ConfigUpdateResponse {
 
 export const updateSettings = (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> =>
   postJson('/api/config/settings', { settings });
-export const getFollowupKeywords = (): Promise<unknown> => getJson('/api/config/followup-keywords');
-export const updateFollowupKeywords = (keywords: string[]): Promise<unknown> =>
+export const getFollowupKeywords = (): Promise<FollowupKeywordsResponse> => getJson('/api/config/followup-keywords');
+export const updateFollowupKeywords = (keywords: string[]): Promise<ConfigWriteResponse<FollowupKeywordsResponse>> =>
   postJson('/api/config/followup-keywords', { followup_keywords: keywords });
-export const getFollowupIgnoreKeywords = (): Promise<unknown> => getJson('/api/config/followup-ignore-keywords');
-export const updateFollowupIgnoreKeywords = (keywords: string[]): Promise<unknown> =>
+export const getFollowupIgnoreKeywords = (): Promise<FollowupIgnoreKeywordsResponse> => getJson('/api/config/followup-ignore-keywords');
+export const updateFollowupIgnoreKeywords = (keywords: string[]): Promise<ConfigWriteResponse<FollowupIgnoreKeywordsResponse>> =>
   postJson('/api/config/followup-ignore-keywords', { followup_ignore_keywords: keywords });
-export const getPrLabel = (): Promise<unknown> => getJson('/api/config/pr-label');
-export const updatePrLabel = (prLabel: string): Promise<unknown> =>
+export const getPrLabel = (): Promise<PrLabelResponse> => getJson('/api/config/pr-label');
+export const updatePrLabel = (prLabel: string): Promise<ConfigWriteResponse<PrLabelResponse>> =>
   postJson('/api/config/pr-label', { pr_label: prLabel });
-export const getAiPrimaryTag = (): Promise<unknown> => getJson('/api/config/ai-primary-tag');
-export const updateAiPrimaryTag = (aiPrimaryTag: string): Promise<unknown> =>
+export const getAiPrimaryTag = (): Promise<AiPrimaryTagResponse> => getJson('/api/config/ai-primary-tag');
+export const updateAiPrimaryTag = (aiPrimaryTag: string): Promise<ConfigWriteResponse<AiPrimaryTagResponse>> =>
   postJson('/api/config/ai-primary-tag', { ai_primary_tag: aiPrimaryTag });
-export const getPrimaryProcessingLabels = (): Promise<unknown> => getJson('/api/config/primary-processing-labels');
-export const updatePrimaryProcessingLabels = (primaryLabels: string[]): Promise<unknown> =>
+export const getPrimaryProcessingLabels = (): Promise<PrimaryProcessingLabelsResponse> => getJson('/api/config/primary-processing-labels');
+export const updatePrimaryProcessingLabels = (primaryLabels: string[]): Promise<ConfigWriteResponse<PrimaryProcessingLabelsResponse>> =>
   postJson('/api/config/primary-processing-labels', { primary_processing_labels: primaryLabels });
 
 export interface SaveAgentsResponse {

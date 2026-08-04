@@ -254,7 +254,10 @@ describe('planner background abort reconciliation', () => {
       quit: async () => { quitCalls += 1; },
       disconnect: () => undefined,
     });
-    assert.equal(await checkAbortSignal('draft-1', 'planner-key', failingFactory), false);
+    await assert.rejects(
+      checkAbortSignal('draft-1', 'planner-key', failingFactory),
+      /Abort state unavailable for task draft-1/
+    );
     await clearWorkerAbortSignal('draft-1', failingFactory);
     assert.equal(quitCalls, 2);
 

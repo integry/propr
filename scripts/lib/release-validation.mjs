@@ -7,14 +7,12 @@ function isCanonicalSemVer(version) {
   return canonical === version;
 }
 
-const RELEASE_IMAGE_NAMES = ["app", "ui", "docs", "agent"];
-
-function getImageBasename(image) {
-  const lastSlash = image.lastIndexOf("/");
-  const lastColon = image.lastIndexOf(":");
-  if (lastColon <= lastSlash) return "";
-  return image.slice(lastSlash + 1, lastColon);
-}
+const RELEASE_IMAGE_REPOSITORIES = {
+  app: "propr/app",
+  ui: "propr/ui",
+  docs: "propr/docs",
+  agent: "propr/agent",
+};
 
 export function validateRelease({
   tag,
@@ -66,12 +64,12 @@ export function validateRelease({
     errors.push(`Launcher manifest version ${launcherManifest.version} does not match propr ${version}`);
   }
 
-  for (const name of RELEASE_IMAGE_NAMES) {
+  for (const [name, repository] of Object.entries(RELEASE_IMAGE_REPOSITORIES)) {
     const image = launcherManifest.images?.[name];
     if (typeof image !== "string" || !image.endsWith(`:${version}`)) {
       errors.push(`Launcher ${name} image must be pinned to :${version}`);
-    } else if (getImageBasename(image) !== name) {
-      errors.push(`Launcher ${name} image must use the ${name} image repository`);
+    } else if (image !== `${repository}:${version}`) {
+      errors.push(`Launcher ${name} image must use the ${repository} image repository`);
     }
   }
 

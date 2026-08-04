@@ -89,6 +89,39 @@ describe('planner abort handlers', () => {
     assert.equal(current.generation_trace, 'completed-run');
   });
 
+  test('retries the abort transition when the same generation run advances its trace', async () => {
+    const advancedTrace = JSON.stringify({
+      steps: [{ name: 'context', status: 'in_progress' }],
+      runId: 'generation-run-1',
+    });
+    await database('task_drafts').insert({
+      draft_id: 'generation-progress-race',
+      user_id: 'user-1',
+      status: 'generating',
+      generation_trace: JSON.stringify({ steps: [], runId: 'generation-run-1' }),
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    let abortSignalCleared = false;
+    const handler = createAbortGenerationHandler(database, {
+      setAbortSignal: async () => {
+        await database('task_drafts').where({ draft_id: 'generation-progress-race' }).update({
+          generation_trace: advancedTrace,
+          updated_at: '2026-08-03 20:00:01.000',
+        });
+      },
+      clearAbortSignal: async () => { abortSignalCleared = true; },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'generation-progress-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'generation-progress-race' }).first();
+    assert.equal(response.statusCode, 200);
+    assert.equal(abortSignalCleared, false);
+    assert.equal(current.status, 'draft');
+    assert.equal(JSON.parse(current.generation_trace).error, 'Generation aborted by user');
+  });
+
   test('does not cancel a same-timestamp refinement restart after reading the old run snapshot', async () => {
     const restartedMetadata = JSON.stringify({ status: 'in_progress', runId: 'refinement-run-2' });
     await database('task_drafts').insert({
@@ -121,6 +154,40 @@ describe('planner abort handlers', () => {
     assert.equal(abortSignalCleared, false);
     assert.equal(current.status, 'refining');
     assert.equal(current.refinement_result, restartedMetadata);
+  });
+
+  test('retries the abort transition when the same refinement run metadata advances', async () => {
+    const advancedMetadata = JSON.stringify({
+      status: 'in_progress',
+      runId: 'refinement-run-1',
+      phase: 'executing',
+    });
+    await database('task_drafts').insert({
+      draft_id: 'refinement-progress-race',
+      user_id: 'user-1',
+      status: 'refining',
+      refinement_result: JSON.stringify({ status: 'in_progress', runId: 'refinement-run-1' }),
+      updated_at: '2026-08-03 20:00:00.000',
+    });
+    let abortSignalCleared = false;
+    const handler = createAbortRefinementHandler(database, {
+      setAbortSignal: async () => {
+        await database('task_drafts').where({ draft_id: 'refinement-progress-race' }).update({
+          refinement_result: advancedMetadata,
+          updated_at: '2026-08-03 20:00:01.000',
+        });
+      },
+      clearAbortSignal: async () => { abortSignalCleared = true; },
+    });
+    const response = createResponse();
+
+    await handler({ body: { draftId: 'refinement-progress-race' }, user: { id: 'user-1' } } as never, response as never);
+
+    const current = await database('task_drafts').where({ draft_id: 'refinement-progress-race' }).first();
+    assert.equal(response.statusCode, 200);
+    assert.equal(abortSignalCleared, false);
+    assert.equal(current.status, 'review');
+    assert.equal(JSON.parse(current.refinement_result).action, 'cancelled');
   });
 
   test('surfaces failed reconciliation for a legacy draft-wide abort signal', async t => {
@@ -158,7 +225,7 @@ describe('planner abort handlers', () => {
       draft_id: 'generation-update-error',
       user_id: 'user-1',
       status: 'generating',
-      generation_trace: 'active-run',
+      generation_trace: JSON.stringify({ steps: [], runId: 'generation-run-error' }),
       updated_at: '2026-08-03 20:00:00.000',
     });
     await database.raw(`
@@ -173,10 +240,10 @@ describe('planner abort handlers', () => {
       await database.raw('DROP TRIGGER IF EXISTS fail_planner_abort');
     });
 
-    let abortSignalCleared = false;
+    let clearedRunId: string | undefined;
     const handler = createAbortGenerationHandler(database, {
       setAbortSignal: async () => undefined,
-      clearAbortSignal: async () => { abortSignalCleared = true; },
+      clearAbortSignal: async (_draftId, runId) => { clearedRunId = runId; },
     });
     const response = createResponse();
 
@@ -184,9 +251,9 @@ describe('planner abort handlers', () => {
 
     const current = await database('task_drafts').where({ draft_id: 'generation-update-error' }).first();
     assert.equal(response.statusCode, 500);
-    assert.equal(abortSignalCleared, true);
+    assert.equal(clearedRunId, 'generation-run-error');
     assert.equal(current.status, 'generating');
-    assert.equal(current.generation_trace, 'active-run');
+    assert.equal(current.generation_trace, JSON.stringify({ steps: [], runId: 'generation-run-error' }));
   });
 
   test('closes Redis connections when setting or clearing an abort signal fails', async () => {

@@ -105,16 +105,44 @@ async function transitionDraftOrReconcileSignal(
   signals: PlannerAbortHandlerDependencies,
   runId: string | undefined,
 ): Promise<number> {
-  try {
-    const updatedRows = await conditionallyAbortDraft(options);
-    // Versioned keys can safely expire after a lost database race: no newer run
-    // observes them. Legacy draft-wide keys must be cleared synchronously and a
-    // cleanup failure must reach the client instead of masquerading as a safe 409.
-    if (updatedRows !== 1 && !runId) await signals.clearAbortSignal(String(options.draft.draft_id));
-    return updatedRows;
-  } catch (error) {
-    if (!runId) await signals.clearAbortSignal(String(options.draft.draft_id));
-    throw error;
+  const draftId = String(options.draft.draft_id);
+  let draft = options.draft;
+
+  while (true) {
+    let updatedRows: number;
+    try {
+      updatedRows = await conditionallyAbortDraft({ ...options, draft });
+    } catch (error) {
+      await signals.clearAbortSignal(draftId, runId);
+      throw error;
+    }
+    if (updatedRows === 1) return updatedRows;
+
+    // A draft-wide marker could abort a replacement run, so it cannot survive a
+    // stale snapshot. Run-scoped markers are safe to retain after completion or
+    // replacement because no other run observes them.
+    if (!runId) {
+      await signals.clearAbortSignal(draftId);
+      return 0;
+    }
+
+    let currentDraft: Record<string, unknown> | undefined;
+    try {
+      currentDraft = await options.db('task_drafts')
+        .where({ draft_id: draftId, user_id: options.userId })
+        .first();
+    } catch (error) {
+      await signals.clearAbortSignal(draftId, runId);
+      throw error;
+    }
+    if (
+      !currentDraft
+      || currentDraft.status !== options.activeStatus
+      || parseActiveRunId(currentDraft, options.activeStatus) !== runId
+    ) {
+      return 0;
+    }
+    draft = currentDraft;
   }
 }
 

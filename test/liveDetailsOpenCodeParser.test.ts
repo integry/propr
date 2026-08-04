@@ -209,14 +209,14 @@ describe('OpenCode live details parsing', () => {
         ]);
     });
 
-    test('preserves equal text from distinct OpenCode parts', () => {
+    test('preserves equal text from genuinely distinct OpenCode parts without IDs', () => {
         const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
             type: 'message',
             message: {
                 role: 'assistant',
                 parts: [
-                    { id: 'part-1', type: 'text', text: 'repeat();' },
-                    { id: 'part-2', type: 'text', text: 'repeat();' },
+                    { type: 'text', text: 'repeat();' },
+                    { type: 'text', text: 'repeat();' },
                 ],
             },
             timestamp: '2026-05-05T00:00:00.000Z',
@@ -238,6 +238,19 @@ describe('OpenCode live details parsing', () => {
 
         assert.deepStrictEqual(result?.events, [
             { type: 'thought', content: 'once', timestamp: '2026-05-05T00:00:00.000Z' },
+        ]);
+    });
+
+    test('deduplicates structurally equal no-ID part and parts envelope payloads', () => {
+        const result = parseOpenCodeOutputToConversationResult(JSON.stringify({
+            type: 'text',
+            part: { type: 'text', text: 'once without an ID', metadata: { source: 'assistant' } },
+            parts: [{ metadata: { source: 'assistant' }, text: 'once without an ID', type: 'text' }],
+            timestamp: '2026-05-05T00:00:00.000Z',
+        }));
+
+        assert.deepStrictEqual(result?.events, [
+            { type: 'thought', content: 'once without an ID', timestamp: '2026-05-05T00:00:00.000Z' },
         ]);
     });
 

@@ -45,6 +45,7 @@ jobs:
         id: docs
         env:
           PROPR_WORKSPACE: ${{ github.workspace }}
+          PROPR_WORKSPACE_PREPARED: 'true'
         run: ./.propr/setup.sh
 
       - name: Start isolated Redis

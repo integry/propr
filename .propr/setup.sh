@@ -7,20 +7,22 @@ PROPR_CACHE_DIR="${PROPR_CACHE_DIR:-/tmp/propr-setup-cache}"
 
 cd "$WORKSPACE"
 
-export npm_config_cache="$PROPR_CACHE_DIR/npm"
-mkdir -p "$npm_config_cache"
-npm ci
-npm run test:prepare
-
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js is required to validate the docs site." >&2
+  echo "Node.js 22 or newer is required to prepare and validate this workspace." >&2
   exit 1
 fi
 
 NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
-if [ "$NODE_MAJOR" -lt 20 ]; then
-  echo "Docs validation requires Node.js 20+ because the Docusaurus site depends on packages with a Node 20 runtime floor. Current version: $(node -v)" >&2
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  echo "Workspace validation requires Node.js 22 or newer. Current version: $(node -v)" >&2
   exit 1
+fi
+
+export npm_config_cache="$PROPR_CACHE_DIR/npm"
+mkdir -p "$npm_config_cache"
+if [ "${PROPR_WORKSPACE_PREPARED:-false}" != "true" ]; then
+  npm ci
+  npm run test:prepare
 fi
 
 cd "$WORKSPACE/docs"

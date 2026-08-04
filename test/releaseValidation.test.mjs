@@ -139,6 +139,13 @@ describe("release validation", () => {
     assert.ok(validateRelease(input).some((error) => error.includes("app image repository")));
   });
 
+  it("rejects a role-matching image name from an untrusted registry or namespace", () => {
+    const input = validInput();
+    input.launcherManifest.images.app = "attacker.example/app:1.2.3";
+
+    assert.ok(validateRelease(input).some((error) => error.includes("propr/app image repository")));
+  });
+
   for (const malformed of [
     "1.2.3-alpha..1",
     "1.2.3-alpha.",

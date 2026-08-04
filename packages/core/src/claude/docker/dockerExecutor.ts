@@ -104,8 +104,8 @@ export async function checkAbortSignal(
             redis.get(plannerAbortKey)
         ]);
         return workerAbort !== null || plannerAbort !== null;
-    } catch {
-        return false;
+    } catch (error) {
+        throw new Error(`Abort state unavailable for task ${taskId}`, { cause: error });
     } finally {
         await closeAbortRedis(redis);
     }
@@ -220,26 +220,31 @@ function resolveDockerPath(command: string): string {
 
 function setupAbortChecker({ taskId, plannerAbortKey, abortedRef, child, containerIdRef, namedContainer }: AbortCheckerOptions): ReturnType<typeof setInterval> {
     let pollInFlight = false;
+    const terminateExecution = async (message: string): Promise<void> => {
+        if (abortedRef.value || child.killed) return;
+        abortedRef.value = true;
+        const containerToStop = containerIdRef.value || namedContainer;
+        logger.info({ taskId, containerId: containerToStop }, message);
+        if (containerToStop) {
+            const stopResult = await stopDockerContainer(containerToStop, 10);
+            if (stopResult.success) logger.info({ taskId, containerId: containerToStop }, 'Docker container stopped successfully on abort');
+            else logger.warn({ taskId, containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container on abort');
+        }
+        child.kill('SIGTERM');
+        setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+        await clearWorkerAbortSignal(taskId);
+    };
     return setInterval(() => {
         if (pollInFlight) return;
         pollInFlight = true;
         void (async () => {
             const shouldAbort = await checkAbortSignal(taskId, plannerAbortKey);
-            if (shouldAbort && !abortedRef.value && !child.killed) {
-                abortedRef.value = true;
-                const containerToStop = containerIdRef.value || namedContainer;
-                logger.info({ taskId, containerId: containerToStop }, 'Abort signal detected, terminating execution');
-                if (containerToStop) {
-                    const stopResult = await stopDockerContainer(containerToStop, 10);
-                    if (stopResult.success) logger.info({ taskId, containerId: containerToStop }, 'Docker container stopped successfully on abort');
-                    else logger.warn({ taskId, containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container on abort');
-                }
-                child.kill('SIGTERM');
-                setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
-                await clearWorkerAbortSignal(taskId);
+            if (shouldAbort) await terminateExecution('Abort signal detected, terminating execution');
+        })().catch(async error => {
+            logger.error({ taskId, plannerAbortKey, error: (error as Error).message }, 'Abort state unavailable; cancellation cannot be verified');
+            if (plannerAbortKey.includes(':run:')) {
+                await terminateExecution('Planner abort state unavailable, terminating execution fail closed');
             }
-        })().catch(error => {
-            logger.warn({ taskId, error: (error as Error).message }, 'Abort signal poll failed');
         }).finally(() => { pollInFlight = false; });
     }, 2000);
 }

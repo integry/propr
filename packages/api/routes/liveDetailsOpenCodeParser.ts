@@ -1,4 +1,5 @@
 import { normalizeOpenCodeTimestamp, parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
+import { isDeepStrictEqual } from 'node:util';
 import type { ConversationResult, TokenUsage } from './liveDetailsTypes.js';
 
 function buildOpenCodeTokenUsage(parsed: ReturnType<typeof parseOpenCodeJsonl>): TokenUsage | null {
@@ -97,7 +98,7 @@ function extractOpenCodeStructuredText(event: OpenCodeEvent, eventType: string |
 
   const topLevelPartsText = includeTopLevel
     ? joinOpenCodePartsText(
-        [...(event.part ? [event.part] : []), ...(event.parts ?? [])],
+        getOpenCodeEnvelopeTextParts(event),
         !isOpenCodeStreamingTextEvent(event)
       )
     : '';
@@ -151,6 +152,18 @@ interface OpenCodeTextPart {
 interface OpenCodeTextCandidate {
   text: string;
   finalized: boolean;
+}
+
+function getOpenCodeEnvelopeTextParts(event: OpenCodeEvent): OpenCodeTextPart[] {
+  const parts = event.parts ?? [];
+  if (!event.part) return parts;
+
+  // JSON parsing breaks object identity when an envelope exposes the same
+  // no-ID payload through both `part` and `parts`. Treat only that cross-field
+  // structural overlap as a duplicate; equal entries within `parts` remain.
+  const noIdEnvelopeOverlap = !event.part.id
+    && parts.some(part => !part.id && isDeepStrictEqual(part, event.part));
+  return noIdEnvelopeOverlap ? parts : [event.part, ...parts];
 }
 
 function buildOpenCodeTextCandidate(part: OpenCodeTextPart): OpenCodeTextCandidate | null {
