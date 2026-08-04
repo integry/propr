@@ -215,6 +215,75 @@ test('ordinary traffic does not reschedule or rerun a fresh entitlement refresh'
   }
 });
 
+test('credential rotation updates a scheduled refresh after request traffic stops', async () => {
+  await database('notification_repository_entitlement_snapshots').insert({
+    user_id: 'rotated-token-user',
+    verified_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const tokens: string[] = [];
+  let markInitial!: () => void;
+  let markScheduled!: () => void;
+  const initial = new Promise<void>(resolve => { markInitial = resolve; });
+  const scheduled = new Promise<void>(resolve => { markScheduled = resolve; });
+  const timers = createManualTimers();
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    timerScheduler: timers.scheduler,
+    refresh: async ({ accessToken }) => {
+      tokens.push(accessToken);
+      if (tokens.length === 1) markInitial();
+      if (tokens.length === 2) markScheduled();
+      return true;
+    },
+  });
+  try {
+    middleware({
+      user: { id: 'rotated-token-user', accessToken: 'old-token' },
+      path: '/config/repos',
+    } as never, {} as never, () => undefined);
+    await waitForSignal(initial, 'the initial refresh with the old token');
+    middleware.updateCredential('rotated-token-user', 'new-token');
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(timers.runNext(), true);
+    await waitForSignal(scheduled, 'the scheduled refresh with the rotated token');
+    assert.deepEqual(tokens, ['old-token', 'new-token']);
+  } finally {
+    middleware.close();
+  }
+});
+
+test('restart recovery rebuilds durable session schedules with bounded concurrency', async () => {
+  let active = 0;
+  let peakActive = 0;
+  const refreshedUsers: string[] = [];
+  const credentials = Array.from({ length: 6 }, (_, index) => ({
+    userId: `recovered-${index}`,
+    accessToken: `recovered-token-${index}`,
+    sessionExpiresAt: Date.now() + 60_000 - index,
+  }));
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    maxScheduledRefreshes: 6,
+    timerScheduler: createManualTimers().scheduler,
+    loadRecoveryCredentials: async () => credentials,
+    refresh: async ({ userId }) => {
+      active++;
+      peakActive = Math.max(peakActive, active);
+      await new Promise(resolve => setImmediate(resolve));
+      refreshedUsers.push(userId);
+      active--;
+      return true;
+    },
+  });
+  try {
+    await middleware.recover();
+    assert.equal(peakActive, 4);
+    assert.deepEqual(refreshedUsers.sort(), credentials.map(value => value.userId).sort());
+  } finally {
+    middleware.close();
+  }
+});
+
 test('closing entitlement middleware aborts retained OAuth work', async () => {
   let signal: AbortSignal | undefined;
   let markStarted!: () => void;

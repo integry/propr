@@ -187,6 +187,8 @@ export {
   getActiveRepositoryIndexingRuns,
   recordSkippedIndexingRun
 } from './services/relevance/summaryMinerQueries.js';
+export { getRepositoryIndexingTerminalTransition }
+  from './services/relevance/indexingTerminalQueries.js';
 export {
   INDEXING_WORKER_HEARTBEAT_KEY,
   INDEXING_WORKER_HEARTBEAT_INTERVAL_MS,
@@ -199,6 +201,8 @@ export type {
   RepositoryStatusTransition,
   UpdateRepositoryStatusOptions
 } from './services/relevance/summaryMinerQueries.js';
+export type { RepositoryIndexingTerminalTransition }
+  from './services/relevance/indexingTerminalQueries.js';
 export { scanProcessableGitFiles, shouldProcessFilePath, isProcessableFile } from './services/relevance/summaryFileFilter.js';
 export type { GitFileInfo } from './services/relevance/summaryFileFilter.js';
 export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';

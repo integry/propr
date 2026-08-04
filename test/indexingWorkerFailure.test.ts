@@ -142,6 +142,11 @@ describe('indexing worker failure finalization', () => {
                 transitionAt: '2026-08-03T00:00:00.000Z',
                 applied: false,
             }),
+            getRepositoryIndexingTerminalTransition: async () => ({
+                runId: 'run-1',
+                status: 'idle',
+                transitionAt: '2026-08-03T00:00:00.000Z',
+            }),
             publishIndexingStatus: async () => { publications++; },
         });
         assert.equal(publications, 0);
@@ -168,6 +173,7 @@ describe('indexing worker failure finalization', () => {
                     applied: false,
                 };
             },
+            getRepositoryIndexingTerminalTransition: async () => undefined,
         }), false);
         assert.equal(statusWrites, 1);
         assert.equal(failedRunId, 'stable-stale-job-run');
@@ -188,6 +194,40 @@ describe('indexing worker failure finalization', () => {
             },
         });
         assert.deepEqual(publications, ['failed']);
+    });
+
+    test('reconciles a failed job after its terminal write committed before a crash', async () => {
+        let publications = 0;
+        let clears = 0;
+        let removals = 0;
+        const job = {
+            ...failedJob(3),
+            failedReason: 'worker crashed after SQLite commit',
+            remove: async () => { removals++; },
+        };
+
+        const reconciled = await reconcileFailedIndexingJobs({
+            getJobs: async () => [job],
+        }, {
+            log: silentLogger,
+            updateRepositoryStatus: async () => ({
+                runId: 'run-1',
+                transitionAt: '2026-08-03T00:00:00.000Z',
+                applied: false,
+            }),
+            getRepositoryIndexingTerminalTransition: async () => ({
+                runId: 'run-1',
+                status: 'failed',
+                transitionAt: '2026-08-03T00:00:00.000Z',
+            }),
+            publishIndexingStatus: async () => { publications++; },
+            clearIndexingRuntimeStateBestEffort: async () => { clears++; },
+        });
+
+        assert.equal(reconciled, 1);
+        assert.equal(publications, 1);
+        assert.equal(clears, 1);
+        assert.equal(removals, 1);
     });
 
     test('retains runtime evidence until a failed-job reconciliation persists the terminal', async () => {

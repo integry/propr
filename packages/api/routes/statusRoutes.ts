@@ -12,6 +12,7 @@ import {
   AgentRegistry,
   getIndexingQueue as loadIndexingQueue,
   INDEXING_WORKER_HEARTBEAT_KEY,
+  logger,
   loadAgents as loadAgentConfigs,
   loadSummarizationRuntimeState
 } from '@propr/core';
@@ -187,7 +188,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     try {
       res.json(await getStatusSnapshot());
     } catch (error) {
-      console.error('Error in /api/status:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'Status route failed');
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -406,7 +408,8 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
     }
     return warnings;
   } catch (error) {
-    console.error('Error loading summarization warnings:', error);
+    logger.error({ error: error instanceof Error ? error.message : String(error) },
+      'Could not load summarization warnings for status');
     return [];
   }
 }

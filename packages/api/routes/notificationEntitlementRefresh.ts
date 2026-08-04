@@ -14,6 +14,8 @@ import {
   type EntitlementRefreshTimerScheduler,
   type NotificationEntitlementRefreshMiddleware,
 } from './notificationEntitlementRefreshScheduler.js';
+import type { RecoveredEntitlementCredential }
+  from './notificationEntitlementSessionRecovery.js';
 
 export type { NotificationEntitlementRefreshMiddleware };
 export { invalidateNotificationRepositoryEntitlements }
@@ -366,6 +368,7 @@ interface NotificationEntitlementRefreshMiddlewareOptions {
   maxScheduledRefreshes?: number;
   timerScheduler?: EntitlementRefreshTimerScheduler;
   ensureRegistration?: (database: Knex, userId: string) => Promise<boolean>;
+  loadRecoveryCredentials?: (database: Knex) => Promise<RecoveredEntitlementCredential[]>;
 }
 
 /** Schedules authorization refresh without adding GitHub latency to API traffic. */
@@ -378,5 +381,6 @@ export function createNotificationEntitlementRefreshMiddleware(
     maxScheduledRefreshes: options.maxScheduledRefreshes,
     timerScheduler: options.timerScheduler,
     ensureRegistration: options.ensureRegistration,
+    loadRecoveryCredentials: options.loadRecoveryCredentials,
   });
 }

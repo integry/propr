@@ -27,13 +27,12 @@ export async function getAgentStatuses(
   registry: StatusAgentRegistry,
   healthTimeoutMs: number
 ): Promise<AgentStatus[]> {
-  let configuredAgents: AgentConfig[];
+  let configuredAgents: AgentConfig[] | undefined;
   try {
     configuredAgents = await loadAgents();
   } catch (error) {
     logger.error({ error: error instanceof Error ? error.message : String(error) },
       'Error loading agent status configuration');
-    return [];
   }
 
   let registeredAgents: Agent[] = [];
@@ -47,6 +46,14 @@ export async function getAgentStatuses(
   } catch (error) {
     logger.error({ error: error instanceof Error ? error.message : String(error) },
       'Error reading agent registry for status');
+  }
+
+  if (configuredAgents === undefined) {
+    return registryAvailable
+      ? Promise.all(registeredAgents
+        .filter(agent => agent.config.enabled)
+        .map(agent => buildRegisteredAgentStatus(agent, healthTimeoutMs)))
+      : [];
   }
 
   if (!registryAvailable) {

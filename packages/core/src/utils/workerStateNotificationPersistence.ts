@@ -31,16 +31,6 @@ export function buildPublishedTaskMetadata(
   };
 }
 
-export function insertedSequence(value: unknown): number | undefined {
-  const first = Array.isArray(value) ? value[0] : undefined;
-  const candidate = typeof first === 'object' && first !== null
-    ? (first as Record<string, unknown>).history_id
-    : first;
-  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate > 0
-    ? candidate
-    : undefined;
-}
-
 function parseMetadataRecord(value: unknown): Record<string, unknown> {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -64,6 +54,7 @@ async function appendTaskNotificationEnrichment(
     transitionAt: string;
     transitionSequence?: number;
     changedAt: string;
+    changeKey: string;
     metadata: Record<string, unknown>;
   }
 ): Promise<void> {
@@ -74,8 +65,9 @@ async function appendTaskNotificationEnrichment(
     transition_history_id: input.transitionSequence ?? null,
     transition_at: input.transitionAt,
     changed_at: input.changedAt,
+    change_key: input.changeKey,
     metadata: JSON.stringify(input.metadata)
-  });
+  }).onConflict(['task_id', 'change_key']).ignore();
 }
 
 export async function persistIssueRefNotificationEnrichment(input: {
@@ -84,8 +76,9 @@ export async function persistIssueRefNotificationEnrichment(input: {
   state: TaskStateData;
   issueRefPatch: Partial<IssueRef>;
   transitionAt: string;
+  changeKey: string;
 }): Promise<Record<string, unknown>> {
-  const { database, taskId, state, issueRefPatch, transitionAt } = input;
+  const { database, taskId, state, issueRefPatch, transitionAt, changeKey } = input;
   const durablePrNumber = typeof state.issueRef.pullRequestNumber === 'number'
     ? state.issueRef.pullRequestNumber
     : typeof state.issueRef.prNumber === 'number' ? state.issueRef.prNumber : undefined;
@@ -121,6 +114,7 @@ export async function persistIssueRefNotificationEnrichment(input: {
       transitionAt,
       transitionSequence: historyRow?.history_id,
       changedAt: state.updatedAt,
+      changeKey,
       metadata: publicationMetadata
     });
     return publicationMetadata;
@@ -135,8 +129,11 @@ export async function persistHistoryMetadataNotificationEnrichment(input: {
   historyIndex: number;
   metadata: Record<string, unknown>;
   transitionAt: string;
+  changeKey: string;
 }): Promise<Record<string, unknown>> {
-  const { database, taskId, state, historyState, historyIndex, metadata, transitionAt } = input;
+  const {
+    database, taskId, state, historyState, historyIndex, metadata, transitionAt, changeKey,
+  } = input;
   return database.transaction(async (transaction) => {
     const historyRow = await transaction('task_history').select('history_id', 'metadata')
       .where({ task_id: taskId, state: historyState, timestamp: transitionAt })
@@ -176,6 +173,7 @@ export async function persistHistoryMetadataNotificationEnrichment(input: {
       transitionAt,
       transitionSequence: historyRow?.history_id,
       changedAt: state.updatedAt,
+      changeKey,
       metadata: publicationMetadata
     });
     return publicationMetadata;

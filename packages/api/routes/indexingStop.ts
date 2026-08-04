@@ -2,6 +2,7 @@ import * as configManager from '@propr/core';
 import {
   getIndexingQueue,
   getActiveRepositoryIndexingRuns,
+  createLegacyIndexingRunIdForJob,
   logger,
   publishIndexingStatus,
   recordSkippedIndexingRun,
@@ -28,6 +29,7 @@ export interface IndexingStopTransition {
 interface StopIndexingDeps {
   getIndexingQueue: typeof getIndexingQueue;
   getActiveRepositoryIndexingRuns: typeof getActiveRepositoryIndexingRuns;
+  createLegacyIndexingRunIdForJob: typeof createLegacyIndexingRunIdForJob;
   requestIndexingCancellation: typeof requestIndexingCancellation;
   updateRepositoryStatus: typeof updateRepositoryStatus;
   recordSkippedIndexingRun: typeof recordSkippedIndexingRun;
@@ -77,12 +79,15 @@ async function prepareJobStop(
 }
 
 async function persistJobStop(
-  job: { data: IndexingJobData },
-  deps: StopIndexingDeps,
-  repository: string,
-  branch: string
+  context: {
+    job: { data: IndexingJobData };
+    runId: string | undefined;
+    repository: string;
+    branch: string;
+  },
+  deps: StopIndexingDeps
 ): Promise<RepositoryStatusTransition> {
-  const runId = job.data.runId;
+  const { job, runId, repository, branch } = context;
   let transition = await deps.updateRepositoryStatus(repository, 'idle', branch, {
     ...(runId ? { runId } : {}),
   });
@@ -105,6 +110,7 @@ export async function stopIndexingJob(
   const deps: StopIndexingDeps = {
     getIndexingQueue,
     getActiveRepositoryIndexingRuns,
+    createLegacyIndexingRunIdForJob,
     requestIndexingCancellation,
     updateRepositoryStatus,
     recordSkippedIndexingRun,
@@ -128,14 +134,25 @@ export async function stopIndexingJob(
       // on the job. The request spelling is only used for case-insensitive lookup.
       const jobRepository = job.data.repository;
       const jobBranch = configManager.normalizeSummarizationBranch(job.data.baseBranch);
-      const runId = job.data.runId;
+      const runId = job.data.runId ?? (job.id === undefined
+        ? undefined
+        : deps.createLegacyIndexingRunIdForJob(
+          jobRepository,
+          jobBranch,
+          String(job.id)
+        ));
       let transition: RepositoryStatusTransition | undefined;
       const active = await prepareJobStop(job, deps, {
         repository: jobRepository,
         branch: jobBranch,
         runId,
       }, async () => {
-        transition = await persistJobStop(job, deps, jobRepository, jobBranch);
+        transition = await persistJobStop({
+          job,
+          runId,
+          repository: jobRepository,
+          branch: jobBranch,
+        }, deps);
       });
       if (active === undefined) continue;
       preparedQueueJobs++;

@@ -2218,7 +2218,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(queue.enqueue({
             eventType: 'task:update', taskId: 'cancel', state: 'canceled', timestamp: EVENT_TIME
         }), null);
-        assert.ok(queue.enqueue({
+        assert.equal(queue.enqueue({
             eventType: 'task:live:update',
             taskId: 'actively-progressing',
             events: [],
@@ -2226,11 +2226,73 @@ describe('notification projection schedulers', { concurrency: false }, () => {
             currentTask: 'still working',
             tokenUsage: null,
             timestamp: '2026-08-02T08:01:00.000Z'
-        }));
+        }), null);
         assert.equal(queue.queueSize, 2);
 
         release();
         assert.equal((await queue.close()).drained, true);
+    });
+
+    test('discards queued nonterminal work superseded by the same entity terminal', async () => {
+        let release!: () => void;
+        let markStarted!: () => void;
+        const blockerStarted = new Promise<void>(resolve => { markStarted = resolve; });
+        const projected: string[] = [];
+        const queue = new NotificationProjectionQueue({
+            projector: async (payload) => {
+                if (payload.eventType !== 'task:update') return;
+                projected.push(`${payload.taskId}:${payload.state}`);
+                if (payload.taskId === 'ordering-blocker') {
+                    markStarted();
+                    await new Promise<void>(resolve => { release = resolve; });
+                }
+            },
+            concurrency: 1,
+            maxSize: 3,
+            drainTimeoutMs: 1_000,
+        });
+        queue.enqueue({
+            eventType: 'task:update', taskId: 'ordering-blocker', state: 'processing', timestamp: EVENT_TIME,
+        });
+        await blockerStarted;
+        const stale = queue.enqueue({
+            eventType: 'task:update', taskId: 'ordered-task', state: 'processing', timestamp: EVENT_TIME,
+        });
+        const terminal = queue.enqueue({
+            eventType: 'task:update', taskId: 'ordered-task', state: 'completed',
+            timestamp: '2026-08-02T08:01:00.000Z',
+        });
+        assert.ok(stale);
+        assert.ok(terminal);
+        assert.equal(queue.enqueue({
+            eventType: 'task:update', taskId: 'ordered-task', state: 'processing',
+            timestamp: '2026-08-02T08:02:00.000Z',
+        }), null);
+
+        release();
+        await Promise.all([stale, terminal]);
+        assert.equal((await queue.close()).drained, true);
+        assert.deepEqual(projected, [
+            'ordering-blocker:processing',
+            'ordered-task:completed',
+        ]);
+    });
+
+    test('validates notification projection queue constructor options', () => {
+        const projector = async () => undefined;
+        const options = { projector, concurrency: 1, maxSize: 1, drainTimeoutMs: 100 };
+        assert.throws(
+            () => new NotificationProjectionQueue({ ...options, maxSize: 0 }),
+            /maxSize/
+        );
+        assert.throws(
+            () => new NotificationProjectionQueue({ ...options, concurrency: -1 }),
+            /concurrency/
+        );
+        assert.throws(
+            () => new NotificationProjectionQueue({ ...options, drainTimeoutMs: 2_147_483_648 }),
+            /drainTimeoutMs/
+        );
     });
 
     test('does not coalesce observable task progress into process-only liveness', async () => {

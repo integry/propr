@@ -48,7 +48,7 @@ import {
   getNotificationStalledCheckIntervalMs,
   getNotificationSystemCheckIntervalMs,
   getNotificationProjectionLeaseTtlMs,
-  closeEventPublisher
+  closeEventPublisher, logger
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -108,7 +108,7 @@ const PORT = process.env.DASHBOARD_API_PORT || 4000;
 app.set('trust proxy', 1);
 
 if (!process.env.FRONTEND_URL) {
-  console.error('FRONTEND_URL environment variable is required');
+  logger.error('FRONTEND_URL environment variable is required');
   process.exit(1);
 }
 
@@ -120,7 +120,7 @@ let validateCorsOrigin: ReturnType<typeof createCorsOriginValidator>;
 try {
   validateCorsOrigin = createCorsOriginValidator(process.env.FRONTEND_URL, cookieDomain);
 } catch {
-  console.error(`FRONTEND_URL must be a valid URL, got: ${process.env.FRONTEND_URL}`);
+  logger.error({ frontendUrl: process.env.FRONTEND_URL }, 'FRONTEND_URL must be a valid URL');
   process.exit(1);
 }
 
@@ -145,10 +145,11 @@ app.use(express.json());
 app.use('/api', demoModeReadOnlyMiddleware);
 
 const appEnsureAuthenticated = setupAuth(app, demoMode, {
-  invalidateNotificationEntitlements: (userId) =>
-    notificationEntitlementRefreshMiddleware.invalidate(userId),
-  activateNotificationEntitlements: (userId) =>
-    notificationEntitlementRefreshMiddleware.activate(userId)
+  invalidateNotificationEntitlements: (userId, authGeneration) =>
+    notificationEntitlementRefreshMiddleware.invalidate(userId, authGeneration),
+  activateNotificationEntitlements: (userId, authGeneration) =>
+    notificationEntitlementRefreshMiddleware.activate(userId, authGeneration),
+  updateNotificationCredential: (userId, accessToken) => notificationEntitlementRefreshMiddleware.updateCredential(userId, accessToken)
 });
 
 let redisClient: RedisClientType;
@@ -160,9 +161,7 @@ let notificationSystemSampler: NotificationSystemSampler | null = null;
 async function initRedis(): Promise<void> {
   ({ redisClient, taskQueue, runtimeBuildQueue } =
     await initializeServerRedis(demoMode, redisRuntimeConfig));
-  console.log(demoMode
-    ? 'Demo mode: Redis and task queue clients are disabled; using read-only in-memory facades'
-    : 'Connected to Redis');
+  logger.info({ demoMode }, 'API Redis runtime initialized');
 }
 
 function setupRoutes(): ReturnType<typeof createStatusRoutes> {
@@ -189,8 +188,7 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
     redisClient,
     taskQueue,
     db,
-    invalidateNotificationEntitlements: (userId) =>
-      notificationEntitlementRefreshMiddleware.invalidate(userId)
+    invalidateNotificationEntitlements: (userId, authGeneration) => notificationEntitlementRefreshMiddleware.invalidate(userId, authGeneration)
   });
   const llmMetricsRoutes = createLLMMetricsRoutes();
   const llmLogsRoutes = createLlmLogsRoutes({ db });
@@ -273,7 +271,7 @@ function setupWebhookRoute(): void {
     app.post('/webhook', (_req: Request, res: Response) => {
       res.status(403).send('Webhook processing is disabled in demo mode.');
     });
-    console.log('[webhook] Webhook endpoint disabled in demo mode');
+    logger.info('Webhook endpoint disabled in demo mode');
     return;
   }
 
@@ -281,10 +279,10 @@ function setupWebhookRoute(): void {
     eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
     enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
   });
-  for (const warning of warnings) console.warn(`[webhook] ${warning}`);
+  for (const warning of warnings) logger.warn({ warning }, 'GitHub event intake warning');
 
   if (intakeMode !== 'direct_webhook') {
-    console.log(`[webhook] Webhook endpoint disabled (GITHUB_EVENT_INTAKE_MODE is "${intakeMode}", not "direct_webhook")`);
+    logger.info({ intakeMode }, 'Webhook endpoint disabled for configured event intake mode');
     return;
   }
 
@@ -337,13 +335,13 @@ function setupWebhookRoute(): void {
         },
       });
     } catch (error) {
-      console.error('[webhook] Error processing webhook:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Webhook processing failed');
       if (!res.headersSent) {
         res.status(500).send('Internal webhook processing error.');
       }
     }
   });
-  console.log('[webhook] Webhook endpoint enabled at POST /webhook');
+  logger.info('Webhook endpoint enabled at POST /webhook');
 }
 
 app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok' }); });
@@ -353,12 +351,13 @@ const httpServer: HttpServer = createServer(app);
 
 async function start(): Promise<void> {
   try {
-    console.log('SQLite persistence is enabled');
+    logger.info('SQLite persistence is enabled');
     await db.migrate.latest();
-    console.log('Database migrations completed successfully');
-    if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
+    logger.info('Database migrations completed successfully');
+    if (demoMode) logger.info('Demo mode enabled with read-only synthetic user');
     await initRedis();
     if (!demoMode) {
+      void notificationEntitlementRefreshMiddleware.recover().catch(error => logger.warn({ error: (error as Error).message }, 'Entitlement schedule recovery failed'));
       await initializePushSubscriptionMaintenance();
       const stalledIntervalMs = getNotificationStalledCheckIntervalMs();
       notificationStalledDetector = new NotificationStalledDetector({
@@ -370,17 +369,17 @@ async function start(): Promise<void> {
         )
       });
       notificationStalledDetector.start();
-      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+      try { await loadSettingsFromConfig(); } catch (error) { logger.warn({ error: (error as Error).message }, 'Failed to load settings from config repository'); }
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
-        if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
+        if (removed > 0) logger.info({ removed }, 'Removed orphaned agent login containers');
       } catch (error) {
         // Docker-backed features surface their own errors when invoked; a
         // best-effort orphan sweep must not make the rest of the API unavailable.
-        console.warn('Could not sweep orphaned agent login containers:', (error as Error).message);
+        logger.warn({ error: (error as Error).message }, 'Could not sweep orphaned agent login containers');
       }
     } else {
-      console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
+      logger.info('Demo mode skipped startup configuration initialization');
     }
     const statusRoutes = setupRoutes();
     if (!demoMode) {
@@ -396,9 +395,9 @@ async function start(): Promise<void> {
       });
       notificationSystemSampler.start();
       const socketService = initSocketService(httpServer, validateCorsOrigin);
-      console.log('[WebSocket] Socket.IO server initialized');
+      logger.info('Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
-      console.log('[WebSocket] Queue features initialized for real-time updates');
+      logger.info('WebSocket queue features initialized');
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API
       // actually serves webhooks — i.e. direct_webhook mode, where this process
@@ -419,20 +418,20 @@ async function start(): Promise<void> {
       });
       if (apiIntakeMode === 'direct_webhook') {
         await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper });
-        console.log('[webhook] Webhook handler initialized');
+        logger.info('Webhook handler initialized');
       }
       setInterval(async () => {
         try {
           await checkAndExecuteDelayedReindex(redisClient as RedisClientType);
         } catch (error) {
-          console.error('Error checking for delayed reindex:', error);
+          logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Delayed reindex check failed');
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, () => logger.info({ port: PORT, demoMode }, 'Dashboard API server started'));
 
     process.on('SIGTERM', async () => {
-      console.log('SIGTERM received, shutting down gracefully...');
+      logger.info('SIGTERM received; shutting down gracefully');
       if (!demoMode) {
         await closeResources([
           { name: 'notification stalled detector', close: () => notificationStalledDetector?.stop() ?? Promise.resolve() },
@@ -459,12 +458,13 @@ async function start(): Promise<void> {
       }
       await closeResources(shutdownTasks);
       httpServer.close(() => {
-        console.log('Server closed');
+        logger.info('API server closed');
         process.exit(0);
       });
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
+    logger.error({ error: error instanceof Error ? error.message : String(error) },
+      'API server failed to start');
     process.exit(1);
   }
 }

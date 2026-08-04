@@ -245,6 +245,23 @@ test('/api/status falls back to disconnected agents when the registry snapshot t
   }]);
 });
 
+test('/api/status uses the live registry when agent configuration loading fails', async () => {
+  const config = createAgentConfig();
+  const body = await readStatus({
+    loadAgents: async () => { throw new Error('configuration store unavailable'); },
+    agentRegistry: createRegistry([
+      createAgent(config, async () => true),
+    ]),
+  });
+
+  assert.deepEqual(body.agents, [{
+    id: config.id,
+    type: config.type,
+    alias: config.alias,
+    status: 'connected',
+  }]);
+});
+
 test('/api/status surfaces unified agent image outages', async () => {
   const body = await readStatus({
     agentRegistry: createRegistry([], {

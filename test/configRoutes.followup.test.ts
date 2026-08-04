@@ -2549,11 +2549,13 @@ describe('config route follow-up helpers', () => {
         const removed: string[] = [];
         const jobs = [
             {
+                id: 'legacy-active-job',
                 data: { repository: 'acme/alpha', baseBranch: 'main' },
                 getState: async () => 'active',
                 remove: async () => { removed.push('main'); },
             },
             {
+                id: 'legacy-waiting-job',
                 data: { repository: 'acme/alpha', baseBranch: 'dev' },
                 getState: async () => 'waiting',
                 remove: async () => { removed.push('dev'); },
@@ -2562,6 +2564,7 @@ describe('config route follow-up helpers', () => {
 
         const result = await stopIndexingJob('acme/alpha', undefined, {
             getIndexingQueue: async () => ({ getJobs: async () => jobs } as never),
+            createLegacyIndexingRunIdForJob: (_repository, branch) => `legacy-${branch}`,
             requestIndexingCancellation: async (repository, branch, runId) => {
                 cancellations.push({ repository, branch, runId });
             },
@@ -2579,12 +2582,12 @@ describe('config route follow-up helpers', () => {
         });
 
         assert.deepStrictEqual(cancellations, [
-            { repository: 'acme/alpha', branch: 'main', runId: undefined },
+            { repository: 'acme/alpha', branch: 'main', runId: 'legacy-main' },
         ]);
         assert.deepStrictEqual(removed, ['dev']);
         assert.deepStrictEqual(transitions, [
-            { branch: 'main', runId: undefined },
-            { branch: 'dev', runId: undefined },
+            { branch: 'main', runId: 'legacy-main' },
+            { branch: 'dev', runId: 'legacy-dev' },
         ]);
         assert.deepStrictEqual(publications, [
             { branch: 'main', runId: 'legacy-main' },

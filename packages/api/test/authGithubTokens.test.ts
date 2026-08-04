@@ -254,7 +254,7 @@ test('authentication lifecycle hooks stay local to their application middleware'
   assert.equal(req.destroyCalls, 1);
 });
 
-test('a valid existing session reactivates notification entitlements', async () => {
+test('a valid existing session does not perform entitlement activation writes', async () => {
   configureDemoMode(false);
   const activations: string[] = [];
   const middleware = createEnsureAuthenticated({
@@ -266,11 +266,11 @@ test('a valid existing session reactivates notification entitlements', async () 
 
   await middleware(req, response, (() => { nextCalls++; }) as NextFunction);
 
-  assert.deepEqual(activations, ['123']);
+  assert.deepEqual(activations, []);
   assert.equal(nextCalls, 1);
 });
 
-test('an activation persistence failure fails authenticated traffic closed', async () => {
+test('ordinary authenticated traffic is independent of login-only activation persistence', async () => {
   configureDemoMode(false);
   const middleware = createEnsureAuthenticated({
     activateNotificationEntitlements: async () => { throw new Error('database unavailable'); },
@@ -281,13 +281,34 @@ test('an activation persistence failure fails authenticated traffic closed', asy
 
   await middleware(req, response, (() => { nextCalls++; }) as NextFunction);
 
-  assert.equal(nextCalls, 0);
-  assert.equal(status(), 503);
-  assert.deepEqual(body(), {
-    error: 'Authorization activation unavailable',
-    code: 'AUTH_ACTIVATION_UNAVAILABLE',
-    message: 'Authorization activation could not be persisted. Please retry.',
+  assert.equal(nextCalls, 1);
+  assert.equal(status(), 200);
+  assert.equal(body(), undefined);
+});
+
+test('a proactive OAuth refresh updates the scheduled entitlement credential', async () => {
+  configureDemoMode(false);
+  let resolveCredential!: (value: string) => void;
+  const updatedCredential = new Promise<string>(resolve => { resolveCredential = resolve; });
+  const middleware = createEnsureAuthenticated({
+    updateNotificationCredential: (_userId, accessToken) => resolveCredential(accessToken),
   });
+  const req = createRequest(createUser({ tokenExpiresAt: Date.now() + 60_000 }));
+  const { response } = createJsonResponse();
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    access_token: 'proactively-refreshed-token',
+    refresh_token: 'new-refresh-token',
+    expires_in: 3600,
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  let nextCalls = 0;
+
+  await middleware(req, response, (() => { nextCalls++; }) as NextFunction);
+
+  assert.equal(nextCalls, 1);
+  assert.equal(await updatedCredential, 'proactively-refreshed-token');
 });
 
 test('failed entitlement invalidation prevents session cleanup from being acknowledged', async () => {

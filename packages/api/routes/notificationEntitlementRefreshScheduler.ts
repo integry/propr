@@ -1,9 +1,26 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { getNotificationRepositoryEntitlementTtlMs, logger } from '@propr/core';
+import {
+  loadRecoverableEntitlementCredentials,
+  type RecoveredEntitlementCredential,
+} from './notificationEntitlementSessionRecovery.js';
+import {
+  activateNotificationRepositoryEntitlements,
+  ensureEntitlementRefreshRegistration,
+  ENTITLEMENT_REFRESH_LEASE_TABLE,
+  invalidateNotificationRepositoryEntitlements,
+} from './notificationEntitlementFencing.js';
+export {
+  activateNotificationRepositoryEntitlements,
+  ensureEntitlementRefreshRegistration,
+  invalidateNotificationRepositoryEntitlements,
+} from './notificationEntitlementFencing.js';
 
 const REFRESH_RETRY_DELAY_MS = 60_000;
 const MAX_SCHEDULED_REFRESHES = 1_000;
+const MAX_SCHEDULED_REFRESHES_ENV = 'NOTIFICATION_ENTITLEMENT_MAX_SCHEDULED_REFRESHES';
+const RECOVERY_CONCURRENCY = 4;
 
 interface ScheduledRefresh {
   accessToken: string;
@@ -34,17 +51,13 @@ interface ScheduledEntitlementRefreshOptions {
   maxScheduledRefreshes?: number;
   timerScheduler?: EntitlementRefreshTimerScheduler;
   ensureRegistration?: typeof ensureEntitlementRefreshRegistration;
+  loadRecoveryCredentials?: (database: Knex) => Promise<RecoveredEntitlementCredential[]>;
 }
 
 const DEFAULT_TIMER_SCHEDULER: EntitlementRefreshTimerScheduler = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout),
 };
-
-const LEASE_TABLE = 'notification_repository_entitlement_refresh_leases';
-const REGISTRATION_TOKEN = 'notification-scheduler-registration';
-const INVALIDATION_TOKEN = 'notification-logout-tombstone';
-const tombstoneSupport = new WeakMap<object, Promise<boolean>>();
 
 async function hasEntitlementRefreshRegistration(
   database: Knex,
@@ -56,9 +69,9 @@ async function hasEntitlementRefreshRegistration(
     .first('user_id');
   if (snapshot !== undefined) return true;
   if (!retry || !await database.schema
-    .hasTable(LEASE_TABLE)) return false;
-  const retryLeaseQuery = database(LEASE_TABLE).where({ user_id: userId });
-  if (await database.schema.hasColumn(LEASE_TABLE, 'invalidated_at')) {
+    .hasTable(ENTITLEMENT_REFRESH_LEASE_TABLE)) return false;
+  const retryLeaseQuery = database(ENTITLEMENT_REFRESH_LEASE_TABLE).where({ user_id: userId });
+  if (await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'invalidated_at')) {
     retryLeaseQuery.whereNull('invalidated_at');
   }
   const retryLease = await retryLeaseQuery
@@ -66,112 +79,23 @@ async function hasEntitlementRefreshRegistration(
   return retryLease !== undefined;
 }
 
-export async function ensureEntitlementRefreshRegistration(
-  database: Knex,
-  userId: string
-): Promise<boolean> {
-  if (!await database.schema.hasTable(LEASE_TABLE)) return false;
-  await database(LEASE_TABLE).insert({
-    user_id: userId,
-    lease_token: REGISTRATION_TOKEN,
-    expires_at: new Date(0).toISOString(),
-  }).onConflict('user_id').ignore();
-  const registration = database(LEASE_TABLE).where({ user_id: userId });
-  if (await database.schema.hasColumn(LEASE_TABLE, 'invalidated_at')) {
-    registration.whereNull('invalidated_at');
-  }
-  return await registration.first('user_id') !== undefined;
-}
-
 export interface NotificationEntitlementRefreshMiddleware {
   (req: Request, res: Response, next: NextFunction): void;
-  invalidate(userId: string): Promise<void>;
-  activate(userId: string): Promise<void>;
+  invalidate(userId: string, authGeneration: string): Promise<void>;
+  activate(userId: string, authGeneration: string): Promise<void>;
+  updateCredential(userId: string, accessToken: string): void;
+  recover(): Promise<void>;
   close(): void;
 }
 
-async function supportsEntitlementInvalidationTombstones(database: Knex): Promise<boolean> {
-  let supported = tombstoneSupport.get(database);
-  if (!supported) {
-    supported = (async () => await database.schema.hasTable(LEASE_TABLE)
-      && await database.schema.hasColumn(LEASE_TABLE, 'fencing_token')
-      && await database.schema.hasColumn(LEASE_TABLE, 'retry_after')
-      && await database.schema.hasColumn(LEASE_TABLE, 'invalidated_at'))();
-    tombstoneSupport.set(database, supported);
-    void supported.then(
-      (value) => { if (!value && tombstoneSupport.get(database) === supported) {
-        tombstoneSupport.delete(database);
-      } },
-      () => { if (tombstoneSupport.get(database) === supported) {
-        tombstoneSupport.delete(database);
-      } }
-    );
-  }
-  return supported;
-}
-
-export async function activateNotificationRepositoryEntitlements(
-  database: Knex,
-  userId: string
-): Promise<void> {
-  if (!await supportsEntitlementInvalidationTombstones(database)) {
-    await ensureEntitlementRefreshRegistration(database, userId);
-    return;
-  }
-  const expiresAt = new Date(0).toISOString();
-  await database(LEASE_TABLE).insert({
-    user_id: userId,
-    lease_token: REGISTRATION_TOKEN,
-    fencing_token: 1,
-    expires_at: expiresAt,
-    retry_after: null,
-    invalidated_at: null,
-  }).onConflict('user_id').merge({
-    lease_token: REGISTRATION_TOKEN,
-    fencing_token: database.raw(`${LEASE_TABLE}.fencing_token + 1`),
-    expires_at: expiresAt,
-    retry_after: null,
-    invalidated_at: null,
-  }).whereNotNull('invalidated_at');
-}
-
-export async function invalidateNotificationRepositoryEntitlements(
-  database: Knex,
-  userId: string
-): Promise<void> {
-  try {
-    const hasRefreshLeases = await database.schema.hasTable(LEASE_TABLE);
-    const hasTombstones = hasRefreshLeases
-      && await supportsEntitlementInvalidationTombstones(database);
-    await database.transaction(async (transaction) => {
-      await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
-      await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
-      if (hasTombstones) {
-        const invalidatedAt = new Date().toISOString();
-        const expiresAt = new Date(0).toISOString();
-        await transaction(LEASE_TABLE).insert({
-          user_id: userId,
-          lease_token: INVALIDATION_TOKEN,
-          fencing_token: 1,
-          expires_at: expiresAt,
-          retry_after: null,
-          invalidated_at: invalidatedAt,
-        }).onConflict('user_id').merge({
-          lease_token: INVALIDATION_TOKEN,
-          fencing_token: transaction.raw(`${LEASE_TABLE}.fencing_token + 1`),
-          expires_at: expiresAt,
-          retry_after: null,
-          invalidated_at: invalidatedAt,
-        });
-      } else if (hasRefreshLeases) {
-        await transaction(LEASE_TABLE).where({ user_id: userId }).delete();
-      }
-    });
-  } catch (error) {
-    logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
-      'Failed to invalidate cached repository notification access');
-    throw error;
-  }
+function getMaxScheduledRefreshes(): number {
+  const configured = process.env[MAX_SCHEDULED_REFRESHES_ENV];
+  if (configured === undefined) return MAX_SCHEDULED_REFRESHES;
+  const parsed = Number(configured);
+  if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  logger.warn({ value: configured, fallback: MAX_SCHEDULED_REFRESHES },
+    `${MAX_SCHEDULED_REFRESHES_ENV} must be a positive safe integer`);
+  return MAX_SCHEDULED_REFRESHES;
 }
 
 /** Keeps refreshing observed authenticated users after request traffic stops. */
@@ -181,9 +105,11 @@ export function createScheduledEntitlementRefreshMiddleware(
   options: ScheduledEntitlementRefreshOptions = {}
 ): NotificationEntitlementRefreshMiddleware {
   const scheduled = new Map<string, ScheduledRefresh>();
-  const maxScheduledRefreshes = options.maxScheduledRefreshes ?? MAX_SCHEDULED_REFRESHES;
+  const maxScheduledRefreshes = options.maxScheduledRefreshes ?? getMaxScheduledRefreshes();
   const timerScheduler = options.timerScheduler ?? DEFAULT_TIMER_SCHEDULER;
   const ensureRegistration = options.ensureRegistration ?? ensureEntitlementRefreshRegistration;
+  const loadRecoveryCredentials = options.loadRecoveryCredentials
+    ?? loadRecoverableEntitlementCredentials;
   if (!Number.isSafeInteger(maxScheduledRefreshes) || maxScheduledRefreshes <= 0) {
     throw new TypeError('maxScheduledRefreshes must be a positive safe integer');
   }
@@ -197,28 +123,29 @@ export function createScheduledEntitlementRefreshMiddleware(
     entry.controller = undefined;
   };
 
-  const runRefresh = (userId: string, entry: ScheduledRefresh): void => {
+  const runRefresh = async (userId: string, entry: ScheduledRefresh): Promise<void> => {
     if (closed || scheduled.get(userId) !== entry || entry.controller) return;
     if (entry.timer) timerScheduler.clearTimeout(entry.timer);
     entry.timer = undefined;
     const controller = new AbortController();
     entry.controller = controller;
-    void refresh({
-      userId,
-      accessToken: entry.accessToken,
-      database,
-      signal: controller.signal,
-    }).then((result) => {
+    try {
+      const result = await refresh({
+        userId,
+        accessToken: entry.accessToken,
+        database,
+        signal: controller.signal,
+      });
       if (closed || scheduled.get(userId) !== entry || controller.signal.aborted) return;
       if (entry.controller === controller) entry.controller = undefined;
       schedule(userId, entry.accessToken, result === false, entry.registrationEstablished);
-    }).catch((error) => {
+    } catch (error) {
       if (closed || scheduled.get(userId) !== entry || controller.signal.aborted) return;
       if (entry.controller === controller) entry.controller = undefined;
       logger.warn({ error: error instanceof Error ? error.message : String(error) },
         'Repository notification access refresh failed');
       schedule(userId, entry.accessToken, true, entry.registrationEstablished);
-    });
+    }
   };
 
   const schedule = (
@@ -279,7 +206,7 @@ export function createScheduledEntitlementRefreshMiddleware(
             removeEntry(userId, entry);
             return;
           }
-          runRefresh(userId, entry);
+          void runRefresh(userId, entry);
         })
         .catch((error) => {
           logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -340,7 +267,7 @@ export function createScheduledEntitlementRefreshMiddleware(
         if (!registered) {
           removeEntry(userId, entry);
         } else if (refreshImmediately) {
-          runRefresh(userId, entry);
+          void runRefresh(userId, entry);
         }
       })
       .catch((error) => {
@@ -354,13 +281,44 @@ export function createScheduledEntitlementRefreshMiddleware(
       });
     next();
   };
-  middleware.invalidate = async (userId: string): Promise<void> => {
+  middleware.invalidate = async (userId: string, authGeneration: string): Promise<void> => {
     const entry = scheduled.get(userId);
     if (entry) removeEntry(userId, entry);
-    await invalidateNotificationRepositoryEntitlements(database, userId);
+    await invalidateNotificationRepositoryEntitlements(database, userId, authGeneration);
   };
-  middleware.activate = (userId: string): Promise<void> =>
-    activateNotificationRepositoryEntitlements(database, userId);
+  middleware.activate = (userId: string, authGeneration: string): Promise<void> =>
+    activateNotificationRepositoryEntitlements(database, userId, authGeneration);
+  middleware.updateCredential = (userId: string, accessToken: string): void => {
+    const entry = scheduled.get(userId);
+    if (entry && accessToken) entry.accessToken = accessToken;
+  };
+  middleware.recover = async (): Promise<void> => {
+    const credentials = await loadRecoveryCredentials(database);
+    if (closed) return;
+    const available = Math.max(0, maxScheduledRefreshes - scheduled.size);
+    const retained = credentials.slice(0, available);
+    let skipped = credentials.length - retained.length;
+    if (skipped > 0) {
+      logger.warn({ recoveredCandidates: credentials.length, capacity: maxScheduledRefreshes, skipped },
+        'Repository entitlement restart recovery exceeded configured capacity');
+    }
+    let recovered = 0;
+    for (let offset = 0; offset < retained.length && !closed; offset += RECOVERY_CONCURRENCY) {
+      await Promise.all(retained.slice(offset, offset + RECOVERY_CONCURRENCY).map(async credential => {
+        if (closed || scheduled.has(credential.userId)) return;
+        if (scheduled.size >= maxScheduledRefreshes) {
+          skipped++;
+          return;
+        }
+        schedule(credential.userId, credential.accessToken, false, true);
+        const entry = scheduled.get(credential.userId);
+        if (!entry) return;
+        recovered++;
+        await runRefresh(credential.userId, entry);
+      }));
+    }
+    logger.info({ recovered, skipped }, 'Recovered repository entitlement refresh schedules');
+  };
   middleware.close = (): void => {
     closed = true;
     for (const [userId, entry] of scheduled) removeEntry(userId, entry);

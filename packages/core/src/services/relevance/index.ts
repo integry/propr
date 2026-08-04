@@ -25,6 +25,7 @@ export {
   recordSkippedIndexingRun,
   updateRepositoryStatus
 } from './summaryMinerQueries.js';
+export { getRepositoryIndexingTerminalTransition } from './indexingTerminalQueries.js';
 export { clearIndexingRuntimeStateBestEffort } from './indexingCancellation.js';
 export type {
   ActiveRepositoryIndexingRun,
@@ -32,6 +33,7 @@ export type {
   RepositoryStatusTransition,
   UpdateRepositoryStatusOptions
 } from './summaryMinerQueries.js';
+export type { RepositoryIndexingTerminalTransition } from './indexingTerminalQueries.js';
 export {
   scanProcessableGitFiles,
   shouldProcessFilePath,

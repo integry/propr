@@ -6,6 +6,7 @@ import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
+import { getSessionAuthGeneration } from '../authSessionGeneration.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
 import { logger } from '@propr/core';
@@ -24,7 +25,7 @@ interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
-  invalidateNotificationEntitlements?: (userId: string) => Promise<void>;
+  invalidateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
   refreshNotificationEntitlements?: typeof refreshNotificationRepositoryEntitlements;
   listNotificationRepositories?: typeof listAccessibleRepositories;
 }
@@ -49,16 +50,16 @@ function isAuthError(error: unknown): boolean {
 export async function handleAuthError(
   req: Request,
   res: Response,
-  invalidateEntitlements?: (userId: string) => Promise<void>
+  invalidateEntitlements?: (userId: string, authGeneration: string) => Promise<void>
 ): Promise<void> {
-  console.warn('GitHub token expired or revoked, attempting token refresh');
+  logger.warn('GitHub token expired or revoked; attempting token refresh');
 
   // Try to refresh the token before logging out
   const refreshResult = await refreshGitHubTokenWithResult(req, true);
 
   if (refreshResult.status === 'refreshed') {
     // Token was successfully refreshed, tell client to retry
-    console.log('Token refresh successful, client should retry');
+    logger.info('GitHub token refresh succeeded; client should retry');
     res.status(401).json({
       error: 'Token refreshed',
       code: 'TOKEN_REFRESHED',
@@ -77,10 +78,10 @@ export async function handleAuthError(
   }
 
   // Token refresh failed, clear the session to force re-login
-  console.warn('Token refresh failed, clearing session for re-authentication');
+  logger.warn('GitHub token refresh failed; clearing session for re-authentication');
   const userId = req.user?.id;
   try {
-    if (userId) await invalidateEntitlements?.(userId);
+    if (userId) await invalidateEntitlements?.(userId, getSessionAuthGeneration(req));
   } catch (error) {
     logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
       'Could not persist repository notification access invalidation');
@@ -94,9 +95,12 @@ export async function handleAuthError(
 
   await new Promise<void>((resolve) => {
     req.logout((err) => {
-      if (err) console.error('Error during logout:', err);
+      if (err) logger.error({ error: err.message }, 'Passport logout failed after GitHub auth error');
       req.session.destroy((destroyErr) => {
-        if (destroyErr) console.error('Error destroying session:', destroyErr);
+        if (destroyErr) {
+          logger.error({ error: destroyErr.message },
+            'Session destruction failed after GitHub auth error');
+        }
         resolve();
       });
     });
@@ -112,15 +116,18 @@ export async function handleAuthError(
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   const { redisClient, taskQueue, db } = deps;
   const invalidateEntitlements = deps.invalidateNotificationEntitlements
-    ?? ((userId: string) => invalidateNotificationRepositoryEntitlements(db, userId));
+    ?? ((userId: string, authGeneration: string) =>
+      invalidateNotificationRepositoryEntitlements(db, userId, authGeneration));
   const refreshNotificationEntitlements = deps.refreshNotificationEntitlements
     ?? refreshNotificationRepositoryEntitlements;
   const listNotificationRepositories = deps.listNotificationRepositories
     ?? listAccessibleRepositories;
 
-  async function invalidateEntitlementsOrRespond(userId: string, res: Response): Promise<boolean> {
+  async function invalidateEntitlementsOrRespond(req: Request, res: Response): Promise<boolean> {
+    const userId = req.user?.id;
+    if (!userId) return true;
     try {
-      await invalidateEntitlements(userId);
+      await invalidateEntitlements(userId, getSessionAuthGeneration(req));
       return true;
     } catch (error) {
       logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
@@ -150,10 +157,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       const newJob = await taskQueue.add('processTaskImport', { taskDescription, repository, correlationId, user: req.user?.username }, { jobId, removeOnComplete: { age: 24 * 3600, count: 100 }, removeOnFail: { age: 7 * 24 * 3600 } });
       await redisClient.lPush('system:activity:log', JSON.stringify({ id: `activity-${Date.now()}-${jobId}`, type: 'task_import', timestamp: new Date().toISOString(), user: req.user?.username, repository, description: `Task import job created for ${repository}`, status: 'pending' }));
       await redisClient.lTrim('system:activity:log', 0, 999);
-      console.log(`Created task import job ${jobId} for repository ${repository}`);
+      logger.info({ jobId, repository }, 'Created task import job');
       res.json({ jobId: newJob.id });
     } catch (error) {
-      console.error('Error in /api/import-tasks:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'Task import route failed');
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -173,7 +181,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         return;
       }
       if (!accessToken) {
-        if (!await invalidateEntitlementsOrRespond(userId, res)) return;
+        if (!await invalidateEntitlementsOrRespond(req, res)) return;
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -219,7 +227,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         await handleAuthError(req, res, invalidateEntitlements);
         return;
       }
-      console.error('Error in /api/github/repos:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'GitHub repositories route failed');
       res.status(500).json({ error: 'Failed to fetch repositories from GitHub' });
     }
   }
@@ -247,7 +256,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
         if (req.user?.id
-            && !await invalidateEntitlementsOrRespond(req.user.id, res)) return;
+            && !await invalidateEntitlementsOrRespond(req, res)) return;
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -273,7 +282,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
           await handleAuthError(req, res, invalidateEntitlements);
           return;
         }
-        console.error('Error fetching repo info for default branch:', error);
+        logger.warn({ owner, repo, error: error instanceof Error ? error.message : String(error) },
+          'Could not load repository default branch');
         // Continue without default branch info
       }
 
@@ -304,7 +314,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         await handleAuthError(req, res, invalidateEntitlements);
         return;
       }
-      console.error('Error in /api/github/repos/:owner/:repo/branches:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'GitHub repository branches route failed');
       res.status(500).json({ error: 'Failed to fetch branches from GitHub' });
     }
   }

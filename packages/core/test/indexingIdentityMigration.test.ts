@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { after, test } from 'node:test';
 import knex from 'knex';
-import { up as addIndexingTransitionIdentity }
+import { down as removeIndexingTransitionIdentity, up as addIndexingTransitionIdentity }
   from '../src/db/migrations/20260802030000_add_indexing_transition_identity.js';
 import { closeConnection } from '../src/db/connection.js';
 import { getActiveRepositoryIndexingRuns }
@@ -201,6 +201,43 @@ test('indexing identity migration canonicalizes repositories and backfills activ
       created_at: '2026-08-03T00:00:00.000Z',
       updated_at: '2026-08-03T00:00:00.000Z',
     }), /UNIQUE constraint failed/);
+
+    await removeIndexingTransitionIdentity(database);
+    assert.equal(await database.schema.hasColumn('repositories', 'indexing_run_id'), false);
+    assert.equal(await database.schema.hasColumn('repositories', 'indexing_transition_at'), false);
+    assert.deepEqual(await database('repositories').pluck('full_name'), ['acme/api']);
+    assert.deepEqual(await database('file_summaries').pluck('path'), ['acme/api/src/index.ts']);
+    assert.deepEqual(await database('task_drafts').pluck('repository'), ['acme/api']);
+  } finally {
+    await database.destroy();
+  }
+});
+
+test('indexing identity migration rejects an un-inventoried repository reference', async () => {
+  const database = knex({
+    client: 'better-sqlite3',
+    connection: { filename: ':memory:' },
+    useNullAsDefault: true,
+  });
+  try {
+    await database.schema.createTable('repositories', (table) => {
+      table.text('full_name').notNullable();
+      table.text('branch').notNullable();
+      table.text('indexing_status').notNullable();
+      table.text('created_at').notNullable();
+      table.text('updated_at').notNullable();
+      table.primary(['full_name', 'branch']);
+    });
+    await database.schema.createTable('untracked_repository_data', (table) => {
+      table.increments('id').primary();
+      table.text('repository').notNullable();
+    });
+
+    await assert.rejects(
+      addIndexingTransitionIdentity(database),
+      /unhandled repository references: untracked_repository_data\.repository/
+    );
+    assert.equal(await database.schema.hasColumn('repositories', 'indexing_run_id'), false);
   } finally {
     await database.destroy();
   }

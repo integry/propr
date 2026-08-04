@@ -1,0 +1,135 @@
+import type { Knex } from 'knex';
+import { logger } from '@propr/core';
+
+export const ENTITLEMENT_REFRESH_LEASE_TABLE =
+  'notification_repository_entitlement_refresh_leases';
+const REGISTRATION_TOKEN = 'notification-scheduler-registration';
+const INVALIDATION_TOKEN = 'notification-logout-tombstone';
+const tombstoneSupport = new WeakMap<object, Promise<boolean>>();
+
+export async function ensureEntitlementRefreshRegistration(
+  database: Knex,
+  userId: string
+): Promise<boolean> {
+  if (!await database.schema.hasTable(ENTITLEMENT_REFRESH_LEASE_TABLE)) return false;
+  await database(ENTITLEMENT_REFRESH_LEASE_TABLE).insert({
+    user_id: userId,
+    lease_token: REGISTRATION_TOKEN,
+    expires_at: new Date(0).toISOString(),
+  }).onConflict('user_id').ignore();
+  const registration = database(ENTITLEMENT_REFRESH_LEASE_TABLE).where({ user_id: userId });
+  if (await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'invalidated_at')) {
+    registration.whereNull('invalidated_at');
+  }
+  return await registration.first('user_id') !== undefined;
+}
+
+function requireAuthGeneration(authGeneration: string): string {
+  const generation = authGeneration.trim();
+  if (!generation) throw new TypeError('Notification entitlement auth generation must be non-blank');
+  return generation;
+}
+
+async function supportsEntitlementInvalidationTombstones(database: Knex): Promise<boolean> {
+  let supported = tombstoneSupport.get(database);
+  if (!supported) {
+    supported = (async () => await database.schema.hasTable(ENTITLEMENT_REFRESH_LEASE_TABLE)
+      && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'fencing_token')
+      && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'retry_after')
+      && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'invalidated_at')
+      && await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'auth_generation'))();
+    tombstoneSupport.set(database, supported);
+    void supported.then(
+      (value) => { if (!value && tombstoneSupport.get(database) === supported) {
+        tombstoneSupport.delete(database);
+      } },
+      () => { if (tombstoneSupport.get(database) === supported) {
+        tombstoneSupport.delete(database);
+      } }
+    );
+  }
+  return supported;
+}
+
+export async function activateNotificationRepositoryEntitlements(
+  database: Knex,
+  userId: string,
+  authGeneration: string
+): Promise<void> {
+  const generation = requireAuthGeneration(authGeneration);
+  if (!await supportsEntitlementInvalidationTombstones(database)) {
+    if (!await ensureEntitlementRefreshRegistration(database, userId)) {
+      throw new Error('Notification entitlement activation is fenced by an invalidation');
+    }
+    return;
+  }
+  const expiresAt = new Date(0).toISOString();
+  await database(ENTITLEMENT_REFRESH_LEASE_TABLE).insert({
+    user_id: userId,
+    lease_token: REGISTRATION_TOKEN,
+    fencing_token: 1,
+    expires_at: expiresAt,
+    retry_after: null,
+    invalidated_at: null,
+    auth_generation: generation,
+  }).onConflict('user_id').merge({
+    lease_token: REGISTRATION_TOKEN,
+    fencing_token: database.raw(`${ENTITLEMENT_REFRESH_LEASE_TABLE}.fencing_token + 1`),
+    expires_at: expiresAt,
+    retry_after: null,
+    invalidated_at: null,
+    auth_generation: generation,
+  }).where((staleGeneration) => staleGeneration
+    .whereNull('auth_generation')
+    .orWhereNot('auth_generation', generation));
+  const activated = await database(ENTITLEMENT_REFRESH_LEASE_TABLE)
+    .where({ user_id: userId, auth_generation: generation })
+    .whereNull('invalidated_at')
+    .first('user_id');
+  if (!activated) throw new Error('Authenticated session generation has already been invalidated');
+}
+
+export async function invalidateNotificationRepositoryEntitlements(
+  database: Knex,
+  userId: string,
+  authGeneration: string
+): Promise<void> {
+  const generation = requireAuthGeneration(authGeneration);
+  try {
+    const hasRefreshLeases = await database.schema.hasTable(ENTITLEMENT_REFRESH_LEASE_TABLE);
+    const hasTombstones = hasRefreshLeases
+      && await supportsEntitlementInvalidationTombstones(database);
+    await database.transaction(async (transaction) => {
+      await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
+      await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
+      if (hasTombstones) {
+        const invalidatedAt = new Date().toISOString();
+        const expiresAt = new Date(0).toISOString();
+        await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE).insert({
+          user_id: userId,
+          lease_token: INVALIDATION_TOKEN,
+          fencing_token: 1,
+          expires_at: expiresAt,
+          retry_after: null,
+          invalidated_at: invalidatedAt,
+          auth_generation: generation,
+        }).onConflict('user_id').merge({
+          lease_token: INVALIDATION_TOKEN,
+          fencing_token: transaction.raw(
+            `${ENTITLEMENT_REFRESH_LEASE_TABLE}.fencing_token + 1`
+          ),
+          expires_at: expiresAt,
+          retry_after: null,
+          invalidated_at: invalidatedAt,
+          auth_generation: generation,
+        });
+      } else if (hasRefreshLeases) {
+        await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE).where({ user_id: userId }).delete();
+      }
+    });
+  } catch (error) {
+    logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
+      'Failed to invalidate cached repository notification access');
+    throw error;
+  }
+}

@@ -54,7 +54,10 @@ export async function closeResources(tasks: ShutdownTask[]): Promise<void> {
   ));
   results.forEach((result, index) => {
     if (result.status === 'rejected') {
-      console.error(`Failed to close ${tasks[index].name}:`, result.reason);
+      logger.error({
+        resource: tasks[index].name,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      }, 'Failed to close server resource');
     }
   });
 }
@@ -85,7 +88,9 @@ export async function initializeServerRedis(
     };
   }
   const redisClient = createClient({ url: runtimeConfig.url });
-  redisClient.on('error', (error) => console.error('Redis Client Error', error));
+  redisClient.on('error', (error) => logger.error({
+    error: error instanceof Error ? error.message : String(error),
+  }, 'API Redis client error'));
   await redisClient.connect();
   const connection = { ...runtimeConfig.options };
   const taskQueue = new Queue(

@@ -4,41 +4,23 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
+import { logger } from '@propr/core';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
-import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded, refreshGitHubTokenWithResult } from './authGithubTokens.js';
+import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenWithResult } from './authGithubTokens.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
+import { getSessionAuthGeneration } from './authSessionGeneration.js';
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
 
 export interface AuthLifecycleHooks {
-    invalidateNotificationEntitlements?: (userId: string) => Promise<void>;
-    activateNotificationEntitlements?: (userId: string) => Promise<void>;
-}
-
-async function activateAuthenticatedEntitlements(
-    req: Request,
-    res: Response,
-    lifecycleHooks: AuthLifecycleHooks
-): Promise<boolean> {
-    const userId = req.user?.id;
-    if (!userId || !lifecycleHooks.activateNotificationEntitlements) return true;
-    try {
-        await lifecycleHooks.activateNotificationEntitlements(userId);
-        return true;
-    } catch (error) {
-        console.error('Failed to activate notification entitlements for authenticated request:', error);
-        res.status(503).json({
-            error: 'Authorization activation unavailable',
-            code: 'AUTH_ACTIVATION_UNAVAILABLE',
-            message: 'Authorization activation could not be persisted. Please retry.'
-        });
-        return false;
-    }
+    invalidateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
+    activateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
+    updateNotificationCredential?: (userId: string, accessToken: string) => void;
 }
 
 async function invalidateRequestEntitlements(
@@ -47,7 +29,7 @@ async function invalidateRequestEntitlements(
 ): Promise<void> {
     const userId = req.user?.id;
     if (!userId || !lifecycleHooks.invalidateNotificationEntitlements) return;
-    await lifecycleHooks.invalidateNotificationEntitlements(userId);
+    await lifecycleHooks.invalidateNotificationEntitlements(userId, getSessionAuthGeneration(req));
 }
 
 async function invalidateBeforeSessionCleanup(
@@ -59,7 +41,8 @@ async function invalidateBeforeSessionCleanup(
         await invalidateRequestEntitlements(req, lifecycleHooks);
         return true;
     } catch (error) {
-        console.error('Failed to invalidate notification entitlements during session cleanup:', error);
+        logger.error({ error: error instanceof Error ? error.message : String(error) },
+            'Failed to invalidate notification entitlements during session cleanup');
         res.status(503).json({
             error: 'Session cleanup unavailable',
             code: 'AUTH_CLEANUP_UNAVAILABLE',
@@ -123,9 +106,13 @@ export function setupAuth(
         const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
         const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
         redisClient.on('error', (err) => {
-            console.error('Session Redis Client Error', err);
+            logger.error({ error: err instanceof Error ? err.message : String(err) },
+                'Session Redis client error');
         });
-        redisClient.connect().catch(console.error);
+        redisClient.connect().catch((error) => {
+            logger.error({ error: error instanceof Error ? error.message : String(error) },
+                'Failed to connect session Redis client');
+        });
 
         // Use Redis store for sessions to share across subdomains
         const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
@@ -157,7 +144,7 @@ export function setupAuth(
         function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
             // Here you would find or create a user in your database.
             // For now, we'll just pass the profile through.
-            console.log('User authenticated:', profile.username);
+            logger.info({ username: profile.username }, 'GitHub user authenticated');
 
             // Calculate token expiration time (expires_in is in seconds)
             const tokenExpiresAt = params.expires_in ? Date.now() + (params.expires_in * 1000) : undefined;
@@ -221,9 +208,15 @@ export function setupAuth(
                 const userId = req.user?.id;
                 if (userId && lifecycleHooks.activateNotificationEntitlements) {
                     try {
-                        await lifecycleHooks.activateNotificationEntitlements(userId);
+                        await lifecycleHooks.activateNotificationEntitlements(
+                            userId,
+                            getSessionAuthGeneration(req)
+                        );
                     } catch (error) {
-                        console.error('Failed to activate notification entitlements after login:', error);
+                        logger.error({
+                            userId,
+                            error: error instanceof Error ? error.message : String(error),
+                        }, 'Failed to activate notification entitlements after login');
                         await clearSessionForReauth(req);
                         clearSessionCookie(res);
                         res.status(503).json({
@@ -248,7 +241,7 @@ export function setupAuth(
                 // This is required when using Redis store with async operations
                 req.session.save((err) => {
                     if (err) {
-                        console.error('Session save error:', err);
+                        logger.error({ error: err.message }, 'Session save failed after login');
                     }
                     res.redirect(finalRedirect);
                 });
@@ -265,11 +258,11 @@ export function setupAuth(
         if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
         req.logout((err) => {
             if (err) {
-                console.error('Logout error:', err);
+                logger.error({ error: err.message }, 'Passport logout failed');
             }
             req.session.destroy((sessionErr) => {
                 if (sessionErr) {
-                    console.error('Session destroy error:', sessionErr);
+                    logger.error({ error: sessionErr.message }, 'Session destruction failed after logout');
                 }
                 clearSessionCookie(res);
                 res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
@@ -302,7 +295,7 @@ export function createEnsureAuthenticated(
 
         return req.isAuthenticated()
             ? authenticateSessionRequest(req, res, next, lifecycleHooks)
-            : authenticateBearerRequest(req, res, next, lifecycleHooks);
+            : authenticateBearerRequest(req, res, next);
     };
 }
 
@@ -332,10 +325,16 @@ async function authenticateSessionRequest(
         await authenticateExpiredSession(req, res, next, lifecycleHooks);
         return;
     }
-    refreshGitHubTokenIfNeeded(req).catch((error) => {
-        console.error('Background token refresh failed:', error);
+    void refreshGitHubTokenWithResult(req).then((result) => {
+        const userId = req.user?.id;
+        const accessToken = req.user?.accessToken;
+        if (result.status === 'refreshed' && userId && accessToken) {
+            lifecycleHooks.updateNotificationCredential?.(userId, accessToken);
+        }
+    }).catch((error) => {
+        logger.error({ error: error instanceof Error ? error.message : String(error) },
+            'Background GitHub token refresh failed');
     });
-    if (!await activateAuthenticatedEntitlements(req, res, lifecycleHooks)) return;
     next();
 }
 
@@ -358,15 +357,18 @@ async function authenticateExpiredSession(
         res.status(503).json({ error: 'GitHub token refresh unavailable', code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE', message: 'GitHub authentication could not be refreshed right now. Please retry shortly.' });
         return;
     }
-    if (!await activateAuthenticatedEntitlements(req, res, lifecycleHooks)) return;
+    const userId = req.user?.id;
+    const accessToken = req.user?.accessToken;
+    if (refreshResult.status === 'refreshed' && userId && accessToken) {
+        lifecycleHooks.updateNotificationCredential?.(userId, accessToken);
+    }
     next();
 }
 
 async function authenticateBearerRequest(
     req: Request,
     res: Response,
-    next: NextFunction,
-    lifecycleHooks: AuthLifecycleHooks
+    next: NextFunction
 ): Promise<void> {
     const authHeader = req.headers.authorization;
     if (process.env.ENABLE_BEARER_AUTH === 'false' || !authHeader?.startsWith('Bearer ')) {
@@ -384,7 +386,6 @@ async function authenticateBearerRequest(
             return;
         }
         (req as Request & { user: GitHubUser }).user = user;
-        if (!await activateAuthenticatedEntitlements(req, res, lifecycleHooks)) return;
         next();
     } catch {
         res.status(401).json({ error: 'Unauthorized: token validation failed' });

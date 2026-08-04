@@ -7,6 +7,7 @@ import { up as hardenNotificationProjection } from '../../core/src/db/migrations
 import { up as hardenNotificationFollowup } from '../../core/src/db/migrations/20260803020000_harden_notification_followup.js';
 import { up as fenceNotificationEntitlements } from '../../core/src/db/migrations/20260803030000_fence_notification_entitlement_refreshes.js';
 import { up as fenceEntitlementInvalidation } from '../../core/src/db/migrations/20260804000000_fence_notification_entitlement_invalidation.js';
+import { up as fenceSessionGenerations } from '../../core/src/db/migrations/20260804020000_fence_notification_session_generations.js';
 import { replaceNotificationRepositoryEntitlements } from '@propr/core';
 import {
   createGitHubRoutes,
@@ -32,6 +33,7 @@ beforeEach(async () => {
   await hardenNotificationFollowup(database);
   await fenceNotificationEntitlements(database);
   await fenceEntitlementInvalidation(database);
+  await fenceSessionGenerations(database);
 });
 
 afterEach(async () => {
@@ -295,7 +297,7 @@ test('scheduled entitlement refresh does not resurrect an invalidated user', asy
       if (!registration) await new Promise(resolve => setImmediate(resolve));
     }
     assert.ok(registration, 'refreshing replica should register its retained token durably');
-    await logoutReplica.invalidate('logged-out-user');
+    await logoutReplica.invalidate('logged-out-user', 'logged-out-session');
 
     timers.runAll();
     await new Promise(resolve => setImmediate(resolve));
@@ -336,7 +338,7 @@ test('a registration that completes after cross-replica logout cannot clear the 
     } as never, {} as never, () => undefined);
     await waitForSignal(registrationStarted, 'the delayed scheduler registration');
 
-    await logoutReplica.invalidate('registration-race-user');
+    await logoutReplica.invalidate('registration-race-user', 'registration-session');
     releaseRegistration();
     await new Promise(resolve => setImmediate(resolve));
 
@@ -373,7 +375,7 @@ test('cross-replica logout fences an in-flight repository scan commit', async ()
   });
   try {
     await waitForSignal(scanStarted, 'the in-flight entitlement scan');
-    await logoutReplica.invalidate('logout-scan-race-user');
+    await logoutReplica.invalidate('logout-scan-race-user', 'scan-session');
     releaseScan();
 
     assert.equal(await scan, false);
@@ -391,10 +393,10 @@ test('cross-replica logout fences an in-flight repository scan commit', async ()
 test('a successful login activation clears a prior entitlement tombstone', async () => {
   const middleware = createNotificationEntitlementRefreshMiddleware(database);
   try {
-    await middleware.invalidate('returning-user');
+    await middleware.invalidate('returning-user', 'logged-out-generation');
     assert.equal(await ensureEntitlementRefreshRegistration(database, 'returning-user'), false);
 
-    await middleware.activate('returning-user');
+    await middleware.activate('returning-user', 'new-login-generation');
 
     assert.equal(await ensureEntitlementRefreshRegistration(database, 'returning-user'), true);
     const row = await database('notification_repository_entitlement_refresh_leases')
@@ -406,15 +408,62 @@ test('a successful login activation clears a prior entitlement tombstone', async
   }
 });
 
+test('a logged-out session generation cannot clear its tombstone after logout', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    await middleware.activate('logout-request-race-user', 'session-generation-1');
+    await middleware.invalidate('logout-request-race-user', 'session-generation-1');
+
+    await assert.rejects(
+      middleware.activate('logout-request-race-user', 'session-generation-1'),
+      /already been invalidated/
+    );
+    const tombstone = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'logout-request-race-user' })
+      .first('invalidated_at', 'auth_generation');
+    assert.equal(typeof tombstone.invalidated_at, 'string');
+    assert.equal(tombstone.auth_generation, 'session-generation-1');
+
+    await middleware.activate('logout-request-race-user', 'session-generation-2');
+    const active = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'logout-request-race-user' })
+      .first('invalidated_at', 'auth_generation');
+    assert.deepEqual(active, {
+      invalidated_at: null,
+      auth_generation: 'session-generation-2',
+    });
+  } finally {
+    middleware.close();
+  }
+});
+
+test('a fresh login generation replaces an older active generation', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    await middleware.activate('multi-session-user', 'older-login-generation');
+    await middleware.activate('multi-session-user', 'fresh-login-generation');
+
+    const active = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'multi-session-user' })
+      .first('invalidated_at', 'auth_generation');
+    assert.deepEqual(active, {
+      invalidated_at: null,
+      auth_generation: 'fresh-login-generation',
+    });
+  } finally {
+    middleware.close();
+  }
+});
+
 test('repeated authenticated activation does not rotate an active entitlement fence', async () => {
   const middleware = createNotificationEntitlementRefreshMiddleware(database);
   try {
-    await middleware.activate('active-session-user');
+    await middleware.activate('active-session-user', 'active-generation');
     const before = await database('notification_repository_entitlement_refresh_leases')
       .where({ user_id: 'active-session-user' })
       .first('lease_token', 'fencing_token', 'invalidated_at');
 
-    await middleware.activate('active-session-user');
+    await middleware.activate('active-session-user', 'active-generation');
 
     const afterActivation = await database('notification_repository_entitlement_refresh_leases')
       .where({ user_id: 'active-session-user' })
@@ -477,6 +526,29 @@ test('a hung repository scan is aborted and releases its durable lease', async (
     .where({ user_id: 'hung-scan-user' })
     .first('expires_at');
   assert.ok(Date.parse(lease.expires_at) <= Date.now());
+});
+
+test('an already-aborted entitlement refresh rejects without waiting for its deadline', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let operationSignal: AbortSignal | undefined;
+  const startedAt = Date.now();
+
+  await assert.rejects(refreshNotificationRepositoryEntitlements({
+    userId: 'already-aborted-user',
+    accessToken: 'token',
+    database,
+    force: true,
+    operationTimeoutMs: 1_000,
+    signal: controller.signal,
+    listRepositories: async (_token, signal) => {
+      operationSignal = signal;
+      return new Promise<string[]>(() => undefined);
+    },
+  }), /was cancelled/);
+
+  assert.equal(operationSignal?.aborted, true);
+  assert.ok(Date.now() - startedAt < 500);
 });
 
 test('failed entitlement refreshes are throttled until the retry window', async () => {
@@ -585,7 +657,10 @@ test('entitlement invalidation surfaces persistence failures to session cleanup'
   const middleware = createNotificationEntitlementRefreshMiddleware(database);
   await database.schema.dropTable('notification_repository_entitlements');
   try {
-    await assert.rejects(middleware.invalidate('logout-failure-user'), /no such table/);
+    await assert.rejects(
+      middleware.invalidate('logout-failure-user', 'logout-failure-generation'),
+      /no such table/
+    );
   } finally {
     middleware.close();
   }

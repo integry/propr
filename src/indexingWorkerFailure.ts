@@ -3,6 +3,7 @@ import {
     logger,
     clearIndexingRuntimeStateBestEffort,
     createLegacyIndexingRunIdForJob,
+    getRepositoryIndexingTerminalTransition,
     publishIndexingStatus,
     updateRepositoryStatus,
     type IndexingJobData,
@@ -26,6 +27,7 @@ interface IndexingFailureDeps {
     publishIndexingStatus: typeof publishIndexingStatus;
     updateRepositoryStatus: typeof updateRepositoryStatus;
     createLegacyIndexingRunIdForJob: typeof createLegacyIndexingRunIdForJob;
+    getRepositoryIndexingTerminalTransition: typeof getRepositoryIndexingTerminalTransition;
     clearIndexingRuntimeStateBestEffort: typeof clearIndexingRuntimeStateBestEffort;
 }
 
@@ -40,6 +42,7 @@ export async function handleIndexingJobFailure(
         publishIndexingStatus,
         updateRepositoryStatus,
         createLegacyIndexingRunIdForJob,
+        getRepositoryIndexingTerminalTransition,
         clearIndexingRuntimeStateBestEffort,
         ...overrides,
     };
@@ -89,9 +92,34 @@ export async function handleIndexingJobFailure(
         return false;
     }
     if (!transition.applied) {
-        deps.log.warn({ repository: job.data.repository, branch, runId },
-            'Failed indexing job does not own a durable run; retaining it for reconciliation');
-        return false;
+        let durableTerminal: Awaited<ReturnType<typeof getRepositoryIndexingTerminalTransition>>;
+        try {
+            durableTerminal = await deps.getRepositoryIndexingTerminalTransition(
+                job.data.repository,
+                branch,
+                runId
+            );
+        } catch (lookupError) {
+            deps.log.warn({
+                repository: job.data.repository,
+                branch,
+                runId,
+                error: lookupError instanceof Error ? lookupError.message : String(lookupError),
+            }, 'Could not inspect the retained indexing run terminal; retaining failed job');
+            return false;
+        }
+        if (durableTerminal?.status !== 'failed') {
+            deps.log.warn({ repository: job.data.repository, branch, runId },
+                'Failed indexing job does not own a durable run; retaining it for reconciliation');
+            return false;
+        }
+        // The prior attempt committed the terminal row but crashed before queue
+        // cleanup. Replay publication/cleanup using that exact durable identity.
+        transition = {
+            runId,
+            transitionAt: durableTerminal.transitionAt,
+            applied: true,
+        };
     }
     try {
         await deps.publishIndexingStatus(job.data.repository, branch, 'failed', transition);

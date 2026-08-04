@@ -16,10 +16,12 @@ import logger from './logger.js';
 const COALESCED_PROJECTION_ACCEPTED = Promise.resolve();
 const PROJECTION_RETRY_BASE_DELAY_MS = 25;
 const PROJECTION_RETRY_MAX_DELAY_MS = 250;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface NotificationProjectionJob {
     payload: EventPayload;
     terminal: boolean;
+    entityKey?: string;
     coalesceKey?: string;
     attempts: number;
     resolves: Array<() => void>;
@@ -85,6 +87,25 @@ function projectionCoalesceKey(payload: EventPayload): string | undefined {
     }
 }
 
+function projectionEntityKey(payload: EventPayload): string | undefined {
+    switch (payload.eventType) {
+        case TASK_LIVE_UPDATE:
+        case TASK_UPDATE:
+            return `task:${payload.taskId}`;
+        case INDEXING_UPDATE:
+            return JSON.stringify([
+                'indexing',
+                payload.repository.trim().toLowerCase(),
+                payload.branch ?? 'HEAD',
+                payload.runId ?? 'legacy',
+            ]);
+        case DRAFT_UPDATE:
+            return `draft:${payload.draftId}`;
+        default:
+            return undefined;
+    }
+}
+
 function shouldReplaceCoalescedPayload(current: EventPayload, incoming: EventPayload): boolean {
     if (current.eventType !== TASK_LIVE_UPDATE || incoming.eventType !== TASK_LIVE_UPDATE) return true;
     const currentKind = current.activityKind ?? 'progress';
@@ -106,7 +127,22 @@ export class NotificationProjectionQueue {
     private active = 0;
     private closing = false;
 
-    constructor(private readonly options: NotificationProjectionQueueOptions) {}
+    constructor(private readonly options: NotificationProjectionQueueOptions) {
+        if (typeof options.projector !== 'function') {
+            throw new TypeError('projector must be a function');
+        }
+        if (!Number.isSafeInteger(options.maxSize) || options.maxSize <= 0) {
+            throw new TypeError('maxSize must be a positive safe integer');
+        }
+        if (!Number.isSafeInteger(options.concurrency) || options.concurrency <= 0) {
+            throw new TypeError('concurrency must be a positive safe integer');
+        }
+        if (!Number.isSafeInteger(options.drainTimeoutMs)
+            || options.drainTimeoutMs <= 0
+            || options.drainTimeoutMs > MAX_TIMER_DELAY_MS) {
+            throw new TypeError('drainTimeoutMs must be a schedulable positive integer');
+        }
+    }
 
     /** Pending work is globally bounded by maxSize; active work is reported separately. */
     get queueSize(): number { return this.queue.length; }
@@ -116,6 +152,12 @@ export class NotificationProjectionQueue {
     enqueue(payload: EventPayload): Promise<void> | null {
         if (this.closing) return null;
         const terminal = isTerminalProjection(payload);
+        const entityKey = projectionEntityKey(payload);
+        if (!terminal && entityKey
+            && this.queue.some((queued) => queued.terminal && queued.entityKey === entityKey)) {
+            return null;
+        }
+        if (terminal && entityKey) this.discardSupersededNonterminal(entityKey);
         const coalesceKey = projectionCoalesceKey(payload);
         if (coalesceKey) {
             const existing = this.queue.find((job) => job.coalesceKey === coalesceKey);
@@ -132,14 +174,13 @@ export class NotificationProjectionQueue {
         const job: NotificationProjectionJob = {
             payload,
             terminal,
+            entityKey,
             coalesceKey,
             attempts: 0,
             resolves: [resolveCompletion]
         };
         if (this.queue.length >= this.options.maxSize) {
-            const evictIndex = terminal
-                ? this.queue.findIndex((queued) => !queued.terminal)
-                : this.queue.findIndex((queued) => queued.terminal);
+            const evictIndex = this.queue.findIndex((queued) => !queued.terminal);
             if (evictIndex >= 0) {
                 const [evicted] = this.queue.splice(evictIndex, 1);
                 this.resolveJob(evicted);
@@ -148,21 +189,11 @@ export class NotificationProjectionQueue {
                     replacementEventType: payload.eventType
                 }, terminal
                     ? 'Evicted low-priority notification projection for a terminal transition'
-                    : 'Evicted a recoverable terminal projection to retain current liveness');
-            } else if (terminal) {
-                // Terminal source transitions are recovered by the durable
-                // reconciler; never let unique terminal bursts exceed the bound.
-                return null;
+                    : 'Evicted oldest nonterminal notification projection at queue capacity');
             } else {
-                // With only distinct heartbeats pending, retain the freshest
-                // liveness evidence and evict the oldest. This is deliberately
-                // lossy, but the queue's maxSize remains a hard memory bound.
-                const evicted = this.queue.shift()!;
-                this.resolveJob(evicted);
-                logger.debug({
-                    eventType: evicted.payload.eventType,
-                    replacementEventType: payload.eventType
-                }, 'Evicted oldest notification heartbeat at queue capacity');
+                // Never displace terminal transitions with liveness work. A full
+                // terminal backlog remains recoverable by the durable reconciler.
+                return null;
             }
         }
         if (terminal) {
@@ -237,6 +268,11 @@ export class NotificationProjectionQueue {
     }
 
     private requeue(job: NotificationProjectionJob): boolean {
+        if (!job.terminal && job.entityKey
+            && this.queue.some((queued) => queued.terminal && queued.entityKey === job.entityKey)) {
+            return false;
+        }
+        if (job.terminal && job.entityKey) this.discardSupersededNonterminal(job.entityKey);
         if (job.coalesceKey) {
             const newer = this.queue.find((queued) => queued.coalesceKey === job.coalesceKey);
             if (newer) {
@@ -245,9 +281,7 @@ export class NotificationProjectionQueue {
             }
         }
         if (this.queue.length >= this.options.maxSize) {
-            const evictIndex = job.terminal
-                ? this.queue.findIndex((queued) => !queued.terminal)
-                : this.queue.findIndex((queued) => queued.terminal);
+            const evictIndex = this.queue.findIndex((queued) => !queued.terminal);
             // A retry is older than every newly queued heartbeat, so do not
             // displace fresher same-priority liveness work at capacity.
             if (evictIndex < 0) return false;
@@ -257,6 +291,17 @@ export class NotificationProjectionQueue {
         if (job.terminal) this.queue.unshift(job);
         else this.queue.push(job);
         return true;
+    }
+
+    private discardSupersededNonterminal(entityKey: string): void {
+        for (let index = this.queue.length - 1; index >= 0; index--) {
+            const queued = this.queue[index];
+            if (queued.terminal || queued.entityKey !== entityKey) continue;
+            this.queue.splice(index, 1);
+            this.resolveJob(queued);
+            logger.debug({ eventType: queued.payload.eventType, entityKey },
+                'Discarded nonterminal projection superseded by a terminal transition');
+        }
     }
 
     private resolveJob(job: NotificationProjectionJob): void {
