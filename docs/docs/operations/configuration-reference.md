@@ -68,6 +68,7 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | Claude task run timeout. | Optional. |
 | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | Codex task run timeout. | Optional. |
+| `CONTEXT_ANALYSIS_TIMEOUT_MS` | `1800000` (30 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
 | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Antigravity task run timeout. | Optional. |
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |

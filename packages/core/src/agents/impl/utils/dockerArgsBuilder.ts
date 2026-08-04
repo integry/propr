@@ -12,6 +12,7 @@ import logger from '../../../utils/logger.js';
 import { AgentConfig } from '../../types.js';
 import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
+import { createContainerExecutionId } from './containerExecutionId.js';
 
 /**
  * Parameters for building Docker arguments.
@@ -82,8 +83,7 @@ export function buildDockerArgs(
 
     // Generate human-readable container name with unique suffix
     // Use LAST 8 chars of taskId (part of correlationId UUID) for uniqueness
-    const timestamp = Date.now().toString(36);
-    const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
+    const shortTaskId = createContainerExecutionId(taskId);
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = `${config.alias || config.type}-${taskType}-${shortTaskId}`;
 

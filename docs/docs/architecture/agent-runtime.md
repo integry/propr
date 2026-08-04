@@ -49,7 +49,7 @@ Timeouts prevent runaway jobs and make failures visible in task state. Defaults 
 | OpenCode | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 | Mistral Vibe | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | `VIBE_MAX_TURNS` | `1000` |
 
-These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Analysis calls use separate, shorter timeouts.
+These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Planner keyword extraction and semantic relevance scoring default to 30 minutes per call and can be adjusted with `CONTEXT_ANALYSIS_TIMEOUT_MS`.
 
 When an implementation run reaches its execution timeout or maximum turn limit, ProPR preserves any workspace changes produced before the interruption. If changes exist, it commits and pushes them, opens the issue PR or updates the existing follow-up PR, and marks the result as potentially incomplete with the agent's last available summary and explicit remaining-work guidance. Other execution errors still fail normally, and an interrupted run with no changes has nothing to publish.
 

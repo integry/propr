@@ -7,6 +7,7 @@ import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGe
 import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from './docker/repoSetupWrapper.js';
 import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
+import { createContainerExecutionId } from '../agents/impl/utils/containerExecutionId.js';
 
 export class UsageLimitError extends Error {
     resetTimestamp: number;
@@ -242,8 +243,7 @@ export function buildDockerArgs(params: DockerArgsParams): string[] {
     // Generate human-readable container name with unique suffix
     // TaskId format: {repo}-{issue}-{agent}-{model}-{correlationId}
     // Use the LAST 8 chars of taskId (part of correlationId UUID) for uniqueness
-    const timestamp = Date.now().toString(36);
-    const shortId = taskId ? taskId.slice(-8) : timestamp;
+    const shortId = createContainerExecutionId(taskId);
     const containerName = `${agentAlias || 'claude'}-issue-${issueNumber}-${shortId}`;
 
     // Always use stdin for prompt to avoid E2BIG errors with large prompts

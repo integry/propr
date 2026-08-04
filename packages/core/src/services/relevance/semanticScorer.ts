@@ -4,6 +4,7 @@ import { loadFileSummaries, loadDirectorySummaries, FileSummaryRow, DirectorySum
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
+import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 
 // --- Types ---
 
@@ -44,7 +45,6 @@ const CHARS_PER_TOKEN_ESTIMATE = 3;
 
 /** Default maximum tokens per chunk (conservative fallback) */
 const DEFAULT_MAX_CHUNK_TOKENS = 30000;
-const CONTEXT_ANALYSIS_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Percentage of model context window to use for chunks.
@@ -172,7 +172,7 @@ export async function scoreSemanticRelevance(
         // Pass modelId to use the configured context analysis model
         const analysisResult = await agent.analyze(prompt, {
           model: modelId,
-          timeoutMs: CONTEXT_ANALYSIS_TIMEOUT_MS,
+          timeoutMs: resolveContextAnalysisTimeoutMs(),
           executionType: 'context-analysis',
           correlationId,
           repository: repoName,
