@@ -923,6 +923,34 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
     });
 
+    test('prepareAgentsUpdate does not resolve versions for disabled agents', async () => {
+        const resolveVersionMock = mock.fn(async () => {
+            throw new Error('registry unavailable');
+        });
+        const result = await prepareAgentsUpdate([
+            {
+                id: 'disabled-agent',
+                alias: 'disabled-custom',
+                type: 'claude',
+                enabled: false,
+                dockerImage: 'old:image',
+                configPath: '/tmp/claude-disabled',
+                supportedModels: [],
+                cliVersionType: 'custom',
+                cliVersion: 'github:example/claude-fork',
+                cliVersionResolved: 'github:example/claude-fork#resolved',
+            },
+        ], {
+            resolveVersion: resolveVersionMock,
+            computeContentHash: () => 'content-hash',
+            generateAgentBundleImageTag: () => 'propr/agent:test',
+        });
+
+        assert.strictEqual(result.error, undefined);
+        assert.strictEqual(resolveVersionMock.mock.calls.length, 0);
+        assert.strictEqual(result.processedAgents?.[0].cliVersionResolved, 'github:example/claude-fork#resolved');
+    });
+
     test('prepareAgentsUpdate does not mislabel local TypeErrors as registry outages', async () => {
         const result = await prepareAgentsUpdate([
             {

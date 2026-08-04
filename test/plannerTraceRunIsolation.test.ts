@@ -64,4 +64,7 @@ test('run-scoped trace updates include step data and reject stale runs', async (
   const current = await database('task_drafts').where({ draft_id: draftId }).first();
   assert.equal(current.generation_trace, replacementTrace);
   assert.equal(publishDraftUpdate.mock.callCount(), 1);
+  const published = publishDraftUpdate.mock.calls[0].arguments[0];
+  assert.equal(published.runId, firstRunId);
+  assert.equal(published.generationTrace.runId, firstRunId);
 });

@@ -331,7 +331,6 @@ program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
 
 function isCliEntryPoint(): boolean {
-  if (process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT) return false;
   const invocation = process.argv[1];
   if (!invocation) return false;
 

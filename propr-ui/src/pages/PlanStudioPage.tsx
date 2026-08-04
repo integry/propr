@@ -80,9 +80,9 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
   });
 
   useEffect(() => {
-    startPolling();
+    startPolling(draft.generation_trace?.runId);
     return () => stopPolling();
-  }, [startPolling, stopPolling]);
+  }, [draft.generation_trace?.runId, startPolling, stopPolling]);
 
   // Use the trace from the hook if available, otherwise fall back to draft's trace
   const displayTrace = generationTrace || draft.generation_trace;

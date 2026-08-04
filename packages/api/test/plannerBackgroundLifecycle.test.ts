@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, beforeEach, describe, test } from 'node:test';
+import { after, before, beforeEach, describe, mock, test } from 'node:test';
 import knex from 'knex';
 
 process.env.NODE_ENV = 'test';
@@ -9,6 +9,9 @@ const {
   buildPlannerAbortSignalKey,
   checkAbortSignal,
   clearWorkerAbortSignal,
+  plannerAbortSignalKeyForTask,
+  runWithPlannerAbortContext,
+  shouldTerminateAfterAbortLookupFailure,
 } = await import('../../core/src/claude/docker/dockerExecutor.js');
 const { closeConnection } = await import('@propr/core');
 const { persistGenerationCompletion } = await import('../../core/src/services/taskPlanningService.js');
@@ -44,6 +47,20 @@ after(async () => {
 });
 
 describe('planner background abort reconciliation', () => {
+  test('uses the parent planner run marker for nested execution task IDs', async () => {
+    const key = await runWithPlannerAbortContext('draft-parent', 'generation-run-1', async () => (
+      plannerAbortSignalKeyForTask('nested-analysis-task')
+    ));
+    assert.equal(key, buildPlannerAbortSignalKey('draft-parent', 'generation-run-1'));
+  });
+
+  test('tolerates one transient planner abort lookup failure but fails closed on sustained unavailability', () => {
+    const plannerKey = buildPlannerAbortSignalKey('draft-1', 'generation-run-1');
+    assert.equal(shouldTerminateAfterAbortLookupFailure(plannerKey, 1), false);
+    assert.equal(shouldTerminateAfterAbortLookupFailure(plannerKey, 2), true);
+    assert.equal(shouldTerminateAfterAbortLookupFailure('planner:abort:draft-1', 10), false);
+  });
+
   test('keeps the planner marker through Docker detection and background error handling', async t => {
     t.mock.method(console, 'error', () => undefined);
     const draftId = 'refinement-abort-race';
@@ -149,6 +166,62 @@ describe('planner background abort reconciliation', () => {
     const current = await database('task_drafts').where({ draft_id: draftId }).first();
     assert.equal(current.status, 'draft');
     assert.equal(current.generation_trace, cancellationTrace);
+  });
+
+  test('retries a failure CAS miss while the same generation run remains active', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    t.mock.method(console, 'log', () => undefined);
+    const draftId = 'generation-failure-cas-race';
+    const runId = 'generation-run-cas';
+    const initialTrace = JSON.stringify({
+      steps: [{ name: 'context', status: 'in_progress' }],
+      runId,
+    });
+    const racedTrace = JSON.stringify({
+      steps: [{ name: 'context', status: 'completed' }, { name: 'llm', status: 'in_progress' }],
+      runId,
+    });
+    await database('task_drafts').insert({
+      draft_id: draftId,
+      status: 'generating',
+      generation_trace: initialTrace,
+    });
+    await database.raw(`
+      CREATE TRIGGER generation_failure_cas_race
+      BEFORE UPDATE OF status ON task_drafts
+      WHEN OLD.draft_id = '${draftId}'
+        AND NEW.status = 'failed'
+        AND OLD.generation_trace = '${initialTrace}'
+      BEGIN
+        UPDATE task_drafts SET generation_trace = '${racedTrace}' WHERE draft_id = OLD.draft_id;
+        SELECT RAISE(IGNORE);
+      END
+    `);
+    const publishDraftUpdate = mock.fn(async (payload: { runId?: string }) => typeof payload === 'object');
+
+    try {
+      await runBackgroundGeneration({
+        db: database,
+        draftId,
+        worktreePath: '/tmp/worktree',
+        authToken: 'token',
+        correlationId: runId,
+        runId,
+      }, {
+        generate: async () => { throw new Error('generation failed'); },
+        getPublisher: () => ({ publishDraftUpdate }) as never,
+      });
+    } finally {
+      await database.raw('DROP TRIGGER IF EXISTS generation_failure_cas_race');
+    }
+
+    const current = await database('task_drafts').where({ draft_id: draftId }).first();
+    const failure = JSON.parse(current.generation_trace);
+    assert.equal(current.status, 'failed');
+    assert.equal(failure.runId, runId);
+    assert.deepEqual(failure.steps.map((step: { status: string }) => step.status), ['completed', 'failed']);
+    assert.equal(publishDraftUpdate.mock.callCount(), 1);
+    assert.equal(publishDraftUpdate.mock.calls[0].arguments[0].runId, runId);
   });
 
   test('recovers the active refinement when abort lookup is unavailable', async t => {

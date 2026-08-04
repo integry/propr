@@ -58,7 +58,7 @@ describe('incremental task live updates', () => {
     expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toHaveLength(2);
   });
 
-  it('keeps repeated legacy output at different timestamps while deduplicating resends', () => {
+  it('deduplicates legacy resends even when a fallback timestamp is regenerated', () => {
     const firstEvent = {
       type: 'thought' as const,
       content: 'Repeated output',
@@ -75,7 +75,6 @@ describe('incremental task live updates', () => {
 
     expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toEqual([
       firstEvent,
-      { ...firstEvent, timestamp: '2026-08-03T00:00:01.000Z' },
     ]);
   });
 

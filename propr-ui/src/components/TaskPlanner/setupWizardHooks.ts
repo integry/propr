@@ -27,7 +27,7 @@ export interface Repo { name: string; enabled: boolean; baseBranch?: string; sta
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[]; contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 
 interface RepoInfoState { isLoading: boolean; error: string | null; }
-interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: () => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
+interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: (runId?: string) => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
 interface DraftCreationParams { selectedRepo: string; config: PlannerConfig; localFiles: File[]; onDraftCreated?: (draftId: string) => void; navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; todoIds?: string[]; }
 interface GenerateDisabledParams { isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean; isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string; }
 
@@ -221,8 +221,8 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
           return;
         }
       }
-      startPolling();
-      await generatePlan(draft.draft_id, buildGenerationPayload(config));
+      const generation = await generatePlan(draft.draft_id, buildGenerationPayload(config));
+      startPolling(generation.runId);
     } catch (err) {
       stopPolling();
       setError((err as Error).message || 'Failed to start plan generation');
@@ -260,9 +260,10 @@ export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCrea
         try { await uploadAttachment(newDraft.draft_id, file); } catch (uploadErr) { console.error('Failed to upload attachment:', uploadErr); }
       }
       if (onDraftCreated) onDraftCreated(newDraft.draft_id);
-      await generatePlan(newDraft.draft_id, buildGenerationPayload(config));
+      const generation = await generatePlan(newDraft.draft_id, buildGenerationPayload(config));
       const draftWithPlan = constructDraftWithPlan(newDraft, draftSetupSnapshot);
       draftWithPlan.status = 'generating';
+      draftWithPlan.generation_trace = { steps: [], runId: generation.runId };
       navigate(`/studio/${newDraft.draft_id}`, { replace: true, state: { initialDraft: draftWithPlan, initialBaseBranch: config.baseBranch, baseBranchPersistenceWarning } });
     } catch (err) {
       setError((err as Error).message || 'Failed to create draft');

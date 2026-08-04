@@ -17,6 +17,7 @@ import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodePa
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
 import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 import { parseRedisOutput } from '../services/redisOutputParser.js';
+import { withStableLiveEventIds } from '../services/liveEventIds.js';
 
 export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
@@ -79,7 +80,10 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
       }
       const result = await parseClaudeConversationFile(conversationPath);
       console.log(`[live-details] Returning: ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
-      res.json(result);
+      res.json({
+        ...result,
+        events: withStableLiveEventIds(taskId, 'conversation', result.events, result.events.length),
+      });
     } catch (error) {
       console.error(`Error in /api/task/:taskId/live-details:`, error);
       res.status(500).json({ error: 'Internal server error' });
@@ -241,7 +245,7 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
   const redisParsed = parseRedisOutput(output.split('\n').filter(line => line.trim()), { executionStartTimestamp });
   if (redisParsed.events.length > 0 || redisParsed.todos.length > 0 || redisParsed.currentTask || redisParsed.tokenUsage) {
     return {
-      events: redisParsed.events as unknown as Array<Record<string, unknown>>,
+      events: withStableLiveEventIds(taskId, 'redis', redisParsed.events, redisParsed.totalEventCount) as unknown as Array<Record<string, unknown>>,
       todos: redisParsed.todos,
       currentTask: redisParsed.currentTask,
       tokenUsage: redisParsed.tokenUsage

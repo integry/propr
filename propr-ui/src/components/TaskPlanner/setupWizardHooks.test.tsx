@@ -21,7 +21,12 @@ const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
 describe('useGenerationHandlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGeneratePlan.mockResolvedValue(undefined);
+    mockGeneratePlan.mockResolvedValue({
+      success: true,
+      status: 'generating',
+      message: 'Plan generation started',
+      runId: 'generation-run-1',
+    });
   });
 
   it('waits for a stale context preview before starting generation', async () => {

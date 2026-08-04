@@ -27,24 +27,47 @@ jobs:
           echo "Checkout outcome: ${{ steps.checkout.outcome }}" >> build_log.txt
 
       - name: Lint GitHub Actions workflows
-        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
-        with:
-          # Standalone shellcheck below owns the release scripts; disabling
-          # actionlint's embedded shellcheck keeps this step focused on YAML
-          # structure and Actions expressions.
-          args: -color -shellcheck=
+        id: actionlint
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- GitHub Actions workflow lint ---"
+            # Standalone shellcheck below owns the release scripts; disabling
+            # actionlint's embedded shellcheck keeps this focused on workflows.
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE:/work:ro" \
+              --workdir /work \
+              rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+              -color -shellcheck=
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Lint release shell scripts
+        id: release_shellcheck
+        continue-on-error: true
         run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/work:ro" \
-            --workdir /work \
-            --entrypoint shellcheck \
-            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
-            --exclude=SC2016 \
-            scripts/build-images.sh \
-            scripts/ci-redis.sh \
-            scripts/smoke-test-images.sh
+          set -euo pipefail
+          {
+            echo
+            echo "--- Release shell script lint ---"
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE:/work:ro" \
+              --workdir /work \
+              --entrypoint shellcheck \
+              rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+              --exclude=SC2016 \
+              scripts/build-images.sh \
+              scripts/ci-redis.sh \
+              scripts/smoke-test-images.sh
+          } > >(tee -a build_log.txt) 2>&1
+
+      - name: Enforce pre-setup validation
+        id: preflight
+        if: steps.actionlint.outcome == 'failure' || steps.release_shellcheck.outcome == 'failure'
+        run: |
+          echo "Pre-setup validation failed; see captured lint output above." | tee -a build_log.txt >&2
+          exit 1
 
       - name: Set up Node.js
         id: node
@@ -171,8 +194,8 @@ jobs:
           echo "Starting changed-area validation process..." >> build_log.txt
           SHARED_BUILT=0
           SHARED_FAILED=0
-          CORE_PKG_BUILT=0
-          CORE_PKG_FAILED=0
+          CORE_BUILD_ATTEMPTED=0
+          CORE_BUILD_FAILED=0
 
           build_shared_once() {
             if [ $SHARED_BUILT -eq 1 ]; then
@@ -191,18 +214,18 @@ jobs:
           }
 
           build_core_package_once() {
-            if [ $CORE_PKG_BUILT -eq 1 ]; then
-              return $CORE_PKG_FAILED
+            if [ $CORE_BUILD_ATTEMPTED -eq 1 ]; then
+              return $CORE_BUILD_FAILED
             fi
 
             echo "Building @propr/core (dependency)..."
             CORE_BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
-              CORE_PKG_FAILED=1
-              CORE_PKG_BUILT=1
+              CORE_BUILD_FAILED=1
+              CORE_BUILD_ATTEMPTED=1
               return 1
             }
 
-            CORE_PKG_BUILT=1
+            CORE_BUILD_ATTEMPTED=1
             return 0
           }
 
@@ -324,39 +347,39 @@ jobs:
           # --- CORE PACKAGE ---
           if [ "${{ steps.filter.outputs.core_package }}" == 'true' ]; then
             echo -e "\n--- Core Package: Build & Lint ---" >> build_log.txt
-            CORE_PKG_FAILED=0
+            CORE_SECTION_FAILED=0
 
             # Dependencies already installed in earlier step
             if ! build_shared_once; then
               echo "❌ Shared Package Build FAILED (core dependency)" >> build_log.txt
               echo "$SHARED_OUTPUT" >> build_log.txt
-              CORE_PKG_FAILED=1
+              CORE_SECTION_FAILED=1
               EXIT_CODE=1
             fi
 
-            if [ $CORE_PKG_FAILED -eq 0 ]; then
+            if [ $CORE_SECTION_FAILED -eq 0 ]; then
               # 1. Build Verification
               if ! build_core_package_once; then
                 echo "❌ Core Package Build FAILED" >> build_log.txt
                 echo "$CORE_BUILD_OUTPUT" >> build_log.txt
-                CORE_PKG_FAILED=1
+                CORE_SECTION_FAILED=1
                 EXIT_CODE=1
               fi
-              if [ $CORE_PKG_FAILED -eq 0 ]; then
+              if [ $CORE_SECTION_FAILED -eq 0 ]; then
                 echo "✅ Core Package Build passed" >> build_log.txt
               fi
             fi
 
-            if [ $CORE_PKG_FAILED -eq 0 ]; then
+            if [ $CORE_SECTION_FAILED -eq 0 ]; then
               # 2. Lint Verification
               echo "Linting @propr/core..."
               LINT_OUTPUT=$(npm run lint -w @propr/core -- --max-warnings 0 2>&1) || {
                 echo "❌ Core Package Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
-                CORE_PKG_FAILED=1
+                CORE_SECTION_FAILED=1
                 EXIT_CODE=1
               }
-              if [ $CORE_PKG_FAILED -eq 0 ]; then
+              if [ $CORE_SECTION_FAILED -eq 0 ]; then
                 echo "✅ Core Package Lint passed" >> build_log.txt
               fi
             fi
@@ -438,6 +461,9 @@ jobs:
           {
             echo
             echo "--- Stage outcomes ---"
+            echo "Workflow lint: ${{ steps.actionlint.outcome }}"
+            echo "Release shell lint: ${{ steps.release_shellcheck.outcome }}"
+            echo "Pre-setup gate: ${{ steps.preflight.outcome }}"
             echo "Node setup: ${{ steps.node.outcome }}"
             echo "Toolchain: ${{ steps.toolchain.outcome }}"
             echo "Dependency install: ${{ steps.install.outcome }}"

@@ -29,6 +29,7 @@ import {
   recoverStaleRefinement,
   releaseDraftPreparation,
   setupRepoContext,
+  selectRefinementModel,
   validateRefineInput,
   GenerateRequestBody
 } from './plannerHelpers/index.js';
@@ -43,28 +44,6 @@ function validateGenerateRequest(body: GenerateRequestBody): string | undefined 
     return 'excludedFiles must be an array of strings';
   }
   return undefined;
-}
-
-/**
- * Extract the model a plan was generated with from a draft's context_config
- * (stored as JSON text in SQLite or an object elsewhere). Returns undefined when
- * absent/unparseable so callers fall back to the planner generation setting.
- */
-function parseDraftGenerationModel(contextConfig: unknown): string | undefined {
-  if (!contextConfig) return undefined;
-  try {
-    const config = typeof contextConfig === 'string' ? JSON.parse(contextConfig) : contextConfig;
-    const model = (config as { generationModel?: unknown })?.generationModel;
-    return typeof model === 'string' && model.trim() ? model : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function selectRefinementModel(
-  requestedModel: string | undefined, contextConfig: unknown, configuredModel: string | undefined
-): string | undefined {
-  return requestedModel || parseDraftGenerationModel(contextConfig) || configuredModel;
 }
 
 export function createGenerateHandler(db: Knex) {
@@ -118,7 +97,7 @@ export function createGenerateHandler(db: Knex) {
         return;
       }
 
-      res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
+      res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started', runId: correlationId });
 
       void runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId, runId: correlationId });
     } catch (error) {

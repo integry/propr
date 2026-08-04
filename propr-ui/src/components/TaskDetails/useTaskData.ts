@@ -62,7 +62,6 @@ const eventFingerprint = (event: LiveDetails['events'][number]) => {
   if (event.toolUseId) return `tool:${event.type}:${event.toolUseId}`;
   return `legacy:${JSON.stringify({
     type: event.type,
-    timestamp: event.timestamp,
     content: event.content,
     toolName: event.toolName,
     input: event.input,

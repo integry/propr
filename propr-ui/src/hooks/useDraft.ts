@@ -137,6 +137,10 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
       if (!currentDraft || currentDraft.draft_id !== payload.draftId) {
         return currentDraft;
       }
+      const activeRunId = currentDraft.generation_trace?.runId;
+      if (activeRunId && payload.runId !== activeRunId) {
+        return currentDraft;
+      }
 
       return parseJsonFields({
         ...currentDraft,
@@ -149,6 +153,8 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
   // Handle draft update from WebSocket
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId) return;
+    const activeRunId = draft?.generation_trace?.runId;
+    if (activeRunId && payload.runId !== activeRunId) return;
 
     console.log('[useDraft] Received draft update via WebSocket:', payload);
     applySocketSnapshot(payload);
@@ -158,7 +164,7 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     if (payload.draftStatus && payload.draftStatus !== 'generating') {
       await fetchDraft(false);
     }
-  }, [draftId, applySocketSnapshot, fetchDraft]);
+  }, [draftId, draft?.generation_trace?.runId, applySocketSnapshot, fetchDraft]);
 
   // Subscribe to WebSocket events for this draft when generating
   useEffect(() => {

@@ -3,7 +3,7 @@
  */
 
 import { generateAdditionalContext } from '../context/index.js';
-import { updateTrace, updateTraceForRun } from '../planning/index.js';
+import { updateTraceForRun } from '../planning/index.js';
 import type { AdditionalContextOptions, AdditionalContextResult } from './types.js';
 
 /**
@@ -44,11 +44,7 @@ export async function generateAdditionalContextIfNeeded(options: AdditionalConte
         totalTokens: additionalContextResult.totalTokens,
         errors: additionalContextResult.errors
       };
-      if (runId) {
-        await updateTraceForRun(draftId, 'additional_context', 'completed', { expectedRunId: runId, data: traceData });
-      } else {
-        await updateTrace(draftId, 'additional_context', 'completed', traceData);
-      }
+      await updateTraceForRun(draftId, 'additional_context', 'completed', { expectedRunId: runId, data: traceData });
     }
 
     if (additionalContextResult.errors.length > 0) {

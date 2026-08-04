@@ -120,6 +120,7 @@ jobs:
     name: Build and Smoke Test CLI
     needs: validate-release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -163,6 +164,7 @@ jobs:
     name: Build, Smoke Test, Push
     needs: [validate-release, prepare-cli]
     runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 180
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
@@ -300,6 +302,7 @@ jobs:
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: [validate-release, prepare-cli, build-smoke-and-push]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -360,6 +363,7 @@ jobs:
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: [validate-release, build-smoke-and-push, publish-cli]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -390,6 +394,7 @@ jobs:
     if: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || inputs.push_latest }}
     needs: [validate-release, publish-github-release]
     runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write

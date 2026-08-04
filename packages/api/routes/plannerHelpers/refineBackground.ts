@@ -26,6 +26,35 @@ export interface BackgroundRefinementDependencies {
   refine?: typeof refinePlan;
 }
 
+async function closeAbortRedis(redis: Redis): Promise<void> {
+  try {
+    await redis.quit();
+  } catch (closeError) {
+    console.error('[refine] Failed to close abort-check Redis connection gracefully:', closeError);
+    try {
+      redis.disconnect();
+    } catch (disconnectError) {
+      console.error('[refine] Failed to disconnect abort-check Redis connection:', disconnectError);
+    }
+  }
+}
+
+function createRefinementAbortChecker(
+  draftId: string,
+  runId: string,
+  override?: () => Promise<boolean>,
+): { check: () => Promise<boolean>; close: () => Promise<void> } {
+  if (override) return { check: override, close: async () => undefined };
+  const redis = new Redis({
+    host: process.env.REDIS_HOST || 'redis',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+  });
+  return {
+    check: async () => !!(await redis.get(buildPlannerAbortSignalKey(draftId, runId))),
+    close: () => closeAbortRedis(redis),
+  };
+}
+
 function parseRefinementRunId(raw: unknown): string | undefined {
   try {
     const metadata = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -65,27 +94,10 @@ export async function runBackgroundRefinement(
 ): Promise<void> {
   const { db, draftId, currentPlan, instruction, generationModel, correlationId, accessToken, runId } = options;
 
-  // Helper to check if refinement was aborted
-  const checkAborted = dependencies.checkAborted ?? (async (): Promise<boolean> => {
-    const redis = new Redis({
-      host: process.env.REDIS_HOST || 'redis',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10)
-    });
-    try {
-      return !!(await redis.get(buildPlannerAbortSignalKey(draftId, runId)));
-    } finally {
-      try {
-        await redis.quit();
-      } catch (closeError) {
-        console.error('[refine] Failed to close abort-check Redis connection gracefully:', closeError);
-        try {
-          redis.disconnect();
-        } catch (disconnectError) {
-          console.error('[refine] Failed to disconnect abort-check Redis connection:', disconnectError);
-        }
-      }
-    }
-  });
+  // Reuse one connection for all checks in this refinement instead of opening a
+  // new Redis connection before and after every LLM execution.
+  const abortChecker = createRefinementAbortChecker(draftId, runId, dependencies.checkAborted);
+  const checkAborted = abortChecker.check;
   const loadRepoContext = dependencies.getRepoContext ?? getRefineRepoContext;
   const executeRefinement = dependencies.refine ?? refinePlan;
 
@@ -175,5 +187,7 @@ export async function runBackgroundRefinement(
     if (!persisted) {
       console.log(`[refine] Refinement run ${runId} is no longer active for draft ${draftId}, not saving failure`);
     }
+  } finally {
+    await abortChecker.close();
   }
 }

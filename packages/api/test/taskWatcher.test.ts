@@ -5,7 +5,7 @@ import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import type { Server as SocketIOServer } from 'socket.io';
 import { db } from '@propr/core';
-import { TaskWatcherManager } from '../services/taskWatcher.js';
+import { TaskWatcherManager, withStableLiveEventIds } from '../services/taskWatcher.js';
 
 after(async () => {
   await db.destroy();
@@ -29,6 +29,20 @@ function taskState(sessionId = 'unknown'): string {
 }
 
 describe('TaskWatcherManager', () => {
+  test('assigns stable sequence IDs independently of regenerated timestamps', () => {
+    const first = withStableLiveEventIds('task-1', 'redis', [
+      { type: 'thought', content: 'same', timestamp: '2026-08-04T00:00:00Z' },
+      { type: 'thought', content: 'same', timestamp: '2026-08-04T00:00:01Z' },
+    ], 12);
+    const reparsed = withStableLiveEventIds('task-1', 'redis', [
+      { type: 'thought', content: 'same', timestamp: '2026-08-04T01:00:00Z' },
+      { type: 'thought', content: 'same', timestamp: '2026-08-04T01:00:01Z' },
+    ], 12);
+
+    assert.deepEqual(first.map(event => event.id), ['live:task-1:redis:10', 'live:task-1:redis:11']);
+    assert.deepEqual(reparsed.map(event => event.id), first.map(event => event.id));
+  });
+
   afterEach(() => mock.restoreAll());
 
   test('uses Redis output before trying to prepare a Claude log directory', async () => {

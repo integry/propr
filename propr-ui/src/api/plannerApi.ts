@@ -5,6 +5,7 @@ export type {
   GenerationStepData,
   GenerationStep,
   GenerationTrace,
+  GenerationStartResponse,
   PlannerAttachment,
   PlannerDraft,
   ContextStats,
@@ -40,6 +41,7 @@ import type {
   PreviewResult,
   PendingPreviewResult,
   PlanGenerationOptions,
+  GenerationStartResponse,
   CreateDraftOptions,
   DraftWithPlan,
   PlanTask,
@@ -116,7 +118,7 @@ export const removeAttachment = async (draftId: string, attachmentId: string): P
   await handleApiResponse(response);
 };
 
-export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<void> => {
+export const generatePlan = async (draftId: string, options?: PlanGenerationOptions): Promise<GenerationStartResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/planner/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -124,6 +126,7 @@ export const generatePlan = async (draftId: string, options?: PlanGenerationOpti
     credentials: 'include'
   });
   await handleApiResponse(response);
+  return response.json();
 };
 
 export const previewContext = async (options: PreviewOptions, signal?: AbortSignal): Promise<PreviewResult | PendingPreviewResult> => {

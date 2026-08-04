@@ -13,8 +13,67 @@ export interface BackgroundGenerationDependencies {
   getPublisher?: typeof getEventPublisher;
 }
 
+const FAILURE_PERSIST_ATTEMPTS = 3;
+
+/** Select the request override, then the model persisted on the draft, then the global default. */
+export function selectRefinementModel(
+  requestedModel: string | undefined,
+  contextConfig: unknown,
+  configuredModel: string | undefined,
+): string | undefined {
+  let draftModel: string | undefined;
+  if (contextConfig) {
+    try {
+      const config = typeof contextConfig === 'string' ? JSON.parse(contextConfig) : contextConfig;
+      const model = (config as { generationModel?: unknown })?.generationModel;
+      draftModel = typeof model === 'string' && model.trim() ? model : undefined;
+    } catch { /* fall through to the configured model */ }
+  }
+  return requestedModel || draftModel || configuredModel;
+}
+
 function buildFailureTraceSnapshot(trace: DraftUpdateGenerationTrace): DraftUpdateGenerationTrace {
   return buildDraftUpdateTraceSnapshot(trace);
+}
+
+async function persistGenerationFailure(
+  db: Knex,
+  draftId: string,
+  runId: string,
+  error: unknown,
+): Promise<DraftUpdateGenerationTrace | null> {
+  for (let attempt = 1; attempt <= FAILURE_PERSIST_ATTEMPTS; attempt += 1) {
+    const draft = await db('task_drafts').where({ draft_id: draftId }).first();
+    const existingTrace = parseGenerationTrace(draft?.generation_trace);
+    if (draft?.status !== 'generating' || existingTrace.runId !== runId) {
+      console.log(`[generate] Generation run ${runId} is no longer active for draft ${draftId}, not saving failure`);
+      return null;
+    }
+
+    const failedTrace: DraftUpdateGenerationTrace = {
+      steps: existingTrace.steps.map((step) =>
+        step.status === 'pending' || step.status === 'in_progress' ? { ...step, status: 'failed' as const } : step
+      ),
+      runId,
+      error: error instanceof Error ? error.message : 'Plan generation failed',
+      failedAt: new Date().toISOString(),
+    };
+    let failureQuery = db('task_drafts').where({ draft_id: draftId, status: 'generating' });
+    failureQuery = draft.generation_trace == null
+      ? failureQuery.whereNull('generation_trace')
+      : failureQuery.where('generation_trace', draft.generation_trace);
+    const failedRows = await failureQuery.update({
+      status: 'failed',
+      generation_trace: JSON.stringify(failedTrace),
+      updated_at: db.fn.now(),
+    });
+    if (Number(failedRows) === 1) return failedTrace;
+
+    console.log(`[generate] Generation run ${runId} trace changed during failure persistence for draft ${draftId}; reconciling (attempt ${attempt})`);
+  }
+
+  console.error(`[generate] Could not persist failure for active generation run ${runId} after ${FAILURE_PERSIST_ATTEMPTS} attempts`);
+  return null;
 }
 
 export async function updateDraftContextConfig(
@@ -69,45 +128,17 @@ export async function runBackgroundGeneration(
   } catch (error) {
     console.error(`[generate] Plan generation failed for draft ${draftId}:`, error);
     try {
-      // Get the exact active-run snapshot so an abort or replacement run wins
-      // any race before failure persistence.
-      const draft = await db('task_drafts').where({ draft_id: draftId }).first();
-      const existingTrace = parseGenerationTrace(draft?.generation_trace);
-      if (draft?.status !== 'generating' || existingTrace.runId !== runId) {
-        console.log(`[generate] Generation run ${runId} is no longer active for draft ${draftId}, not saving failure`);
-        return;
-      }
-
-      // Mark any non-completed steps as failed and add error info
-      const updatedSteps = existingTrace.steps.map((step) =>
-        step.status === 'pending' || step.status === 'in_progress' ? { ...step, status: 'failed' as const } : step
-      );
-
-      const failedTrace: DraftUpdateGenerationTrace = {
-        steps: updatedSteps,
-        error: error instanceof Error ? error.message : 'Plan generation failed',
-        failedAt: new Date().toISOString()
-      };
-
-      let failureQuery = db('task_drafts').where({ draft_id: draftId, status: 'generating' });
-      failureQuery = draft.generation_trace == null
-        ? failureQuery.whereNull('generation_trace')
-        : failureQuery.where('generation_trace', draft.generation_trace);
-      const failedRows = await failureQuery.update({
-        status: 'failed',
-        generation_trace: JSON.stringify(failedTrace),
-        updated_at: db.fn.now()
-      });
-      if (Number(failedRows) !== 1) {
-        console.log(`[generate] Generation run ${runId} changed before failure persistence for draft ${draftId}`);
-        return;
-      }
+      // Re-read and retry a CAS miss when a same-run trace update won the race.
+      // Abort or replacement runs still win because their status/run ID differs.
+      const failedTrace = await persistGenerationFailure(db, draftId, runId, error);
+      if (!failedTrace) return;
 
       // Emit failure event so the UI can transition without polling
       const eventPublisher = (dependencies.getPublisher ?? getEventPublisher)();
       const failureSnapshot = buildFailureTraceSnapshot(failedTrace);
       const published = await eventPublisher.publishDraftUpdate({
         draftId,
+        runId,
         step: 'complete',
         status: 'failed',
         draftStatus: 'failed',
