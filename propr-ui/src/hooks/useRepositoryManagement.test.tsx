@@ -11,6 +11,7 @@ import {
   updateRepoConfig
 } from '../api/proprApi';
 import { triggerRepositoryIndexing } from '../api/repoIndexingApi';
+import { CommittedConfigWriteError } from '../api/apiClient';
 
 const authState = vi.hoisted(() => ({
   permissions: ['instance.manage_settings']
@@ -108,7 +109,7 @@ describe('useRepositoryManagement', () => {
     mockGetUserRepoPreferences.mockResolvedValue({});
     mockStopRepositoryIndexing.mockResolvedValue({ success: true });
     mockTriggerRepositoryIndexing.mockResolvedValue({ success: true });
-    mockUpdateRepoConfig.mockResolvedValue({});
+    mockUpdateRepoConfig.mockResolvedValue({ success: true, repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] });
   });
 
   afterEach(() => {
@@ -178,6 +179,37 @@ describe('useRepositoryManagement', () => {
 
     expect(result.current.repos[0].enabled).toBe(true);
     expect(mockUpdateRepoConfig).not.toHaveBeenCalled();
+  });
+
+  it('reloads authoritative repositories before surfacing a committed-write warning', async () => {
+    mockGetRepoConfig
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] })
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-current', name: 'integry/propr', enabled: true, alias: 'server-current', baseBranch: 'release/2026' }] });
+    mockUpdateRepoConfig.mockRejectedValueOnce(new CommittedConfigWriteError(409, {
+      committed: true,
+      warning: 'Repositories were saved, but the lock was lost afterward.',
+      lock_lost_after_commit: true,
+    }));
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    await waitFor(() => expect(result.current.saveStatus).toBe('error'));
+    expect(mockGetRepoConfig).toHaveBeenCalledTimes(2);
+    expect(result.current.repos[0]).toMatchObject({ id: 'repo-current', enabled: true, alias: 'server-current' });
+    expect(result.current.error).toContain('saved');
+  });
+
+  it('blocks a blind retry when committed repository state cannot be refreshed', async () => {
+    mockGetRepoConfig
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] })
+      .mockRejectedValueOnce(new Error('refresh unavailable'));
+    mockUpdateRepoConfig.mockRejectedValueOnce(new CommittedConfigWriteError(500, { committed: true, error: 'Repositories were saved, but publication failed.' }));
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    await waitFor(() => expect(result.current.saveStatus).toBe('error'));
+    expect(result.current.error).toContain('Reload this page before editing repositories again');
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id)); expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1);
   });
 
   it('applies branch-aware websocket updates and clears stale progress for terminal states', async () => {

@@ -3,7 +3,6 @@
  */
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
-import { Redis } from 'ioredis';
 import {
   executeDraft,
   generateCorrelationId,
@@ -12,9 +11,9 @@ import {
   estimateTokens,
   REFINER_SYSTEM_PROMPT,
   getEventPublisher,
-  resolveConfiguredModel
+  resolveConfiguredModel,
+  type Plan
 } from '@propr/core';
-import type { Plan } from '@propr/core';
 import {
   checkDbAndAuth,
   sendCheckError,
@@ -30,6 +29,7 @@ import {
   recoverStaleRefinement,
   releaseDraftPreparation,
   setupRepoContext,
+  selectRefinementModel,
   validateRefineInput,
   GenerateRequestBody
 } from './plannerHelpers/index.js';
@@ -44,37 +44,6 @@ function validateGenerateRequest(body: GenerateRequestBody): string | undefined 
     return 'excludedFiles must be an array of strings';
   }
   return undefined;
-}
-
-async function clearAbortSignal(draftId: string): Promise<void> {
-  const redis = new Redis({
-    host: process.env.REDIS_HOST || 'redis',
-    port: parseInt(process.env.REDIS_PORT || '6379', 10)
-  });
-  await redis.del(`planner:abort:${draftId}`);
-  await redis.quit();
-}
-
-/**
- * Extract the model a plan was generated with from a draft's context_config
- * (stored as JSON text in SQLite or an object elsewhere). Returns undefined when
- * absent/unparseable so callers fall back to the planner generation setting.
- */
-function parseDraftGenerationModel(contextConfig: unknown): string | undefined {
-  if (!contextConfig) return undefined;
-  try {
-    const config = typeof contextConfig === 'string' ? JSON.parse(contextConfig) : contextConfig;
-    const model = (config as { generationModel?: unknown })?.generationModel;
-    return typeof model === 'string' && model.trim() ? model : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function selectRefinementModel(
-  requestedModel: string | undefined, contextConfig: unknown, configuredModel: string | undefined
-): string | undefined {
-  return requestedModel || parseDraftGenerationModel(contextConfig) || configuredModel;
 }
 
 export function createGenerateHandler(db: Knex) {
@@ -121,20 +90,16 @@ export function createGenerateHandler(db: Knex) {
       await updateDraftContextConfig(db, draftId, draft, { baseBranch, granularity, contextLevel, compress, contextRepositories, generationModel, excludedFiles });
 
       generationClaimed = await claimDraftOperation(db, draftId, 'generating', {
-        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString() })
+        generation_trace: JSON.stringify({ steps: [], startedAt: new Date().toISOString(), runId: correlationId })
       });
       if (!generationClaimed) {
         res.status(409).json({ error: 'Another operation is already running for this draft' });
         return;
       }
 
-      // Only the request that won the database claim may clear an old abort
-      // signal. A concurrent loser must not erase an abort for the active run.
-      await clearAbortSignal(draftId);
+      res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started', runId: correlationId });
 
-      res.status(202).json({ success: true, status: 'generating', message: 'Plan generation started' });
-
-      runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId });
+      void runBackgroundGeneration({ db, draftId, worktreePath, authToken, correlationId, runId: correlationId });
     } catch (error) {
       console.error('Generate plan error:', error);
       if (generationClaimed && !res.headersSent) {
@@ -227,7 +192,8 @@ export function createRefineHandler(db: Knex) {
         model: generationModel,
         estimatedDuration: estimation.estimatedDurationMs,
         isHistoricalEstimate: estimation.isHistoricalEstimate,
-        sampleCount: estimation.sampleCount
+        sampleCount: estimation.sampleCount,
+        runId: correlationId
       };
 
       refinementClaimed = await claimDraftOperation(db, draftId, 'refining', {
@@ -237,10 +203,6 @@ export function createRefineHandler(db: Knex) {
         res.status(409).json({ error: 'Another operation is already running for this draft' });
         return;
       }
-
-      // Clear an abort from an earlier run only after this request has won the
-      // claim, otherwise a duplicate request could cancel the active abort.
-      await clearAbortSignal(draftId);
 
       // Return 202 Accepted immediately - client should poll for status
       res.status(202).json({ success: true, status: 'refining', message: 'Plan refinement started' });
@@ -253,8 +215,9 @@ export function createRefineHandler(db: Knex) {
         instruction,
         generationModel,
         correlationId,
-        accessToken: req.user!.accessToken || ''
-      });
+        accessToken: req.user!.accessToken || '',
+        runId: correlationId
+      }).catch(error => console.error(`[refine] Detached refinement failed for draft ${draftId}:`, error));
     } catch (error) {
       console.error('Refine plan error:', error);
       if (refinementClaimed && !res.headersSent) {
@@ -361,94 +324,6 @@ export function createFinalizeHandler(db: Knex) {
         }
       }
     })();
-  };
-}
-
-export function createAbortGenerationHandler(db: Knex) {
-  return async function abortGeneration(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(db, req.user?.id);
-    if (!check.valid) { sendCheckError(res, check); return; }
-
-    const { draftId } = req.body;
-    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
-
-    try {
-      const draft = await db('task_drafts').where({ draft_id: draftId, user_id: req.user!.id }).first();
-      if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
-      if (draft.status !== 'generating') {
-        res.status(400).json({ error: 'Can only abort drafts that are currently generating' });
-        return;
-      }
-
-      // Set abort signal in Redis
-      const redis = new Redis({
-        host: process.env.REDIS_HOST || 'redis',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10)
-      });
-      await redis.setex(`planner:abort:${draftId}`, 300, '1'); // Expires in 5 minutes
-      await redis.quit();
-
-      // Update draft status back to draft (ready for review/edit)
-      await db('task_drafts').where({ draft_id: draftId }).update({
-        status: 'draft',
-        generation_trace: JSON.stringify({
-          steps: [],
-          error: 'Generation aborted by user',
-          abortedAt: new Date().toISOString()
-        }),
-        updated_at: db.fn.now()
-      });
-
-      console.log(`[abort] Plan generation aborted for draft ${draftId}`);
-      res.json({ success: true, message: 'Generation aborted' });
-    } catch (error) {
-      console.error('Abort generation error:', error);
-      res.status(500).json({ error: 'Failed to abort generation' });
-    }
-  };
-}
-
-export function createAbortRefinementHandler(db: Knex) {
-  return async function abortRefinement(req: Request, res: Response): Promise<void> {
-    const check = checkDbAndAuth(db, req.user?.id);
-    if (!check.valid) { sendCheckError(res, check); return; }
-
-    const { draftId } = req.body;
-    if (!draftId) { res.status(400).json({ error: 'draftId is required' }); return; }
-
-    try {
-      const draft = await db('task_drafts').where({ draft_id: draftId, user_id: req.user!.id }).first();
-      if (!draft) { res.status(404).json({ error: 'Draft not found' }); return; }
-      if (draft.status !== 'refining') {
-        res.status(400).json({ error: 'Can only abort drafts that are currently refining' });
-        return;
-      }
-
-      // Set abort signal in Redis
-      const redis = new Redis({
-        host: process.env.REDIS_HOST || 'redis',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10)
-      });
-      await redis.setex(`planner:abort:${draftId}`, 300, '1'); // Expires in 5 minutes
-      await redis.quit();
-
-      // Update draft status back to review (ready for refinement again)
-      await db('task_drafts').where({ draft_id: draftId }).update({
-        status: 'review',
-        refinement_result: JSON.stringify({
-          action: 'cancelled',
-          summary: 'Refinement cancelled by user',
-          timestamp: new Date().toISOString()
-        }),
-        updated_at: db.fn.now()
-      });
-
-      console.log(`[abort] Plan refinement aborted for draft ${draftId}`);
-      res.json({ success: true, message: 'Refinement aborted' });
-    } catch (error) {
-      console.error('Abort refinement error:', error);
-      res.status(500).json({ error: 'Failed to abort refinement' });
-    }
   };
 }
 

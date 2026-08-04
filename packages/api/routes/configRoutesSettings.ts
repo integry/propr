@@ -14,6 +14,7 @@ interface SaveSettingsRequest {
   settings: Record<string, unknown>;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   configStore?: SettingsStore;
+  database?: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }
 
@@ -24,6 +25,7 @@ interface PersistSettingsRequest {
   otherSettings: Record<string, unknown>;
   normalizedSpecializedSettings: Partial<Record<SpecializedSettingName, unknown>>;
   specializedNames: SpecializedSettingName[];
+  database: Pick<Knex, 'transaction'>;
   lock?: ConfigLockContext;
 }
 
@@ -32,6 +34,7 @@ async function persistSettingsAtomically({
   otherSettings,
   normalizedSpecializedSettings,
   specializedNames,
+  database,
   lock
 }: PersistSettingsRequest): Promise<void> {
   let trx: Knex.Transaction | null = null;
@@ -46,7 +49,7 @@ async function persistSettingsAtomically({
         generalSettingsPatch
       )
       : null;
-    trx = await db.transaction();
+    trx = await database.transaction();
     const transaction = trx;
 
     if (mergedSettings !== null) {
@@ -135,6 +138,7 @@ export async function saveSettingsWithRollback({
   settings,
   publishConfigUpdate,
   configStore = configManager,
+  database = db,
   lock
 }: SaveSettingsRequest): Promise<SaveResponse> {
   if (!isPlainSettingsObject(settings)) {
@@ -175,6 +179,7 @@ export async function saveSettingsWithRollback({
       otherSettings,
       normalizedSpecializedSettings: extracted.normalized,
       specializedNames: extracted.saves.map(({ name }) => name),
+      database,
       lock
     });
   } catch (error) {

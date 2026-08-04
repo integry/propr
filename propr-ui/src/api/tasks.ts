@@ -4,7 +4,7 @@
  * Client wrapper for the /api/tasks backend routes.
  * Provides methods to list, get, stop, and delete tasks.
  */
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 // ============================================================================
 // Type Definitions

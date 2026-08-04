@@ -3,16 +3,31 @@
  */
 
 import type { Logger } from 'pino';
-import { logger, handleError, getAuthenticatedOctokit, withRetry, retryConfigs, filterCommentByAuthor } from '@propr/core';
+import { logger, handleError, getAuthenticatedOctokit, withRetry, retryConfigs, filterCommentByAuthor, safeAddLabel } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
 import type { JobContext, LabelCheckResult, IssueComment } from './types.js';
 
-export async function getAuthenticatedClient(context: JobContext): Promise<Awaited<ReturnType<typeof getAuthenticatedOctokit>>> {
+type AuthenticationRetry = <T>(operation: () => Promise<T>) => Promise<T>;
+type AuthenticationErrorHandler = (
+  error: unknown,
+  context: string,
+  metadata: { correlationId: string; issueRef: IssueJobData }
+) => { category: string };
+
+export async function getAuthenticatedClient(
+  context: JobContext,
+  authenticate: typeof getAuthenticatedOctokit = getAuthenticatedOctokit,
+  retry?: AuthenticationRetry,
+  classifyError: AuthenticationErrorHandler = handleError
+): Promise<Awaited<ReturnType<typeof getAuthenticatedOctokit>>> {
   const { correlationId, stateManager, taskId, correlatedLogger, issueRef } = context;
   try {
-    return await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
+    const operation = () => authenticate();
+    return await (retry
+      ? retry(operation)
+      : withRetry(operation, { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit'));
   } catch (authError) {
-    const errorDetails = handleError(authError, 'Worker: Failed to get authenticated Octokit instance', { correlationId, issueRef });
+    const errorDetails = classifyError(authError, 'Worker: Failed to get authenticated Octokit instance', { correlationId, issueRef });
     try {
       await stateManager.markTaskFailed(taskId, authError as Error, { errorCategory: errorDetails.category });
     } catch (stateError) {
@@ -20,6 +35,22 @@ export async function getAuthenticatedClient(context: JobContext): Promise<Await
     }
     throw authError;
   }
+}
+
+export async function ensureProcessingLabel(
+  currentLabels: string[],
+  context: JobContext,
+  octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+  addLabel: typeof safeAddLabel = safeAddLabel
+): Promise<void> {
+  if (currentLabels.includes(context.AI_PROCESSING_TAG)) return;
+  await addLabel({
+    octokit,
+    owner: context.issueRef.repoOwner,
+    repo: context.issueRef.repoName,
+    issueNumber: context.issueRef.number,
+    logger: context.correlatedLogger
+  }, context.AI_PROCESSING_TAG);
 }
 
 export function checkLabelConditions(currentLabels: string[], context: JobContext): LabelCheckResult {

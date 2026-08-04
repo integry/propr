@@ -1,6 +1,11 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
 import { formatSubscriptionUsage } from '../packages/core/src/utils/github/formatSubscriptionUsage.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('formatSubscriptionUsage', () => {
     // --- Record-first behavior ---

@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ExternalLink } from 'lucide-react';
-import { PlanIssue, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
+import { PlanIssue, AgentModelPair } from '../../api/planIssuesApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
 import {

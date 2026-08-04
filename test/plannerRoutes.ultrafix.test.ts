@@ -1,10 +1,15 @@
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import assert from 'node:assert';
 
 const {
   buildUpdatedExecutionConfig,
   mergeExecutionContextConfig
 } = await import('../packages/api/routes/plannerRoutes.ts');
+const { closeConnection } = await import('@propr/core');
+
+after(async () => {
+  await closeConnection();
+});
 
 describe('plannerRoutes ultrafix execution config updates', () => {
   test('numeric runUltrafix values follow the same normalization rules as issue updates', () => {

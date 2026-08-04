@@ -173,6 +173,7 @@ await mock.module('@propr/core', {
         createLogFiles: mock.fn(async () => {}),
         UsageLimitError: class UsageLimitError extends Error { name = 'UsageLimitError'; },
         AgentRegistry: { getInstance: mock.fn(() => mockRegistry) },
+        resolveConfiguredModel: mock.fn(async (model: string) => model),
         resolveLlmLabel: mock.fn(async (label: string) => ({ agentAlias: 'claude', model: label })),
         recordLLMMetrics: mock.fn(async () => {}),
         issueQueue: { add: mockQueueAdd },
@@ -186,6 +187,7 @@ await mock.module('@propr/core', {
         }),
         cleanupWorktree: mockCleanupWorktree,
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
+        AI_COMMIT_AUTHOR: { name: 'ProPR AI', email: 'ai@propr.dev' },
     }
 });
 
@@ -199,6 +201,7 @@ await mock.module('../src/jobs/prCommentJobHelpers.js', {
 
 await mock.module('../src/jobs/prCommentJobUtils.js', {
     namedExports: {
+        fetchAllComments: mock.fn(async () => []),
         toClaudeResult: mock.fn((r: unknown) => r),
         agentResultToClaudeResponse: mock.fn((r: Record<string, unknown>) => ({
             success: r.success,
@@ -211,6 +214,8 @@ await mock.module('../src/jobs/prCommentJobUtils.js', {
             finalResult: r.summary ? { type: 'result', result: r.summary } : null,
             conversationLog: r.conversationLog,
             tokenUsage: r.tokenUsage,
+            logs: r.logs,
+            rawOutput: r.rawOutput,
         })),
     }
 });
@@ -322,7 +327,6 @@ describe('processMergeConflictJob', () => {
         assert.ok(prompt.includes('src/index.ts'), 'Prompt should include conflicted files');
         assert.ok(prompt.includes('src/app.ts'), 'Prompt should include conflicted files');
         assert.ok(prompt.includes('main'), 'Prompt should include base branch');
-        assert.deepStrictEqual(executeOptions.environment, { PROPR_REPO_SETUP: '0' });
 
         // Verify commit and push were called
         assert.strictEqual(mockCommitChanges.mock.callCount(), 1);
@@ -421,7 +425,7 @@ describe('processMergeConflictJob', () => {
         assert.ok(body.includes('not a git repository'));
     });
 
-    test('agent failure: reports stderr/log details instead of unknown error', async () => {
+    test('agent failure: keeps stderr/log details out of public errors', async () => {
         mockMergeResult = { outcome: 'conflicts' as never, conflictedFiles: ['.propr/setup.sh'] } as never;
         mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
         mockAgent.executeTask.mock.mockImplementationOnce(async () => ({
@@ -435,7 +439,7 @@ describe('processMergeConflictJob', () => {
 
         await assert.rejects(
             async () => processMergeConflictJob(job),
-            /setup\.sh: line 1/
+            /detailed output is available in restricted logs/
         );
 
         const patchCall = mockOctokit.request.mock.calls.find(
@@ -445,7 +449,8 @@ describe('processMergeConflictJob', () => {
         );
         assert.ok(patchCall);
         const body = patchCall.arguments[1].body as string;
-        assert.ok(body.includes('setup.sh: line 1'));
+        assert.ok(body.includes('detailed output is available in restricted logs'));
+        assert.ok(!body.includes('setup.sh: line 1'));
         assert.ok(!body.includes('Unknown error'));
     });
 

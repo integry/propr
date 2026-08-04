@@ -340,7 +340,9 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
         // Repos with no legacy status contexts report 'pending' — treat as passing.
         const statusPass = commitStatus.totalCount === 0 ||
             (commitStatus.state !== 'pending' && commitStatus.state !== 'failure' && commitStatus.state !== 'error');
-        const allPass = allCheckRunsPass && statusPass;
+        // Do not treat a commit with no CI signal at all as safe to merge.
+        const hasCheckSignal = checkRuns.length > 0 || commitStatus.totalCount > 0;
+        const allPass = hasCheckSignal && allCheckRunsPass && statusPass;
 
         logger.debug({
             owner,
@@ -349,6 +351,7 @@ export async function areAllChecksPassing(owner: string, repoName: string, ref: 
             totalCheckRuns: checkRuns.length,
             commitStatus: commitStatus.state,
             statusContexts: commitStatus.totalCount,
+            hasCheckSignal,
             allCheckRunsPass,
             statusPass,
             allPass
@@ -375,6 +378,8 @@ export interface PRAutoMergeInfo {
     isDraft: boolean;
     baseBranch: string;
     headBranch: string;
+    mergeable: boolean | null;
+    mergeableState: string;
 }
 
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
@@ -545,6 +550,10 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
+        const mergeable = typeof prResponse.data.mergeable === 'boolean' ? prResponse.data.mergeable : null;
+        const mergeableState = typeof prResponse.data.mergeable_state === 'string'
+            ? prResponse.data.mergeable_state
+            : 'unknown';
 
         return {
             hasLabel,
@@ -554,7 +563,9 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             ultrafixStateUnavailable: ultrafixState?.unavailable === true,
             isDraft,
             baseBranch,
-            headBranch
+            headBranch,
+            mergeable,
+            mergeableState
         };
     } catch (error) {
         logger.warn({
@@ -571,7 +582,9 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             ultrafixStateUnavailable: false,
             isDraft: false,
             baseBranch: '',
-            headBranch: ''
+            headBranch: '',
+            mergeable: null,
+            mergeableState: 'unknown'
         };
     }
 }

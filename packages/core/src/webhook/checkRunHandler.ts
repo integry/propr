@@ -168,6 +168,21 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
         return;
     }
 
+    // GitHub's PR mergeability result accounts for required checks that may not
+    // have registered a check run yet, branch protection, and merge conflicts.
+    // Requiring the authoritative clean state prevents an unrelated fast check
+    // from opening a premature merge window for an App that can bypass rules.
+    if (prInfo.mergeable !== true || prInfo.mergeableState !== 'clean') {
+        log.debug({
+            owner,
+            repoName,
+            prNumber,
+            mergeable: prInfo.mergeable,
+            mergeableState: prInfo.mergeableState,
+        }, 'GitHub does not report the PR as cleanly mergeable yet, skipping merge');
+        return;
+    }
+
     // Check for active tasks (e.g., followup processing) before merging
     const repository = `${owner}/${repoName}`;
     const { hasActive, activeTasks, queuedJobs } = await hasActiveTasksForPR(repository, prNumber);

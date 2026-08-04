@@ -1,5 +1,5 @@
 import type { AgentType } from '@propr/shared';
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export type AgentLoginSessionStatus =
   | 'starting'

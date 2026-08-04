@@ -1,5 +1,5 @@
 // Summary Browser API - File and Directory Summaries
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 // ============= Types =============
 

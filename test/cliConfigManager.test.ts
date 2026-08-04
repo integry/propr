@@ -363,7 +363,8 @@ test("ConfigManager", async (t) => {
 
     // Should only contain githubToken, not the undefined values
     assert.strictEqual(Object.keys(parsed).length, 1);
-    assert.strictEqual(parsed.githubToken, "only-token");
+    assert.strictEqual(parsed.profiles.default.githubToken, "only-token");
+    assert.ok(!("githubToken" in parsed));
     assert.ok(!("remoteUrl" in parsed));
     assert.ok(!("defaultProject" in parsed));
 

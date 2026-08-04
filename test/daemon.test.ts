@@ -1,6 +1,6 @@
-import { test, mock, before } from 'node:test';
+import { test, mock, before, after } from 'node:test';
 import assert from 'node:assert';
-import { fetchIssuesForRepo, loadPrimaryProcessingLabelsFromConfig } from '@propr/core';
+import { closeConnection, fetchIssuesForRepo, loadPrimaryProcessingLabelsFromConfig } from '@propr/core';
 
 // fetchIssuesForRepo pulls open issues from the GitHub REST API by primary
 // processing label (via octokit.paginate), drops pull requests and any issue
@@ -40,6 +40,10 @@ before(async () => {
     // Populate the core config module's primaryProcessingLabels from the env var
     // set above; without this the label loop is empty and nothing is fetched.
     await loadPrimaryProcessingLabelsFromConfig();
+});
+
+after(async () => {
+    await closeConnection();
 });
 
 test('fetchIssuesForRepo handles invalid repository format', async () => {

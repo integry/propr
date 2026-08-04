@@ -195,9 +195,10 @@ test('demo Express GET routes work with the in-memory Redis facade', async () =>
 
   const statusResponse = await fetchFromApp(app, '/api/status');
   assert.equal(statusResponse.status, 200);
-  const statusBody = await statusResponse.json() as { redis: string; worker: string };
+  const statusBody = await statusResponse.json() as { redis: string; worker: string; workerCount: number };
   assert.equal(statusBody.redis, 'connected');
-  assert.equal(statusBody.worker, 'stopped');
+  assert.equal(statusBody.worker, 'running');
+  assert.equal(statusBody.workerCount, 3);
 
   const activityResponse = await fetchFromApp(app, '/api/activity');
   assert.equal(activityResponse.status, 200);
@@ -217,8 +218,8 @@ test('ensureAuthenticated attaches the synthetic demo user', async () => {
 
   assert.equal(nextCalled, true);
   assert.deepEqual(request.user, getDemoUser());
-  assert.equal(request.user?.login, 'demo');
-  assert.equal(request.user?.username, 'demo');
+  assert.equal(request.user?.login, 'propr-demo');
+  assert.equal(request.user?.username, 'propr-demo');
   assert.equal(request.user?.accessToken, undefined);
 });
 

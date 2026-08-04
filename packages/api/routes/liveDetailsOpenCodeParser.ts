@@ -1,4 +1,5 @@
 import { normalizeOpenCodeTimestamp, parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
+import { isDeepStrictEqual } from 'node:util';
 import type { ConversationResult, TokenUsage } from './liveDetailsTypes.js';
 
 function buildOpenCodeTokenUsage(parsed: ReturnType<typeof parseOpenCodeJsonl>): TokenUsage | null {
@@ -96,7 +97,10 @@ function extractOpenCodeStructuredText(event: OpenCodeEvent, eventType: string |
   }
 
   const topLevelPartsText = includeTopLevel
-    ? joinOpenCodePartsText([...(event.part ? [event.part] : []), ...(event.parts ?? [])], false)
+    ? joinOpenCodePartsText(
+        getOpenCodeEnvelopeTextParts(event),
+        !isOpenCodeStreamingTextEvent(event)
+      )
     : '';
   const responseText = joinOpenCodeTextValues([event.response?.text, event.response?.delta, event.response?.content]);
   const messageText = isConfirmedAssistant
@@ -137,13 +141,76 @@ function isOpenCodeStreamingTextEvent(event: OpenCodeEvent): boolean {
   });
 }
 
-function joinOpenCodePartsText(parts: Array<{ type?: string; text?: string; delta?: string; content?: unknown }>, trim = true): string {
-  const values = parts.flatMap(part => {
-    const partType = part.type?.toLowerCase();
-    if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return [];
-    return [part.text, part.delta, part.content];
-  });
-  return joinOpenCodeTextValues(values, trim);
+interface OpenCodeTextPart {
+  id?: string;
+  type?: string;
+  text?: string;
+  delta?: string;
+  content?: unknown;
+}
+
+interface OpenCodeTextCandidate {
+  text: string;
+  finalized: boolean;
+}
+
+function getOpenCodeEnvelopeTextParts(event: OpenCodeEvent): OpenCodeTextPart[] {
+  const parts = event.parts ?? [];
+  if (!event.part) return parts;
+
+  // JSON parsing breaks object identity when an envelope exposes the same
+  // no-ID payload through both `part` and `parts`. Treat only that cross-field
+  // structural overlap as a duplicate; equal entries within `parts` remain.
+  const noIdEnvelopeOverlap = !event.part.id
+    && parts.some(part => !part.id && isDeepStrictEqual(part, event.part));
+  return noIdEnvelopeOverlap ? parts : [event.part, ...parts];
+}
+
+function buildOpenCodeTextCandidate(part: OpenCodeTextPart): OpenCodeTextCandidate | null {
+  const partType = part.type?.toLowerCase();
+  if (partType && !['text', 'text_delta', 'delta', 'assistant_text', 'message', 'completion', 'reasoning'].includes(partType)) return null;
+  const text = joinOpenCodeTextValues([part.text, part.delta, part.content], false);
+  if (!text) return null;
+  const hasFinalText = typeof part.text === 'string' || typeof part.content === 'string';
+  const isDelta = partType === 'delta' || partType === 'text_delta';
+  return {
+    text,
+    finalized: hasFinalText && !isDelta,
+  };
+}
+
+function joinOpenCodePartsText(parts: OpenCodeTextPart[], trim = true): string {
+  const seenReferences = new Set<object>();
+  const candidateIndexById = new Map<string, number>();
+  const candidates: OpenCodeTextCandidate[] = [];
+  for (const part of parts) {
+    if (seenReferences.has(part)) continue;
+    seenReferences.add(part);
+    // A single part can expose the same payload through text/content/delta.
+    // Same-ID envelope representations select finalized payloads first and
+    // otherwise use the latest envelope order, while
+    // identical text from distinct part IDs remains meaningful and is kept.
+    const candidate = buildOpenCodeTextCandidate(part);
+    if (!candidate) continue;
+    const existingIndex = part.id ? candidateIndexById.get(part.id) : undefined;
+    if (existingIndex !== undefined) {
+      const existing = candidates[existingIndex];
+      if (candidate.finalized || !existing.finalized) {
+        candidates[existingIndex] = candidate;
+      }
+      continue;
+    }
+    if (part.id) candidateIndexById.set(part.id, candidates.length);
+    candidates.push(candidate);
+  }
+  const textParts = candidates.map(candidate => candidate.text);
+  if (!trim) return textParts.join('');
+
+  return textParts.reduce((combined, value) => {
+    if (!combined) return value;
+    const separator = /\s$/.test(combined) || /^\s/.test(value) ? '' : '\n';
+    return `${combined}${separator}${value}`;
+  }, '').trim();
 }
 
 function joinOpenCodeTextValues(values: unknown[], trim = true): string {

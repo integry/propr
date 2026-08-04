@@ -26,7 +26,8 @@ import {
 } from './plannerHelpers/index.js';
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
-import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
+import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
+import { createAbortGenerationHandler, createAbortRefinementHandler } from './plannerAbortHandlers.js';
 import {
   buildUpdatedExecutionConfig,
   ExecutionSettingsContextConfigError,

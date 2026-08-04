@@ -1,7 +1,12 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import { redactSecrets, redactSerializableValue, createLogFiles, generateCompletionComment } from '../packages/core/src/utils/github/logFiles.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 test('redactSecrets replaces GitHub personal access tokens', () => {
     const input = 'token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
