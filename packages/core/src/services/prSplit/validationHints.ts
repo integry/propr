@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- Language-specific safe-command inference shares one confidence boundary. */
 import { posix } from 'node:path';
 import type {
   PrSnapshot,
@@ -248,12 +249,16 @@ function addConvention(
     groups.set(config.path, [...(groups.get(config.path) ?? []), file.filename]);
   }
   for (const [configPath, paths] of groups) {
+    const config = configs.find(candidate => candidate.path === configPath);
+    const contentUnavailable = config?.contentComplete === false;
     addHint(hints, details.command, {
-      reason: `${details.reason}; repository marker ${configPath} exists at the PR head`,
+      reason: contentUnavailable
+        ? `${details.reason}; repository marker ${configPath} exists at the PR head, but its contents are unavailable`
+        : `${details.reason}; repository marker ${configPath} exists at the PR head`,
       source: 'repository-convention',
       relatedFiles: paths,
       workingDirectory: posix.dirname(configPath),
-      confidence: 'medium',
+      confidence: contentUnavailable ? 'low' : 'medium',
       executable: true,
     });
   }
@@ -365,6 +370,14 @@ function languageHints(
   }
 }
 
+function annotateIncompleteRepositoryDiscovery(hints: ValidationHint[]): void {
+  for (const hint of hints) {
+    if (!hint.executable) continue;
+    hint.confidence = 'low';
+    hint.reason = `${hint.reason}; repository configuration discovery was incomplete`;
+  }
+}
+
 /** Infer structured validation hints without executing untrusted repository code. */
 export function inferValidationHints(
   snapshot: PrSnapshot,
@@ -376,6 +389,7 @@ export function inferValidationHints(
   workflowObservations(selectedFiles, hints);
   javascriptHints(selectedFiles, configs, hints);
   languageHints(selectedFiles, configs, hints);
+  if (!snapshot.repositoryTreeComplete) annotateIncompleteRepositoryDiscovery(hints);
   const commands: ValidationCommand[] = hints.filter(hint => hint.executable).map(hint => ({
     command: hint.command,
     workingDirectory: hint.workingDirectory,
@@ -391,6 +405,20 @@ export function inferValidationHints(
       hints,
       inferred: false,
       explanation: `No constructed executable validation command could be inferred; manual validation is required.${repositoryNote}`,
+    };
+  }
+  const unavailableConfigurationContents = hints.some(hint => hint.executable
+    && /contents are unavailable/i.test(hint.reason));
+  const incompleteReasons = [
+    ...(!snapshot.repositoryTreeComplete ? ['repository configuration discovery was incomplete'] : []),
+    ...(unavailableConfigurationContents ? ['relevant configuration contents were unavailable'] : []),
+  ];
+  if (incompleteReasons.length > 0) {
+    return {
+      commands,
+      hints,
+      inferred: false,
+      explanation: `${commands.length} candidate validation command${commands.length === 1 ? ' was' : 's were'} constructed, but manual confirmation is required because ${incompleteReasons.join(' and ')}.`,
     };
   }
   return {

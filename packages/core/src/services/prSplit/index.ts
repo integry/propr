@@ -97,6 +97,7 @@ export type {
 export { inferValidationHints, detectValidationHints } from './validationHints.js';
 
 export {
+  MAX_SPLIT_PLANNER_CHANGED_FILES,
   SplitPlannerResponseError,
   createSplitPlan,
   parseSplitPlannerChoice,
@@ -124,6 +125,7 @@ export type {
   SplitPlannerJudge,
   SplitPlannerAgent,
   SplitPlannerOptions,
+  SplitPlanningOutcome,
   SplitPlanSourceDiff,
   SplitPlan,
 } from './types.js';

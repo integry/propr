@@ -33,8 +33,8 @@ export interface PrSnapshotFile {
   patchComplete: boolean;
   sha: string | null;
   /**
-   * Contents at the captured merge-base SHA (falling back to baseSha only when
-   * GitHub cannot report a merge base) and immutable head SHA.
+   * Contents at the authoritative captured merge-base SHA and immutable head SHA.
+   * Snapshot collection fails closed when GitHub cannot resolve the merge base.
    */
   baseContent: string | null;
   headContent: string | null;
@@ -69,8 +69,8 @@ export interface PrSnapshot {
   pullNumber: number;
   baseRef: string;
   baseSha: string;
-  /** Merge base reported by GitHub's comparison API, when it could be resolved. */
-  mergeBaseSha: string | null;
+  /** Merge base reported by GitHub's comparison API. Collector snapshots always set it. */
+  mergeBaseSha: string;
   headRef: string;
   headSha: string;
   sourceHeadRepository: PrSplitRepository | null;
@@ -166,9 +166,14 @@ export interface SplitPlannerOptions {
   judge?: SplitPlannerJudge;
   /** Existing Agent-compatible planner. `judge` takes precedence when both are supplied. */
   agent?: SplitPlannerAgent;
-  /** Optional shorter deadline for judgement; the service maximum still applies. */
+  /**
+   * Optional shorter deadline for judgement; the service ceiling is configured by
+   * PR_SPLIT_JUDGEMENT_TIMEOUT_MS and remains capped by a hard safety bound.
+   */
   judgementTimeoutMs?: number;
 }
+
+export type SplitPlanningOutcome = 'selected' | 'no_split' | 'failed';
 
 /** Immutable source coordinates required to reproduce the captured PR delta. */
 export interface SplitPlanSourceDiff {
@@ -176,11 +181,13 @@ export interface SplitPlanSourceDiff {
   headRepository: string;
   baseSha: string;
   headSha: string;
-  mergeBaseSha: string | null;
+  mergeBaseSha: string;
 }
 
 /** The complete analysis result consumed by the later branch/publication layer. */
 export interface SplitPlan {
+  /** Distinguishes a valid model decision not to split from an operational/planner failure. */
+  planningOutcome: SplitPlanningOutcome;
   selectedSummary: string;
   includedFiles: string[];
   excludedScope: string[];
@@ -191,6 +198,9 @@ export interface SplitPlan {
   selectionReason: string;
   /** Publication must use these immutable coordinates, not moving branch refs. */
   sourceDiff: SplitPlanSourceDiff;
-  /** Publication must reconstruct selected file deltas at sourceDiff SHAs; no rewrite is planned. */
+  /**
+   * Publication must fetch exact Git objects at sourceDiff SHAs, including modes,
+   * symlinks, and binary blobs; snapshot content strings are analysis evidence only.
+   */
   preserveSourceDiff: true;
 }

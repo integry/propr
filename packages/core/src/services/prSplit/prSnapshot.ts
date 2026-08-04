@@ -40,8 +40,13 @@ export interface PrSnapshotResourceLimits {
 interface SnapshotBudget extends PrSnapshotResourceLimits {
   requests: number;
   retainedBytes: number;
+  responseBytesInFlight: number;
   deadline: number;
   controller: AbortController;
+}
+
+interface ResponseByteTracker {
+  bytes: number;
 }
 
 interface RepositoryCoordinates {
@@ -151,8 +156,98 @@ function createBudget(limits: PrSnapshotResourceLimits, deadline: number): Snaps
     ...limits,
     requests: 0,
     retainedBytes: 0,
+    responseBytesInFlight: 0,
     deadline,
     controller: new AbortController(),
+  };
+}
+
+function responseResourceError(budget: SnapshotBudget, description: string): SnapshotResourceLimitError {
+  return new SnapshotResourceLimitError(
+    `PR snapshot retained-byte budget exceeded while reading ${description} (${budget.maxRetainedBytes} bytes)`,
+  );
+}
+
+function reserveInFlightResponseBytes(
+  budget: SnapshotBudget,
+  tracker: ResponseByteTracker,
+  bytes: number,
+  description: string,
+): void {
+  if (budget.retainedBytes + budget.responseBytesInFlight + bytes > budget.maxRetainedBytes) {
+    budget.controller.abort();
+    throw responseResourceError(budget, description);
+  }
+  tracker.bytes += bytes;
+  budget.responseBytesInFlight += bytes;
+}
+
+function releaseInFlightResponseBytes(budget: SnapshotBudget, tracker: ResponseByteTracker): void {
+  budget.responseBytesInFlight = Math.max(0, budget.responseBytesInFlight - tracker.bytes);
+}
+
+function measuredValueBytes(value: unknown, maximum: number): number {
+  const pending: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  let bytes = 0;
+  while (pending.length > 0 && bytes <= maximum) {
+    const current = pending.pop();
+    if (typeof current === 'string') {
+      bytes += Buffer.byteLength(current, 'utf8');
+    } else if (typeof current === 'number' || typeof current === 'boolean') {
+      bytes += 8;
+    } else if (typeof current === 'object' && current !== null && !seen.has(current)) {
+      seen.add(current);
+      bytes += 32;
+      for (const [key, nested] of Object.entries(current)) {
+        bytes += Buffer.byteLength(key, 'utf8');
+        pending.push(nested);
+      }
+    }
+  }
+  return bytes;
+}
+
+function boundedResponseFetch(
+  budget: SnapshotBudget,
+  tracker: ResponseByteTracker,
+  description: string,
+  underlyingFetch: typeof fetch,
+): typeof fetch {
+  return async (input, init) => {
+    const response = await underlyingFetch(input, init);
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength)
+      && declaredLength > budget.maxRetainedBytes - budget.retainedBytes - budget.responseBytesInFlight) {
+      await response.body?.cancel();
+      budget.controller.abort();
+      throw responseResourceError(budget, description);
+    }
+    if (!response.body) return response;
+    const reader = response.body.getReader();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            controller.close();
+            return;
+          }
+          reserveInFlightResponseBytes(budget, tracker, chunk.value.byteLength, description);
+          controller.enqueue(chunk.value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   };
 }
 
@@ -174,12 +269,20 @@ async function budgetedRequest(
   }
   budget.requests += 1;
   let timeout: NodeJS.Timeout | undefined;
+  const responseTracker: ResponseByteTracker = { bytes: 0 };
   try {
     const requestOptions = isRecord(parameters.request) ? parameters.request : {};
-    return await Promise.race([
+    const underlyingFetch = typeof requestOptions.fetch === 'function'
+      ? requestOptions.fetch as typeof fetch
+      : fetch;
+    const response = await Promise.race([
       octokit.request(route, {
         ...parameters,
-        request: { ...requestOptions, signal: budget.controller.signal },
+        request: {
+          ...requestOptions,
+          signal: budget.controller.signal,
+          fetch: boundedResponseFetch(budget, responseTracker, route, underlyingFetch),
+        },
       }),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
@@ -190,16 +293,21 @@ async function budgetedRequest(
         }, remaining);
       }),
     ]);
+    releaseInFlightResponseBytes(budget, responseTracker);
+    const remainingBytes = budget.maxRetainedBytes - budget.retainedBytes;
+    const responseBytes = responseTracker.bytes || measuredValueBytes(response.data, remainingBytes);
+    retainBytes(budget, responseBytes, `GitHub response for ${route}`);
+    responseTracker.bytes = 0;
+    return response;
   } finally {
+    releaseInFlightResponseBytes(budget, responseTracker);
     if (timeout) clearTimeout(timeout);
   }
 }
 
 function retainBytes(budget: SnapshotBudget, bytes: number, description: string): void {
   if (budget.retainedBytes + bytes > budget.maxRetainedBytes) {
-    throw new SnapshotResourceLimitError(
-      `PR snapshot retained-byte budget exceeded while reading ${description} (${budget.maxRetainedBytes} bytes)`,
-    );
+    throw responseResourceError(budget, description);
   }
   budget.retainedBytes += bytes;
 }
@@ -271,6 +379,7 @@ interface PatchHunkInput {
 
 interface PatchHunkHeader {
   hunkStart: number;
+  newHunkStart: number;
   oldCount: number;
   newCount: number;
 }
@@ -279,8 +388,10 @@ function parsePatchHunkHeader(line: string): PatchHunkHeader | null {
   const header = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
   if (!header) return null;
   const oldStart = Number(header[1]);
+  const newStart = Number(header[3]);
   return {
     hunkStart: oldStart === 0 ? 0 : oldStart - 1,
+    newHunkStart: newStart === 0 ? 0 : newStart - 1,
     oldCount: header[2] === undefined ? 1 : Number(header[2]),
     newCount: header[4] === undefined ? 1 : Number(header[4]),
   };
@@ -319,36 +430,51 @@ function applyPatchHunk(input: PatchHunkInput): AppliedPatchHunk | null {
   return { index, baseCursor, consumed, produced };
 }
 
-function patchReconstructsHead(file: PrSnapshotFile): boolean {
-  if (!file.patch || !file.contentComplete) return false;
+function applyValidatedPatchHunk(
+  input: PatchHunkInput,
+  header: PatchHunkHeader,
+): AppliedPatchHunk | null {
+  const { base, initialBaseCursor, output } = input;
+  if (header.hunkStart < initialBaseCursor || header.hunkStart > base.length) return null;
+  output.push(...base.slice(initialBaseCursor, header.hunkStart));
+  if (header.newHunkStart !== output.length) return null;
+  const applied = applyPatchHunk({ ...input, initialBaseCursor: header.hunkStart });
+  if (!applied
+    || applied.consumed !== header.oldCount
+    || applied.produced !== header.newCount) return null;
+  return applied;
+}
+
+function reconstructedPatchText(file: PrSnapshotFile): string | null {
+  if (!file.patch || !file.contentComplete) return null;
   const base = normalizedLines(file.baseContent ?? '');
-  const expectedHead = (file.headContent ?? '').replace(/\r\n/g, '\n');
   const patchLines = file.patch.replace(/\r\n/g, '\n').split('\n');
   const output: string[] = [];
   let baseCursor = 0;
-  let sawHunk = false;
+  let hunkCount = 0;
   for (let index = 0; index < patchLines.length; index += 1) {
     const header = parsePatchHunkHeader(patchLines[index]);
     if (!header) continue;
-    sawHunk = true;
-    const { hunkStart, oldCount, newCount } = header;
-    if (hunkStart < baseCursor || hunkStart > base.length) return false;
-    output.push(...base.slice(baseCursor, hunkStart));
-    baseCursor = hunkStart;
-    const applied = applyPatchHunk({
+    hunkCount += 1;
+    const applied = applyValidatedPatchHunk({
       patchLines,
       hunkHeaderIndex: index,
       base,
       initialBaseCursor: baseCursor,
       output,
-    });
-    if (!applied) return false;
+    }, header);
+    if (!applied) return null;
     ({ index, baseCursor } = applied);
-    if (applied.consumed !== oldCount || applied.produced !== newCount) return false;
   }
-  if (!sawHunk) return false;
+  if (hunkCount === 0) return null;
   output.push(...base.slice(baseCursor));
-  return output.join('\n') === expectedHead;
+  return output.join('\n');
+}
+
+function patchReconstructsHead(file: PrSnapshotFile): boolean {
+  const reconstructed = reconstructedPatchText(file);
+  return reconstructed !== null
+    && reconstructed === (file.headContent ?? '').replace(/\r\n/g, '\n');
 }
 
 function normalizeRepository(value: unknown): PrSplitRepository | null {
@@ -676,24 +802,28 @@ async function readMergeBaseSha(
   reader: SnapshotReader,
   baseSha: string,
   headSha: string,
-): Promise<string | null> {
-  try {
-    const comparisonResponse = await repositoryRequest(reader, {
-      route: 'GET /repos/{owner}/{repo}/compare/{basehead}',
-      repository: reader.targetRepository,
-      parameters: { basehead: `${baseSha}...${headSha}` },
-    });
-    const comparison = isRecord(comparisonResponse.data) ? comparisonResponse.data : null;
-    const mergeBase = comparison && isRecord(comparison.merge_base_commit)
-      ? comparison.merge_base_commit
-      : null;
-    return mergeBase && typeof mergeBase.sha === 'string' && mergeBase.sha.trim()
-      ? mergeBase.sha.trim().toLowerCase()
-      : null;
-  } catch (error) {
-    if (!isExpectedUnavailable(error)) throw error;
-    return null;
+): Promise<string> {
+  const comparisonResponse = await repositoryRequest(reader, {
+    route: 'GET /repos/{owner}/{repo}/compare/{basehead}',
+    repository: reader.targetRepository,
+    parameters: { basehead: `${baseSha}...${headSha}` },
+  });
+  const comparison = isRecord(comparisonResponse.data) ? comparisonResponse.data : null;
+  const mergeBase = comparison && isRecord(comparison.merge_base_commit)
+    ? comparison.merge_base_commit
+    : null;
+  if (!mergeBase || typeof mergeBase.sha !== 'string' || !mergeBase.sha.trim()) {
+    throw new Error('GitHub comparison response is missing an authoritative merge base');
   }
+  return mergeBase.sha.trim().toLowerCase();
+}
+
+function sameSourceHeadRepository(
+  initial: PrSplitRepository | null,
+  verification: PrSplitRepository | null,
+): boolean {
+  if (!initial || !verification) return initial === verification;
+  return initial.fullName.toLowerCase() === verification.fullName.toLowerCase();
 }
 
 async function readSnapshotAttemptBody(
@@ -744,7 +874,7 @@ async function readSnapshotAttemptBody(
     headRepository,
   };
 
-  let collection: [unknown[], unknown[], PrSnapshotGitHubResponse, string | null];
+  let collection: [unknown[], unknown[], PrSnapshotGitHubResponse, string];
   try {
     collection = await Promise.all([
       readAllPages(octokit, budget, 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files', parameters),
@@ -780,7 +910,7 @@ async function readSnapshotAttemptBody(
   retainBytes(budget, normalizedFiles.length * 256, 'normalized changed-file metadata');
   const [changedFiles, repositoryContext] = await Promise.all([
     enrichChangedFileContents(reader, normalizedFiles, {
-      baseSha: mergeBaseSha ?? baseSha,
+      baseSha: mergeBaseSha,
       headSha,
     }),
     readRepositoryFiles(reader, headSha),
@@ -808,6 +938,7 @@ async function readSnapshotAttemptBody(
   const verificationHead = requiredRecord(verification.head, 'verification head');
   const verificationBaseSha = requiredString(verificationBase.sha, 'verification base.sha').toLowerCase();
   const verificationHeadSha = requiredString(verificationHead.sha, 'verification head.sha').toLowerCase();
+  const verificationSourceHeadRepository = normalizeRepository(verificationHead.repo);
   const verificationFileCount = requiredNonNegativeInteger(
     verification.changed_files,
     'verification changed_files',
@@ -837,6 +968,7 @@ async function readSnapshotAttemptBody(
     unifiedDiffComplete: false,
   }, stable: verificationHeadSha === headSha
     && verificationBaseSha === baseSha
+    && sameSourceHeadRepository(sourceHeadRepository, verificationSourceHeadRepository)
     && verificationFileCount === expectedFileCount
     && verificationCommitCount === expectedCommitCount };
 }
@@ -867,7 +999,7 @@ async function readSnapshot(requestInput: ReadPrSnapshotRequest): Promise<PrSnap
       if (result.stable) return result.snapshot;
       budget.controller.abort();
       consistencyFailure = new SnapshotConsistencyError(
-        'Pull request base, head, file count, or commit count changed while collecting the snapshot',
+        'Pull request base, head, source repository, file count, or commit count changed while collecting the snapshot',
       );
     } catch (error) {
       if (!(error instanceof SnapshotConsistencyError)) throw error;

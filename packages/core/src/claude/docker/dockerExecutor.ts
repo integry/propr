@@ -1,4 +1,4 @@
-import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
+import { spawn, execFileSync, execSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
@@ -79,7 +79,8 @@ async function checkAbortSignal(taskId: string): Promise<boolean> {
  */
 export async function stopDockerContainer(
     containerId: string,
-    timeoutSeconds: number = 10
+    timeoutSeconds: number = 10,
+    executeDocker: typeof execFileSync = execFileSync,
 ): Promise<{ success: boolean; error?: string }> {
     if (!containerId) {
         return { success: false, error: 'No container ID provided' };
@@ -90,19 +91,18 @@ export async function stopDockerContainer(
     try {
         // First check if the container exists and is running
         try {
-            const statusOutput = execSync(
-                `/usr/bin/docker ps -a --filter "id=${containerId}" --format "{{.Status}}"`,
+            const running = executeDocker(
+                '/usr/bin/docker',
+                ['inspect', '--format', '{{.State.Running}}', containerId],
                 { encoding: 'utf8', timeout: 5000 }
-            ).trim();
+            ).toString().trim();
 
-            if (!statusOutput) {
-                logger.info({ containerId }, 'Container no longer exists');
-                return { success: true }; // Container already removed, treat as success
-            }
-
-            if (!statusOutput.includes('Up')) {
-                logger.info({ containerId, status: statusOutput }, 'Container is already stopped');
+            if (running === 'false') {
+                logger.info({ containerId, running }, 'Container is already stopped');
                 return { success: true }; // Already stopped
+            }
+            if (running !== 'true') {
+                logger.warn({ containerId, running }, 'Docker returned an unknown container state, attempting stop');
             }
         } catch (checkErr) {
             // If we can't check status, try to stop anyway
@@ -111,7 +111,7 @@ export async function stopDockerContainer(
 
         // Try graceful stop first with timeout
         try {
-            execSync(`/usr/bin/docker stop -t ${timeoutSeconds} ${containerId}`, {
+            executeDocker('/usr/bin/docker', ['stop', '-t', String(timeoutSeconds), containerId], {
                 encoding: 'utf8',
                 timeout: (timeoutSeconds + 5) * 1000 // Add 5 seconds buffer for the command itself
             });
@@ -123,7 +123,7 @@ export async function stopDockerContainer(
 
             // Force kill if graceful stop failed
             try {
-                execSync(`/usr/bin/docker kill ${containerId}`, {
+                executeDocker('/usr/bin/docker', ['kill', containerId], {
                     encoding: 'utf8',
                     timeout: 10000
                 });
@@ -220,6 +220,54 @@ function spawnCommand(executablePath: string, args: string[], cwd: string | unde
     return child;
 }
 
+interface ContainerCleanupResult { success: boolean; error?: string; }
+interface ContainerCleanupRef { value: Promise<ContainerCleanupResult> | null; }
+interface TimerRef { value: ReturnType<typeof setTimeout> | undefined; }
+
+async function cleanupCancelledContainer(container: string | null): Promise<ContainerCleanupResult> {
+    if (!container) return { success: true };
+    const result = await stopDockerContainer(container, 10);
+    if (result.success) {
+        logger.info({ containerId: container }, 'Docker container cleanup confirmed after cancellation');
+    } else {
+        logger.error({ containerId: container, error: result.error }, 'Docker stop and force-kill cleanup failed after cancellation');
+    }
+    return result;
+}
+
+async function completeContainerCleanup(
+    initialCleanup: Promise<ContainerCleanupResult> | null,
+    container: string | null,
+): Promise<ContainerCleanupResult> {
+    if (initialCleanup) await initialCleanup;
+    // Re-check after the Docker CLI exits so a late-created named container cannot be orphaned.
+    return cleanupCancelledContainer(container);
+}
+
+function scheduleChildForceKill(child: ChildProcess, timerRef: TimerRef): void {
+    timerRef.value = setTimeout(() => {
+        if (child.exitCode === null) child.kill('SIGKILL');
+    }, 5000);
+}
+
+function createSignalAbortHandler(options: {
+    abortedRef: { value: boolean };
+    child: ChildProcess;
+    container: () => string | null;
+    cleanupRef: ContainerCleanupRef;
+    forceKillTimerRef: TimerRef;
+}): () => void {
+    return () => {
+        if (options.abortedRef.value) return;
+        options.abortedRef.value = true;
+        options.child.kill('SIGTERM');
+        scheduleChildForceKill(options.child, options.forceKillTimerRef);
+        const container = options.container();
+        options.cleanupRef.value = Promise.resolve()
+            .then(() => cleanupCancelledContainer(container));
+    };
+}
+
 /**
  * Finds a running agent container by the task-id suffix used by every agent
  * container name. This survives worker/Redis restarts because Docker remains
@@ -256,6 +304,7 @@ export async function findRunningDockerContainerForTask(
 }
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
+    if (options.signal?.aborted) return Promise.reject(new ExecutionAbortedError());
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, signal } = options;
         const executablePath = resolveDockerPath(command);
@@ -265,40 +314,26 @@ export function executeDockerCommand(command: string, args: string[], options: D
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
         const messageTimestamps = new Map<string, string>();
-        let timeoutForceKillHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutForceKillTimer: TimerRef = { value: undefined };
+        const timeoutCleanup: ContainerCleanupRef = { value: null };
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
             const containerToStop = state.containerId.value || namedContainer;
-            if (containerToStop) {
-                void stopDockerContainer(containerToStop, 10).then((stopResult) => {
-                    if (!stopResult.success) {
-                        logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after timeout');
-                    }
-                });
-            }
             child.kill('SIGTERM');
-            timeoutForceKillHandle = setTimeout(() => {
-                if (child.exitCode === null) child.kill('SIGKILL');
-            }, 5000);
+            scheduleChildForceKill(child, timeoutForceKillTimer);
+            timeoutCleanup.value = Promise.resolve()
+                .then(() => cleanupCancelledContainer(containerToStop));
         }, timeout);
         const abortCheckInterval = setupTaskAbortChecker(taskId, { abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer });
-        let signalForceKillHandle: ReturnType<typeof setTimeout> | undefined;
-        const abortHandler = () => {
-            if (state.aborted.value) return;
-            state.aborted.value = true;
-            const containerToStop = state.containerId.value || namedContainer;
-            if (containerToStop) {
-                setImmediate(() => {
-                    void stopDockerContainer(containerToStop, 10).then((stopResult) => {
-                        if (!stopResult.success) logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after cancellation');
-                    });
-                });
-            }
-            child.kill('SIGTERM');
-            signalForceKillHandle = setTimeout(() => {
-                if (child.exitCode === null) child.kill('SIGKILL');
-            }, 5000);
-        };
+        const signalForceKillTimer: TimerRef = { value: undefined };
+        const signalCleanup: ContainerCleanupRef = { value: null };
+        const abortHandler = createSignalAbortHandler({
+            abortedRef: state.aborted,
+            child,
+            container: () => state.containerId.value || namedContainer,
+            cleanupRef: signalCleanup,
+            forceKillTimerRef: signalForceKillTimer,
+        });
         signal?.addEventListener('abort', abortHandler, { once: true });
         if (signal?.aborted) abortHandler();
 
@@ -331,12 +366,16 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
-            if (timeoutForceKillHandle) clearTimeout(timeoutForceKillHandle);
-            if (signalForceKillHandle) clearTimeout(signalForceKillHandle);
+            if (timeoutForceKillTimer.value) clearTimeout(timeoutForceKillTimer.value);
+            if (signalForceKillTimer.value) clearTimeout(signalForceKillTimer.value);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
             signal?.removeEventListener('abort', abortHandler);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
             if (state.timedOut) {
+                await completeContainerCleanup(
+                    timeoutCleanup.value,
+                    state.containerId.value || namedContainer,
+                );
                 const timeoutMessage = `Command timed out after ${timeout}ms`;
                 const timeoutStderr = stderr.trim() ? `${stderr.trimEnd()}\n${timeoutMessage}` : timeoutMessage;
                 if (preserveOutputOnTimeout) {
@@ -346,18 +385,35 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 }
                 return;
             }
-            if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
+            if (state.aborted.value) {
+                const cleanupResult = await completeContainerCleanup(
+                    signalCleanup.value,
+                    state.containerId.value || namedContainer,
+                );
+                reject(new ExecutionAbortedError(cleanupResult.success
+                    ? undefined
+                    : `Execution aborted, but Docker container cleanup could not be confirmed: ${cleanupResult.error || 'unknown cleanup error'}`));
+                return;
+            }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
         });
-        child.on('error', (error: Error) => {
+        child.on('error', async (error: Error) => {
             clearTimeout(timeoutHandle);
-            if (timeoutForceKillHandle) clearTimeout(timeoutForceKillHandle);
-            if (signalForceKillHandle) clearTimeout(signalForceKillHandle);
+            if (timeoutForceKillTimer.value) clearTimeout(timeoutForceKillTimer.value);
+            if (signalForceKillTimer.value) clearTimeout(signalForceKillTimer.value);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
             signal?.removeEventListener('abort', abortHandler);
             if (redisState.interval) clearInterval(redisState.interval);
-            if (redisState.client) redisState.client.quit().catch(() => {});
-            reject(error);
+            if (redisState.client) await redisState.client.quit().catch(() => {});
+            if (state.aborted.value) {
+                await completeContainerCleanup(
+                    signalCleanup.value,
+                    state.containerId.value || namedContainer,
+                );
+                reject(new ExecutionAbortedError());
+            } else {
+                reject(error);
+            }
         });
     });
 }
