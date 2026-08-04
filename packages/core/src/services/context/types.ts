@@ -63,6 +63,5 @@ export interface GenerateOptimizedContextOptions {
   tiktokenLimit: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   contextLogger: any;
-  writeOutput: (output: string) => Promise<undefined>;
-  noopClipboard: () => Promise<void>;
+  captureOutput: () => Promise<void>;
 }

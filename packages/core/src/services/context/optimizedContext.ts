@@ -108,7 +108,7 @@ export function planFilesToRemoveForTokenLimit(
 }
 
 export async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
-  const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, writeOutput, noopClipboard } = options;
+  const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, captureOutput } = options;
   let currentFiles = [...initialFiles];
   const optimizedBaseConfig = buildCompactRepomixConfig(baseConfig);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -120,10 +120,8 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
     iterations++;
     const limitedConfig = { ...optimizedBaseConfig, include: currentFiles };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    result = await (pack as any)([repoPath], limitedConfig, () => {}, {
-      writeOutputToDisk: writeOutput,
-      copyToClipboardIfEnabled: noopClipboard,
-    });
+    result = await (pack as any)([repoPath], limitedConfig, () => {});
+    await captureOutput();
 
     if (result.totalTokens <= tiktokenLimit) {
       contextLogger.info(
@@ -172,10 +170,8 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
       contextLogger.warn({ fallbackFiles }, 'Retrying with the highest-priority file instead of returning empty context');
       const fallbackConfig = { ...optimizedBaseConfig, include: fallbackFiles };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      result = await (pack as any)([repoPath], fallbackConfig, () => {}, {
-        writeOutputToDisk: writeOutput,
-        copyToClipboardIfEnabled: noopClipboard,
-      });
+      result = await (pack as any)([repoPath], fallbackConfig, () => {});
+      await captureOutput();
       currentFiles = fallbackFiles;
     }
   }

@@ -3,6 +3,9 @@
  */
 
 import { pack } from 'repomix';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import logger from '../../utils/logger.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO } from '../../config/modelLimits.js';
 import { generateOptimizedContext } from './optimizedContext.js';
@@ -57,14 +60,18 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
   correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit, compress }, 'Starting context generation with repomix');
 
+  const outputDirectory = await mkdtemp(path.join(tmpdir(), 'propr-repomix-'));
+  const outputFilePath = path.join(outputDirectory, 'repomix-output.xml');
+
   const config = {
     cwd: repoPath,
     input: {
       maxFileSize: 10 * 1024 * 1024, // 10MB
     },
     output: {
-      filePath: 'repomix-output.xml',
+      filePath: outputFilePath,
       style: 'xml' as const,
+      filePathStyle: 'target-relative' as const,
       parsableStyle: true,
       fileSummary: true,
       directoryStructure: true,
@@ -104,13 +111,8 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
   let capturedOutput = '';
 
-  const captureWriteOutput = async (output: string): Promise<undefined> => {
-    capturedOutput = output;
-    return undefined;
-  };
-
-  const noopCopyToClipboard = async (): Promise<void> => {
-    return;
+  const captureOutput = async (): Promise<void> => {
+    capturedOutput = await readFile(outputFilePath, 'utf8');
   };
 
   let skippedSecurityFiles: SuspiciousFile[] | undefined;
@@ -118,10 +120,8 @@ export async function generateContext(options: ContextGenerationOptions): Promis
   try {
     // repomix v1.9+ expects rootDirs as first argument (array of directories)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let result = await (pack as any)([repoPath], config, () => {}, {
-      writeOutputToDisk: captureWriteOutput,
-      copyToClipboardIfEnabled: noopCopyToClipboard,
-    });
+    let result = await (pack as any)([repoPath], config, () => {});
+    await captureOutput();
 
     // Check if we got a security exception and need to retry without problematic files
     if (result.suspiciousFilesResults && result.suspiciousFilesResults.length > 0) {
@@ -165,10 +165,8 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
       // Retry without suspicious files
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      result = await (pack as any)([repoPath], updatedConfig, () => {}, {
-        writeOutputToDisk: captureWriteOutput,
-        copyToClipboardIfEnabled: noopCopyToClipboard,
-      });
+      result = await (pack as any)([repoPath], updatedConfig, () => {});
+      await captureOutput();
     }
 
     // Check if result exceeds token limit and needs truncation
@@ -188,8 +186,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
           baseConfig: config,
           tiktokenLimit,
           contextLogger: correlatedLogger,
-          writeOutput: captureWriteOutput,
-          noopClipboard: noopCopyToClipboard,
+          captureOutput,
         });
 
         result = optimizedResult.result;
@@ -245,5 +242,7 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
     correlatedLogger.error({ error: (error as Error).message }, 'Failed to generate context with repomix');
     throw error;
+  } finally {
+    await rm(outputDirectory, { recursive: true, force: true });
   }
 }
