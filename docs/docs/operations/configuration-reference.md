@@ -33,6 +33,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
 | `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |
+| `SQLITE_BUSY_TIMEOUT_MS` | `30000` | Maximum time each SQLite connection waits for a writer in another process before reporting contention. | Optional. |
 
 ## Event Intake
 
@@ -46,7 +47,7 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PROPR_ROUTING_WS_PONG_TIMEOUT_MS` | `30000` (30 seconds) | Maximum wait for a transport pong before the stale socket is terminated and reconnected. | Optional. |
 | `POLLING_INTERVAL_MS` | `60000` | Poll period when pulling events from the GitHub API. | Polling mode only. |
 | `GH_WEBHOOK_SECRET` | Unset | Shared secret GitHub signs webhook deliveries with. | Direct webhook mode. |
-| `PR_SPLIT_EXECUTION_ENABLED` | `false` | Enables `/split` command intake. Accepted true values are `1` and case-insensitive `true`; every other value leaves it disabled. | Only with `routing_websocket` or `direct_webhook` intake and a deployed split-operation worker. |
+| `PR_SPLIT_EXECUTION_ENABLED` | `false` | Allows eligible `/split` commands to create queued operations. Even when false, webhook intake recognizes and stores the command and posts a disabled response. Accepted true values are `1` and case-insensitive `true`. | Only with `routing_websocket` or `direct_webhook` intake and a deployed split-operation worker. |
 | `GITHUB_REPOS_TO_MONITOR` | Placeholder (`owner/repo1,owner/repo2`) | Comma-separated repositories the daemon watches. | Always. |
 | `CONFIG_REPO` | Example config repo URL | Git repository for dynamic repository management; when set, processing labels and repo config load from it. | Optional. |
 | `PRIMARY_PROCESSING_LABELS` | Shipped `AI,propr` / code falls back to `AI` | Issue labels that trigger processing. | Optional. |
@@ -57,7 +58,7 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PR_FOLLOWUP_TRIGGER_KEYWORDS` | `!propr` | Keywords in PR comments that trigger follow-up work. See [PR Follow-up](../features/pr-followup.md). | Optional. |
 | `LABEL_APPLIER_TIMELINE_MAX_PAGES` | `5` | With a whitelist set, polling resolves who applied the trigger label from the issue timeline (page 1 + the most recent N pages). Raise it if long-lived issues are skipped with "Could not determine label applier". | Optional. |
 
-> **`/split` intake limitation:** `/split` commands require an `issue_comment` event and are accepted only in `routing_websocket` or `direct_webhook` mode. Polling intentionally ignores them and does not post a response. Enable the flag only alongside a deployed split-operation worker. Intake durably suppresses responses after five commands from the same repository/user identity in ten minutes.
+> **`/split` intake limitation:** `/split` commands require an `issue_comment` event and are recognized only in `routing_websocket` or `direct_webhook` mode. Polling intentionally ignores them and does not post a response. With execution disabled (the default), webhook commands still create durable receipts and a disabled comment but never create an operation. Enable execution only alongside a deployed split-operation worker. Intake durably suppresses responses after five commands from the same repository/user identity in ten minutes.
 
 ## Agents & Timeouts
 

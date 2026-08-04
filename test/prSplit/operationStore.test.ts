@@ -17,9 +17,11 @@ import {
   buildSplitOperationEventKey,
 } from '../../packages/core/src/services/prSplit/keys.js';
 import {
+  CANCELLED_QUEUED_SPLIT_OPERATION_ERROR,
   DEFAULT_SPLIT_OPERATION_LEASE_MS,
   STALE_SPLIT_OPERATION_ERROR,
   assertPrSplitOperationLease,
+  cancelQueuedPrSplitOperation,
   getActivePrSplitOperation,
   getPrSplitOperation,
   heartbeatPrSplitOperation,
@@ -92,6 +94,7 @@ describe('PR split command and operation persistence', () => {
   test('preserves the first terminal disposition for non-executable commands', async () => {
     const first = await recordPrSplitCommandOutcome({
       ...BASE_SPLIT_INPUT,
+      instruction: '  extract\n auth   changes  ',
       outcome: 'disabled',
     }, database);
     const replay = await recordPrSplitCommandOutcome({
@@ -104,6 +107,7 @@ describe('PR split command and operation persistence', () => {
     assert.equal(replay.receipt.outcome, 'disabled');
     assert.equal(replay.replayed, true);
     assert.equal(replay.receipt.requester_id, BASE_SPLIT_INPUT.requesterId);
+    assert.equal(first.receipt.instruction, 'extract auth changes');
     assert.equal(await database('pr_split_operations').count('* as count').first()
       .then(row => Number(row?.count)), 0);
   });
@@ -317,6 +321,33 @@ describe('PR split command and operation persistence', () => {
       STALE_SPLIT_OPERATION_ERROR);
   });
 
+  test('administratively cancels abandoned queued work and releases its PR lock', async () => {
+    const queued = await createOrGetPrSplitOperation(BASE_SPLIT_INPUT, database);
+    const operation = requiredOperation(queued);
+    const cancelledAt = new Date('2026-08-04T12:00:00.000Z');
+    const cancelled = await cancelQueuedPrSplitOperation(
+      operation.id,
+      { now: cancelledAt },
+      database,
+    );
+    assert.equal(cancelled?.status, 'failed');
+    assert.equal(cancelled?.error_message, CANCELLED_QUEUED_SPLIT_OPERATION_ERROR);
+    assert.equal(cancelled?.finished_at, cancelledAt.toISOString());
+    assert.equal(await getActivePrSplitOperation(
+      BASE_SPLIT_INPUT.repositoryId,
+      BASE_SPLIT_INPUT.sourcePrNumber,
+      database,
+    ), null);
+    assert.equal(await cancelQueuedPrSplitOperation(operation.id, {}, database), null);
+
+    const next = await createOrGetPrSplitOperation({
+      ...BASE_SPLIT_INPUT,
+      originalCommentId: 9002,
+      instruction: 'extract API changes',
+    }, database);
+    assert.equal(next.receipt.outcome, 'queued');
+  });
+
   test('does not hide non-unique SQLite constraint failures', async () => {
     await database.raw(`
       CREATE TRIGGER reject_split_insert
@@ -329,7 +360,10 @@ describe('PR split command and operation persistence', () => {
       createOrGetPrSplitOperation(BASE_SPLIT_INPUT, database),
       /split trigger failure/,
     );
-    assert.equal(await getPrSplitCommandRecord(BASE_SPLIT_INPUT, database), null);
+    assert.equal(
+      (await getPrSplitCommandRecord(BASE_SPLIT_INPUT, database))?.receipt.outcome,
+      'processing',
+    );
   });
 
   test('uses separate processes to arbitrate a genuinely concurrent SQLite race', async () => {
@@ -375,6 +409,52 @@ describe('PR split command and operation persistence', () => {
         .then(row => Number(row?.count)), 1);
       assert.equal(await verificationDatabase('pr_split_command_receipts').count('* as count').first()
         .then(row => Number(row?.count)), 2);
+    } finally {
+      await verificationDatabase.destroy();
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test('atomically reserves the per-user limit across separate processes', async () => {
+    const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'propr-split-limit-race-'));
+    const filename = path.join(temporaryDirectory, 'commands.sqlite');
+    const verificationDatabase = knex({
+      client: 'better-sqlite3',
+      connection: { filename },
+      useNullAsDefault: true,
+      pool: { min: 1, max: 1 },
+    });
+
+    try {
+      await verificationDatabase.raw('PRAGMA journal_mode = WAL');
+      await createPrSplitTables(verificationDatabase);
+      const childScript = path.resolve('test/prSplit/operationRaceChild.ts');
+      const startAt = Date.now() + 1_000;
+      const runChild = async (commentId: number) => {
+        const { stdout } = await execFileAsync(process.execPath, [
+          '--import',
+          'tsx',
+          childScript,
+          filename,
+          JSON.stringify({ ...BASE_SPLIT_INPUT, originalCommentId: commentId }),
+          String(startAt),
+          'reserve',
+        ]);
+        return JSON.parse(stdout) as { outcome: string; processId: number };
+      };
+      const results = await Promise.all(
+        Array.from({ length: 8 }, (_, index) => runChild(9100 + index)),
+      );
+      assert.equal(new Set(results.map(result => result.processId)).size, 8);
+      assert.deepEqual(
+        results.map(result => result.outcome).sort(),
+        ['processing', 'processing', 'processing', 'processing', 'processing',
+          'rate_limited', 'rate_limited', 'rate_limited'],
+      );
+      assert.equal(await verificationDatabase('pr_split_command_receipts')
+        .count('* as count').first().then(row => Number(row?.count)), 8);
+      assert.equal(await verificationDatabase('pr_split_operations')
+        .count('* as count').first().then(row => Number(row?.count)), 0);
     } finally {
       await verificationDatabase.destroy();
       await rm(temporaryDirectory, { recursive: true, force: true });

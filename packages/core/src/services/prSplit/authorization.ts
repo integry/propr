@@ -49,9 +49,9 @@ function githubStatus(error: unknown): number | undefined {
 /**
  * Fail-closed repository authorization for a split requester.
  *
- * GitHub's 404 response is a definitive negative collaborator result. A 403
- * can instead describe the App/token's own missing access, so every 403 is
- * rethrown and remains retryable rather than becoming a permanent refusal.
+ * A collaborator 404 is terminal only after the same credential proves that
+ * it can still read the repository. Repository/installation failures remain
+ * retryable instead of becoming an immutable authorization refusal.
  */
 export async function authorizeSplitRequester(
   octokit: PrSplitRequestClient,
@@ -76,6 +76,10 @@ export async function authorizeSplitRequester(
   } catch (error) {
     const status = githubStatus(error);
     if (status === 404) {
+      await octokit.request(
+        'GET /repos/{owner}/{repo}',
+        { owner: request.owner, repo: request.repo },
+      );
       return { authorized: false, permission: null };
     }
     throw error;

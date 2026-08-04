@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
+import { normalizeSplitInstruction } from './command.js';
 import {
+  buildSplitOperationDedupeKey,
   buildSplitOperationEventKey,
   normalizeGitHubId,
   normalizePositiveInteger,
@@ -113,11 +115,24 @@ function isSqliteBusyError(error: unknown): boolean {
   return typeof error === 'object'
     && error !== null
     && 'code' in error
-    && error.code === 'SQLITE_BUSY';
+    && typeof error.code === 'string'
+    && error.code.startsWith('SQLITE_BUSY');
 }
 
-async function yieldBeforeBusyRetry(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+async function withSqliteBusyRetry<T>(action: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      if (!isSqliteBusyError(error) || attempt === 4) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+    }
+  }
+  throw new Error('SQLite write retry limit exhausted');
+}
+
+async function withCommandWrite<T>(action: () => Promise<T>): Promise<T> {
+  return withLocalCommandWriteLock(() => withSqliteBusyRetry(action));
 }
 
 function receiptInsert(input: PrSplitCommandInput, outcome: string, now: Date) {
@@ -138,7 +153,7 @@ function receiptInsert(input: PrSplitCommandInput, outcome: string, now: Date) {
     requester_id: requesterId,
     requester: input.requester,
     original_comment_id: normalizeGitHubId(input.originalCommentId, 'originalCommentId'),
-    instruction: input.instruction,
+    instruction: normalizeSplitInstruction(input.instruction),
     outcome,
     duplicate_kind: null,
     operation_id: null,
@@ -166,9 +181,6 @@ async function hydrateRecord(
   receipt: PrSplitCommandReceipt,
   replayed: boolean,
 ): Promise<PrSplitCommandRecord> {
-  if (receipt.outcome === 'processing') {
-    throw new Error(`PR split command ${receipt.event_key} has an incomplete intake outcome`);
-  }
   const operation = receipt.operation_id
     ? await getPrSplitOperation(receipt.operation_id, client)
     : null;
@@ -193,13 +205,11 @@ export async function getPrSplitCommandRecord(
   return findRecord(client, buildSplitOperationEventKey(input), true);
 }
 
-/** Bound new command work for one immutable repository/requester identity. */
-export async function isPrSplitCommandRateLimited(
-  repositoryId: number,
-  requesterId: number,
-  dbClient?: Knex,
-  options: PrSplitCommandRateLimitOptions = {},
-): Promise<boolean> {
+function rateLimitOptions(options: PrSplitCommandRateLimitOptions): {
+  now: Date;
+  maxCommands: number;
+  windowMs: number;
+} {
   const now = options.now ?? new Date();
   const maxCommands = options.maxCommands ?? DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT;
   const windowMs = options.windowMs ?? DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT_WINDOW_MS;
@@ -209,17 +219,56 @@ export async function isPrSplitCommandRateLimited(
   if (!Number.isFinite(windowMs) || windowMs <= 0) {
     throw new RangeError('PR split command rate limit window must be positive');
   }
+  return { now, maxCommands, windowMs };
+}
 
+/**
+ * Atomically reserve an event and its per-user rate-limit slot. Inserting the
+ * processing receipt is deliberately the transaction's first database action:
+ * SQLite writers are serialized before any process counts the active window.
+ */
+export async function reservePrSplitCommand(
+  input: PrSplitCommandInput,
+  dbClient?: Knex,
+  options: PrSplitCommandRateLimitOptions = {},
+): Promise<PrSplitCommandRecord> {
+  const { now, maxCommands, windowMs } = rateLimitOptions(options);
   const client = await resolvePrSplitDb(dbClient);
-  const row = await client('pr_split_command_receipts')
-    .where({
-      repository_id: normalizeGitHubId(repositoryId, 'repositoryId'),
-      requester_id: normalizeGitHubId(requesterId, 'requesterId'),
-    })
-    .andWhere('created_at', '>=', timestamp(new Date(now.getTime() - windowMs)))
-    .count({ count: '*' })
-    .first();
-  return Number(row?.count ?? 0) >= maxCommands;
+  const pendingReceipt = receiptInsert(input, 'processing', now);
+  const existing = await findRecord(client, pendingReceipt.event_key, true);
+  if (existing) return existing;
+
+  return withCommandWrite(async () => {
+    const raced = await findRecord(client, pendingReceipt.event_key, true);
+    if (raced) return raced;
+    try {
+      return await client.transaction(async (transaction) => {
+        await transaction('pr_split_command_receipts').insert(pendingReceipt);
+        const row = await transaction('pr_split_command_receipts')
+          .where({
+            repository_id: pendingReceipt.repository_id,
+            requester_id: pendingReceipt.requester_id,
+          })
+          .andWhere('created_at', '>=', timestamp(new Date(now.getTime() - windowMs)))
+          .count({ count: '*' })
+          .first();
+        if (Number(row?.count ?? 0) > maxCommands) {
+          await transaction<PrSplitCommandReceipt>('pr_split_command_receipts')
+            .where({ event_key: pendingReceipt.event_key, outcome: 'processing' })
+            .update({ outcome: 'rate_limited', response_state: 'suppressed' });
+        }
+        const receipt = await findReceipt(transaction, pendingReceipt.event_key);
+        if (!receipt) throw new Error('Reserved PR split command receipt could not be read back');
+        return hydrateRecord(transaction, receipt, false);
+      });
+    } catch (error) {
+      if (isPrSplitUniqueConstraintError(error)) {
+        const concurrent = await findRecord(client, pendingReceipt.event_key, true);
+        if (concurrent) return concurrent;
+      }
+      throw error;
+    }
+  });
 }
 
 /** Persist a non-executable command disposition before attempting its response. */
@@ -227,21 +276,23 @@ export async function recordPrSplitCommandOutcome(
   input: RecordPrSplitCommandOutcomeInput,
   dbClient?: Knex,
 ): Promise<PrSplitCommandRecord> {
+  const reservation = await reservePrSplitCommand(input, dbClient);
+  if (reservation.receipt.outcome !== 'processing') return reservation;
   const client = await resolvePrSplitDb(dbClient);
-  const record = receiptInsert(input, input.outcome, new Date());
+  const eventKey = reservation.receipt.event_key;
 
-  return withLocalCommandWriteLock(async () => {
-    try {
-      await client('pr_split_command_receipts').insert(record);
-      const inserted = await findReceipt(client, record.event_key);
-      if (!inserted) throw new Error('Created PR split command receipt could not be read back');
-      return hydrateRecord(client, inserted, false);
-    } catch (error) {
-      if (!isPrSplitUniqueConstraintError(error)) throw error;
-      const existing = await findRecord(client, record.event_key, true);
-      if (existing) return existing;
-      throw error;
-    }
+  return withCommandWrite(async () => {
+    const now = new Date();
+    const updated = await client<PrSplitCommandReceipt>('pr_split_command_receipts')
+      .where({ event_key: eventKey, outcome: 'processing' })
+      .update({
+        outcome: input.outcome,
+        response_state: input.outcome === 'rate_limited' ? 'suppressed' : 'pending',
+        updated_at: timestamp(now),
+      });
+    const receipt = await findReceipt(client, eventKey);
+    if (!receipt) throw new Error('Completed PR split command receipt could not be read back');
+    return hydrateRecord(client, receipt, updated === 0);
   });
 }
 
@@ -263,53 +314,37 @@ export async function createOrGetPrSplitOperation(
   input: CreatePrSplitOperationInput,
   dbClient?: Knex,
 ): Promise<PrSplitCommandRecord> {
+  buildSplitOperationDedupeKey(input);
+  const reservation = await reservePrSplitCommand(input, dbClient);
+  if (reservation.receipt.outcome !== 'processing') return reservation;
   const client = await resolvePrSplitDb(dbClient);
-  const eventKey = buildSplitOperationEventKey(input);
-  const existing = await findRecord(client, eventKey, true);
-  if (existing) return existing;
+  const eventKey = reservation.receipt.event_key;
 
-  return withLocalCommandWriteLock(async () => {
-    const racedBeforeWrite = await findRecord(client, eventKey, true);
-    if (racedBeforeWrite) return racedBeforeWrite;
-
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        return await client.transaction(async (transaction) => {
-          const now = new Date();
-          await transaction('pr_split_command_receipts').insert(
-            receiptInsert(input, 'processing', now),
-          );
-          const decision = await createPrSplitOperationDecision(input, transaction, now);
-          const terminal = receiptOutcome(decision);
-          await transaction<PrSplitCommandReceipt>('pr_split_command_receipts')
-            .where({ event_key: eventKey, outcome: 'processing' })
-            .update({
-              outcome: terminal.outcome,
-              duplicate_kind: terminal.duplicateKind,
-              operation_id: decision.operation.id,
-              updated_at: timestamp(now),
-            });
-          const receipt = await findReceipt(transaction, eventKey);
-          if (!receipt) throw new Error('Created PR split command receipt could not be read back');
-          return { receipt, operation: decision.operation, replayed: false };
-        });
-      } catch (error) {
-        if (isPrSplitUniqueConstraintError(error)) {
-          const raced = await findRecord(client, eventKey, true);
-          if (raced) return raced;
-        }
-        if (isSqliteBusyError(error) && attempt < 2) {
-          await yieldBeforeBusyRetry();
-          const raced = await findRecord(client, eventKey, true);
-          if (raced) return raced;
-          continue;
-        }
-        throw error;
-      }
+  return withCommandWrite(() => client.transaction(async (transaction) => {
+    const now = new Date();
+    const claimed = await transaction<PrSplitCommandReceipt>('pr_split_command_receipts')
+      .where({ event_key: eventKey, outcome: 'processing' })
+      .update({ updated_at: timestamp(now) });
+    if (claimed === 0) {
+      const completed = await findRecord(transaction, eventKey, true);
+      if (!completed) throw new Error('Reserved PR split command receipt disappeared');
+      return completed;
     }
 
-    throw new Error('Unable to record PR split command');
-  });
+    const decision = await createPrSplitOperationDecision(input, transaction, now);
+    const terminal = receiptOutcome(decision);
+    await transaction<PrSplitCommandReceipt>('pr_split_command_receipts')
+      .where({ event_key: eventKey, outcome: 'processing' })
+      .update({
+        outcome: terminal.outcome,
+        duplicate_kind: terminal.duplicateKind,
+        operation_id: decision.operation.id,
+        updated_at: timestamp(now),
+      });
+    const receipt = await findReceipt(transaction, eventKey);
+    if (!receipt) throw new Error('Created PR split command receipt could not be read back');
+    return { receipt, operation: decision.operation, replayed: false };
+  }));
 }
 
 /** Claim a response attempt, reclaiming abandoned attempts after their lease. */
@@ -327,6 +362,7 @@ export async function claimPrSplitCommandResponse(
   const currentTimestamp = timestamp(now);
   const claimedPending = await client<PrSplitCommandReceipt>('pr_split_command_receipts')
     .where({ event_key: eventKey, response_state: 'pending' })
+    .whereNot({ outcome: 'processing' })
     .update({
       response_state: 'claimed',
       response_claim_token: claimToken,

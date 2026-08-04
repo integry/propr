@@ -138,6 +138,18 @@ function getCommentEventDetails(
     return null;
 }
 
+function ignoredCommentReason(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+): string {
+    if (eventType !== 'issue_comment') return 'not_pull_request_comment';
+    const issuePayload = payload as IssueCommentEvent;
+    if (!issuePayload.issue.pull_request) return 'not_pull_request_comment';
+    return parseSplitCommand(issuePayload.comment.body)
+        ? 'split_requires_webhook_intake'
+        : 'not_pull_request_comment';
+}
+
 export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
     const { redisClient } = config;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -535,7 +547,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const repoFullName = `${owner}/${repo}`;
 
     const eventDetails = getCommentEventDetails(payload, eventType, repoFullName, correlatedLogger);
-    if (!eventDetails) return { status: 'ignored', reason: 'not_pull_request_comment' };
+    if (!eventDetails) return { status: 'ignored', reason: ignoredCommentReason(payload, eventType) };
 
     const { prNumber, comment } = eventDetails;
 

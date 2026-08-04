@@ -18,6 +18,7 @@ export const SPLIT_OPERATION_STATUSES = [
 ] as const;
 export const DEFAULT_SPLIT_OPERATION_LEASE_MS = 15 * 60 * 1000;
 export const STALE_SPLIT_OPERATION_ERROR = 'Split operation lease expired before completion';
+export const CANCELLED_QUEUED_SPLIT_OPERATION_ERROR = 'Queued split operation cancelled';
 
 export type SplitOperationStatus = (typeof SPLIT_OPERATION_STATUSES)[number];
 
@@ -78,6 +79,11 @@ export interface UpdatePrSplitOperationStatusOptions {
 export interface HeartbeatPrSplitOperationOptions {
   leaseToken: string;
   leaseDurationMs?: number;
+  now?: Date;
+}
+
+export interface CancelQueuedPrSplitOperationOptions {
+  reason?: string;
   now?: Date;
 }
 
@@ -177,6 +183,26 @@ export async function recoverStalePrSplitOperations(
       finished_at: currentTimestamp,
       updated_at: currentTimestamp,
     });
+}
+
+/** Administratively fail abandoned queued work and release its per-PR lock. */
+export async function cancelQueuedPrSplitOperation(
+  operationId: string,
+  options: CancelQueuedPrSplitOperationOptions = {},
+  dbClient?: Knex,
+): Promise<PrSplitOperation | null> {
+  const client = await resolvePrSplitDb(dbClient);
+  const currentTimestamp = timestamp(options.now ?? new Date());
+  const reason = options.reason?.trim() || CANCELLED_QUEUED_SPLIT_OPERATION_ERROR;
+  const updated = await client<PrSplitOperation>('pr_split_operations')
+    .where({ id: operationId, status: 'queued' })
+    .update({
+      status: 'failed',
+      error_message: reason,
+      finished_at: currentTimestamp,
+      updated_at: currentTimestamp,
+    });
+  return updated === 1 ? getPrSplitOperation(operationId, client) : null;
 }
 
 /** Resolve the executable operation decision inside the caller's transaction. */

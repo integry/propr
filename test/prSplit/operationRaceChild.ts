@@ -1,12 +1,13 @@
 import knex from 'knex';
 import {
   createOrGetPrSplitOperation,
+  reservePrSplitCommand,
 } from '../../packages/core/src/services/prSplit/commandStore.js';
 import type {
   CreatePrSplitOperationInput,
 } from '../../packages/core/src/services/prSplit/operationStore.js';
 
-const [filename, serializedInput, startAtValue] = process.argv.slice(2);
+const [filename, serializedInput, startAtValue, mode = 'operation'] = process.argv.slice(2);
 if (!filename || !serializedInput || !startAtValue) {
   throw new Error('Operation race child requires database, input, and start time arguments');
 }
@@ -25,7 +26,9 @@ const database = knex({
 
 try {
   await database.raw('PRAGMA busy_timeout = 1000');
-  const result = await createOrGetPrSplitOperation(input, database);
+  const result = mode === 'reserve'
+    ? await reservePrSplitCommand(input, database)
+    : await createOrGetPrSplitOperation(input, database);
   process.stdout.write(JSON.stringify({
     outcome: result.receipt.outcome,
     processId: process.pid,

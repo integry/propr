@@ -38,10 +38,10 @@ export {
   claimPrSplitCommandResponse,
   createOrGetPrSplitOperation,
   getPrSplitCommandRecord,
-  isPrSplitCommandRateLimited,
   markPrSplitCommandResponsePosted,
   recordPrSplitCommandOutcome,
   releasePrSplitCommandResponseClaim,
+  reservePrSplitCommand,
 } from './commandStore.js';
 export type {
   PrSplitCommandInput,
@@ -56,11 +56,13 @@ export type {
 
 export {
   ACTIVE_SPLIT_OPERATION_STATUSES,
+  CANCELLED_QUEUED_SPLIT_OPERATION_ERROR,
   DEFAULT_SPLIT_OPERATION_LEASE_MS,
   STALE_SPLIT_OPERATION_ERROR,
   TERMINAL_SPLIT_OPERATION_STATUSES,
   SPLIT_OPERATION_STATUSES,
   assertPrSplitOperationLease,
+  cancelQueuedPrSplitOperation,
   isActiveSplitOperationStatus,
   isTerminalSplitOperationStatus,
   getActivePrSplitOperation,
@@ -73,6 +75,7 @@ export type {
   SplitOperationStatus,
   PrSplitOperation,
   CreatePrSplitOperationInput,
+  CancelQueuedPrSplitOperationOptions,
   HeartbeatPrSplitOperationOptions,
   UpdatePrSplitOperationStatusOptions,
 } from './operationStore.js';

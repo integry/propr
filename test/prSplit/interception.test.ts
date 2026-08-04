@@ -55,7 +55,10 @@ describe('/split interception boundaries', () => {
         PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
       },
     );
-    assert.deepEqual(result, { status: 'ignored', reason: 'not_pull_request_comment' });
+    assert.deepEqual(result, {
+      status: 'ignored',
+      reason: 'split_requires_webhook_intake',
+    });
     assert.equal(redisGet.mock.callCount(), 0);
   });
 

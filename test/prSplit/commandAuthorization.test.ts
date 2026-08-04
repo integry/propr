@@ -56,7 +56,7 @@ describe('/split repository authorization', () => {
     }
   });
 
-  test('uses the collaborator permission endpoint and treats only 404 as definitive', async () => {
+  test('verifies repository access before treating a collaborator 404 as definitive', async () => {
     const requestedRoutes: string[] = [];
     const octokit: PrSplitRequestClient = {
       request: mock.fn(async (route: string) => {
@@ -72,15 +72,34 @@ describe('/split repository authorization', () => {
       'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
     ]);
 
+    const notFoundRoutes: string[] = [];
     const notFoundClient: PrSplitRequestClient = {
-      request: mock.fn(async () => {
-        throw Object.assign(new Error('Not Found'), { status: 404 });
+      request: mock.fn(async (route: string) => {
+        notFoundRoutes.push(route);
+        if (route === 'GET /repos/{owner}/{repo}') return { data: { id: 123456 } };
+        throw Object.assign(new Error('Collaborator not found'), { status: 404 });
       }),
     };
     assert.deepEqual(await authorizeSplitRequester(notFoundClient, authorizationRequest), {
       authorized: false,
       permission: null,
     });
+    assert.deepEqual(notFoundRoutes, [
+      'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
+      'GET /repos/{owner}/{repo}',
+    ]);
+
+    const repositoryError = Object.assign(new Error('Repository not found'), { status: 404 });
+    const inaccessibleClient: PrSplitRequestClient = {
+      request: mock.fn(async (route: string) => {
+        if (route === 'GET /repos/{owner}/{repo}') throw repositoryError;
+        throw Object.assign(new Error('Collaborator not found'), { status: 404 });
+      }),
+    };
+    await assert.rejects(
+      authorizeSplitRequester(inaccessibleClient, authorizationRequest),
+      error => error === repositoryError,
+    );
   });
 
   test('rejects a renamed or recycled login whose numeric identity differs', async () => {
