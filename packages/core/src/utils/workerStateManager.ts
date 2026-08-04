@@ -20,6 +20,17 @@ redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
 return 1
 `;
 
+const CREATE_FENCED_TASK_STATE_SCRIPT = `
+if redis.call('get', KEYS[2]) ~= ARGV[1] then
+    return 0
+end
+redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
+return 1
+`;
+
+const MAX_CAS_ATTEMPTS = 8;
+const MAX_CAS_BACKOFF_MS = 25;
+
 const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
     TaskStates.COMPLETED,
     TaskStates.FAILED,
@@ -48,6 +59,8 @@ export class WorkerStateManager {
     private redis: InstanceType<typeof Redis>;
     private keyPrefix: string;
     private stateExpiry: number;
+    private nonTerminalScanCursor = '0';
+    private persistenceTails = new Map<string, Promise<void>>();
 
     constructor(options: WorkerStateManagerOptions = {}) {
         this.redis = new Redis({
@@ -77,17 +90,35 @@ export class WorkerStateManager {
         correlationId: string | null = null,
         options: CreateTaskStateOptions = {},
     ): Promise<TaskStateData> {
+        if (Boolean(options.prProcessingLockToken) !== Boolean(options.prProcessingLockKey)) {
+            throw new Error('PR task state creation requires both a processing lock token and key');
+        }
         const state: TaskStateData = {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
             state: TaskStates.PENDING, createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(), attempts: 0,
+            updatedAt: new Date().toISOString(), version: 1, attempts: 0,
             history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }],
             ...(options.prProcessingLockToken
                 ? { prProcessingLockToken: options.prProcessingLockToken }
                 : {}),
         };
         const key = this.getTaskKey(taskId);
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        if (options.prProcessingLockToken && options.prProcessingLockKey) {
+            const created = await this.redis.eval(
+                CREATE_FENCED_TASK_STATE_SCRIPT,
+                2,
+                key,
+                options.prProcessingLockKey,
+                options.prProcessingLockToken,
+                this.stateExpiry,
+                JSON.stringify(state),
+            );
+            if (Number(created) !== 1) {
+                throw new Error(`PR processing attempt no longer owns its lease for taskId: ${taskId}`);
+            }
+        } else {
+            await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        }
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId, issueNumber: issueRef.number,
@@ -120,7 +151,9 @@ export class WorkerStateManager {
                 taskId,
                 state: TaskStates.PENDING,
                 repository,
-                issueNumber: issueRef.number
+                issueNumber: issueRef.number,
+                version: state.version,
+                updatedAt: state.updatedAt,
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
@@ -135,13 +168,20 @@ export class WorkerStateManager {
      * @param metadata - Additional metadata
      * @returns Updated state
      */
-    async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
+    async updateTaskState(
+        taskId: string,
+        newState: TaskState,
+        metadata: UpdateMetadata = {},
+        expectedPrProcessingLockToken?: string,
+    ): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        while (true) {
+        for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
             const state: TaskStateData = JSON.parse(stateJson);
+            if (expectedPrProcessingLockToken !== undefined
+                && state.prProcessingLockToken !== expectedPrProcessingLockToken) return state;
             // Terminal state is monotonic. A retry is the sole intentional path
             // back into processing and must opt in explicitly.
             if (!canTransitionTaskState(state.state, newState, metadata)) return state;
@@ -156,11 +196,18 @@ export class WorkerStateManager {
                 this.stateExpiry,
                 JSON.stringify(state),
             );
-            if (Number(updated) !== 1) continue;
+            if (Number(updated) !== 1) {
+                await this.waitForCASRetry(attempt);
+                continue;
+            }
 
-            await this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata });
+            await this.enqueueTaskStatePersistence(
+                taskId,
+                () => this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
+            );
             return state;
         }
+        throw new Error(`Task state update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
     }
 
     /**
@@ -180,6 +227,9 @@ export class WorkerStateManager {
         const state: TaskStateData = JSON.parse(stateJson);
         if (state.state !== expectation.state) return null;
         if (expectation.updatedAt && state.updatedAt !== expectation.updatedAt) return null;
+        if (expectation.version !== undefined && (state.version ?? 0) !== expectation.version) return null;
+        if (expectation.prProcessingLockToken !== undefined
+            && state.prProcessingLockToken !== expectation.prProcessingLockToken) return null;
         if (!canTransitionTaskState(state.state, newState, metadata)) return null;
 
         const previousState = state.state;
@@ -194,7 +244,10 @@ export class WorkerStateManager {
         );
         if (Number(updated) !== 1) return null;
 
-        await this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata });
+        await this.enqueueTaskStatePersistence(
+            taskId,
+            () => this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
+        );
         return state;
     }
 
@@ -202,6 +255,7 @@ export class WorkerStateManager {
         const previousState = state.state;
         state.state = newState;
         state.updatedAt = new Date().toISOString();
+        state.version = (state.version ?? 0) + 1;
         state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
 
         if (metadata.error) {
@@ -220,6 +274,23 @@ export class WorkerStateManager {
         });
     }
 
+    private async waitForCASRetry(attempt: number): Promise<void> {
+        const exponentialCap = Math.min(MAX_CAS_BACKOFF_MS, 2 ** attempt);
+        const delayMs = Math.floor(Math.random() * (exponentialCap + 1));
+        if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+
+    private async enqueueTaskStatePersistence(taskId: string, operation: () => Promise<void>): Promise<void> {
+        const previous = this.persistenceTails.get(taskId) ?? Promise.resolve();
+        const current = previous.catch(() => undefined).then(operation);
+        this.persistenceTails.set(taskId, current);
+        try {
+            await current;
+        } finally {
+            if (this.persistenceTails.get(taskId) === current) this.persistenceTails.delete(taskId);
+        }
+    }
+
     private async persistTaskStateUpdate(
         taskId: string,
         state: TaskStateData,
@@ -233,20 +304,25 @@ export class WorkerStateManager {
             previousState, newState, attempts: state.attempts
         }, 'Task state updated');
 
+        const historyTimestamp = state.history.at(-1)?.timestamp ?? state.updatedAt;
+        const historyData = {
+            task_id: taskId, state: newState, timestamp: historyTimestamp,
+            reason: metadata.reason ?? `State changed from ${previousState}`,
+            metadata: JSON.stringify({
+                ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
+                stateVersion: state.version ?? 0, stateUpdatedAt: state.updatedAt,
+                error: metadata.error, worktreeInfo: metadata.worktreeInfo,
+                claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
+            })
+        };
         try {
-            const historyData = {
-                task_id: taskId, state: newState, timestamp: new Date().toISOString(),
-                reason: metadata.reason ?? `State changed from ${previousState}`,
-                metadata: JSON.stringify({
-                    ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
-                    error: metadata.error, worktreeInfo: metadata.worktreeInfo,
-                    claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
-                    })
-                };
-                await db('task_history').insert(historyData);
+            await db('task_history').insert(historyData);
             correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
+        } catch (error) {
+            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
+        }
 
-            // Publish real-time event for task state change
+        try {
             const eventPublisher = getEventPublisher();
             await eventPublisher.publishTaskUpdate({
                 taskId,
@@ -254,13 +330,15 @@ export class WorkerStateManager {
                 previousState,
                 repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                 issueNumber: state.issueRef.number,
+                version: state.version,
+                updatedAt: state.updatedAt,
                 metadata: {
                     attempts: state.attempts,
                     reason: metadata.reason
                 }
             });
         } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
+            correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish task state update event');
         }
     }
 
@@ -282,15 +360,38 @@ export class WorkerStateManager {
      * @param issueRefPatch - Issue reference fields to merge
      * @returns Updated state, or null if no state exists
      */
-    async updateIssueRef(taskId: string, issueRefPatch: Partial<IssueRef>): Promise<TaskStateData | null> {
+    async updateIssueRef(
+        taskId: string,
+        issueRefPatch: Partial<IssueRef>,
+        expectedPrProcessingLockToken?: string,
+    ): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) return null;
+        let state: TaskStateData | null = null;
+        for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) return null;
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        state.issueRef = { ...state.issueRef, ...issueRefPatch };
-        state.updatedAt = new Date().toISOString();
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+            state = JSON.parse(stateJson) as TaskStateData;
+            if (expectedPrProcessingLockToken !== undefined
+                && state.prProcessingLockToken !== expectedPrProcessingLockToken) return state;
+            state.issueRef = { ...state.issueRef, ...issueRefPatch };
+            state.updatedAt = new Date().toISOString();
+            state.version = (state.version ?? 0) + 1;
+            const updated = await this.redis.eval(
+                COMPARE_AND_SET_TASK_STATE_SCRIPT,
+                1,
+                key,
+                stateJson,
+                this.stateExpiry,
+                JSON.stringify(state),
+            );
+            if (Number(updated) === 1) break;
+            state = null;
+            await this.waitForCASRetry(attempt);
+        }
+        if (!state) {
+            throw new Error(`Task issue reference update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
+        }
 
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
@@ -307,6 +408,8 @@ export class WorkerStateManager {
                 state: state.state,
                 repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                 issueNumber: state.issueRef.number,
+                version: state.version,
+                updatedAt: state.updatedAt,
                 metadata: {
                     issueRefUpdated: true,
                     updatedFields: Object.keys(issueRefPatch)
@@ -352,18 +455,41 @@ export class WorkerStateManager {
      * @param metadata - Metadata to merge
      * @returns Updated state
      */
-    async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
+    async updateHistoryMetadata(
+        taskId: string,
+        historyState: TaskState,
+        metadata: Record<string, unknown> = {},
+        expectedPrProcessingLockToken?: string,
+    ): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        const historyIndex = state.history.findLastIndex(h => h.state === historyState);
+            const state: TaskStateData = JSON.parse(stateJson);
+            if (expectedPrProcessingLockToken !== undefined
+                && state.prProcessingLockToken !== expectedPrProcessingLockToken) return state;
+            const historyIndex = state.history.findLastIndex(h => h.state === historyState);
 
-        if (historyIndex >= 0) {
+            if (historyIndex < 0) {
+                logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
+                return state;
+            }
             state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
             state.updatedAt = new Date().toISOString();
-            await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+            state.version = (state.version ?? 0) + 1;
+            const updated = await this.redis.eval(
+                COMPARE_AND_SET_TASK_STATE_SCRIPT,
+                1,
+                key,
+                stateJson,
+                this.stateExpiry,
+                JSON.stringify(state),
+            );
+            if (Number(updated) !== 1) {
+                await this.waitForCASRetry(attempt);
+                continue;
+            }
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
             correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
 
@@ -375,6 +501,8 @@ export class WorkerStateManager {
                     state: state.state,
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
+                    version: state.version,
+                    updatedAt: state.updatedAt,
                     metadata: {
                         metadataUpdate: true,
                         updatedFields: Object.keys(metadata)
@@ -383,10 +511,9 @@ export class WorkerStateManager {
             } catch (error) {
                 correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
             }
-        } else {
-            logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
+            return state;
         }
-        return state;
+        throw new Error(`Task history metadata update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
     }
 
     /**
@@ -447,7 +574,14 @@ export class WorkerStateManager {
      * reconciler to repair state after an unclean restart.
      */
     async getNonTerminalTasks(filter: NonTerminalTaskFilter = {}): Promise<TaskStateData[]> {
-        return scanNonTerminalTaskStates(this.redis, this.keyPrefix, filter);
+        const result = await scanNonTerminalTaskStates(
+            this.redis,
+            this.keyPrefix,
+            filter,
+            this.nonTerminalScanCursor,
+        );
+        this.nonTerminalScanCursor = result.nextCursor;
+        return result.tasks;
     }
 
     /**

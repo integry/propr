@@ -48,6 +48,7 @@ export class SocketService {
   private queueBroadcaster: QueueBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
   private queueDeps: QueueDependencies | null = null;
+  private taskRevisions = new Map<string, number>();
 
   constructor(httpServer: HttpServer, corsOrigins: string | string[] | CorsOriginFunction) {
     // Initialize Socket.IO server with CORS configuration
@@ -250,6 +251,16 @@ export class SocketService {
   }
 
   private handleTaskUpdate(payload: TaskUpdatePayload): void {
+    if (payload.version !== undefined) {
+      const latestVersion = this.taskRevisions.get(payload.taskId) ?? -1;
+      if (payload.version < latestVersion) return;
+      this.taskRevisions.delete(payload.taskId);
+      this.taskRevisions.set(payload.taskId, payload.version);
+      if (this.taskRevisions.size > 10_000) {
+        const oldestTaskId = this.taskRevisions.keys().next().value;
+        if (oldestTaskId !== undefined) this.taskRevisions.delete(oldestTaskId);
+      }
+    }
     this.io.to(`task:${payload.taskId}`).emit(TASK_UPDATE, payload);
     this.io.emit(TASK_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);

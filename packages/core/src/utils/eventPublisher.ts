@@ -89,6 +89,8 @@ class EventPublisher {
     previousState?: string;
     repository?: string;
     issueNumber?: number;
+    version?: number;
+    updatedAt?: string;
     metadata?: Record<string, unknown>;
   }): Promise<void> {
     const payload: TaskUpdatePayload = {
@@ -98,7 +100,8 @@ class EventPublisher {
       previousState: params.previousState,
       repository: params.repository,
       issueNumber: params.issueNumber,
-      timestamp: new Date().toISOString(),
+      timestamp: params.updatedAt ?? new Date().toISOString(),
+      version: params.version,
       metadata: params.metadata
     };
     await this.publish(REDIS_CHANNELS.TASKS, payload);

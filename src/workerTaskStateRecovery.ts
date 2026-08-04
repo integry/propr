@@ -14,9 +14,12 @@ import {
     finalizePRCommentTaskResult,
 } from './jobs/prCommentTaskFinalizer.js';
 import {
+    DEFAULT_TASK_RECONCILIATION_BATCH_SIZE,
+    DEFAULT_TASK_RECONCILIATION_CONCURRENCY,
     DEFAULT_TASK_RECONCILIATION_STALE_MS,
     reconcileStaleTaskStates,
 } from './taskStateReconciler.js';
+import { readBoundedIntegerEnv } from './config/numericEnv.js';
 
 export interface WorkerTaskStateRecovery {
     close(): Promise<void>;
@@ -30,6 +33,7 @@ interface FailedEventJob {
     id?: string | number;
     name: string;
     getState(): Promise<string>;
+    data?: unknown;
 }
 
 interface ReconciliationLeaseRedis {
@@ -51,11 +55,6 @@ end
 return 0
 `;
 
-function positiveIntegerEnv(name: string, fallback: number): number {
-    const value = Number(process.env[name]);
-    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-}
-
 /** BullMQ emits `failed` for retryable attempts too; only its failed set is terminal. */
 export async function finalizeTerminalPRCommentJobFailure(
     job: FailedEventJob,
@@ -64,7 +63,14 @@ export async function finalizeTerminalPRCommentJobFailure(
 ): Promise<boolean> {
     if (job.name !== 'processPullRequestComment' || job.id == null) return false;
     if (await job.getState() !== 'failed') return false;
-    return finalizePRCommentTaskFailure(String(job.id), stateManager, error);
+    const data = job.data && typeof job.data === 'object'
+        ? job.data as { prProcessingLockToken?: unknown }
+        : undefined;
+    return finalizePRCommentTaskFailure(String(job.id), stateManager, error, {
+        prProcessingLockToken: typeof data?.prProcessingLockToken === 'string'
+            ? data.prProcessingLockToken
+            : undefined,
+    });
 }
 
 /** Runs one reconciliation only while this process owns the distributed lease. */
@@ -193,7 +199,11 @@ async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Pr
 export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<WorkerTaskStateRecovery> {
     const stateManager = getStateManager();
     const finalizers = attachPRCommentTaskStateFinalizers(worker, stateManager);
-    const shutdownTimeoutMs = positiveIntegerEnv('TASK_RECONCILIATION_SHUTDOWN_TIMEOUT_MS', 10_000);
+    const shutdownTimeoutMs = readBoundedIntegerEnv('TASK_RECONCILIATION_SHUTDOWN_TIMEOUT_MS', {
+        fallback: 10_000,
+        min: 100,
+        max: 5 * 60 * 1000,
+    });
 
     const redis = new Redis(getRedisConnectionOptions({
         lazyConnect: false,
@@ -213,8 +223,26 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
         throw error;
     }
 
-    const intervalMs = positiveIntegerEnv('TASK_RECONCILIATION_INTERVAL_MS', 60 * 1000);
-    const staleAfterMs = positiveIntegerEnv('TASK_RECONCILIATION_STALE_MS', DEFAULT_TASK_RECONCILIATION_STALE_MS);
+    const intervalMs = readBoundedIntegerEnv('TASK_RECONCILIATION_INTERVAL_MS', {
+        fallback: 60 * 1000,
+        min: 1000,
+        max: 12 * 60 * 60 * 1000,
+    });
+    const staleAfterMs = readBoundedIntegerEnv('TASK_RECONCILIATION_STALE_MS', {
+        fallback: DEFAULT_TASK_RECONCILIATION_STALE_MS,
+        min: 1000,
+        max: 30 * 24 * 60 * 60 * 1000,
+    });
+    const batchSize = readBoundedIntegerEnv('TASK_RECONCILIATION_BATCH_SIZE', {
+        fallback: DEFAULT_TASK_RECONCILIATION_BATCH_SIZE,
+        min: 1,
+        max: 1000,
+    });
+    const concurrency = readBoundedIntegerEnv('TASK_RECONCILIATION_CONCURRENCY', {
+        fallback: DEFAULT_TASK_RECONCILIATION_CONCURRENCY,
+        min: 1,
+        max: 32,
+    });
     const leaseTtlMs = Math.max(intervalMs * 2, 2 * 60 * 1000);
     let inFlight: Promise<void> | null = null;
     let closing = false;
@@ -229,6 +257,8 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
                 queue,
                 redis,
                 staleAfterMs,
+                batchSize,
+                concurrency,
                 signal,
             });
             logger.info(summary, 'Task state reconciliation completed');

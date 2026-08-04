@@ -9,6 +9,11 @@ import {
 
 type StateEnumerationRedis = Pick<InstanceType<typeof Redis>, 'pipeline' | 'scan'>;
 
+export interface NonTerminalTaskScanResult {
+    tasks: TaskStateData[];
+    nextCursor: string;
+}
+
 /**
  * Recognizes PR-comment task state written before `issueRef.type` was added.
  * Explicit types always win; the legacy fallback is deliberately limited to
@@ -18,7 +23,16 @@ export function isPRCommentTaskState(state: TaskStateData): boolean {
     if (state.issueRef.type !== undefined) return state.issueRef.type === 'pr_comment';
     return state.taskId.startsWith('pr-comments-batch-')
         || state.taskId.startsWith('pr-comment-')
-        || Array.isArray(state.issueRef.comments);
+        || (/^\d+$/.test(state.taskId)
+            && Number.isInteger(state.issueRef.number)
+            && state.issueRef.number > 0
+            && Array.isArray(state.issueRef.comments)
+            && state.issueRef.comments.every(comment => (
+                comment !== null
+                && typeof comment === 'object'
+                && Number.isFinite((comment as { id?: unknown }).id)
+                && typeof (comment as { body?: unknown }).body === 'string'
+            )));
 }
 
 function matchesTaskType(state: TaskStateData, taskTypes: Set<string>): boolean {
@@ -31,7 +45,8 @@ export async function scanNonTerminalTaskStates(
     redis: StateEnumerationRedis,
     keyPrefix: string,
     filter: NonTerminalTaskFilter,
-): Promise<TaskStateData[]> {
+    initialCursor = '0',
+): Promise<NonTerminalTaskScanResult> {
     const seenKeys = new Set<string>();
     const nonTerminalTasks: TaskStateData[] = [];
     const nonTerminalStates: TaskState[] = [
@@ -41,7 +56,8 @@ export async function scanNonTerminalTaskStates(
         TaskStates.POST_PROCESSING,
     ];
     const taskTypes = filter.taskTypes ? new Set(filter.taskTypes) : null;
-    let cursor = '0';
+    const limit = Math.max(1, filter.limit ?? Number.POSITIVE_INFINITY);
+    let cursor = initialCursor;
     do {
         const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', `${keyPrefix}*`, 'COUNT', 100);
         cursor = nextCursor;
@@ -71,6 +87,11 @@ export async function scanNonTerminalTaskStates(
                 logger.warn({ key: keys[index], error: (error as Error).message }, 'Failed to parse task state during reconciliation scan');
             }
         }
+        // Finish the Redis SCAN page so no keys from the returned cursor page
+        // are skipped. COUNT is a hint, so a page can be slightly over limit.
+        if (nonTerminalTasks.length >= limit) {
+            return { tasks: nonTerminalTasks, nextCursor: cursor };
+        }
     } while (cursor !== '0');
-    return nonTerminalTasks;
+    return { tasks: nonTerminalTasks, nextCursor: cursor };
 }

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
-import { closeConnection, TaskStates, type TaskStateData, type UpdateMetadata } from '@propr/core';
+import { closeConnection, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
 import {
     finalizePRCommentTaskFailure,
     finalizePRCommentTaskResult,
+    finalizePRCommentTaskResultBestEffort,
 } from '../src/jobs/prCommentTaskFinalizer.js';
 
 after(async () => { await closeConnection(); });
@@ -29,12 +30,14 @@ function stateManager(initialState: TaskStateData) {
         getTaskState: async () => current,
         updateTaskStateIfCurrent: async (
             _taskId: string,
-            expectation: Pick<TaskStateData, 'state' | 'updatedAt'>,
+            expectation: TaskStateExpectation,
             state: TaskStateData['state'],
             metadata: UpdateMetadata = {},
         ) => {
             if (current.state !== expectation.state) return null;
             if (expectation.updatedAt && current.updatedAt !== expectation.updatedAt) return null;
+            if (expectation.prProcessingLockToken !== undefined
+                && current.prProcessingLockToken !== expectation.prProcessingLockToken) return null;
             updates.push({ state, metadata });
             current = { ...current, state };
             return current;
@@ -145,5 +148,45 @@ describe('PR comment task finalization', () => {
 
         assert.equal(changed, false);
         assert.equal(current.state, TaskStates.CANCELLED);
+    });
+
+    test('requires the matching attempt token for generated task state', async () => {
+        const generated = task(TaskStates.PROCESSING);
+        generated.prProcessingLockToken = 'successor-token';
+        const manager = stateManager(generated);
+
+        const unfenced = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'complete',
+        });
+        const stale = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'complete',
+            prProcessingLockToken: 'old-token',
+        });
+        const matching = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'complete',
+            prProcessingLockToken: 'successor-token',
+        });
+
+        assert.equal(unfenced, false);
+        assert.equal(stale, false);
+        assert.equal(matching, true);
+        assert.equal(manager.updates.length, 1);
+        assert.equal(manager.updates[0].state, TaskStates.COMPLETED);
+    });
+
+    test('defers a skipped result when Redis finalization fails', async () => {
+        let reportedError: unknown;
+        const changed = await finalizePRCommentTaskResultBestEffort(
+            'task-1',
+            {
+                getTaskState: async () => { throw new Error('Redis unavailable'); },
+                updateTaskStateIfCurrent: async () => null,
+            } as never,
+            { status: 'skipped' },
+            { onError: error => { reportedError = error; } },
+        );
+
+        assert.equal(changed, false);
+        assert.match((reportedError as Error).message, /Redis unavailable/);
     });
 });

@@ -21,9 +21,22 @@ export function buildContinuationMeta(r: ContinuationMetaInput): Record<string, 
 }
 
 export async function patchUltrafixContinuationMeta(
-    stateManager: WorkerStateManager, taskId: string, continuationMeta: Record<string, unknown>, correlatedLogger: Logger,
+    stateManager: WorkerStateManager,
+    taskId: string,
+    continuationMeta: Record<string, unknown>,
+    options: { correlatedLogger: Logger; prProcessingLockToken?: string },
 ): Promise<void> {
-    try { await stateManager.updateHistoryMetadata(taskId, TaskStates.COMPLETED, continuationMeta); } catch (e) {
+    const { correlatedLogger, prProcessingLockToken } = options;
+    if (prProcessingLockToken !== undefined) {
+        try {
+            const currentState = await stateManager.getTaskState(taskId);
+            if (currentState?.prProcessingLockToken !== prProcessingLockToken) return;
+        } catch (e) {
+            correlatedLogger.warn({ error: (e as Error).message, taskId }, 'Failed to verify ultrafix metadata attempt ownership');
+            return;
+        }
+    }
+    try { await stateManager.updateHistoryMetadata(taskId, TaskStates.COMPLETED, continuationMeta, prProcessingLockToken); } catch (e) {
         correlatedLogger.warn({ error: (e as Error).message, taskId }, 'Failed to patch ultrafix metadata into Redis history entry');
     }
     try {

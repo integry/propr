@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { after, describe, test } from 'node:test';
-import { closeConnection, TaskStates, type TaskStateData, type UpdateMetadata } from '@propr/core';
+import { closeConnection, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
 import {
     attachPRCommentTaskStateFinalizers,
     finalizeTerminalPRCommentJobFailure,
@@ -10,7 +10,7 @@ import {
 
 after(async () => { await closeConnection(); });
 
-function stateManager() {
+function stateManager(prProcessingLockToken?: string) {
     let current: TaskStateData = {
         taskId: 'pr-comments-retry',
         issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr', type: 'pr_comment' },
@@ -20,6 +20,7 @@ function stateManager() {
         updatedAt: '2026-08-04T00:00:00.000Z',
         attempts: 0,
         history: [],
+        prProcessingLockToken,
     };
     const updates: Array<{ state: TaskStateData['state']; metadata: UpdateMetadata }> = [];
     return {
@@ -27,12 +28,14 @@ function stateManager() {
         getTaskState: async () => current,
         updateTaskStateIfCurrent: async (
             _taskId: string,
-            expectation: Pick<TaskStateData, 'state' | 'updatedAt'>,
+            expectation: TaskStateExpectation,
             state: TaskStateData['state'],
             metadata: UpdateMetadata,
         ) => {
             if (current.state !== expectation.state) return null;
             if (expectation.updatedAt && current.updatedAt !== expectation.updatedAt) return null;
+            if (expectation.prProcessingLockToken !== undefined
+                && current.prProcessingLockToken !== expectation.prProcessingLockToken) return null;
             current = { ...current, state };
             updates.push({ state, metadata });
             return current;
@@ -78,6 +81,26 @@ describe('worker task state recovery hooks', () => {
 
         assert.equal(changed, true);
         assert.equal(manager.updates[0].state, TaskStates.FAILED);
+    });
+
+    test('does not let an unfenced failed event finalize a generated attempt', async () => {
+        const manager = stateManager('current-attempt-token');
+
+        const unfenced = await finalizeTerminalPRCommentJobFailure({
+            id: 'pr-comments-retry',
+            name: 'processPullRequestComment',
+            getState: async () => 'failed',
+        }, new Error('old attempt failed'), manager as never);
+        const matching = await finalizeTerminalPRCommentJobFailure({
+            id: 'pr-comments-retry',
+            name: 'processPullRequestComment',
+            data: { prProcessingLockToken: 'current-attempt-token' },
+            getState: async () => 'failed',
+        }, new Error('current attempt failed'), manager as never);
+
+        assert.equal(unfenced, false);
+        assert.equal(matching, true);
+        assert.equal(manager.updates.length, 1);
     });
 
     test('permits only one process to reconcile under the distributed lease', async () => {

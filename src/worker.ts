@@ -318,7 +318,24 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         },
     });
 
-    const taskStateRecovery = await startWorkerTaskStateRecovery(worker);
+    let taskStateRecovery: Awaited<ReturnType<typeof startWorkerTaskStateRecovery>>;
+    try {
+        taskStateRecovery = await startWorkerTaskStateRecovery(worker);
+    } catch (error) {
+        clearInterval(heartbeatInterval);
+        const cleanupResults = await Promise.allSettled([
+            worker.close(),
+            heartbeatRedis.srem('system:status:workers', workerId),
+            subscriberRedis.quit(),
+        ]);
+        cleanupResults.push(...await Promise.allSettled([heartbeatRedis.quit()]));
+        for (const result of cleanupResults) {
+            if (result.status === 'rejected') {
+                logger.warn({ error: (result.reason as Error).message }, 'Worker startup cleanup failed');
+            }
+        }
+        throw error;
+    }
 
     const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
         AGENT_RUNTIME_BUILD_QUEUE_NAME,
@@ -352,12 +369,19 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
         // Keep finalizers attached while BullMQ drains active jobs.
-        await worker.close();
-        await taskStateRecovery.close();
-        await heartbeatRedis.srem('system:status:workers', workerId);
-        await subscriberRedis.quit();
-        await heartbeatRedis.quit();
-        await runtimeBuildWorker.close();
+        const workerClose = await Promise.allSettled([worker.close()]);
+        const cleanupResults = await Promise.allSettled([
+            taskStateRecovery.close(),
+            heartbeatRedis.srem('system:status:workers', workerId),
+            subscriberRedis.quit(),
+            runtimeBuildWorker.close(),
+        ]);
+        cleanupResults.push(...await Promise.allSettled([heartbeatRedis.quit()]));
+        for (const result of [...workerClose, ...cleanupResults]) {
+            if (result.status === 'rejected') {
+                logger.warn({ error: (result.reason as Error).message }, 'Worker shutdown cleanup failed');
+            }
+        }
     };
 
     process.on('SIGINT', async () => {

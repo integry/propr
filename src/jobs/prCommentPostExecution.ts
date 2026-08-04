@@ -57,6 +57,7 @@ interface PostExecutionParams {
     unprocessedReviewComments: AIReviewComment[];
     llm: string | null | undefined;
     redisClient: Redis;
+    prProcessingLockToken: string;
 }
 
 interface UndoContextParams {
@@ -125,7 +126,7 @@ export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'comple
 }
 
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
-    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient } = params;
+    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
     requirePostExecutionState(state);
@@ -164,7 +165,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
             ...(partial && { incompleteExecution: { reason: terminationReason } }),
             ...ultrafixHistoryMeta,
         }
-    });
+    }, prProcessingLockToken);
 
     await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
     return { commitHash: commitResult?.commitHash, partial };

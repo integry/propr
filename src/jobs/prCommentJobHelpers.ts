@@ -4,9 +4,8 @@ import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
 import { TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { db } from '@propr/core';
 import { filterCommentByAuthor } from '@propr/core';
-import type { UnprocessedComment, CommentJobData } from '@propr/core';
+import type { UnprocessedComment } from '@propr/core';
 import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
 import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
 
@@ -48,6 +47,7 @@ interface SessionIdOptions {
     stateManager: WorkerStateManager;
     correlatedLogger: Logger;
     redisClient: InstanceType<typeof Redis>;
+    prProcessingLockToken?: string;
 }
 
 interface PRContext {
@@ -334,7 +334,7 @@ export function createSessionIdCallbackForPR(
     options: SessionIdOptions
 ): (sessionId: string, conversationId?: string) => Promise<void> {
     const { pullRequestNumber, repoOwner, repoName } = prContext;
-    const { llm, stateManager, correlatedLogger, redisClient } = options;
+    const { llm, stateManager, correlatedLogger, redisClient, prProcessingLockToken } = options;
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     return async (sessionId: string, conversationId?: string): Promise<void> => {
         try {
@@ -344,18 +344,20 @@ export function createSessionIdCallbackForPR(
                 correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping session ID update');
                 return;
             }
+            if (prProcessingLockToken !== undefined
+                && currentState?.prProcessingLockToken !== prProcessingLockToken) return;
             if (currentState?.state === TaskStates.CLAUDE_EXECUTION) {
                 // Already in claude_execution, just update the history metadata with session info
                 await stateManager.updateHistoryMetadata(taskId, 'claude_execution', {
                     sessionId, conversationId, model: llm
-                });
+                }, prProcessingLockToken);
             } else {
                 // Transition to claude_execution state
                 await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
                     reason: 'Claude execution started',
                     claudeResult: { success: false, sessionId, conversationId },
                     historyMetadata: { sessionId, conversationId, model: llm }
-                });
+                }, prProcessingLockToken);
             }
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -387,7 +389,8 @@ export function createSessionIdCallbackForPR(
 
 export function createContainerIdCallbackForPR(
     taskId: string,
-    stateManager: WorkerStateManager
+    stateManager: WorkerStateManager,
+    prProcessingLockToken?: string,
 ): (containerId: string, containerName: string) => Promise<void> {
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     return async (containerId: string, containerName: string): Promise<void> => {
@@ -403,17 +406,19 @@ export function createContainerIdCallbackForPR(
                 logger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping container ID update');
                 return;
             }
+            if (prProcessingLockToken !== undefined
+                && currentState.prProcessingLockToken !== prProcessingLockToken) return;
 
             if (currentState.state === TaskStates.CLAUDE_EXECUTION) {
                 // Already in claude_execution, just update the history metadata
-                await stateManager.updateHistoryMetadata(taskId, 'claude_execution', { containerId, containerName });
+                await stateManager.updateHistoryMetadata(taskId, 'claude_execution', { containerId, containerName }, prProcessingLockToken);
             } else {
                 // Not yet in claude_execution state - transition to it with container info
                 // This happens when container starts before session_id is received
                 await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
                     reason: 'Docker container started',
                     historyMetadata: { containerId, containerName }
-                });
+                }, prProcessingLockToken);
             }
             logger.info({ taskId, containerId, containerName }, 'Docker container info added to task state');
         } catch (err) {
@@ -422,44 +427,5 @@ export function createContainerIdCallbackForPR(
     };
 }
 
-interface UpdateTaskTitleOptions {
-    taskId: string;
-    jobData: CommentJobData;
-    stateManager: WorkerStateManager;
-    correlatedLogger: Logger;
-    redisClient?: InstanceType<typeof Redis>;
-    linkedIssueNumber?: number | null;
-}
-
-export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Promise<void> {
-    const { taskId, jobData, stateManager, correlatedLogger, linkedIssueNumber } = options;
-
-    // Add linkedIssueNumber to jobData for DB storage
-    const jobDataWithIssue = linkedIssueNumber
-        ? { ...jobData, issueNumber: linkedIssueNumber }
-        : jobData;
-
-    try {
-        await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobDataWithIssue) });
-        correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle, linkedIssueNumber }, 'Updated task with title/subtitle in DB');
-    } catch (dbError) {
-        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
-    }
-    try {
-        // Include issueNumber in issueRef if we have a linked issue
-        await stateManager.updateIssueRef(taskId, {
-            number: jobData.pullRequestNumber,
-            repoOwner: jobData.repoOwner,
-            repoName: jobData.repoName,
-            pullRequestNumber: jobData.pullRequestNumber,
-            title: jobData.title,
-            subtitle: jobData.subtitle,
-            ...(linkedIssueNumber && { issueNumber: linkedIssueNumber })
-        });
-        correlatedLogger.info({ taskId, title: jobData.title, linkedIssueNumber }, 'Updated task with title/subtitle in Redis');
-    } catch (redisError) {
-        correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
-    }
-}
-
 export { buildCompletionComment } from './prCompletionComment.js';
+export { updateTaskTitleForPR } from './prCommentTaskTitleUpdate.js';

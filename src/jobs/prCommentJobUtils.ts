@@ -164,6 +164,7 @@ export interface JobErrorOptions {
     startingWorkComment: { data: { id: number } } | null;
     claudeResult: ClaudeCodeResponse | null; correlationId: string;
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
+    prProcessingLockToken?: string;
 }
 
 export class UsageLimitError extends Error {
@@ -223,8 +224,8 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
-    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
-    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
+    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
+    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } }, prProcessingLockToken);
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
         await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
@@ -232,10 +233,10 @@ async function handleUserCancellation(options: JobErrorOptions, errorMessage: st
 }
 
 async function handleGenericError(error: Error, options: JobErrorOptions): Promise<void> {
-    const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
+    const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
     const sanitizedMessage = sanitizeErrorMessage(error.message);
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } });
+    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } }, prProcessingLockToken);
     if (claudeResult) {
         try {
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
@@ -258,13 +259,19 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
 }
 
 export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
-    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
+    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
 
     const isUserCancelled = error.message?.includes('aborted by user');
     const isUsageLimit = error.name === 'UsageLimitError' || error.message?.includes('usage limit');
 
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     const currentState = await stateManager.getTaskState(taskId);
+
+    if (prProcessingLockToken !== undefined
+        && currentState?.prProcessingLockToken !== prProcessingLockToken) {
+        correlatedLogger.info({ taskId }, 'Skipping error handling for a superseded PR processing attempt');
+        return;
+    }
 
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');

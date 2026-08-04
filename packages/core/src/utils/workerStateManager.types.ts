@@ -57,6 +57,8 @@ export interface TaskStateData {
     state: TaskState;
     createdAt: string;
     updatedAt: string;
+    /** Monotonic revision used to order concurrent persistence and UI events. */
+    version?: number;
     attempts: number;
     history: HistoryEntry[];
     /** Exact renewable lease token owned by this PR-comment attempt. */
@@ -69,15 +71,21 @@ export interface TaskStateData {
 
 export interface CreateTaskStateOptions {
     prProcessingLockToken?: string;
+    /** PR lease key whose current value must match the attempt token at creation. */
+    prProcessingLockKey?: string;
 }
 
 export interface NonTerminalTaskFilter {
     taskTypes?: string[];
+    /** Maximum number of matching records returned by one rotating scan. */
+    limit?: number;
 }
 
 export interface TaskStateExpectation {
     state: TaskState;
     updatedAt?: string;
+    version?: number;
+    prProcessingLockToken?: string;
 }
 
 export interface CancellationMetadata {

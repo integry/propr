@@ -1,4 +1,4 @@
-import { test, mock, after } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert';
 
 // Mock Redis
@@ -154,7 +154,12 @@ test('getNonTerminalTasks safely includes legacy PR-comment records without a ty
     const unrelated = {
         ...legacyPRComment,
         taskId: 'legacy-issue',
-        issueRef: { number: 1353, repoOwner: 'integry', repoName: 'propr' },
+        issueRef: {
+            number: 1353,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            comments: [{ id: 2, body: 'imported issue comment' }],
+        },
     };
     mockRedisInstance.scan.mock.mockImplementation(async () => [
         '0',
@@ -358,12 +363,16 @@ test('createTaskState publishes real-time event', async () => {
         state: string;
         repository: string;
         issueNumber: number;
+        version: number;
+        updatedAt: string;
     };
 
     assert.strictEqual(eventPayload.taskId, taskId);
     assert.strictEqual(eventPayload.state, TaskStates.PENDING);
     assert.strictEqual(eventPayload.repository, 'event-owner/event-repo');
     assert.strictEqual(eventPayload.issueNumber, 88);
+    assert.strictEqual(eventPayload.version, 1);
+    assert.ok(eventPayload.updatedAt);
 
     await stateManager.close();
 });
@@ -1089,7 +1098,6 @@ test('updateTaskState handles database error gracefully', async () => {
     mockCorrelatedLogger.error.mock.resetCalls();
 
     // Make db history insert throw an error
-    const originalHistoryInsert = mockDbHistoryInsert.mock.mockImplementation;
     mockDbHistoryInsert.mock.mockImplementation(() => {
         throw new Error('Database connection failed');
     });
@@ -1112,7 +1120,7 @@ test('updateTaskState handles database error gracefully', async () => {
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
 
     // Restore original mock
-    mockDbHistoryInsert.mock.mockImplementation(originalHistoryInsert);
+    mockDbHistoryInsert.mock.mockImplementation(async () => [1]);
 
     await stateManager.close();
 });
@@ -1440,7 +1448,7 @@ test('markTaskFailed publishes real-time event', async () => {
     await stateManager.close();
 });
 
-test('markTaskFailed persists failure to Redis', async () => {
+test('markTaskFailed persists failure to Redis atomically', async () => {
     const existingState: TaskStateData = {
         taskId: 'task-fail-redis',
         issueRef: { number: 208, repoOwner: 'redis-owner', repoName: 'redis-repo' },
@@ -1453,7 +1461,7 @@ test('markTaskFailed persists failure to Redis', async () => {
     };
 
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
     mockDbHistoryInsert.mock.resetCalls();
     mockPublishTaskUpdate.mock.resetCalls();
 
@@ -1465,14 +1473,14 @@ test('markTaskFailed persists failure to Redis', async () => {
     const error = new Error('System failure');
     await stateManager.markTaskFailed('task-fail-redis', error);
 
-    // Verify Redis setex was called
-    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 1);
-    const setexCall = mockRedisInstance.setex.mock.calls[0];
-    assert.strictEqual(setexCall.arguments[0], `${TEST_KEY_PREFIX}task-fail-redis`);
-    assert.strictEqual(setexCall.arguments[1], TEST_STATE_EXPIRY);
+    // Verify the full-value CAS renewed the Redis TTL.
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
+    const evalCall = mockRedisInstance.eval.mock.calls[0];
+    assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-fail-redis`);
+    assert.strictEqual(evalCall.arguments[4], TEST_STATE_EXPIRY);
 
     // Verify stored state has FAILED status
-    const storedState = JSON.parse(setexCall.arguments[2] as string) as TaskStateData;
+    const storedState = JSON.parse(evalCall.arguments[5] as string) as TaskStateData;
     assert.strictEqual(storedState.state, TaskStates.FAILED);
     assert.ok(storedState.lastError);
     assert.strictEqual(storedState.lastError.message, 'System failure');
@@ -2922,7 +2930,146 @@ test('updateTaskState cannot resurrect a task finalized after its read', async (
     await stateManager.close();
 });
 
-// Force exit due to module-level initialization in @propr/core
-after(() => {
-    process.exit(0);
+test('updateIssueRef applies its patch to a concurrent terminal state without resurrecting it', async () => {
+    const processing: TaskStateData = {
+        taskId: 'task-issue-ref-cancel-race',
+        issueRef: { number: 627, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-issue-ref-race',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        version: 2,
+        attempts: 0,
+        history: [],
+    };
+    let stored = JSON.stringify(processing);
+    let cancellationCommitted = false;
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (
+        _script: string,
+        _numberOfKeys: number,
+        _key: string,
+        expectedJson: string,
+        _expiry: number,
+        updatedJson: string,
+    ) => {
+        if (!cancellationCommitted) {
+            stored = JSON.stringify({
+                ...processing,
+                state: TaskStates.CANCELLED,
+                updatedAt: '2026-08-04T00:02:00.000Z',
+                version: 3,
+            });
+            cancellationCommitted = true;
+            return 0;
+        }
+        if (stored !== expectedJson) return 0;
+        stored = updatedJson;
+        return 1;
+    });
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const result = await stateManager.updateIssueRef(processing.taskId, { title: 'Updated title' });
+
+    assert.strictEqual(result?.state, TaskStates.CANCELLED);
+    assert.strictEqual(JSON.parse(stored).state, TaskStates.CANCELLED);
+    assert.strictEqual(JSON.parse(stored).issueRef.title, 'Updated title');
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    await stateManager.close();
+});
+
+test('updateHistoryMetadata merges into a concurrent completed state without resurrecting it', async () => {
+    const processing: TaskStateData = {
+        taskId: 'task-history-cancel-race',
+        issueRef: { number: 628, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-history-race',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        version: 2,
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: '2026-08-04T00:01:00.000Z', reason: 'processing' }],
+    };
+    let stored = JSON.stringify(processing);
+    let completionCommitted = false;
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (
+        _script: string,
+        _numberOfKeys: number,
+        _key: string,
+        expectedJson: string,
+        _expiry: number,
+        updatedJson: string,
+    ) => {
+        if (!completionCommitted) {
+            stored = JSON.stringify({
+                ...processing,
+                state: TaskStates.COMPLETED,
+                updatedAt: '2026-08-04T00:02:00.000Z',
+                version: 3,
+            });
+            completionCommitted = true;
+            return 0;
+        }
+        if (stored !== expectedJson) return 0;
+        stored = updatedJson;
+        return 1;
+    });
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const result = await stateManager.updateHistoryMetadata(
+        processing.taskId,
+        TaskStates.PROCESSING,
+        { containerId: 'container-1' },
+    );
+
+    assert.strictEqual(result.state, TaskStates.COMPLETED);
+    assert.strictEqual(JSON.parse(stored).state, TaskStates.COMPLETED);
+    assert.strictEqual(JSON.parse(stored).history[0].metadata.containerId, 'container-1');
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    await stateManager.close();
+});
+
+test('fenced creation and bounded CAS retries reject stale attempts predictably', async () => {
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 0);
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    await assert.rejects(
+        stateManager.createTaskState(
+            'task-stale-create',
+            { number: 629, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+            'correlation',
+            { prProcessingLockToken: 'old-token', prProcessingLockKey: 'lock:pr:owner:repo:629' },
+        ),
+        /no longer owns its lease/,
+    );
+
+    assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
+    const processing: TaskStateData = {
+        taskId: 'task-cas-contention',
+        issueRef: { number: 630, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-contention',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        attempts: 0,
+        history: [],
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(processing));
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 0);
+
+    await assert.rejects(
+        stateManager.updateTaskState(processing.taskId, TaskStates.CLAUDE_EXECUTION),
+        /contention exceeded 8 attempts/,
+    );
+
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 8);
+    await stateManager.close();
 });

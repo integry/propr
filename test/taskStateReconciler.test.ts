@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, describe, mock, test } from 'node:test';
-import { closeConnection, TaskStates, type TaskStateData, type UpdateMetadata } from '@propr/core';
+import { closeConnection, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
 import { reconcileStaleTaskStates } from '../src/taskStateReconciler.js';
 
 after(async () => { await closeConnection(); });
@@ -29,13 +29,16 @@ function stateManager(tasks: TaskStateData[]) {
         getTaskState: async (taskId: string) => states.get(taskId) ?? null,
         updateTaskStateIfCurrent: async (
             taskId: string,
-            expectation: Pick<TaskStateData, 'state' | 'updatedAt'>,
+            expectation: TaskStateExpectation,
             state: TaskStateData['state'],
             metadata: UpdateMetadata = {},
         ) => {
             const current = states.get(taskId)!;
             if (current.state !== expectation.state) return null;
             if (expectation.updatedAt && current.updatedAt !== expectation.updatedAt) return null;
+            if (expectation.version !== undefined && current.version !== expectation.version) return null;
+            if (expectation.prProcessingLockToken !== undefined
+                && current.prProcessingLockToken !== expectation.prProcessingLockToken) return null;
             const next = { ...current, state };
             states.set(taskId, next);
             updates.push({ taskId, state, metadata });
@@ -302,6 +305,85 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(queued.taskId)?.updatedAt, replacementUpdatedAt);
         assert.equal(manager.updates.length, 0);
         assert.equal(summary.queued, 0);
+    });
+
+    test('does not finalize a successor attempt that replaced the scanned token', async () => {
+        const scanned = task('pr-comments-finalizer-generation-race', TaskStates.PROCESSING);
+        const manager = stateManager([scanned]);
+        const successorToken = 'replacement-attempt-token';
+        const queueWithReplacement = {
+            getJob: async () => ({
+                getState: async () => {
+                    manager.states.set(scanned.taskId, {
+                        ...scanned,
+                        prProcessingLockToken: successorToken,
+                    });
+                    return 'completed';
+                },
+                returnvalue: { status: 'complete' },
+            }),
+            toKey: (type: string) => type,
+        };
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queueWithReplacement,
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(scanned.taskId)?.state, TaskStates.PROCESSING);
+        assert.equal(manager.states.get(scanned.taskId)?.prProcessingLockToken, successorToken);
+        assert.equal(manager.updates.length, 0);
+        assert.equal(summary.finalized, 0);
+    });
+
+    test('treats an implausible future timestamp as stale', async () => {
+        const future = task('pr-comments-future-clock', TaskStates.PROCESSING);
+        future.updatedAt = '2026-08-05T00:00:00.000Z';
+        const manager = stateManager([future]);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(future.taskId)?.state, TaskStates.FAILED);
+        assert.equal(summary.fresh, 0);
+        assert.equal(summary.interrupted, 1);
+    });
+
+    test('retries owned-lock cleanup before making the state terminal', async () => {
+        const abandoned = task('pr-comments-lock-cleanup-retry', TaskStates.PROCESSING);
+        const manager = stateManager([abandoned]);
+        let attempts = 0;
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: {
+                eval: async () => {
+                    attempts++;
+                    if (attempts === 1) throw new Error('temporary Redis failure');
+                    return 1;
+                },
+                pttl: async () => -2,
+            },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(attempts, 2);
+        assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
+        assert.equal(summary.locksCleared, 1);
+        assert.equal(summary.interrupted, 1);
     });
 
     test('terminalizes an invalid completed result as a diagnostic failure', async () => {

@@ -29,7 +29,7 @@ import {
 import type { Redis } from 'ioredis';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
-import { finalizePRCommentTaskResult } from './prCommentTaskFinalizer.js';
+import { finalizePRCommentTaskResultBestEffort } from './prCommentTaskFinalizer.js';
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -76,6 +76,7 @@ export interface ExecuteReviewParams {
     stateManager: WorkerStateManager;
     state: ProcessingState;
     redisClient: Redis;
+    prProcessingLockToken: string;
     validatePRAndComments: (octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }) => Promise<{
         skip: boolean;
         reason?: string;
@@ -258,8 +259,7 @@ async function updateReviewCompletionComment(
     const { repoOwner, repoName, taskUrl, correlatedLogger } = options;
     if (!state.startingWorkComment) return;
 
-    const successCount = reviewResults.filter(r => r.analysisResult.success).length;
-    const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
+    const successCount = reviewResults.filter(r => r.analysisResult.success).length, failCount = reviewResults.length - successCount;
 
     try {
         const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${r.assignment.label}](${r.commentUrl})`).join('\n');
@@ -288,10 +288,10 @@ function getWebUiTaskUrl(taskId: string): string {
 
 async function handleUltrafixContinuation(
     action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; prProcessingLockToken: string }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
-    const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
+    const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken } = params;
     try {
         const continuationResult = await continueUltrafixLoop({
             owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
@@ -299,7 +299,10 @@ async function handleUltrafixContinuation(
             currentJobId: job.id,
         });
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
-        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
+        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), {
+            correlatedLogger,
+            prProcessingLockToken,
+        });
     } catch (contErr) {
         correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
     }
@@ -313,7 +316,7 @@ async function resolveUltrafixHistoryMeta(
 }
 
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments } = params;
+    const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken } = params;
     let { llm } = params;
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
@@ -322,7 +325,15 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     if (validation.skip) {
         correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping review processing');
         const result = { status: 'skipped', reason: validation.reason, pullRequestNumber };
-        await finalizePRCommentTaskResult(taskId, stateManager, result);
+        await finalizePRCommentTaskResultBestEffort(
+            taskId,
+            stateManager,
+            result,
+            {
+                prProcessingLockToken,
+                onError: error => correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Deferred skipped review finalization to worker recovery'),
+            },
+        );
         return result;
     }
 
@@ -336,7 +347,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting review processing',
         historyMetadata: { commandMode: 'review' }
-    });
+    }, prProcessingLockToken);
 
     const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
@@ -378,10 +389,10 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     }
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = titleContext.hasMeaningfulContext ? summaryTitle : fallbackSubtitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber, prProcessingLockToken });
     await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
         titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
-    });
+    }, prProcessingLockToken);
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
@@ -420,8 +431,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
     await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger });
 
-    const successCount = reviewResults.filter(r => r.analysisResult.success).length;
-    const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
+    const successCount = reviewResults.filter(r => r.analysisResult.success).length, failCount = reviewResults.length - successCount;
 
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, redisClient, { repoOwner, repoName, pullRequestNumber });
 
@@ -435,10 +445,10 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             })),
             ...ultrafixHistoryMeta,
         },
-    });
+    }, prProcessingLockToken);
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
-    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken });
 
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }

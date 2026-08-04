@@ -1,4 +1,11 @@
-import type { JobResult, TaskState, UpdateMetadata, WorkerStateManager } from '@propr/core';
+import type {
+    JobResult,
+    TaskState,
+    TaskStateData,
+    TaskStateExpectation,
+    UpdateMetadata,
+    WorkerStateManager,
+} from '@propr/core';
 import { TaskStates } from '@propr/core';
 
 type TaskStateStore = Pick<WorkerStateManager, 'getTaskState' | 'updateTaskStateIfCurrent'>;
@@ -13,7 +20,7 @@ export function isTerminalTaskState(state: TaskState): boolean {
     return TERMINAL_STATES.has(state);
 }
 
-type KnownResultStatus = 'cancelled' | 'rescheduled' | 'requeued' | 'failed' | 'complete' | 'partial' | 'skipped';
+export type KnownPRCommentResultStatus = 'cancelled' | 'rescheduled' | 'requeued' | 'failed' | 'complete' | 'partial' | 'skipped';
 
 const KNOWN_RESULT_STATUSES: ReadonlySet<string> = new Set([
     'cancelled',
@@ -25,13 +32,27 @@ const KNOWN_RESULT_STATUSES: ReadonlySet<string> = new Set([
     'skipped',
 ]);
 
-function isKnownResultStatus(status: string | null): status is KnownResultStatus {
+function isKnownResultStatus(status: string | null): status is KnownPRCommentResultStatus {
     return status !== null && KNOWN_RESULT_STATUSES.has(status);
 }
 
 function asResultRecord(result: unknown): Record<string, unknown> | null {
     return result !== null && typeof result === 'object'
         ? result as Record<string, unknown>
+        : null;
+}
+
+export interface ParsedPRCommentJobResult {
+    result: JobResult;
+    status: KnownPRCommentResultStatus;
+}
+
+/** The single parser used by direct finalizers, worker hooks, and reconciliation. */
+export function parsePRCommentJobResult(result: unknown): ParsedPRCommentJobResult | null {
+    const record = asResultRecord(result);
+    const status = typeof record?.status === 'string' ? record.status : null;
+    return isKnownResultStatus(status)
+        ? { result: record as JobResult, status }
         : null;
 }
 
@@ -67,7 +88,7 @@ function invalidResultTransition(result: unknown, status: string | null): TaskFi
 
 function knownResultTransition(
     result: JobResult,
-    status: KnownResultStatus,
+    status: KnownPRCommentResultStatus,
 ): TaskFinalizationTransition {
     const reason = resultReason(result);
     const historyMetadata = {
@@ -119,6 +140,47 @@ function knownResultTransition(
     }
 }
 
+export interface PRCommentTaskFinalizationOptions {
+    /** Full scanned-state fence used by reconciliation without a second read. */
+    expectation?: TaskStateExpectation;
+    /** Attempt fence supplied by a running worker or BullMQ result. */
+    prProcessingLockToken?: string;
+    onError?: (error: unknown) => void;
+}
+
+export function taskStateExpectation(task: TaskStateData): TaskStateExpectation {
+    return {
+        state: task.state,
+        updatedAt: task.updatedAt,
+        version: task.version,
+        prProcessingLockToken: task.prProcessingLockToken,
+    };
+}
+
+async function resolveFinalizationExpectation(
+    taskId: string,
+    stateManager: TaskStateStore,
+    options: PRCommentTaskFinalizationOptions,
+    result?: unknown,
+): Promise<TaskStateExpectation | null> {
+    if (options.expectation) return options.expectation;
+
+    const task = await stateManager.getTaskState(taskId);
+    if (!task || isTerminalTaskState(task.state)) return null;
+    const resultRecord = asResultRecord(result);
+    const resultToken = typeof resultRecord?.prProcessingLockToken === 'string'
+        ? resultRecord.prProcessingLockToken
+        : undefined;
+    const expectedToken = options.prProcessingLockToken ?? resultToken;
+    // Once a task has an attempt generation, an unfenced old BullMQ event must
+    // never be allowed to finalize whichever attempt happens to be current.
+    if (task.prProcessingLockToken !== undefined
+        && expectedToken !== task.prProcessingLockToken) return null;
+    if (expectedToken !== undefined
+        && task.prProcessingLockToken !== expectedToken) return null;
+    return taskStateExpectation(task);
+}
+
 /**
  * Makes a BullMQ PR-comment result visible in the persistent task state.
  *
@@ -130,21 +192,37 @@ export async function finalizePRCommentTaskResult(
     taskId: string,
     stateManager: TaskStateStore,
     result: unknown,
+    options: PRCommentTaskFinalizationOptions = {},
 ): Promise<boolean> {
-    const task = await stateManager.getTaskState(taskId);
-    if (!task || isTerminalTaskState(task.state)) return false;
-
     const resultRecord = asResultRecord(result);
     const status = typeof resultRecord?.status === 'string' ? resultRecord.status : null;
-    const transition = isKnownResultStatus(status)
-        ? knownResultTransition(resultRecord as JobResult, status)
+    const parsed = parsePRCommentJobResult(result);
+    const transition = parsed
+        ? knownResultTransition(parsed.result, parsed.status)
         : invalidResultTransition(result, status);
+    const expectation = await resolveFinalizationExpectation(taskId, stateManager, options, result);
+    if (!expectation) return false;
     return Boolean(await stateManager.updateTaskStateIfCurrent(
         taskId,
-        { state: task.state, updatedAt: task.updatedAt },
+        expectation,
         transition.state,
         transition.metadata,
     ));
+}
+
+/** Direct processor finalization is repairable by the completed hook/reconciler. */
+export async function finalizePRCommentTaskResultBestEffort(
+    taskId: string,
+    stateManager: TaskStateStore,
+    result: unknown,
+    options: PRCommentTaskFinalizationOptions = {},
+): Promise<boolean> {
+    try {
+        return await finalizePRCommentTaskResult(taskId, stateManager, result, options);
+    } catch (error) {
+        options.onError?.(error);
+        return false;
+    }
 }
 
 /** Marks a failed BullMQ attempt terminal if the processor did not already do so. */
@@ -152,13 +230,14 @@ export async function finalizePRCommentTaskFailure(
     taskId: string,
     stateManager: TaskStateStore,
     error: Error,
+    options: PRCommentTaskFinalizationOptions = {},
 ): Promise<boolean> {
-    const task = await stateManager.getTaskState(taskId);
-    if (!task || isTerminalTaskState(task.state)) return false;
+    const expectation = await resolveFinalizationExpectation(taskId, stateManager, options);
+    if (!expectation) return false;
 
     return Boolean(await stateManager.updateTaskStateIfCurrent(
         taskId,
-        { state: task.state, updatedAt: task.updatedAt },
+        expectation,
         TaskStates.FAILED,
         {
             reason: `Worker job failed: ${error.message}`,

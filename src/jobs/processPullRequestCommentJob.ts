@@ -47,7 +47,7 @@ import {
     releasePRProcessingLock,
     startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
-import { finalizePRCommentTaskResult } from './prCommentTaskFinalizer.js';
+import { finalizePRCommentTaskResultBestEffort } from './prCommentTaskFinalizer.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -175,6 +175,7 @@ interface ExecuteProcessingParams {
     taskId: string;
     stateManager: WorkerStateManager;
     state: ProcessingState;
+    lockToken: string;
 }
 
 function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {
@@ -188,7 +189,12 @@ function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string 
     return section;
 }
 
-function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
+function checkTerminalStateAfterExecution(
+    currentState: { state: string; prProcessingLockToken?: string } | null,
+    taskId: string,
+    expectedLockToken: string,
+    correlatedLogger: Logger,
+): void {
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
@@ -196,6 +202,9 @@ function checkTerminalStateAfterExecution(currentState: { state: string } | null
             throw new Error('Execution aborted by user request');
         }
         throw new Error(`Task already in terminal state: ${currentState.state}`);
+    }
+    if (currentState?.prProcessingLockToken !== expectedLockToken) {
+        throw new Error('PR processing attempt was superseded by a newer attempt');
     }
 }
 
@@ -214,7 +223,7 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
 }
 
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state } = params;
+    const { job, context, taskId, stateManager, state, lockToken } = params;
     let { llm } = params;
     const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
@@ -223,7 +232,15 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     if (validation.skip) {
         correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping PR comment processing');
         const result = { status: 'skipped', reason: validation.reason, pullRequestNumber };
-        await finalizePRCommentTaskResult(taskId, stateManager, result);
+        await finalizePRCommentTaskResultBestEffort(
+            taskId,
+            stateManager,
+            result,
+            {
+                prProcessingLockToken: lockToken,
+                onError: error => correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Deferred skipped-task finalization to worker recovery'),
+            },
+        );
         return result;
     }
 
@@ -267,7 +284,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting PR comment processing',
         historyMetadata: { commandMode: job.data.commandMode || 'default' }
-    });
+    }, lockToken);
     await ensureGitRepository(correlatedLogger);
     state.localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
@@ -312,10 +329,10 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = summaryTitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber, prProcessingLockToken: lockToken });
     await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
         titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
-    });
+    }, lockToken);
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection });
 
@@ -323,10 +340,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
         pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
         reasoningLevel: job.data.reasoningLevel,
+        prProcessingLockToken: lockToken,
     });
     state.claudeResult = claudeResult;
 
-    checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
+    checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, lockToken, correlatedLogger);
 
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
     await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
@@ -339,14 +357,14 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             model: state.claudeResult.model,
             tokenUsage: state.claudeResult.tokenUsage
         }
-    });
+    }, lockToken);
 
     const postResult = await handlePostExecution(
-        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient },
+        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken: lockToken },
         taskUrl,
     );
 
-    await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+    await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken: lockToken });
 
     return { status: postResult.partial ? 'partial' : 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
@@ -365,6 +383,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
 
     const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
+    job.data.prProcessingLockToken = lockToken;
 
     const runningContainer = await findRunningDockerContainerForTask(taskId);
     if (runningContainer) {
@@ -382,23 +401,26 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
     });
 
+    const issueRef: IssueRef = {
+        number: pullRequestNumber,
+        repoOwner,
+        repoName,
+        type: 'pr_comment',
+        comments: job.data.comments,
+        modelName,
+    };
     try {
-        const issueRef: IssueRef = {
-            number: pullRequestNumber,
-            repoOwner,
-            repoName,
-            type: 'pr_comment',
-            comments: job.data.comments,
-            modelName,
-        };
         await stateManager.createTaskState(
             taskId,
             issueRef,
             correlationId,
-            { prProcessingLockToken: lockToken },
+            { prProcessingLockToken: lockToken, prProcessingLockKey: lockKey },
         );
     } catch (stateError) {
-        correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state, continuing anyway');
+        await stopLockHeartbeat();
+        await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        correlatedLogger.error({ taskId, error: (stateError as Error).message }, 'Failed to create fenced initial task state');
+        throw stateError;
     }
 
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
@@ -406,18 +428,20 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     try {
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
-            return await executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments });
+            const result = await executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken });
+            return { ...result, prProcessingLockToken: lockToken };
         }
-        return await executeProcessing({ job, context, llm, taskId, stateManager, state });
+        const result = await executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken });
+        return { ...result, prProcessingLockToken: lockToken };
     } catch (error) {
-        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
+        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken: lockToken });
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {
-            return { status: 'cancelled', reason: 'user_cancelled' };
+            return { status: 'cancelled', reason: 'user_cancelled', prProcessingLockToken: lockToken };
         }
         if (!(error instanceof UsageLimitError)) throw error;
-        return { status: 'requeued', reason: 'usage_limit' };
+        return { status: 'requeued', reason: 'usage_limit', prProcessingLockToken: lockToken };
     } finally {
         await stopLockHeartbeat();
         await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });

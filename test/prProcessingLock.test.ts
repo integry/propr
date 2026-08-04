@@ -3,14 +3,17 @@ import { describe, mock, test } from 'node:test';
 import {
     acquirePRProcessingLock,
     DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS,
+    MAXIMUM_PR_PROCESSING_LOCK_TTL_SECONDS,
     MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS,
     PR_PROCESSING_LOCK_TTL_SECONDS,
 } from '../src/jobs/prProcessingLock.js';
+import { readBoundedIntegerEnv } from '../src/config/numericEnv.js';
 
 describe('PR processing lock lease', () => {
     test('uses a short renewable lease by default', async () => {
         assert.equal(DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS, 120);
         assert.equal(MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS, 90);
+        assert.equal(MAXIMUM_PR_PROCESSING_LOCK_TTL_SECONDS, 86_400);
         assert.ok(PR_PROCESSING_LOCK_TTL_SECONDS >= MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS);
 
         const set = mock.fn(async () => 'OK');
@@ -24,5 +27,21 @@ describe('PR processing lock lease', () => {
             PR_PROCESSING_LOCK_TTL_SECONDS,
             'NX',
         ]);
+    });
+
+    test('rejects unsafe and out-of-range numeric configuration', () => {
+        const name = 'PROPR_TEST_BOUNDED_INTEGER';
+        const previous = process.env[name];
+        try {
+            process.env[name] = String(Number.MAX_SAFE_INTEGER + 1);
+            assert.equal(readBoundedIntegerEnv(name, { fallback: 120, min: 90, max: 86_400 }), 120);
+            process.env[name] = '86401';
+            assert.equal(readBoundedIntegerEnv(name, { fallback: 120, min: 90, max: 86_400 }), 120);
+            process.env[name] = '3600';
+            assert.equal(readBoundedIntegerEnv(name, { fallback: 120, min: 90, max: 86_400 }), 3600);
+        } finally {
+            if (previous === undefined) delete process.env[name];
+            else process.env[name] = previous;
+        }
     });
 });

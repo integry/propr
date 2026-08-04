@@ -1,18 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
+import { readBoundedIntegerEnv } from '../config/numericEnv.js';
 
 export const PR_PROCESSING_LOCK_RENEW_INTERVAL_MS = 30 * 1000;
 export const DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS = 2 * 60;
 export const MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS = Math.ceil(
     (PR_PROCESSING_LOCK_RENEW_INTERVAL_MS * 3) / 1000,
 );
+export const MAXIMUM_PR_PROCESSING_LOCK_TTL_SECONDS = 24 * 60 * 60;
 
 function readLockTtlSeconds(): number {
-    const configured = Number(process.env.PR_PROCESSING_LOCK_TTL_SECONDS);
-    if (!Number.isFinite(configured) || configured < MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS) {
-        return DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS;
-    }
-    return Math.floor(configured);
+    return readBoundedIntegerEnv('PR_PROCESSING_LOCK_TTL_SECONDS', {
+        fallback: DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS,
+        min: MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS,
+        max: MAXIMUM_PR_PROCESSING_LOCK_TTL_SECONDS,
+    });
 }
 
 /**
