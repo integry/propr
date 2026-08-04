@@ -56,6 +56,8 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PR_FOLLOWUP_TRIGGER_KEYWORDS` | `!propr` | Keywords in PR comments that trigger follow-up work. See [PR Follow-up](../features/pr-followup.md). | Optional. |
 | `LABEL_APPLIER_TIMELINE_MAX_PAGES` | `5` | With a whitelist set, polling resolves who applied the trigger label from the issue timeline (page 1 + the most recent N pages). Raise it if long-lived issues are skipped with "Could not determine label applier". | Optional. |
 
+> **`/split` intake limitation:** `/split` commands require an `issue_comment` event and are accepted only in `routing_websocket` or `direct_webhook` mode. Polling intentionally ignores them and does not post a response. `PR_SPLIT_EXECUTION_ENABLED` must also be enabled only alongside a deployed split-operation worker.
+
 ## Agents & Timeouts
 
 Unified image selection, per-agent credential paths, and execution limits. Coding-agent task executions default to 24 hours; analysis calls keep their separate, shorter timeouts.

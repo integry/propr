@@ -1,4 +1,8 @@
-export { parseSplitCommand, normalizeSplitInstruction } from './command.js';
+export {
+  MAX_SPLIT_INSTRUCTION_LENGTH,
+  parseSplitCommand,
+  normalizeSplitInstruction,
+} from './command.js';
 export type { ParsedSplitCommand } from './command.js';
 
 export {
@@ -15,16 +19,40 @@ export type {
 } from './authorization.js';
 
 export {
+  buildSplitOperationEventKey,
+  buildSplitOperationDedupeKey,
+} from './keys.js';
+export type {
+  SplitEventKeyInput,
+  SplitDedupeKeyInput,
+} from './keys.js';
+
+export {
+  TERMINAL_PR_SPLIT_COMMAND_OUTCOMES,
+  claimPrSplitCommandResponse,
+  createOrGetPrSplitOperation,
+  getPrSplitCommandRecord,
+  markPrSplitCommandResponsePosted,
+  recordPrSplitCommandOutcome,
+} from './commandStore.js';
+export type {
+  PrSplitCommandInput,
+  PrSplitCommandOutcome,
+  PrSplitCommandReceipt,
+  PrSplitCommandRecord,
+  PrSplitResponseState,
+  RecordPrSplitCommandOutcomeInput,
+} from './commandStore.js';
+
+export {
   ACTIVE_SPLIT_OPERATION_STATUSES,
   DEFAULT_SPLIT_OPERATION_LEASE_MS,
   STALE_SPLIT_OPERATION_ERROR,
   TERMINAL_SPLIT_OPERATION_STATUSES,
   SPLIT_OPERATION_STATUSES,
-  buildSplitOperationEventKey,
-  buildSplitOperationDedupeKey,
+  assertPrSplitOperationLease,
   isActiveSplitOperationStatus,
   isTerminalSplitOperationStatus,
-  createOrGetPrSplitOperation,
   getActivePrSplitOperation,
   getPrSplitOperation,
   heartbeatPrSplitOperation,
@@ -35,9 +63,7 @@ export type {
   SplitOperationStatus,
   PrSplitOperation,
   CreatePrSplitOperationInput,
-  CreatePrSplitOperationResult,
-  SplitEventKeyInput,
-  SplitDedupeKeyInput,
+  HeartbeatPrSplitOperationOptions,
   UpdatePrSplitOperationStatusOptions,
 } from './operationStore.js';
 

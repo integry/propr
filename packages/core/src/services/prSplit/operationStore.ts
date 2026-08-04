@@ -1,6 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { normalizeSplitInstruction } from './command.js';
+import {
+  buildSplitOperationDedupeKey,
+  buildSplitOperationEventKey,
+  normalizeGitHubId,
+  normalizeRef,
+  normalizeSha,
+} from './keys.js';
 
 export const ACTIVE_SPLIT_OPERATION_STATUSES = ['queued', 'running'] as const;
 export const TERMINAL_SPLIT_OPERATION_STATUSES = ['completed', 'failed'] as const;
@@ -15,11 +22,13 @@ export type SplitOperationStatus = (typeof SPLIT_OPERATION_STATUSES)[number];
 
 export interface PrSplitOperation {
   id: string;
+  repository_id: number;
   repository: string;
   source_pr_number: number;
   base_ref: string;
   base_sha: string;
   head_sha: string;
+  requester_id: number;
   requester: string;
   original_comment_id: number;
   instruction: string;
@@ -30,37 +39,26 @@ export interface PrSplitOperation {
   started_at: string | null;
   heartbeat_at: string | null;
   lease_expires_at: string | null;
+  lease_token: string | null;
   finished_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface CreatePrSplitOperationInput {
+  repositoryId: number;
   repository: string;
   sourcePrNumber: number;
   baseRef: string;
   baseSha: string;
   headSha: string;
+  requesterId: number;
   requester: string;
   originalCommentId: number;
   instruction: string;
 }
 
-export interface SplitEventKeyInput {
-  repository: string;
-  originalCommentId: number;
-}
-
-export interface SplitDedupeKeyInput {
-  repository: string;
-  sourcePrNumber: number;
-  baseRef: string;
-  baseSha: string;
-  headSha: string;
-  instruction: string;
-}
-
-export type CreatePrSplitOperationResult =
+export type PrSplitOperationDecision =
   | { outcome: 'created'; operation: PrSplitOperation }
   | {
       outcome: 'duplicate';
@@ -72,43 +70,14 @@ export type CreatePrSplitOperationResult =
 export interface UpdatePrSplitOperationStatusOptions {
   errorMessage?: string | null;
   leaseDurationMs?: number;
+  leaseToken?: string;
   now?: Date;
 }
 
-function normalizeRepository(repository: string): string {
-  return repository.trim().toLowerCase();
-}
-
-function normalizeSha(sha: string): string {
-  return sha.trim().toLowerCase();
-}
-
-function normalizeRef(ref: string): string {
-  return ref.trim();
-}
-
-function hashCanonicalInput(parts: readonly (string | number)[]): string {
-  return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
-}
-
-/** Stable identity for one GitHub issue-comment event across webhook retries. */
-export function buildSplitOperationEventKey(input: SplitEventKeyInput): string {
-  return hashCanonicalInput([
-    normalizeRepository(input.repository),
-    input.originalCommentId,
-  ]);
-}
-
-/** Stable semantic key for equivalent split inputs, independent of event identity. */
-export function buildSplitOperationDedupeKey(input: SplitDedupeKeyInput): string {
-  return hashCanonicalInput([
-    normalizeRepository(input.repository),
-    input.sourcePrNumber,
-    normalizeRef(input.baseRef),
-    normalizeSha(input.baseSha),
-    normalizeSha(input.headSha),
-    normalizeSplitInstruction(input.instruction),
-  ]);
+export interface HeartbeatPrSplitOperationOptions {
+  leaseToken: string;
+  leaseDurationMs?: number;
+  now?: Date;
 }
 
 export function isActiveSplitOperationStatus(status: SplitOperationStatus): boolean {
@@ -123,12 +92,12 @@ export function isTerminalSplitOperationStatus(status: SplitOperationStatus): bo
   );
 }
 
-async function resolveDb(client?: Knex): Promise<Knex> {
+export async function resolvePrSplitDb(client?: Knex): Promise<Knex> {
   if (client) return client;
   return (await import('../../db/connection.js')).db;
 }
 
-function isUniqueConstraintError(error: unknown): boolean {
+export function isPrSplitUniqueConstraintError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('code' in error)) return false;
   const code = typeof error.code === 'string' ? error.code : '';
   return code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
@@ -164,37 +133,37 @@ async function findSemanticDuplicate(
 
 /** Find the queued/running operation that currently owns a source PR lock. */
 export async function getActivePrSplitOperation(
-  repository: string,
+  repositoryId: number,
   sourcePrNumber: number,
   dbClient?: Knex,
 ): Promise<PrSplitOperation | null> {
-  const client = await resolveDb(dbClient);
+  const client = await resolvePrSplitDb(dbClient);
   const operation = await client<PrSplitOperation>('pr_split_operations')
-    .whereRaw('repository = ? COLLATE NOCASE', [repository.trim()])
-    .andWhere({ source_pr_number: sourcePrNumber })
+    .where({
+      repository_id: normalizeGitHubId(repositoryId, 'repositoryId'),
+      source_pr_number: sourcePrNumber,
+    })
     .whereIn('status', ACTIVE_SPLIT_OPERATION_STATUSES)
     .first();
 
   return operation ?? null;
 }
 
-/**
- * Fail active operations whose worker lease has elapsed. The conditional update
- * is safe to race with a heartbeat: only a row still expired at update time is
- * failed, which releases the partial-index PR lock.
- */
+/** Fail active operations whose worker lease has elapsed and release their PR lock. */
 export async function recoverStalePrSplitOperations(
-  repository: string,
+  repositoryId: number,
   sourcePrNumber: number,
   dbClient?: Knex,
   now = new Date(),
 ): Promise<number> {
-  const client = await resolveDb(dbClient);
+  const client = await resolvePrSplitDb(dbClient);
   const currentTimestamp = timestamp(now);
 
   return client<PrSplitOperation>('pr_split_operations')
-    .whereRaw('repository = ? COLLATE NOCASE', [repository.trim()])
-    .andWhere({ source_pr_number: sourcePrNumber })
+    .where({
+      repository_id: normalizeGitHubId(repositoryId, 'repositoryId'),
+      source_pr_number: sourcePrNumber,
+    })
     .whereIn('status', ACTIVE_SPLIT_OPERATION_STATUSES)
     .andWhere((builder) => {
       builder.whereNull('lease_expires_at').orWhere('lease_expires_at', '<=', currentTimestamp);
@@ -203,31 +172,27 @@ export async function recoverStalePrSplitOperations(
       status: 'failed',
       error_message: STALE_SPLIT_OPERATION_ERROR,
       lease_expires_at: null,
+      lease_token: null,
       finished_at: currentTimestamp,
       updated_at: currentTimestamp,
     });
 }
 
-/**
- * Atomically create a queued operation, dedupe it, or return the active lock
- * owner. Event and semantic conflicts are resolved separately. Failed semantic
- * requests may be retried by a later comment, while a redelivery of the same
- * comment always resolves to its original operation.
- */
-export async function createOrGetPrSplitOperation(
+/** Resolve the executable operation decision inside the caller's transaction. */
+export async function createPrSplitOperationDecision(
   input: CreatePrSplitOperationInput,
-  dbClient?: Knex,
-): Promise<CreatePrSplitOperationResult> {
-  const client = await resolveDb(dbClient);
-  const now = new Date();
+  dbClient: Knex,
+  now = new Date(),
+): Promise<PrSplitOperationDecision> {
   const normalizedInstruction = normalizeSplitInstruction(input.instruction);
-  const repository = input.repository.trim();
+  const repositoryId = normalizeGitHubId(input.repositoryId, 'repositoryId');
+  const requesterId = normalizeGitHubId(input.requesterId, 'requesterId');
   const eventKey = buildSplitOperationEventKey({
-    repository,
+    repositoryId,
     originalCommentId: input.originalCommentId,
   });
   const dedupeKey = buildSplitOperationDedupeKey({
-    repository,
+    repositoryId,
     sourcePrNumber: input.sourcePrNumber,
     baseRef: input.baseRef,
     baseSha: input.baseSha,
@@ -235,16 +200,18 @@ export async function createOrGetPrSplitOperation(
     instruction: normalizedInstruction,
   });
 
-  await recoverStalePrSplitOperations(repository, input.sourcePrNumber, client, now);
+  await recoverStalePrSplitOperations(repositoryId, input.sourcePrNumber, dbClient, now);
 
   const currentTimestamp = timestamp(now);
   const record = {
     id: randomUUID(),
-    repository,
+    repository_id: repositoryId,
+    repository: input.repository.trim(),
     source_pr_number: input.sourcePrNumber,
     base_ref: normalizeRef(input.baseRef),
     base_sha: normalizeSha(input.baseSha),
     head_sha: normalizeSha(input.headSha),
+    requester_id: requesterId,
     requester: input.requester,
     original_comment_id: input.originalCommentId,
     instruction: normalizedInstruction,
@@ -255,35 +222,37 @@ export async function createOrGetPrSplitOperation(
     started_at: null,
     heartbeat_at: currentTimestamp,
     lease_expires_at: leaseExpiry(now),
+    lease_token: null,
     finished_at: null,
     created_at: currentTimestamp,
     updated_at: currentTimestamp,
   };
 
-  // An active conflict may finish between the failed insert and lookup. Retry
-  // once in that narrow case; event and semantic conflicts remain stable.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      await client('pr_split_operations').insert(record);
-      const operation = await findByEventKey(client, eventKey);
+      await dbClient('pr_split_operations').insert(record);
+      const operation = await findByEventKey(dbClient, eventKey);
       if (!operation) throw new Error('Created PR split operation could not be read back');
       return { outcome: 'created', operation };
     } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
+      if (!isPrSplitUniqueConstraintError(error)) throw error;
 
-      const eventDuplicate = await findByEventKey(client, eventKey);
+      const eventDuplicate = await findByEventKey(dbClient, eventKey);
       if (eventDuplicate) {
         return { outcome: 'duplicate', duplicateKind: 'event', operation: eventDuplicate };
       }
 
-      const semanticDuplicate = await findSemanticDuplicate(client, dedupeKey);
+      const semanticDuplicate = await findSemanticDuplicate(dbClient, dedupeKey);
       if (semanticDuplicate) {
         return { outcome: 'duplicate', duplicateKind: 'semantic', operation: semanticDuplicate };
       }
 
-      const active = await getActivePrSplitOperation(repository, input.sourcePrNumber, client);
+      const active = await getActivePrSplitOperation(
+        repositoryId,
+        input.sourcePrNumber,
+        dbClient,
+      );
       if (active) return { outcome: 'active', operation: active };
-
       if (attempt === 1) throw error;
     }
   }
@@ -295,23 +264,16 @@ export async function getPrSplitOperation(
   operationId: string,
   dbClient?: Knex,
 ): Promise<PrSplitOperation | null> {
-  const client = await resolveDb(dbClient);
+  const client = await resolvePrSplitDb(dbClient);
   const operation = await client<PrSplitOperation>('pr_split_operations')
     .where({ id: operationId })
     .first();
   return operation ?? null;
 }
 
-const ALLOWED_TRANSITION_SOURCES: Partial<Record<SplitOperationStatus, readonly SplitOperationStatus[]>> = {
-  running: ['queued'],
-  completed: ['running'],
-  failed: ['queued', 'running'],
-};
-
 /**
- * Apply one permitted lifecycle transition using a compare-and-swap update.
- * A null result means the operation did not exist or another worker already
- * changed its state, so only one worker can claim queued work.
+ * Apply a fenced lifecycle transition. Claims require a live queued lease;
+ * running workers must present their claim token and still own a live lease.
  */
 export async function updatePrSplitOperationStatus(
   operationId: string,
@@ -319,51 +281,58 @@ export async function updatePrSplitOperationStatus(
   options: UpdatePrSplitOperationStatusOptions = {},
   dbClient?: Knex,
 ): Promise<PrSplitOperation | null> {
-  const allowedSources = ALLOWED_TRANSITION_SOURCES[status];
-  if (!allowedSources) return null;
+  if (status === 'queued') return null;
 
-  const client = await resolveDb(dbClient);
+  const client = await resolvePrSplitDb(dbClient);
   const now = options.now ?? new Date();
   const currentTimestamp = timestamp(now);
-  const updates: Record<string, unknown> = {
-    status,
-    updated_at: currentTimestamp,
-  };
+  const updates: Record<string, unknown> = { status, updated_at: currentTimestamp };
+  const query = client<PrSplitOperation>('pr_split_operations').where({ id: operationId });
 
   if (status === 'running') {
+    query.andWhere({ status: 'queued' });
     updates.started_at = currentTimestamp;
     updates.heartbeat_at = currentTimestamp;
     updates.lease_expires_at = leaseExpiry(now, options.leaseDurationMs);
+    updates.lease_token = randomUUID();
     updates.finished_at = null;
     updates.error_message = null;
-  } else {
+  } else if (options.leaseToken) {
+    query.andWhere({ status: 'running', lease_token: options.leaseToken });
     updates.finished_at = currentTimestamp;
     updates.lease_expires_at = null;
+    updates.lease_token = null;
     updates.error_message = status === 'completed'
       ? null
       : options.errorMessage?.trim() || 'Split operation failed';
+  } else if (status === 'failed') {
+    query.andWhere({ status: 'queued' });
+    updates.finished_at = currentTimestamp;
+    updates.lease_expires_at = null;
+    updates.lease_token = null;
+    updates.error_message = options.errorMessage?.trim() || 'Split operation failed';
+  } else {
+    return null;
   }
 
-  const updated = await client<PrSplitOperation>('pr_split_operations')
-    .where({ id: operationId })
-    .whereIn('status', allowedSources)
+  const updated = await query
+    .andWhere('lease_expires_at', '>', currentTimestamp)
     .update(updates);
   if (updated === 0) return null;
-
   return getPrSplitOperation(operationId, client);
 }
 
-/** Extend a running operation's lease without changing its lifecycle state. */
+/** Extend a running operation's lease while proving ownership with its claim token. */
 export async function heartbeatPrSplitOperation(
   operationId: string,
-  options: UpdatePrSplitOperationStatusOptions = {},
+  options: HeartbeatPrSplitOperationOptions,
   dbClient?: Knex,
 ): Promise<PrSplitOperation | null> {
-  const client = await resolveDb(dbClient);
+  const client = await resolvePrSplitDb(dbClient);
   const now = options.now ?? new Date();
   const currentTimestamp = timestamp(now);
   const updated = await client<PrSplitOperation>('pr_split_operations')
-    .where({ id: operationId, status: 'running' })
+    .where({ id: operationId, status: 'running', lease_token: options.leaseToken })
     .andWhere('lease_expires_at', '>', currentTimestamp)
     .update({
       heartbeat_at: currentTimestamp,
@@ -371,6 +340,23 @@ export async function heartbeatPrSplitOperation(
       updated_at: currentTimestamp,
     });
   if (updated === 0) return null;
-
   return getPrSplitOperation(operationId, client);
+}
+
+/**
+ * Fence external GitHub side effects. A future worker must call this immediately
+ * before each side effect and stop if the token no longer owns a live lease.
+ */
+export async function assertPrSplitOperationLease(
+  operationId: string,
+  leaseToken: string,
+  dbClient?: Knex,
+  now = new Date(),
+): Promise<PrSplitOperation | null> {
+  const client = await resolvePrSplitDb(dbClient);
+  const operation = await client<PrSplitOperation>('pr_split_operations')
+    .where({ id: operationId, status: 'running', lease_token: leaseToken })
+    .andWhere('lease_expires_at', '>', timestamp(now))
+    .first();
+  return operation ?? null;
 }

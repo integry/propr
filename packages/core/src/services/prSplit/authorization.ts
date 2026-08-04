@@ -43,48 +43,12 @@ function githubStatus(error: unknown): number | undefined {
   return typeof error.status === 'number' ? error.status : undefined;
 }
 
-function githubErrorMessage(error: unknown): string {
-  if (!isRecord(error)) return '';
-  const response = isRecord(error.response) ? error.response : undefined;
-  const responseData = response && isRecord(response.data) ? response.data : undefined;
-  const responseMessage = responseData?.message;
-  if (typeof responseMessage === 'string') return responseMessage;
-  return typeof error.message === 'string' ? error.message : '';
-}
-
-function githubErrorHeaders(error: unknown): UnknownRecord {
-  if (!isRecord(error)) return {};
-  const response = isRecord(error.response) ? error.response : undefined;
-  const headers = response && isRecord(response.headers) ? response.headers : error.headers;
-  return isRecord(headers) ? headers : {};
-}
-
-function headerValue(headers: UnknownRecord, name: string): string | undefined {
-  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
-  const value = entry?.[1];
-  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
-}
-
-function isRateLimited403(error: unknown): boolean {
-  const headers = githubErrorHeaders(error);
-  const message = githubErrorMessage(error);
-  return headerValue(headers, 'x-ratelimit-remaining') === '0'
-    || headerValue(headers, 'retry-after') !== undefined
-    || /(?:secondary |api )?rate limit|abuse detection|temporarily blocked/i.test(message);
-}
-
-function isPermission403(error: unknown): boolean {
-  return /forbidden|resource not accessible|permission|must have .*access/i.test(
-    githubErrorMessage(error),
-  );
-}
-
 /**
  * Fail-closed repository authorization for a split requester.
  *
- * A definite collaborator/permission refusal returns unauthorized. Rate-limit,
- * abuse-protection, server, and ambiguous 403 responses are rethrown so GitHub
- * can retry the delivery instead of sending a false permission refusal.
+ * GitHub's 404 response is a definitive negative collaborator result. A 403
+ * can instead describe the App/token's own missing access, so every 403 is
+ * rethrown and remains retryable rather than becoming a permanent refusal.
  */
 export async function authorizeSplitRequester(
   octokit: PrSplitRequestClient,
@@ -104,7 +68,7 @@ export async function authorizeSplitRequester(
       : { authorized: false, permission };
   } catch (error) {
     const status = githubStatus(error);
-    if (status === 404 || (status === 403 && !isRateLimited403(error) && isPermission403(error))) {
+    if (status === 404) {
       return { authorized: false, permission: null };
     }
     throw error;

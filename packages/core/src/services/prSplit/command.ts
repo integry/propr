@@ -1,8 +1,10 @@
 export interface ParsedSplitCommand {
   /** Whitespace-normalized natural-language guidance after `/split`. */
   instruction: string;
+  validationError?: 'instruction_too_long';
 }
 
+export const MAX_SPLIT_INSTRUCTION_LENGTH = 8_000;
 const SPLIT_COMMAND_PATTERN = /^\/split(?=$|[\t\r\n ])[\t\r\n ]*([\s\S]*)$/;
 
 /**
@@ -29,5 +31,9 @@ export function parseSplitCommand(body: string | null | undefined): ParsedSplitC
   const match = SPLIT_COMMAND_PATTERN.exec(body);
   if (!match) return null;
 
-  return { instruction: normalizeSplitInstruction(match[1] ?? '') };
+  const instruction = normalizeSplitInstruction(match[1] ?? '');
+  if (instruction.length > MAX_SPLIT_INSTRUCTION_LENGTH) {
+    return { instruction: '', validationError: 'instruction_too_long' };
+  }
+  return { instruction };
 }
