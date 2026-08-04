@@ -1,5 +1,6 @@
-import { buildSplitCandidates } from './candidatePlanner.js';
+import { buildSplitCandidates, validateSplitCandidate } from './candidatePlanner.js';
 import type {
+  DeepReadonly,
   PrSnapshot,
   SplitCandidate,
   SplitPlan,
@@ -10,6 +11,10 @@ import type {
 } from './types.js';
 
 type UnknownRecord = Record<string, unknown>;
+
+const MAX_PLANNER_CANDIDATES = 20;
+const MAX_PROMPT_FILES_PER_CANDIDATE = 80;
+const MAX_PLANNER_REASON_LENGTH = 500;
 
 export class SplitPlannerResponseError extends Error {
   constructor(message: string) {
@@ -99,7 +104,13 @@ export function parseSplitPlannerChoice(
   if (parsed.reason !== undefined && typeof parsed.reason !== 'string') {
     throw new SplitPlannerResponseError('reason must be a string');
   }
-  const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : undefined;
+  const reason = typeof parsed.reason === 'string'
+    ? parsed.reason
+      .replace(/\p{Cc}/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, MAX_PLANNER_REASON_LENGTH)
+    : undefined;
   return {
     choice: {
       candidateId: candidate.id,
@@ -119,8 +130,10 @@ function plannerPrompt(
     candidateId: candidate.id,
     kind: candidate.kind,
     summary: candidate.summary,
-    includedFiles: candidate.includedFiles,
-    excludedScope: candidate.excludedScope,
+    includedFiles: candidate.includedFiles.slice(0, MAX_PROMPT_FILES_PER_CANDIDATE),
+    includedFileCount: candidate.includedFiles.length,
+    includedFilesTruncated: candidate.includedFiles.length > MAX_PROMPT_FILES_PER_CANDIDATE,
+    excludedFileCount: candidate.excludedScope.length,
     riskNotes: candidate.riskNotes,
     validationCommands: candidate.validationPlan.commands,
     deterministicScore: candidate.score,
@@ -131,8 +144,8 @@ function plannerPrompt(
 The split must preserve the source PR diff against base ${snapshot.baseRef} (${snapshot.baseSha}).
 Do not propose code rewrites and do not add, remove, or invent files. Prefer the user's instruction when supplied, then atomicity, cohesion, dependency completeness, test coverage, and reviewability. A useful coherent unit is better than the smallest file count.
 
-Requested instruction: ${instruction || '(none)'}
-Source PR: ${snapshot.title}
+Requested instruction: ${(instruction || '(none)').slice(0, 2_000)}
+Source PR: ${snapshot.title.slice(0, 500)}
 
 Candidates:
 ${JSON.stringify(options, null, 2)}
@@ -172,12 +185,30 @@ function selectedPlan(candidate: SplitCandidate, selectionReason: string): Split
     includedFiles: [...candidate.includedFiles],
     excludedScope: [...candidate.excludedScope],
     riskNotes: [...candidate.riskNotes],
-    validationPlan: candidate.validationPlan,
+    validationPlan: {
+      ...candidate.validationPlan,
+      commands: [...candidate.validationPlan.commands],
+      hints: candidate.validationPlan.hints.map(hint => ({
+        ...hint,
+        relatedFiles: [...hint.relatedFiles],
+      })),
+    },
     safeToCreatePr: candidate.safeToCreatePr,
     failureReason: null,
     selectionReason,
     preserveSourceDiff: true,
   };
+}
+
+function deeplyFrozenClone<T>(value: T): DeepReadonly<T> {
+  const clone = structuredClone(value);
+  const freeze = (current: unknown): void => {
+    if (typeof current !== 'object' || current === null || Object.isFrozen(current)) return;
+    for (const nested of Object.values(current)) freeze(nested);
+    Object.freeze(current);
+  };
+  freeze(clone);
+  return clone as DeepReadonly<T>;
 }
 
 async function requestJudgement(
@@ -207,16 +238,17 @@ export async function createSplitPlan(
   snapshot: PrSnapshot,
   optionsOrInstruction: SplitPlannerOptions | string = {},
 ): Promise<SplitPlan> {
+  const planningSnapshot = structuredClone(snapshot);
   const options = typeof optionsOrInstruction === 'string'
     ? { instruction: optionsOrInstruction }
     : optionsOrInstruction;
   const instruction = options.instruction?.trim() ?? '';
-  const candidates = buildSplitCandidates(snapshot, instruction);
+  const candidates = buildSplitCandidates(planningSnapshot, instruction);
   const safeCandidates = candidates.filter(candidate => candidate.safeToCreatePr && !candidate.rejected);
   if (safeCandidates.length === 0) {
     const firstReason = candidates.flatMap(candidate => candidate.rejectionReasons)[0];
     return failedPlan(
-      snapshot,
+      planningSnapshot,
       firstReason ? `No safe split candidate: ${firstReason}` : 'No split candidates could be constructed.',
     );
   }
@@ -224,17 +256,29 @@ export async function createSplitPlan(
   if (!options.judge && !options.agent) {
     return selectedPlan(safeCandidates[0], 'Selected by deterministic candidate ranking.');
   }
-  const prompt = plannerPrompt(snapshot, instruction, safeCandidates);
+  const judgeCandidates = safeCandidates.slice(0, MAX_PLANNER_CANDIDATES);
+  const prompt = plannerPrompt(planningSnapshot, instruction, judgeCandidates);
   try {
-    const response = await requestJudgement({ snapshot, instruction, candidates: safeCandidates, prompt }, options);
-    const { choice, candidate } = parseSplitPlannerChoice(response, safeCandidates);
+    const response = await requestJudgement({
+      snapshot: deeplyFrozenClone(planningSnapshot),
+      instruction,
+      candidates: deeplyFrozenClone(judgeCandidates),
+      prompt,
+    }, options);
+    const { choice, candidate } = parseSplitPlannerChoice(response, judgeCandidates);
+    const postJudgementSafety = validateSplitCandidate(planningSnapshot, candidate.includedFiles);
+    if (!postJudgementSafety.safeToCreatePr || postJudgementSafety.rejected) {
+      throw new SplitPlannerResponseError(
+        `selected candidate failed post-judgement safety validation: ${postJudgementSafety.rejectionReasons.join(' ')}`,
+      );
+    }
     return selectedPlan(
       candidate,
       choice.reason || 'Selected by optional planner judgement from deterministic candidates.',
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return failedPlan(snapshot, `Planner judgement failed closed: ${message}`);
+    return failedPlan(planningSnapshot, `Planner judgement failed closed: ${message}`);
   }
 }
 

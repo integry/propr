@@ -30,6 +30,11 @@ export interface PrSnapshotFile {
   changes: number;
   patch: string | null;
   sha: string | null;
+  /** Complete file contents at each side of the PR when that side exists. */
+  baseContent: string | null;
+  headContent: string | null;
+  /** False when either required side could not be read in full. */
+  contentComplete: boolean;
 }
 
 /** A normalized source-PR commit and the changed paths belonging to it. */
@@ -41,6 +46,15 @@ export interface PrSnapshotCommit {
   committedAt: string | null;
   parents: string[];
   files: string[];
+  /** True only after every page of the commit-detail file list was read. */
+  filesComplete: boolean;
+}
+
+/** A repository configuration file discovered at the immutable PR head. */
+export interface PrSnapshotRepositoryFile {
+  path: string;
+  content: string | null;
+  contentComplete: boolean;
 }
 
 /** Immutable input used by split analysis. */
@@ -57,6 +71,8 @@ export interface PrSnapshot {
   body: string;
   commits: PrSnapshotCommit[];
   changedFiles: PrSnapshotFile[];
+  repositoryFiles: PrSnapshotRepositoryFile[];
+  repositoryTreeComplete: boolean;
   unifiedDiff: string;
 }
 
@@ -75,6 +91,10 @@ export interface ValidationHint {
   reason: string;
   source: ValidationHintSource;
   relatedFiles: string[];
+  workingDirectory: string;
+  confidence: 'high' | 'medium' | 'low';
+  /** Only constructed, allowlisted commands may enter ValidationPlan.commands. */
+  executable: boolean;
 }
 
 /** Commands are hints for the later execution layer, not evidence that validation passed. */
@@ -101,12 +121,14 @@ export interface SplitCandidate {
   commitShas: string[];
   dependencyFiles: string[];
   instructionMatchScore: number;
+  changedLines: number;
   score: number;
   rankingReasons: string[];
   riskNotes: string[];
   validationPlan: ValidationPlan;
   rejected: boolean;
   rejectionReasons: string[];
+  /** Scope-level deterministic checks passed; this is not a guarantee that the diff is secret-free. */
   safeToCreatePr: boolean;
 }
 
@@ -118,10 +140,18 @@ export interface SplitCandidateSafetyAssessment {
   safeToCreatePr: boolean;
 }
 
+export type DeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly (infer Item)[]
+    ? readonly DeepReadonly<Item>[]
+    : T extends object
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T;
+
 export interface SplitPlannerJudgementInput {
-  snapshot: PrSnapshot;
+  snapshot: DeepReadonly<PrSnapshot>;
   instruction: string;
-  candidates: readonly SplitCandidate[];
+  candidates: readonly DeepReadonly<SplitCandidate>[];
   prompt: string;
 }
 

@@ -10,6 +10,13 @@ export function scoreSplitCandidate(candidate: SplitCandidate): number {
   };
   const fileCount = candidate.includedFiles.length;
   const reviewableUnitScore = fileCount >= 2 && fileCount <= 10 ? 20 : fileCount === 1 ? 5 : 0;
+  const changeSizeScore = candidate.changedLines <= 200
+    ? 15
+    : candidate.changedLines <= 500
+      ? 5
+      : candidate.changedLines <= 1_000
+        ? -10
+        : -30;
   const validationScore = candidate.validationPlan.inferred ? 10 : 0;
   const testScore = candidate.includedFiles.some(isTestSplitFile) ? 20 : 0;
   const focusScore = candidate.excludedScope.length > 0 ? 15 : 0;
@@ -17,7 +24,7 @@ export function scoreSplitCandidate(candidate: SplitCandidate): number {
   const rejectionPenalty = candidate.rejected ? 1000 : 0;
   return 100 + kindScore[candidate.kind]
     + candidate.instructionMatchScore * 2
-    + reviewableUnitScore + validationScore + testScore + focusScore
+    + reviewableUnitScore + changeSizeScore + validationScore + testScore + focusScore
     - riskPenalty - rejectionPenalty;
 }
 
@@ -35,7 +42,12 @@ export function buildCandidateRankingReasons(
   if (candidate.includedFiles.some(isTestSplitFile)) {
     reasons.push('Includes changed tests with the selected scope.');
   }
-  if (!candidate.rejected) reasons.push('Passed deterministic completeness and safety checks.');
+  if (candidate.changedLines <= 500) {
+    reasons.push(`Keeps the selected diff reviewable at ${candidate.changedLines} changed lines.`);
+  } else if (candidate.changedLines > 1_000) {
+    reasons.push(`Large selected diff: ${candidate.changedLines} changed lines.`);
+  }
+  if (!candidate.rejected) reasons.push('Passed deterministic scope-completeness checks.');
   return reasons;
 }
 
