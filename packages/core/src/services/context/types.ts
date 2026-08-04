@@ -18,6 +18,8 @@ export interface ContextGenerationOptions {
   compress?: boolean;
   /** Model ID for token ratio calculation (tiktoken is accurate for OpenAI, needs adjustment for Claude/Gemini) */
   modelId?: string;
+  /** Base temporary directory under which a service-owned Repomix directory is created. */
+  temporaryRoot?: string;
 }
 
 export interface ContextGenerationResult {
@@ -48,14 +50,29 @@ export class SecurityException extends Error {
 }
 
 export class ContextTokenLimitError extends Error {
+  public readonly code = 'CONTEXT_TOKEN_LIMIT_EXCEEDED';
+  /** Smallest attempted bundle, measured with Repomix's tiktoken tokenizer. */
   public readonly totalTokens: number;
+  /** @deprecated Use requestedTokenLimit; retained for compatibility. */
   public readonly tokenLimit: number;
+  /** Model-token limit supplied by the caller. */
+  public readonly requestedTokenLimit: number;
+  /** Internal tiktoken budget derived from the requested model-token limit. */
+  public readonly tiktokenLimit: number;
+  public readonly modelId?: string;
 
-  constructor(totalTokens: number, tokenLimit: number) {
-    super(`Repomix context cannot fit within the ${tokenLimit} token limit (smallest attempted bundle: ${totalTokens} tokens)`);
+  constructor(totalTokens: number, requestedTokenLimit: number, tiktokenLimit: number, modelId?: string) {
+    const modelDescription = modelId ? ` for ${modelId}` : '';
+    super(
+      `Repomix context cannot fit within the requested ${requestedTokenLimit}-token model budget${modelDescription} ` +
+      `(internal tiktoken budget: ${tiktokenLimit}; smallest attempted bundle: ${totalTokens} tiktoken tokens)`,
+    );
     this.name = 'ContextTokenLimitError';
     this.totalTokens = totalTokens;
-    this.tokenLimit = tokenLimit;
+    this.tokenLimit = requestedTokenLimit;
+    this.requestedTokenLimit = requestedTokenLimit;
+    this.tiktokenLimit = tiktokenLimit;
+    this.modelId = modelId;
   }
 }
 
@@ -77,6 +94,8 @@ export interface GenerateOptimizedContextOptions {
   initialFiles: string[];
   baseConfig: RepomixPackConfig;
   tiktokenLimit: number;
+  requestedTokenLimit: number;
+  modelId?: string;
   contextLogger: Pick<Logger, 'info' | 'warn'>;
   onSuspiciousFiles?: (files: SuspiciousFile[]) => void;
 }

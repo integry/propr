@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import {
   generateContextPreview,
   BranchNotFoundError,
+  ContextTokenLimitError,
   ensureRepoCloned,
   generateCorrelationId,
   loadSettings,
@@ -93,6 +94,15 @@ function sendPreviewError(res: Response, error: unknown): void {
     res.status(400).json({ error: error.message });
     return;
   }
+  if (error instanceof ContextTokenLimitError) {
+    res.status(413).json({
+      error: `${error.message}. Exclude unusually large generated or minified files, or choose a model with a larger context window.`,
+      code: error.code,
+      requestedTokenLimit: error.requestedTokenLimit,
+      tiktokenLimit: error.tiktokenLimit,
+    });
+    return;
+  }
   res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to preview context' });
 }
 
@@ -168,14 +178,25 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         })
         .catch(async (error) => {
           console.error('Preview context background error:', error);
-          const errorMessage = error instanceof Error ? error.message : 'Failed to preview context';
+          const isCapacityError = error instanceof ContextTokenLimitError;
+          const errorMessage = isCapacityError
+            ? `${error.message}. Exclude unusually large generated or minified files, or choose a model with a larger context window.`
+            : error instanceof Error ? error.message : 'Failed to preview context';
           await storePreviewFailure(deps.db, draftId, previewRequestId, errorMessage);
           const eventPublisher = getEventPublisher();
           await eventPublisher.publishDraftUpdate({
             draftId,
             step: 'context',
             status: 'failed',
-            data: { error: errorMessage, previewRequestId },
+            data: {
+              error: errorMessage,
+              previewRequestId,
+              ...(isCapacityError ? {
+                errorCode: error.code,
+                requestedTokenLimit: error.requestedTokenLimit,
+                tiktokenLimit: error.tiktokenLimit,
+              } : {}),
+            },
             draftStatus: 'generating'
           });
         });

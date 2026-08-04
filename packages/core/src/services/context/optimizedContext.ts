@@ -175,7 +175,16 @@ export function planFilesToRemoveForTokenLimit(
 }
 
 export async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
-  const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, onSuspiciousFiles } = options;
+  const {
+    repoPath,
+    initialFiles,
+    baseConfig,
+    tiktokenLimit,
+    requestedTokenLimit,
+    modelId,
+    contextLogger,
+    onSuspiciousFiles,
+  } = options;
   let currentFiles = [...initialFiles];
   let optimizedBaseConfig = buildCompactRepomixConfig(baseConfig);
   let result: PackResult | undefined;
@@ -214,7 +223,7 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
     const { filesToRemove, tokensFreed } = removalPlan;
 
     if (filesToRemove.length === 0) {
-      throw new ContextTokenLimitError(result.totalTokens, tiktokenLimit);
+      throw new ContextTokenLimitError(result.totalTokens, requestedTokenLimit, tiktokenLimit, modelId);
     }
 
     contextLogger.info(
@@ -238,7 +247,7 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
   }
 
   if (result.totalTokens > tiktokenLimit) {
-    throw new ContextTokenLimitError(result.totalTokens, tiktokenLimit);
+    throw new ContextTokenLimitError(result.totalTokens, requestedTokenLimit, tiktokenLimit, modelId);
   }
 
   return { result, currentFiles };
