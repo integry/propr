@@ -1,7 +1,9 @@
 import assert from 'node:assert';
 import { describe, test } from 'node:test';
 import {
+    ExecutionAbortedError,
     executeDockerCommand,
+    stopDockerContainer,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { parseStreamJsonOutput } from '../packages/core/src/claude/claudeHelpers.js';
@@ -47,6 +49,43 @@ function partialClaudeResult(reason: 'timeout' | 'max_turns'): ClaudeCodeRespons
 }
 
 describe('partial agent execution', () => {
+    test('does not spawn a command when its signal is already aborted', async () => {
+        const controller = new AbortController();
+        controller.abort();
+        await assert.rejects(
+            executeDockerCommand('/definitely/not/an/executable', [], {
+                signal: controller.signal,
+            }),
+            ExecutionAbortedError,
+        );
+    });
+
+    test('terminates an underlying analysis process when its abort signal fires', async () => {
+        const controller = new AbortController();
+        const running = executeDockerCommand(process.execPath, [
+            '-e',
+            'setInterval(() => {}, 1000);',
+        ], { timeout: 5_000, signal: controller.signal });
+        setTimeout(() => controller.abort(), 20);
+
+        await assert.rejects(running, ExecutionAbortedError);
+    });
+
+    test('force-kills a container when graceful stop fails', async () => {
+        const operations: string[] = [];
+        const executeDocker = ((_file: string, args: readonly string[]) => {
+            operations.push(args[0]);
+            if (args[0] === 'inspect') return 'true';
+            if (args[0] === 'stop') throw new Error('graceful stop failed');
+            return '';
+        }) as typeof import('node:child_process').execFileSync;
+
+        const result = await stopDockerContainer('container-id', 0, executeDocker);
+
+        assert.equal(result.success, true);
+        assert.deepEqual(operations, ['inspect', 'stop', 'kill']);
+    });
+
     test('preserves buffered output when the execution deadline is reached', async () => {
         const result = await executeDockerCommand(process.execPath, [
             '-e',

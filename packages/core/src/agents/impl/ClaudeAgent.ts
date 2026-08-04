@@ -161,7 +161,7 @@ export class ClaudeAgent implements Agent {
 
     /** Runs a lightweight, read-only analysis for planning, summarization, and PR reviews. */
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, signal, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -192,7 +192,7 @@ export class ClaudeAgent implements Agent {
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'claude',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId
+                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId, signal
                 }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );

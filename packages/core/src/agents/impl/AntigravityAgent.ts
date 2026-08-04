@@ -289,7 +289,7 @@ export class AntigravityAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, signal, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Antigravity agent...');
         const effectiveModel = model || 'antigravity-gemini-3.5-flash-medium';
@@ -302,7 +302,7 @@ export class AntigravityAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData: fullPrompt, taskId }),
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData: fullPrompt, taskId, signal }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
             const executionTimeMs = Date.now() - startTime;

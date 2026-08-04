@@ -26,6 +26,13 @@ function resolveOpenCodeExecutionOutcome(
     return { success: result.exitCode === 0 && !parsedOutput.error && !terminationReason, terminationReason };
 }
 
+function buildAnalysisPrompt(prompt: string, context: string | undefined, responseFormat: 'text' | 'json'): string {
+    const suffix = responseFormat === 'json'
+        ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
+        : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+    return context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+}
+
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
     private readonly timeoutMs: number;
@@ -121,11 +128,10 @@ export class OpenCodeAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, signal, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
-        const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
-        const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        const analysisPrompt = buildAnalysisPrompt(prompt, context, responseFormat);
         const analysisWorkspace = this.ensureAnalysisWorkspace();
         const analysisConfigPath = this.createAnalysisConfigSnapshot();
         const analysisDataPath = this.resolveAnalysisDataPath();
@@ -134,7 +140,7 @@ export class OpenCodeAgent implements Agent {
             const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, configPath: analysisConfigPath, dataPath: analysisDataPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData: analysisPrompt, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId, signal })
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
@@ -144,9 +150,7 @@ export class OpenCodeAgent implements Agent {
             const success = !result.timedOut && result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
 
             const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
-            if (!suppressLlmLog) {
-                await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
-            }
+            await this.persistAnalysisLogUnlessSuppressed(suppressLlmLog, { executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
             return success
                 ? { response: analysisText, modelUsed, executionTimeMs, success: true, sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage }
                 : { response: analysisText, modelUsed, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage };
@@ -154,9 +158,7 @@ export class OpenCodeAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
             logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'OpenCode lightweight analysis failed');
-            if (!suppressLlmLog) {
-                await this.persistAnalysisLogSafely({ executionType, modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message, taskId, correlationId, repository, metadata, taskNumber, prNumber });
-            }
+            await this.persistAnalysisLogUnlessSuppressed(suppressLlmLog, { executionType, modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message, taskId, correlationId, repository, metadata, taskNumber, prNumber });
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
         } finally {
             this.cleanupAnalysisWorkspace(analysisWorkspace);
@@ -253,6 +255,13 @@ export class OpenCodeAgent implements Agent {
         } catch (persistError) {
             logger.warn({ agentAlias: this.config.alias, error: (persistError as Error).message }, 'Failed to persist OpenCode analysis log');
         }
+    }
+
+    private async persistAnalysisLogUnlessSuppressed(
+        suppressLlmLog: boolean | undefined,
+        opts: Parameters<OpenCodeAgent['persistAnalysisLogSafely']>[0]
+    ): Promise<void> {
+        if (!suppressLlmLog) await this.persistAnalysisLogSafely(opts);
     }
 
     private ensureAnalysisWorkspace(): string {

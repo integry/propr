@@ -122,6 +122,8 @@ export interface AnalyzeOptions {
     metadata?: Record<string, unknown>;
     /** Optional timeout for lightweight analysis execution. */
     timeoutMs?: number;
+    /** Cancels the underlying analysis process and its agent container. */
+    signal?: AbortSignal;
     /** Expected response format. Defaults to plain text analysis. */
     responseFormat?: 'text' | 'json';
     /** Optional per-analysis reasoning level override. */
