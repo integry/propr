@@ -1,7 +1,7 @@
 import fs from 'fs';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
-import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { executeDockerCommand, type ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath, loadSettings } from '../../config/configManager.js';
@@ -20,6 +20,14 @@ export { getMistralApiKeyFromSettings, readLatestVibeSessionTokenUsage } from '.
 
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
+
+function resolveVibeExecutionOutcome(
+    result: ExecutionResult,
+    parsedOutput: ReturnType<typeof parseVibeOutput>
+): Pick<AgentExecutionResult, 'success' | 'terminationReason'> {
+    const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+    return { success: isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason, terminationReason };
+}
 
 interface VibeDockerArgsParams {
     worktreePath: string;
@@ -106,8 +114,7 @@ export class VibeAgent implements Agent {
             const conversationLog = parseVibeConversationLog(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
-            const success = isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason;
+            const { success, terminationReason } = resolveVibeExecutionOutcome(result, parsedOutput);
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
 

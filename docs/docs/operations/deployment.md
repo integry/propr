@@ -124,6 +124,8 @@ in [ProPR Connect](./propr-connect.md).
 
 **Polling** (`GITHUB_EVENT_INTAKE_MODE=polling`) suits installs that prefer to pull rather than maintain a streaming connection; it needs no inbound endpoint but adds latency and consumes the API budget continuously. The interval is `POLLING_INTERVAL_MS` (default `60000`).
 
+> **Command limitation:** polling does not accept `/split` PR comments and does not post a refusal. `/split` requires `issue_comment` event delivery, so use `routing_websocket` or `direct_webhook` for that command.
+
 **Direct webhook** (`GITHUB_EVENT_INTAKE_MODE=direct_webhook`) is for running your own GitHub App with GitHub delivering events to a public endpoint:
 
 ```bash

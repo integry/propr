@@ -460,7 +460,6 @@ export async function storePromptInRedis(options: StorePromptOptions): Promise<v
 
         await redis.quit();
     } catch (redisError) {
-        const error = redisError as Error;
-        logger.warn({ issueNumber: issueRef.number, error: error.message }, 'Failed to store execution prompt in Redis - continuing');
+        logger.warn({ issueNumber: issueRef.number, error: (redisError as Error).message }, 'Failed to store execution prompt in Redis - continuing');
     }
 }

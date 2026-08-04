@@ -3,7 +3,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
-import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { executeDockerCommand, type ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
@@ -17,6 +17,14 @@ import { resolveAgentTerminationReason } from '../termination.js';
 export { UsageLimitError };
 
 const DEFAULT_OPENCODE_ANALYSIS_ROOT = '/tmp/git-processor/opencode-analysis';
+
+function resolveOpenCodeExecutionOutcome(
+    result: ExecutionResult,
+    parsedOutput: ParsedOpenCodeOutput
+): Pick<AgentExecutionResult, 'success' | 'terminationReason'> {
+    const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+    return { success: result.exitCode === 0 && !parsedOutput.error && !terminationReason, terminationReason };
+}
 
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
@@ -69,8 +77,7 @@ export class OpenCodeAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
-            const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
+            const { success, terminationReason } = resolveOpenCodeExecutionOutcome(result, parsedOutput);
             const errorText = success ? undefined : (parsedOutput.error || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
             const response: AgentExecutionResult = {
                 success,

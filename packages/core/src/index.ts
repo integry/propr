@@ -122,7 +122,7 @@ export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, 
 export type { CheckRunsStatus, ActivePRWork, ActivePRTask, ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
-export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
+export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, SplitCommentHandler, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
 export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckEvidence, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
@@ -147,6 +147,7 @@ export type { PlanIssueStatus as StatusMachinePlanIssueStatus } from './webhook/
 
 export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
+export * from './services/prSplit/index.js';
 export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChangesFromWorktree, getCommitChanges, isValidCommitHash } from './services/worktreeMonitorService.js';
 export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
 export { generateContext, generateAdditionalContext, SecurityException } from './services/context/index.js';

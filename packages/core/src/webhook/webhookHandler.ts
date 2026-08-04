@@ -27,6 +27,10 @@ import type {
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import {
+    handlePrSplitComment,
+    type PrSplitIntakeResult,
+} from '../services/prSplit/intake.js';
 
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
@@ -65,6 +69,10 @@ export type CommentDeletedHandler = (payload: IssueCommentEvent | PullRequestRev
 export type CommentEditedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type PullRequestProcessor = (payload: PullRequestEvent, correlationId: string) => Promise<void>;
 export type CheckRunProcessor = (payload: CheckRunEvent, correlationId: string) => Promise<void>;
+export type SplitCommentHandler = (
+    payload: IssueCommentEvent,
+    correlationId: string,
+) => Promise<PrSplitIntakeResult>;
 
 let processDetectedIssue: IssueProcessor | null = null;
 let processCommentEvent: CommentProcessor | null = null;
@@ -73,6 +81,7 @@ let handleCommentEdited: CommentEditedHandler | null = null;
 let processPullRequest: PullRequestProcessor | null = null;
 let processCheckRun: CheckRunProcessor | null = null;
 let webhookRedisClient: Redis | null = null;
+let processSplitComment: SplitCommentHandler = handlePrSplitComment;
 
 export interface WebhookHandlerOptions {
     issueProcessor: IssueProcessor;
@@ -81,6 +90,7 @@ export interface WebhookHandlerOptions {
     commentEditedHandler: CommentEditedHandler;
     pullRequestProcessor?: PullRequestProcessor;
     checkRunProcessor?: CheckRunProcessor;
+    splitCommentHandler?: SplitCommentHandler;
     redisClient?: Redis;
 }
 
@@ -91,6 +101,7 @@ export async function initializeWebhookHandler(options: WebhookHandlerOptions): 
     handleCommentEdited = options.commentEditedHandler;
     processPullRequest = options.pullRequestProcessor || null;
     processCheckRun = options.checkRunProcessor || null;
+    processSplitComment = options.splitCommentHandler ?? handlePrSplitComment;
     webhookRedisClient = options.redisClient || null;
     logger.info('Webhook handler initialized');
 }
@@ -333,6 +344,14 @@ export async function processWebhookEvent(
     correlationId: string,
 ): Promise<DeliveryDisposition> {
     const correlatedLogger = logger.withCorrelation(correlationId);
+
+    // `/split` owns a separate authorization and durable-operation boundary.
+    // Intercept it before plan tracking or generic PR follow-up processing so a
+    // command can never be mistaken for an implementation request.
+    if (eventType === 'issue_comment' && isIssueCommentEvent(payload)) {
+        const splitResult = await processSplitComment(payload, correlationId);
+        if (splitResult.handled) return splitResult.disposition;
+    }
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 
