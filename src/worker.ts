@@ -350,12 +350,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     const close = async (): Promise<void> => {
+        clearInterval(heartbeatInterval);
+        // Keep finalizers attached while BullMQ drains active jobs.
+        await worker.close();
         await taskStateRecovery.close();
         await heartbeatRedis.srem('system:status:workers', workerId);
-        clearInterval(heartbeatInterval);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
-        await worker.close();
         await runtimeBuildWorker.close();
     };
 

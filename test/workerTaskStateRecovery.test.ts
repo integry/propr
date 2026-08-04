@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { after, describe, test } from 'node:test';
 import { closeConnection, TaskStates, type TaskStateData, type UpdateMetadata } from '@propr/core';
 import {
+    attachPRCommentTaskStateFinalizers,
     finalizeTerminalPRCommentJobFailure,
     runWithTaskReconciliationLease,
 } from '../src/workerTaskStateRecovery.js';
@@ -65,6 +67,19 @@ describe('worker task state recovery hooks', () => {
         assert.equal(manager.updates[0].state, TaskStates.FAILED);
     });
 
+    test('accepts a numeric BullMQ job ID of zero', async () => {
+        const manager = stateManager();
+
+        const changed = await finalizeTerminalPRCommentJobFailure({
+            id: 0,
+            name: 'processPullRequestComment',
+            getState: async () => 'failed',
+        }, new Error('attempts exhausted'), manager as never);
+
+        assert.equal(changed, true);
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+    });
+
     test('permits only one process to reconcile under the distributed lease', async () => {
         let leaseToken: string | null = null;
         const redis = {
@@ -97,5 +112,52 @@ describe('worker task state recovery hooks', () => {
         assert.equal(second, false);
         assert.equal(await first, true);
         assert.equal(leaseToken, null);
+    });
+
+    test('aborts reconciliation mutations after lease renewal loses ownership', async () => {
+        const redis = {
+            set: async () => 'OK',
+            eval: async (script: string) => script.includes("redis.call('pexpire'") ? 0 : 0,
+        };
+        let mutations = 0;
+        let observedAbort = false;
+
+        const ran = await runWithTaskReconciliationLease(redis, 30, async signal => {
+            mutations++;
+            while (!signal.aborted) {
+                await new Promise(resolve => setTimeout(resolve, 5));
+            }
+            observedAbort = true;
+            signal.throwIfAborted();
+            mutations++;
+        });
+
+        assert.equal(ran, false);
+        assert.equal(observedAbort, true);
+        assert.equal(mutations, 1);
+    });
+
+    test('keeps completed hooks attached while graceful worker close drains a job', async () => {
+        const manager = stateManager();
+        const worker = new EventEmitter();
+        const finalizers = attachPRCommentTaskStateFinalizers(
+            worker as never,
+            manager as never,
+            async () => null,
+        );
+
+        const closeWorker = async (): Promise<void> => {
+            worker.emit('completed', {
+                id: 0,
+                name: 'processPullRequestComment',
+            }, { status: 'complete' });
+            await Promise.resolve();
+        };
+
+        await closeWorker();
+        await finalizers.close();
+
+        assert.equal(manager.updates.length, 1);
+        assert.equal(manager.updates[0].state, TaskStates.COMPLETED);
     });
 });

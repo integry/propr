@@ -6,7 +6,6 @@ import {
     getRedisConnectionOptions,
     getStateManager,
     logger,
-    type JobResult,
     type WorkerStateManager,
 } from '@propr/core';
 import type { MainWorker } from './workerFactory.js';
@@ -20,6 +19,10 @@ import {
 } from './taskStateReconciler.js';
 
 export interface WorkerTaskStateRecovery {
+    close(): Promise<void>;
+}
+
+export interface WorkerTaskStateFinalizers {
     close(): Promise<void>;
 }
 
@@ -59,7 +62,7 @@ export async function finalizeTerminalPRCommentJobFailure(
     error: Error,
     stateManager: Pick<WorkerStateManager, 'getTaskState' | 'updateTaskStateIfCurrent'>,
 ): Promise<boolean> {
-    if (job.name !== 'processPullRequestComment' || !job.id) return false;
+    if (job.name !== 'processPullRequestComment' || job.id == null) return false;
     if (await job.getState() !== 'failed') return false;
     return finalizePRCommentTaskFailure(String(job.id), stateManager, error);
 }
@@ -68,12 +71,13 @@ export async function finalizeTerminalPRCommentJobFailure(
 export async function runWithTaskReconciliationLease(
     redis: ReconciliationLeaseRedis,
     leaseTtlMs: number,
-    operation: () => Promise<void>,
+    operation: (signal: AbortSignal) => Promise<void>,
 ): Promise<boolean> {
     const token = randomUUID();
     const acquired = await redis.set(RECONCILIATION_LEASE_KEY, token, 'PX', leaseTtlMs, 'NX');
     if (acquired !== 'OK') return false;
 
+    const leaseController = new AbortController();
     let renewal: Promise<void> | null = null;
     const renew = (): void => {
         if (renewal) return;
@@ -86,19 +90,26 @@ export async function runWithTaskReconciliationLease(
         ).then(result => {
             if (Number(result) !== 1) {
                 logger.warn('Lost the distributed task reconciliation lease');
+                leaseController.abort(new Error('Lost the distributed task reconciliation lease'));
             }
         }).catch(error => {
             logger.warn({ error: (error as Error).message }, 'Failed to renew task reconciliation lease');
+            leaseController.abort(new Error('Failed to renew the distributed task reconciliation lease', {
+                cause: error,
+            }));
         }).finally(() => {
             renewal = null;
         });
     };
-    const renewalInterval = setInterval(renew, Math.max(1000, Math.floor(leaseTtlMs / 3)));
+    const renewalInterval = setInterval(renew, Math.max(10, Math.floor(leaseTtlMs / 3)));
     renewalInterval.unref();
 
+    let completed = false;
     try {
-        await operation();
-        return true;
+        await operation(leaseController.signal);
+        completed = true;
+    } catch (error) {
+        if (!leaseController.signal.aborted) throw error;
     } finally {
         clearInterval(renewalInterval);
         await renewal;
@@ -109,23 +120,30 @@ export async function runWithTaskReconciliationLease(
             token,
         );
     }
+    return completed && !leaseController.signal.aborted;
 }
 
-/** Adds terminal-state safety hooks and periodically repairs abandoned tasks. */
-export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<WorkerTaskStateRecovery> {
-    const stateManager = getStateManager();
+/** Attaches terminal-state safety hooks until the worker has drained. */
+export function attachPRCommentTaskStateFinalizers(
+    worker: MainWorker,
+    stateManager: Pick<WorkerStateManager, 'getTaskState' | 'updateTaskStateIfCurrent'>,
+    findRunningContainer: typeof findRunningDockerContainerForTask = findRunningDockerContainerForTask,
+): WorkerTaskStateFinalizers {
     const pendingEventHandlers = new Set<Promise<void>>();
     const track = (operation: Promise<void>): void => {
         pendingEventHandlers.add(operation);
         void operation.finally(() => { pendingEventHandlers.delete(operation); });
     };
 
-    const onCompleted = (job: { id?: string | number; name: string }, result: JobResult): void => {
-        if (job.name !== 'processPullRequestComment' || !job.id) return;
+    const onCompleted = (job: { id?: string | number; name: string }, result: unknown): void => {
+        if (job.name !== 'processPullRequestComment' || job.id == null) return;
         track((async () => {
             try {
-                if ((result.status === 'rescheduled' || result.status === 'requeued')
-                    && await findRunningDockerContainerForTask(String(job.id))) {
+                const status = result && typeof result === 'object'
+                    ? (result as { status?: unknown }).status
+                    : undefined;
+                if ((status === 'rescheduled' || status === 'requeued')
+                    && await findRunningContainer(String(job.id))) {
                     return;
                 }
                 await finalizePRCommentTaskResult(String(job.id), stateManager, result);
@@ -148,7 +166,40 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
     worker.on('completed', onCompleted);
     worker.on('failed', onFailed);
 
-    const redis = new Redis(getRedisConnectionOptions({ lazyConnect: false }));
+    return {
+        close: async () => {
+            worker.off('completed', onCompleted);
+            worker.off('failed', onFailed);
+            await Promise.allSettled([...pendingEventHandlers]);
+        },
+    };
+}
+
+async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            operation.then(() => true),
+            new Promise<false>(resolve => {
+                timeout = setTimeout(() => resolve(false), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timeout) clearTimeout(timeout);
+    }
+}
+
+/** Adds terminal-state safety hooks and periodically repairs abandoned tasks. */
+export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<WorkerTaskStateRecovery> {
+    const stateManager = getStateManager();
+    const finalizers = attachPRCommentTaskStateFinalizers(worker, stateManager);
+    const shutdownTimeoutMs = positiveIntegerEnv('TASK_RECONCILIATION_SHUTDOWN_TIMEOUT_MS', 10_000);
+
+    const redis = new Redis(getRedisConnectionOptions({
+        lazyConnect: false,
+        maxRetriesPerRequest: 1,
+        commandTimeout: shutdownTimeoutMs,
+    }));
     redis.on('error', error => {
         logger.error({ error: error.message }, 'Redis error in task state recovery');
     });
@@ -157,9 +208,8 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
     try {
         queue = await getIssueQueue();
     } catch (error) {
-        worker.off('completed', onCompleted);
-        worker.off('failed', onFailed);
-        await redis.quit();
+        await finalizers.close();
+        redis.disconnect();
         throw error;
     }
 
@@ -168,21 +218,28 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
     const leaseTtlMs = Math.max(intervalMs * 2, 2 * 60 * 1000);
     let inFlight: Promise<void> | null = null;
     let closing = false;
+    const shutdownController = new AbortController();
     const run = (): Promise<void> => {
         if (closing) return Promise.resolve();
         if (inFlight) return inFlight;
-        inFlight = runWithTaskReconciliationLease(redis, leaseTtlMs, async () => {
+        inFlight = runWithTaskReconciliationLease(redis, leaseTtlMs, async leaseSignal => {
+            const signal = AbortSignal.any([leaseSignal, shutdownController.signal]);
             const summary = await reconcileStaleTaskStates({
                 stateManager,
                 queue,
                 redis,
                 staleAfterMs,
+                signal,
             });
             logger.info(summary, 'Task state reconciliation completed');
         }).then(ran => {
-            if (!ran) logger.debug('Skipped task state reconciliation because another worker owns the lease');
+            if (!ran) logger.debug('Stopped task state reconciliation because its distributed lease was not held');
         }).catch(error => {
-            logger.error({ error: (error as Error).message }, 'Task state reconciliation failed');
+            if (closing && shutdownController.signal.aborted) {
+                logger.debug('Task state reconciliation stopped during worker shutdown');
+            } else {
+                logger.error({ error: (error as Error).message }, 'Task state reconciliation failed');
+            }
         }).finally(() => {
             inFlight = null;
         });
@@ -198,11 +255,20 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
         close: async () => {
             closing = true;
             clearInterval(interval);
-            worker.off('completed', onCompleted);
-            worker.off('failed', onFailed);
-            await Promise.allSettled([...pendingEventHandlers]);
-            await inFlight;
-            await redis.quit();
+            shutdownController.abort(new Error('Worker task state recovery is shutting down'));
+            const outstanding = [finalizers.close(), ...(inFlight ? [inFlight] : [])];
+            const settled = await settlesWithin(Promise.allSettled(outstanding), shutdownTimeoutMs);
+            if (!settled) {
+                logger.warn({ shutdownTimeoutMs }, 'Timed out waiting for task state recovery to stop');
+                redis.disconnect();
+                return;
+            }
+            try {
+                await redis.quit();
+            } catch (error) {
+                logger.warn({ error: (error as Error).message }, 'Failed to close task state recovery Redis cleanly');
+                redis.disconnect();
+            }
         },
     };
 }

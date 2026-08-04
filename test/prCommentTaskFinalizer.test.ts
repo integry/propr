@@ -105,14 +105,27 @@ describe('PR comment task finalization', () => {
         assert.equal(manager.updates[0].metadata.error?.message, 'review generation failed');
     });
 
-    test('rejects an unknown completed-job outcome', async () => {
+    test('turns an unknown completed-job outcome into a diagnostic failure', async () => {
         const manager = stateManager(task(TaskStates.PROCESSING));
 
-        await assert.rejects(
-            finalizePRCommentTaskResult('task-1', manager as never, { status: 'compelete' }),
-            /Unknown PR comment job result status: compelete/,
-        );
-        assert.equal(manager.updates.length, 0);
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, { status: 'compelete' });
+
+        assert.equal(changed, true);
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /unknown result status: compelete/);
+        assert.deepEqual(manager.updates[0].metadata.historyMetadata, {
+            outcome: 'invalid_completed_result',
+            returnedStatus: 'compelete',
+        });
+    });
+
+    test('turns a missing completed-job result into a diagnostic failure', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+
+        await finalizePRCommentTaskResult('task-1', manager as never, undefined);
+
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /missing result status/);
     });
 
     test('does not overwrite a cancellation that wins the finalization race', async () => {

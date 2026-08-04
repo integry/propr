@@ -20,6 +20,21 @@ redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
 return 1
 `;
 
+const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
+    TaskStates.COMPLETED,
+    TaskStates.FAILED,
+    TaskStates.CANCELLED,
+]);
+
+function canTransitionTaskState(
+    currentState: TaskState,
+    newState: TaskState,
+    metadata: UpdateMetadata,
+): boolean {
+    if (!TERMINAL_TASK_STATES.has(currentState)) return true;
+    return metadata.isRetry === true && !TERMINAL_TASK_STATES.has(newState);
+}
+
 interface PersistedTaskStateTransition {
     previousState: TaskState;
     newState: TaskState;
@@ -122,15 +137,30 @@ export class WorkerStateManager {
      */
     async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        while (true) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        const previousState = state.state;
-        this.applyTaskStateUpdate(state, newState, metadata);
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-        await this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata });
-        return state;
+            const state: TaskStateData = JSON.parse(stateJson);
+            // Terminal state is monotonic. A retry is the sole intentional path
+            // back into processing and must opt in explicitly.
+            if (!canTransitionTaskState(state.state, newState, metadata)) return state;
+
+            const previousState = state.state;
+            this.applyTaskStateUpdate(state, newState, metadata);
+            const updated = await this.redis.eval(
+                COMPARE_AND_SET_TASK_STATE_SCRIPT,
+                1,
+                key,
+                stateJson,
+                this.stateExpiry,
+                JSON.stringify(state),
+            );
+            if (Number(updated) !== 1) continue;
+
+            await this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata });
+            return state;
+        }
     }
 
     /**
@@ -150,6 +180,7 @@ export class WorkerStateManager {
         const state: TaskStateData = JSON.parse(stateJson);
         if (state.state !== expectation.state) return null;
         if (expectation.updatedAt && state.updatedAt !== expectation.updatedAt) return null;
+        if (!canTransitionTaskState(state.state, newState, metadata)) return null;
 
         const previousState = state.state;
         this.applyTaskStateUpdate(state, newState, metadata);

@@ -4,7 +4,7 @@ import { findRunningDockerContainerForTask, logger } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
+import type { IssueRef, WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
@@ -383,16 +383,17 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     });
 
     try {
+        const issueRef: IssueRef = {
+            number: pullRequestNumber,
+            repoOwner,
+            repoName,
+            type: 'pr_comment',
+            comments: job.data.comments,
+            modelName,
+        };
         await stateManager.createTaskState(
             taskId,
-            {
-                number: pullRequestNumber,
-                repoOwner,
-                repoName,
-                type: 'pr_comment',
-                comments: job.data.comments,
-                modelName,
-            } as unknown as Parameters<typeof stateManager.createTaskState>[1],
+            issueRef,
             correlationId,
             { prProcessingLockToken: lockToken },
         );

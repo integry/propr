@@ -127,6 +127,63 @@ describe('task state reconciliation', () => {
         assert.equal(summary.live, 1);
     });
 
+    test('finalizes success when an active job completes while its lock is checked', async () => {
+        const completing = task('pr-comments-completing-race', TaskStates.CLAUDE_EXECUTION);
+        const manager = stateManager([completing]);
+        const activeGetState = mock.fn(async () => 'active');
+        const completedGetState = mock.fn(async () => 'completed');
+        let jobReads = 0;
+        const getJob = mock.fn(async () => {
+            jobReads++;
+            if (jobReads === 1) {
+                return { getState: activeGetState };
+            }
+            return {
+                getState: completedGetState,
+                returnvalue: { status: 'complete', pullRequestNumber: 1738 },
+            };
+        });
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: {
+                getJob,
+                toKey: (type: string) => `bull:queue:${type}`,
+            },
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(getJob.mock.calls.length, 2);
+        assert.equal(activeGetState.mock.calls.length, 1);
+        assert.equal(completedGetState.mock.calls.length, 1);
+        assert.equal(manager.states.get(completing.taskId)?.state, TaskStates.COMPLETED);
+        assert.equal(summary.finalized, 1);
+        assert.equal(summary.interrupted, 0);
+    });
+
+    test('reconciles a legacy PR-comment state without issueRef.type', async () => {
+        const legacy = task('pr-comments-batch-integry-propr-1738-legacy', TaskStates.PROCESSING);
+        delete legacy.issueRef.type;
+        const manager = stateManager([legacy]);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({
+                [legacy.taskId]: { state: 'completed', returnvalue: { status: 'skipped' } },
+            }),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(summary.scanned, 1);
+        assert.equal(manager.states.get(legacy.taskId)?.state, TaskStates.COMPLETED);
+    });
+
     test('does not supersede a rescheduled task while its original agent is still alive', async () => {
         const manager = stateManager([task('pr-comments-rescheduled-live', TaskStates.CLAUDE_EXECUTION)]);
 
@@ -200,7 +257,7 @@ describe('task state reconciliation', () => {
             toKey: (type: string) => type,
         };
 
-        await reconcileStaleTaskStates({
+        const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
             queue: queueWithCancellation,
             redis: { eval: async () => 0, pttl: async () => -2 },
@@ -211,6 +268,7 @@ describe('task state reconciliation', () => {
 
         assert.equal(manager.states.get(queued.taskId)?.state, TaskStates.CANCELLED);
         assert.equal(manager.updates.length, 0);
+        assert.equal(summary.queued, 0);
     });
 
     test('does not rewrite a replacement attempt that reached the same state', async () => {
@@ -231,7 +289,7 @@ describe('task state reconciliation', () => {
             toKey: (type: string) => type,
         };
 
-        await reconcileStaleTaskStates({
+        const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
             queue: queueWithReplacement,
             redis: { eval: async () => 0, pttl: async () => -2 },
@@ -243,6 +301,28 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(queued.taskId)?.state, TaskStates.PROCESSING);
         assert.equal(manager.states.get(queued.taskId)?.updatedAt, replacementUpdatedAt);
         assert.equal(manager.updates.length, 0);
+        assert.equal(summary.queued, 0);
+    });
+
+    test('terminalizes an invalid completed result as a diagnostic failure', async () => {
+        const malformed = task('pr-comments-malformed-result', TaskStates.PROCESSING);
+        const manager = stateManager([malformed]);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({
+                [malformed.taskId]: { state: 'completed', returnvalue: { status: 'compelete' } },
+            }),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(malformed.taskId)?.state, TaskStates.FAILED);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /invalid result status: compelete/);
+        assert.equal(summary.interrupted, 1);
+        assert.equal(summary.errors, 0);
     });
 
     test('allows only one of two concurrent reconcilers to terminalize a task', async () => {

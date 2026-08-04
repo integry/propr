@@ -9,6 +9,23 @@ import {
 
 type StateEnumerationRedis = Pick<InstanceType<typeof Redis>, 'pipeline' | 'scan'>;
 
+/**
+ * Recognizes PR-comment task state written before `issueRef.type` was added.
+ * Explicit types always win; the legacy fallback is deliberately limited to
+ * the old queue ID prefixes or the comment payload stored by that processor.
+ */
+export function isPRCommentTaskState(state: TaskStateData): boolean {
+    if (state.issueRef.type !== undefined) return state.issueRef.type === 'pr_comment';
+    return state.taskId.startsWith('pr-comments-batch-')
+        || state.taskId.startsWith('pr-comment-')
+        || Array.isArray(state.issueRef.comments);
+}
+
+function matchesTaskType(state: TaskStateData, taskTypes: Set<string>): boolean {
+    if (state.issueRef.type !== undefined) return taskTypes.has(state.issueRef.type);
+    return taskTypes.has('pr_comment') && isPRCommentTaskState(state);
+}
+
 /** Incrementally scans and pipelines state reads without trusting SCAN uniqueness. */
 export async function scanNonTerminalTaskStates(
     redis: StateEnumerationRedis,
@@ -48,7 +65,7 @@ export async function scanNonTerminalTaskStates(
             try {
                 const state: TaskStateData = JSON.parse(value);
                 if (!nonTerminalStates.includes(state.state)) continue;
-                if (taskTypes && !taskTypes.has(state.issueRef.type ?? '')) continue;
+                if (taskTypes && !matchesTaskType(state, taskTypes)) continue;
                 nonTerminalTasks.push(state);
             } catch (error) {
                 logger.warn({ key: keys[index], error: (error as Error).message }, 'Failed to parse task state during reconciliation scan');

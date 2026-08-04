@@ -1,5 +1,10 @@
 import type { JobResult, TaskStateData, WorkerStateManager } from '@propr/core';
-import { findRunningDockerContainerForTask, logger, TaskStates } from '@propr/core';
+import {
+    findRunningDockerContainerForTask,
+    isPRCommentTaskState,
+    logger,
+    TaskStates,
+} from '@propr/core';
 import {
     finalizePRCommentTaskFailure,
     finalizePRCommentTaskResult,
@@ -44,6 +49,7 @@ export interface TaskReconciliationOptions {
     staleAfterMs?: number;
     now?: () => number;
     findRunningContainer?: typeof findRunningDockerContainerForTask;
+    signal?: AbortSignal;
 }
 
 export const DEFAULT_TASK_RECONCILIATION_STALE_MS = 90 * 1000;
@@ -62,11 +68,21 @@ end
 return 0
 `;
 
-function asJobResult(value: unknown): JobResult {
+const COMPLETED_JOB_RESULT_STATUSES = new Set([
+    'cancelled',
+    'rescheduled',
+    'requeued',
+    'failed',
+    'complete',
+    'partial',
+    'skipped',
+]);
+
+function asJobResult(value: unknown): JobResult | null {
     if (value && typeof value === 'object' && typeof (value as { status?: unknown }).status === 'string') {
         return value as JobResult;
     }
-    throw new Error('Completed PR comment job has no valid result status');
+    return null;
 }
 
 function taskAgeMs(task: TaskStateData, now: number): number {
@@ -74,19 +90,21 @@ function taskAgeMs(task: TaskStateData, now: number): number {
     return Number.isFinite(updatedAt) ? Math.max(0, now - updatedAt) : Number.POSITIVE_INFINITY;
 }
 
-function isPRCommentTask(task: TaskStateData): boolean {
-    return task.issueRef.type === 'pr_comment';
+function throwIfAborted(signal?: AbortSignal): void {
+    signal?.throwIfAborted();
 }
 
 async function clearOwnedPRLock(
     task: TaskStateData,
     redis: ReconciliationRedis,
+    signal?: AbortSignal,
 ): Promise<boolean> {
-    if (!isPRCommentTask(task)) return false;
+    if (!isPRCommentTaskState(task)) return false;
     const { repoOwner, repoName, number } = task.issueRef;
     if (!repoOwner || !repoName || !Number.isFinite(number) || !task.prProcessingLockToken) return false;
 
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${number}`;
+    throwIfAborted(signal);
     const released = await redis.eval(
         RELEASE_OWNED_PR_LOCK_SCRIPT,
         1,
@@ -110,10 +128,12 @@ async function finalizeCompletedJob(
     options: TaskReconciliationOptions,
     summary: TaskReconciliationSummary,
 ): Promise<void> {
-    if (await finalizePRCommentTaskResult(task.taskId, options.stateManager, asJobResult(job.returnvalue))) {
+    throwIfAborted(options.signal);
+    if (await finalizePRCommentTaskResult(task.taskId, options.stateManager, job.returnvalue)) {
         summary.finalized++;
     }
-    if (await clearOwnedPRLock(task, options.redis)) summary.locksCleared++;
+    throwIfAborted(options.signal);
+    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
 }
 
 async function finalizeFailedJob(
@@ -122,10 +142,12 @@ async function finalizeFailedJob(
     options: TaskReconciliationOptions,
     summary: TaskReconciliationSummary,
 ): Promise<void> {
+    throwIfAborted(options.signal);
     if (await finalizePRCommentTaskFailure(task.taskId, options.stateManager, new Error(message))) {
         summary.interrupted++;
     }
-    if (await clearOwnedPRLock(task, options.redis)) summary.locksCleared++;
+    throwIfAborted(options.signal);
+    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
 }
 
 async function handleTerminalQueueState(
@@ -137,8 +159,21 @@ async function handleTerminalQueueState(
     const { options, summary, findRunningContainer } = context;
     if (queueState === 'completed' && job) {
         const result = asJobResult(job.returnvalue);
+        if (!result || !COMPLETED_JOB_RESULT_STATUSES.has(result.status)) {
+            const returnedStatus = result?.status ?? 'missing';
+            await finalizeFailedJob(
+                task,
+                `Completed BullMQ job returned an invalid result status: ${returnedStatus}`,
+                options,
+                summary,
+            );
+            return true;
+        }
         const isRetryOutcome = result.status === 'rescheduled' || result.status === 'requeued';
-        if (isRetryOutcome && await findRunningContainer(task.taskId)) summary.live++;
+        if (isRetryOutcome && await findRunningContainer(task.taskId)) {
+            throwIfAborted(options.signal);
+            summary.live++;
+        }
         else await finalizeCompletedJob(task, job, options, summary);
         return true;
     }
@@ -162,7 +197,8 @@ async function handleQueuedState(
     const { options, summary } = context;
     if (!['waiting', 'delayed', 'prioritized', 'waiting-children'].includes(queueState)) return false;
     if (task.state !== TaskStates.PENDING) {
-        await options.stateManager.updateTaskStateIfCurrent(
+        throwIfAborted(options.signal);
+        const updated = await options.stateManager.updateTaskStateIfCurrent(
             task.taskId,
             { state: task.state, updatedAt: task.updatedAt },
             TaskStates.PENDING,
@@ -171,8 +207,10 @@ async function handleQueuedState(
                 historyMetadata: { recovered: true, queueState },
             },
         );
+        if (updated) summary.queued++;
+    } else {
+        summary.queued++;
     }
-    summary.queued++;
     return true;
 }
 
@@ -181,18 +219,36 @@ async function reconcileStaleTask(
     context: ReconciliationContext,
 ): Promise<void> {
     const { options, summary, findRunningContainer } = context;
-    const job = await options.queue.getJob(task.taskId);
-    const queueState = job ? await job.getState() : 'missing';
+    throwIfAborted(options.signal);
+    let job = await options.queue.getJob(task.taskId);
+    throwIfAborted(options.signal);
+    let queueState = job ? await job.getState() : 'missing';
+    throwIfAborted(options.signal);
     if (await handleTerminalQueueState(task, job, queueState, context)) return;
     if (await handleQueuedState(task, queueState, context)) return;
 
     if (await findRunningContainer(task.taskId)) {
+        throwIfAborted(options.signal);
         summary.live++;
         return;
     }
-    if (queueState === 'active' && await hasLiveBullLock(task.taskId, options.queue, options.redis)) {
-        summary.live++;
-        return;
+    throwIfAborted(options.signal);
+    if (queueState === 'active') {
+        if (await hasLiveBullLock(task.taskId, options.queue, options.redis)) {
+            throwIfAborted(options.signal);
+            summary.live++;
+            return;
+        }
+
+        // Completing a BullMQ job removes its lock. Reload the job so both its
+        // state and terminal result come from after that transition.
+        throwIfAborted(options.signal);
+        job = await options.queue.getJob(task.taskId);
+        throwIfAborted(options.signal);
+        queueState = job ? await job.getState() : 'missing';
+        throwIfAborted(options.signal);
+        if (await handleTerminalQueueState(task, job, queueState, context)) return;
+        if (await handleQueuedState(task, queueState, context)) return;
     }
 
     await finalizeFailedJob(
@@ -216,9 +272,11 @@ export async function reconcileStaleTaskStates(
     const staleAfterMs = options.staleAfterMs ?? DEFAULT_TASK_RECONCILIATION_STALE_MS;
     const now = (options.now ?? Date.now)();
     const findRunningContainer = options.findRunningContainer ?? findRunningDockerContainerForTask;
+    throwIfAborted(options.signal);
     const tasks = (await options.stateManager.getNonTerminalTasks({
         taskTypes: ['pr_comment'],
-    })).filter(isPRCommentTask);
+    })).filter(isPRCommentTaskState);
+    throwIfAborted(options.signal);
     const summary: TaskReconciliationSummary = {
         scanned: tasks.length,
         fresh: 0,
@@ -232,6 +290,7 @@ export async function reconcileStaleTaskStates(
     const context = { options, summary, findRunningContainer };
 
     for (const task of tasks) {
+        throwIfAborted(options.signal);
         if (taskAgeMs(task, now) < staleAfterMs) {
             summary.fresh++;
             continue;
@@ -240,6 +299,7 @@ export async function reconcileStaleTaskStates(
         try {
             await reconcileStaleTask(task, context);
         } catch (error) {
+            throwIfAborted(options.signal);
             summary.errors++;
             logger.warn({
                 taskId: task.taskId,

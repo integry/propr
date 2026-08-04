@@ -9,6 +9,7 @@ export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
 export { WorkerStateManager, getStateManager, closeStateManager, TaskStates } from './utils/workerStateManager.js';
+export { isPRCommentTaskState } from './utils/workerStateEnumeration.js';
 export { getEventPublisher, closeEventPublisher, EventPublisher } from './utils/eventPublisher.js';
 export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, UpdateMetadata, TaskResult, ResumableTaskInfo, WorkerStateManagerOptions, CreateTaskStateOptions, NonTerminalTaskFilter, TaskStateExpectation } from './utils/workerStateManager.types.js';
 export { validatePRCreation, generateEnhancedClaudePrompt, validateRepositoryInfo } from './utils/prValidation.js';
