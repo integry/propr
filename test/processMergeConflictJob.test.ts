@@ -173,6 +173,7 @@ await mock.module('@propr/core', {
         createLogFiles: mock.fn(async () => {}),
         UsageLimitError: class UsageLimitError extends Error { name = 'UsageLimitError'; },
         AgentRegistry: { getInstance: mock.fn(() => mockRegistry) },
+        resolveConfiguredModel: mock.fn(async (model: string) => model),
         resolveLlmLabel: mock.fn(async (label: string) => ({ agentAlias: 'claude', model: label })),
         recordLLMMetrics: mock.fn(async () => {}),
         issueQueue: { add: mockQueueAdd },

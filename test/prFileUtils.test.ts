@@ -1,4 +1,4 @@
-import { test, describe } from 'node:test';
+import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
 process.env.GH_APP_ID ||= '1';
@@ -6,6 +6,11 @@ process.env.GH_INSTALLATION_ID ||= '1';
 process.env.GH_PRIVATE_KEY ||= '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n';
 
 const { formatPRDiff, formatPRDiffWithMetadata } = await import('../src/jobs/prFileUtils.js');
+const { closeConnection } = await import('@propr/core');
+
+after(async () => {
+    await closeConnection();
+});
 
 function prFile(overrides: Partial<{
     filename: string;
