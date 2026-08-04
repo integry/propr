@@ -5,6 +5,7 @@ import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type Unproc
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { loadPrimaryProcessingLabels } from '@propr/core';
+import { parseSplitCommand } from '@propr/core';
 import type { Redis } from 'ioredis';
 
 type Octokit = {
@@ -225,6 +226,15 @@ async function collectUnprocessedComments(
 
     for (const comment of commentsByTime) {
         const commentAuthor = comment.user.login;
+
+        // `/split` is accepted only through issue_comment.created intake, where
+        // repository authorization and DB locking are enforced. Polling must not
+        // reinterpret it as a generic follow-up job.
+        if (parseSplitCommand(comment.body)) {
+            correlatedLogger.debug({ pullRequestNumber: pr.number, commentId: comment.id }, 'Skipping /split command in generic PR comment polling');
+            continue;
+        }
+
         const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
         if (filterResult.shouldFilter) continue;
 

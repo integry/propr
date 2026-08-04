@@ -20,6 +20,7 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { parseSplitCommand } from '../services/prSplit/command.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -112,6 +113,13 @@ function getCommentEventDetails(
             return null;
         }
 
+        // Webhook intake handles `/split` before this generic processor. Keep
+        // polling/synthetic callers from turning it into an implementation job.
+        if (parseSplitCommand(issuePayload.comment.body)) {
+            correlatedLogger.debug({ repository: repoFullName, commentId: issuePayload.comment.id }, 'Skipping /split outside webhook intake');
+            return null;
+        }
+
         return {
             prNumber: issuePayload.issue.number,
             comment: issuePayload.comment,
@@ -128,6 +136,18 @@ function getCommentEventDetails(
 
     correlatedLogger.warn({ eventType }, 'Unknown event type for comment processing');
     return null;
+}
+
+function ignoredCommentReason(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+): string {
+    if (eventType !== 'issue_comment') return 'not_pull_request_comment';
+    const issuePayload = payload as IssueCommentEvent;
+    if (!issuePayload.issue.pull_request) return 'not_pull_request_comment';
+    return parseSplitCommand(issuePayload.comment.body)
+        ? 'split_requires_webhook_intake'
+        : 'not_pull_request_comment';
 }
 
 export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string, config: CommentEventConfig): Promise<void> {
@@ -527,7 +547,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const repoFullName = `${owner}/${repo}`;
 
     const eventDetails = getCommentEventDetails(payload, eventType, repoFullName, correlatedLogger);
-    if (!eventDetails) return { status: 'ignored', reason: 'not_pull_request_comment' };
+    if (!eventDetails) return { status: 'ignored', reason: ignoredCommentReason(payload, eventType) };
 
     const { prNumber, comment } = eventDetails;
 
