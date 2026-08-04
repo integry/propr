@@ -21,6 +21,9 @@ export type {
 export {
   buildSplitOperationEventKey,
   buildSplitOperationDedupeKey,
+  normalizePositiveInteger,
+  normalizeRef,
+  normalizeSha,
 } from './keys.js';
 export type {
   SplitEventKeyInput,
@@ -29,17 +32,24 @@ export type {
 
 export {
   TERMINAL_PR_SPLIT_COMMAND_OUTCOMES,
+  DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT,
+  DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT_WINDOW_MS,
+  DEFAULT_PR_SPLIT_RESPONSE_CLAIM_LEASE_MS,
   claimPrSplitCommandResponse,
   createOrGetPrSplitOperation,
   getPrSplitCommandRecord,
+  isPrSplitCommandRateLimited,
   markPrSplitCommandResponsePosted,
   recordPrSplitCommandOutcome,
+  releasePrSplitCommandResponseClaim,
 } from './commandStore.js';
 export type {
   PrSplitCommandInput,
   PrSplitCommandOutcome,
+  PrSplitCommandRateLimitOptions,
   PrSplitCommandReceipt,
   PrSplitCommandRecord,
+  PrSplitResponseClaim,
   PrSplitResponseState,
   RecordPrSplitCommandOutcomeInput,
 } from './commandStore.js';

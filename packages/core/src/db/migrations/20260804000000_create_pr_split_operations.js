@@ -74,6 +74,7 @@ export async function up(knex) {
       'unauthorized',
       'closed',
       'invalid',
+      'rate_limited',
       'queued',
       'duplicate',
       'active',
@@ -88,6 +89,7 @@ export async function up(knex) {
       'pending',
       'claimed',
       'posted',
+      'suppressed',
     ]);
     table.text('response_claim_token').nullable();
     table.timestamp('response_claimed_at').nullable();
@@ -98,6 +100,7 @@ export async function up(knex) {
 
     table.unique(['repository_id', 'original_comment_id']);
     table.index(['repository_id', 'source_pr_number']);
+    table.index(['repository_id', 'requester_id', 'created_at']);
     table.index('operation_id');
     table.index('response_state');
   });

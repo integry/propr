@@ -44,6 +44,7 @@ describe('/split repository authorization', () => {
     owner: 'integry',
     repo: 'propr',
     username: 'maintainer',
+    requesterId: 7654321,
   };
 
   test('maps only write-like GitHub permissions to authorized', () => {
@@ -60,7 +61,7 @@ describe('/split repository authorization', () => {
     const octokit: PrSplitRequestClient = {
       request: mock.fn(async (route: string) => {
         requestedRoutes.push(route);
-        return { data: { permission: 'maintain' } };
+        return { data: { permission: 'maintain', user: { id: 7654321 } } };
       }),
     };
     assert.deepEqual(await authorizeSplitRequester(octokit, authorizationRequest), {
@@ -79,6 +80,19 @@ describe('/split repository authorization', () => {
     assert.deepEqual(await authorizeSplitRequester(notFoundClient, authorizationRequest), {
       authorized: false,
       permission: null,
+    });
+  });
+
+  test('rejects a renamed or recycled login whose numeric identity differs', async () => {
+    const octokit: PrSplitRequestClient = {
+      request: mock.fn(async () => ({
+        data: { permission: 'admin', user: { id: 9999999 } },
+      })),
+    };
+
+    assert.deepEqual(await authorizeSplitRequester(octokit, authorizationRequest), {
+      authorized: false,
+      permission: 'admin',
     });
   });
 

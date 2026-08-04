@@ -1,3 +1,5 @@
+import { normalizeGitHubId } from './keys.js';
+
 export const SPLIT_AUTHORIZED_PERMISSIONS = ['write', 'maintain', 'admin'] as const;
 
 export type SplitAuthorizedPermission = (typeof SPLIT_AUTHORIZED_PERMISSIONS)[number];
@@ -19,6 +21,7 @@ export interface SplitAuthorizationRequest {
   owner: string;
   repo: string;
   username: string;
+  requesterId: number;
 }
 
 export type SplitAuthorizationResult =
@@ -54,6 +57,7 @@ export async function authorizeSplitRequester(
   octokit: PrSplitRequestClient,
   request: SplitAuthorizationRequest,
 ): Promise<SplitAuthorizationResult> {
+  const requesterId = normalizeGitHubId(request.requesterId, 'requesterId');
   try {
     const { data } = await octokit.request(
       'GET /repos/{owner}/{repo}/collaborators/{username}/permission',
@@ -62,8 +66,11 @@ export async function authorizeSplitRequester(
     const permission = isRecord(data) && typeof data.permission === 'string'
       ? data.permission
       : null;
+    const responseUserId = isRecord(data) && isRecord(data.user) && typeof data.user.id === 'number'
+      ? data.user.id
+      : null;
 
-    return isSplitPermissionAuthorized(permission)
+    return responseUserId === requesterId && isSplitPermissionAuthorized(permission)
       ? { authorized: true, permission }
       : { authorized: false, permission };
   } catch (error) {

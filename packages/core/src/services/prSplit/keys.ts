@@ -15,19 +15,29 @@ export interface SplitDedupeKeyInput {
   instruction: string;
 }
 
-export function normalizeGitHubId(value: number, field: string): number {
+export function normalizePositiveInteger(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new RangeError(`${field} must be a positive safe integer`);
   }
   return value;
 }
 
+export function normalizeGitHubId(value: number, field: string): number {
+  return normalizePositiveInteger(value, field);
+}
+
+function normalizeNonEmptyString(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new RangeError(`${field} must not be empty`);
+  return normalized;
+}
+
 export function normalizeSha(sha: string): string {
-  return sha.trim().toLowerCase();
+  return normalizeNonEmptyString(sha, 'sha').toLowerCase();
 }
 
 export function normalizeRef(ref: string): string {
-  return ref.trim();
+  return normalizeNonEmptyString(ref, 'ref');
 }
 
 function hashCanonicalInput(parts: readonly (string | number)[]): string {
@@ -46,7 +56,7 @@ export function buildSplitOperationEventKey(input: SplitEventKeyInput): string {
 export function buildSplitOperationDedupeKey(input: SplitDedupeKeyInput): string {
   return hashCanonicalInput([
     normalizeGitHubId(input.repositoryId, 'repositoryId'),
-    input.sourcePrNumber,
+    normalizePositiveInteger(input.sourcePrNumber, 'sourcePrNumber'),
     normalizeRef(input.baseRef),
     normalizeSha(input.baseSha),
     normalizeSha(input.headSha),

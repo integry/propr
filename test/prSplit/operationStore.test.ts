@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { promisify } from 'node:util';
 import knex, { type Knex } from 'knex';
 import { up as createPrSplitTables } from '../../packages/core/src/db/migrations/20260804000000_create_pr_split_operations.js';
 import {
@@ -15,6 +17,7 @@ import {
   buildSplitOperationEventKey,
 } from '../../packages/core/src/services/prSplit/keys.js';
 import {
+  DEFAULT_SPLIT_OPERATION_LEASE_MS,
   STALE_SPLIT_OPERATION_ERROR,
   assertPrSplitOperationLease,
   getActivePrSplitOperation,
@@ -28,6 +31,8 @@ import {
   createSplitTestDatabase,
   requiredOperation,
 } from './helpers.js';
+
+const execFileAsync = promisify(execFile);
 
 describe('PR split command and operation persistence', () => {
   let database: Knex;
@@ -66,6 +71,21 @@ describe('PR split command and operation persistence', () => {
       { ...BASE_SPLIT_INPUT, baseSha: 'ddd444' },
     ]) {
       assert.notEqual(first, buildSplitOperationDedupeKey(changed));
+    }
+  });
+
+  test('rejects invalid PR numbers and empty refs or SHAs at persistence boundaries', async () => {
+    for (const invalidInput of [
+      { ...BASE_SPLIT_INPUT, sourcePrNumber: 0 },
+      { ...BASE_SPLIT_INPUT, baseRef: '   ' },
+      { ...BASE_SPLIT_INPUT, baseSha: '' },
+      { ...BASE_SPLIT_INPUT, headSha: '\n' },
+    ]) {
+      assert.throws(() => buildSplitOperationDedupeKey(invalidInput), RangeError);
+      await assert.rejects(
+        createOrGetPrSplitOperation(invalidInput, database),
+        RangeError,
+      );
     }
   });
 
@@ -252,52 +272,49 @@ describe('PR split command and operation persistence', () => {
     assert.equal(completed?.lease_token, null);
   });
 
-  test('rejects expired claims and completion, then recovers the stale lock', async () => {
+  test('keeps queued backlogs claimable and recovers only expired running leases', async () => {
     const queued = await createOrGetPrSplitOperation(BASE_SPLIT_INPUT, database);
     const queuedOperation = requiredOperation(queued);
-    const queuedExpiry = new Date(queuedOperation.lease_expires_at ?? 0);
-    assert.equal(await updatePrSplitOperationStatus(
+    assert.equal(queuedOperation.heartbeat_at, null);
+    assert.equal(queuedOperation.lease_expires_at, null);
+
+    const afterLongBacklog = new Date(
+      new Date(queuedOperation.created_at).getTime() + DEFAULT_SPLIT_OPERATION_LEASE_MS + 1,
+    );
+    assert.equal(await recoverStalePrSplitOperations(
+      BASE_SPLIT_INPUT.repositoryId,
+      BASE_SPLIT_INPUT.sourcePrNumber,
+      database,
+      afterLongBacklog,
+    ), 0);
+    const claimed = await updatePrSplitOperationStatus(
       queuedOperation.id,
       'running',
-      { now: queuedExpiry },
+      { now: afterLongBacklog, leaseDurationMs: 1_000 },
+      database,
+    );
+    assert.ok(claimed?.lease_token);
+    const expiredAt = new Date(afterLongBacklog.getTime() + 1_000);
+    assert.equal(await assertPrSplitOperationLease(
+      queuedOperation.id,
+      claimed.lease_token,
+      database,
+      expiredAt,
+    ), null);
+    assert.equal(await updatePrSplitOperationStatus(
+      queuedOperation.id,
+      'completed',
+      { now: expiredAt, leaseToken: claimed.lease_token },
       database,
     ), null);
     assert.equal(await recoverStalePrSplitOperations(
       BASE_SPLIT_INPUT.repositoryId,
       BASE_SPLIT_INPUT.sourcePrNumber,
       database,
-      queuedExpiry,
+      expiredAt,
     ), 1);
     assert.equal((await getPrSplitOperation(queuedOperation.id, database))?.error_message,
       STALE_SPLIT_OPERATION_ERROR);
-
-    const replacement = await createOrGetPrSplitOperation({
-      ...BASE_SPLIT_INPUT,
-      originalCommentId: 9002,
-      instruction: 'extract API changes',
-    }, database);
-    const replacementOperation = requiredOperation(replacement);
-    const startedAt = new Date(new Date(replacementOperation.created_at).getTime() + 1_000);
-    const claimed = await updatePrSplitOperationStatus(
-      replacementOperation.id,
-      'running',
-      { now: startedAt, leaseDurationMs: 1_000 },
-      database,
-    );
-    assert.ok(claimed?.lease_token);
-    const expiredAt = new Date(startedAt.getTime() + 1_000);
-    assert.equal(await assertPrSplitOperationLease(
-      replacementOperation.id,
-      claimed.lease_token,
-      database,
-      expiredAt,
-    ), null);
-    assert.equal(await updatePrSplitOperationStatus(
-      replacementOperation.id,
-      'completed',
-      { now: expiredAt, leaseToken: claimed.lease_token },
-      database,
-    ), null);
   });
 
   test('does not hide non-unique SQLite constraint failures', async () => {
@@ -315,43 +332,51 @@ describe('PR split command and operation persistence', () => {
     assert.equal(await getPrSplitCommandRecord(BASE_SPLIT_INPUT, database), null);
   });
 
-  test('uses independent SQLite connections to arbitrate a multi-process race', async () => {
+  test('uses separate processes to arbitrate a genuinely concurrent SQLite race', async () => {
     const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'propr-split-race-'));
     const filename = path.join(temporaryDirectory, 'operations.sqlite');
-    const createDatabase = (): Knex => knex({
+    const verificationDatabase = knex({
       client: 'better-sqlite3',
       connection: { filename },
       useNullAsDefault: true,
       pool: { min: 1, max: 1 },
     });
-    const firstClient = createDatabase();
-    const secondClient = createDatabase();
 
     try {
-      await firstClient.raw('PRAGMA journal_mode = WAL');
-      await Promise.all([
-        firstClient.raw('PRAGMA busy_timeout = 50'),
-        secondClient.raw('PRAGMA busy_timeout = 50'),
-      ]);
-      await createPrSplitTables(firstClient);
+      await verificationDatabase.raw('PRAGMA journal_mode = WAL');
+      await createPrSplitTables(verificationDatabase);
+      const childScript = path.resolve('test/prSplit/operationRaceChild.ts');
+      const startAt = Date.now() + 500;
+      const runChild = async (input: typeof BASE_SPLIT_INPUT) => {
+        const { stdout } = await execFileAsync(process.execPath, [
+          '--import',
+          'tsx',
+          childScript,
+          filename,
+          JSON.stringify(input),
+          String(startAt),
+        ]);
+        return JSON.parse(stdout) as { outcome: string; processId: number };
+      };
       const results = await Promise.all([
-        createOrGetPrSplitOperation(BASE_SPLIT_INPUT, firstClient),
-        createOrGetPrSplitOperation({
+        runChild(BASE_SPLIT_INPUT),
+        runChild({
           ...BASE_SPLIT_INPUT,
           originalCommentId: 9002,
           instruction: 'extract API changes',
-        }, secondClient),
+        }),
       ]);
+      assert.notEqual(results[0]?.processId, results[1]?.processId);
       assert.deepEqual(
-        results.map(result => result.receipt.outcome).sort(),
+        results.map(result => result.outcome).sort(),
         ['active', 'queued'],
       );
-      assert.equal(await firstClient('pr_split_operations').count('* as count').first()
+      assert.equal(await verificationDatabase('pr_split_operations').count('* as count').first()
         .then(row => Number(row?.count)), 1);
-      assert.equal(await firstClient('pr_split_command_receipts').count('* as count').first()
+      assert.equal(await verificationDatabase('pr_split_command_receipts').count('* as count').first()
         .then(row => Number(row?.count)), 2);
     } finally {
-      await Promise.all([firstClient.destroy(), secondClient.destroy()]);
+      await verificationDatabase.destroy();
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
   });

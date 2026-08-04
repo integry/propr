@@ -13,8 +13,10 @@ import {
   claimPrSplitCommandResponse,
   createOrGetPrSplitOperation,
   getPrSplitCommandRecord,
+  isPrSplitCommandRateLimited,
   markPrSplitCommandResponsePosted,
   recordPrSplitCommandOutcome,
+  releasePrSplitCommandResponseClaim,
   type PrSplitCommandInput,
   type PrSplitCommandOutcome,
   type PrSplitCommandRecord,
@@ -63,6 +65,7 @@ const BLOCKED_OUTCOME_REASONS: Partial<Record<PrSplitCommandOutcome, string>> = 
   active: 'split_operation_already_active',
   closed: 'split_pull_request_closed',
   invalid: 'split_instruction_too_long',
+  rate_limited: 'split_request_rate_limited',
 };
 
 function acceptedDisposition(commentId: number): DeliveryDisposition {
@@ -110,6 +113,8 @@ function responseBody(record: PrSplitCommandRecord): string {
       return '⛔ `/split` can only run on an open, unmerged pull request.';
     case 'invalid':
       return `⛔ \`/split\` instructions are limited to ${MAX_SPLIT_INSTRUCTION_LENGTH.toLocaleString('en-US')} characters.`;
+    case 'rate_limited':
+      return '⏳ Too many `/split` commands were received from this account. Try again later.';
     case 'queued':
       return `✅ Split operation \`${shortId}\` queued. The source PR branch will not be modified.`;
     case 'active':
@@ -124,41 +129,117 @@ function responseBody(record: PrSplitCommandRecord): string {
 interface PostResponseContext {
   owner: string;
   repo: string;
-  octokit: PrSplitRequestClient;
+  getOctokit: () => Promise<PrSplitRequestClient>;
+  octokit?: PrSplitRequestClient;
   db?: Knex;
 }
 
-/**
- * The durable pending-to-claimed update is the sole authority to call GitHub.
- * A claim is intentionally never released: an ambiguous POST failure may lose
- * an acknowledgement, but can never create two conflicting visible responses.
- */
+const RESPONSE_RECONCILIATION_PAGE_SIZE = 100;
+const RESPONSE_RECONCILIATION_MAX_PAGES = 10;
+
+function responseMarker(eventKey: string): string {
+  return `<!-- propr:pr-split-response:${eventKey} -->`;
+}
+
+function githubErrorStatus(error: unknown): number | null {
+  return isRecord(error) && typeof error.status === 'number' ? error.status : null;
+}
+
+function isDefinitiveGitHubRejection(error: unknown): boolean {
+  const status = githubErrorStatus(error);
+  return status !== null && status >= 400 && status < 500;
+}
+
+async function findPostedResponse(
+  record: PrSplitCommandRecord,
+  context: PostResponseContext,
+  octokit: PrSplitRequestClient,
+): Promise<number | null | undefined> {
+  const marker = responseMarker(record.receipt.event_key);
+  for (let page = 1; page <= RESPONSE_RECONCILIATION_MAX_PAGES; page += 1) {
+    const { data } = await octokit.request(
+      'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+      {
+        owner: context.owner,
+        repo: context.repo,
+        issue_number: record.receipt.source_pr_number,
+        since: record.receipt.created_at,
+        per_page: RESPONSE_RECONCILIATION_PAGE_SIZE,
+        page,
+      },
+    );
+    if (!Array.isArray(data)) {
+      throw new Error('GitHub issue comments response was not an array');
+    }
+    const response = data.find(comment => isRecord(comment)
+      && typeof comment.body === 'string'
+      && comment.body.includes(marker));
+    if (isRecord(response)) return typeof response.id === 'number' ? response.id : null;
+    if (data.length < RESPONSE_RECONCILIATION_PAGE_SIZE) return undefined;
+  }
+  throw new Error('PR split response reconciliation exceeded its page limit');
+}
+
+async function markResponsePosted(
+  record: PrSplitCommandRecord,
+  claimToken: string,
+  responseCommentId: number | null,
+  db?: Knex,
+): Promise<void> {
+  const marked = await markPrSplitCommandResponsePosted(
+    record.receipt.event_key,
+    claimToken,
+    responseCommentId,
+    db,
+  );
+  if (!marked) throw new Error(`Lost PR split response claim for ${record.receipt.event_key}`);
+}
+
 async function postResponseOnce(
   record: PrSplitCommandRecord,
   context: PostResponseContext,
 ): Promise<boolean> {
   const eventKey = record.receipt.event_key;
-  const claimToken = await claimPrSplitCommandResponse(eventKey, context.db);
-  if (!claimToken) return false;
+  const claim = await claimPrSplitCommandResponse(eventKey, context.db);
+  if (!claim) return false;
 
-  const marker = `<!-- propr:pr-split-response:${eventKey} -->`;
-  const { data } = await context.octokit.request(
-    'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
-    {
-      owner: context.owner,
-      repo: context.repo,
-      issue_number: record.receipt.source_pr_number,
-      body: `${responseBody(record)}\n\n${marker}`,
-    },
-  );
+  let octokit = context.octokit;
+  try {
+    octokit ??= await context.getOctokit();
+  } catch (error) {
+    if (!claim.needsReconciliation) {
+      await releasePrSplitCommandResponseClaim(eventKey, claim.token, context.db);
+    }
+    throw error;
+  }
+
+  if (claim.needsReconciliation) {
+    const responseCommentId = await findPostedResponse(record, context, octokit);
+    if (responseCommentId !== undefined) {
+      await markResponsePosted(record, claim.token, responseCommentId, context.db);
+      return true;
+    }
+  }
+
+  let data: unknown;
+  try {
+    ({ data } = await octokit.request(
+      'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
+      {
+        owner: context.owner,
+        repo: context.repo,
+        issue_number: record.receipt.source_pr_number,
+        body: `${responseBody(record)}\n\n${responseMarker(eventKey)}`,
+      },
+    ));
+  } catch (error) {
+    if (isDefinitiveGitHubRejection(error)) {
+      await releasePrSplitCommandResponseClaim(eventKey, claim.token, context.db);
+    }
+    throw error;
+  }
   const responseCommentId = isRecord(data) && typeof data.id === 'number' ? data.id : null;
-  const marked = await markPrSplitCommandResponsePosted(
-    eventKey,
-    claimToken,
-    responseCommentId,
-    context.db,
-  );
-  if (!marked) throw new Error(`Lost PR split response claim for ${eventKey}`);
+  await markResponsePosted(record, claim.token, responseCommentId, context.db);
   return true;
 }
 
@@ -203,11 +284,11 @@ async function finishIntake(
   context: IntakeContext,
   existingOctokit?: PrSplitRequestClient,
 ): Promise<PrSplitIntakeResult> {
-  const octokit = existingOctokit ?? await context.dependencies.getOctokit();
   const responsePosted = await postResponseOnce(record, {
     owner: context.owner,
     repo: context.repo,
-    octokit,
+    getOctokit: context.dependencies.getOctokit,
+    ...(existingOctokit ? { octokit: existingOctokit } : {}),
     db: context.dependencies.db,
   });
   logger.withCorrelation(context.correlationId).info({
@@ -270,6 +351,18 @@ export async function handlePrSplitComment(
   const existing = await getPrSplitCommandRecord(eventIdentity, dependencies.db);
   if (existing) return finishIntake(existing, context);
 
+  if (await isPrSplitCommandRateLimited(
+    baseInput.repositoryId,
+    baseInput.requesterId,
+    dependencies.db,
+  )) {
+    const record = await recordPrSplitCommandOutcome(
+      { ...baseInput, outcome: 'rate_limited' },
+      dependencies.db,
+    );
+    return finishIntake(record, context);
+  }
+
   if (command.validationError) {
     const record = await recordPrSplitCommandOutcome(
       { ...baseInput, outcome: 'invalid' },
@@ -291,6 +384,7 @@ export async function handlePrSplitComment(
     owner,
     repo,
     username: baseInput.requester,
+    requesterId: baseInput.requesterId,
   });
   if (!authorization.authorized) {
     const record = await recordPrSplitCommandOutcome(

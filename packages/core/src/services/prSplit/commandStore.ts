@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 import {
   buildSplitOperationEventKey,
   normalizeGitHubId,
+  normalizePositiveInteger,
   type SplitEventKeyInput,
 } from './keys.js';
 import {
@@ -20,13 +21,29 @@ export const TERMINAL_PR_SPLIT_COMMAND_OUTCOMES = [
   'unauthorized',
   'closed',
   'invalid',
+  'rate_limited',
   'queued',
   'duplicate',
   'active',
 ] as const;
 
 export type PrSplitCommandOutcome = (typeof TERMINAL_PR_SPLIT_COMMAND_OUTCOMES)[number];
-export type PrSplitResponseState = 'pending' | 'claimed' | 'posted';
+export type PrSplitResponseState = 'pending' | 'claimed' | 'posted' | 'suppressed';
+
+export const DEFAULT_PR_SPLIT_RESPONSE_CLAIM_LEASE_MS = 5 * 60 * 1000;
+export const DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT = 5;
+export const DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+
+export interface PrSplitResponseClaim {
+  token: string;
+  needsReconciliation: boolean;
+}
+
+export interface PrSplitCommandRateLimitOptions {
+  now?: Date;
+  maxCommands?: number;
+  windowMs?: number;
+}
 
 export interface PrSplitCommandReceipt {
   event_key: string;
@@ -60,7 +77,10 @@ export interface PrSplitCommandInput {
 }
 
 export interface RecordPrSplitCommandOutcomeInput extends PrSplitCommandInput {
-  outcome: Extract<PrSplitCommandOutcome, 'disabled' | 'unauthorized' | 'closed' | 'invalid'>;
+  outcome: Extract<
+    PrSplitCommandOutcome,
+    'disabled' | 'unauthorized' | 'closed' | 'invalid' | 'rate_limited'
+  >;
 }
 
 export interface PrSplitCommandRecord {
@@ -103,6 +123,7 @@ async function yieldBeforeBusyRetry(): Promise<void> {
 function receiptInsert(input: PrSplitCommandInput, outcome: string, now: Date) {
   const repositoryId = normalizeGitHubId(input.repositoryId, 'repositoryId');
   const requesterId = normalizeGitHubId(input.requesterId, 'requesterId');
+  const sourcePrNumber = normalizePositiveInteger(input.sourcePrNumber, 'sourcePrNumber');
   const eventKey = buildSplitOperationEventKey({
     repositoryId,
     originalCommentId: input.originalCommentId,
@@ -113,7 +134,7 @@ function receiptInsert(input: PrSplitCommandInput, outcome: string, now: Date) {
     event_key: eventKey,
     repository_id: repositoryId,
     repository: input.repository.trim(),
-    source_pr_number: input.sourcePrNumber,
+    source_pr_number: sourcePrNumber,
     requester_id: requesterId,
     requester: input.requester,
     original_comment_id: normalizeGitHubId(input.originalCommentId, 'originalCommentId'),
@@ -121,7 +142,7 @@ function receiptInsert(input: PrSplitCommandInput, outcome: string, now: Date) {
     outcome,
     duplicate_kind: null,
     operation_id: null,
-    response_state: 'pending',
+    response_state: outcome === 'rate_limited' ? 'suppressed' : 'pending',
     response_claim_token: null,
     response_claimed_at: null,
     response_comment_id: null,
@@ -170,6 +191,35 @@ export async function getPrSplitCommandRecord(
 ): Promise<PrSplitCommandRecord | null> {
   const client = await resolvePrSplitDb(dbClient);
   return findRecord(client, buildSplitOperationEventKey(input), true);
+}
+
+/** Bound new command work for one immutable repository/requester identity. */
+export async function isPrSplitCommandRateLimited(
+  repositoryId: number,
+  requesterId: number,
+  dbClient?: Knex,
+  options: PrSplitCommandRateLimitOptions = {},
+): Promise<boolean> {
+  const now = options.now ?? new Date();
+  const maxCommands = options.maxCommands ?? DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT;
+  const windowMs = options.windowMs ?? DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT_WINDOW_MS;
+  if (!Number.isSafeInteger(maxCommands) || maxCommands <= 0) {
+    throw new RangeError('PR split command rate limit must be a positive safe integer');
+  }
+  if (!Number.isFinite(windowMs) || windowMs <= 0) {
+    throw new RangeError('PR split command rate limit window must be positive');
+  }
+
+  const client = await resolvePrSplitDb(dbClient);
+  const row = await client('pr_split_command_receipts')
+    .where({
+      repository_id: normalizeGitHubId(repositoryId, 'repositoryId'),
+      requester_id: normalizeGitHubId(requesterId, 'requesterId'),
+    })
+    .andWhere('created_at', '>=', timestamp(new Date(now.getTime() - windowMs)))
+    .count({ count: '*' })
+    .first();
+  return Number(row?.count ?? 0) >= maxCommands;
 }
 
 /** Persist a non-executable command disposition before attempting its response. */
@@ -262,16 +312,20 @@ export async function createOrGetPrSplitOperation(
   });
 }
 
-/** Atomically grant the only GitHub response attempt for a command receipt. */
+/** Claim a response attempt, reclaiming abandoned attempts after their lease. */
 export async function claimPrSplitCommandResponse(
   eventKey: string,
   dbClient?: Knex,
   now = new Date(),
-): Promise<string | null> {
+  leaseDurationMs = DEFAULT_PR_SPLIT_RESPONSE_CLAIM_LEASE_MS,
+): Promise<PrSplitResponseClaim | null> {
+  if (!Number.isFinite(leaseDurationMs) || leaseDurationMs <= 0) {
+    throw new RangeError('PR split response claim lease must be positive');
+  }
   const client = await resolvePrSplitDb(dbClient);
   const claimToken = randomUUID();
   const currentTimestamp = timestamp(now);
-  const claimed = await client<PrSplitCommandReceipt>('pr_split_command_receipts')
+  const claimedPending = await client<PrSplitCommandReceipt>('pr_split_command_receipts')
     .where({ event_key: eventKey, response_state: 'pending' })
     .update({
       response_state: 'claimed',
@@ -279,7 +333,45 @@ export async function claimPrSplitCommandResponse(
       response_claimed_at: currentTimestamp,
       updated_at: currentTimestamp,
     });
-  return claimed === 1 ? claimToken : null;
+  if (claimedPending === 1) {
+    return { token: claimToken, needsReconciliation: false };
+  }
+
+  const staleBefore = timestamp(new Date(now.getTime() - leaseDurationMs));
+  const reclaimed = await client<PrSplitCommandReceipt>('pr_split_command_receipts')
+    .where({ event_key: eventKey, response_state: 'claimed' })
+    .andWhere((builder) => {
+      builder.whereNull('response_claimed_at').orWhere('response_claimed_at', '<=', staleBefore);
+    })
+    .update({
+      response_claim_token: claimToken,
+      response_claimed_at: currentTimestamp,
+      updated_at: currentTimestamp,
+    });
+  return reclaimed === 1 ? { token: claimToken, needsReconciliation: true } : null;
+}
+
+/** Release a claim only when no GitHub response could have been created. */
+export async function releasePrSplitCommandResponseClaim(
+  eventKey: string,
+  claimToken: string,
+  dbClient?: Knex,
+): Promise<boolean> {
+  const client = await resolvePrSplitDb(dbClient);
+  const currentTimestamp = timestamp(new Date());
+  const released = await client<PrSplitCommandReceipt>('pr_split_command_receipts')
+    .where({
+      event_key: eventKey,
+      response_state: 'claimed',
+      response_claim_token: claimToken,
+    })
+    .update({
+      response_state: 'pending',
+      response_claim_token: null,
+      response_claimed_at: null,
+      updated_at: currentTimestamp,
+    });
+  return released === 1;
 }
 
 /** Mark the claimed response as posted without allowing another claimant. */
@@ -299,6 +391,7 @@ export async function markPrSplitCommandResponsePosted(
     })
     .update({
       response_state: 'posted',
+      response_claim_token: null,
       response_comment_id: responseCommentId,
       response_posted_at: currentTimestamp,
       updated_at: currentTimestamp,

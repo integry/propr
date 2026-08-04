@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import type { Knex } from 'knex';
 import type { PrSplitRequestClient } from '../../packages/core/src/services/prSplit/authorization.js';
 import {
+  DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT,
+  DEFAULT_PR_SPLIT_RESPONSE_CLAIM_LEASE_MS,
+  claimPrSplitCommandResponse,
   getPrSplitCommandRecord,
+  markPrSplitCommandResponsePosted,
   recordPrSplitCommandOutcome,
 } from '../../packages/core/src/services/prSplit/commandStore.js';
 import { MAX_SPLIT_INSTRUCTION_LENGTH } from '../../packages/core/src/services/prSplit/command.js';
@@ -300,7 +304,7 @@ describe('/split issue-comment intake', () => {
     ), false);
   });
 
-  test('never retries an ambiguous response POST after its durable claim', async () => {
+  test('does not retry an ambiguous response POST while its claim lease is live', async () => {
     const postError = new Error('socket closed after request write');
     const request = mock.fn(async () => { throw postError; });
     const client: PrSplitRequestClient = { request };
@@ -319,5 +323,194 @@ describe('/split issue-comment intake', () => {
       originalCommentId: 9001,
     }, database);
     assert.equal(receipt?.receipt.response_state, 'claimed');
+  });
+
+  test('reconciles the marker after an ambiguous POST instead of duplicating it', async () => {
+    const postError = new Error('socket closed after request write');
+    let postedBody = '';
+    const request = mock.fn(async (
+      route: string,
+      parameters: Record<string, unknown>,
+    ): Promise<{ data: unknown }> => {
+      if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') {
+        postedBody = String(parameters.body);
+        throw postError;
+      }
+      return { data: [{ id: 42, body: postedBody }] };
+    });
+    const client: PrSplitRequestClient = { request };
+    const intakeDependencies = dependencies(client, { isExecutionEnabled: () => false });
+    const payload = issueCommentPayload('/split extract auth changes');
+
+    await assert.rejects(
+      handlePrSplitComment(payload, 'first-delivery', intakeDependencies),
+      error => error === postError,
+    );
+    await database('pr_split_command_receipts').update({
+      response_claimed_at: new Date(
+        Date.now() - DEFAULT_PR_SPLIT_RESPONSE_CLAIM_LEASE_MS - 1_000,
+      ).toISOString(),
+    });
+
+    const replay = await handlePrSplitComment(payload, 'stale-redelivery', intakeDependencies);
+    assert.equal(replay.handled && replay.outcome, 'disabled');
+    assert.deepEqual(request.mock.calls.map(call => call.arguments[0]), [
+      'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
+      'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+    ]);
+    const receipt = await getPrSplitCommandRecord({
+      repositoryId: 123456,
+      originalCommentId: 9001,
+    }, database);
+    assert.equal(receipt?.receipt.response_state, 'posted');
+    assert.equal(receipt?.receipt.response_comment_id, 42);
+  });
+
+  test('recovers a stale claim left by a crash before the response request', async () => {
+    const record = await recordPrSplitCommandOutcome({
+      repositoryId: 123456,
+      repository: 'integry/propr',
+      sourcePrNumber: 1735,
+      requesterId: 7654321,
+      requester: 'maintainer',
+      originalCommentId: 9001,
+      instruction: 'extract auth changes',
+      outcome: 'disabled',
+    }, database);
+    const staleClaim = await claimPrSplitCommandResponse(
+      record.receipt.event_key,
+      database,
+      new Date(Date.now() - DEFAULT_PR_SPLIT_RESPONSE_CLAIM_LEASE_MS - 1_000),
+    );
+    assert.equal(staleClaim?.needsReconciliation, false);
+
+    const request = mock.fn(async (route: string): Promise<{ data: unknown }> => (
+      route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments'
+        ? { data: [] }
+        : { data: { id: 42 } }
+    ));
+    const client: PrSplitRequestClient = { request };
+    const result = await handlePrSplitComment(
+      issueCommentPayload('/split extract auth changes'),
+      'crash-redelivery',
+      dependencies(client, { isExecutionEnabled: () => false }),
+    );
+
+    assert.equal(result.handled && result.outcome, 'disabled');
+    assert.deepEqual(request.mock.calls.map(call => call.arguments[0]), [
+      'GET /repos/{owner}/{repo}/issues/{issue_number}/comments',
+      'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
+    ]);
+  });
+
+  test('releases definitive GitHub rejections so a redelivery can retry', async () => {
+    const rejectionStatuses = [401, 403, 422, 429];
+    let rejectionStatus: number | null = null;
+    const request = mock.fn(async (route: string): Promise<{ data: unknown }> => {
+      if (
+        route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments'
+        && rejectionStatus !== null
+      ) {
+        throw Object.assign(new Error(`GitHub rejected response with ${rejectionStatus}`), {
+          status: rejectionStatus,
+        });
+      }
+      return { data: { id: 42 } };
+    });
+    const client: PrSplitRequestClient = { request };
+    const intakeDependencies = dependencies(client, { isExecutionEnabled: () => false });
+
+    for (const [index, status] of rejectionStatuses.entries()) {
+      const payload = issueCommentPayload('/split extract auth changes', {
+        commentId: 9001 + index,
+      });
+      rejectionStatus = status;
+      await assert.rejects(
+        handlePrSplitComment(payload, `rejected-${status}`, intakeDependencies),
+        (error: unknown) => typeof error === 'object'
+          && error !== null
+          && 'status' in error
+          && error.status === status,
+      );
+      const pending = await getPrSplitCommandRecord({
+        repositoryId: 123456,
+        originalCommentId: 9001 + index,
+      }, database);
+      assert.equal(pending?.receipt.response_state, 'pending');
+
+      rejectionStatus = null;
+      const replay = await handlePrSplitComment(payload, `retry-${status}`, intakeDependencies);
+      assert.equal(replay.handled && replay.outcome, 'disabled');
+    }
+    assert.equal(request.mock.calls.filter(
+      call => call.arguments[0] === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
+    ).length, rejectionStatuses.length * 2);
+  });
+
+  test('returns a posted durable replay during a GitHub authentication outage', async () => {
+    const record = await recordPrSplitCommandOutcome({
+      repositoryId: 123456,
+      repository: 'integry/propr',
+      sourcePrNumber: 1735,
+      requesterId: 7654321,
+      requester: 'maintainer',
+      originalCommentId: 9001,
+      instruction: 'extract auth changes',
+      outcome: 'disabled',
+    }, database);
+    const claim = await claimPrSplitCommandResponse(record.receipt.event_key, database);
+    assert.ok(claim);
+    assert.equal(await markPrSplitCommandResponsePosted(
+      record.receipt.event_key,
+      claim.token,
+      42,
+      database,
+    ), true);
+    const authError = new Error('relay unavailable');
+    const getOctokit = mock.fn(async (): Promise<PrSplitRequestClient> => { throw authError; });
+
+    const replay = await handlePrSplitComment(
+      issueCommentPayload('/split extract auth changes'),
+      'auth-outage-redelivery',
+      { getOctokit, isExecutionEnabled: () => false, db: database },
+    );
+    assert.equal(replay.handled && replay.outcome, 'disabled');
+    assert.equal(getOctokit.mock.callCount(), 0);
+  });
+
+  test('durably suppresses API responses after the per-user command limit', async () => {
+    const request = mock.fn(async () => ({ data: { id: 42 } }));
+    const client: PrSplitRequestClient = { request };
+    const intakeDependencies = dependencies(client, { isExecutionEnabled: () => false });
+    let limitedPayload = issueCommentPayload('/split extract auth changes');
+
+    for (let index = 0; index <= DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT; index += 1) {
+      limitedPayload = issueCommentPayload('/split extract auth changes', {
+        commentId: 9001 + index,
+      });
+      const result = await handlePrSplitComment(
+        limitedPayload,
+        `rate-limit-${index}`,
+        intakeDependencies,
+      );
+      assert.equal(
+        result.handled && result.outcome,
+        index < DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT ? 'disabled' : 'rate_limited',
+      );
+    }
+
+    const replay = await handlePrSplitComment(
+      limitedPayload,
+      'rate-limited-redelivery',
+      intakeDependencies,
+    );
+    assert.equal(replay.handled && replay.outcome, 'rate_limited');
+    assert.equal(replay.handled && replay.disposition.reason, 'split_request_rate_limited');
+    assert.equal(request.mock.callCount(), DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT);
+    const receipt = await getPrSplitCommandRecord({
+      repositoryId: 123456,
+      originalCommentId: 9001 + DEFAULT_PR_SPLIT_COMMAND_RATE_LIMIT,
+    }, database);
+    assert.equal(receipt?.receipt.response_state, 'suppressed');
   });
 });
