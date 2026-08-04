@@ -1,4 +1,8 @@
-import { buildSplitCandidates, validateSplitCandidate } from './candidatePlanner.js';
+import {
+  buildSplitCandidates,
+  validateSplitCandidate,
+} from './candidatePlanner.js';
+import { MAX_SPLIT_INSTRUCTION_LENGTH } from './command.js';
 import type {
   DeepReadonly,
   PrSnapshot,
@@ -15,6 +19,10 @@ type UnknownRecord = Record<string, unknown>;
 const MAX_PLANNER_CANDIDATES = 20;
 const MAX_PROMPT_FILES_PER_CANDIDATE = 80;
 const MAX_PLANNER_REASON_LENGTH = 500;
+const MAX_PLANNER_PROMPT_LENGTH = 120_000;
+const MAX_CANDIDATE_SUMMARY_LENGTH = 500;
+const MAX_JUDGEMENT_TIMEOUT_MS = 30_000;
+const MAX_PROMPT_INSTRUCTION_LENGTH = 2_000;
 
 export class SplitPlannerResponseError extends Error {
   constructor(message: string) {
@@ -82,6 +90,10 @@ export function parseSplitPlannerChoice(
   response: unknown,
   candidates: readonly SplitCandidate[],
 ): { choice: SplitPlannerChoice; candidate: SplitCandidate } {
+  const candidateIds = new Set(candidates.map(candidate => candidate.id));
+  if (candidateIds.size !== candidates.length) {
+    throw new SplitPlannerResponseError('candidate IDs must be globally unique');
+  }
   const parsed = typeof response === 'string' ? strictJsonValue(response) : response;
   if (!isRecord(parsed)) {
     throw new SplitPlannerResponseError('response must be a JSON object');
@@ -129,29 +141,35 @@ function plannerPrompt(
   const options = candidates.map(candidate => ({
     candidateId: candidate.id,
     kind: candidate.kind,
-    summary: candidate.summary,
-    includedFiles: candidate.includedFiles.slice(0, MAX_PROMPT_FILES_PER_CANDIDATE),
+    summary: candidate.summary.slice(0, MAX_CANDIDATE_SUMMARY_LENGTH),
+    includedFiles: candidate.includedFiles
+      .slice(0, MAX_PROMPT_FILES_PER_CANDIDATE)
+      .map(path => path.slice(0, 500)),
     includedFileCount: candidate.includedFiles.length,
     includedFilesTruncated: candidate.includedFiles.length > MAX_PROMPT_FILES_PER_CANDIDATE,
     excludedFileCount: candidate.excludedScope.length,
-    riskNotes: candidate.riskNotes,
+    riskNotes: candidate.riskNotes.map(note => note.slice(0, 500)),
     validationCommands: candidate.validationPlan.commands,
     deterministicScore: candidate.score,
     instructionMatchScore: candidate.instructionMatchScore,
   }));
-  return `Choose the strongest independently reviewable split from the deterministic candidates below.
+  const prefix = `Choose the strongest independently reviewable split from the deterministic candidates below.
 
-The split must preserve the source PR diff against base ${snapshot.baseRef} (${snapshot.baseSha}).
+The split must preserve the source PR diff against base ${snapshot.baseRef.slice(0, 500)} (${snapshot.baseSha.slice(0, 100)}).
 Do not propose code rewrites and do not add, remove, or invent files. Prefer the user's instruction when supplied, then atomicity, cohesion, dependency completeness, test coverage, and reviewability. A useful coherent unit is better than the smallest file count.
 
-Requested instruction: ${(instruction || '(none)').slice(0, 2_000)}
+Requested instruction: ${(instruction || '(none)').slice(0, MAX_PROMPT_INSTRUCTION_LENGTH)}
 Source PR: ${snapshot.title.slice(0, 500)}
+Valid candidate IDs: ${candidates.map(candidate => candidate.id).join(', ')}
 
-Candidates:
-${JSON.stringify(options, null, 2)}
+Candidate details:
+`;
+  const suffix = `
 
 Return only strict JSON in this form:
 {"candidateId":"one candidateId above","reason":"brief reason"}`;
+  const detailsBudget = Math.max(0, MAX_PLANNER_PROMPT_LENGTH - prefix.length - suffix.length);
+  return `${prefix}${JSON.stringify(options, null, 2).slice(0, detailsBudget)}${suffix}`;
 }
 
 function failedValidationPlan(reason: string): ValidationPlan {
@@ -187,7 +205,7 @@ function selectedPlan(candidate: SplitCandidate, selectionReason: string): Split
     riskNotes: [...candidate.riskNotes],
     validationPlan: {
       ...candidate.validationPlan,
-      commands: [...candidate.validationPlan.commands],
+      commands: candidate.validationPlan.commands.map(command => ({ ...command })),
       hints: candidate.validationPlan.hints.map(hint => ({
         ...hint,
         relatedFiles: [...hint.relatedFiles],
@@ -200,20 +218,22 @@ function selectedPlan(candidate: SplitCandidate, selectionReason: string): Split
   };
 }
 
-function deeplyFrozenClone<T>(value: T): DeepReadonly<T> {
-  const clone = structuredClone(value);
-  const freeze = (current: unknown): void => {
-    if (typeof current !== 'object' || current === null || Object.isFrozen(current)) return;
-    for (const nested of Object.values(current)) freeze(nested);
-    Object.freeze(current);
-  };
-  freeze(clone);
-  return clone as DeepReadonly<T>;
+function deeplyFrozenCopy<T>(value: T): DeepReadonly<T> {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(item => deeplyFrozenCopy(item))) as DeepReadonly<T>;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const copy = Object.fromEntries(Object.entries(value)
+      .map(([key, nested]) => [key, deeplyFrozenCopy(nested)]));
+    return Object.freeze(copy) as DeepReadonly<T>;
+  }
+  return value as DeepReadonly<T>;
 }
 
 async function requestJudgement(
   input: SplitPlannerJudgementInput,
   options: SplitPlannerOptions,
+  timeoutMs: number,
 ): Promise<unknown> {
   if (options.judge) return options.judge(input);
   if (!options.agent) return undefined;
@@ -222,6 +242,7 @@ async function requestJudgement(
     responseFormat: 'json',
     repository: `${input.snapshot.owner}/${input.snapshot.repo}`,
     prNumber: input.snapshot.pullNumber,
+    timeoutMs,
     metadata: { callType: 'pr_split_candidate_selection' },
   });
   if (!result.success) {
@@ -238,11 +259,11 @@ export async function createSplitPlan(
   snapshot: PrSnapshot,
   optionsOrInstruction: SplitPlannerOptions | string = {},
 ): Promise<SplitPlan> {
-  const planningSnapshot = structuredClone(snapshot);
+  const planningSnapshot = snapshot;
   const options = typeof optionsOrInstruction === 'string'
     ? { instruction: optionsOrInstruction }
     : optionsOrInstruction;
-  const instruction = options.instruction?.trim() ?? '';
+  const instruction = options.instruction?.trim().slice(0, MAX_SPLIT_INSTRUCTION_LENGTH) ?? '';
   const candidates = buildSplitCandidates(planningSnapshot, instruction);
   const safeCandidates = candidates.filter(candidate => candidate.safeToCreatePr && !candidate.rejected);
   if (safeCandidates.length === 0) {
@@ -258,13 +279,31 @@ export async function createSplitPlan(
   }
   const judgeCandidates = safeCandidates.slice(0, MAX_PLANNER_CANDIDATES);
   const prompt = plannerPrompt(planningSnapshot, instruction, judgeCandidates);
+  const judgementTimeoutMs = Math.min(
+    MAX_JUDGEMENT_TIMEOUT_MS,
+    Math.max(1, options.judgementTimeoutMs ?? MAX_JUDGEMENT_TIMEOUT_MS),
+  );
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | undefined;
   try {
-    const response = await requestJudgement({
-      snapshot: deeplyFrozenClone(planningSnapshot),
+    const judgementInput: SplitPlannerJudgementInput = {
+      snapshot: deeplyFrozenCopy(planningSnapshot),
       instruction,
-      candidates: deeplyFrozenClone(judgeCandidates),
+      candidates: deeplyFrozenCopy(judgeCandidates),
       prompt,
-    }, options);
+      signal: controller.signal,
+    };
+    const response = await Promise.race([
+      requestJudgement(judgementInput, options, judgementTimeoutMs),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new SplitPlannerResponseError(
+            `planner judgement timed out after ${judgementTimeoutMs}ms`,
+          ));
+        }, judgementTimeoutMs);
+      }),
+    ]);
     const { choice, candidate } = parseSplitPlannerChoice(response, judgeCandidates);
     const postJudgementSafety = validateSplitCandidate(planningSnapshot, candidate.includedFiles);
     if (!postJudgementSafety.safeToCreatePr || postJudgementSafety.rejected) {
@@ -279,6 +318,8 @@ export async function createSplitPlan(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return failedPlan(planningSnapshot, `Planner judgement failed closed: ${message}`);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 

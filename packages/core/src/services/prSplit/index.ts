@@ -90,6 +90,7 @@ export { readPrSnapshot, fetchPrSnapshot } from './prSnapshot.js';
 export type {
   PrSnapshotClient,
   PrSnapshotGitHubResponse,
+  PrSnapshotResourceLimits,
   ReadPrSnapshotRequest,
 } from './prSnapshot.js';
 
@@ -124,6 +125,7 @@ export type {
   PullRequestSnapshotCommit,
   ValidationHintSource,
   ValidationHint,
+  ValidationCommand,
   ValidationPlan,
   SplitCandidateKind,
   SplitCandidate,

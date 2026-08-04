@@ -6,7 +6,7 @@ const LOCKFILE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm
 const GENERATED_NAME = /\.min\.(js|css)$|\.(generated|gen)\.[cm]?[jt]sx?$|\.snap$/i;
 const TEST_PATH = /(^|\/)(tests?|spec|__tests__)(\/|$)|\.(test|spec)\.[^.]+$|_test\.[^.]+$/i;
 const SOURCE_PATH = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|php|java|kt|kts|cs|cpp|cc|cxx|c|h|hpp|swift|scala|vue|svelte)$/i;
-const SPECIAL_DEPENDENCY = /(^|\/)(migrations?|schema|schemas|types?)(\/|$)|(?:^|\.)(types?|schema)\.[cm]?[jt]s$|\.(sql|prisma|proto|d\.ts)$/i;
+const SPECIAL_DEPENDENCY = /(^|\/)(migrations?|schema|schemas|types?)(\/|$)|(^|\/)(types?|schema)\.[cm]?[jt]s$|\.(sql|prisma|proto|d\.ts)$/i;
 const SECRET_PATH = /(^|\/)(\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)|credentials?(?:\.[^.]+)?\.json|service[-_]?account(?:\.[^.]+)?\.json|secrets?\.ya?ml)$|\.(pem|p12|pfx|key)$/i;
 const SECRET_CONTENT = /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|\bASIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{30,}\b|\bxox[baprs]-[A-Za-z0-9-]{20,}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*['"][^'"\r\n]{8,}['"]/i;
 

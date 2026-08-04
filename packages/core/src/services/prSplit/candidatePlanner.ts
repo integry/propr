@@ -1,4 +1,5 @@
 /* eslint-disable max-lines -- Candidate graph construction and safety checks form one deterministic pipeline. */
+import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import {
   addedSplitPatchText,
@@ -14,6 +15,8 @@ import {
   rankSplitCandidates,
   scoreSplitCandidate,
 } from './candidateRanking.js';
+import { MAX_SPLIT_INSTRUCTION_LENGTH } from './command.js';
+import { addLanguageImportDependencies } from './dependencyResolvers.js';
 import { inferValidationHints } from './validationHints.js';
 import type {
   PrSnapshot,
@@ -33,27 +36,16 @@ interface CandidateSeed {
 
 type DependencyGraph = Map<string, Set<string>>;
 
-interface ImportAliasRule {
-  matchPrefix: string;
-  matchSuffix: string;
-  targetPrefix: string;
-  targetSuffix: string;
-}
-
 const MAX_SPLIT_CANDIDATES = 128;
-const MAX_COMMIT_SEEDS = 32;
-const MAX_MODULE_SEEDS = 48;
-const MAX_DEPENDENCY_SEEDS = 96;
+const MAX_COMMIT_SEEDS = 24;
+const MAX_MODULE_SEEDS = 32;
+const MAX_DEPENDENCY_SEEDS = 71;
+const MAX_INSTRUCTION_TERMS = 64;
+const MAX_INSTRUCTION_PATCH_CHARS = 20_000;
 const ANALYZABLE_SOURCE = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|php|java|kt|kts|cs|cpp|cc|cxx|c|h|hpp|swift|scala|vue|svelte)$/i;
-const DEPENDENCY_CONFIG = /(^|\/)(?:package\.json|pyproject\.toml|Cargo\.toml|Gemfile|composer\.json|go\.mod|Package\.swift)$/i;
+const DEPENDENCY_CONFIG = /(^|\/)(?:package\.json|pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile|Cargo\.toml|Gemfile|composer\.json|go\.mod|Package\.swift|pom\.xml|build\.gradle(?:\.kts)?|[^/]+\.(?:csproj|fsproj))$/i;
 const IMPORT_CONFIG = /(^|\/)(?:tsconfig(?:\.[^/]+)?|jsconfig)\.json$/i;
-const RESOLVABLE_EXTENSIONS = [
-  '.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs', '.py', '.go', '.rs',
-  '.rb', '.php', '.java', '.kt', '.kts', '.cs', '.cpp', '.cc', '.cxx', '.c', '.h',
-  '.hpp', '.swift', '.scala', '.vue', '.svelte', '.json', '.yaml', '.yml', '.css', '.scss',
-  '.sass', '.less', '.svg', '.sql', '.proto', '.prisma',
-];
-
+const SOURCE_CONFIGURATION = /(^|\/)(?:package\.json|pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile|Cargo\.toml|Gemfile|composer\.json|go\.mod|Package\.swift|tsconfig(?:\.[^/]+)?\.json|jsconfig\.json|eslint\.config\.[cm]?js|\.eslintrc(?:\.[^/]+)?|vite\.config\.[cm]?[jt]s|webpack\.config\.[cm]?[jt]s|jest\.config\.[cm]?[jt]s|pom\.xml|build\.gradle(?:\.kts)?|[^/]+\.(?:csproj|fsproj))$/i;
 const GENERIC_DIRECTORIES = new Set([
   'src', 'lib', 'app', 'test', 'tests', 'spec', 'services', 'components', 'controllers',
   'models', 'utils', 'helpers', 'hooks', 'pages', 'routes', 'packages', 'modules',
@@ -89,160 +81,6 @@ function addMandatoryCompanions(graph: DependencyGraph, left: string, right: str
   addDependency(graph, right, left);
 }
 
-function pathAliases(snapshot: PrSnapshot): Map<string, string> {
-  const aliases = new Map<string, string>();
-  for (const file of snapshot.changedFiles) {
-    aliases.set(file.filename, file.filename);
-    if (file.previousFilename) aliases.set(file.previousFilename, file.filename);
-  }
-  return aliases;
-}
-
-function configuredImportAliases(snapshot: PrSnapshot): ImportAliasRule[] {
-  return snapshot.repositoryFiles.flatMap((file) => {
-    if (!/(^|\/)(?:tsconfig(?:\.[^/]+)?|jsconfig)\.json$/i.test(file.path) || !file.contentComplete || !file.content) {
-      return [];
-    }
-    try {
-      const withoutComments = file.content
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '')
-        .replace(/,\s*([}\]])/g, '$1');
-      const parsed = JSON.parse(withoutComments) as {
-        compilerOptions?: { baseUrl?: unknown; paths?: unknown };
-      };
-      const options = parsed.compilerOptions;
-      if (!options || typeof options.paths !== 'object' || options.paths === null) return [];
-      const baseUrl = typeof options.baseUrl === 'string' ? options.baseUrl : '.';
-      return Object.entries(options.paths).flatMap(([pattern, targets]) => {
-        if (!Array.isArray(targets)) return [];
-        const wildcard = pattern.indexOf('*');
-        const matchPrefix = wildcard >= 0 ? pattern.slice(0, wildcard) : pattern;
-        const matchSuffix = wildcard >= 0 ? pattern.slice(wildcard + 1) : '';
-        return targets.flatMap((target) => {
-          if (typeof target !== 'string') return [];
-          const targetWildcard = target.indexOf('*');
-          const resolvedTarget = posix.normalize(posix.join(posix.dirname(file.path), baseUrl, target));
-          return [{
-            matchPrefix,
-            matchSuffix,
-            targetPrefix: targetWildcard >= 0 ? resolvedTarget.slice(0, resolvedTarget.indexOf('*')) : resolvedTarget,
-            targetSuffix: targetWildcard >= 0 ? resolvedTarget.slice(resolvedTarget.indexOf('*') + 1) : '',
-          }];
-        });
-      });
-    } catch {
-      return [];
-    }
-  });
-}
-
-function resolveChangedImport(
-  fromFile: string,
-  specifier: string,
-  aliases: Map<string, string>,
-  importAliases: readonly ImportAliasRule[],
-): string[] {
-  const pythonRelative = specifier.match(/^(\.+)([A-Za-z_].*)$/);
-  const normalizedSpecifier = pythonRelative
-    ? `${'../'.repeat(Math.max(0, pythonRelative[1].length - 1))}${pythonRelative[2].replace(/\./g, '/')}`
-    : specifier
-      .replace(/^crate::/, '')
-      .replace(/^self::/, './')
-      .replace(/^super::/, '../');
-  const cleaned = normalizedSpecifier.trim()
-    .replace(/[?#].*$/, '')
-    .replace(/::/g, '/')
-    .replace(/\\/g, '/')
-    .replace(/^@\//, '')
-    .replace(/^~\//, '')
-    .replace(/\/\*$/, '');
-  const relative = specifier.startsWith('.')
-    || specifier.startsWith('self::')
-    || specifier.startsWith('super::');
-  const base = relative
-    ? posix.normalize(posix.join(posix.dirname(fromFile), cleaned.replace(/^super::/, '../')))
-    : cleaned.replace(/^\/+/, '').replace(/\./g, '/');
-  const configuredBases = importAliases.flatMap((rule) => {
-    if (!specifier.startsWith(rule.matchPrefix) || !specifier.endsWith(rule.matchSuffix)) return [];
-    const matched = specifier.slice(
-      rule.matchPrefix.length,
-      specifier.length - rule.matchSuffix.length || undefined,
-    );
-    return [`${rule.targetPrefix}${matched}${rule.targetSuffix}`];
-  });
-  const bases = [...new Set([base, ...configuredBases])];
-  if (/\.rs$/i.test(fromFile)) {
-    let parent = posix.dirname(base);
-    while (parent !== '.') {
-      bases.push(parent);
-      parent = posix.dirname(parent);
-    }
-  }
-  const possibilities = bases.flatMap(candidate => [
-    candidate,
-    ...RESOLVABLE_EXTENSIONS.map(extension => `${candidate}${extension}`),
-    ...RESOLVABLE_EXTENSIONS.map(extension => `${candidate}/index${extension}`),
-    `${candidate}/__init__.py`,
-  ]);
-  const exact = possibilities.flatMap(path => aliases.get(path) ?? []);
-  if (exact.length > 0) return [...new Set(exact)];
-
-  // Package-qualified imports and common path aliases can still be matched
-  // deterministically when their trailing path uniquely names a changed file.
-  const suffixes = possibilities.map(path => `/${path}`);
-  const suffixMatches = [...aliases.entries()]
-    .filter(([path]) => suffixes.some(suffix => `/${path}`.endsWith(suffix))
-      || (/\.go$/i.test(fromFile) && bases.some(candidate =>
-        `/${posix.dirname(path)}`.endsWith(`/${candidate}`) && /\.go$/i.test(path))))
-    .map(([, currentPath]) => currentPath);
-  return [...new Set(suffixMatches)];
-}
-
-function referencedSpecifiers(filename: string, content: string): string[] {
-  const patterns: RegExp[] = [];
-  if (/\.(?:[cm]?[jt]sx?|vue|svelte)$/i.test(filename)) {
-    patterns.push(
-      /\b(?:import|export)\s+(?:type\s+)?(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g,
-      /\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    );
-  } else if (/\.py$/i.test(filename)) {
-    patterns.push(/^\s*from\s+([.\w]+)\s+import\s+/gm, /^\s*import\s+([.\w]+)/gm);
-  } else if (/\.go$/i.test(filename)) {
-    patterns.push(/^\s*(?:import\s+)?(?:[\w.]+\s+)?["`]([^"`]+)["`]/gm);
-  } else if (/\.rs$/i.test(filename)) {
-    patterns.push(/\buse\s+([\w:]+)/g, /\bmod\s+([A-Za-z_][\w]*)\s*;/g, /#\s*\[path\s*=\s*"([^"]+)"\]/g);
-  } else if (/\.rb$/i.test(filename)) {
-    patterns.push(/\b(?:require_relative|load)\s*\(?\s*['"]([^'"]+)['"]/g);
-  } else if (/\.php$/i.test(filename)) {
-    patterns.push(/\b(?:include|include_once|require|require_once)\s*\(?\s*['"]([^'"]+)['"]/g, /^\s*use\s+([\\\w]+)/gm);
-  } else if (/\.(?:java|kt|kts|cs|swift|scala)$/i.test(filename)) {
-    patterns.push(/^\s*import\s+([\w.*]+)/gm);
-  } else if (/\.(?:c|cc|cpp|cxx|h|hpp)$/i.test(filename)) {
-    patterns.push(/^\s*#\s*include\s*"([^"]+)"/gm);
-  }
-  return [...new Set(patterns.flatMap(pattern => [...content.matchAll(pattern)].map(match => match[1])))];
-}
-
-function importDependencies(snapshot: PrSnapshot, graph: DependencyGraph): void {
-  const aliases = pathAliases(snapshot);
-  const importAliases = configuredImportAliases(snapshot);
-  for (const file of snapshot.changedFiles) {
-    const versions = [
-      { path: file.filename, content: file.headContent },
-      { path: file.previousFilename ?? file.filename, content: file.baseContent },
-    ];
-    for (const version of versions) {
-      if (version.content === null) continue;
-      for (const specifier of referencedSpecifiers(version.path, version.content)) {
-        for (const dependency of resolveChangedImport(version.path, specifier, aliases, importAliases)) {
-          addMandatoryCompanions(graph, file.filename, dependency);
-        }
-      }
-    }
-  }
-}
-
 function testDependencies(snapshot: PrSnapshot, graph: DependencyGraph): void {
   const implementations = snapshot.changedFiles.filter(file => isImplementationFile(file.filename));
   for (const test of snapshot.changedFiles.filter(file => isTestFile(file.filename))) {
@@ -273,26 +111,49 @@ function testDependencies(snapshot: PrSnapshot, graph: DependencyGraph): void {
 }
 
 function distinctiveTokens(file: PrSnapshotFile): Set<string> {
-  const ignored = new Set(['const', 'string', 'return', 'function', 'create', 'update', 'delete', 'table']);
+  const ignored = new Set([
+    'changed', 'class', 'const', 'create', 'delete', 'export', 'extends', 'function',
+    'import', 'interface', 'module', 'public', 'return', 'schema', 'select', 'string',
+    'table', 'update', 'values', 'where',
+  ]);
   return new Set(
     (file.headContent ?? addedSplitPatchText(file))
       .toLowerCase()
       .split(/[^a-z0-9_]+/)
-      .filter(token => token.length >= 5 && !ignored.has(token) && !/^\d+$/.test(token)),
+      .filter(token => token.length >= 6 && !ignored.has(token) && !/^\d+$/.test(token)),
   );
+}
+
+function declaredSpecialIdentifiers(file: PrSnapshotFile): Set<string> {
+  const content = file.headContent ?? addedSplitPatchText(file);
+  const patterns = [
+    /\b(?:CREATE|ALTER)\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`[]?([A-Za-z_]\w*)/gi,
+    /\b(?:interface|type|class|enum|message|model)\s+([A-Za-z_]\w*)/g,
+  ];
+  return new Set(patterns.flatMap(pattern => [...content.matchAll(pattern)]
+    .map(match => match[1].toLowerCase())
+    .filter(identifier => identifier.length >= 4)));
 }
 
 function specialDependencies(snapshot: PrSnapshot, graph: DependencyGraph): void {
   const specialFiles = snapshot.changedFiles.filter(file => isSpecialSplitDependencyFile(file.filename));
   const specialTokenMap = new Map(specialFiles.map(file => [file.filename, distinctiveTokens(file)]));
+  const declaredIdentifiers = new Map(
+    specialFiles.map(file => [file.filename, declaredSpecialIdentifiers(file)]),
+  );
   for (const implementation of snapshot.changedFiles.filter(file => isImplementationFile(file.filename))) {
     const implementationTokens = distinctiveTokens(implementation);
     for (const dependency of specialFiles) {
       const shared = [...(specialTokenMap.get(dependency.filename) ?? [])]
         .filter(token => implementationTokens.has(token));
-      // A shared schema/table/type identifier is strong evidence because these
-      // files are already limited to changed migrations, schemas, and type contracts.
-      if (shared.length >= 1) {
+      const hasLanguageContractDeclarations = /(^|\/)migrations?(\/|$)|\.(?:sql|prisma|proto)$/i
+        .test(dependency.filename);
+      const declaredReference = hasLanguageContractDeclarations
+        && [...(declaredIdentifiers.get(dependency.filename) ?? [])]
+          .some(identifier => implementationTokens.has(identifier)
+            || new RegExp(`\\b${identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+              .test(implementation.headContent ?? addedSplitPatchText(implementation)));
+      if (declaredReference || shared.length >= 3) {
         addMandatoryCompanions(graph, implementation.filename, dependency.filename);
       }
     }
@@ -346,15 +207,31 @@ function manifestLockfileCompanions(snapshot: PrSnapshot, graph: DependencyGraph
   }
 }
 
+function configurationDependencies(snapshot: PrSnapshot, graph: DependencyGraph): void {
+  const changedConfigs = snapshot.changedFiles.filter(file => SOURCE_CONFIGURATION.test(file.filename));
+  for (const source of snapshot.changedFiles.filter(file => ANALYZABLE_SOURCE.test(file.filename))) {
+    for (const config of changedConfigs) {
+      const directory = posix.dirname(config.filename);
+      if (directory === '.' || source.filename.startsWith(`${directory}/`)) {
+        addDependency(graph, source.filename, config.filename);
+      }
+    }
+  }
+}
+
 function buildDependencyGraph(snapshot: PrSnapshot): DependencyGraph {
   const graph: DependencyGraph = new Map(
     snapshot.changedFiles.map(file => [file.filename, new Set<string>()]),
   );
-  importDependencies(snapshot, graph);
+  addLanguageImportDependencies(
+    snapshot,
+    (left, right) => addMandatoryCompanions(graph, left, right),
+  );
   testDependencies(snapshot, graph);
   specialDependencies(snapshot, graph);
   generatedCompanions(snapshot, graph);
   manifestLockfileCompanions(snapshot, graph);
+  configurationDependencies(snapshot, graph);
   return graph;
 }
 
@@ -382,8 +259,9 @@ function moduleKey(filename: string): string {
 }
 
 function instructionTerms(instruction: string): string[] {
-  const terms = instruction.toLowerCase().split(/[^a-z0-9]+/)
-    .filter(term => term.length >= 3 && !INSTRUCTION_STOP_WORDS.has(term));
+  const terms = instruction.slice(0, MAX_SPLIT_INSTRUCTION_LENGTH).toLowerCase().split(/[^a-z0-9]+/)
+    .filter(term => term.length >= 3 && !INSTRUCTION_STOP_WORDS.has(term))
+    .slice(0, MAX_INSTRUCTION_TERMS);
   const expanded = new Set(terms);
   if (terms.some(term => ['auth', 'authentication', 'authorization', 'login'].includes(term))) {
     for (const term of ['auth', 'authentication', 'authorization', 'login']) expanded.add(term);
@@ -399,7 +277,7 @@ function termMatches(text: string, term: string): boolean {
 
 function fileInstructionScore(file: PrSnapshotFile, terms: readonly string[]): number {
   const path = file.filename.toLowerCase();
-  const patch = (file.patch ?? '').toLowerCase();
+  const patch = (file.patch ?? '').slice(0, MAX_INSTRUCTION_PATCH_CHARS).toLowerCase();
   return terms.reduce((score, term) => score
     + (termMatches(path, term) ? 5 : 0)
     + (termMatches(patch, term) ? 1 : 0), 0);
@@ -425,7 +303,8 @@ function candidateInstructionScore(
 }
 
 function instructionSeed(snapshot: PrSnapshot, instruction: string): CandidateSeed | null {
-  const terms = instructionTerms(instruction);
+  const boundedInstruction = instruction.slice(0, MAX_SPLIT_INSTRUCTION_LENGTH).trim();
+  const terms = instructionTerms(boundedInstruction);
   if (terms.length === 0) return null;
   const files = new Set(
     snapshot.changedFiles
@@ -434,7 +313,7 @@ function instructionSeed(snapshot: PrSnapshot, instruction: string): CandidateSe
   );
   const commitShas: string[] = [];
   for (const commit of snapshot.commits) {
-    if (!terms.some(term => termMatches(commit.message.toLowerCase(), term))) continue;
+    if (!terms.some(term => termMatches(commit.message.slice(0, 2_000).toLowerCase(), term))) continue;
     const independentlyMatched = commit.files.filter(path => {
       const file = changedFileMap(snapshot).get(path);
       return file ? fileInstructionScore(file, terms) > 0 : false;
@@ -445,7 +324,7 @@ function instructionSeed(snapshot: PrSnapshot, instruction: string): CandidateSe
   return {
     kind: 'instruction',
     idPart: 'requested',
-    summary: `Requested scope: ${instruction.trim()}`,
+    summary: `Requested scope: ${boundedInstruction}`,
     files: [...files],
     commitShas,
   };
@@ -470,11 +349,21 @@ function commitSeeds(snapshot: PrSnapshot): CandidateSeed[] {
     return [{
       kind: 'atomic-commit' as const,
       idPart: commit.sha.slice(0, 12),
-      summary: commit.title,
+      summary: commit.title.slice(0, 500) || '(empty commit message)',
       files,
       commitShas: [commit.sha],
     }];
   });
+}
+
+function evenlySample<T>(values: readonly T[], maximum: number): T[] {
+  if (values.length <= maximum) return [...values];
+  if (maximum === 1) return [values[0]];
+  const indices = new Set(Array.from(
+    { length: maximum },
+    (_, index) => Math.round((index * (values.length - 1)) / (maximum - 1)),
+  ));
+  return [...indices].map(index => values[index]);
 }
 
 function moduleSeeds(snapshot: PrSnapshot): CandidateSeed[] {
@@ -483,7 +372,7 @@ function moduleSeeds(snapshot: PrSnapshot): CandidateSeed[] {
     const key = moduleKey(file.filename);
     modules.set(key, [...(modules.get(key) ?? []), file.filename]);
   }
-  return [...modules.entries()].map(([key, files]) => ({
+  return [...modules.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, files]) => ({
     kind: 'module-boundary',
     idPart: key,
     summary: `Cohesive module scope: ${key}`,
@@ -493,10 +382,10 @@ function moduleSeeds(snapshot: PrSnapshot): CandidateSeed[] {
 }
 
 function dependencySeeds(snapshot: PrSnapshot): CandidateSeed[] {
-  return snapshot.changedFiles
+  const eligible = snapshot.changedFiles
     .filter(file => !isGeneratedSplitFile(file.filename) && !isSecretBearingSplitFile(file))
-    .sort((left, right) => left.filename.localeCompare(right.filename))
-    .slice(0, MAX_DEPENDENCY_SEEDS)
+    .sort((left, right) => left.filename.localeCompare(right.filename));
+  return evenlySample(eligible, MAX_DEPENDENCY_SEEDS)
     .map(file => ({
       kind: 'dependency-closed' as const,
       idPart: file.filename,
@@ -521,6 +410,7 @@ function dependencyAnalysisRejections(
   const dependencyRelevantFiles = snapshot.changedFiles.filter(file =>
     ANALYZABLE_SOURCE.test(file.filename)
     || DEPENDENCY_CONFIG.test(file.filename)
+    || SOURCE_CONFIGURATION.test(file.filename)
     || isSpecialSplitDependencyFile(file.filename)
     || file.status === 'removed'
     || file.status === 'renamed');
@@ -584,10 +474,6 @@ function assessSafety(
   rejectionReasons.push(...dependencyAnalysisRejections(snapshot, selectedRecords));
   const tests = selectedRecords.filter(file => isTestFile(file.filename));
   const implementations = selectedRecords.filter(file => isImplementationFile(file.filename));
-  const sourcePrHasImplementation = snapshot.changedFiles.some(file => isImplementationFile(file.filename));
-  if (tests.length > 0 && implementations.length === 0 && sourcePrHasImplementation) {
-    rejectionReasons.push('Candidate contains tests without their changed implementation.');
-  }
   if (!snapshot.sourceHeadRepository) {
     rejectionReasons.push('The source head repository is no longer available.');
   }
@@ -613,20 +499,27 @@ function safeIdPart(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || 'scope';
 }
 
+function sameStringSets(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every(value => rightSet.has(value));
+}
+
 /** Build and rank split scopes. Dependencies are closed before any candidate is evaluated. */
 export function buildSplitCandidates(snapshot: PrSnapshot, instruction = ''): SplitCandidate[] {
+  const boundedInstruction = instruction.slice(0, MAX_SPLIT_INSTRUCTION_LENGTH).trim();
   const graph = buildDependencyGraph(snapshot);
-  const requested = instructionSeed(snapshot, instruction);
+  const requested = instructionSeed(snapshot, boundedInstruction);
   const seeds = [
     ...(requested ? [requested] : []),
-    ...commitSeeds(snapshot).slice(0, MAX_COMMIT_SEEDS),
-    ...moduleSeeds(snapshot).slice(0, MAX_MODULE_SEEDS),
+    ...evenlySample(commitSeeds(snapshot), MAX_COMMIT_SEEDS),
+    ...evenlySample(moduleSeeds(snapshot), MAX_MODULE_SEEDS),
     ...dependencySeeds(snapshot),
-  ].slice(0, MAX_SPLIT_CANDIDATES * 2);
+  ];
   const allFiles = snapshot.changedFiles.map(file => file.filename).sort();
   const snapshotFileMap = changedFileMap(snapshot);
   const signatures = new Set<string>();
-  const usedIds = new Map<string, number>();
+  const usedIds = new Set<string>();
   const candidates: SplitCandidate[] = [];
 
   for (const seed of seeds) {
@@ -636,20 +529,34 @@ export function buildSplitCandidates(snapshot: PrSnapshot, instruction = ''): Sp
     const signature = includedFiles.join('\0');
     if (signatures.has(signature)) continue;
     signatures.add(signature);
-    const baseId = `${seed.kind}-${safeIdPart(seed.idPart)}`;
-    const occurrence = (usedIds.get(baseId) ?? 0) + 1;
-    usedIds.set(baseId, occurrence);
+    const expandedAtomicCommit = seed.kind === 'atomic-commit'
+      && !sameStringSets(includedFiles, seed.files);
+    const effectiveKind: SplitCandidateKind = expandedAtomicCommit
+      ? 'dependency-closed'
+      : seed.kind;
+    const effectiveSummary = expandedAtomicCommit
+      ? `Dependency-closed expansion of commit: ${seed.summary}`
+      : seed.summary;
+    const baseId = `${effectiveKind}-${safeIdPart(seed.idPart)}`;
+    const signatureHash = createHash('sha256').update(signature).digest('hex').slice(0, 12);
+    let id = `${baseId}-${signatureHash}`;
+    let collision = 2;
+    while (usedIds.has(id)) {
+      id = `${baseId}-${signatureHash}-${collision}`;
+      collision += 1;
+    }
+    usedIds.add(id);
     const safety = assessSafety(snapshot, includedFiles, graph);
     const validationPlan = inferValidationHints(snapshot, includedFiles);
     const candidate: SplitCandidate = {
-      id: occurrence === 1 ? baseId : `${baseId}-${occurrence}`,
-      kind: seed.kind,
-      summary: seed.summary,
+      id,
+      kind: effectiveKind,
+      summary: effectiveSummary.slice(0, 600),
       includedFiles,
       excludedScope: allFiles.filter(file => !includedSet.has(file)),
-      commitShas: [...new Set(seed.commitShas)].sort(),
+      commitShas: expandedAtomicCommit ? [] : [...new Set(seed.commitShas)].sort(),
       dependencyFiles: includedFiles.filter(file => !seed.files.includes(file)),
-      instructionMatchScore: candidateInstructionScore(snapshot, includedFiles, instruction),
+      instructionMatchScore: candidateInstructionScore(snapshot, includedFiles, boundedInstruction),
       changedLines: includedFiles.reduce(
         (total, path) => total + (snapshotFileMap.get(path)?.changes ?? 0),
         0,
@@ -665,7 +572,7 @@ export function buildSplitCandidates(snapshot: PrSnapshot, instruction = ''): Sp
       rejectionReasons: safety.rejectionReasons,
       safeToCreatePr: safety.safeToCreatePr,
     };
-    candidate.rankingReasons = buildCandidateRankingReasons(candidate, instruction);
+    candidate.rankingReasons = buildCandidateRankingReasons(candidate, boundedInstruction);
     candidate.score = scoreSplitCandidate(candidate);
     candidates.push(candidate);
   }

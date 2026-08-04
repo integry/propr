@@ -30,7 +30,11 @@ export interface PrSnapshotFile {
   changes: number;
   patch: string | null;
   sha: string | null;
-  /** Complete file contents at each side of the PR when that side exists. */
+  /**
+   * Contents at the captured current base SHA and head SHA. `baseContent` is
+   * deliberately not described as the unified-diff preimage: GitHub builds PR
+   * diffs from a merge base, which can differ after the base branch advances.
+   */
   baseContent: string | null;
   headContent: string | null;
   /** False when either required side could not be read in full. */
@@ -64,6 +68,8 @@ export interface PrSnapshot {
   pullNumber: number;
   baseRef: string;
   baseSha: string;
+  /** Merge base reported by GitHub's comparison API, when it could be resolved. */
+  mergeBaseSha: string | null;
   headRef: string;
   headSha: string;
   sourceHeadRepository: PrSplitRepository | null;
@@ -74,6 +80,8 @@ export interface PrSnapshot {
   repositoryFiles: PrSnapshotRepositoryFile[];
   repositoryTreeComplete: boolean;
   unifiedDiff: string;
+  /** False because GitHub's PR diff response does not guarantee complete hunks. */
+  unifiedDiffComplete: boolean;
 }
 
 export type PullRequestSnapshot = PrSnapshot;
@@ -97,9 +105,16 @@ export interface ValidationHint {
   executable: boolean;
 }
 
-/** Commands are hints for the later execution layer, not evidence that validation passed. */
+export interface ValidationCommand {
+  command: string;
+  workingDirectory: string;
+  /** PR code and its configuration are untrusted, so execution always requires isolation. */
+  requiresSandbox: true;
+}
+
+/** Commands are untrusted execution requests, not evidence that validation passed or security approval. */
 export interface ValidationPlan {
-  commands: string[];
+  commands: ValidationCommand[];
   hints: ValidationHint[];
   inferred: boolean;
   explanation: string;
@@ -153,6 +168,8 @@ export interface SplitPlannerJudgementInput {
   instruction: string;
   candidates: readonly DeepReadonly<SplitCandidate>[];
   prompt: string;
+  /** Aborted when the bounded judgement deadline expires. */
+  signal: AbortSignal;
 }
 
 export interface SplitPlannerChoice {
@@ -174,6 +191,8 @@ export interface SplitPlannerOptions {
   judge?: SplitCandidateJudge;
   /** Existing Agent-compatible judgement. `judge` takes precedence when both are supplied. */
   agent?: SplitPlannerAgent;
+  /** Optional shorter deadline for judgement; the service maximum still applies. */
+  judgementTimeoutMs?: number;
 }
 
 /** The complete analysis result consumed by the later branch/publication layer. */

@@ -3,6 +3,7 @@ import type {
   PrSnapshot,
   PrSnapshotFile,
   PrSnapshotRepositoryFile,
+  ValidationCommand,
   ValidationHint,
   ValidationHintSource,
   ValidationPlan,
@@ -36,15 +37,32 @@ function selectedSnapshotFiles(snapshot: PrSnapshot, includedFiles?: readonly st
   return snapshot.changedFiles.filter(file => selected.has(file.filename));
 }
 
-function repositoryFiles(snapshot: PrSnapshot): PrSnapshotRepositoryFile[] {
+function repositoryFiles(
+  snapshot: PrSnapshot,
+  includedFiles?: readonly string[],
+): PrSnapshotRepositoryFile[] {
   const files = new Map(snapshot.repositoryFiles.map(file => [file.path, file]));
+  const selected = includedFiles ? new Set(includedFiles) : null;
   for (const changed of snapshot.changedFiles) {
-    if (changed.headContent === null || files.has(changed.filename)) continue;
-    files.set(changed.filename, {
-      path: changed.filename,
-      content: changed.headContent,
-      contentComplete: changed.contentComplete,
-    });
+    const useHead = !selected || selected.has(changed.filename);
+    files.delete(changed.filename);
+    if (changed.previousFilename) files.delete(changed.previousFilename);
+    if (useHead) {
+      if (changed.status !== 'removed' && changed.headContent !== null) {
+        files.set(changed.filename, {
+          path: changed.filename,
+          content: changed.headContent,
+          contentComplete: changed.contentComplete,
+        });
+      }
+    } else if (changed.status !== 'added' && changed.status !== 'copied' && changed.baseContent !== null) {
+      const basePath = changed.previousFilename ?? changed.filename;
+      files.set(basePath, {
+        path: basePath,
+        content: changed.baseContent,
+        contentComplete: changed.contentComplete,
+      });
+    }
   }
   return [...files.values()];
 }
@@ -144,7 +162,7 @@ function parsedPackageScripts(file: PrSnapshotRepositoryFile): Set<string> {
     if (typeof scripts !== 'object' || scripts === null || Array.isArray(scripts)) return new Set();
     return new Set(Object.entries(scripts)
       .filter(([, value]) => typeof value === 'string')
-      .map(([name]) => name.toLowerCase()));
+      .map(([name]) => name));
   } catch {
     return new Set();
   }
@@ -215,6 +233,67 @@ function addConvention(
   }
 }
 
+function rubyHints(
+  selectedFiles: PrSnapshotFile[],
+  configs: readonly PrSnapshotRepositoryFile[],
+  hints: ValidationHint[],
+): void {
+  for (const gemfile of configs.filter(file => posix.basename(file.path) === 'Gemfile')) {
+    if (!gemfile.contentComplete
+      || !/^\s*gem\s*\(?\s*['"]rspec(?:-core)?['"]/im.test(gemfile.content ?? '')) continue;
+    const related = selectedFiles.filter(file => /\.rb$/i.test(file.filename)
+      && isWithinDirectory(file.filename, posix.dirname(gemfile.path)));
+    if (related.length === 0) continue;
+    addHint(hints, 'bundle exec rspec', {
+      reason: `RSpec is declared in ${gemfile.path}`,
+      source: 'repository-convention',
+      relatedFiles: related.map(file => file.filename),
+      workingDirectory: posix.dirname(gemfile.path),
+      confidence: 'high',
+      executable: true,
+    });
+  }
+}
+
+function composerHasTestScript(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as { scripts?: unknown };
+    const scripts = typeof parsed.scripts === 'object' && parsed.scripts !== null
+      ? parsed.scripts as Record<string, unknown>
+      : null;
+    const testScript = scripts?.test;
+    return (typeof testScript === 'string' && Boolean(testScript.trim()))
+      || (Array.isArray(testScript)
+        && testScript.length > 0
+        && testScript.every(entry => typeof entry === 'string'));
+  } catch {
+    return false;
+  }
+}
+
+function phpHints(
+  selectedFiles: PrSnapshotFile[],
+  configs: readonly PrSnapshotRepositoryFile[],
+  hints: ValidationHint[],
+): void {
+  for (const composer of configs.filter(file => posix.basename(file.path) === 'composer.json')) {
+    if (!composer.contentComplete
+      || composer.content === null
+      || !composerHasTestScript(composer.content)) continue;
+    const related = selectedFiles.filter(file => /\.php$/i.test(file.filename)
+      && isWithinDirectory(file.filename, posix.dirname(composer.path)));
+    if (related.length === 0) continue;
+    addHint(hints, 'composer run-script test', {
+      reason: `A test script is declared in ${composer.path}`,
+      source: 'repository-convention',
+      relatedFiles: related.map(file => file.filename),
+      workingDirectory: posix.dirname(composer.path),
+      confidence: 'high',
+      executable: true,
+    });
+  }
+}
+
 function languageHints(
   selectedFiles: PrSnapshotFile[],
   configs: readonly PrSnapshotRepositoryFile[],
@@ -233,20 +312,17 @@ function languageHints(
     reason: 'Python source is selected',
   });
   addConvention(selectedFiles, configs, hints, {
-    extension: /\.rb$/i, configName: /^Gemfile$/i, command: 'bundle exec rspec', reason: 'Ruby source is selected',
-  });
-  addConvention(selectedFiles, configs, hints, {
-    extension: /\.php$/i, configName: /^composer\.json$/i, command: 'composer test', reason: 'PHP source is selected',
-  });
-  addConvention(selectedFiles, configs, hints, {
     extension: /\.java$/i, configName: /^pom\.xml$/i, command: 'mvn test', reason: 'Java source is selected',
   });
   addConvention(selectedFiles, configs, hints, {
     extension: /\.(?:java|kt|kts)$/i,
-    configName: /^(?:gradlew|build\.gradle(?:\.kts)?)$/i,
+    configName: /^gradlew$/i,
     command: './gradlew test',
     reason: 'Gradle source is selected',
   });
+
+  rubyHints(selectedFiles, configs, hints);
+  phpHints(selectedFiles, configs, hints);
 
   for (const makefile of configs.filter(file => posix.basename(file.path) === 'Makefile')) {
     if (!makefile.contentComplete || !/^test\s*:/m.test(makefile.content ?? '')) continue;
@@ -269,12 +345,16 @@ export function inferValidationHints(
   includedFiles?: readonly string[],
 ): ValidationPlan {
   const selectedFiles = selectedSnapshotFiles(snapshot, includedFiles);
-  const configs = repositoryFiles(snapshot);
+  const configs = repositoryFiles(snapshot, includedFiles);
   const hints: ValidationHint[] = [];
   workflowObservations(selectedFiles, hints);
   javascriptHints(selectedFiles, configs, hints);
   languageHints(selectedFiles, configs, hints);
-  const commands = hints.filter(hint => hint.executable).map(hint => hint.command);
+  const commands: ValidationCommand[] = hints.filter(hint => hint.executable).map(hint => ({
+    command: hint.command,
+    workingDirectory: hint.workingDirectory,
+    requiresSandbox: true,
+  }));
 
   if (commands.length === 0) {
     const repositoryNote = snapshot.repositoryTreeComplete
@@ -284,14 +364,14 @@ export function inferValidationHints(
       commands: [],
       hints,
       inferred: false,
-      explanation: `No trusted executable validation command could be inferred; manual validation is required.${repositoryNote}`,
+      explanation: `No constructed executable validation command could be inferred; manual validation is required.${repositoryNote}`,
     };
   }
   return {
     commands,
     hints,
     inferred: true,
-    explanation: `${commands.length} trusted validation command${commands.length === 1 ? '' : 's'} inferred with repository-aware working directories.`,
+    explanation: `${commands.length} sandbox-required validation command${commands.length === 1 ? '' : 's'} inferred with repository-aware working directories.`,
   };
 }
 
