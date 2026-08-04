@@ -118,8 +118,9 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
         assert.equal(args[entrypointIndex + 1], '/bin/bash');
         assert.equal(args[entrypointIndex + 2], '-lc');
         assert.match(args[entrypointIndex + 3], /--dangerously-skip-permissions/);
-        assert.match(args[entrypointIndex + 3], /--print - "\$@"/);
-        assert.doesNotMatch(args[entrypointIndex + 3], /prompt="\$\(cat\)"/);
+        assert.match(args[entrypointIndex + 3], /cat > "\$prompt_file"/);
+        assert.match(args[entrypointIndex + 3], /--add-dir "\$prompt_dir" --print "Read the complete user request from \$prompt_file/);
+        assert.doesNotMatch(args[entrypointIndex + 3], /--print -/);
         assert.equal(args[entrypointIndex + 4], 'propr-antigravity');
         assert.ok(!args.includes('--output-format'));
         assert.ok(!args.includes('--yolo'));
@@ -134,6 +135,16 @@ test('Antigravity output parser falls back to plain print output', () => {
 
     assert.equal(parsed.summary, 'antigravity-ok');
     assert.deepEqual(parsed.conversationLog, []);
+});
+
+test('Antigravity output parser preserves plain responses that are valid JSON values', () => {
+    const numeric = parseAntigravityJsonl('2\n');
+    const object = parseAntigravityJsonl('{"answer":2}\n');
+
+    assert.equal(numeric.summary, '2');
+    assert.equal(object.summary, '{"answer":2}');
+    assert.deepEqual(numeric.conversationLog, []);
+    assert.deepEqual(object.conversationLog, []);
 });
 
 test('Antigravity output parser reads real transcript JSONL events', () => {

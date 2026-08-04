@@ -52,10 +52,22 @@ function extractAntigravityResult(cleanedOutput: string): string | undefined {
 }
 
 function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
     const candidate = event as Partial<AntigravityTranscriptEvent>;
     return typeof candidate.source === 'string'
         && typeof candidate.type === 'string'
         && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type);
+}
+
+function isAntigravityEvent(event: unknown): event is AntigravityEvent {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
+    const type = (event as { type?: unknown }).type;
+    return typeof type === 'string'
+        && ['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(type);
+}
+
+function isAntigravityOutputEvent(event: unknown): event is AntigravityOutputEvent {
+    return isTranscriptEvent(event) || isAntigravityEvent(event);
 }
 
 function normalizeTokenUsage(stats: AntigravityResultEvent['stats'] | undefined): { input_tokens?: number; output_tokens?: number } {
@@ -113,14 +125,18 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
     for (const line of output.split('\n')) {
         if (!line.trim()) continue;
         try {
-            const event = JSON.parse(line) as AntigravityOutputEvent;
+            const event = JSON.parse(line) as unknown;
+            // Plain text print responses can themselves be valid JSON (for
+            // example `2`, `true`, or a requested JSON object). Only suppress
+            // the plain-text fallback for recognized Antigravity event shapes.
+            if (!isAntigravityOutputEvent(event)) continue;
             events.push(event);
             sawJsonEvent = true;
             if (isTranscriptEvent(event)) {
                 if (event.source === 'MODEL' && typeof event.content === 'string' && event.content.trim()) {
                     state.lastCompleteAssistantMessage = event.content;
                 }
-            } else { processEvent(event as AntigravityEvent, state); }
+            } else { processEvent(event, state); }
         }
         catch { logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Antigravity output'); }
     }

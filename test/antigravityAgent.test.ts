@@ -61,7 +61,7 @@ describe('AntigravityAgent Docker args', () => {
         }
     });
 
-    test('reads the prompt from stdin via `--print -` and passes the CLI display-name model', () => {
+    test('spools stdin to a prompt file and passes the CLI display-name model', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-model-'));
         fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
 
@@ -81,10 +81,13 @@ describe('AntigravityAgent Docker args', () => {
                 issueNumber: 0
             });
 
-            // Prompt is delivered via stdin (`--print -`), never as an argv element
-            // (large repo-context prompts would exceed MAX_ARG_STRLEN -> E2BIG).
+            // Current agy releases treat `--print -` as a literal dash. Keep
+            // stdin prompts out of argv (and below MAX_ARG_STRLEN) by writing a
+            // private file that the one-shot prompt tells the agent to read.
             const shellCmd = args.find(a => a.includes('agy'));
-            assert.ok(shellCmd && shellCmd.includes('--print - '), 'shell command must use `--print -` to read stdin');
+            assert.ok(shellCmd && shellCmd.includes('cat > "$prompt_file"'));
+            assert.ok(shellCmd && shellCmd.includes('--add-dir "$prompt_dir" --print "Read the complete user request from $prompt_file'));
+            assert.equal(shellCmd?.includes('--print -'), false);
 
             // Model must be the CLI display name, never the namespaced id.
             const modelIdx = args.indexOf('--model');
@@ -96,13 +99,26 @@ describe('AntigravityAgent Docker args', () => {
         }
     });
 
-    test('entrypoint copies only durable auth into disposable runtime state and exports the transcript', () => {
+    test('image exposes agy to login shells with an isolated HOME', () => {
+        const dockerfile = fs.readFileSync(path.join(process.cwd(), 'Dockerfile.agent'), 'utf8');
+        const smokeTest = fs.readFileSync(path.join(process.cwd(), 'scripts/smoke-test-images.sh'), 'utf8');
+
+        assert.match(dockerfile, /ln -sf \/home\/node\/\.local\/bin\/agy \/usr\/local\/bin\/agy/);
+        assert.match(smokeTest, /HOME=\/tmp\/propr-antigravity-smoke \/bin\/bash -lc "command -v agy"/);
+    });
+
+    test('entrypoint prepares writable disposable runtime state and exports the transcript', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/antigravity-entrypoint.sh'), 'utf8');
 
         assert.match(script, /antigravity-oauth-token/);
         assert.match(script, /Using disposable Antigravity runtime state/);
         assert.match(script, /PROPR_ANTIGRAVITY_TRANSCRIPT_PATH/);
         assert.match(script, /transcript\.jsonl/);
+        assert.match(
+            script,
+            /for dir in tmp antigravity-cli\/log antigravity-cli\/cache config\/projects; do[\s\S]*chown -R node:node "\$config_dir"/,
+            'fresh config directories must be created before ownership is handed to node'
+        );
     });
 });
 

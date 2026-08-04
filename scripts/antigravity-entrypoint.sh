@@ -54,17 +54,20 @@ prepare_antigravity_config_dir() {
         echo "Contents of $config_dir:" >&2
         ls -la "$config_dir/" >&2
 
-        if [ "$(id -u)" = "0" ]; then
-            echo "Fixing ownership of Antigravity config files in $config_dir..." >&2
-            chown -R node:node "$config_dir" 2>/dev/null || echo "Could not change ownership" >&2
-        fi
-
         for dir in tmp antigravity-cli/log antigravity-cli/cache config/projects; do
             if [ ! -d "$config_dir/$dir" ]; then
                 echo "Creating missing directory: $config_dir/$dir" >&2
                 mkdir -p "$config_dir/$dir" 2>/dev/null || echo "Could not create $dir (permission issue)" >&2
             fi
         done
+
+        # The entrypoint runs as root so it can repair bind-mounted credentials.
+        # Do this after mkdir: otherwise fresh runtime directories are root-owned
+        # and become unwritable as soon as execution drops to the node user.
+        if [ "$(id -u)" = "0" ]; then
+            echo "Fixing ownership of Antigravity config files in $config_dir..." >&2
+            chown -R node:node "$config_dir" 2>/dev/null || echo "Could not change ownership" >&2
+        fi
         return 0
     fi
 

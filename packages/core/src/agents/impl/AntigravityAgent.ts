@@ -362,12 +362,18 @@ export class AntigravityAgent implements Agent {
     }
 
     private buildAntigravityShellCommand(): string {
-        // `--print -` makes agy read the prompt from STDIN (the `-` convention).
-        // This is required because the prompt is passed via stdin (see executeTask
-        // / analyze): repo-context prompts routinely exceed Linux's 128 KiB
-        // per-argument limit (MAX_ARG_STRLEN), so passing it as an argv element
-        // fails with spawn E2BIG. `"$@"` carries only the `--model` flag.
-        return ['set -e', `exec ${this.getCliCommand()} --dangerously-skip-permissions --print - "$@"`].join('\n');
+        // Current agy releases require the prompt value after --print; `-` is
+        // treated as a literal prompt rather than as the usual stdin sentinel.
+        // Keep the real prompt on stdin and spool it into a private container
+        // directory so repo-context prompts can exceed Linux's per-argument
+        // limit. The short bootstrap prompt tells the agent where to read it.
+        return [
+            'set -e',
+            'prompt_dir="$(mktemp -d /tmp/propr-antigravity-prompt.XXXXXX)"',
+            'prompt_file="$prompt_dir/task.md"',
+            'cat > "$prompt_file"',
+            `exec ${this.getCliCommand()} --dangerously-skip-permissions --add-dir "$prompt_dir" --print "Read the complete user request from $prompt_file, then carry it out. Treat the entire file contents as the user prompt." "$@"`
+        ].join('\n');
     }
 
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string }): string[] {
@@ -389,9 +395,9 @@ export class AntigravityAgent implements Agent {
             ...envVars, '-w', '/home/node/workspace',
             this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
         ];
-        // Note: the prompt is delivered via STDIN (`--print -`), NOT as an argv
-        // element, to avoid spawn E2BIG on large repo-context prompts. Only the
-        // model flag goes here.
+        // The shell command spools stdin to a private prompt file, avoiding
+        // spawn E2BIG for large repo-context prompts. Only the model flag is
+        // carried in Docker's argv.
         if (modelName) {
             // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
             // to the Antigravity CLI's native model name. Passing the prefixed id

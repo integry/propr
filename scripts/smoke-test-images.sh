@@ -313,6 +313,7 @@ docker run --rm "$AGENT_TAG" sh -c '
   for executable in claude codex agy opencode vibe git gh rg python3; do
     command -v "$executable" >/dev/null
   done
+  test "$(env HOME=/tmp/propr-antigravity-smoke /bin/bash -lc "command -v agy")" = /usr/local/bin/agy
 ' >/dev/null
 echo "✓ agent runtime exposes every bundled CLI"
 

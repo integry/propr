@@ -13,11 +13,68 @@ import {
 import type { AgentConfig } from '@propr/core';
 
 const CONTAINER_WORKSPACE = '/home/node/workspace';
+const ANTIGRAVITY_TOKEN_PATH = 'antigravity-cli/antigravity-oauth-token';
+const ANTIGRAVITY_ONBOARDING_PATH = 'antigravity-cli/cache/onboarding.json';
+const ANTIGRAVITY_SETTINGS_PATH = 'antigravity-cli/settings.json';
+
+export const AGENT_LOGIN_TERMINAL = {
+  rows: 30,
+  columns: 120,
+  type: 'xterm-256color',
+} as const;
 
 export class AgentLoginInputError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AgentLoginInputError';
+  }
+}
+
+function readJsonObject(filePath: string, label: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw new AgentLoginInputError(`${label} is not valid JSON`);
+  }
+  throw new AgentLoginInputError(`${label} must contain a JSON object`);
+}
+
+/**
+ * Apply privacy-preserving, non-legal defaults before Antigravity's first-run
+ * wizard starts. The user still sees and accepts the provider's terms, while
+ * interaction telemetry begins unchecked and the isolated login workspace does
+ * not require another trust prompt.
+ */
+export function prepareAgentLoginCredentialDefaults(type: AgentType, credentialPath: string): void {
+  if (type !== 'antigravity') return;
+  const settingsPath = path.join(credentialPath, ANTIGRAVITY_SETTINGS_PATH);
+  const settings = readJsonObject(settingsPath, 'Antigravity settings');
+  settings.enableTelemetry = false;
+  if (typeof settings.colorScheme !== 'string') settings.colorScheme = 'terminal';
+  const trustedWorkspaces = Array.isArray(settings.trustedWorkspaces)
+    ? settings.trustedWorkspaces.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (!trustedWorkspaces.includes(CONTAINER_WORKSPACE)) trustedWorkspaces.push(CONTAINER_WORKSPACE);
+  settings.trustedWorkspaces = trustedWorkspaces;
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true, mode: 0o755 });
+  fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+}
+
+export function isAgentLoginComplete(type: AgentType, credentialPath: string): boolean {
+  if (type !== 'antigravity') return false;
+  if (!fs.existsSync(path.join(credentialPath, ANTIGRAVITY_TOKEN_PATH))) return false;
+  try {
+    const onboarding = readJsonObject(
+      path.join(credentialPath, ANTIGRAVITY_ONBOARDING_PATH),
+      'Antigravity onboarding state',
+    );
+    return onboarding.onboardingComplete === true;
+  } catch {
+    return false;
   }
 }
 
@@ -164,6 +221,9 @@ export function buildAgentLoginCreateArgs(
     '-v', `${credentialPath}:${descriptor.containerConfigPath}:rw`,
     ...additionalMounts,
     '-e', `PROPR_AGENT_TYPE=${agent.type}`,
+    '-e', `TERM=${AGENT_LOGIN_TERMINAL.type}`,
+    '-e', `COLUMNS=${AGENT_LOGIN_TERMINAL.columns}`,
+    '-e', `LINES=${AGENT_LOGIN_TERMINAL.rows}`,
     ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []),
     ...environment,
     '-w', CONTAINER_WORKSPACE,

@@ -4,7 +4,7 @@ Third-Party Licenses
 This file lists every third-party package bundled in the Propr Docker images,
 its license, and (where required) the full license text.
 
-Generated: 2026-07-29
+Generated: 2026-08-04
 See NOTICE for a higher-level summary and end-user obligations.
 
 ---
@@ -509,7 +509,7 @@ below is bundled in the propr/app image under the stated license.
 "prebuild-install@7.1.3","MIT","https://github.com/prebuild/prebuild-install"
 "pretty-ms@9.3.0","MIT","https://github.com/sindresorhus/pretty-ms"
 "process-warning@5.0.0","MIT","https://github.com/fastify/process-warning"
-"propr@0.8.6","UNLICENSED",""
+"propr@0.8.6","UNLICENSED","https://github.com/integry/propr"
 "proxy-addr@2.0.7","MIT","https://github.com/jshttp/proxy-addr"
 "pump@3.0.2","MIT","https://github.com/mafintosh/pump"
 "qs@6.14.0","BSD-3-Clause","https://github.com/ljharb/qs"

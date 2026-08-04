@@ -63,7 +63,7 @@ describe('AgentLoginModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => {
-      expect(sendAgentLoginInput).toHaveBeenCalledWith(agent.id, runningSession.id, 'ABCD-1234\n');
+      expect(sendAgentLoginInput).toHaveBeenCalledWith(agent.id, runningSession.id, 'ABCD-1234\r');
     });
   });
 
@@ -115,7 +115,7 @@ describe('AgentLoginModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => {
-      expect(sendAgentLoginInput).toHaveBeenCalledWith(agent.id, runningSession.id, '\n');
+      expect(sendAgentLoginInput).toHaveBeenCalledWith(agent.id, runningSession.id, '\r');
     });
   });
 

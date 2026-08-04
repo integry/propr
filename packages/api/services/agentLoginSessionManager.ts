@@ -8,8 +8,11 @@ import {
 } from '@propr/shared';
 import type { AgentConfig } from '@propr/core';
 import {
+  AGENT_LOGIN_TERMINAL,
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
+  isAgentLoginComplete,
+  prepareAgentLoginCredentialDefaults,
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
@@ -20,6 +23,8 @@ const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_LENGTH = 128 * 1024;
 const MAX_INPUT_LENGTH = 4096;
+const MAX_CONTROL_STRING_LENGTH = 16 * 1024;
+const DEFAULT_PROVIDER_COMPLETION_POLL_MS = 500;
 
 type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
   | 'control_string' | 'control_string_escape';
@@ -60,8 +65,13 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   process?: ChildProcessWithoutNullStreams;
   timeout?: ReturnType<typeof setTimeout>;
   retentionTimeout?: ReturnType<typeof setTimeout>;
+  providerCompletionTimeout?: ReturnType<typeof setTimeout>;
+  providerLoginInitiallyComplete?: boolean;
   cleanupStarted?: boolean;
   escapeState: TerminalEscapeState;
+  controlStringKind?: string;
+  controlStringBuffer: string;
+  emittedTerminalLinks: Set<string>;
   outputEndedWithCarriageReturn?: boolean;
 }
 
@@ -77,6 +87,7 @@ export interface AgentLoginSessionManagerDeps {
   id?: () => string;
   sessionTimeoutMs?: number;
   sessionRetentionMs?: number;
+  providerCompletionPollMs?: number;
   scope?: string;
 }
 
@@ -107,12 +118,19 @@ function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
   });
 }
 
-function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
+export function buildDockerAttachCommand(args: string[]): string {
   const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-  const command = ['docker', ...args].map(shellQuote).join(' ');
+  const dockerCommand = ['docker', ...args].map(shellQuote).join(' ');
+  return `stty rows ${AGENT_LOGIN_TERMINAL.rows} cols ${AGENT_LOGIN_TERMINAL.columns}; exec ${dockerCommand}`;
+}
+
+function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
+  const command = buildDockerAttachCommand(args);
   // Docker refuses to attach a container TTY when its own stdin is a pipe.
   // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
-  // pipeable for the browser session.
+  // pipeable for the browser session. Set a real initial terminal size before
+  // Docker attaches; otherwise the container receives a 0x0 PTY and full-screen
+  // provider login UIs can stay alive without rendering any prompt.
   return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
@@ -164,16 +182,83 @@ function isUnsafeControlCharacter(value: string): boolean {
   return UNSAFE_CONTROL_RANGES.some(([start, end]) => code >= start && code <= end);
 }
 
+function startControlString(session: AgentLoginSession, kind: string): void {
+  session.controlStringKind = kind;
+  session.controlStringBuffer = '';
+}
+
+function appendControlString(session: AgentLoginSession, value: string): void {
+  if (session.controlStringBuffer.length >= MAX_CONTROL_STRING_LENGTH) {
+    session.controlStringKind = undefined;
+    session.controlStringBuffer = '';
+    return;
+  }
+  session.controlStringBuffer += value;
+}
+
+function finishControlString(session: AgentLoginSession): string {
+  const kind = session.controlStringKind;
+  const payload = session.controlStringBuffer;
+  session.controlStringKind = undefined;
+  session.controlStringBuffer = '';
+
+  // OSC 8 hyperlinks carry the complete target separately from the rendered
+  // label. Full-screen CLIs can wrap or truncate that label, so preserve one
+  // validated HTTP(S) target as plain text for the browser to linkify. All
+  // other OSC/DCS payloads remain stripped from the output.
+  if (kind !== ']') return '';
+  const match = payload.match(/^8;[^;]*;(https?:\/\/[^\u0000-\u0020\u007f]+)$/u);
+  const target = match?.[1];
+  if (!target || session.emittedTerminalLinks.has(target)) return '';
+  try {
+    const parsed = new URL(target);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+  } catch {
+    return '';
+  }
+  session.emittedTerminalLinks.add(target);
+  return `\n${target}\n`;
+}
+
 function sanitizeTerminalChunk(session: AgentLoginSession, chunk: string): string {
   let sanitized = '';
   for (const value of chunk) {
     const state = session.escapeState;
     if (state !== 'text') {
+      if (state === 'escape' && CONTROL_STRING_STARTS.has(value)) {
+        startControlString(session, value);
+        session.escapeState = 'control_string';
+        continue;
+      }
+      if (state === 'control_string') {
+        if (value === '\u0007' || value === '\u009c') {
+          sanitized += finishControlString(session);
+          session.escapeState = 'text';
+        } else if (value === '\u001b') {
+          session.escapeState = 'control_string_escape';
+        } else {
+          appendControlString(session, value);
+        }
+        continue;
+      }
+      if (state === 'control_string_escape') {
+        if (value === '\\' || value === '\u009c') {
+          sanitized += finishControlString(session);
+          session.escapeState = 'text';
+        } else {
+          appendControlString(session, value);
+          session.escapeState = value === '\u001b' ? 'control_string_escape' : 'control_string';
+        }
+        continue;
+      }
       session.escapeState = ESCAPE_TRANSITIONS[state](value);
       continue;
     }
     const escapeState = startEscapeSequence(value);
     if (escapeState) {
+      if (escapeState === 'control_string') {
+        startControlString(session, value === '\u009d' ? ']' : value);
+      }
       session.escapeState = escapeState;
       continue;
     }
@@ -201,6 +286,7 @@ export class AgentLoginSessionManager {
   private readonly id: NonNullable<AgentLoginSessionManagerDeps['id']>;
   private readonly sessionTimeoutMs: number;
   private readonly sessionRetentionMs: number;
+  private readonly providerCompletionPollMs: number;
   private readonly scope: string;
 
   constructor(deps: AgentLoginSessionManagerDeps = {}) {
@@ -210,6 +296,7 @@ export class AgentLoginSessionManager {
     this.id = deps.id ?? randomUUID;
     this.sessionTimeoutMs = deps.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.sessionRetentionMs = deps.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS;
+    this.providerCompletionPollMs = deps.providerCompletionPollMs ?? DEFAULT_PROVIDER_COMPLETION_POLL_MS;
     this.scope = normalizeScope(deps.scope ?? process.env.PROPR_STACK ?? 'propr');
   }
 
@@ -255,6 +342,8 @@ export class AgentLoginSessionManager {
       status: 'starting',
       output: '',
       escapeState: 'text',
+      controlStringBuffer: '',
+      emittedTerminalLinks: new Set<string>(),
       createdAt: new Date(timestamp).toISOString(),
       updatedAt: new Date(timestamp).toISOString(),
       expiresAt: new Date(timestamp + this.sessionTimeoutMs).toISOString(),
@@ -269,6 +358,13 @@ export class AgentLoginSessionManager {
         // entrypoint then normalizes ownership of the mounted leaf before
         // dropping privileges and writing credential files.
         mkdirSync(credentialPath, { recursive: true, mode: 0o755 });
+      }
+      prepareAgentLoginCredentialDefaults(agent.type, credentialPath);
+      session.providerLoginInitiallyComplete = isAgentLoginComplete(agent.type, credentialPath);
+      if (session.providerLoginInitiallyComplete) {
+        this.appendOutput(session, 'Antigravity authentication is already available.\n');
+        this.finish(session, 'succeeded', 0);
+        return this.snapshot(session);
       }
       const image = resolveAgentLoginImage(agent);
       const createArgs = buildAgentLoginCreateArgs(
@@ -335,6 +431,7 @@ export class AgentLoginSessionManager {
     await Promise.all(sessions.map(async (session) => {
       if (session.timeout) clearTimeout(session.timeout);
       if (session.retentionTimeout) clearTimeout(session.retentionTimeout);
+      if (session.providerCompletionTimeout) clearTimeout(session.providerCompletionTimeout);
       if (!isTerminal(session.status)) {
         session.status = 'cancelled';
         session.process?.kill();
@@ -355,6 +452,7 @@ export class AgentLoginSessionManager {
     child.stdin.on('error', () => {
       // A provider can close stdin as it transitions to browser polling.
     });
+    this.scheduleProviderCompletionCheck(session);
     child.on('error', error => {
       if (isTerminal(session.status)) return;
       this.appendOutput(session, `${error.message}\n`);
@@ -395,6 +493,10 @@ export class AgentLoginSessionManager {
       clearTimeout(session.timeout);
       session.timeout = undefined;
     }
+    if (session.providerCompletionTimeout) {
+      clearTimeout(session.providerCompletionTimeout);
+      session.providerCompletionTimeout = undefined;
+    }
     if (!session.retentionTimeout) {
       session.retentionTimeout = setTimeout(() => {
         this.sessions.delete(session.id);
@@ -422,6 +524,23 @@ export class AgentLoginSessionManager {
       void this.timeoutSession(session);
     }, this.sessionTimeoutMs);
     unrefTimer(session.timeout);
+  }
+
+  private scheduleProviderCompletionCheck(session: AgentLoginSession): void {
+    if (session.agentType !== 'antigravity' || session.providerLoginInitiallyComplete) return;
+    session.providerCompletionTimeout = setTimeout(() => {
+      session.providerCompletionTimeout = undefined;
+      if (isTerminal(session.status)) return;
+      if (isAgentLoginComplete(session.agentType, session.credentialPath)) {
+        this.appendOutput(session, '\nAuthentication saved. Closing the provider prompt…\n');
+        this.finish(session, 'succeeded', 0);
+        session.process?.kill();
+        void this.cleanupContainer(session);
+        return;
+      }
+      this.scheduleProviderCompletionCheck(session);
+    }, this.providerCompletionPollMs);
+    unrefTimer(session.providerCompletionTimeout);
   }
 
   private requireSession(sessionId: string, owner: string): AgentLoginSession {
