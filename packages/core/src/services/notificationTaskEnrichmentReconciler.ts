@@ -20,6 +20,7 @@ interface ReconcileTaskEnrichmentsOptions {
     shouldContinue: () => boolean;
     project: (payload: TaskUpdatePayload) => Promise<'completed' | 'deferred'>;
     advanceCheckpoint: (cursor: number) => Promise<void>;
+    deferProjection: (cursor: number, payload: TaskUpdatePayload) => Promise<boolean>;
 }
 
 function parseMetadata(value: unknown): Record<string, unknown> {
@@ -86,7 +87,7 @@ export async function reconcileTaskNotificationEnrichments(
             continue;
         }
         const transitionSequence = Number(row.transition_history_id);
-        const outcome = await options.project({
+        const payload: TaskUpdatePayload = {
             eventType: 'task:update',
             taskId: row.task_id,
             state: row.state,
@@ -94,15 +95,18 @@ export async function reconcileTaskNotificationEnrichments(
             metadata: {
                 ...parseMetadata(row.metadata),
                 transitionAt,
+                notificationReconciliation: true,
                 ...(Number.isSafeInteger(transitionSequence) && transitionSequence > 0
                     ? { transitionSequence }
                     : {})
             }
-        });
-        if (outcome === 'deferred') break;
+        };
+        const outcome = await options.project(payload);
+        if (outcome === 'deferred'
+            && !await options.deferProjection(row.change_id, payload)) break;
         await options.advanceCheckpoint(row.change_id);
         cursor = row.change_id;
-        repaired++;
+        if (outcome === 'completed') repaired++;
     }
     return { repaired, cursor };
 }

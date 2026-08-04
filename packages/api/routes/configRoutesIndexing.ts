@@ -134,7 +134,10 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         req.user?.username
       );
 
-      res.json({ success: true });
+      res.json({
+        success: true,
+        ...(result.message === undefined ? {} : { message: result.message })
+      });
     } catch (error) {
       console.error('Error in /api/config/repos/stop-indexing POST:', error);
       res.status(500).json({ error: 'Failed to stop indexing' });

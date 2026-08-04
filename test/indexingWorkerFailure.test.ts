@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
-import { closeConnection, type RepositoryStatusTransition } from '@propr/core';
+import {
+    closeConnection,
+    type IndexingJobData,
+    type RepositoryStatusTransition,
+} from '@propr/core';
 import { handleIndexingJobFailure } from '../src/indexingWorkerFailure.js';
+import { createIndexingJobProcessor } from '../src/indexingJobProcessor.js';
 
 after(async () => closeConnection());
 
@@ -24,6 +29,55 @@ function failedJob(attemptsMade: number, attempts = 3) {
 }
 
 describe('indexing worker failure finalization', () => {
+    test('retains a legacy run identity when BullMQ data enrichment fails', async () => {
+        const job: { data: IndexingJobData; updateData: () => Promise<never> } = {
+            data: {
+                repository: 'acme/api',
+                repoPath: '/tmp/acme-api',
+                correlationId: 'legacy-enrichment-failure',
+                baseBranch: 'main',
+            },
+            updateData: async () => { throw new Error('Redis update failed'); },
+        };
+        const processor = createIndexingJobProcessor({
+            createIndexingRunIdentity: () => ({
+                runId: 'accepted-legacy-run',
+                transitionAt: '2026-08-03T10:00:00.000Z',
+            }),
+            updateRepositoryStatus: async () => ({
+                runId: 'accepted-legacy-run',
+                transitionAt: '2026-08-03T10:01:00.000Z',
+                applied: true,
+            }),
+            indexRepo: async () => { throw new Error('indexing failed'); },
+            clearIndexingRuntimeStateBestEffort: clearRuntimeState,
+        });
+
+        await assert.rejects(processor(job as never), /indexing failed/);
+        assert.equal(job.data.runId, 'accepted-legacy-run');
+        assert.equal(job.data.durablyAccepted, true);
+
+        let finalizedRunId: string | undefined;
+        await handleIndexingJobFailure({
+            data: job.data,
+            attemptsMade: 1,
+            opts: { attempts: 1 },
+        }, new Error('indexing failed'), {
+            log: silentLogger,
+            clearIndexingRuntimeStateBestEffort: clearRuntimeState,
+            updateRepositoryStatus: async (_repository, _status, _branch, options) => {
+                finalizedRunId = options.runId;
+                return {
+                    runId: options.runId!,
+                    transitionAt: '2026-08-03T10:02:00.000Z',
+                    applied: true,
+                };
+            },
+            publishIndexingStatus: async () => undefined,
+        });
+        assert.equal(finalizedRunId, 'accepted-legacy-run');
+    });
+
     test('does not terminally fail a run while BullMQ still has a retry', async () => {
         let statusWrites = 0;
         await handleIndexingJobFailure(failedJob(1), new Error('temporary'), {

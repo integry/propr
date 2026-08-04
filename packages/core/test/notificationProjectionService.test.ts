@@ -11,8 +11,10 @@ import { up as addIndexingTransitionHistory } from '../src/db/migrations/2026080
 import { up as addProjectionCheckpoints } from '../src/db/migrations/20260803010000_add_notification_projection_checkpoints.js';
 import { up as hardenNotificationFollowup } from '../src/db/migrations/20260803020000_harden_notification_followup.js';
 import { up as addTaskNotificationEnrichments } from '../src/db/migrations/20260803040000_add_task_notification_enrichments.js';
+import { up as hardenProjectionRetries } from '../src/db/migrations/20260803050000_harden_projection_retries_and_indexing_terminals.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
+import { NotificationProjectionCheckpointStore } from '../src/services/notificationProjectionCheckpointStore.js';
 import { NotificationService } from '../src/services/notificationService.js';
 import { NotificationStalledDetector } from '../src/services/notificationStalledDetector.js';
 import { NotificationSystemProjection } from '../src/services/notificationSystemProjection.js';
@@ -162,6 +164,7 @@ beforeEach(async () => {
     await addProjectionCheckpoints(database);
     await hardenNotificationFollowup(database);
     await addTaskNotificationEnrichments(database);
+    await hardenProjectionRetries(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -1372,7 +1375,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.equal(await restartedProjection.reconcileTerminalTransitions(), 0);
     });
 
-    test('defers a terminal checkpoint until repository authorization refreshes', async () => {
+    test('durably retries a deferred transition after advancing its source checkpoint', async () => {
         await database('tasks').insert({
             task_id: 'deferred-terminal-task',
             repository: 'Integry/ProPR',
@@ -1394,12 +1397,15 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
 
         assert.equal(await projection.reconcileTerminalTransitions(), 0);
         assert.equal((await events()).length, 0);
-        assert.equal(
+        assert.deepEqual(
             await database('notification_projection_checkpoints')
                 .where({ source: 'terminal-task-history' })
-                .first(),
-            undefined
+                .first('cursor'),
+            { cursor: '1' }
         );
+        assert.equal(await database('notification_projection_retries')
+            .where({ source: 'terminal-task-history' })
+            .count({ count: '*' }).first().then((row) => Number(row?.count)), 1);
 
         await grantRepositoryEntitlement('deferred-owner', 'integry/propr');
         await database('notification_repository_entitlement_snapshots')
@@ -1410,6 +1416,80 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.deepEqual(await database('notification_user_states').pluck('user_id'), [
             'deferred-owner'
         ]);
+        assert.equal(await database('notification_projection_retries')
+            .count({ count: '*' }).first().then((row) => Number(row?.count)), 0);
+    });
+
+    test('a deferred recipient does not block later task transitions', async () => {
+        await grantRepositoryEntitlement('ready-owner');
+        await database('tasks').insert([
+            {
+                task_id: 'blocked-task', repository: 'integry/propr', issue_number: 1,
+                task_type: 'issue', initial_job_data: JSON.stringify({ userId: 'blocked-owner' })
+            },
+            {
+                task_id: 'ready-task', repository: 'integry/propr', issue_number: 2,
+                task_type: 'issue', initial_job_data: JSON.stringify({ userId: 'ready-owner' })
+            }
+        ]);
+        const [blockedHistoryId] = await database('task_history').insert({
+            task_id: 'blocked-task', state: 'failed', timestamp: EVENT_TIME, metadata: '{}'
+        });
+        const [readyHistoryId] = await database('task_history').insert({
+            task_id: 'ready-task', state: 'failed', timestamp: EVENT_TIME, metadata: '{}'
+        });
+
+        assert.equal(await projection.reconcileTerminalTransitions(), 1);
+        assert.deepEqual(await database('notification_user_states').pluck('user_id'), ['ready-owner']);
+        assert.deepEqual(await database('notification_projection_checkpoints')
+            .where({ source: 'terminal-task-history' }).first('cursor'), {
+            cursor: String(readyHistoryId)
+        });
+        assert.deepEqual(await database('notification_projection_retries')
+            .first('transition_key'), { transition_key: String(blockedHistoryId) });
+
+        await grantRepositoryEntitlement('blocked-owner');
+        assert.equal(await projection.reconcileTerminalTransitions(), 1);
+        assert.deepEqual(
+            new Set(await database('notification_user_states').pluck('user_id')),
+            new Set(['blocked-owner', 'ready-owner'])
+        );
+    });
+
+    test('reloads a shared cursor on every run and never projects behind a handoff', async () => {
+        const handoffProjection = new NotificationProjectionService({
+            database,
+            now: () => SERVICE_TIME
+        });
+        assert.equal(await handoffProjection.reconcileTerminalTransitions(), 0);
+        await grantRepositoryEntitlement('handoff-owner');
+        await database('tasks').insert({
+            task_id: 'handoff-task', repository: 'integry/propr', issue_number: 3,
+            task_type: 'issue', initial_job_data: JSON.stringify({ userId: 'handoff-owner' })
+        });
+        await database('task_history').insert({
+            task_id: 'handoff-task', state: 'failed', timestamp: EVENT_TIME, metadata: '{}'
+        });
+        await database('notification_projection_checkpoints').insert({
+            source: 'terminal-task-history', cursor: '1000', updated_at: SERVICE_TIME
+        });
+
+        assert.equal(await handoffProjection.reconcileTerminalTransitions(), 0);
+        assert.equal((await events()).length, 0);
+    });
+
+    test('conditionally advances numeric and tuple checkpoints monotonically', async () => {
+        const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
+        await checkpoints.save('terminal-task-history', '1000');
+        await checkpoints.save('terminal-task-history', '200');
+        await checkpoints.save('review-drafts', JSON.stringify(['2026-08-03T00:00:00.000Z', 'z']));
+        await checkpoints.save('review-drafts', JSON.stringify(['2026-08-02T00:00:00.000Z', 'a']));
+
+        assert.equal(await checkpoints.load('terminal-task-history'), '1000');
+        assert.equal(
+            await checkpoints.load('review-drafts'),
+            JSON.stringify(['2026-08-03T00:00:00.000Z', 'z'])
+        );
     });
 
     test('prunes terminal indexing activity only after its durable checkpoint advances', async () => {
@@ -1706,6 +1786,32 @@ describe('system notification projection', { concurrency: false }, () => {
 });
 
 describe('notification projection schedulers', { concurrency: false }, () => {
+    test('backs off immediate projection retries after transient failures', async () => {
+        let attempts = 0;
+        const startedAt = Date.now();
+        const queue = new NotificationProjectionQueue({
+            projector: async () => {
+                attempts++;
+                if (attempts < 3) throw new Error('transient projection failure');
+            },
+            concurrency: 1,
+            maxSize: 2,
+            drainTimeoutMs: 1000
+        });
+        const completion = queue.enqueue({
+            eventType: 'task:update',
+            taskId: 'backoff-task',
+            state: 'processing',
+            timestamp: EVENT_TIME
+        });
+
+        assert.ok(completion);
+        await completion;
+        assert.equal(attempts, 3);
+        assert.ok(Date.now() - startedAt >= 30);
+        assert.equal((await queue.close()).drained, true);
+    });
+
     test('derives a lease TTL that exceeds renewal clamps and operation deadlines', () => {
         assert.equal(getNotificationProjectionLeaseTtlMs(100), 20_000);
         assert.equal(getNotificationProjectionLeaseTtlMs(60_000), 120_000);

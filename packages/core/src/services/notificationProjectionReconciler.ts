@@ -5,21 +5,23 @@ import {
     type IndexingUpdatePayload,
     type TaskUpdatePayload
 } from '@propr/shared';
-import logger from '../utils/logger.js';
 import {
     NotificationProjectionCheckpointStore,
     type NotificationProjectionCheckpointSource
 } from './notificationProjectionCheckpointStore.js';
 import { reconcileTaskNotificationEnrichments } from './notificationTaskEnrichmentReconciler.js';
+import { reconcileNotificationProjectionRetries } from './notificationProjectionRetryReconciler.js';
 import {
     checkpointTuple,
+    getNotificationIndexingTransitionRetentionMs,
+    logMalformedReconciliationTimestamp,
     nonNegativeCheckpoint,
     normalizedReconciliationTimestamp,
-    parseReconciliationMetadata
+    parseReconciliationMetadata,
+    reconciliationPublicationTimestamp
 } from './notificationProjectionReconciliationValues.js';
 
 const DEFAULT_RECONCILIATION_BATCH_SIZE = 100;
-export const DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RETENTION_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const TERMINAL_TASK_STATES = ['completed', 'complete', 'succeeded', 'failed', 'error', 'cancelled', 'canceled'] as const;
 
@@ -52,23 +54,10 @@ interface DraftCursor {
 
 type ReconciledRepositoryStatus = 'indexing' | 'completed' | 'failed' | 'idle';
 
-function positiveIntegerEnv(name: string, fallback: number): number {
-    const raw = process.env[name];
-    if (raw === undefined || raw.trim() === '') return fallback;
-    const value = Number(raw);
-    if (Number.isSafeInteger(value) && value > 0) return value;
-    logger.warn({ name, value: raw }, 'Ignoring invalid notification reconciliation configuration');
-    return fallback;
-}
-
-export function getNotificationIndexingTransitionRetentionMs(): number {
-    return positiveIntegerEnv(
-        'NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS',
-        DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS
-    );
-}
-
-/** Bounded scans repair missed terminal projections and durably advance each source. */
+/**
+ * Bounded, at-least-once scans repair missed terminal projections. Projection
+ * commits before its monotonic cursor, so a crash can replay an idempotent event.
+ */
 export class NotificationProjectionReconciler {
     private readonly database: Knex;
     private readonly projectTaskUpdate: ReconcilerOptions['projectTaskUpdate'];
@@ -108,7 +97,15 @@ export class NotificationProjectionReconciler {
 
     async reconcile(shouldContinue: () => boolean = () => true): Promise<number> {
         await this.ensureCursorsLoaded();
-        let repaired = await this.reconcileTasks(shouldContinue);
+        let repaired = await reconcileNotificationProjectionRetries({
+            checkpoints: this.checkpoints,
+            batchSize: this.batchSize,
+            shouldContinue,
+            projectTaskUpdate: this.projectTaskUpdate,
+            projectIndexingUpdate: this.projectIndexingUpdate,
+            projectDraftUpdate: this.projectDraftUpdate
+        });
+        if (shouldContinue()) repaired += await this.reconcileTasks(shouldContinue);
         if (shouldContinue()) repaired += await this.reconcileTaskEnrichments(shouldContinue);
         if (shouldContinue()) repaired += await this.reconcileRepositories(shouldContinue);
         if (shouldContinue()) repaired += await this.reconcileDrafts(shouldContinue);
@@ -116,8 +113,13 @@ export class NotificationProjectionReconciler {
     }
 
     private async ensureCursorsLoaded(): Promise<void> {
-        this.cursorLoad ??= this.loadCursors();
-        await this.cursorLoad;
+        const load = this.cursorLoad ?? this.loadCursors();
+        this.cursorLoad = load;
+        try {
+            await load;
+        } finally {
+            if (this.cursorLoad === load) this.cursorLoad = undefined;
+        }
     }
 
     private async loadCursors(): Promise<void> {
@@ -132,15 +134,17 @@ export class NotificationProjectionReconciler {
         this.taskEnrichmentCursor = nonNegativeCheckpoint(taskEnrichment) ?? 0;
         this.repositoryTransitionCursor = nonNegativeCheckpoint(indexingHistory) ?? 0;
         const repositoryTuple = checkpointTuple(indexingCurrent, 3);
-        if (repositoryTuple) {
-            this.repositoryCursor = {
+        this.repositoryCursor = repositoryTuple
+            ? {
                 updatedAt: repositoryTuple[0],
                 fullName: repositoryTuple[1],
                 branch: repositoryTuple[2]
-            };
-        }
+            }
+            : undefined;
         const draftTuple = checkpointTuple(draft, 2);
-        if (draftTuple) this.draftCursor = { updatedAt: draftTuple[0], draftId: draftTuple[1] };
+        this.draftCursor = draftTuple
+            ? { updatedAt: draftTuple[0], draftId: draftTuple[1] }
+            : undefined;
     }
 
     private async reconcileTasks(shouldContinue: () => boolean): Promise<number> {
@@ -162,26 +166,33 @@ export class NotificationProjectionReconciler {
             try {
                 transitionAt = normalizedReconciliationTimestamp(row.timestamp);
             } catch (error) {
-                this.logMalformedTimestamp(TASK_CHECKPOINT, row.history_id, row.timestamp, error);
+                logMalformedReconciliationTimestamp(
+                    TASK_CHECKPOINT, row.history_id, row.timestamp, error
+                );
                 await this.advanceNumericCheckpoint(TASK_CHECKPOINT, row.history_id);
                 this.taskCursor = row.history_id;
                 continue;
             }
-            const outcome = await this.projectTaskUpdate({
+            const payload: TaskUpdatePayload = {
                 eventType: 'task:update',
                 taskId: row.task_id,
                 state: row.state,
-                timestamp: this.publicationTimestamp(transitionAt),
+                timestamp: reconciliationPublicationTimestamp(this.now(), transitionAt),
                 metadata: {
                     ...parseReconciliationMetadata(row.metadata),
                     transitionAt,
-                    transitionSequence: row.history_id
+                    transitionSequence: row.history_id,
+                    notificationReconciliation: true
                 }
-            });
-            if (outcome === 'deferred') break;
+            };
+            const outcome = await this.projectTaskUpdate(payload);
+            if (outcome === 'deferred'
+                && !await this.checkpoints.enqueueRetry(
+                    TASK_CHECKPOINT, String(row.history_id), payload
+                )) break;
             await this.advanceNumericCheckpoint(TASK_CHECKPOINT, row.history_id);
             this.taskCursor = row.history_id;
-            repaired++;
+            if (outcome === 'completed') repaired++;
         }
         return repaired;
     }
@@ -196,6 +207,9 @@ export class NotificationProjectionReconciler {
             project: this.projectTaskUpdate,
             advanceCheckpoint: (cursor) => this.advanceNumericCheckpoint(
                 TASK_ENRICHMENT_CHECKPOINT, cursor
+            ),
+            deferProjection: (cursor, payload) => this.checkpoints.enqueueRetry(
+                TASK_ENRICHMENT_CHECKPOINT, String(cursor), payload
             )
         });
         this.taskEnrichmentCursor = result.cursor;
@@ -231,26 +245,30 @@ export class NotificationProjectionReconciler {
             try {
                 transitionAt = normalizedReconciliationTimestamp(row.transition_at);
             } catch (error) {
-                this.logMalformedTimestamp(
+                logMalformedReconciliationTimestamp(
                     INDEXING_HISTORY_CHECKPOINT, row.transition_id, row.transition_at, error
                 );
                 await this.advanceNumericCheckpoint(INDEXING_HISTORY_CHECKPOINT, row.transition_id);
                 this.repositoryTransitionCursor = row.transition_id;
                 continue;
             }
-            const outcome = await this.projectIndexingUpdate({
+            const payload: IndexingUpdatePayload = {
                 eventType: 'indexing:update',
                 repository: row.full_name,
                 branch: row.branch,
                 phase: row.status,
                 transitionAt,
                 runId: row.run_id,
-                timestamp: this.publicationTimestamp(transitionAt)
-            });
-            if (outcome === 'deferred') break;
+                timestamp: reconciliationPublicationTimestamp(this.now(), transitionAt)
+            };
+            const outcome = await this.projectIndexingUpdate(payload);
+            if (outcome === 'deferred'
+                && !await this.checkpoints.enqueueRetry(
+                    INDEXING_HISTORY_CHECKPOINT, String(row.transition_id), payload
+                )) break;
             await this.advanceNumericCheckpoint(INDEXING_HISTORY_CHECKPOINT, row.transition_id);
             this.repositoryTransitionCursor = row.transition_id;
-            repaired++;
+            if (outcome === 'completed') repaired++;
         }
         return repaired;
     }
@@ -294,7 +312,7 @@ export class NotificationProjectionReconciler {
             try {
                 transitionAt = normalizedReconciliationTimestamp(row.indexing_transition_at);
             } catch (error) {
-                this.logMalformedTimestamp(
+                logMalformedReconciliationTimestamp(
                     INDEXING_CURRENT_CHECKPOINT,
                     `${row.full_name}:${row.branch}`,
                     row.indexing_transition_at,
@@ -306,17 +324,20 @@ export class NotificationProjectionReconciler {
                 this.repositoryCursor = cursor;
                 continue;
             }
-            const outcome = await this.projectIndexingUpdate({
+            const payload: IndexingUpdatePayload = {
                 eventType: 'indexing:update', repository: row.full_name, branch: row.branch,
                 phase: row.indexing_status, transitionAt, runId: row.indexing_run_id,
-                timestamp: this.publicationTimestamp(transitionAt)
-            });
-            if (outcome === 'deferred') break;
-            await this.advanceTupleCheckpoint(INDEXING_CURRENT_CHECKPOINT, [
-                cursor.updatedAt, cursor.fullName, cursor.branch
-            ]);
+                timestamp: reconciliationPublicationTimestamp(this.now(), transitionAt)
+            };
+            const cursorTuple = [cursor.updatedAt, cursor.fullName, cursor.branch];
+            const outcome = await this.projectIndexingUpdate(payload);
+            if (outcome === 'deferred'
+                && !await this.checkpoints.enqueueRetry(
+                    INDEXING_CURRENT_CHECKPOINT, JSON.stringify(cursorTuple), payload
+                )) break;
+            await this.advanceTupleCheckpoint(INDEXING_CURRENT_CHECKPOINT, cursorTuple);
             this.repositoryCursor = cursor;
-            repaired++;
+            if (outcome === 'completed') repaired++;
         }
         return repaired;
     }
@@ -349,22 +370,29 @@ export class NotificationProjectionReconciler {
             try {
                 transitionAt = normalizedReconciliationTimestamp(row.review_transition_at ?? row.updated_at);
             } catch (error) {
-                this.logMalformedTimestamp(
+                logMalformedReconciliationTimestamp(
                     DRAFT_CHECKPOINT, row.draft_id, row.review_transition_at ?? row.updated_at, error
                 );
                 await this.advanceTupleCheckpoint(DRAFT_CHECKPOINT, [row.updated_at, row.draft_id]);
                 this.draftCursor = { updatedAt: row.updated_at, draftId: row.draft_id };
                 continue;
             }
-            const outcome = await this.projectDraftUpdate({
+            const payload: DraftUpdatePayload = {
                 eventType: 'draft:update', draftId: row.draft_id,
                 step: 'notification-reconciliation', status: 'completed', draftStatus: 'review',
-                timestamp: this.publicationTimestamp(transitionAt)
-            });
-            if (outcome === 'deferred') break;
-            await this.advanceTupleCheckpoint(DRAFT_CHECKPOINT, [row.updated_at, row.draft_id]);
+                timestamp: reconciliationPublicationTimestamp(this.now(), transitionAt)
+            };
+            const cursorTuple = [row.updated_at, row.draft_id];
+            const outcome = await this.projectDraftUpdate(payload);
+            if (outcome === 'deferred'
+                && !await this.checkpoints.enqueueRetry(
+                    DRAFT_CHECKPOINT,
+                    JSON.stringify(cursorTuple),
+                    { ...payload, step: 'notification-reconciliation-retry' }
+                )) break;
+            await this.advanceTupleCheckpoint(DRAFT_CHECKPOINT, cursorTuple);
             this.draftCursor = { updatedAt: row.updated_at, draftId: row.draft_id };
-            repaired++;
+            if (outcome === 'completed') repaired++;
         }
         return repaired;
     }
@@ -397,22 +425,4 @@ export class NotificationProjectionReconciler {
         this.lastRetentionPruneAt = nowMs;
     }
 
-    private logMalformedTimestamp(
-        source: NotificationProjectionCheckpointSource,
-        identity: string | number,
-        value: unknown,
-        error: unknown
-    ): void {
-        logger.warn({
-            source,
-            identity,
-            value: String(value).slice(0, 128),
-            error: error instanceof Error ? error.message : String(error)
-        }, 'Skipping malformed durable notification transition and advancing its checkpoint');
-    }
-
-    private publicationTimestamp(transitionAt: string): string {
-        const current = normalizeISO8601Timestamp(this.now());
-        return current >= transitionAt ? current : transitionAt;
-    }
 }

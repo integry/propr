@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
@@ -9,12 +8,19 @@ import {
   replaceNotificationRepositoryEntitlements,
   type NotificationRepositoryEntitlementFence,
 } from '@propr/core';
+import {
+  createScheduledEntitlementRefreshMiddleware,
+  type NotificationEntitlementRefreshMiddleware,
+} from './notificationEntitlementRefreshScheduler.js';
+
+export type { NotificationEntitlementRefreshMiddleware };
 
 const entitlementRefreshes = new Map<string, Promise<boolean>>();
 const legacyRetryAfter = new Map<string, number>();
 const ENTITLEMENT_REFRESH_RETRY_DELAY_MS = 60_000;
 const ENTITLEMENT_REFRESH_LEASE_MS = 2 * 60_000;
 const ENTITLEMENT_REFRESH_LEASE_RENEWAL_MS = Math.floor(ENTITLEMENT_REFRESH_LEASE_MS / 3);
+const DEFAULT_ENTITLEMENT_REFRESH_TIMEOUT_MS = 90_000;
 const MAX_LEGACY_ENTITLEMENT_REFRESH_BACKOFFS = 1_000;
 const LEASE_TABLE = 'notification_repository_entitlement_refresh_leases';
 
@@ -22,7 +28,34 @@ interface EntitlementRefreshLease extends NotificationRepositoryEntitlementFence
   persisted: boolean;
 }
 
-export async function listAccessibleRepositories(accessToken: string): Promise<string[]> {
+async function withEntitlementRefreshDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('Repository entitlement refresh timeout must be a positive safe integer');
+  }
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(
+        `Repository entitlement refresh exceeded ${timeoutMs}ms`
+      ));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation(controller.signal), deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+export async function listAccessibleRepositories(
+  accessToken: string,
+  signal?: AbortSignal
+): Promise<string[]> {
   const PaginatedOctokit = Octokit.plugin(paginateRest);
   const octokit = new PaginatedOctokit({ auth: accessToken });
   const repositories: string[] = [];
@@ -31,6 +64,7 @@ export async function listAccessibleRepositories(accessToken: string): Promise<s
     sort: 'full_name',
     direction: 'asc',
     affiliation: 'owner,collaborator,organization_member',
+    ...(signal === undefined ? {} : { request: { signal } }),
   })) {
     for (const repository of response.data) {
       if (repository.full_name) repositories.push(repository.full_name);
@@ -121,13 +155,15 @@ async function renewEntitlementRefreshLease(
   database: Knex
 ): Promise<boolean> {
   if (!lease.persisted) return true;
-  const expiresAt = new Date(Date.now() + ENTITLEMENT_REFRESH_LEASE_MS).toISOString();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + ENTITLEMENT_REFRESH_LEASE_MS).toISOString();
   const updated = await database(LEASE_TABLE)
     .where({
       user_id: userId,
       lease_token: lease.leaseToken,
       fencing_token: lease.fencingToken,
     })
+    .whereRaw("expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
     .update({ expires_at: expiresAt });
   return updated === 1;
 }
@@ -192,7 +228,8 @@ export interface RefreshNotificationRepositoryEntitlementsOptions {
   accessToken: string;
   database: Knex;
   force?: boolean;
-  listRepositories?: (accessToken: string) => Promise<string[]>;
+  operationTimeoutMs?: number;
+  listRepositories?: (accessToken: string, signal?: AbortSignal) => Promise<string[]>;
 }
 
 /** Serialize scans locally, fence them across replicas, and commit only the newest result. */
@@ -237,7 +274,13 @@ async function runEntitlementRefresh(
   try {
     if (!options.force
         && !await notificationEntitlementsNeedRefresh(options.userId, options.database)) return true;
-    const repositories = await (options.listRepositories ?? listAccessibleRepositories)(options.accessToken);
+    const repositories = await withEntitlementRefreshDeadline(
+      (signal) => (options.listRepositories ?? listAccessibleRepositories)(
+        options.accessToken,
+        signal
+      ),
+      options.operationTimeoutMs ?? DEFAULT_ENTITLEMENT_REFRESH_TIMEOUT_MS
+    );
     if (leaseLost || !await renewEntitlementRefreshLease(options.userId, lease, options.database)) {
       return false;
     }
@@ -300,19 +343,7 @@ interface NotificationEntitlementRefreshMiddlewareOptions {
 export function createNotificationEntitlementRefreshMiddleware(
   database: Knex,
   options: NotificationEntitlementRefreshMiddlewareOptions = {}
-) {
+): NotificationEntitlementRefreshMiddleware {
   const refresh = options.refresh ?? refreshNotificationRepositoryEntitlements;
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    const userId = req.user?.id;
-    const accessToken = req.user?.accessToken;
-    if (!userId || !accessToken || req.path === '/github/repos') {
-      next();
-      return;
-    }
-    void refresh({ userId, accessToken, database }).catch((error) => {
-      logger.warn({ error: error instanceof Error ? error.message : String(error) },
-        'Failed to refresh repository notification access');
-    });
-    next();
-  };
+  return createScheduledEntitlementRefreshMiddleware(database, refresh);
 }

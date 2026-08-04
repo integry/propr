@@ -181,9 +181,11 @@ export {
   createIndexingQueueDeduplicationId,
   createIndexingQueueJobId,
   createIndexingRunIdentity,
+  getActiveRepositoryIndexingRuns,
   recordSkippedIndexingRun
 } from './services/relevance/summaryMinerQueries.js';
 export type {
+  ActiveRepositoryIndexingRun,
   IndexingRunIdentity,
   RepositoryStatusTransition,
   UpdateRepositoryStatusOptions
@@ -438,7 +440,7 @@ export type {
 export {
     DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS,
     getNotificationIndexingTransitionRetentionMs
-} from './services/notificationProjectionReconciler.js';
+} from './services/notificationProjectionReconciliationValues.js';
 export {
     NotificationSystemProjection,
     notificationSystemProjection,

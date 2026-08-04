@@ -1,6 +1,7 @@
 import * as configManager from '@propr/core';
 import {
   getIndexingQueue,
+  getActiveRepositoryIndexingRuns,
   logger,
   publishIndexingStatus,
   recordSkippedIndexingRun,
@@ -25,6 +26,7 @@ export interface IndexingStopTransition {
 
 interface StopIndexingDeps {
   getIndexingQueue: typeof getIndexingQueue;
+  getActiveRepositoryIndexingRuns: typeof getActiveRepositoryIndexingRuns;
   requestIndexingCancellation: typeof requestIndexingCancellation;
   updateRepositoryStatus: typeof updateRepositoryStatus;
   recordSkippedIndexingRun: typeof recordSkippedIndexingRun;
@@ -73,6 +75,7 @@ export async function stopIndexingJob(
 ): Promise<StopIndexingResult> {
   const deps: StopIndexingDeps = {
     getIndexingQueue,
+    getActiveRepositoryIndexingRuns,
     requestIndexingCancellation,
     updateRepositoryStatus,
     recordSkippedIndexingRun,
@@ -132,7 +135,47 @@ export async function stopIndexingJob(
       else removedQueuedRuns.push(stoppedRun);
     }
 
-    return { success: true, cancelledActiveRuns, removedQueuedRuns };
+    let message: string | undefined;
+    if (matchingJobs.length === 0) {
+      const normalizedBranch = branch === undefined
+        ? undefined
+        : configManager.normalizeSummarizationBranch(branch);
+      const durableRuns = await deps.getActiveRepositoryIndexingRuns(
+        repository,
+        normalizedBranch
+      );
+      for (const run of durableRuns) {
+        const transition = await deps.updateRepositoryStatus(
+          run.fullName,
+          'idle',
+          run.branch,
+          { runId: run.runId }
+        );
+        if (!transition.applied) continue;
+        await publishIndexingRunBestEffort({
+          publisher: deps.publishIndexingStatus,
+          repository: run.fullName,
+          branch: run.branch,
+          phase: 'idle',
+          transition,
+        });
+        cancelledActiveRuns.push({
+          branch: run.branch,
+          runId: transition.runId,
+          transitionAt: transition.transitionAt,
+        });
+      }
+      message = cancelledActiveRuns.length > 0
+        ? `Stopped ${cancelledActiveRuns.length} orphaned durable indexing run(s)`
+        : 'No queued or durable active indexing run matched the request';
+    }
+
+    return {
+      success: true,
+      ...(message === undefined ? {} : { message }),
+      cancelledActiveRuns,
+      removedQueuedRuns
+    };
   } catch (error) {
     logger.error({ error }, 'Error stopping indexing job');
     return {

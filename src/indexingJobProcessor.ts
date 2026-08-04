@@ -6,6 +6,7 @@ import {
     logger,
     updateRepositoryStatus,
     type IndexingJobData,
+    type IndexingRunIdentity,
     type JobResult,
 } from '@propr/core';
 
@@ -28,6 +29,26 @@ const defaultDeps: IndexingJobProcessorDeps = {
     createIndexingRunIdentity,
     clearIndexingRuntimeStateBestEffort,
 };
+
+async function persistAcceptedRunBestEffort(
+    job: Job<IndexingJobData>,
+    indexingRun: IndexingRunIdentity,
+    warn: (error: unknown) => void
+): Promise<void> {
+    const acceptedData: IndexingJobData = {
+        ...job.data,
+        ...indexingRun,
+        durablyAccepted: true,
+    };
+    // Failure finalization observes this Job instance even when the Redis data
+    // enrichment fails. Durable database ownership remains authoritative.
+    Object.assign(job.data, acceptedData);
+    try {
+        await job.updateData(acceptedData);
+    } catch (error) {
+        warn(error);
+    }
+}
 
 async function processWithDeps(
     job: Job<IndexingJobData>,
@@ -58,7 +79,10 @@ async function processWithDeps(
                 return { status: 'skipped', success: true };
             }
             indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
-            await job.updateData({ ...job.data, ...indexingRun, durablyAccepted: true });
+            await persistAcceptedRunBestEffort(job, indexingRun, (error) => {
+                correlatedLogger.warn({ error },
+                    'Could not persist accepted indexing run identity to queue data');
+            });
         } else {
             let transition = await deps.updateRepositoryStatus(
                 repository, 'indexing', baseBranch, indexingRun
@@ -80,7 +104,10 @@ async function processWithDeps(
             indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
             if (job.data.durablyAccepted !== true
                 || job.data.transitionAt !== transition.transitionAt) {
-                await job.updateData({ ...job.data, ...indexingRun, durablyAccepted: true });
+                await persistAcceptedRunBestEffort(job, indexingRun, (error) => {
+                    correlatedLogger.warn({ error },
+                        'Could not persist accepted indexing run identity to queue data');
+                });
             }
         }
 

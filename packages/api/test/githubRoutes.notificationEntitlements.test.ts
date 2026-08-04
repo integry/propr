@@ -171,6 +171,85 @@ test('ordinary API middleware does not await a full entitlement refresh', async 
   finishRefresh();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(refreshFinished, true);
+  middleware.close();
+});
+
+test('scheduled entitlement refresh continues after authenticated traffic stops', async () => {
+  const previousTtl = process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
+  process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = '20';
+  await database('notification_repository_entitlement_snapshots').insert({
+    user_id: 'inactive-user',
+    verified_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 1_000).toISOString(),
+  });
+  let refreshes = 0;
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    refresh: async () => { refreshes++; return true; },
+  });
+  try {
+    middleware({
+      user: { id: 'inactive-user', accessToken: 'token' },
+      path: '/config/repos',
+    } as never, {} as never, () => undefined);
+
+    await new Promise(resolve => setTimeout(resolve, 35));
+    assert.ok(refreshes >= 2, `expected a scheduled refresh, observed ${refreshes}`);
+  } finally {
+    middleware.close();
+    if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
+    else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
+  }
+});
+
+test('scheduled entitlement refresh does not resurrect an invalidated user', async () => {
+  const previousTtl = process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
+  process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = '20';
+  await database('notification_repository_entitlement_snapshots').insert({
+    user_id: 'logged-out-user',
+    verified_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 1_000).toISOString(),
+  });
+  let refreshes = 0;
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    refresh: async () => { refreshes++; return true; },
+  });
+  try {
+    middleware({
+      user: { id: 'logged-out-user', accessToken: 'token' },
+      path: '/github/repos',
+    } as never, {} as never, () => undefined);
+    await database('notification_repository_entitlement_snapshots')
+      .where({ user_id: 'logged-out-user' })
+      .delete();
+
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(refreshes, 0);
+  } finally {
+    middleware.close();
+    if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
+    else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
+  }
+});
+
+test('a hung repository scan is aborted and releases its durable lease', async () => {
+  let signal: AbortSignal | undefined;
+  await assert.rejects(refreshNotificationRepositoryEntitlements({
+    userId: 'hung-scan-user',
+    accessToken: 'token',
+    database,
+    force: true,
+    operationTimeoutMs: 20,
+    listRepositories: async (_token, operationSignal) => {
+      signal = operationSignal;
+      return new Promise<string[]>(() => undefined);
+    },
+  }), /exceeded 20ms/);
+
+  assert.equal(signal?.aborted, true);
+  const lease = await database('notification_repository_entitlement_refresh_leases')
+    .where({ user_id: 'hung-scan-user' })
+    .first('expires_at');
+  assert.ok(Date.parse(lease.expires_at) <= Date.now());
 });
 
 test('failed entitlement refreshes are throttled until the retry window', async () => {

@@ -17,11 +17,13 @@ export {
   createIndexingQueueDeduplicationId,
   createIndexingQueueJobId,
   createIndexingRunIdentity,
+  getActiveRepositoryIndexingRuns,
   recordSkippedIndexingRun,
   updateRepositoryStatus
 } from './summaryMinerQueries.js';
 export { clearIndexingRuntimeStateBestEffort } from './indexingCancellation.js';
 export type {
+  ActiveRepositoryIndexingRun,
   IndexingRunIdentity,
   RepositoryStatusTransition,
   UpdateRepositoryStatusOptions

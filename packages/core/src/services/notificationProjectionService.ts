@@ -130,7 +130,9 @@ export class NotificationProjectionService {
         if (payload.draftStatus !== 'review' || payload.status !== 'completed') return 'completed';
         const publishedAt = normalizeISO8601Timestamp(payload.timestamp);
         const context = await this.store.getDraftContext(payload.draftId);
-        if (!context || (context.status !== undefined && context.status !== 'review')) return 'completed';
+        const reconciliationRetry = payload.step === 'notification-reconciliation-retry';
+        if (!context || (!reconciliationRetry
+            && context.status !== undefined && context.status !== 'review')) return 'completed';
         const timestamp = context.reviewTransitionAt && context.reviewTransitionAt <= publishedAt
             ? context.reviewTransitionAt
             : publishedAt;
@@ -216,7 +218,8 @@ export class NotificationProjectionService {
                 transition,
                 metadata: safeMetadata
             }, transaction);
-            if (decision === 'stale') return 'completed';
+            const reconciliationReplay = payload.metadata?.notificationReconciliation === true;
+            if (decision === 'stale' && !reconciliationReplay) return 'completed';
             const resolution = await this.store.resolveTaskRecipients(context, transaction);
 
             // Re-run every expected idempotent delivery for a current transition.

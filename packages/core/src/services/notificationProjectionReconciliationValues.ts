@@ -1,4 +1,23 @@
 import { normalizeISO8601Timestamp } from '@propr/shared';
+import logger from '../utils/logger.js';
+
+export const DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === '') return fallback;
+    const value = Number(raw);
+    if (Number.isSafeInteger(value) && value > 0) return value;
+    logger.warn({ name, value: raw }, 'Ignoring invalid notification reconciliation configuration');
+    return fallback;
+}
+
+export function getNotificationIndexingTransitionRetentionMs(): number {
+    return positiveIntegerEnv(
+        'NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS',
+        DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS
+    );
+}
 
 export function parseReconciliationMetadata(value: unknown): Record<string, unknown> {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -39,4 +58,26 @@ export function checkpointTuple(value: string | undefined, length: number): stri
     } catch {
         return undefined;
     }
+}
+
+export function logMalformedReconciliationTimestamp(
+    source: string,
+    identity: string | number,
+    value: unknown,
+    error: unknown
+): void {
+    logger.warn({
+        source,
+        identity,
+        value: String(value).slice(0, 128),
+        error: error instanceof Error ? error.message : String(error)
+    }, 'Skipping malformed durable notification transition and advancing its checkpoint');
+}
+
+export function reconciliationPublicationTimestamp(
+    now: string | number | Date,
+    transitionAt: string
+): string {
+    const current = normalizeISO8601Timestamp(now);
+    return current >= transitionAt ? current : transitionAt;
 }

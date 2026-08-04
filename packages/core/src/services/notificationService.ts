@@ -293,8 +293,9 @@ export class NotificationService {
 
     /**
      * Persist an event and its recipient snapshot inside a caller-owned transaction.
-     * Projection checkpoints use this entry point so advancing source state and
-     * creating every notification for that transition commit atomically.
+     * Projection activity and notification writes share this boundary. Durable
+     * reconciliation cursors advance afterward, so crash recovery is explicitly
+     * at-least-once and relies on event/recipient deduplication during replay.
      */
     async createNotificationEventInTransaction<K extends NotificationKind>(
         transaction: Knex.Transaction,

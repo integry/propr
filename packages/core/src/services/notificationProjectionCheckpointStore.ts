@@ -9,9 +9,22 @@ export type NotificationProjectionCheckpointSource =
     | 'review-drafts';
 
 const CHECKPOINT_TABLE = 'notification_projection_checkpoints';
+const RETRY_TABLE = 'notification_projection_retries';
+const NUMERIC_CHECKPOINTS = new Set<NotificationProjectionCheckpointSource>([
+    'terminal-task-history',
+    'task-notification-enrichments',
+    'terminal-indexing-history'
+]);
+
+export interface NotificationProjectionRetry {
+    source: NotificationProjectionCheckpointSource;
+    transitionKey: string;
+    payloadJson: string;
+    attemptCount: number;
+}
 
 export class NotificationProjectionCheckpointStore {
-    private tableAvailability?: Promise<boolean>;
+    private readonly tableAvailability = new Map<string, Promise<boolean>>();
 
     constructor(
         private readonly database: Knex,
@@ -19,7 +32,7 @@ export class NotificationProjectionCheckpointStore {
     ) {}
 
     async load(source: NotificationProjectionCheckpointSource): Promise<string | undefined> {
-        if (!await this.hasTable()) return undefined;
+        if (!await this.hasTable(CHECKPOINT_TABLE)) return undefined;
         const row = await this.database(CHECKPOINT_TABLE)
             .select('cursor')
             .where({ source })
@@ -28,19 +41,116 @@ export class NotificationProjectionCheckpointStore {
     }
 
     async save(source: NotificationProjectionCheckpointSource, cursor: string): Promise<void> {
-        if (!await this.hasTable()) return;
+        if (!await this.hasTable(CHECKPOINT_TABLE)) return;
+        const numeric = NUMERIC_CHECKPOINTS.has(source);
+        if (numeric && (!/^\d+$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) {
+            throw new TypeError(`Invalid numeric notification projection checkpoint: ${cursor}`);
+        }
+        const tuple = numeric
+            ? undefined
+            : this.parseTuple(cursor, source === 'terminal-indexing-current' ? 3 : 2);
         const updatedAt = normalizeISO8601Timestamp(this.now());
         await this.database(CHECKPOINT_TABLE)
             .insert({ source, cursor, updated_at: updatedAt })
             .onConflict('source')
-            .merge({ cursor, updated_at: updatedAt });
+            .ignore();
+
+        const update = this.database(CHECKPOINT_TABLE).where({ source });
+        if (numeric) {
+            update.whereRaw('CAST(cursor AS INTEGER) < ?', [Number(cursor)]);
+        } else {
+            const tupleValues = tuple!;
+            const tupleLength = tupleValues.length;
+            const comparisons = tupleValues.map((_value, index) => {
+                const equalPrefix = tupleValues.slice(0, index)
+                    .map((_prefix, prefixIndex) => `json_extract(cursor, '$[${prefixIndex}]') = ?`);
+                return `(${[
+                    ...equalPrefix,
+                    `json_extract(cursor, '$[${index}]') < ?`
+                ].join(' AND ')})`;
+            });
+            const bindings: Array<string | number> = [tupleLength];
+            tupleValues.forEach((_value, index) => {
+                bindings.push(...tupleValues.slice(0, index), tupleValues[index]);
+            });
+            update.whereRaw(`
+                CASE
+                  WHEN json_valid(cursor) = 0 THEN 1
+                  WHEN json_type(cursor) != 'array' OR json_array_length(cursor) != ? THEN 1
+                  ELSE ${comparisons.join(' OR ')}
+                END = 1
+            `, bindings);
+        }
+        await update.update({ cursor, updated_at: updatedAt });
+    }
+
+    async enqueueRetry(
+        source: NotificationProjectionCheckpointSource,
+        transitionKey: string,
+        payload: unknown
+    ): Promise<boolean> {
+        if (!await this.hasTable(RETRY_TABLE)) return false;
+        const timestamp = normalizeISO8601Timestamp(this.now());
+        const payloadJson = JSON.stringify(payload);
+        if (payloadJson === undefined) throw new TypeError('Notification projection retry payload is invalid');
+        await this.database(RETRY_TABLE)
+            .insert({
+                source,
+                transition_key: transitionKey,
+                payload_json: payloadJson,
+                attempt_count: 0,
+                created_at: timestamp,
+                updated_at: timestamp
+            })
+            .onConflict(['source', 'transition_key'])
+            .merge({ payload_json: payloadJson, updated_at: timestamp });
+        return true;
+    }
+
+    async loadRetries(limit: number): Promise<NotificationProjectionRetry[]> {
+        if (!await this.hasTable(RETRY_TABLE)) return [];
+        const rows = await this.database(RETRY_TABLE)
+            .select('source', 'transition_key', 'payload_json', 'attempt_count')
+            .orderBy('attempt_count', 'asc')
+            .orderBy('updated_at', 'asc')
+            .orderBy('source', 'asc')
+            .orderBy('transition_key', 'asc')
+            .limit(limit) as Array<{
+                source: NotificationProjectionCheckpointSource;
+                transition_key: string;
+                payload_json: string;
+                attempt_count: number;
+            }>;
+        return rows.map((row) => ({
+            source: row.source,
+            transitionKey: row.transition_key,
+            payloadJson: row.payload_json,
+            attemptCount: Number(row.attempt_count)
+        }));
+    }
+
+    async markRetryDeferred(retry: NotificationProjectionRetry): Promise<void> {
+        if (!await this.hasTable(RETRY_TABLE)) return;
+        await this.database(RETRY_TABLE)
+            .where({ source: retry.source, transition_key: retry.transitionKey })
+            .update({
+                attempt_count: this.database.raw('attempt_count + 1'),
+                updated_at: normalizeISO8601Timestamp(this.now())
+            });
+    }
+
+    async deleteRetry(retry: NotificationProjectionRetry): Promise<void> {
+        if (!await this.hasTable(RETRY_TABLE)) return;
+        await this.database(RETRY_TABLE)
+            .where({ source: retry.source, transition_key: retry.transitionKey })
+            .delete();
     }
 
     async pruneIndexingTransitions(
         maximumTransitionId: number,
         observedBefore: string
     ): Promise<number> {
-        if (!await this.hasTable()
+        if (!await this.hasTable(CHECKPOINT_TABLE)
             || !await this.database.schema.hasTable('repository_indexing_transitions')) return 0;
         const deleted = await this.database('repository_indexing_transitions')
             .where('transition_id', '<=', maximumTransitionId)
@@ -53,7 +163,7 @@ export class NotificationProjectionCheckpointStore {
         maximumTransitionId: number,
         completedBefore: string
     ): Promise<void> {
-        if (!await this.hasTable()
+        if (!await this.hasTable(CHECKPOINT_TABLE)
             || !await this.database.schema.hasTable('repository_indexing_transitions')
             || !await this.database.schema.hasTable('notification_source_activity')) return;
         await this.database.raw(`
@@ -82,15 +192,32 @@ export class NotificationProjectionCheckpointStore {
         `, [completedBefore, maximumTransitionId]);
     }
 
-    private async hasTable(): Promise<boolean> {
-        this.tableAvailability ??= Promise.resolve()
-            .then(() => this.database.schema.hasTable(CHECKPOINT_TABLE));
+    private parseTuple(cursor: string, length: number): string[] {
+        let value: unknown;
         try {
-            const available = await this.tableAvailability;
-            if (!available) this.tableAvailability = undefined;
+            value = JSON.parse(cursor);
+        } catch {
+            throw new TypeError(`Invalid tuple notification projection checkpoint: ${cursor}`);
+        }
+        if (!Array.isArray(value) || value.length !== length
+            || value.some((entry) => typeof entry !== 'string')) {
+            throw new TypeError(`Invalid tuple notification projection checkpoint: ${cursor}`);
+        }
+        return value;
+    }
+
+    private async hasTable(table: string): Promise<boolean> {
+        let availability = this.tableAvailability.get(table);
+        if (!availability) {
+            availability = Promise.resolve().then(() => this.database.schema.hasTable(table));
+            this.tableAvailability.set(table, availability);
+        }
+        try {
+            const available = await availability;
+            if (!available) this.tableAvailability.delete(table);
             return available;
         } catch (error) {
-            this.tableAvailability = undefined;
+            this.tableAvailability.delete(table);
             throw error;
         }
     }

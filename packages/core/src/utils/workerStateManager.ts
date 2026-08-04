@@ -441,7 +441,7 @@ export class WorkerStateManager {
                     };
                     await appendTaskNotificationEnrichment(transaction, {
                         taskId,
-                        state: state.state,
+                        state: historyState,
                         transitionAt,
                         transitionSequence: historyRow?.history_id,
                         changedAt: state.updatedAt,
@@ -451,7 +451,7 @@ export class WorkerStateManager {
                 const eventPublisher = getEventPublisher();
                 await eventPublisher.publishTaskUpdate({
                     taskId,
-                    state: state.state,
+                    state: historyState,
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
                     metadata: publicationMetadata

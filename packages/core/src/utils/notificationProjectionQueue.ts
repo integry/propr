@@ -14,6 +14,8 @@ import {
 import logger from './logger.js';
 
 const COALESCED_PROJECTION_ACCEPTED = Promise.resolve();
+const PROJECTION_RETRY_BASE_DELAY_MS = 25;
+const PROJECTION_RETRY_MAX_DELAY_MS = 250;
 
 interface NotificationProjectionJob {
     payload: EventPayload;
@@ -88,6 +90,14 @@ function shouldReplaceCoalescedPayload(current: EventPayload, incoming: EventPay
     const currentKind = current.activityKind ?? 'progress';
     const incomingKind = incoming.activityKind ?? 'progress';
     return currentKind !== 'progress' || incomingKind === 'progress';
+}
+
+function projectionRetryDelay(attempt: number): number {
+    const exponential = Math.min(
+        PROJECTION_RETRY_MAX_DELAY_MS,
+        PROJECTION_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1)
+    );
+    return Math.max(1, Math.floor(exponential * (0.75 + Math.random() * 0.5)));
 }
 
 export class NotificationProjectionQueue {
@@ -199,7 +209,7 @@ export class NotificationProjectionQueue {
         this.active++;
         let retry = false;
         void this.options.projector(job.payload)
-            .catch((error) => {
+            .catch(async (error) => {
                 retry = !this.closing && job.attempts < 2;
                 logger.warn({
                     eventType: job.payload.eventType,
@@ -207,9 +217,15 @@ export class NotificationProjectionQueue {
                     retrying: retry,
                     error: error instanceof Error ? error.message : String(error)
                 }, 'Notification projection failed');
+                if (retry) {
+                    await new Promise<void>((resolve) => {
+                        setTimeout(resolve, projectionRetryDelay(job.attempts + 1));
+                    });
+                }
             })
             .finally(() => {
                 this.active--;
+                retry = retry && !this.closing;
                 if (retry) {
                     job.attempts++;
                     retry = this.requeue(job);

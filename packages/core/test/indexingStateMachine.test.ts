@@ -39,6 +39,11 @@ beforeEach(async () => {
     table.text('observed_at').notNullable();
     table.unique(['full_name', 'branch', 'run_id', 'status', 'transition_at']);
   });
+  await database.raw(`
+    CREATE UNIQUE INDEX repository_indexing_transitions_terminal_run_unique
+    ON repository_indexing_transitions (full_name, branch, run_id)
+    WHERE status IN ('idle', 'completed', 'failed')
+  `);
 });
 
 afterEach(async () => database.destroy());
@@ -183,5 +188,74 @@ describe('repository indexing run state machine', { concurrency: false }, () => 
       startNewRun: true,
     });
     assert.equal(lateProducer.applied, false);
+  });
+
+  test('a skipped run closes the durable owner when startup won the race', async () => {
+    await updateRepositoryStatus('acme/api', 'indexing', 'main', {
+      ...statusOptions('starting-run'),
+      startNewRun: true,
+    });
+
+    const skipped = await recordSkippedIndexingRun(
+      'acme/api',
+      'main',
+      { runId: 'starting-run', transitionAt: '2000-01-01T00:00:00.000Z' },
+      database
+    );
+
+    assert.equal(skipped.applied, true);
+    assert.deepEqual(
+      await database('repositories').first('indexing_status', 'indexing_run_id'),
+      { indexing_status: 'idle', indexing_run_id: 'starting-run' }
+    );
+  });
+
+  test('the database rejects contradictory terminal results for one run', async () => {
+    await updateRepositoryStatus('acme/api', 'indexing', 'main', {
+      ...statusOptions('terminal-invariant-run'),
+      startNewRun: true,
+    });
+    await updateRepositoryStatus(
+      'acme/api',
+      'completed',
+      'main',
+      statusOptions('terminal-invariant-run')
+    );
+
+    await assert.rejects(database('repository_indexing_transitions').insert({
+      full_name: 'acme/api',
+      branch: 'main',
+      run_id: 'terminal-invariant-run',
+      status: 'failed',
+      transition_at: new Date().toISOString(),
+      observed_at: new Date().toISOString(),
+    }), /UNIQUE constraint failed/);
+  });
+
+  test('terminal history repairs a legacy owner that was reopened after completion', async () => {
+    await updateRepositoryStatus('acme/api', 'indexing', 'main', {
+      ...statusOptions('reopened-run'),
+      startNewRun: true,
+    });
+    await updateRepositoryStatus(
+      'acme/api',
+      'completed',
+      'main',
+      statusOptions('reopened-run')
+    );
+    await database('repositories')
+      .where({ full_name: 'acme/api', branch: 'main' })
+      .update({ indexing_status: 'indexing' });
+
+    const replacement = await updateRepositoryStatus('acme/api', 'indexing', 'main', {
+      ...statusOptions('reopened-run'),
+      startNewRun: true,
+    });
+
+    assert.equal(replacement.applied, false);
+    assert.deepEqual(
+      await database('repositories').first('indexing_status', 'indexing_run_id'),
+      { indexing_status: 'completed', indexing_run_id: 'reopened-run' }
+    );
   });
 });

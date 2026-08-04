@@ -28,7 +28,12 @@ const mockDbTasksInsert = mock.fn(() => ({
 
 const mockDbHistoryInsert = mock.fn(async () => [1]);
 
-const mockDb = (tableName: string) => {
+type MockTransaction = ((tableName: string) => unknown) & {
+    schema: { hasTable(tableName: string): Promise<boolean> };
+};
+let mockDbTransaction: ((callback: (transaction: MockTransaction) => Promise<unknown>) => Promise<unknown>) | undefined;
+
+const mockDb = Object.assign((tableName: string) => {
     if (tableName === 'tasks') {
         return { insert: mockDbTasksInsert };
     }
@@ -36,7 +41,12 @@ const mockDb = (tableName: string) => {
         return { insert: mockDbHistoryInsert };
     }
     return { insert: mock.fn(async () => [1]) };
-};
+}, {
+    transaction: async (callback: (transaction: MockTransaction) => Promise<unknown>) => {
+        if (!mockDbTransaction) throw new Error('Unexpected database transaction');
+        return mockDbTransaction(callback);
+    }
+});
 
 await mock.module('../packages/core/src/db/connection.js', {
     namedExports: {
@@ -2744,6 +2754,67 @@ test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
     assert.ok(cleanedCount >= 0, 'Should return valid count');
 
     await stateManager.close();
+});
+
+test('historical metadata enrichment publishes the located history state', async () => {
+    const transitionAt = '2026-08-03T10:00:00.000Z';
+    const currentAt = '2026-08-03T11:00:00.000Z';
+    const state: TaskStateData = {
+        taskId: 'historical-metadata-task',
+        issueRef: { number: 1734, repoOwner: 'integry', repoName: 'propr', type: 'issue' },
+        correlationId: 'history-metadata-correlation',
+        state: TaskStates.COMPLETED,
+        createdAt: transitionAt,
+        updatedAt: currentAt,
+        attempts: 1,
+        history: [
+            { state: TaskStates.FAILED, timestamp: transitionAt, metadata: {} },
+            { state: TaskStates.COMPLETED, timestamp: currentAt, metadata: {} }
+        ]
+    };
+    let enrichmentState: string | undefined;
+    const historyBuilder = {
+        select() { return this; },
+        where() { return this; },
+        orderBy() { return this; },
+        first: async () => ({ history_id: 7, metadata: '{}' }),
+        update: async () => 1
+    };
+    const transaction = Object.assign((tableName: string) => {
+        if (tableName === 'task_history') return historyBuilder;
+        return {
+            insert: async (row: { state?: string }) => {
+                if (tableName === 'task_notification_enrichments') enrichmentState = row.state;
+                return [1];
+            }
+        };
+    }, {
+        schema: { hasTable: async () => true }
+    }) as MockTransaction;
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(state));
+    mockPublishTaskUpdate.mock.resetCalls();
+    mockDbTransaction = async (callback) => callback(transaction);
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+    try {
+        await stateManager.updateHistoryMetadata(
+            state.taskId,
+            TaskStates.FAILED,
+            { reason: 'late failure detail' }
+        );
+
+        assert.strictEqual(enrichmentState, TaskStates.FAILED);
+        assert.strictEqual(
+            mockPublishTaskUpdate.mock.calls[0]?.arguments[0].state,
+            TaskStates.FAILED
+        );
+    } finally {
+        mockDbTransaction = undefined;
+        await stateManager.close();
+    }
 });
 
 // Force exit due to module-level initialization in @propr/core

@@ -2853,6 +2853,53 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(statusWrites, 0);
     });
 
+    test('stopIndexingJob closes a durable orphan when the queue lost its job', async () => {
+        const publications: string[] = [];
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({ getJobs: async () => [] } as never),
+            getActiveRepositoryIndexingRuns: async () => [{
+                fullName: 'acme/api',
+                branch: 'main',
+                runId: 'orphaned-run',
+                transitionAt: '2026-08-03T10:00:00.000Z',
+            }],
+            updateRepositoryStatus: async (_repository, status, _branch, options) => ({
+                runId: options.runId!,
+                transitionAt: '2026-08-03T10:01:00.000Z',
+                applied: status === 'idle',
+            }),
+            publishIndexingStatus: async (_repository, _branch, phase) => {
+                publications.push(phase);
+            },
+        });
+
+        assert.deepStrictEqual(publications, ['idle']);
+        assert.deepStrictEqual(result, {
+            success: true,
+            message: 'Stopped 1 orphaned durable indexing run(s)',
+            cancelledActiveRuns: [{
+                branch: 'main',
+                runId: 'orphaned-run',
+                transitionAt: '2026-08-03T10:01:00.000Z',
+            }],
+            removedQueuedRuns: [],
+        });
+    });
+
+    test('stopIndexingJob reports a meaningful no-op when nothing is active', async () => {
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({ getJobs: async () => [] } as never),
+            getActiveRepositoryIndexingRuns: async () => [],
+        });
+
+        assert.deepStrictEqual(result, {
+            success: true,
+            message: 'No queued or durable active indexing run matched the request',
+            cancelledActiveRuns: [],
+            removedQueuedRuns: [],
+        });
+    });
+
     function createQueueResummarizationDeps(options: {
         repos: Array<{ id: string; name: string; enabled: boolean }>;
         existingJobs?: Array<{ data: { repository: string; baseBranch?: string } }>;
