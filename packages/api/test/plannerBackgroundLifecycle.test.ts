@@ -22,6 +22,17 @@ const database = knex({
   useNullAsDefault: true,
 });
 
+// Node infers an empty argument tuple from a zero-argument mock implementation,
+// while draft-update publisher stubs are invoked with the emitted event payload.
+declare module 'node:test' {
+  interface MockTracker {
+    fn(
+      original: () => Promise<boolean>,
+      options?: MockFunctionOptions,
+    ): Mock<(payload: { generationTrace: unknown }) => Promise<boolean>>;
+  }
+}
+
 before(async () => {
   await database.schema.createTable('task_drafts', table => {
     table.string('draft_id').primary();
