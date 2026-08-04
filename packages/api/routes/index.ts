@@ -23,4 +23,5 @@ export { createRepoImprovementsRoutes } from './repoImprovementsRoutes.js';
 export { createRepoTodoRoutes } from './repoTodoRoutes.js';
 export { createUserRepoPreferencesRoutes } from './userRepoPreferencesRoutes.js';
 export { createAgentRuntimeRoutes } from './agentRuntimeRoutes.js';
+export { createNotificationRoutes } from './notificationRoutes.js';
 export { createAdminRoutes } from './adminRoutes.js';

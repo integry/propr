@@ -27,6 +27,7 @@ import {
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
   createAgentRuntimeRoutes,
+  createNotificationRoutes,
   createAdminRoutes,
   createInstanceCatalogRoutes,
   attachmentUpload
@@ -52,6 +53,7 @@ import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
+import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import {
   assertNoDuplicateRoutes,
@@ -246,6 +248,7 @@ function setupRoutes(): void {
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
+  const notificationRoutes = createNotificationRoutes();
   const adminRoutes = createAdminRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
@@ -271,7 +274,8 @@ function setupRoutes(): void {
     ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
-    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
+    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences], ['get', '/api/notifications', notificationRoutes.getNotifications], ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount], ['get', '/api/notifications/config', notificationRoutes.getConfiguration], ['get', '/api/notifications/capabilities', notificationRoutes.getCapabilities],
+    ['get', '/api/notifications/preferences', notificationRoutes.getPreferences], ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences], ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions], ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription], ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription], ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
   ];
   const routes = [
     ...operationalRoutes,
@@ -369,9 +373,7 @@ function setupWebhookRoute(): void {
   console.log('[webhook] Webhook endpoint enabled at POST /webhook');
 }
 
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok' });
-});
+app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok' }); });
 
 // Create HTTP server to wrap Express app (required for Socket.IO)
 const httpServer: HttpServer = createServer(app);
@@ -379,11 +381,13 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
+    await db.migrate.latest();
+    console.log('Database migrations completed successfully');
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      await initializePushSubscriptionMaintenance();
       try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();

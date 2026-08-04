@@ -379,6 +379,49 @@ export type {
     BatchReorderItem
 } from './services/repoTodosService.js';
 
+// Authenticated Inbox persistence and keyset pagination
+export {
+    NotificationService, NotificationEventNotFoundError,
+    NotificationValidationError, PushSubscriptionConflictError,
+    PushSubscriptionQuotaError, PushSubscriptionRateLimitError,
+    MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER, MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
+    MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW,
+    PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
+    PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS,
+    PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
+    notificationService,
+    createNotificationEvent,
+    assignNotificationRecipients,
+    listNotifications,
+    getUnreadNotificationCount,
+    markNotificationRead,
+    dismissNotification,
+    getNotificationPreferences,
+    updateNotificationPreferences,
+    updateNotificationPreference,
+    upsertPushSubscription,
+    listPushSubscriptions,
+    revokePushSubscription,
+    revokePushSubscriptionById,
+    garbageCollectPushSubscriptions
+} from './services/notificationService.js';
+export type {
+    NotificationRecipientInput,
+    NotificationRecipient,
+    CreateNotificationEventInput,
+    NotificationListOptions,
+    NotificationServiceOptions
+} from './services/notificationService.js';
+export {
+    DEFAULT_NOTIFICATION_LIST_LIMIT,
+    MAX_NOTIFICATION_LIST_LIMIT,
+    NotificationQueryValidationError,
+    parseNotificationListLimit,
+    encodeNotificationCursor,
+    decodeNotificationCursor
+} from './services/notificationPagination.js';
+export type { NotificationCursor } from './services/notificationPagination.js';
+
 // Repository migration (rename/move detection)
 export {
     detectRepositoryRename,
@@ -387,7 +430,4 @@ export {
     detectRenameFromResponse,
     scheduleRepositoryRenameCheck
 } from './services/repositoryMigrationService.js';
-export type {
-    RepositoryRenameResult,
-    MigrationResult
-} from './services/repositoryMigrationService.js';
+export type { RepositoryRenameResult, MigrationResult } from './services/repositoryMigrationService.js';
