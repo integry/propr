@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
+import { closeConnection } from '@propr/core';
 import express from 'express';
 import { setupAuth } from '../auth.js';
 import { resetConfiguredDemoMode } from '../demoMode.js';
@@ -34,6 +35,10 @@ afterEach(() => {
   else process.env.API_PUBLIC_URL = originalApiPublicUrl;
   if (originalRedirectAllowedHosts === undefined) delete process.env.AUTH_REDIRECT_ALLOWED_HOSTS;
   else process.env.AUTH_REDIRECT_ALLOWED_HOSTS = originalRedirectAllowedHosts;
+});
+
+after(async () => {
+  await closeConnection();
 });
 
 test('auth redirect allowlist treats FRONTEND_URL as exact host only', async () => {

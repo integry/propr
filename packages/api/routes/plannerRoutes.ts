@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
 import multer from 'multer';
 import path from 'path';
@@ -26,7 +27,8 @@ import {
 } from './plannerHelpers/index.js';
 import { parseSearchWords, scoreDrafts, sortDraftsByScore, removeSearchScore } from './plannerSearchHelpers.js';
 import { buildIssueSummaryMap, parseDraftJsonFields, attachIssueSummaries } from './plannerDraftHelpers.js';
-import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createAbortGenerationHandler, createAbortRefinementHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
+import { createGenerateHandler, createRefineHandler, createFinalizeHandler, createReviseDraftHandler } from './plannerActionHandlers.js';
+import { createAbortGenerationHandler, createAbortRefinementHandler } from './plannerAbortHandlers.js';
 import {
   buildUpdatedExecutionConfig,
   ExecutionSettingsContextConfigError,
@@ -184,7 +186,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  async function getDraft(req: Request, res: Response): Promise<void> {
+  async function getDraft(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
@@ -209,7 +211,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  async function updateDraft(req: Request, res: Response): Promise<void> {
+  async function updateDraft(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
 
@@ -238,7 +240,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  async function deleteDraft(req: Request, res: Response): Promise<void> {
+  async function deleteDraft(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     const idValidation = validateUUID(req.params.id, 'Draft ID');
@@ -259,7 +261,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const previewContext = withAuthCheck(db, createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput, db }));
   const deleteAttachment = withAuthCheck(db, createDeleteAttachmentHandler({ verifyOwnership: ownershipVerifier }));
 
-  async function resetDraftToSetup(req: Request, res: Response): Promise<void> {
+  async function resetDraftToSetup(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     const idValidation = validateUUID(req.params.id, 'Draft ID');
@@ -294,7 +296,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const abortRefinement = createAbortRefinementHandler(db);
   const reviseDraft = createReviseDraftHandler(db);
 
-  async function draftPauseAction(req: Request, res: Response, action: 'pause' | 'resume'): Promise<void> {
+  async function draftPauseAction(req: FlatRequest, res: Response, action: 'pause' | 'resume'): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     try {
@@ -308,10 +310,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       res.status(500).json({ error: `Failed to ${action} draft execution` });
     }
   }
-  const pauseDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'pause');
-  const resumeDraftExecution = (req: Request, res: Response) => draftPauseAction(req, res, 'resume');
+  const pauseDraftExecution = (req: FlatRequest, res: Response) => draftPauseAction(req, res, 'pause');
+  const resumeDraftExecution = (req: FlatRequest, res: Response) => draftPauseAction(req, res, 'resume');
 
-  async function updateExecutionSettings(req: Request, res: Response): Promise<void> {
+  async function updateExecutionSettings(req: FlatRequest, res: Response): Promise<void> {
     const check = checkDbAndAuth(db, req.user?.id);
     if (!check.valid) { sendCheckError(res, check); return; }
     const idValidation = validateUUID(req.params.id, 'Draft ID');

@@ -5,7 +5,7 @@ import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import type { Server as SocketIOServer } from 'socket.io';
 import { db } from '@propr/core';
-import { TaskWatcherManager } from '../services/taskWatcher.js';
+import { TaskWatcherManager, withStableLiveEventIds } from '../services/taskWatcher.js';
 
 after(async () => {
   await db.destroy();
@@ -29,6 +29,54 @@ function taskState(sessionId = 'unknown'): string {
 }
 
 describe('TaskWatcherManager', () => {
+  test('assigns stable sequence IDs independently of regenerated timestamps', () => {
+    const first = withStableLiveEventIds({
+      taskId: 'task-1',
+      source: 'redis',
+      events: [
+        { type: 'thought', content: 'same', timestamp: '2026-08-04T00:00:00Z' },
+        { type: 'thought', content: 'same', timestamp: '2026-08-04T00:00:01Z' },
+      ],
+      totalEventCount: 12,
+      executionNamespace: 'execution-7',
+    });
+    const reparsed = withStableLiveEventIds({
+      taskId: 'task-1',
+      source: 'redis',
+      events: [
+        { type: 'thought', content: 'same', timestamp: '2026-08-04T01:00:00Z' },
+        { type: 'thought', content: 'same', timestamp: '2026-08-04T01:00:01Z' },
+      ],
+      totalEventCount: 12,
+      executionNamespace: 'execution-7',
+    });
+
+    assert.deepEqual(first.map(event => event.id), [
+      'live:task-1:redis:execution-7:thought:sequence:10',
+      'live:task-1:redis:execution-7:thought:sequence:11',
+    ]);
+    assert.deepEqual(reparsed.map(event => event.id), first.map(event => event.id));
+  });
+
+  test('namespaces parser IDs by task, source, execution, and event type', () => {
+    const firstExecution = withStableLiveEventIds({
+      taskId: 'task-1', source: 'redis', events: [{ id: 'tool-1', type: 'tool_use' }],
+      totalEventCount: 1, executionNamespace: 'execution-1',
+    });
+    const secondExecution = withStableLiveEventIds({
+      taskId: 'task-1', source: 'redis', events: [{ id: 'tool-1', type: 'tool_use' }],
+      totalEventCount: 1, executionNamespace: 'execution-2',
+    });
+    const matchingResult = withStableLiveEventIds({
+      taskId: 'task-1', source: 'redis', events: [{ id: 'tool-1', type: 'tool_result' }],
+      totalEventCount: 1, executionNamespace: 'execution-1',
+    });
+
+    assert.notEqual(firstExecution[0].id, secondExecution[0].id);
+    assert.notEqual(firstExecution[0].id, matchingResult[0].id);
+    assert.match(firstExecution[0].id, /:tool_use:external:tool-1$/);
+  });
+
   afterEach(() => mock.restoreAll());
 
   test('uses Redis output before trying to prepare a Claude log directory', async () => {

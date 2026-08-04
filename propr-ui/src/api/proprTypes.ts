@@ -131,7 +131,12 @@ export interface AgentConfig {
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
   modelReasoningLevels?: Record<string, ReasoningLevel>;
+  cliVersionType?: CliVersionType;
+  cliVersion?: string;
+  cliVersionResolved?: string;
 }
+
+export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface SystemSettings {
   default_agent_alias?: string;

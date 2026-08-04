@@ -1,5 +1,6 @@
 import assert from 'node:assert';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
+import { closeConnection } from '@propr/core';
 import {
     executeDockerCommand,
     type ExecutionResult,
@@ -17,6 +18,10 @@ import { getTaskCompletionStatus } from '../src/jobs/issueJob/completion.js';
 import { buildCommitMessage } from '../src/jobs/prCommentJobUtils.js';
 import { buildIssueReference } from '../src/jobs/issueJobHelpers.js';
 import type { ClaudeCodeResponse } from '../packages/core/src/claude/claudeService.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 function executionResult(stdout: string, overrides: Partial<ExecutionResult> = {}): ExecutionResult {
     return {

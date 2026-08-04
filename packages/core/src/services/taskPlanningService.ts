@@ -7,8 +7,9 @@ import { db } from '../db/connection.js';
 import { loadFileSummaries } from './relevance/contextBuilder.js';
 import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
+import type { Knex } from 'knex';
 import {
-  updateTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTraceForRun, parseGenerationTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planning/index.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
@@ -34,6 +35,35 @@ import {
 const MAX_ATTACHMENT_PERCENT = 0.25;
 const BUDGET_SAFETY_FACTOR = 0.85;
 
+function updateGenerationTrace(
+  draftId: string,
+  step: string,
+  status: Parameters<typeof updateTraceForRun>[2],
+  options: { runId: string; data?: Record<string, unknown> },
+) {
+  return updateTraceForRun(draftId, step, status, { expectedRunId: options.runId, data: options.data });
+}
+
+interface GenerationCompletionOptions {
+  database: Knex;
+  draftId: string;
+  runId: string;
+  expectedTrace: string;
+  updates: Record<string, unknown>;
+}
+
+export async function persistGenerationCompletion(options: GenerationCompletionOptions): Promise<boolean> {
+  const { database, draftId, runId, expectedTrace, updates } = options;
+  if (parseGenerationTrace(expectedTrace).runId !== runId) return false;
+
+  const query = database('task_drafts').where({
+    draft_id: draftId,
+    status: 'generating',
+    generation_trace: expectedTrace,
+  });
+  return Number(await query.update(updates)) === 1;
+}
+
 function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: number): number | undefined {
   if (imageCount <= 0) {
     return undefined;
@@ -44,7 +74,7 @@ function calculateMaxImageBytesForPlanning(tokenLimit: number, imageCount: numbe
 }
 
 export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> {
-  const { draftId, worktreePath, githubToken, correlationId } = options;
+  const { draftId, worktreePath, githubToken, correlationId, runId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   if (!db) throw new Error('Database not available');
@@ -84,10 +114,13 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const contextStartedAt = new Date().toISOString();
 
   // Update trace with in_progress status and estimated duration
-  await updateTrace(draftId, 'context', 'in_progress', {
-    estimatedDuration: estimatedContextDuration,
-    startedAt: contextStartedAt,
-    fileCount: relevantFilePaths.length
+  await updateGenerationTrace(draftId, 'context', 'in_progress', {
+    runId,
+    data: {
+      estimatedDuration: estimatedContextDuration,
+      startedAt: contextStartedAt,
+      fileCount: relevantFilePaths.length
+    }
   });
   correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress, estimatedDurationMs: estimatedContextDuration }, 'Generating context');
 
@@ -108,13 +141,16 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Generate context with retry logic
   const { fullContext, contextResult } = await generateContextWithRetry({
     worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images,
-    draft, draftId, githubToken, correlationId, generationModel, contextModel, correlatedLogger
+    draft, draftId, runId, githubToken, correlationId, generationModel, contextModel, correlatedLogger
   });
 
-  await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
+  await updateGenerationTrace(draftId, 'context', 'completed', {
+    runId,
+    data: { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens }
+  });
 
   const { plan, enforcementMetadata } = await callLLMForPlan({
-    draftId, fullContext: fullContext!, worktreePath, githubToken, repository: draft.repository,
+    draftId, runId, fullContext: fullContext!, worktreePath, githubToken, repository: draft.repository,
     correlationId, tokenLimit: config.tokenLimit, model: generationModel, granularity: config.granularity
   });
 
@@ -124,14 +160,17 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Add trace step for granularity enforcement if tasks were merged
   if (enforcementMetadata.enforced) {
-    await updateTrace(draftId, 'granularity_enforcement', 'completed', {
-      originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount,
-      granularity: enforcementMetadata.granularity, message: enforcementMetadata.message
+    await updateGenerationTrace(draftId, 'granularity_enforcement', 'completed', {
+      runId,
+      data: {
+        originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount,
+        granularity: enforcementMetadata.granularity, message: enforcementMetadata.message
+      }
     });
     correlatedLogger.info({ originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount }, 'Granularity enforcement applied - added trace step');
   }
 
-  const finalTrace = await updateTrace(draftId, 'llm', 'completed');
+  const finalTrace = await updateGenerationTrace(draftId, 'llm', 'completed', { runId });
 
   const updatedContextConfig = { ...parsedContextConfig, generationModel, granularityEnforcement: enforcementMetadata };
 
@@ -148,16 +187,26 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     chatHistoryJson = '[]';
   }
 
-  await db('task_drafts').where({ draft_id: draftId }).update({
-    plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
-    generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
-    name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+  const completed = await persistGenerationCompletion({
+    database: db,
+    draftId,
+    runId,
+    expectedTrace: JSON.stringify(finalTrace),
+    updates: {
+      plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
+      generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
+      name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+    }
   });
+  if (!completed) {
+    throw new Error(`Planner generation run ${runId} is no longer active`);
+  }
 
   // Emit final completion event so the UI can transition without polling
   const eventPublisher = getEventPublisher();
   const published = await eventPublisher.publishDraftUpdate({
     draftId,
+    runId,
     step: 'complete',
     status: 'completed',
     draftStatus: 'review',

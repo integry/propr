@@ -1,4 +1,4 @@
-import { test, mock, describe, beforeEach } from 'node:test';
+import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
@@ -19,8 +19,14 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis() {
-        return { on: mock.fn(), quit: mock.fn(async () => {}) };
+    namedExports: {
+        Redis: function Redis() {
+            return {
+                on: mock.fn(),
+                connect: mock.fn(async () => {}),
+                quit: mock.fn(async () => {}),
+            };
+        },
     },
 });
 
@@ -64,6 +70,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', {
     namedExports: {
         getAuthenticatedOctokit: mock.fn(async () => mockOctokit),
         getGitHubInstallationToken: mock.fn(async () => 'mock-token'),
+        validateGithubIntakePrerequisites: mock.fn(() => {}),
     },
 });
 
@@ -85,23 +92,39 @@ await mock.module('../packages/core/src/utils/logger.js', {
     },
     namedExports: {
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
-        default: {
-            info: mock.fn(),
-            warn: mock.fn(),
-            error: mock.fn(),
-            debug: mock.fn(),
-            withCorrelation: mock.fn(() => mockLoggerInstance),
-        },
+        createCorrelatedLogger: mock.fn(() => mockLoggerInstance),
     },
 });
 
 // Mock configManager
+const actualConfigManager = await import('../packages/core/src/config/configManager.js');
 await mock.module('../packages/core/src/config/configManager.js', {
     namedExports: {
+        ...actualConfigManager,
         loadFollowupIgnoreKeywords: mock.fn(async () => []),
+        loadMonitoredRepos: mock.fn(async () => []),
+        loadAiPrimaryTag: mock.fn(async () => 'AI'),
         loadPrimaryProcessingLabels: mock.fn(async () => ['AI']),
+        loadSettings: mock.fn(async () => ({})),
+        loadAgentTankSettings: mock.fn(async () => ({})),
         getConfig: mock.fn(async () => null),
         saveConfig: mock.fn(async () => true),
+    },
+});
+
+// Keep the model-validation fallback isolated from the full agent runtime.
+const mockAgentRegistry = {
+    ensureInitialized: mock.fn(async () => {}),
+    getAllAgents: mock.fn(() => []),
+};
+await mock.module('../packages/core/src/agents/AgentRegistry.js', {
+    namedExports: {
+        AgentRegistry: class AgentRegistry {
+            static getInstance() {
+                return mockAgentRegistry;
+            }
+        },
+        getAgentRegistry: mock.fn(() => mockAgentRegistry),
     },
 });
 
@@ -118,6 +141,8 @@ await mock.module('../packages/core/src/utils/commentFilters.js', {
 const mockSafeUpdateLabels = mock.fn(async () => {});
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
     namedExports: {
+        safeRemoveLabel: mock.fn(async () => true),
+        safeAddLabel: mock.fn(async () => true),
         safeUpdateLabels: mockSafeUpdateLabels,
     },
 });
@@ -132,9 +157,14 @@ await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', {
 });
 
 // Mock retryHandler
+const actualRetryHandler = await import('../packages/core/src/utils/retryHandler.js');
+const { default: retryHandlerDefault, ...retryHandlerNamedExports } = actualRetryHandler;
 await mock.module('../packages/core/src/utils/retryHandler.js', {
+    defaultExport: retryHandlerDefault,
     namedExports: {
+        ...retryHandlerNamedExports,
         withRetry: mock.fn(async (fn: () => Promise<unknown>) => fn()),
+        retryConfigs: { githubApi: {} },
     },
 });
 
@@ -142,9 +172,16 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 const { processCommentEvent, handleCommentDeleted } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
+
+after(async () => {
+    await shutdownQueue();
+    await closeConnection();
+});
 
 // ========== Helpers ==========
 
@@ -232,8 +269,8 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const call = mockSafeUpdateLabels.mock.calls[0];
         const newLabels = call.arguments[2] as string[];
-        // "opus" should be resolved to "claude-opus-4-6" via resolveModelAlias
-        assert.deepStrictEqual(newLabels, ['llm-claude-opus-4-6']);
+        // "opus" should be resolved via the current configured alias.
+        assert.deepStrictEqual(newLabels, ['llm-claude-opus-5']);
     });
 
     test('/switch with full model ID preserves it in label', async () => {
@@ -267,7 +304,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['llm-claude-opus-4-6']);
-        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet-4-6']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet-5']);
     });
 
     test('/switch without model argument warns and returns early', async () => {
@@ -350,7 +387,7 @@ describe('commentEventHandler — /switch command', () => {
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['ai-model-claude-opus-4-6']);
         // New label should use the custom prefix, not hardcoded 'llm-'
-        assert.deepStrictEqual(newLabels, ['ai-model-claude-sonnet-4-6']);
+        assert.deepStrictEqual(newLabels, ['ai-model-claude-sonnet-5']);
     });
 
     test('/switch with llm- prefixed argument strips prefix before resolving', async () => {
@@ -399,7 +436,7 @@ describe('commentEventHandler — /switch command', () => {
         // Should call safeUpdateLabels with the derived prefix 'model-'
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        assert.deepStrictEqual(newLabels, ['model-claude-opus-4-6']);
+        assert.deepStrictEqual(newLabels, ['model-claude-opus-5']);
     });
 
     test('/switch aborts when derived label prefix would not match MODEL_LABEL_PATTERN', async () => {
@@ -425,7 +462,7 @@ describe('commentEventHandler — /switch command', () => {
         // Should still update labels using the first model
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        assert.deepStrictEqual(newLabels, ['llm-claude-opus-4-6']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-opus-5']);
         // Should have logged a warning about extra arguments
         const warnCalls = mockLoggerInstance.warn.mock.calls;
         const extraWarn = warnCalls.find(
@@ -499,8 +536,7 @@ describe('commentEventHandler — /use command', () => {
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        // resolveLlm should have resolved "opus" → "claude-opus-4-6"
-        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.strictEqual(jobData.llm, 'claude-opus-5');
     });
 
     test('/use without model argument warns and returns early', async () => {
@@ -552,8 +588,8 @@ describe('commentEventHandler — /use command', () => {
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        // "llm-opus" → normalizeModelLabel strips "llm-" → "opus" → resolveModelAlias → "claude-opus-4-6"
-        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        // "llm-opus" is normalized before resolving the current alias.
+        assert.strictEqual(jobData.llm, 'claude-opus-5');
     });
 
     test('/use without instructions still enqueues a job with empty body', async () => {
@@ -596,7 +632,7 @@ describe('commentEventHandler — /use command', () => {
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.strictEqual(jobData.llm, 'claude-opus-5');
         // Warning should be logged
         const warnCalls = mockLoggerInstance.warn.mock.calls;
         const extraWarn = warnCalls.find(
@@ -638,7 +674,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.commandMode, 'switch');
         const meta = jobData.commandMeta as { mode: string; models: string[]; instructions: string };
         assert.strictEqual(meta.mode, 'switch');
-        assert.deepStrictEqual(meta.models, ['claude-sonnet-4-6']);
+        assert.deepStrictEqual(meta.models, ['sonnet']);
         assert.strictEqual(meta.instructions, 'Do a review');
         assert.strictEqual(jobData.commandInstructions, 'Do a review');
     });
@@ -671,7 +707,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.requestedModels, undefined);
     });
 
-    test('/use job does not include requestedModels', async () => {
+    test('/use job preserves its explicit model as requestedModels', async () => {
         const event = createPRCommentEvent('/use sonnet\nDo something');
         const config = createTestConfig();
 
@@ -679,7 +715,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.requestedModels, undefined);
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-sonnet-5']);
     });
 
     test('/review job includes requestedModels from command args', async () => {
@@ -833,7 +869,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.body, 'Fix the bug');
         assert.strictEqual(pendingComment.commandMode, 'use');
         assert.strictEqual(pendingComment.commandInstructions, 'Fix the bug');
-        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-4-6');
+        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-5');
     });
 
     test('/switch with instructions is batched when an existing job is active', async () => {
@@ -856,7 +892,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
         assert.strictEqual(pendingComment.commandMode, 'switch');
         assert.strictEqual(pendingComment.commandInstructions, 'Review the code');
-        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-4-6');
+        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-5');
     });
 
     test('/use enqueues normally when no existing job is active', async () => {
@@ -984,5 +1020,44 @@ describe('applyPendingCommentCommandContext', () => {
         assert.strictEqual(jobData.commandMode, 'fix');
         assert.strictEqual(jobData.commandInstructions, 'Fix the auth bug');
         assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+    });
+
+    test('promotes a /use override when a later model-less /review becomes active', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-review',
+            commandMode: 'default' as const,
+            llm: 'claude-sonnet-4-6',
+            requestedModels: undefined as string[] | undefined,
+        };
+        const commentsToProcess = [
+            {
+                id: 102,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                requestedModels: ['claude-opus-4-6'],
+                commandInstructions: '',
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 103,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+                commandInstructions: '',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
     });
 });

@@ -21,6 +21,10 @@ export { getMistralApiKeyFromSettings, readLatestVibeSessionTokenUsage } from '.
 const DEFAULT_VIBE_MAX_TURNS = 1000;
 const CONTAINER_CONFIG_PATH = '/home/node/.vibe';
 
+function buildFailedExecutionResult(error: Error & { stderr?: string }, executionTimeMs: number, model: string | undefined): AgentExecutionResult {
+    return { success: false, error: error.message, executionTimeMs, logs: error.stderr || error.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: model || 'unknown' };
+}
+
 interface VibeDockerArgsParams {
     worktreePath: string;
     githubToken: string;
@@ -159,18 +163,9 @@ export class VibeAgent implements Agent {
         } catch (error) {
             if (error instanceof UsageLimitError) throw error;
             const executionTimeMs = Date.now() - startTime;
-            const err = error as Error;
+            const err = error as Error & { stderr?: string };
             logger.error({ issueNumber: issueRef.number, repository, executionTimeMs, error: err.message, agentAlias: this.config.alias }, 'Error during Vibe agent execution');
-            return {
-                success: false,
-                error: err.message,
-                executionTimeMs,
-                logs: (error as { stderr?: string }).stderr || err.message,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: undefined,
-                modelUsed: effectiveModel || 'unknown'
-            };
+            return buildFailedExecutionResult(err, executionTimeMs, effectiveModel);
         } finally {
             cleanupTempFile(promptFilePath);
             cleanupTempFile(envFilePath);

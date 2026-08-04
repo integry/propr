@@ -36,6 +36,12 @@ export function getPrimaryProcessingLabels(): string[] {
 }
 
 export function getUserWhitelist(): string[] {
+    if (!process.env.CONFIG_REPO) {
+        return (process.env.GITHUB_USER_WHITELIST ?? '')
+            .split(',')
+            .map(user => user.trim())
+            .filter(Boolean);
+    }
     return GITHUB_USER_WHITELIST;
 }
 

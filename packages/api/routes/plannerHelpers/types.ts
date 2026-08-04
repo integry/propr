@@ -2,7 +2,7 @@
  * Type definitions for planner helpers.
  */
 
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
 
 export interface DbCheckResult {
   valid: false;
@@ -16,7 +16,7 @@ export interface DbCheckSuccess {
 
 export type DbCheck = DbCheckResult | DbCheckSuccess;
 
-export type HandlerFunction = (req: Request, res: Response) => Promise<void>;
+export type HandlerFunction<P = Request['params']> = (req: Request<P>, res: Response) => Promise<void>;
 
 export interface OwnershipResult {
   authorized: boolean;
@@ -56,6 +56,7 @@ export interface BackgroundGenerationOptions {
   worktreePath: string;
   authToken: string;
   correlationId: string;
+  runId: string;
 }
 
 export interface ValidateContextRepositoryResponse {

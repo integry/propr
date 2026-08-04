@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
+import { closeConnection } from '@propr/core';
 import type { NextFunction, Request, Response as ExpressResponse } from 'express';
 import { ensureAuthenticated } from '../auth.js';
 import { isGitHubTokenExpired } from '../authGithubTokens.js';
@@ -87,6 +88,10 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   Date.now = originalDateNow;
   resetConfiguredDemoMode();
+});
+
+after(async () => {
+  await closeConnection();
 });
 
 test('isGitHubTokenExpired handles missing, future, exact, and past expiry values', () => {

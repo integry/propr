@@ -1,4 +1,5 @@
 import type { PlannerConfig } from './setupWizardHooks';
+import type { PlannerDraft } from '../../api/proprApi';
 
 export function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -24,7 +25,7 @@ export const baseConfig: PlannerConfig = {
   excludedFiles: [],
 };
 
-export const makeDraft = (overrides: Record<string, unknown> = {}) => ({
+export const makeDraft = (overrides: Partial<PlannerDraft> = {}): PlannerDraft => ({
   draft_id: 'draft-1',
   repository: 'integry/propr',
   initial_prompt: 'Test prompt',

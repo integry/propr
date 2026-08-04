@@ -12,7 +12,7 @@ import { calculateEffectiveAdditionalContextBudget } from './tokenBudgets.js';
 import type { ContextGenerationParams, ContextGenerationResult } from './types.js';
 
 export async function generateContextWithRetry(params: ContextGenerationParams): Promise<ContextGenerationResult> {
-  const { worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images, draft, draftId, githubToken, correlationId, generationModel, correlatedLogger } = params;
+  const { worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images, draft, draftId, runId, githubToken, correlationId, generationModel, correlatedLogger } = params;
   const modelHardLimit = getModelHardLimit(generationModel);
   const rawInputCharLimit = getRawInputCharLimit(generationModel);
   let currentRepomixLimit = budgets.repomixTokenLimit;
@@ -74,6 +74,7 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
       useFullBudget: config.contextLevel >= 80,
       githubToken,
       draftId,
+      runId,
       correlationId,
       correlatedLogger
     });

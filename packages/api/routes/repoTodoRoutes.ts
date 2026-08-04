@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import {
   db,
   getCategoriesForRepository,
@@ -178,7 +179,7 @@ export function createRepoTodoRoutes() {
    * PUT /api/repos/todos/categories/:categoryId
    * Update a category
    */
-  async function updateCategoryHandler(req: Request, res: Response): Promise<void> {
+  async function updateCategoryHandler(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { categoryId } = req.params;
       const { name, orderIndex } = req.body as UpdateCategoryRequest;
@@ -211,7 +212,7 @@ export function createRepoTodoRoutes() {
    * DELETE /api/repos/todos/categories/:categoryId
    * Delete a category (moves todos to uncategorized)
    */
-  async function deleteCategoryHandler(req: Request, res: Response): Promise<void> {
+  async function deleteCategoryHandler(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { categoryId } = req.params;
 
@@ -300,7 +301,7 @@ export function createRepoTodoRoutes() {
    * GET /api/repos/todos/:todoId
    * Get a single todo
    */
-  async function getTodoHandler(req: Request, res: Response): Promise<void> {
+  async function getTodoHandler(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { todoId } = req.params;
 
@@ -374,7 +375,7 @@ export function createRepoTodoRoutes() {
    * PUT /api/repos/todos/:todoId
    * Update a todo
    */
-  async function updateTodoHandler(req: Request, res: Response): Promise<void> {
+  async function updateTodoHandler(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { todoId } = req.params;
       const { categoryId, content, orderIndex, isCompleted } = req.body as UpdateTodoRequest;
@@ -412,7 +413,7 @@ export function createRepoTodoRoutes() {
    * DELETE /api/repos/todos/:todoId
    * Delete a todo
    */
-  async function deleteTodoHandler(req: Request, res: Response): Promise<void> {
+  async function deleteTodoHandler(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { todoId } = req.params;
 

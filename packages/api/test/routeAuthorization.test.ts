@@ -9,6 +9,7 @@ import {
   createMemberCatalogRouteEntries,
   registerRouteEntries,
 } from '../routeRegistry.js';
+import { SUMMARY_TREE_ROUTE_PATH } from '../routes/summaryBrowserRoutes.js';
 
 after(async () => closeConnection());
 
@@ -57,9 +58,10 @@ function createAuthorizationTestApp() {
 }
 
 async function withServer(
-  callback: (origin: string) => Promise<void>
+  callback: (origin: string) => Promise<void>,
+  app = createAuthorizationTestApp(),
 ): Promise<void> {
-  const server = createAuthorizationTestApp().listen(0, '127.0.0.1');
+  const server = app.listen(0, '127.0.0.1');
   try {
     await new Promise<void>(resolve => server.once('listening', resolve));
     const { port } = server.address() as AddressInfo;
@@ -81,6 +83,21 @@ const managementRequests = [
 ] as const;
 
 describe('assembled instance permission routes', () => {
+  test('captures Express 5 named wildcard parameters as path segments', async () => {
+    const app = express();
+    app.get(SUMMARY_TREE_ROUTE_PATH, (req, res) => res.json(req.params));
+
+    await withServer(async origin => {
+      const response = await fetch(`${origin}/api/summaries/integry/propr/tree/src/routes/file.ts`);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        owner: 'integry',
+        repo: 'propr',
+        path: ['src', 'routes', 'file.ts'],
+      });
+    }, app);
+  });
+
   test('members can read only the sanitized catalog endpoints', async () => {
     await withServer(async origin => {
       for (const path of ['/api/catalog', '/api/repositories/indexing-status']) {

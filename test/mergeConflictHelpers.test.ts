@@ -1,13 +1,36 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '@propr/core';
 
 // Import the helpers directly (no external dependencies needed)
 import {
     buildConflictResolutionPrompt,
     buildMergeConflictCommitMessage,
     buildMergeConflictComment,
+    getAgentFailureDetail,
     mergeConflictJobToCommentJob,
 } from '../src/jobs/mergeConflictHelpers.js';
+
+after(async () => {
+    await closeConnection();
+});
+
+describe('getAgentFailureDetail', () => {
+    test('classifies known failures without returning raw error text', () => {
+        const detail = getAgentFailureDetail({ error: 'request timed out while reading /repo/private.ts' });
+
+        assert.strictEqual(detail, 'Agent execution timed out.');
+        assert.ok(!detail.includes('/repo/private.ts'));
+    });
+
+    test('does not expose explicit errors, raw agent logs, or output', () => {
+        const secret = 'repository source and secret token ghp_not-a-real-token';
+        const detail = getAgentFailureDetail({ error: secret, logs: secret, rawOutput: secret });
+
+        assert.strictEqual(detail, 'Agent execution failed; detailed output is available in restricted logs.');
+        assert.ok(!detail.includes(secret));
+    });
+});
 
 describe('buildConflictResolutionPrompt', () => {
     test('includes all conflicted files in the prompt', () => {

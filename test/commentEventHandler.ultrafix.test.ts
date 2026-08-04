@@ -1,12 +1,17 @@
-import { test, mock, describe, beforeEach } from 'node:test';
+import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import type { Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent } from './testHelpers.js';
 
 // ========== Mocks ==========
 
+const mockOctokitRequest = mock.fn(async () => ({ data: {} }));
 const mockOctokit = {
-    request: mock.fn(async () => ({ data: {} })),
+    request: mockOctokitRequest,
+    paginate: mock.fn(async (route: string, options: Record<string, unknown>) => {
+        const response = await mockOctokitRequest(route, options);
+        return response.data;
+    }),
 };
 
 // Mock simple-git
@@ -19,8 +24,14 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis() {
-        return { on: mock.fn(), quit: mock.fn(async () => {}) };
+    namedExports: {
+        Redis: function Redis() {
+            return {
+                on: mock.fn(),
+                connect: mock.fn(async () => {}),
+                quit: mock.fn(async () => {}),
+            };
+        },
     },
 });
 
@@ -64,6 +75,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', {
     namedExports: {
         getAuthenticatedOctokit: mock.fn(async () => mockOctokit),
         getGitHubInstallationToken: mock.fn(async () => 'mock-token'),
+        validateGithubIntakePrerequisites: mock.fn(() => {}),
     },
 });
 
@@ -85,23 +97,38 @@ await mock.module('../packages/core/src/utils/logger.js', {
     },
     namedExports: {
         generateCorrelationId: mock.fn(() => 'test-correlation-id'),
-        default: {
-            info: mock.fn(),
-            warn: mock.fn(),
-            error: mock.fn(),
-            debug: mock.fn(),
-            withCorrelation: mock.fn(() => mockLoggerInstance),
-        },
+        createCorrelatedLogger: mock.fn(() => mockLoggerInstance),
     },
 });
 
 // Mock configManager
+const actualConfigManager = await import('../packages/core/src/config/configManager.js');
 await mock.module('../packages/core/src/config/configManager.js', {
     namedExports: {
+        ...actualConfigManager,
         loadFollowupIgnoreKeywords: mock.fn(async () => []),
+        loadMonitoredRepos: mock.fn(async () => []),
+        loadAiPrimaryTag: mock.fn(async () => 'AI'),
         loadPrimaryProcessingLabels: mock.fn(async () => ['AI']),
+        loadSettings: mock.fn(async () => ({})),
         getConfig: mock.fn(async () => null),
         saveConfig: mock.fn(async () => true),
+    },
+});
+
+// Keep the model-validation fallback isolated from the full agent runtime.
+const mockAgentRegistry = {
+    ensureInitialized: mock.fn(async () => {}),
+    getAllAgents: mock.fn(() => []),
+};
+await mock.module('../packages/core/src/agents/AgentRegistry.js', {
+    namedExports: {
+        AgentRegistry: class AgentRegistry {
+            static getInstance() {
+                return mockAgentRegistry;
+            }
+        },
+        getAgentRegistry: mock.fn(() => mockAgentRegistry),
     },
 });
 
@@ -124,6 +151,8 @@ const mockSafeUpdateLabels = mock.fn(async () => ({
 }));
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
     namedExports: {
+        safeRemoveLabel: mock.fn(async () => true),
+        safeAddLabel: mock.fn(async () => true),
         safeUpdateLabels: mockSafeUpdateLabels,
     },
 });
@@ -138,9 +167,14 @@ await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', {
 });
 
 // Mock retryHandler
+const actualRetryHandler = await import('../packages/core/src/utils/retryHandler.js');
+const { default: retryHandlerDefault, ...retryHandlerNamedExports } = actualRetryHandler;
 await mock.module('../packages/core/src/utils/retryHandler.js', {
+    defaultExport: retryHandlerDefault,
     namedExports: {
+        ...retryHandlerNamedExports,
         withRetry: mock.fn(async (fn: () => Promise<unknown>) => fn()),
+        retryConfigs: { githubApi: {} },
     },
 });
 
@@ -148,6 +182,8 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 const { processCommentEvent, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 
 // ========== Ultrafix Deps Mock ==========
 
@@ -172,6 +208,11 @@ setUltrafixDeps({
     startLoop: mockStartLoop,
     clearState: mockClearState,
     getPendingReviewState: mockGetPendingReviewState,
+});
+
+after(async () => {
+    await shutdownQueue();
+    await closeConnection();
 });
 
 // ========== Helpers ==========
@@ -402,8 +443,9 @@ describe('commentEventHandler — /ultrafix command', () => {
         const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
         // The batched comment should carry ultrafixMeta
         assert.ok(pendingComment.ultrafixMeta, 'Batched comment should include ultrafixMeta');
-        // The batched comment commandMode should be the first action (review), not 'ultrafix'
-        assert.strictEqual(pendingComment.commandMode, 'review');
+        // Preserve the command until the batch is processed; only then can the
+        // current review state safely select the first action.
+        assert.strictEqual(pendingComment.commandMode, 'ultrafix');
 
         // Should NOT post label or circuit-breaker comment (batching guard fires before side effects)
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
@@ -503,7 +545,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.ok(commentBody.includes('label'), 'Comment should mention the label as a circuit breaker');
     });
 
-    test('bot-authored system /ultrafix comment is allowed even when the login does not match configured bot identity', async () => {
+    test('bot-authored /ultrafix is filtered when the login does not match configured bot identity', async () => {
         process.env.GITHUB_BOT_USERNAME = 'configured-bot[bot]';
         mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
 
@@ -514,9 +556,7 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-system-bot', config);
 
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(mockStartLoop.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 });

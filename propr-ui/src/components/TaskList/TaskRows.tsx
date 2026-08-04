@@ -13,7 +13,7 @@ interface ParentTaskRowProps {
   isDuplicateRepo?: boolean;
 }
 
-const renderTaskBadges = (task: Task, prNumber?: number, forceIssueWithPr = false): React.ReactNode[] => {
+const renderTaskBadges = (task: Task, prNumber?: number | null, forceIssueWithPr = false): React.ReactNode[] => {
   const badges: React.ReactNode[] = [];
 
   if (prNumber) {

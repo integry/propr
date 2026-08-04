@@ -53,6 +53,8 @@ export interface GeneratePlanOptions {
   worktreePath: string;
   githubToken: string;
   correlationId?: string;
+  /** Active planner run used to guard completion against abort/restart races. */
+  runId: string;
 }
 
 export interface TokenBudgetResult {
@@ -83,6 +85,8 @@ export interface AdditionalContextOptions {
   useFullBudget?: boolean;
   githubToken: string;
   draftId: string;
+  /** Active planner run used to guard trace mutations against abort/restart races. */
+  runId: string;
   correlationId: string | undefined;
   correlatedLogger: MinimalLogger;
 }
@@ -138,6 +142,8 @@ export interface TaskDraft {
 
 export interface CallLLMOptions {
   draftId: string;
+  /** Active planner run used to guard trace mutations against abort/restart races. */
+  runId: string;
   /** Full context XML including all enrichments (repomix, summaries, images, etc.) */
   fullContext: string;
   worktreePath: string;
@@ -183,6 +189,8 @@ export interface ContextGenerationParams {
   base64Images: Base64Image[];
   draft: TaskDraft;
   draftId: string;
+  /** Active planner run used to guard trace mutations against abort/restart races. */
+  runId: string;
   githubToken: string;
   correlationId?: string;
   generationModel: string;

@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import {
   getPlanIssuesByDraft,
   getPlanIssuesByDraftPaginated,
@@ -195,7 +196,7 @@ async function runIssueImplementation(params: ImplementIssueContext & {
 
 async function loadImplementationTarget(params: {
   deps: PlanIssueDeps;
-  req: Request;
+  req: FlatRequest;
   draftId: string;
   issueNumber: number;
 }): Promise<{
@@ -268,7 +269,7 @@ async function implementLoadedIssue(params: {
   const effectivePlanIssue = buildEffectivePlanIssue(issueForImplementation, body);
   return runIssueImplementation({ ...context, draftId, planIssue: effectivePlanIssue, models });
 }
-function parseIssueNumberParam(req: Request, res: Response): number | null {
+function parseIssueNumberParam(req: FlatRequest, res: Response): number | null {
   const issueNumber = parseInt(req.params.issueNumber, 10);
   if (isNaN(issueNumber)) {
     res.status(400).json({ error: 'Invalid issue number' });
@@ -290,7 +291,7 @@ function sendImplementIssueError(res: Response, error: unknown): void {
 }
 
 export function createGetIssuesHandler(deps: PlanIssueDeps) {
-  return async function getIssues(req: Request, res: Response): Promise<void> {
+  return async function getIssues(req: FlatRequest, res: Response): Promise<void> {
     try {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
@@ -317,7 +318,7 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
   };
 }
 export function createImplementIssueHandler(deps: PlanIssueDeps) {
-  return async function implementIssue(req: Request, res: Response): Promise<void> {
+  return async function implementIssue(req: FlatRequest, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseIssueNumberParam(req, res);
     if (issueNumber === null) return;
@@ -331,7 +332,7 @@ export function createImplementIssueHandler(deps: PlanIssueDeps) {
   };
 }
 export function createUpdateIssueHandler(deps: PlanIssueDeps) {
-  return async function updateIssueHandler(req: Request, res: Response): Promise<void> {
+  return async function updateIssueHandler(req: FlatRequest, res: Response): Promise<void> {
     const draftId = req.params.id;
     const issueNumber = parseInt(req.params.issueNumber, 10);
     if (isNaN(issueNumber)) { res.status(400).json({ error: 'Invalid issue number' }); return; }
@@ -343,7 +344,9 @@ export function createUpdateIssueHandler(deps: PlanIssueDeps) {
       if (requestValidationError) { res.status(400).json({ error: requestValidationError }); return; }
       const currentIssue = await getPlanIssue(draftId, issueNumber);
       if (!currentIssue) { res.status(404).json({ error: 'Issue not found in this plan' }); return; }
-      const issueUpdates = buildIssueUpdate(body);
+      const issueUpdates = buildIssueUpdate(body, {
+        existingRunUltrafix: currentIssue.run_ultrafix,
+      });
       const repository = ownership.draft!.repository as string;
       const configUpdates = buildConfigUpdatesFromIssueUpdate(issueUpdates);
       const shouldUpdateConfig = hasConfigUpdates(configUpdates);

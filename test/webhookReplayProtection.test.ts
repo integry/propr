@@ -1,9 +1,14 @@
-import { test, describe, beforeEach, afterEach } from 'node:test';
+import { test, describe, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
 import crypto from 'crypto';
 import http from 'node:http';
 import express, { Request, Response } from 'express';
 import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/api/webhookHandler.js';
+import { closeConnection } from '@propr/core';
+
+after(async () => {
+  await closeConnection();
+});
 
 /**
  * Webhook Replay Protection Tests

@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Queue, Job } from 'bullmq';
 import { Knex } from 'knex';
@@ -26,7 +27,7 @@ interface TaskHistoryRoutesDeps { redisClient: RedisClientType; taskQueue: Queue
 export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
   const { redisClient, taskQueue, db } = deps;
 
-  async function getTaskHistory(req: Request, res: Response): Promise<void> {
+  async function getTaskHistory(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { taskId } = req.params;
 

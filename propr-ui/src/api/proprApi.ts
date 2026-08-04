@@ -1,92 +1,22 @@
-// API for fetching system data from backend
-import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import type { AgentType, ReasoningLevel } from '@propr/shared';
-import { getApiBaseUrl } from '../config/runtimeConfig';
+import type { Task as ApiTask } from './tasks';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
-export const API_BASE_URL = getApiBaseUrl();
-export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
+export * from './apiClient';
 
 export interface DemoModeStatus {
   demoMode: boolean;
 }
-
-export class DemoModeReadOnlyError extends Error {
-  readonly code = DEMO_MODE_READ_ONLY_CODE;
-
-  constructor(message = 'Demo mode is read-only. Write and AI execution actions are disabled.') {
-    super(message);
-    this.name = 'DemoModeReadOnlyError';
-  }
-}
-
-export const isDemoModeReadOnlyError = (error: unknown): error is DemoModeReadOnlyError =>
-  error instanceof DemoModeReadOnlyError || (
-    error instanceof Error &&
-    'code' in error &&
-    (error as { code?: unknown }).code === DEMO_MODE_READ_ONLY_CODE
-  );
-
-const shouldRetryAfterTokenRefresh = async (response: Response): Promise<boolean> => {
-  if (response.status !== 401) return false;
-  try {
-    const data = await response.clone().json() as { code?: string };
-    return data.code === 'TOKEN_REFRESHED';
-  } catch {
-    return false;
-  }
-};
-
-const isReplayableApiRequest = (input: RequestInfo | URL, init?: RequestInit): boolean => {
-  const method = (init?.method ?? (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')).toUpperCase();
-  if (typeof Request !== 'undefined' && input instanceof Request && (input.body || input.bodyUsed)) return false;
-  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
-};
-
-export const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const response = await fetch(input, init);
-  if (isReplayableApiRequest(input, init) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
-  return response;
-};
 
 // Re-export all types for backward compatibility
 export * from './proprTypes';
 
 import type {
   SystemStatus, StatusResponse, TaskAnalysisResponse, QueueStats, GeneratingPlansResponse,
-  GetTasksOptions, MonitoredRepo, RepoConfigResponse, RepoBranchesResponse,
-  StopExecutionResponse, DeleteTaskResponse, SystemSettings, CurrentUser,
+  GetTasksOptions, StopExecutionResponse, DeleteTaskResponse, CurrentUser,
   InstanceCatalogResponse
 } from './proprTypes';
 
 export type { UserRepoPreferences } from './userRepoPreferencesApi';
-
-export const handleApiResponse = async (response: Response): Promise<Response> => {
-  if (response.ok) return response;
-  if (response.status === 401) {
-    if (window.location.pathname === '/login') throw new Error('Authentication required');
-    window.location.href = '/login';
-    throw new Error('Authentication required');
-  }
-
-  let data: { code?: string; error?: string; message?: string } | null = null;
-  try {
-    data = await response.clone().json() as { code?: string; error?: string; message?: string };
-  } catch { /* Preserve the generic status fallback for malformed error bodies. */ }
-  if (data?.code === DEMO_MODE_READ_ONLY_CODE) {
-    throw new DemoModeReadOnlyError(data.message || data.error);
-  }
-  if (data?.code === 'INSUFFICIENT_INSTANCE_PERMISSION') {
-    window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
-  }
-  if (response.status < 500 && (data?.message || data?.error)) {
-    throw new Error(data.message || data.error);
-  }
-  throw new Error(
-    response.status >= 500
-      ? `The server ran into a problem (HTTP ${response.status}). Please try again in a moment.`
-      : `The request could not be completed (HTTP ${response.status}).`
-  );
-};
 
 export const getDemoModeStatus = async (): Promise<DemoModeStatus> => {
   const response = await apiFetch(`${API_BASE_URL}/api/auth/demo-mode`, { credentials: 'include' });
@@ -175,9 +105,11 @@ export const getQueueStats = async (): Promise<QueueStats> => {
   return { ...queueStats, active: queueStats.active + generatingCount };
 };
 
+export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; }
+
 export const getTasks = async (
   statusOrOptions: string | GetTasksOptions = 'all', limit = 50, offset = 0, repository = 'all', search = ''
-): Promise<unknown> => {
+): Promise<GetTasksResponse> => {
   let options: GetTasksOptions;
   if (typeof statusOrOptions === 'object') options = statusOrOptions;
   else options = { status: statusOrOptions, limit, offset, repository, search };
@@ -212,86 +144,8 @@ export const getTaskLiveDetails = async (taskId: string): Promise<unknown> => {
   return response.json();
 };
 
-export const getRepoConfig = async (): Promise<RepoConfigResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
 export const getInstanceCatalog = async (): Promise<InstanceCatalogResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/catalog`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateRepoConfig = async (repos: MonitoredRepo[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/repos`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repos_to_monitor: repos }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getAvailableGithubRepos = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/github/repos`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getRepoBranches = async (owner: string, repo: string): Promise<RepoBranchesResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getSettings = async (): Promise<SystemSettings> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface ConfigUpdateResponse {
-  success: boolean;
-  settings?: Record<string, unknown>;
-  warnings?: string[];
-}
-
-export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/settings`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ settings }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getFollowupKeywords = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateFollowupKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-keywords`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ followup_keywords: keywords }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getFollowupIgnoreKeywords = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateFollowupIgnoreKeywords = async (keywords: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/followup-ignore-keywords`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ followup_ignore_keywords: keywords }), credentials: 'include'
-  });
   await handleApiResponse(response);
   return response.json();
 };
@@ -312,51 +166,6 @@ export const fetchLogFile = async (logFilePath: string): Promise<string> => {
   const response = await apiFetch(`${API_BASE_URL}${logFilePath}`, { credentials: 'include' });
   await handleApiResponse(response);
   return response.text();
-};
-
-export const getPrLabel = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updatePrLabel = async (prLabel: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/pr-label`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pr_label: prLabel }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getAiPrimaryTag = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updateAiPrimaryTag = async (aiPrimaryTag: string): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/ai-primary-tag`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ai_primary_tag: aiPrimaryTag }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getPrimaryProcessingLabels = async (): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const updatePrimaryProcessingLabels = async (primaryLabels: string[]): Promise<unknown> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/primary-processing-labels`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ primary_processing_labels: primaryLabels }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
 };
 
 export const stopTaskExecution = async (taskId: string): Promise<StopExecutionResponse> => {
@@ -386,55 +195,7 @@ export const logout = (): void => {
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
 
-export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
-
-export interface AgentConfig {
-  id: string;
-  type: AgentType;
-  alias: string;
-  enabled: boolean;
-  dockerImage: string;
-  configPath: string;
-  supportedModels: string[];
-  defaultModel?: string;
-  envVars?: Record<string, string>;
-  modelCustomLabels?: Record<string, string>;
-  modelReasoningLevels?: Record<string, ReasoningLevel>;
-  // CLI Version Configuration
-  cliVersionType?: CliVersionType;
-  cliVersion?: string;
-  cliVersionResolved?: string;
-}
-
-export const getAgents = async (): Promise<{ agents: AgentConfig[] }> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export interface SaveAgentsResponse {
-  success: boolean;
-  agents: AgentConfig[];
-  warnings?: string[];
-}
-
-export const saveAgents = async (agents: AgentConfig[]): Promise<SaveAgentsResponse> => {
-  const response = await apiFetch(`${API_BASE_URL}/api/config/agents`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agents }), credentials: 'include'
-  });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-export const getOpenCodeModels = async (agentId?: string): Promise<{ models: string[] }> => {
-  const params = agentId ? `?agentId=${encodeURIComponent(agentId)}` : '';
-  const response = await apiFetch(`${API_BASE_URL}/api/agents/opencode/models${params}`, { credentials: 'include' });
-  await handleApiResponse(response);
-  return response.json();
-};
-
-
+export * from './configApi';
 export * from './plannerApi';
 export * from './taskStatsApi';
 export * from './agentChatApi';
@@ -448,3 +209,10 @@ export * from './repoTodosApi';
 export * from './userRepoPreferencesApi';
 export * from './revertApi';
 export * from './agentLoginApi';
+
+export type { ChatMessage } from './plannerApi';
+export type { PlanIssueStatus } from './planIssuesApi';
+export type {
+  CommitInfo, DeleteTaskResponse, PostFollowupResponse,
+  RevertParams, RevertPreviewResponse, TriggerReindexAllResponse
+} from './proprTypes';

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation, type InitialEntry } from 'react-router-dom';
 import LoginPage from './LoginPage';
 import { getCurrentUser } from '../api/proprApi';
+import type { CurrentUser } from '../api/proprTypes';
 
 vi.mock('../hooks/useDocumentTitle', () => ({
   useDocumentTitle: vi.fn(),
@@ -19,6 +20,18 @@ vi.mock('../api/proprApi', () => ({
 }));
 
 const mockGetCurrentUser = vi.mocked(getCurrentUser);
+
+const authenticatedUser: CurrentUser = {
+  id: '100',
+  login: 'owner',
+  username: 'owner',
+  displayName: 'Owner',
+  email: null,
+  avatarUrl: null,
+  role: 'admin',
+  permissions: [],
+  authorizationSource: 'local',
+};
 
 const LocationProbe = () => {
   const location = useLocation();
@@ -45,7 +58,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('redirects to the previous page when /api/auth/user succeeds', async () => {
-    mockGetCurrentUser.mockResolvedValue({});
+    mockGetCurrentUser.mockResolvedValue(authenticatedUser);
 
     renderLogin({ pathname: '/login', state: { from: '/plans' } });
 
@@ -58,7 +71,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('falls back to the dashboard for an external redirect_to query param', async () => {
-    mockGetCurrentUser.mockResolvedValue({});
+    mockGetCurrentUser.mockResolvedValue(authenticatedUser);
 
     renderLogin('/login?redirect_to=https%3A%2F%2Fevil.example');
 
@@ -69,7 +82,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('falls back to the dashboard for a protocol-relative redirect_to query param', async () => {
-    mockGetCurrentUser.mockResolvedValue({});
+    mockGetCurrentUser.mockResolvedValue(authenticatedUser);
 
     renderLogin('/login?redirect_to=%2F%2Fevil.example');
 
@@ -80,7 +93,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('falls back to the dashboard for an external router state return path', async () => {
-    mockGetCurrentUser.mockResolvedValue({});
+    mockGetCurrentUser.mockResolvedValue(authenticatedUser);
 
     renderLogin({ pathname: '/login', state: { from: 'https://evil.example' } });
 
@@ -91,7 +104,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('uses object-shaped router state with pathname, search, and hash', async () => {
-    mockGetCurrentUser.mockResolvedValue({});
+    mockGetCurrentUser.mockResolvedValue(authenticatedUser);
 
     renderLogin({
       pathname: '/login',
@@ -105,7 +118,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('falls back to the dashboard for return paths containing backslashes', async () => {
-    mockGetCurrentUser.mockResolvedValue({});
+    mockGetCurrentUser.mockResolvedValue(authenticatedUser);
 
     renderLogin({ pathname: '/login', state: { from: '/plans\\evil' } });
 
@@ -128,7 +141,7 @@ describe('LoginPage session recovery', () => {
   });
 
   it('skips the session recovery check after an explicit logout', async () => {
-    mockGetCurrentUser.mockResolvedValue({});
+    mockGetCurrentUser.mockResolvedValue(authenticatedUser);
 
     renderLogin('/login?logged_out=true');
 
