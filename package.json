@@ -95,7 +95,7 @@
     "express": "^5.2.1",
     "express-session": "^1.18.2",
     "fs-extra": "^11.3.0",
-    "ioredis": "5.8.2",
+    "ioredis": "5.11.1",
     "js-tiktoken": "^1.0.21",
     "jsonwebtoken": "^9.0.2",
     "knex": "^3.1.0",
@@ -103,7 +103,7 @@
     "passport-github2": "^0.1.12",
     "pino": "^9.7.0",
     "pino-pretty": "^13.0.0",
-    "redis": "^4.6.5",
+    "redis": "^5.0.0",
     "simple-git": "^3.36.0",
     "undici": "^7.29.0",
     "uuid": "^14.0.1"

@@ -177,7 +177,7 @@ describe('planner background abort reconciliation', () => {
       status: 'generating',
       generation_trace: JSON.stringify({ steps: [{ name: 'llm', status: 'in_progress' }], runId }),
     });
-    const publishDraftUpdate = mock.fn(async () => true);
+    const publishDraftUpdate = mock.fn(async (payload: { generationTrace: unknown }) => typeof payload === 'object');
     const rawError = 'provider failed at /srv/private/repo: https://user:secret@example.test/api?token=secret';
 
     await runBackgroundGeneration({
