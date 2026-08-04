@@ -175,7 +175,35 @@ export { mineGitHistory, mineGitHistoryWithLLM, getCommitHistory, formatCommitLo
 export type { FileScore as GitFileScore, CommitInfo, SemanticMinerFile, SemanticMinerResponse, SemanticMiningOptions } from './services/relevance/gitMiner.js';
 export { scorePaths } from './services/relevance/pathScorer.js';
 export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries, clearRepositorySummaries, updateRepositoryStatus } from './services/relevance/summaryMiner.js';
-export type { FileSummary, DirectorySummary, IndexingOptions } from './services/relevance/summaryMiner.js';
+export type { FileSummary, DirectorySummary, IndexingOptions, IndexingOutcome } from './services/relevance/summaryMiner.js';
+export {
+  INDEXING_FAILED_JOB_RETENTION,
+  INDEXING_JOB_ACCEPTANCE_DELAY_MS,
+  createIndexingQueueDeduplicationId,
+  createIndexingQueueJobId,
+  createLegacyIndexingRunIdForJob,
+  createIndexingRunIdentity
+} from './services/relevance/indexingQueueIdentity.js';
+export {
+  getActiveRepositoryIndexingRuns,
+  recordSkippedIndexingRun
+} from './services/relevance/summaryMinerQueries.js';
+export { getRepositoryIndexingTerminalTransition }
+  from './services/relevance/indexingTerminalQueries.js';
+export {
+  INDEXING_WORKER_HEARTBEAT_KEY,
+  INDEXING_WORKER_HEARTBEAT_INTERVAL_MS,
+  INDEXING_WORKER_HEARTBEAT_TTL_SECONDS,
+  INDEXING_WORKER_HEARTBEAT_STALE_MS
+} from './services/relevance/indexingWorkerHealth.js';
+export type {
+  ActiveRepositoryIndexingRun,
+  IndexingRunIdentity,
+  RepositoryStatusTransition,
+  UpdateRepositoryStatusOptions
+} from './services/relevance/summaryMinerQueries.js';
+export type { RepositoryIndexingTerminalTransition }
+  from './services/relevance/indexingTerminalQueries.js';
 export { scanProcessableGitFiles, shouldProcessFilePath, isProcessableFile } from './services/relevance/summaryFileFilter.js';
 export type { GitFileInfo } from './services/relevance/summaryFileFilter.js';
 export { DEFAULT_INSTRUCTIONS } from './services/relevance/summaryMinerHelpers.js';
@@ -185,6 +213,7 @@ export {
   requestIndexingCancellation,
   isIndexingCancelled,
   clearIndexingCancellation,
+  clearIndexingRuntimeStateBestEffort,
   IndexingCancelledError,
   initIndexingProgress,
   updateIndexingProgress,
@@ -379,48 +408,8 @@ export type {
     BatchReorderItem
 } from './services/repoTodosService.js';
 
-// Authenticated Inbox persistence and keyset pagination
-export {
-    NotificationService, NotificationEventNotFoundError,
-    NotificationValidationError, PushSubscriptionConflictError,
-    PushSubscriptionQuotaError, PushSubscriptionRateLimitError,
-    MAX_ACTIVE_PUSH_SUBSCRIPTIONS_PER_USER, MAX_STORED_PUSH_SUBSCRIPTIONS_PER_USER,
-    MAX_PUSH_SUBSCRIPTION_ENROLLMENTS_PER_WINDOW,
-    PUSH_SUBSCRIPTION_ENROLLMENT_WINDOW_MS,
-    PUSH_SUBSCRIPTION_REVOKED_RETENTION_MS,
-    PUSH_SUBSCRIPTION_GC_BATCH_SIZE,
-    notificationService,
-    createNotificationEvent,
-    assignNotificationRecipients,
-    listNotifications,
-    getUnreadNotificationCount,
-    markNotificationRead,
-    dismissNotification,
-    getNotificationPreferences,
-    updateNotificationPreferences,
-    updateNotificationPreference,
-    upsertPushSubscription,
-    listPushSubscriptions,
-    revokePushSubscription,
-    revokePushSubscriptionById,
-    garbageCollectPushSubscriptions
-} from './services/notificationService.js';
-export type {
-    NotificationRecipientInput,
-    NotificationRecipient,
-    CreateNotificationEventInput,
-    NotificationListOptions,
-    NotificationServiceOptions
-} from './services/notificationService.js';
-export {
-    DEFAULT_NOTIFICATION_LIST_LIMIT,
-    MAX_NOTIFICATION_LIST_LIMIT,
-    NotificationQueryValidationError,
-    parseNotificationListLimit,
-    encodeNotificationCursor,
-    decodeNotificationCursor
-} from './services/notificationPagination.js';
-export type { NotificationCursor } from './services/notificationPagination.js';
+// Authenticated Inbox persistence, projection, scheduling, and pagination.
+export * from './notificationExports.js';
 
 // Repository migration (rename/move detection)
 export {

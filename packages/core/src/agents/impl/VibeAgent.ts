@@ -290,10 +290,11 @@ export class VibeAgent implements Agent {
         }
     }
 
-    async healthCheck(): Promise<boolean> {
+    async healthCheck(signal?: AbortSignal): Promise<boolean> {
         logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Vibe agent...');
         try {
-            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
+            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage],
+                { timeout: 10000, signal });
             const imageExists = !!result.stdout.trim();
             if (!imageExists) {
                 logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Health check failed: Docker image not found');

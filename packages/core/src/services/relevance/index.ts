@@ -13,6 +13,28 @@ export {
   clearRepositorySummaries
 } from './summaryMiner.js';
 export {
+  INDEXING_FAILED_JOB_RETENTION,
+  INDEXING_JOB_ACCEPTANCE_DELAY_MS,
+  createIndexingQueueDeduplicationId,
+  createIndexingQueueJobId,
+  createLegacyIndexingRunIdForJob,
+  createIndexingRunIdentity
+} from './indexingQueueIdentity.js';
+export {
+  getActiveRepositoryIndexingRuns,
+  recordSkippedIndexingRun,
+  updateRepositoryStatus
+} from './summaryMinerQueries.js';
+export { getRepositoryIndexingTerminalTransition } from './indexingTerminalQueries.js';
+export { clearIndexingRuntimeStateBestEffort } from './indexingCancellation.js';
+export type {
+  ActiveRepositoryIndexingRun,
+  IndexingRunIdentity,
+  RepositoryStatusTransition,
+  UpdateRepositoryStatusOptions
+} from './summaryMinerQueries.js';
+export type { RepositoryIndexingTerminalTransition } from './indexingTerminalQueries.js';
+export {
   scanProcessableGitFiles,
   shouldProcessFilePath,
   isProcessableFile
@@ -20,6 +42,7 @@ export {
 export type {
   FileSummary,
   DirectorySummary,
-  IndexingOptions
+  IndexingOptions,
+  IndexingOutcome
 } from './summaryMiner.js';
 export type { GitFileInfo } from './summaryFileFilter.js';

@@ -25,6 +25,8 @@ export interface HistoryEntry {
     timestamp: string;
     reason: string;
     metadata?: Record<string, unknown>;
+    /** Stable durable identity used to make a transition retry idempotent. */
+    transitionKey?: string;
 }
 
 export interface LastError {
@@ -63,6 +65,12 @@ export interface TaskStateData {
     worktreeInfo?: WorktreeInfo;
     claudeResult?: ClaudeResultSummary;
     prResult?: PRResult;
+    /** Identity of the latest history transition represented by this Redis state. */
+    currentTransitionKey?: string;
+    /** Monotonic SQLite history ID used for compare-and-set Redis projection. */
+    currentTransitionSequence?: number;
+    /** Content identity used to recognize a retry after Redis already advanced. */
+    currentTransitionFingerprint?: string;
 }
 
 export interface CancellationMetadata {
@@ -74,6 +82,8 @@ export interface CancellationMetadata {
 }
 
 export interface UpdateMetadata {
+    /** Caller-provided retry identity when one is available (for example, a queue delivery ID). */
+    idempotencyKey?: string;
     isRetry?: boolean;
     error?: {
         message: string;

@@ -79,6 +79,8 @@ export type CreateNotificationEventInput<
     action?: NotificationAction;
     metadata?: JsonObject;
     occurredAt?: TimestampInput;
+    /** Monotonic durable change ID for mutable presentation enrichment. */
+    enrichmentSequence?: number;
     /** Trusted producer-selected recipients, snapshotted with this event. */
     recipients?: readonly NotificationRecipient[];
 } : never;
@@ -107,6 +109,7 @@ interface NotificationEventRow {
     metadata_json: string | null;
     occurred_at: string;
     created_at: string;
+    enrichment_sequence: number;
 }
 
 interface NotificationRow extends NotificationEventRow {
@@ -187,6 +190,14 @@ function validateNotificationInput<T>(parser: () => T): T {
     }
 }
 
+function enrichmentSequence(value: number | undefined): number {
+    const sequence = value ?? 0;
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+        throw new TypeError('notification enrichmentSequence must be a non-negative safe integer');
+    }
+    return sequence;
+}
+
 function assertIdentifier(value: string, path: string): void {
     // Reuse the durable event parser's identifier constraints without exposing
     // unbounded values to SQLite. User IDs come from trusted auth or workers.
@@ -264,6 +275,53 @@ async function unreadCount(database: Database, userId: string): Promise<number> 
     return count;
 }
 
+function buildEnrichedNotificationEvent<K extends NotificationKind>(
+    stored: NotificationEvent<K>,
+    input: CreateNotificationEventInput<K>
+): NotificationEvent<K> {
+    const mergedMetadata = input.metadata === undefined && stored.metadata === undefined
+        ? undefined
+        : { ...(stored.metadata ?? {}), ...(input.metadata ?? {}) };
+    const enrichedAction = input.action ?? stored.action;
+    const requested = parseNotificationEvent({
+        id: stored.id,
+        deduplicationKey: input.deduplicationKey,
+        kind: input.kind,
+        severity: input.severity ?? stored.severity,
+        target: input.target,
+        title: input.title,
+        body: input.body,
+        ...(enrichedAction === undefined ? {} : { action: enrichedAction }),
+        ...(mergedMetadata === undefined ? {} : { metadata: mergedMetadata }),
+        occurredAt: input.occurredAt === undefined
+            ? stored.occurredAt
+            : normalizeISO8601Timestamp(input.occurredAt),
+        createdAt: stored.createdAt
+    }) as NotificationEvent<K>;
+    if (stored.target.type !== requested.target.type) {
+        throw new Error('Notification enrichment cannot change target type');
+    }
+    let enrichedTarget = stored.target as NotificationTargetFor<K>;
+    if (stored.target.type === 'task' && requested.target.type === 'task') {
+        const { prNumber: storedPrNumber, ...storedIdentity } = stored.target;
+        const { prNumber: requestedPrNumber, ...requestedIdentity } = requested.target;
+        if (JSON.stringify(storedIdentity) !== JSON.stringify(requestedIdentity)) {
+            throw new Error('Notification enrichment cannot change target identity');
+        }
+        if (storedPrNumber !== undefined && requestedPrNumber !== undefined
+            && storedPrNumber !== requestedPrNumber) {
+            throw new Error('Notification enrichment cannot replace an assigned PR number');
+        }
+        enrichedTarget = {
+            ...stored.target,
+            ...(requestedPrNumber === undefined ? {} : { prNumber: requestedPrNumber })
+        } as NotificationTargetFor<K>;
+    } else if (JSON.stringify(stored.target) !== JSON.stringify(requested.target)) {
+        throw new Error('Notification enrichment cannot change target identity');
+    }
+    return { ...requested, target: enrichedTarget } as NotificationEvent<K>;
+}
+
 export class NotificationService {
     private readonly database: Knex;
     private readonly now: () => TimestampInput;
@@ -286,11 +344,28 @@ export class NotificationService {
         input: CreateNotificationEventInput<K>,
         recipients: readonly NotificationRecipient[] = input.recipients ?? []
     ): Promise<NotificationEvent<K>> {
+        return this.database.transaction((transaction) =>
+            this.createNotificationEventInTransaction(transaction, input, recipients)
+        );
+    }
+
+    /**
+     * Persist an event and its recipient snapshot inside a caller-owned transaction.
+     * Projection activity and notification writes share this boundary. Durable
+     * reconciliation cursors advance afterward, so crash recovery is explicitly
+     * at-least-once and relies on event/recipient deduplication during replay.
+     */
+    async createNotificationEventInTransaction<K extends NotificationKind>(
+        transaction: Knex.Transaction,
+        input: CreateNotificationEventInput<K>,
+        recipients: readonly NotificationRecipient[] = input.recipients ?? []
+    ): Promise<NotificationEvent<K>> {
         if (input.id !== undefined && input.eventId !== undefined && input.id !== input.eventId) {
             throw new TypeError('notification id and eventId must match when both are supplied');
         }
 
         const createdAt = normalizeISO8601Timestamp(this.now());
+        const eventEnrichmentSequence = enrichmentSequence(input.enrichmentSequence);
         const event = parseNotificationEvent({
             id: input.eventId ?? input.id ?? this.generateId(),
             deduplicationKey: input.deduplicationKey,
@@ -308,34 +383,88 @@ export class NotificationService {
         }) as NotificationEvent<K>;
         const normalizedRecipients = normalizeRecipients(recipients);
 
-        return this.database.transaction(async (transaction) => {
-            await transaction('notification_events')
-                .insert({
-                    event_id: event.id,
-                    deduplication_key: event.deduplicationKey,
-                    kind: event.kind,
-                    severity: event.severity,
-                    target_json: JSON.stringify(event.target),
-                    title: event.title,
-                    body: event.body,
-                    action_json: event.action === undefined ? null : JSON.stringify(event.action),
-                    metadata_json: event.metadata === undefined ? null : JSON.stringify(event.metadata),
-                    occurred_at: event.occurredAt,
-                    created_at: event.createdAt
-                })
-                .onConflict('deduplication_key')
-                .ignore();
+        await transaction('notification_events')
+            .insert({
+                event_id: event.id,
+                deduplication_key: event.deduplicationKey,
+                kind: event.kind,
+                severity: event.severity,
+                target_json: JSON.stringify(event.target),
+                title: event.title,
+                body: event.body,
+                action_json: event.action === undefined ? null : JSON.stringify(event.action),
+                metadata_json: event.metadata === undefined ? null : JSON.stringify(event.metadata),
+                occurred_at: event.occurredAt,
+                created_at: event.createdAt,
+                enrichment_sequence: eventEnrichmentSequence
+            })
+            .onConflict('deduplication_key')
+            .ignore();
 
-            const storedRow = await transaction<NotificationEventRow>('notification_events')
-                .where({ deduplication_key: event.deduplicationKey })
-                .first();
-            if (!storedRow) {
-                throw new Error('Notification event was not persisted');
-            }
-            const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
-            await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
-            return storedEvent;
+        const storedRow = await transaction<NotificationEventRow>('notification_events')
+            .where({ deduplication_key: event.deduplicationKey })
+            .first();
+        if (!storedRow) {
+            throw new Error('Notification event was not persisted');
+        }
+        const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
+        await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
+        return storedEvent;
+    }
+
+    /**
+     * Create an event or safely enrich the mutable presentation fields of the
+     * event already stored under the same durable projection identity.
+     */
+    async createOrEnrichNotificationEventInTransaction<K extends NotificationKind>(
+        transaction: Knex.Transaction,
+        input: CreateNotificationEventInput<K>,
+        recipients: readonly NotificationRecipient[] = input.recipients ?? []
+    ): Promise<NotificationEvent<K>> {
+        const stored = await this.createNotificationEventInTransaction(
+            transaction,
+            input,
+            []
+        );
+        const requestedId = input.eventId ?? input.id;
+        if (requestedId !== undefined && requestedId !== stored.id) {
+            throw new Error('Notification enrichment identity resolved to a different event');
+        }
+        const enriched = buildEnrichedNotificationEvent(stored, input);
+        if (stored.deduplicationKey !== enriched.deduplicationKey
+            || stored.kind !== enriched.kind
+            || stored.severity !== enriched.severity
+            || stored.occurredAt !== enriched.occurredAt) {
+            throw new Error('Notification enrichment cannot change durable event identity');
+        }
+        await this.assignRecipients(transaction, stored, normalizeRecipients(recipients));
+        const requestedSequence = enrichmentSequence(input.enrichmentSequence);
+        const storedSequenceRow = await transaction<NotificationEventRow>('notification_events')
+            .where({ event_id: stored.id })
+            .first('enrichment_sequence');
+        const storedSequence = Number(storedSequenceRow?.enrichment_sequence);
+        if (!Number.isSafeInteger(storedSequence) || storedSequence < 0) {
+            throw new Error('Stored notification enrichment sequence is invalid');
+        }
+        if (requestedSequence <= storedSequence) {
+            return stored;
+        }
+        await transaction('notification_events')
+            .where({ event_id: stored.id })
+            .where('enrichment_sequence', '<', requestedSequence)
+            .update({
+            target_json: JSON.stringify(enriched.target),
+            title: enriched.title,
+            body: enriched.body,
+            action_json: enriched.action === undefined ? null : JSON.stringify(enriched.action),
+            metadata_json: enriched.metadata === undefined ? null : JSON.stringify(enriched.metadata),
+            enrichment_sequence: requestedSequence
         });
+        const enrichedRow = await transaction<NotificationEventRow>('notification_events')
+            .where({ event_id: stored.id })
+            .first();
+        if (!enrichedRow) throw new Error('Enriched notification event could not be read');
+        return toNotificationEvent(enrichedRow) as NotificationEvent<K>;
     }
 
     async assignNotificationRecipients(

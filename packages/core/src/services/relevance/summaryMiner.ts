@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- indexing phases share one run-scoped lifecycle */
 import { simpleGit, SimpleGit } from 'simple-git';
 import path from 'path';
 import fs from 'fs/promises';
@@ -12,9 +13,25 @@ import {
 } from './summaryMinerHelpers.js';
 import type { ProcessBatchesResult } from './summaryMinerHelpers.js';
 import type { AggregateDirectoriesResult } from './summaryMinerDirectories.js';
-import { clearIndexingCancellation, IndexingCancelledError, initIndexingProgress, ensureIndexingProgress, clearIndexingProgress, publishIndexingStatus } from './indexingCancellation.js';
+import {
+  clearIndexingCancellation,
+  clearIndexingRuntimeStateBestEffort,
+  isIndexingCancelled,
+  IndexingCancelledError,
+  initIndexingProgress,
+  ensureIndexingProgress,
+  clearIndexingProgress,
+  publishIndexingStatus
+} from './indexingCancellation.js';
 import type { IndexingPhase } from '@propr/shared';
-import { updateRepositoryStatus, getRepositoryIndexingStatus } from './summaryMinerQueries.js';
+import {
+  updateRepositoryStatus,
+  getRepositoryIndexingStatus,
+  recordSkippedIndexingRun,
+  type IndexingRunIdentity,
+  type RepositoryStatusTransition
+} from './summaryMinerQueries.js';
+import { createIndexingRunIdentity } from './indexingQueueIdentity.js';
 import { scanProcessableGitFiles } from './summaryFileFilter.js';
 import { deleteFileSummaries, identifyStaleFiles } from './summaryMinerStaleness.js';
 
@@ -51,7 +68,18 @@ export interface IndexingOptions {
   branch?: string; // branch to index (defaults to 'HEAD')
   fullReindex?: boolean; // if true, process all files regardless of staleness (but preserve existing summaries as fallback)
   ignoreCooldown?: boolean; // manual/admin override for persisted summarization cooldowns
+  runId?: string;
+  transitionAt?: string;
+  /** BullMQ owns terminal failure after its final attempt. */
+  deferFailureFinalization?: boolean;
 }
+
+export type IndexingOutcome =
+  | 'indexed'
+  | 'skipped_disabled'
+  | 'skipped_cooldown'
+  | 'skipped_superseded'
+  | 'skipped_cancelled';
 
 // --- Constants ---
 
@@ -193,12 +221,55 @@ async function resolveHeadInfo(repoPath: string, branch: string, log: Logger): P
   }
 }
 
-async function safePublishIndexingStatus(fullName: string, branch: string, status: IndexingPhase): Promise<void> {
+async function safePublishIndexingStatus(
+  fullName: string,
+  branch: string,
+  status: IndexingPhase,
+  transition?: { transitionAt: string; runId: string }
+): Promise<void> {
   try {
-    await publishIndexingStatus(fullName, branch, status);
+    await publishIndexingStatus(fullName, branch, status, transition);
   } catch {
     // best-effort
   }
+}
+
+async function safePublishAppliedIndexingStatus(
+  fullName: string,
+  branch: string,
+  status: IndexingPhase,
+  transition: RepositoryStatusTransition
+): Promise<void> {
+  if (!transition.applied) return;
+  await safePublishIndexingStatus(fullName, branch, status, transition);
+}
+
+async function throwIfIndexingCancelled(
+  fullName: string,
+  branch: string,
+  indexingRun: IndexingRunIdentity
+): Promise<void> {
+  if (await isIndexingCancelled(fullName, branch, indexingRun.runId)) {
+    throw new IndexingCancelledError(fullName);
+  }
+}
+
+async function closeSkippedIndexingRun(
+  fullName: string,
+  branch: string,
+  indexingRun: IndexingRunIdentity | undefined
+): Promise<void> {
+  if (!indexingRun) return;
+  // Older rows can predate run ownership. Preserve their durable failure just
+  // as we preserve a failed row owned by another modern run.
+  const existingStatus = await getRepositoryIndexingStatus(fullName, branch);
+  const currentTransition = existingStatus === 'failed'
+    ? { ...indexingRun, applied: false }
+    : await updateRepositoryStatus(fullName, 'idle', branch, indexingRun);
+  const terminalTransition = currentTransition.applied
+    ? currentTransition
+    : await recordSkippedIndexingRun(fullName, branch, indexingRun);
+  await safePublishAppliedIndexingStatus(fullName, branch, 'idle', terminalTransition);
 }
 
 interface IndexingCompletionOptions {
@@ -211,6 +282,7 @@ interface IndexingCompletionOptions {
   batchResult: { filesProcessed: number; failedBatches: number; totalBatches: number };
   dirFailedBatches: number;
   log: Logger;
+  indexingRun: IndexingRunIdentity;
 }
 
 async function handleNoFilesToProcess(options: {
@@ -224,30 +296,45 @@ async function handleNoFilesToProcess(options: {
   agentAliasSetting: string;
   resolveSummarizationConfig: () => Promise<AgentSetupResult & { customPrompt?: string }>;
   log: Logger;
+  indexingRun: IndexingRunIdentity;
 }): Promise<void> {
-  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, agentAliasSetting, resolveSummarizationConfig, log } = options;
+  const { fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, agent, modelOverride, agentAliasSetting, resolveSummarizationConfig, log, indexingRun } = options;
   log.info('No files need processing, all file summaries up to date');
-  await ensureIndexingProgress(fullName, branch);
-  const dirResult = await aggregateDirectories({ fullName, agent, log, modelOverride, agentAliasSetting, resolveSummarizationConfig, branch });
-  await clearIndexingCancellation(fullName, branch);
-  await clearIndexingProgress(fullName, branch);
+  await ensureIndexingProgress(fullName, branch, indexingRun);
+  const dirResult = await aggregateDirectories({
+    fullName, agent, log, modelOverride, agentAliasSetting, resolveSummarizationConfig,
+    branch, runId: indexingRun.runId
+  });
+  await throwIfIndexingCancelled(fullName, branch, indexingRun);
 
   if (dirResult.failedBatches > 0) {
-    await updateRepositoryStatus(fullName, 'failed', branch);
-    await safePublishIndexingStatus(fullName, branch, 'failed');
+    const transition = await updateRepositoryStatus(fullName, 'failed', branch, {
+      ...indexingRun
+    });
+    await safePublishAppliedIndexingStatus(fullName, branch, 'failed', transition);
+    await clearIndexingCancellation(fullName, branch, indexingRun.runId);
+    await clearIndexingProgress(fullName, branch, indexingRun.runId);
     log.warn({ fullName, branch, ...dirResult }, 'Directory aggregation completed with failures - will retry on next scan');
     return;
   }
 
-  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-  await safePublishIndexingStatus(fullName, branch, 'completed');
+  const transition = await updateRepositoryStatus(fullName, 'completed', branch, {
+    ...indexingRun,
+    commitInfo: { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath }
+  });
+  await safePublishAppliedIndexingStatus(fullName, branch, 'completed', transition);
+  await clearIndexingCancellation(fullName, branch, indexingRun.runId);
+  await clearIndexingProgress(fullName, branch, indexingRun.runId);
 }
 
 async function finalizeIndexing(options: IndexingCompletionOptions): Promise<void> {
-  const { repoPath, fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, batchResult, dirFailedBatches, log } = options;
+  const { repoPath, fullName, branch, currentHeadHash, currentHeadCommitMessage, iconPath, batchResult, dirFailedBatches, log, indexingRun } = options;
+  await throwIfIndexingCancelled(fullName, branch, indexingRun);
   if (batchResult.failedBatches > 0 || dirFailedBatches > 0) {
-    await updateRepositoryStatus(fullName, 'failed', branch);
-    await safePublishIndexingStatus(fullName, branch, 'failed');
+    const transition = await updateRepositoryStatus(fullName, 'failed', branch, {
+      ...indexingRun
+    });
+    await safePublishAppliedIndexingStatus(fullName, branch, 'failed', transition);
     log.warn(
       { repoPath, fullName, branch, ...batchResult, dirFailedBatches },
       'Repository indexing completed with failures - will retry on next scan'
@@ -255,8 +342,11 @@ async function finalizeIndexing(options: IndexingCompletionOptions): Promise<voi
     return;
   }
 
-  await updateRepositoryStatus(fullName, 'completed', branch, { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath });
-  await safePublishIndexingStatus(fullName, branch, 'completed');
+  const transition = await updateRepositoryStatus(fullName, 'completed', branch, {
+    ...indexingRun,
+    commitInfo: { hash: currentHeadHash, message: currentHeadCommitMessage, iconPath }
+  });
+  await safePublishAppliedIndexingStatus(fullName, branch, 'completed', transition);
   log.info({ repoPath, fullName, branch, headHash: currentHeadHash, iconPath, ...batchResult }, 'Repository indexing completed successfully');
 }
 
@@ -269,41 +359,48 @@ async function finalizeIndexing(options: IndexingCompletionOptions): Promise<voi
  * @param repoPath - Path to the git repository
  * @param options - Indexing options
  */
-export async function indexRepo(repoPath: string, options: IndexingOptions = {}): Promise<void> {
+// eslint-disable-next-line complexity -- every exit must preserve the accepted run identity
+export async function indexRepo(repoPath: string, options: IndexingOptions = {}): Promise<IndexingOutcome> {
   const correlationId = options.correlationId || generateCorrelationId();
   const correlatedLogger: Logger = logger.withCorrelation(correlationId);
 
   const fullName = options.fullName || path.basename(repoPath);
   const branch = options.branch || 'HEAD';
-
-  const { hash: currentHeadHash, commitMessage: currentHeadCommitMessage } = await resolveHeadInfo(repoPath, branch, correlatedLogger);
+  let indexingRun: IndexingRunIdentity | undefined = options.runId && options.transitionAt
+    ? { runId: options.runId, transitionAt: options.transitionAt }
+    : undefined;
 
   try {
-    // Phase A: Setup & Staleness Check
-    correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
-
-    // Check if summarization is enabled before considering runtime cooldowns.
+    // Check configuration before touching the repository. A queued job can race
+    // with an operator disabling summarization and must remain a clean skip even
+    // when its checkout has since become unavailable.
     const settings = await loadSummarizationSettings();
     if (!settings.enabled) {
       correlatedLogger.info('Summarization is disabled, skipping indexing');
-      return;
+      await closeSkippedIndexingRun(fullName, branch, indexingRun);
+      if (indexingRun) {
+        await clearIndexingRuntimeStateBestEffort(fullName, branch, indexingRun.runId);
+      }
+      return 'skipped_disabled';
     }
 
     const cooldown = options.ignoreCooldown ? null : await getSummarizationCooldown(fullName, branch);
     if (cooldown) {
       correlatedLogger.warn({ fullName, branch, until: cooldown.until, reason: cooldown.reason }, 'Skipping repository indexing during summarization cooldown');
-      // Preserve an existing failed state: the cooldown skip repairs nothing, so
-      // clearing a previously failed repository to idle would hide a real problem.
-      const existingStatus = await getRepositoryIndexingStatus(fullName, branch);
-      const cooldownStatus = existingStatus === 'failed' ? 'failed' : 'idle';
-      if (existingStatus !== 'failed') {
-        await updateRepositoryStatus(fullName, 'idle', branch);
+      // Close the optimistic queued activity. If another run (including a
+      // failed one) owns the durable repository row, retain that current status
+      // and append this cancellation to transition history instead.
+      await closeSkippedIndexingRun(fullName, branch, indexingRun);
+      if (indexingRun) {
+        await clearIndexingRuntimeStateBestEffort(fullName, branch, indexingRun.runId);
       }
-      await safePublishIndexingStatus(fullName, branch, cooldownStatus);
-      await clearIndexingCancellation(fullName, branch);
-      await clearIndexingProgress(fullName, branch);
-      return;
+      return 'skipped_cooldown';
     }
+
+    // Phase A: Setup & Staleness Check
+    const { hash: currentHeadHash, commitMessage: currentHeadCommitMessage } =
+      await resolveHeadInfo(repoPath, branch, correlatedLogger);
+    correlatedLogger.info({ repoPath, fullName, branch, headHash: currentHeadHash }, 'Starting repository indexing');
 
     // Discover repository icon early, so we can include it in status updates.
     const iconPath = await discoverRepoIcon(repoPath, correlatedLogger);
@@ -325,8 +422,23 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       'Using agent for summarization'
     );
 
-    // 3. Update repository status to 'indexing'
-    await updateRepositoryStatus(fullName, 'indexing', branch);
+    // 3. Producers normally establish durable ownership when BullMQ accepts the
+    // job. Direct/legacy callers establish it here; accepted queued runs merely
+    // verify that cancellation or a replacement did not win first.
+    const queuedRun = indexingRun;
+    const requestedRun = queuedRun ?? createIndexingRunIdentity();
+    const startTransition = await updateRepositoryStatus(fullName, 'indexing', branch, {
+      ...requestedRun,
+      startNewRun: queuedRun === undefined
+    });
+    indexingRun = { runId: startTransition.runId, transitionAt: startTransition.transitionAt };
+    if (!startTransition.applied) {
+      correlatedLogger.warn({ fullName, branch, runId: indexingRun.runId },
+        'Skipping superseded indexing job');
+      await clearIndexingRuntimeStateBestEffort(fullName, branch, indexingRun.runId);
+      return 'skipped_superseded';
+    }
+    await safePublishIndexingStatus(fullName, branch, 'indexing', indexingRun);
 
     // 4. Scan files using git ls-files --stage
     const gitFiles = await scanProcessableGitFiles(repoPath, correlatedLogger);
@@ -357,9 +469,10 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         modelOverride,
         agentAliasSetting,
         resolveSummarizationConfig,
-        log: correlatedLogger
+        log: correlatedLogger,
+        indexingRun
       });
-      return;
+      return 'indexed';
     }
 
     let batchResult: ProcessBatchesResult = {
@@ -376,7 +489,7 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       correlatedLogger.info({ count: filesToProcess.length }, 'Files need processing');
 
       // Initialize progress tracking
-      await initIndexingProgress(fullName, filesToProcess.length, branch);
+      await initIndexingProgress(fullName, filesToProcess.length, branch, indexingRun);
 
       // Phase B: Batch Summarization
       batchResult = await processBatches({
@@ -393,14 +506,15 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         fallbackAgentAliasSetting: agentConfig.fallbackAgentAliasSetting,
         customPrompt: settings.custom_prompt,
         resolveSummarizationConfig,
-        branch
+        branch,
+        runId: indexingRun.runId
       });
     }
 
     // Phase C: Directory Aggregation (if files were processed or deleted)
     let dirFailedBatches = 0;
     if (!batchResult.stopProcessing && (batchResult.filesProcessed > 0 || filesToDelete.length > 0)) {
-      await ensureIndexingProgress(fullName, branch);
+      await ensureIndexingProgress(fullName, branch, indexingRun);
       const dirResult = await aggregateDirectories({
         fullName,
         agent,
@@ -412,7 +526,8 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
         fallbackEffectiveModel: agentConfig.fallbackEffectiveModel,
         fallbackAgentAliasSetting: agentConfig.fallbackAgentAliasSetting,
         resolveSummarizationConfig,
-        branch
+        branch,
+        runId: indexingRun.runId
       });
       dirFailedBatches = dirResult.failedBatches;
       applyDirectoryFallbackResult(batchResult, dirResult);
@@ -428,15 +543,23 @@ export async function indexRepo(repoPath: string, options: IndexingOptions = {})
       iconPath,
       batchResult,
       dirFailedBatches,
-      log: correlatedLogger
+      log: correlatedLogger,
+      indexingRun
     });
 
     // Clear cancellation flag and progress on successful completion
-    await clearIndexingCancellation(fullName, branch);
-    await clearIndexingProgress(fullName, branch);
+    await clearIndexingCancellation(fullName, branch, indexingRun.runId);
+    await clearIndexingProgress(fullName, branch, indexingRun.runId);
+    return 'indexed';
 
   } catch (error) {
-    await handleIndexingError(error, repoPath, options, correlatedLogger);
+    return handleIndexingError({
+      error,
+      repoPath,
+      options,
+      correlatedLogger,
+      indexingRun
+    });
   }
 }
 
@@ -447,28 +570,46 @@ function applyDirectoryFallbackResult(batchResult: ProcessBatchesResult, dirResu
   batchResult.fallbackAgentAlias = dirResult.fallbackAgentAlias;
 }
 
-async function handleIndexingError(
-  error: unknown,
-  repoPath: string,
-  options: IndexingOptions,
-  correlatedLogger: Logger
-): Promise<void> {
+async function handleIndexingError(input: {
+  error: unknown;
+  repoPath: string;
+  options: IndexingOptions;
+  correlatedLogger: Logger;
+  indexingRun?: IndexingRunIdentity;
+}): Promise<IndexingOutcome> {
+  const { error, repoPath, options, correlatedLogger, indexingRun } = input;
   const repoName = options.fullName || path.basename(repoPath);
   const errorBranch = options.branch || 'HEAD';
-
-  // Always clear the cancellation flag and progress
-  await clearIndexingCancellation(repoName, errorBranch);
-  await clearIndexingProgress(repoName, errorBranch);
 
   // Handle user-initiated cancellation
   if (error instanceof IndexingCancelledError) {
     correlatedLogger.info({ repoPath, fullName: repoName, branch: errorBranch }, 'Repository indexing was cancelled by user');
     // Reset DB status to idle so REST queries reflect the stopped state
-    await updateRepositoryStatus(repoName, 'idle', errorBranch);
+    const transition = await updateRepositoryStatus(repoName, 'idle', errorBranch, {
+      ...(indexingRun ?? {})
+    });
     // Publish idle now that the worker has fully stopped — this is the authoritative
     // terminal event so clients won't see stale progress updates afterward.
-    await safePublishIndexingStatus(repoName, errorBranch, 'idle');
-    return;
+    await safePublishAppliedIndexingStatus(repoName, errorBranch, 'idle', transition);
+    if (indexingRun) {
+      await clearIndexingRuntimeStateBestEffort(repoName, errorBranch, indexingRun.runId);
+    }
+    return 'skipped_cancelled';
+  }
+
+  // A queue-owned run must stay non-terminal while BullMQ still has attempts.
+  // Preserve a concurrent cancellation request for the next attempt, but reset
+  // partial progress so diagnostics do not report work from the failed attempt.
+  if (options.deferFailureFinalization) {
+    await clearIndexingProgress(repoName, errorBranch, indexingRun?.runId).catch((cleanupError) => {
+      correlatedLogger.warn({ error: (cleanupError as Error).message },
+        'Failed to clear indexing progress after a retryable attempt');
+    });
+    throw error;
+  }
+
+  if (indexingRun) {
+    await clearIndexingRuntimeStateBestEffort(repoName, errorBranch, indexingRun.runId);
   }
 
   const err = error as Error;
@@ -479,8 +620,10 @@ async function handleIndexingError(
 
   // Set status to failed
   try {
-    await updateRepositoryStatus(repoName, 'failed', errorBranch);
-    await safePublishIndexingStatus(repoName, errorBranch, 'failed');
+    const transition = await updateRepositoryStatus(repoName, 'failed', errorBranch, {
+      ...(indexingRun ?? {})
+    });
+    await safePublishAppliedIndexingStatus(repoName, errorBranch, 'failed', transition);
   } catch (statusError) {
     correlatedLogger.error(
       { error: (statusError as Error).message },

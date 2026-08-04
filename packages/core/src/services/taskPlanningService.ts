@@ -187,6 +187,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     chatHistoryJson = '[]';
   }
 
+  const reviewTransitionAt = new Date().toISOString();
   const completed = await persistGenerationCompletion({
     database: db,
     draftId,
@@ -195,7 +196,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     updates: {
       plan_json: JSON.stringify(validatedPlan), context_config: JSON.stringify(updatedContextConfig),
       generated_context: fullContext, chat_history: chatHistoryJson, status: 'review',
-      name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
+      name: truncateToSentences(draft.initial_prompt), review_transition_at: reviewTransitionAt,
+      updated_at: reviewTransitionAt
     }
   });
   if (!completed) {
@@ -210,7 +212,8 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
     step: 'complete',
     status: 'completed',
     draftStatus: 'review',
-    generationTrace: buildDraftUpdateTraceSnapshot(finalTrace)
+    generationTrace: buildDraftUpdateTraceSnapshot(finalTrace),
+    timestamp: reviewTransitionAt
   });
   if (!published) {
     correlatedLogger.warn('Failed to publish completion event — client will resync via safety-net poll');

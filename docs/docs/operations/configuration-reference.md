@@ -93,6 +93,13 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | `GITHUB_ISSUE_QUEUE_NAME` | `github-issue-processor` | Name of the issue-processing queue. | Optional. |
 | `WORKER_CONCURRENCY` | Shipped `2` / code falls back to `5` if unset | Jobs a worker processes in parallel. | Optional. |
 | `COMMENT_BATCH_DELAY_MS` | `3000` | Delay for batching GitHub comment updates. | Optional. |
+| `NOTIFICATION_STALLED_AFTER_MS` | `1800000` (30 minutes) | Creates one durable stalled notification when active task or indexing activity remains unchanged for this long. | Optional. |
+| `NOTIFICATION_STALLED_CHECK_INTERVAL_MS` | `60000` (1 minute) | How often the API scans durable task and indexing activity for stalls. Replicas coordinate each scan through Redis. | Optional. |
+| `NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS` | `30000` (30 seconds) | How often the API samples installation health for durable notifications independently of UI polling. Replicas coordinate each sample through Redis. | Optional. |
+| `NOTIFICATION_SYSTEM_STARTUP_GRACE_MS` | `120000` (2 minutes) | Delays the first durable system-health sample so sibling services can publish their initial heartbeats during a cold start. | Optional. |
+| `NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS` | `3600000` (1 hour) | How long a GitHub repository-access snapshot may authorize repository notifications. Expired or failed snapshots deny delivery until access is refreshed. | Optional. |
+| `NOTIFICATION_ENTITLEMENT_MAX_SCHEDULED_REFRESHES` | `1000` | Maximum authenticated users whose repository-entitlement refresh schedules an API replica retains. Restart recovery applies this capacity while scanning sessions. | Optional. |
+| `NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS` | `2592000000` (30 days) | How long already-reconciled repository indexing transition history is retained for diagnostics and recovery. Unreconciled transitions are never pruned. | Optional. |
 | `SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD` | `3` | Promotes the summarization fallback to primary after this many primary quota failures for the same agent/model. | Optional. |
 | `SUMMARIZATION_QUOTA_COOLDOWN_MS` | `3600000` (1 hour) | Pauses normal summarization jobs for a repository/branch after both primary and fallback paths fail. | Optional. |
 | `SYSTEM_TASK_SECRET` | Empty | Signs system task requests (for example revert operations). Generate with `openssl rand -hex 32`. | System tasks (reverts). |

@@ -2,19 +2,75 @@ import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
-import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
+import { logger, withNotificationDeadline } from '@propr/core';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
-import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded, refreshGitHubTokenWithResult } from './authGithubTokens.js';
+import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenWithResult } from './authGithubTokens.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
+import { getSessionAuthGeneration } from './authSessionGeneration.js';
 import { authenticatedUserResponse, resolveAuthorization } from './authorization.js';
+import { createSessionRedisClient } from './serverRuntime.js';
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
+
+export interface AuthLifecycleHooks {
+    invalidateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
+    activateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
+    updateNotificationCredential?: (
+        userId: string,
+        accessToken: string,
+        authGeneration: string
+    ) => void;
+}
+
+const AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS = 5_000;
+
+async function invalidateRequestEntitlements(
+    req: Request,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<void> {
+    const userId = req.user?.id;
+    if (!userId || !lifecycleHooks.invalidateNotificationEntitlements) return;
+    const authGeneration = getSessionAuthGeneration(req);
+    await withNotificationDeadline(
+        lifecycleHooks.invalidateNotificationEntitlements(userId, authGeneration),
+        AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
+        'persisting notification entitlement invalidation'
+    );
+}
+
+async function invalidateBeforeSessionCleanup(
+    req: Request,
+    res: Response,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<boolean> {
+    try {
+        await invalidateRequestEntitlements(req, lifecycleHooks);
+        return true;
+    } catch (error) {
+        logger.error({
+            userId: req.user?.id,
+            error: error instanceof Error ? error.message : String(error)
+        }, 'Failed to invalidate notification entitlements during session cleanup');
+        res.status(503).json({
+            error: 'Session cleanup unavailable',
+            code: 'AUTH_CLEANUP_UNAVAILABLE',
+            message: 'Authorization cleanup could not be persisted. Please retry.'
+        });
+        return false;
+    }
+}
+
+function saveSession(req: Request): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        req.session.save(error => error ? reject(error) : resolve());
+    });
+}
 
 export function getSessionCookieDomain(): string | undefined {
     if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
@@ -34,7 +90,7 @@ export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): 
     }
 }
 
-function clearSessionCookie(res: Response): void {
+export function clearSessionCookie(res: Response): void {
     const domain = getSessionCookieDomain();
     // Mirror the attributes used when the session cookie is set — browsers match
     // on name/domain/path, but mirroring secure/httpOnly/sameSite is the safer
@@ -48,7 +104,12 @@ function clearSessionCookie(res: Response): void {
     });
 }
 
-export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
+export function setupAuth(
+    app: Express,
+    demoModeAtStartup = isDemoMode(),
+    lifecycleHooks: AuthLifecycleHooks = {}
+): ReturnType<typeof createEnsureAuthenticated> {
+    const appEnsureAuthenticated = createEnsureAuthenticated(lifecycleHooks);
     configureDemoMode(demoModeAtStartup);
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
@@ -61,13 +122,15 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
     if (!demoModeAtStartup) {
         // Create Redis client for session store
         // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
-        const sessionRedisHost = process.env.SESSION_REDIS_HOST || process.env.REDIS_HOST || 'redis';
-        const sessionRedisPort = process.env.SESSION_REDIS_PORT || process.env.REDIS_PORT || '6379';
-        const redisClient = createClient({ url: `redis://${sessionRedisHost}:${sessionRedisPort}` });
+        const redisClient = createSessionRedisClient();
         redisClient.on('error', (err) => {
-            console.error('Session Redis Client Error', err);
+            logger.error({ error: err instanceof Error ? err.message : String(err) },
+                'Session Redis client error');
         });
-        redisClient.connect().catch(console.error);
+        redisClient.connect().catch((error) => {
+            logger.error({ error: error instanceof Error ? error.message : String(error) },
+                'Failed to connect session Redis client');
+        });
 
         // Use Redis store for sessions to share across subdomains
         const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
@@ -99,7 +162,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
             // Here you would find or create a user in your database.
             // For now, we'll just pass the profile through.
-            console.log('User authenticated:', profile.username);
+            logger.info({ username: profile.username }, 'GitHub user authenticated');
 
             // Calculate token expiration time (expires_in is in seconds)
             const tokenExpiresAt = params.expires_in ? Date.now() + (params.expires_in * 1000) : undefined;
@@ -146,17 +209,64 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
     } else {
         app.get('/api/auth/github/callback',
             passport.authenticate('github', { failureRedirect: '/login' }),
-            (req: Request, res: Response) => {
+            async (req: Request, res: Response) => {
                 // Reject logins from users not on the access whitelist, before a
                 // session is usable. (No-op when no whitelist is configured.)
                 if (!isUserWhitelisted(req.user?.username)) {
-                    req.logout(() => {
-                        req.session.destroy(() => {
-                            clearSessionCookie(res);
-                            res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
-                        });
+                    if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+                    await clearSessionForReauth(req);
+                    clearSessionCookie(res);
+                    res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
+                    return;
+                }
+
+                const userId = req.user?.id;
+                const authGeneration = userId ? getSessionAuthGeneration(req) : undefined;
+
+                // Persist the authenticated session before activating its durable
+                // notification generation. A failed save therefore cannot strand
+                // an active generation without a session that can revoke it.
+                try {
+                    await saveSession(req);
+                } catch (error) {
+                    logger.error({
+                        userId,
+                        error: error instanceof Error ? error.message : String(error)
+                    }, 'Session save failed after login');
+                    await clearSessionForReauth(req);
+                    clearSessionCookie(res);
+                    res.status(503).json({
+                        error: 'Login session unavailable',
+                        code: 'AUTH_SESSION_UNAVAILABLE',
+                        message: 'Your authenticated session could not be persisted. Please retry login.'
                     });
                     return;
+                }
+
+                if (userId && authGeneration && lifecycleHooks.activateNotificationEntitlements) {
+                    try {
+                        await lifecycleHooks.activateNotificationEntitlements(
+                            userId,
+                            authGeneration
+                        );
+                    } catch (error) {
+                        logger.error({
+                            userId,
+                            error: error instanceof Error ? error.message : String(error),
+                        }, 'Failed to activate notification entitlements after login');
+                        // Activation hooks are expected to be transactional, but
+                        // explicitly tombstone the generation in case a custom hook
+                        // persisted activation before reporting an error.
+                        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+                        await clearSessionForReauth(req);
+                        clearSessionCookie(res);
+                        res.status(503).json({
+                            error: 'Login activation unavailable',
+                            code: 'AUTH_ACTIVATION_UNAVAILABLE',
+                            message: 'Authorization activation could not be persisted. Please retry login.'
+                        });
+                        return;
+                    }
                 }
 
                 // Check for stored redirect URL (for PR preview environments)
@@ -167,40 +277,24 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                 }
 
                 const finalRedirect = redirectTo || getDefaultRedirectUrl();
-
-                // Explicitly save session before redirect to ensure cookie is set
-                // This is required when using Redis store with async operations
-                req.session.save((err) => {
-                    if (err) {
-                        console.error('Session save error:', err);
-                    }
-                    res.redirect(finalRedirect);
-                });
+                res.redirect(finalRedirect);
             }
         );
     }
 
-    app.get('/api/auth/logout', (req: Request, res: Response) => {
+    app.get('/api/auth/logout', async (req: Request, res: Response) => {
         if (demoModeAtStartup) {
             res.redirect(`${process.env.FRONTEND_URL}/`);
             return;
         }
 
-        req.logout((err) => {
-            if (err) {
-                console.error('Logout error:', err);
-            }
-            req.session.destroy((sessionErr) => {
-                if (sessionErr) {
-                    console.error('Session destroy error:', sessionErr);
-                }
-                clearSessionCookie(res);
-                res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
-            });
-        });
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
+        clearSessionCookie(res);
+        res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
     });
 
-    app.get('/api/auth/user', ensureAuthenticated, resolveAuthorization, (req: Request, res: Response) => {
+    app.get('/api/auth/user', appEnsureAuthenticated, resolveAuthorization, (req: Request, res: Response) => {
         if (!req.user || !req.authorization) {
             res.status(500).json({ error: 'Instance authorization was not resolved' });
             return;
@@ -212,79 +306,131 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         res.json({ demoMode: demoModeAtStartup });
     });
 
+    return appEnsureAuthenticated;
 }
 
-export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if (isDemoMode()) {
-        res.set('X-ProPR-Demo-Mode', 'true');
-        // Demo mode is deployment-wide: browser callers receive the synthetic read-only user.
-        // Stale bearer headers are ignored so public demo visitors are treated consistently.
-        (req as Request & { user: GitHubUser }).user = getDemoUser();
-        return next();
-    }
-
-    // Session-based auth (Passport)
-    if (req.isAuthenticated()) {
-        if (req.user?.githubAuthInvalid) {
-            await clearSessionForReauth(req);
-            res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
-            return;
+export function createEnsureAuthenticated(
+    lifecycleHooks: AuthLifecycleHooks = {}
+): (req: Request, res: Response, next: NextFunction) => Promise<void> {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        if (isDemoMode()) {
+            res.set('X-ProPR-Demo-Mode', 'true');
+            // Demo mode is deployment-wide: browser callers receive the synthetic read-only user.
+            // Stale bearer headers are ignored so public demo visitors are treated consistently.
+            (req as Request & { user: GitHubUser }).user = getDemoUser();
+            return next();
         }
 
-        if (!isUserWhitelisted(req.user?.username)) {
-            req.logout(() => {
-                req.session.destroy(() => {
-                    clearSessionCookie(res);
-                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
-                });
-            });
-            return;
-        }
+        return req.isAuthenticated()
+            ? authenticateSessionRequest(req, res, next, lifecycleHooks)
+            : authenticateBearerRequest(req, res, next);
+    };
+}
 
-        if (isGitHubTokenExpired(req)) {
-            const refreshResult = await refreshGitHubTokenWithResult(req, true);
-            if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
-                if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
-                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
-                return;
-            }
-            if (refreshResult.status === 'temporarily-unavailable') {
-                res.status(503).json({ error: 'GitHub token refresh unavailable', code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE', message: 'GitHub authentication could not be refreshed right now. Please retry shortly.' });
-                return;
-            }
-        } else {
-            // Proactively refresh token in background if needed.
-            refreshGitHubTokenIfNeeded(req).catch((err) => {
-                console.error('Background token refresh failed:', err);
-            });
-        }
-        return next();
-    }
-
-    // Bearer token auth (CLI)
-    const bearerEnabled = process.env.ENABLE_BEARER_AUTH !== 'false';
-    const authHeader = req.headers.authorization;
-
-    if (bearerEnabled && authHeader?.startsWith('Bearer ')) {
-        const token = authHeader.slice(7);
-
-        try {
-            const user = await validateGitHubToken(token);
-            if (user) {
-                if (!isUserWhitelisted(user.username)) {
-                    res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
-                    return;
-                }
-                // Populate req.user so downstream handlers work the same way
-                (req as Request & { user: GitHubUser }).user = user;
-                return next();
-            }
-            res.status(401).json({ error: 'Unauthorized: invalid token' });
-        } catch {
-            res.status(401).json({ error: 'Unauthorized: token validation failed' });
-        }
+async function authenticateSessionRequest(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<void> {
+    if (req.user?.githubAuthInvalid) {
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
+        clearSessionCookie(res);
+        respondGitHubReauthRequired(res);
         return;
     }
-
-    res.status(401).json({ error: 'Unauthorized' });
+    if (!isUserWhitelisted(req.user?.username)) {
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
+        clearSessionCookie(res);
+        res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+        return;
+    }
+    if (isGitHubTokenExpired(req)) {
+        await authenticateExpiredSession(req, res, next, lifecycleHooks);
+        return;
+    }
+    void refreshGitHubTokenWithResult(req).then((result) => {
+        const userId = req.user?.id;
+        const accessToken = req.user?.accessToken;
+        if (result.status === 'refreshed' && userId && accessToken) {
+            lifecycleHooks.updateNotificationCredential?.(
+                userId,
+                accessToken,
+                getSessionAuthGeneration(req)
+            );
+        }
+    }).catch((error) => {
+        logger.error({ error: error instanceof Error ? error.message : String(error) },
+            'Background GitHub token refresh failed');
+    });
+    next();
 }
+
+async function authenticateExpiredSession(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<void> {
+    const refreshResult = await refreshGitHubTokenWithResult(req, true);
+    if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
+        clearSessionCookie(res);
+        respondGitHubReauthRequired(res);
+        return;
+    }
+    if (refreshResult.status === 'temporarily-unavailable') {
+        res.status(503).json({ error: 'GitHub token refresh unavailable', code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE', message: 'GitHub authentication could not be refreshed right now. Please retry shortly.' });
+        return;
+    }
+    const userId = req.user?.id;
+    const accessToken = req.user?.accessToken;
+    if (refreshResult.status === 'refreshed' && userId && accessToken) {
+        lifecycleHooks.updateNotificationCredential?.(
+            userId,
+            accessToken,
+            getSessionAuthGeneration(req)
+        );
+    }
+    next();
+}
+
+async function authenticateBearerRequest(
+    req: Request,
+    res: Response,
+    next: NextFunction
+): Promise<void> {
+    const authHeader = req.headers.authorization;
+    if (process.env.ENABLE_BEARER_AUTH === 'false' || !authHeader?.startsWith('Bearer ')) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+    }
+    try {
+        const user = await validateGitHubToken(authHeader.slice(7));
+        if (!user) {
+            res.status(401).json({ error: 'Unauthorized: invalid token' });
+            return;
+        }
+        if (!isUserWhitelisted(user.username)) {
+            res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
+            return;
+        }
+        (req as Request & { user: GitHubUser }).user = user;
+        next();
+    } catch {
+        res.status(401).json({ error: 'Unauthorized: token validation failed' });
+    }
+}
+
+function respondGitHubReauthRequired(res: Response): void {
+    res.status(401).json({
+        error: 'GitHub authentication expired',
+        code: 'GITHUB_REAUTH_REQUIRED',
+        message: 'Your GitHub session has expired. Please log in again.'
+    });
+}
+
+export const ensureAuthenticated = createEnsureAuthenticated();

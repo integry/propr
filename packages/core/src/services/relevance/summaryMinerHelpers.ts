@@ -65,6 +65,7 @@ export interface ProcessBatchesOptions {
   fallbackAgentAliasSetting?: string;
   resolveSummarizationConfig?: () => Promise<SummarizationAgentConfig>;
   branch?: string; // Branch being indexed (defaults to 'HEAD')
+  runId?: string;
 }
 
 export interface ProcessBatchesResult {
@@ -87,7 +88,7 @@ export interface ProcessBatchesResult {
 export async function processBatches(options: ProcessBatchesOptions): Promise<ProcessBatchesResult> {
   const {
     repoPath, fullName, files, agent, log, modelOverride, agentAliasSetting, customPrompt, resolveSummarizationConfig, branch = 'HEAD',
-    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting
+    fallbackAgent, fallbackModelOverride, fallbackEffectiveModel, fallbackAgentAliasSetting, runId
   } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
@@ -136,7 +137,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
 
   for (const file of files) {
     // Check for cancellation before processing each file
-    if (await isIndexingCancelled(fullName, branch)) {
+    if (await isIndexingCancelled(fullName, branch, runId)) {
       log.info({ repository: fullName }, 'Indexing cancelled by user');
       throw new IndexingCancelledError(fullName);
     }
@@ -206,8 +207,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         batchCompleted: true,
         inputTokens: batchInputTokens,
         outputTokens: batchOutputTokens,
-      }, branch);
-      await publishBatchProgressIfActive(fullName, branch, updatedProgress);
+      }, branch, runId);
+      await publishBatchProgressIfActive(fullName, branch, updatedProgress, runId);
 
       currentBatch = [];
       currentTokens = 0;
@@ -238,7 +239,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   // Process remaining batch
   if (currentBatch.length > 0) {
     // Check for cancellation before final batch
-    if (await isIndexingCancelled(fullName, branch)) {
+    if (await isIndexingCancelled(fullName, branch, runId)) {
       log.info({ repository: fullName }, 'Indexing cancelled by user');
       throw new IndexingCancelledError(fullName);
     }
@@ -287,8 +288,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       batchCompleted: true,
       inputTokens: batchInputTokens,
       outputTokens: batchOutputTokens,
-    }, branch);
-    await publishBatchProgressIfActive(fullName, branch, updatedProgress);
+    }, branch, runId);
+    await publishBatchProgressIfActive(fullName, branch, updatedProgress, runId);
   }
 
   log.info({ totalBatches: batchNumber, successfulBatches, failedBatches, filesProcessed, filesFailed }, 'Batch processing complete');
@@ -328,9 +329,10 @@ function logBatchAgentIfChanged(
 async function publishBatchProgressIfActive(
   repository: string,
   branch: string,
-  progress: Awaited<ReturnType<typeof updateIndexingProgress>>
+  progress: Awaited<ReturnType<typeof updateIndexingProgress>>,
+  runId?: string
 ): Promise<void> {
-  if (!progress || await isIndexingCancelled(repository, branch)) {
+  if (!progress || await isIndexingCancelled(repository, branch, runId)) {
     return;
   }
 

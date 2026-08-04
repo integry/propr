@@ -348,10 +348,11 @@ export class AntigravityAgent implements Agent {
         }
     }
 
-    async healthCheck(): Promise<boolean> {
+    async healthCheck(signal?: AbortSignal): Promise<boolean> {
         logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Antigravity agent...');
         try {
-            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
+            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage],
+                { timeout: 10000, signal });
             const imageExists = !!result.stdout.trim();
             logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
             return imageExists;

@@ -1,4 +1,5 @@
 import type { Request } from 'express';
+import { logger } from '@propr/core';
 
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
@@ -41,8 +42,13 @@ async function markGitHubSessionReauthRequired(req: Request, reason: string): Pr
 
     await new Promise<void>(resolve => {
         req.session.save(err => {
-            if (err) console.error('Error saving session after marking GitHub auth invalid:', err);
-            else console.warn(`Marked GitHub OAuth session for user ${user.username} as requiring re-authentication (${reason})`);
+            if (err) {
+                logger.error({ userId: user.id, error: err.message },
+                    'Failed to save session after marking GitHub auth invalid');
+            } else {
+                logger.warn({ userId: user.id, username: user.username, reason },
+                    'Marked GitHub OAuth session as requiring re-authentication');
+            }
             resolve();
         });
     });
@@ -51,9 +57,15 @@ async function markGitHubSessionReauthRequired(req: Request, reason: string): Pr
 export async function clearSessionForReauth(req: Request): Promise<void> {
     await new Promise<void>(resolve => {
         req.logout(logoutErr => {
-            if (logoutErr) console.error('Error during logout after GitHub auth invalidation:', logoutErr);
+            if (logoutErr) {
+                logger.error({ error: logoutErr.message },
+                    'Passport logout failed after GitHub auth invalidation');
+            }
             req.session.destroy(destroyErr => {
-                if (destroyErr) console.error('Error destroying session after GitHub auth invalidation:', destroyErr);
+                if (destroyErr) {
+                    logger.error({ error: destroyErr.message },
+                        'Session destruction failed after GitHub auth invalidation');
+                }
                 resolve();
             });
         });
@@ -78,10 +90,10 @@ async function saveSession(req: Request, successMessage: string): Promise<void> 
     await new Promise<void>((resolve, reject) => {
         req.session.save(err => {
             if (err) {
-                console.error('Error saving session after token refresh:', err);
+                logger.error({ error: err.message }, 'Failed to save session after GitHub token refresh');
                 reject(err);
             } else {
-                console.log(successMessage);
+                logger.info(successMessage);
                 resolve();
             }
         });
@@ -97,7 +109,7 @@ async function performGitHubTokenRefresh(req: Request, force: boolean): Promise<
     const needsRefresh = force || (user.tokenExpiresAt && (user.tokenExpiresAt - now) < TOKEN_REFRESH_BUFFER_MS);
     if (!needsRefresh) return { status: 'not-needed' };
 
-    console.log(`Refreshing GitHub token for user ${user.username} (force=${force})`);
+    logger.info({ userId: user.id, username: user.username, force }, 'Refreshing GitHub token');
 
     try {
         const response = await fetch('https://github.com/login/oauth/access_token', {
@@ -111,18 +123,23 @@ async function performGitHubTokenRefresh(req: Request, force: boolean): Promise<
             }),
         });
         if (!response.ok) {
-            console.error(`GitHub token refresh failed with status ${response.status}`);
+            logger.error({ userId: user.id, responseStatus: response.status },
+                'GitHub token refresh request failed');
             return { status: 'temporarily-unavailable' };
         }
 
         const data = await response.json() as GitHubTokenRefreshResponse;
         if (data.error) {
-            console.error(`GitHub token refresh error: ${data.error} - ${data.error_description}`);
+            logger.error({
+                userId: user.id,
+                githubError: data.error,
+                description: data.error_description,
+            }, 'GitHub token refresh returned an error');
             if (isUnrecoverableRefreshError(data.error)) await markGitHubSessionReauthRequired(req, data.error);
             return { status: isUnrecoverableRefreshError(data.error) ? 'reauth-required' : 'temporarily-unavailable' };
         }
         if (!data.access_token) {
-            console.error('GitHub token refresh response missing access_token');
+            logger.error({ userId: user.id }, 'GitHub token refresh response omitted access token');
             return { status: 'temporarily-unavailable' };
         }
 
@@ -139,7 +156,8 @@ async function performGitHubTokenRefresh(req: Request, force: boolean): Promise<
             tokenExpiresAt: user.tokenExpiresAt,
         };
     } catch (error) {
-        console.error('Error refreshing GitHub token:', error);
+        logger.error({ userId: user.id, error: error instanceof Error ? error.message : String(error) },
+            'GitHub token refresh failed');
         return { status: 'temporarily-unavailable' };
     }
 }

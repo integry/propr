@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
-import { db, logger } from '@propr/core';
+import type { Knex } from 'knex';
+import { db, logger, replaceNotificationRepositorySubscriptions } from '@propr/core';
 
 /**
  * User-specific repository preferences.
@@ -34,21 +35,25 @@ async function getUserRepoPrefs(userId: string): Promise<UserRepoPreferences> {
 /**
  * Save user repo preferences to database.
  */
-async function saveUserRepoPrefs(userId: string, prefs: UserRepoPreferences): Promise<boolean> {
+async function saveUserRepoPrefs(
+  userId: string,
+  prefs: UserRepoPreferences,
+  database: Knex | Knex.Transaction = db
+): Promise<boolean> {
   try {
     const key = `user_repo_prefs_${userId}`;
     const jsonValue = JSON.stringify(prefs);
-    await db('system_configs')
+    await database('system_configs')
       .insert({
         key,
         value: jsonValue,
-        updated_at: db.fn.now(),
-        created_at: db.fn.now()
+        updated_at: database.fn.now(),
+        created_at: database.fn.now()
       })
       .onConflict('key')
       .merge({
         value: jsonValue,
-        updated_at: db.fn.now()
+        updated_at: database.fn.now()
       });
     return true;
   } catch (error) {
@@ -141,7 +146,15 @@ export function createUserRepoPreferencesRoutes() {
         }
       }
 
-      await saveUserRepoPrefs(req.user.id, mergedPrefs);
+      await db.transaction(async (transaction) => {
+        const saved = await saveUserRepoPrefs(req.user!.id, mergedPrefs, transaction);
+        if (!saved) throw new Error('Failed to persist repository preferences');
+        await replaceNotificationRepositorySubscriptions({
+          userId: req.user!.id,
+          preferences: mergedPrefs,
+          database: transaction
+        });
+      });
       res.json({ success: true, preferences: mergedPrefs });
     } catch (error) {
       console.error('Error updating user repo preferences:', error);

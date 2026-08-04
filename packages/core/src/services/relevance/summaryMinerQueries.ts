@@ -1,3 +1,5 @@
+/* eslint-disable max-lines -- indexing persistence and its run-state invariants share one boundary */
+import { randomUUID } from 'node:crypto';
 import { db } from '../../db/connection.js';
 
 // Inline type definitions to avoid circular dependency with summaryMiner.ts
@@ -16,6 +18,31 @@ interface DirectorySummaryResult {
   last_updated_at: Date;
 }
 
+export interface IndexingRunIdentity {
+  runId: string;
+  transitionAt: string;
+}
+
+export interface UpdateRepositoryStatusOptions extends Partial<IndexingRunIdentity> {
+  startNewRun?: boolean;
+  /** Start a legacy queue run only when no other run currently owns the branch. */
+  startNewRunIfIdle?: boolean;
+  /** Verify an existing owner without allowing a queue consumer to create it. */
+  requireExistingRun?: boolean;
+  commitInfo?: { hash?: string; message?: string; iconPath?: string | null };
+  /** Optional database boundary for atomic callers and isolated tests. */
+  database?: typeof db;
+}
+
+export interface RepositoryStatusTransition extends IndexingRunIdentity {
+  applied: boolean;
+}
+
+export interface ActiveRepositoryIndexingRun extends IndexingRunIdentity {
+  fullName: string;
+  branch: string;
+}
+
 /**
  * Updates the repository indexing status
  */
@@ -23,43 +50,355 @@ export async function updateRepositoryStatus(
   fullName: string,
   status: 'idle' | 'indexing' | 'completed' | 'failed',
   branch: string = 'HEAD',
-  commitInfo?: { hash?: string; message?: string; iconPath?: string | null }
-): Promise<void> {
-  const lastIndexedHash = commitInfo?.hash;
-  const lastIndexedCommitMessage = commitInfo?.message;
-  const iconPath = commitInfo?.iconPath;
-  const updateData: Record<string, unknown> = {
-    indexing_status: status,
-    updated_at: db.fn.now()
-  };
+  options: UpdateRepositoryStatusOptions = {}
+): Promise<RepositoryStatusTransition> {
+  const database = options.database ?? db;
+  return database.transaction(
+    // eslint-disable-next-line complexity -- run ownership and ordering form one atomic decision
+    async (transaction) => {
+    const existing = await transaction('repositories')
+      .select('full_name', 'indexing_status', 'indexing_transition_at', 'indexing_run_id')
+      .whereRaw('lower(full_name) = ?', [fullName.trim().toLowerCase()])
+      .where({ branch })
+      .forUpdate()
+      .first() as {
+        full_name?: string;
+        indexing_status?: string;
+        indexing_transition_at?: string | null;
+        indexing_run_id?: string | null;
+      } | undefined;
+    const now = new Date().toISOString();
+    const requestedRunId = options.runId;
+    const replacingRun = status === 'indexing' && options.startNewRun === true;
+    const startingLegacyRun = status === 'indexing' && options.startNewRunIfIdle === true;
+    if (requestedRunId) {
+      const alreadyTerminal = await transaction('repository_indexing_transitions')
+        .whereRaw('lower(full_name) = ?', [fullName.trim().toLowerCase()])
+        .where({ branch, run_id: requestedRunId })
+        .whereIn('status', ['idle', 'completed', 'failed'])
+        .first('status', 'transition_at') as {
+          status?: 'idle' | 'completed' | 'failed';
+          transition_at?: string;
+      } | undefined;
+      if (alreadyTerminal) {
+        const sameTerminal = status !== 'indexing' && alreadyTerminal.status === status;
+        if (existing && alreadyTerminal.status && existing.indexing_status !== alreadyTerminal.status
+            && existing.indexing_run_id === requestedRunId) {
+          await transaction('repositories')
+            .where({
+              full_name: existing.full_name,
+              branch,
+              indexing_status: existing.indexing_status,
+              indexing_run_id: requestedRunId
+            })
+            .update({
+              indexing_status: alreadyTerminal.status,
+              indexing_transition_at: alreadyTerminal.transition_at,
+              updated_at: now
+            });
+        }
+        return {
+          runId: requestedRunId,
+          transitionAt: alreadyTerminal.transition_at ?? options.transitionAt ?? now,
+          applied: sameTerminal
+        };
+      }
+    }
+    if (requestedRunId && status === 'indexing' && options.requireExistingRun === true
+        && (!existing || existing.indexing_status !== 'indexing'
+          || existing.indexing_run_id !== requestedRunId)) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? existing?.indexing_transition_at ?? now,
+        applied: false
+      };
+    }
+    if (requestedRunId && startingLegacyRun
+        && existing?.indexing_status === 'indexing'
+        && existing.indexing_run_id !== requestedRunId) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? now,
+        applied: false
+      };
+    }
+    if (status !== 'indexing' && existing?.indexing_status
+      && existing.indexing_status !== 'indexing'
+      && existing.indexing_status !== status) {
+      return {
+        runId: requestedRunId ?? existing.indexing_run_id ?? randomUUID(),
+        transitionAt: options.transitionAt ?? existing.indexing_transition_at ?? now,
+        applied: false
+      };
+    }
+    if (requestedRunId && status !== 'indexing'
+      && existing?.indexing_status === 'indexing'
+      && !existing.indexing_run_id) {
+      // A run-scoped queued cancellation cannot claim an active legacy row
+      // whose owner is unknown. Record that queued run in history instead.
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? now,
+        applied: false
+      };
+    }
+    if (
+      existing?.indexing_run_id
+      && requestedRunId
+      && existing.indexing_run_id !== requestedRunId
+      && !replacingRun
+    ) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? now,
+        applied: false
+      };
+    }
 
-  if (status === 'completed') {
-    updateData.last_indexed_at = db.fn.now();
-    if (lastIndexedHash) {
-      updateData.last_indexed_hash = lastIndexedHash;
+    if (requestedRunId && existing?.indexing_run_id === requestedRunId) {
+      if (existing.indexing_status === status) {
+        return {
+          runId: requestedRunId,
+          transitionAt: existing.indexing_transition_at ?? options.transitionAt ?? now,
+          applied: true
+        };
+      }
+      // Every run has one terminal result. In particular, an idle cancellation
+      // must not be overwritten by late completion or failure callbacks.
+      if (existing.indexing_status !== 'indexing') {
+        return {
+          runId: requestedRunId,
+          transitionAt: options.transitionAt ?? now,
+          applied: false
+        };
+      }
     }
-    if (lastIndexedCommitMessage) {
-      updateData.last_indexed_commit_message = lastIndexedCommitMessage;
-    }
-    if (iconPath !== undefined) {
-      updateData.icon_path = iconPath;
-    }
-  }
 
-  await db('repositories')
-    .insert({
-      full_name: fullName,
-      branch,
+    if (requestedRunId && status !== 'indexing' && !existing) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? now,
+        applied: false
+      };
+    }
+
+    let supersededTransitionAt: string | undefined;
+    if (replacingRun
+        && existing?.indexing_status === 'indexing'
+        && existing.indexing_run_id
+        && existing.indexing_run_id !== requestedRunId) {
+      supersededTransitionAt = now;
+      if (existing.indexing_transition_at
+          && supersededTransitionAt <= existing.indexing_transition_at) {
+        supersededTransitionAt = new Date(
+          Date.parse(existing.indexing_transition_at) + 1
+        ).toISOString();
+      }
+      await transaction('repository_indexing_transitions')
+        .insert({
+          full_name: existing.full_name ?? fullName,
+          branch,
+          run_id: existing.indexing_run_id,
+          status: 'idle',
+          transition_at: supersededTransitionAt,
+          observed_at: now
+        })
+        .onConflict()
+        .ignore();
+    }
+
+    const statusChanged = existing?.indexing_status !== status;
+    const storedFullName = existing?.full_name ?? fullName;
+    const runId = requestedRunId ?? (
+      status === 'indexing' && (replacingRun || statusChanged) || !existing?.indexing_run_id
+        ? randomUUID()
+        : existing.indexing_run_id
+    );
+    const runChanged = existing?.indexing_run_id !== runId;
+    let transitionAt = runChanged
+      // Cross-run ownership follows serialized database acceptance, never a
+      // producer host's wall clock. The request timestamp remains queue data
+      // until the database returns this authoritative transition identity.
+      ? now
+      : statusChanged
+        ? now
+        : existing?.indexing_transition_at ?? options.transitionAt ?? now;
+    if (runChanged && existing?.indexing_transition_at && transitionAt <= existing.indexing_transition_at) {
+      transitionAt = new Date(Date.parse(existing.indexing_transition_at) + 1).toISOString();
+    }
+    if (supersededTransitionAt && transitionAt <= supersededTransitionAt) {
+      transitionAt = new Date(Date.parse(supersededTransitionAt) + 1).toISOString();
+    }
+    const lastIndexedHash = options.commitInfo?.hash;
+    const lastIndexedCommitMessage = options.commitInfo?.message;
+    const iconPath = options.commitInfo?.iconPath;
+    const updateData: Record<string, unknown> = {
       indexing_status: status,
-      created_at: db.fn.now(),
-      updated_at: db.fn.now(),
-      last_indexed_hash: lastIndexedHash || null,
-      last_indexed_commit_message: lastIndexedCommitMessage || null,
-      icon_path: iconPath || null,
-      ...(status === 'completed' ? { last_indexed_at: db.fn.now() } : {})
-    })
-    .onConflict(['full_name', 'branch'])
-    .merge(updateData);
+      indexing_transition_at: transitionAt,
+      indexing_run_id: runId,
+      updated_at: now
+    };
+
+    if (status === 'completed') {
+      updateData.last_indexed_at = now;
+      if (lastIndexedHash) {
+        updateData.last_indexed_hash = lastIndexedHash;
+      }
+      if (lastIndexedCommitMessage) {
+        updateData.last_indexed_commit_message = lastIndexedCommitMessage;
+      }
+      if (iconPath !== undefined) {
+        updateData.icon_path = iconPath;
+      }
+    }
+
+    await transaction('repositories')
+      .insert({
+        full_name: storedFullName,
+        branch,
+        indexing_status: status,
+        indexing_transition_at: transitionAt,
+        indexing_run_id: runId,
+        created_at: now,
+        updated_at: now,
+        last_indexed_hash: lastIndexedHash || null,
+        last_indexed_commit_message: lastIndexedCommitMessage || null,
+        icon_path: iconPath || null,
+        ...(status === 'completed' ? { last_indexed_at: now } : {})
+      })
+      .onConflict(['full_name', 'branch'])
+      .merge(updateData);
+    await transaction('repository_indexing_transitions')
+      .insert({
+        full_name: storedFullName,
+        branch,
+        run_id: runId,
+        status,
+        transition_at: transitionAt,
+        observed_at: now
+      })
+      .onConflict(['full_name', 'branch', 'run_id', 'status', 'transition_at'])
+      .ignore();
+    return { transitionAt, runId, applied: true };
+    }
+  );
+}
+
+/**
+ * Records a queued run's cancellation without replacing another run's current
+ * repository status. Reconciliation can therefore recover the run-scoped
+ * terminal projection without treating a rejected ownership transition as
+ * authoritative.
+ */
+export async function recordSkippedIndexingRun(
+  fullName: string,
+  branch: string,
+  indexingRun: IndexingRunIdentity,
+  database: typeof db = db
+): Promise<RepositoryStatusTransition> {
+  return database.transaction(async (transaction) => {
+    const repository = await transaction('repositories')
+      .whereRaw('lower(full_name) = ?', [fullName.trim().toLowerCase()])
+      .where({ branch })
+      .forUpdate()
+      .first(
+        'full_name', 'indexing_status', 'indexing_transition_at', 'indexing_run_id'
+      ) as {
+        full_name?: string;
+        indexing_status?: string;
+        indexing_transition_at?: string | null;
+        indexing_run_id?: string | null;
+      } | undefined;
+    const existingTerminal = await transaction('repository_indexing_transitions')
+      .whereRaw('lower(full_name) = ?', [fullName.trim().toLowerCase()])
+      .where({ branch, run_id: indexingRun.runId })
+      .whereIn('status', ['idle', 'completed', 'failed'])
+      .orderBy('transition_id', 'asc')
+      .first('status', 'transition_at') as {
+        status?: 'idle' | 'completed' | 'failed';
+        transition_at?: string;
+      } | undefined;
+    if (existingTerminal?.transition_at) {
+      return {
+        runId: indexingRun.runId,
+        transitionAt: existingTerminal.transition_at,
+        applied: existingTerminal.status === 'idle'
+      };
+    }
+    const requestedTransitionTime = Date.parse(indexingRun.transitionAt);
+    let transitionAt = Number.isFinite(requestedTransitionTime)
+      ? new Date(requestedTransitionTime).toISOString()
+      : new Date().toISOString();
+    if (repository?.indexing_run_id === indexingRun.runId
+        && repository.indexing_transition_at
+        && transitionAt <= repository.indexing_transition_at) {
+      transitionAt = new Date(Date.parse(repository.indexing_transition_at) + 1).toISOString();
+    }
+    const storedFullName = repository?.full_name ?? fullName;
+    if (!repository) {
+      await transaction('repositories').insert({
+        full_name: storedFullName,
+        branch,
+        indexing_status: 'idle',
+        indexing_transition_at: transitionAt,
+        indexing_run_id: indexingRun.runId,
+        created_at: transitionAt,
+        updated_at: transitionAt,
+        last_indexed_hash: null,
+        last_indexed_commit_message: null,
+        icon_path: null
+      });
+    } else if (repository.indexing_status === 'indexing'
+        && repository.indexing_run_id === indexingRun.runId) {
+      await transaction('repositories')
+        .where({ full_name: storedFullName, branch, indexing_run_id: indexingRun.runId })
+        .where({ indexing_status: 'indexing' })
+        .update({
+          indexing_status: 'idle',
+          indexing_transition_at: transitionAt,
+          updated_at: transitionAt
+        });
+    }
+    await transaction('repository_indexing_transitions')
+      .insert({
+        full_name: storedFullName,
+        branch,
+        run_id: indexingRun.runId,
+        status: 'idle',
+        transition_at: transitionAt,
+        observed_at: transitionAt
+      })
+      .onConflict(['full_name', 'branch', 'run_id', 'status', 'transition_at'])
+      .ignore();
+    return { runId: indexingRun.runId, transitionAt, applied: true };
+  });
+}
+
+/** Finds durable indexing owners after the queue snapshot has no matching job. */
+export async function getActiveRepositoryIndexingRuns(
+  fullName: string,
+  branch?: string,
+  database: typeof db = db
+): Promise<ActiveRepositoryIndexingRun[]> {
+  const query = database('repositories')
+    .select('full_name', 'branch', 'indexing_run_id', 'indexing_transition_at')
+    .whereRaw('lower(full_name) = ?', [fullName.trim().toLowerCase()])
+    .where({ indexing_status: 'indexing' })
+    .whereNotNull('indexing_run_id')
+    .whereNotNull('indexing_transition_at');
+  if (branch !== undefined) query.where({ branch });
+  const rows = await query as Array<{
+    full_name: string;
+    branch: string;
+    indexing_run_id: string;
+    indexing_transition_at: string;
+  }>;
+  return rows.map((row) => ({
+    fullName: row.full_name,
+    branch: row.branch,
+    runId: row.indexing_run_id,
+    transitionAt: row.indexing_transition_at
+  }));
 }
 
 /**
@@ -70,7 +409,8 @@ export async function getRepositoryIndexingStatus(
   branch: string = 'HEAD'
 ): Promise<'idle' | 'indexing' | 'completed' | 'failed' | null> {
   const row = await db('repositories')
-    .where({ full_name: fullName, branch })
+    .whereRaw('lower(full_name) = ?', [fullName.trim().toLowerCase()])
+    .where({ branch })
     .select('indexing_status')
     .first();
   return (row?.indexing_status as 'idle' | 'indexing' | 'completed' | 'failed' | undefined) ?? null;

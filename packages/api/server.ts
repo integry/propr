@@ -1,12 +1,12 @@
 import express, { Request, Response } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
-import { createClient, RedisClientType } from 'redis';
+import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
-import { Redis, RedisOptions } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.js';
-import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
+import { Redis } from 'ioredis';
+import { setupAuth } from './auth.js';
+import { configureDemoMode, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import { createCorsOriginValidator } from './corsValidation.js';
@@ -34,11 +34,11 @@ import {
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
+import { createNotificationEntitlementRefreshMiddleware } from './routes/githubRoutes.js';
 import {
   generateCorrelationId,
   processWebhookEvent,
   initializeWebhookHandler,
-  buildRedisRuntimeConfig,
   db,
   loadSettingsFromConfig,
   processDetectedIssue as processDetectedIssueBase,
@@ -47,13 +47,20 @@ import {
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME
+  NotificationStalledDetector,
+  NotificationSystemSampler,
+  getNotificationStalledCheckIntervalMs,
+  getNotificationSystemCheckIntervalMs,
+  getNotificationProjectionLeaseTtlMs,
+  closeEventPublisher, logger
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
+import { closeResources, createNotificationProjectionLease, getRedisRuntimeConfig,
+  initializeServerRedis, type ShutdownTask } from './serverRuntime.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import {
   assertNoDuplicateRoutes,
@@ -62,41 +69,9 @@ import {
   registerRouteEntries,
   type RouteEntry
 } from './routeRegistry.js';
-
-type ShutdownTask = { name: string; close: () => Promise<unknown> };
-
 const demoMode = configureDemoMode();
-
-function buildRedisUrlFromOptions(options: RedisOptions): string {
-  const protocol = options.tls ? 'rediss' : 'redis';
-  const host = options.host || 'redis';
-  const port = options.port || 6379;
-  const credentials = options.username
-    ? `${encodeURIComponent(options.username)}:${encodeURIComponent(options.password || '')}@`
-    : options.password
-      ? `:${encodeURIComponent(options.password)}@`
-      : '';
-  const database = typeof options.db === 'number' ? `/${options.db}` : '';
-
-  return `${protocol}://${credentials}${host}:${port}${database}`;
-}
-
-function getRedisRuntimeConfig(): { url: string; options: RedisOptions } {
-  const runtimeConfig = buildRedisRuntimeConfig();
-  return {
-    url: runtimeConfig.url || buildRedisUrlFromOptions(runtimeConfig.options),
-    options: { ...runtimeConfig.options }
-  };
-}
-
-async function closeResources(tasks: ShutdownTask[]): Promise<void> {
-  const results = await Promise.allSettled(tasks.map(async ({ close }) => close()));
-  results.forEach((result, index) => {
-    if (result.status === 'rejected') {
-      console.error(`Failed to close ${tasks[index].name}:`, result.reason);
-    }
-  });
-}
+const notificationEntitlementRefreshMiddleware =
+  createNotificationEntitlementRefreshMiddleware(db);
 
 const redisRuntimeConfig = getRedisRuntimeConfig();
 const ioRedisClient = demoMode ? null : new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options);
@@ -132,7 +107,7 @@ const PORT = process.env.DASHBOARD_API_PORT || 4000;
 app.set('trust proxy', 1);
 
 if (!process.env.FRONTEND_URL) {
-  console.error('FRONTEND_URL environment variable is required');
+  logger.error('FRONTEND_URL environment variable is required');
   process.exit(1);
 }
 
@@ -144,7 +119,7 @@ let validateCorsOrigin: ReturnType<typeof createCorsOriginValidator>;
 try {
   validateCorsOrigin = createCorsOriginValidator(process.env.FRONTEND_URL, cookieDomain);
 } catch {
-  console.error(`FRONTEND_URL must be a valid URL, got: ${process.env.FRONTEND_URL}`);
+  logger.error({ frontendUrl: process.env.FRONTEND_URL }, 'FRONTEND_URL must be a valid URL');
   process.exit(1);
 }
 
@@ -168,54 +143,32 @@ app.use(express.json({ limit: '1mb' }));
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode);
+const appEnsureAuthenticated = setupAuth(app, demoMode, {
+  invalidateNotificationEntitlements: (userId, authGeneration) =>
+    notificationEntitlementRefreshMiddleware.invalidate(userId, authGeneration),
+  activateNotificationEntitlements: (userId, authGeneration) =>
+    notificationEntitlementRefreshMiddleware.activate(userId, authGeneration),
+  updateNotificationCredential: (userId, accessToken, authGeneration) =>
+    notificationEntitlementRefreshMiddleware.updateCredential(
+      userId,
+      accessToken,
+      authGeneration
+    )
+});
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
-
-function createDemoTaskQueue(): Queue {
-  return {
-    add: async () => { throw new Error('Task queue is disabled in demo mode'); },
-    close: async () => undefined,
-    getWaitingCount: async () => 0,
-    getActiveCount: async () => 0,
-    getCompletedCount: async () => 0,
-    getFailedCount: async () => 0,
-    getDelayedCount: async () => 0,
-    getJob: async () => null,
-  } as unknown as Queue;
-}
+let notificationStalledDetector: NotificationStalledDetector | null = null;
+let notificationSystemSampler: NotificationSystemSampler | null = null;
 
 async function initRedis(): Promise<void> {
-  if (demoMode) {
-    redisClient = createDemoRedisClient();
-    taskQueue = createDemoTaskQueue();
-    runtimeBuildQueue = createDemoTaskQueue();
-    console.log('Demo mode: Redis and task queue clients are disabled; using read-only in-memory facades');
-    return;
-  }
-
-  redisClient = createClient({
-    url: redisRuntimeConfig.url
-  });
-  
-  redisClient.on('error', (err) => console.error('Redis Client Error', err));
-  await redisClient.connect();
-  
-  const queueName = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
-  taskQueue = new Queue(queueName, {
-    connection: { ...redisRuntimeConfig.options }
-  });
-  runtimeBuildQueue = new Queue(AGENT_RUNTIME_BUILD_QUEUE_NAME, {
-    connection: { ...redisRuntimeConfig.options }
-  });
-  await runtimeBuildQueue.setGlobalConcurrency(1);
-  
-  console.log('Connected to Redis');
+  ({ redisClient, taskQueue, runtimeBuildQueue } =
+    await initializeServerRedis(demoMode, redisRuntimeConfig));
+  logger.info({ demoMode }, 'API Redis runtime initialized');
 }
 
-function setupRoutes(): void {
+function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   const statusRoutes = createStatusRoutes({ redisClient });
   // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
   // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
@@ -225,7 +178,8 @@ function setupRoutes(): void {
   // compatibility dates). All other /api routes registered after this line are
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
-  app.use('/api', ensureAuthenticated, resolveAuthorization);
+  app.use('/api', appEnsureAuthenticated, resolveAuthorization);
+  app.use('/api', notificationEntitlementRefreshMiddleware);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -234,7 +188,12 @@ function setupRoutes(): void {
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
   const dockerRoutes = createDockerRoutes({ redisClient });
-  const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });
+  const githubRoutes = createGitHubRoutes({
+    redisClient,
+    taskQueue,
+    db,
+    invalidateNotificationEntitlements: (userId, authGeneration) => notificationEntitlementRefreshMiddleware.invalidate(userId, authGeneration)
+  });
   const llmMetricsRoutes = createLLMMetricsRoutes();
   const llmLogsRoutes = createLlmLogsRoutes({ db });
   const plannerRoutes = createPlannerRoutes({ db });
@@ -293,6 +252,7 @@ function setupRoutes(): void {
   app.use('/api/agents', agentRoutes.router);
 
   setupWebhookRoute();
+  return statusRoutes;
 }
 
 function setupWebhookRoute(): void {
@@ -300,7 +260,7 @@ function setupWebhookRoute(): void {
     app.post('/webhook', (_req: Request, res: Response) => {
       res.status(403).send('Webhook processing is disabled in demo mode.');
     });
-    console.log('[webhook] Webhook endpoint disabled in demo mode');
+    logger.info('Webhook endpoint disabled in demo mode');
     return;
   }
 
@@ -308,10 +268,10 @@ function setupWebhookRoute(): void {
     eventIntakeMode: process.env.GITHUB_EVENT_INTAKE_MODE,
     enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
   });
-  for (const warning of warnings) console.warn(`[webhook] ${warning}`);
+  for (const warning of warnings) logger.warn({ warning }, 'GitHub event intake warning');
 
   if (intakeMode !== 'direct_webhook') {
-    console.log(`[webhook] Webhook endpoint disabled (GITHUB_EVENT_INTAKE_MODE is "${intakeMode}", not "direct_webhook")`);
+    logger.info({ intakeMode }, 'Webhook endpoint disabled for configured event intake mode');
     return;
   }
 
@@ -364,13 +324,13 @@ function setupWebhookRoute(): void {
         },
       });
     } catch (error) {
-      console.error('[webhook] Error processing webhook:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Webhook processing failed');
       if (!res.headersSent) {
         res.status(500).send('Internal webhook processing error.');
       }
     }
   });
-  console.log('[webhook] Webhook endpoint enabled at POST /webhook');
+  logger.info('Webhook endpoint enabled at POST /webhook');
 }
 
 app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok' }); });
@@ -380,32 +340,54 @@ const httpServer: HttpServer = createServer(app);
 
 async function start(): Promise<void> {
   try {
-    console.log('SQLite persistence is enabled');
+    logger.info('SQLite persistence is enabled');
     await db.migrate.latest();
-    console.log('Database migrations completed successfully');
-    if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
+    logger.info('Database migrations completed successfully');
+    if (demoMode) logger.info('Demo mode enabled with read-only synthetic user');
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      void notificationEntitlementRefreshMiddleware.recover().catch(error => logger.warn({ error: (error as Error).message }, 'Entitlement schedule recovery failed'));
       await initializePushSubscriptionMaintenance();
-      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+      const stalledIntervalMs = getNotificationStalledCheckIntervalMs();
+      notificationStalledDetector = new NotificationStalledDetector({
+        intervalMs: stalledIntervalMs,
+        acquireLease: createNotificationProjectionLease(
+          redisClient,
+          'stalled-activity',
+          getNotificationProjectionLeaseTtlMs(stalledIntervalMs)
+        )
+      });
+      notificationStalledDetector.start();
+      try { await loadSettingsFromConfig(); } catch (error) { logger.warn({ error: (error as Error).message }, 'Failed to load settings from config repository'); }
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
-        if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
+        if (removed > 0) logger.info({ removed }, 'Removed orphaned agent login containers');
       } catch (error) {
         // Docker-backed features surface their own errors when invoked; a
         // best-effort orphan sweep must not make the rest of the API unavailable.
-        console.warn('Could not sweep orphaned agent login containers:', (error as Error).message);
+        logger.warn({ error: (error as Error).message }, 'Could not sweep orphaned agent login containers');
       }
     } else {
-      console.log('Demo mode: skipped startup config initialization; API config reads use the curated database directly');
+      logger.info('Demo mode skipped startup configuration initialization');
     }
-    setupRoutes();
+    const statusRoutes = setupRoutes();
     if (!demoMode) {
+      const systemCheckIntervalMs = getNotificationSystemCheckIntervalMs();
+      notificationSystemSampler = new NotificationSystemSampler({
+        getSnapshot: statusRoutes.getNotificationHealthSnapshot,
+        intervalMs: systemCheckIntervalMs,
+        acquireLease: createNotificationProjectionLease(
+          redisClient,
+          'system-health',
+          getNotificationProjectionLeaseTtlMs(systemCheckIntervalMs)
+        )
+      });
+      notificationSystemSampler.start();
       const socketService = initSocketService(httpServer, validateCorsOrigin);
-      console.log('[WebSocket] Socket.IO server initialized');
+      logger.info('Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
-      console.log('[WebSocket] Queue features initialized for real-time updates');
+      logger.info('WebSocket queue features initialized');
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API
       // actually serves webhooks — i.e. direct_webhook mode, where this process
@@ -426,21 +408,31 @@ async function start(): Promise<void> {
       });
       if (apiIntakeMode === 'direct_webhook') {
         await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper });
-        console.log('[webhook] Webhook handler initialized');
+        logger.info('Webhook handler initialized');
       }
       setInterval(async () => {
         try {
           await checkAndExecuteDelayedReindex(redisClient as RedisClientType);
         } catch (error) {
-          console.error('Error checking for delayed reindex:', error);
+          logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Delayed reindex check failed');
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, () => logger.info({ port: PORT, demoMode }, 'Dashboard API server started'));
 
     process.on('SIGTERM', async () => {
-      console.log('SIGTERM received, shutting down gracefully...');
+      logger.info('SIGTERM received; shutting down gracefully');
+      if (!demoMode) {
+        await closeResources([
+          { name: 'notification stalled detector', close: () => notificationStalledDetector?.stop() ?? Promise.resolve() },
+          { name: 'notification system sampler', close: () => notificationSystemSampler?.stop() ?? Promise.resolve() }
+        ]);
+      }
       const shutdownTasks: ShutdownTask[] = [
+        {
+          name: 'notification entitlement refresh middleware',
+          close: async () => notificationEntitlementRefreshMiddleware.close()
+        },
         { name: 'task queue', close: () => taskQueue.close() },
         { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
         { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },
@@ -448,6 +440,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'event publisher', close: () => closeEventPublisher() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }
@@ -455,12 +448,13 @@ async function start(): Promise<void> {
       }
       await closeResources(shutdownTasks);
       httpServer.close(() => {
-        console.log('Server closed');
+        logger.info('API server closed');
         process.exit(0);
       });
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
+    logger.error({ error: error instanceof Error ? error.message : String(error) },
+      'API server failed to start');
     process.exit(1);
   }
 }

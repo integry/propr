@@ -3,7 +3,6 @@ import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
 import {
   getProprCompatibilityMetadata,
-  AGENT_DEFAULTS,
   resolveGithubAuthMode,
   resolveGithubEventIntakeMode,
   ROUTING_STATUS_REDIS_KEY,
@@ -12,41 +11,40 @@ import {
 import {
   AgentRegistry,
   getIndexingQueue as loadIndexingQueue,
+  INDEXING_WORKER_HEARTBEAT_KEY,
+  logger,
   loadAgents as loadAgentConfigs,
   loadSummarizationRuntimeState
 } from '@propr/core';
-import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
-import path from 'node:path';
-import os from 'node:os';
+import type { AgentConfig } from '@propr/core';
+import {
+  getAgentStatuses,
+  type AgentStatus,
+  type StatusAgentRegistry,
+} from './statusAgentHealth.js';
+import {
+  getIndexingHealth,
+  loadRepositoryIndexingStatus,
+  resolveIndexingWorkerStatus,
+  type IndexingStatusQueue,
+  type ServiceStatus,
+} from './statusIndexingHealth.js';
+
+export { loadRepositoryIndexingStatus } from './statusIndexingHealth.js';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
   agentRegistry?: StatusAgentRegistry;
   loadAgents?: () => Promise<AgentConfig[]>;
   getIndexingQueue?: () => Promise<IndexingStatusQueue>;
+  getRepositoryIndexingStatus?: () => Promise<ServiceStatus | undefined>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
+  notificationProbeTimeoutMs?: number;
   now?: () => number;
   loadSummarizationRuntimeState?: typeof loadSummarizationRuntimeState;
 }
 
-interface IndexingStatusQueue {
-  getJobCounts(...statuses: Array<'active' | 'waiting' | 'delayed' | 'failed'>): Promise<Record<string, number>>;
-}
-
-type StatusAgentRegistry = Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents' | 'getAgentById' | 'getAgentByAlias'> & {
-  createAgentFromConfig(config: AgentConfig): Agent;
-  getOperationalStatus?: () => AgentRegistryOperationalStatus;
-};
-
-type ServiceStatus = 'connected' | 'disconnected' | 'active' | 'queued' | 'idle' | 'failed' | 'unknown';
-
-interface AgentStatus {
-  id: string;
-  type: AgentConfig['type'];
-  alias: string;
-  status: 'connected' | 'disconnected';
-}
 
 export function createStatusRoutes(deps: StatusRoutesDeps) {
   const {
@@ -54,8 +52,10 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     agentRegistry = AgentRegistry.getInstance() as StatusAgentRegistry,
     loadAgents = loadAgentConfigs,
     getIndexingQueue = loadIndexingQueue,
+    getRepositoryIndexingStatus = loadRepositoryIndexingStatus,
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
+    notificationProbeTimeoutMs = 2000,
     now = Date.now,
     loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState
   } = deps;
@@ -65,120 +65,209 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     res.json(getProprCompatibilityMetadata());
   }
 
-  async function getStatus(req: Request, res: Response): Promise<void> {
-    try {
-      const compatibility = getProprCompatibilityMetadata();
-      // In demo mode, return all-green status
-      if (isDemoMode()) {
-        res.json({
-          ...compatibility,
-          api: 'healthy',
-          redis: 'connected',
-          daemon: 'running',
-          worker: 'running',
-          workerCount: 3,
-          githubAuth: 'connected',
-          githubAuthMode: 'demo',
-          githubEventIntake: resolveIntakeMode(),
-          githubEventIntakeStatus: 'connected',
-          claudeAuth: 'connected',
-          indexing: 'idle',
-          warnings: [],
-          agents: [{
-            id: 'default-claude-agent',
-            type: 'claude',
-            alias: 'default',
-            status: 'connected'
-          }],
-          timestamp: new Date().toISOString()
-        });
-        return;
-      }
-
-      const status: Record<string, unknown> = {
+  async function getStatusSnapshot(): Promise<Record<string, unknown>> {
+    const compatibility = getProprCompatibilityMetadata();
+    // In demo mode, return all-green status
+    if (isDemoMode()) {
+      return {
         ...compatibility,
         api: 'healthy',
-        redis: 'unknown',
-        daemon: 'unknown',
-        worker: 'unknown',
-        githubAuth: 'unknown',
-        claudeAuth: 'unknown',
-        indexing: 'unknown',
+        redis: 'connected',
+        daemon: 'running',
+        worker: 'running',
+        workerCount: 3,
+        githubAuth: 'connected',
+        githubAuthMode: 'demo',
+        githubEventIntake: resolveIntakeMode(),
+        githubEventIntakeStatus: 'connected',
+        claudeAuth: 'connected',
+        indexing: 'idle',
+        indexingService: 'connected',
         warnings: [],
-        agents: [],
-        timestamp: new Date().toISOString()
+        agents: [{
+          id: 'default-claude-agent',
+          type: 'claude',
+          alias: 'default',
+          status: 'connected'
+        }],
+        timestamp: new Date(now()).toISOString()
       };
+    }
 
-      try {
-        await redisClient.ping();
-        status.redis = 'connected';
+    const status: Record<string, unknown> = {
+      ...compatibility,
+      api: 'healthy',
+      redis: 'unknown',
+      daemon: 'unknown',
+      worker: 'unknown',
+      githubAuth: 'unknown',
+      claudeAuth: 'unknown',
+      indexing: 'unknown',
+      warnings: [],
+      agents: [],
+      timestamp: new Date(now()).toISOString()
+    };
 
-        const daemonHeartbeat = await redisClient.get('system:status:daemon');
-        status.daemon = (daemonHeartbeat && Date.now() - parseInt(daemonHeartbeat) < 120000) ? 'running' : 'stopped';
+    let indexingWorkerStatus: ServiceStatus = 'unknown';
+    try {
+      await redisClient.ping();
+      status.redis = 'connected';
 
-        const activeWorkers = await redisClient.sCard('system:status:workers');
-        status.worker = activeWorkers > 0 ? 'running' : 'stopped';
-        status.workerCount = activeWorkers;
-      } catch {
-        status.redis = 'disconnected';
+      const daemonHeartbeat = await redisClient.get('system:status:daemon');
+      status.daemon = (daemonHeartbeat && now() - parseInt(daemonHeartbeat) < 120000) ? 'running' : 'stopped';
+
+      const activeWorkers = await redisClient.sCard('system:status:workers');
+      status.worker = activeWorkers > 0 ? 'running' : 'stopped';
+      status.workerCount = activeWorkers;
+      indexingWorkerStatus = resolveIndexingWorkerStatus(
+        await redisClient.get(INDEXING_WORKER_HEARTBEAT_KEY),
+        now()
+      );
+    } catch {
+      status.redis = 'disconnected';
+    }
+
+    // Auth mode (how ProPR authenticates to GitHub) and event intake mode (how
+    // GitHub events arrive) are independent — surface both so operators can tell
+    // a relay-auth + routing-websocket deployment apart from an app + webhook one.
+    const authMode = resolveAuthMode();
+    status.githubAuthMode = authMode;
+    // The coarse githubAuth health is derived from the resolved auth mode rather
+    // than GH_APP_* alone, so a valid relay-auth deployment reports 'connected'
+    // instead of a misleading 'disconnected'. Only 'none' (nothing configured)
+    // and 'unknown' (resolver error) report as disconnected.
+    status.githubAuth = (authMode === 'app' || authMode === 'relay' || authMode === 'demo')
+      ? 'connected'
+      : 'disconnected';
+    const intakeMode = resolveIntakeMode();
+    status.githubEventIntake = intakeMode;
+
+    // Routing WebSocket runtime state, published to Redis by the daemon when the
+    // default routing_websocket intake path is active. Included only when present
+    // so non-routing deployments don't carry an empty field.
+    const routing = await getRoutingState(redisClient);
+    if (routing) {
+      status.routing = routing;
+    }
+
+    // The intake status is a stable, mode-aware health signal for the active
+    // GitHub event delivery path so operators can tell a healthy intake from a
+    // stalled one independent of the intake method name.
+    status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
+
+    const agents = await getCachedAgentStatuses();
+    status.agents = agents;
+    status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
+      ? 'connected'
+      : 'disconnected';
+    const indexingHealth = await getIndexingHealth(
+      getIndexingQueue,
+      getRepositoryIndexingStatus,
+      indexingWorkerStatus
+    );
+    status.indexing = indexingHealth.activity;
+    status.indexingService = indexingHealth.service;
+    const warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
+    const agentRuntime = agentRegistry.getOperationalStatus?.();
+    if (agentRuntime) {
+      status.agentRuntime = agentRuntime;
+      const image = agentRuntime.unifiedAgentImage;
+      if (image.status === 'unavailable') {
+        warnings.push({
+          type: 'agent_runtime_unified_image_unavailable',
+          message: `Unified agent image is unavailable${image.imageTag ? ` (${image.imageTag})` : ''}: ${image.error || 'unknown error'}`
+        });
       }
+    }
+    status.warnings = warnings;
 
-      // Auth mode (how ProPR authenticates to GitHub) and event intake mode (how
-      // GitHub events arrive) are independent — surface both so operators can tell
-      // a relay-auth + routing-websocket deployment apart from an app + webhook one.
-      const authMode = resolveAuthMode();
-      status.githubAuthMode = authMode;
-      // The coarse githubAuth health is derived from the resolved auth mode rather
-      // than GH_APP_* alone, so a valid relay-auth deployment reports 'connected'
-      // instead of a misleading 'disconnected'. Only 'none' (nothing configured)
-      // and 'unknown' (resolver error) report as disconnected.
-      status.githubAuth = (authMode === 'app' || authMode === 'relay' || authMode === 'demo')
-        ? 'connected'
-        : 'disconnected';
-      const intakeMode = resolveIntakeMode();
-      status.githubEventIntake = intakeMode;
+    return status;
+  }
 
-      // Routing WebSocket runtime state, published to Redis by the daemon when the
-      // default routing_websocket intake path is active. Included only when present
-      // so non-routing deployments don't carry an empty field.
-      const routing = await getRoutingState(redisClient);
-      if (routing) {
-        status.routing = routing;
-      }
-
-      // The intake status is a stable, mode-aware health signal for the active
-      // GitHub event delivery path so operators can tell a healthy intake from a
-      // stalled one independent of the intake method name.
-      status.githubEventIntakeStatus = resolveIntakeStatus(intakeMode, routing, status.daemon);
-
-      const agents = await getCachedAgentStatuses();
-      status.agents = agents;
-      status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
-        ? 'connected'
-        : 'disconnected';
-      status.indexing = await getIndexingStatus(getIndexingQueue);
-      const warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
-      const agentRuntime = agentRegistry.getOperationalStatus?.();
-      if (agentRuntime) {
-        status.agentRuntime = agentRuntime;
-        const image = agentRuntime.unifiedAgentImage;
-        if (image.status === 'unavailable') {
-          warnings.push({
-            type: 'agent_runtime_unified_image_unavailable',
-            message: `Unified agent image is unavailable${image.imageTag ? ` (${image.imageTag})` : ''}: ${image.error || 'unknown error'}`
-          });
-        }
-      }
-      status.warnings = warnings;
-
-      res.json(status);
+  async function getStatus(_req: Request, res: Response): Promise<void> {
+    try {
+      res.json(await getStatusSnapshot());
     } catch (error) {
-      console.error('Error in /api/status:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'Status route failed');
       res.status(500).json({ error: 'Internal server error' });
     }
   }
 
-  return { getCompatibility, getStatus };
+  /** Lean sampler input: no agent probes, warning scans, or runtime image inspection. */
+  async function getNotificationHealthSnapshot(): Promise<Record<string, unknown>> {
+    if (isDemoMode()) {
+      return {
+        redis: 'connected',
+        daemon: 'running',
+        worker: 'running',
+        githubAuth: 'connected',
+        githubEventIntakeStatus: 'connected',
+        indexing: 'idle',
+        indexingService: 'connected',
+        timestamp: new Date(now()).toISOString()
+      };
+    }
+
+    const status: Record<string, unknown> = {
+      redis: 'unknown',
+      daemon: 'unknown',
+      worker: 'unknown',
+      githubAuth: 'unknown',
+      githubEventIntakeStatus: 'unknown',
+      indexing: 'unknown',
+      indexingService: 'unknown',
+      timestamp: new Date(now()).toISOString()
+    };
+    const probeTimedOut = Symbol('notification health probe timed out');
+    let indexingWorkerStatus: ServiceStatus = 'unknown';
+    try {
+      const ping = await withTimeout(redisClient.ping(), notificationProbeTimeoutMs, probeTimedOut);
+      if (ping === probeTimedOut) throw new Error('Redis notification health ping timed out');
+      status.redis = 'connected';
+      const [daemonHeartbeat, activeWorkers, indexingWorkerHeartbeat] = await Promise.all([
+        withTimeout(redisClient.get('system:status:daemon'), notificationProbeTimeoutMs, probeTimedOut),
+        withTimeout(redisClient.sCard('system:status:workers'), notificationProbeTimeoutMs, probeTimedOut),
+        withTimeout(
+          redisClient.get(INDEXING_WORKER_HEARTBEAT_KEY),
+          notificationProbeTimeoutMs,
+          probeTimedOut
+        )
+      ]);
+      status.daemon = daemonHeartbeat === probeTimedOut
+        ? 'unknown'
+        : daemonHeartbeat && now() - parseInt(daemonHeartbeat) < 120000 ? 'running' : 'stopped';
+      status.worker = activeWorkers === probeTimedOut
+        ? 'unknown'
+        : activeWorkers > 0 ? 'running' : 'stopped';
+      indexingWorkerStatus = indexingWorkerHeartbeat === probeTimedOut
+        ? 'unknown'
+        : resolveIndexingWorkerStatus(indexingWorkerHeartbeat, now());
+    } catch {
+      status.redis = 'disconnected';
+    }
+    const authMode = resolveAuthMode();
+    status.githubAuth = authMode === 'app' || authMode === 'relay' || authMode === 'demo'
+      ? 'connected'
+      : authMode === 'unknown' ? 'unknown' : 'disconnected';
+    const intakeMode = resolveIntakeMode();
+    const routing = await withTimeout(
+      getRoutingState(redisClient), notificationProbeTimeoutMs, probeTimedOut
+    );
+    status.githubEventIntakeStatus = routing === probeTimedOut
+      ? 'unknown'
+      : resolveIntakeStatus(intakeMode, routing, status.daemon);
+    const indexingHealth = await withTimeout(
+      getIndexingHealth(getIndexingQueue, getRepositoryIndexingStatus, indexingWorkerStatus),
+      notificationProbeTimeoutMs,
+      { activity: 'unknown' as ServiceStatus, service: 'unknown' as ServiceStatus }
+    );
+    status.indexing = indexingHealth.activity;
+    status.indexingService = indexingHealth.service;
+    return status;
+  }
+
+  return { getCompatibility, getStatus, getStatusSnapshot, getNotificationHealthSnapshot };
 
   async function getCachedAgentStatuses(): Promise<AgentStatus[]> {
     const currentTime = now();
@@ -319,7 +408,8 @@ async function getSystemWarnings(loadRuntimeState: typeof loadSummarizationRunti
     }
     return warnings;
   } catch (error) {
-    console.error('Error loading summarization warnings:', error);
+    logger.error({ error: error instanceof Error ? error.message : String(error) },
+      'Could not load summarization warnings for status');
     return [];
   }
 }
@@ -338,120 +428,16 @@ function formatCooldownUntil(until: string): string {
   });
 }
 
-async function getAgentStatuses(
-  loadAgents: () => Promise<AgentConfig[]>,
-  registry: StatusAgentRegistry,
-  healthTimeoutMs: number
-): Promise<AgentStatus[]> {
-  let configuredAgents: AgentConfig[];
-  try {
-    configuredAgents = await loadAgents();
-  } catch (error) {
-    console.error('Error loading agent status configuration:', error);
-    return [];
-  }
-
-  try {
-    await registry.ensureInitialized();
-  } catch (error) {
-    console.error('Error initializing agent registry for status:', error);
-  }
-
-  if (configuredAgents.length === 0) {
-    const defaultAgent = registry.getAgentById('default-claude-agent') ?? registry.getAgentByAlias('default');
-    if (defaultAgent?.config.type === 'claude') {
-      return [await buildRegisteredAgentStatus(defaultAgent, healthTimeoutMs)];
-    }
-    return [buildDisconnectedAgentStatus(getDefaultClaudeConfig())];
-  }
-
-  const registeredById = new Map(registry.getAllAgents().map(agent => [agent.config.id, agent]));
-  const registeredByAlias = new Map(registry.getAllAgents().map(agent => [agent.config.alias, agent]));
-
-  return Promise.all(configuredAgents
-    .filter(agent => agent.enabled)
-    .map(async (config) => {
-      const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
-      if (!registeredAgent) {
-        return buildConfiguredAgentStatus(config, registry, healthTimeoutMs);
-      }
-      return buildRegisteredAgentStatus(registeredAgent, healthTimeoutMs);
-    }));
-}
-
-function getDefaultClaudeConfig(): AgentConfig {
-  return {
-    id: 'default-claude-agent',
-    type: 'claude',
-    alias: 'default',
-    enabled: true,
-    dockerImage: process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest',
-    configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
-    supportedModels: [...AGENT_DEFAULTS.claude.defaultModels],
-    defaultModel: process.env.CLAUDE_MODEL || undefined
-  };
-}
-
-async function buildConfiguredAgentStatus(
-  config: AgentConfig,
-  registry: StatusAgentRegistry,
-  healthTimeoutMs: number
-): Promise<AgentStatus> {
-  try {
-    return await buildRegisteredAgentStatus(registry.createAgentFromConfig(config), healthTimeoutMs);
-  } catch (error) {
-    console.error('Error checking configured agent status:', error);
-    return buildDisconnectedAgentStatus(config);
-  }
-}
-
-async function buildRegisteredAgentStatus(agent: Agent, healthTimeoutMs: number): Promise<AgentStatus> {
-  let healthy = false;
-  try {
-    healthy = await withTimeout(agent.healthCheck(), healthTimeoutMs, false);
-  } catch {
-    healthy = false;
-  }
-  return {
-    id: agent.config.id,
-    type: agent.config.type,
-    alias: agent.config.alias,
-    status: healthy ? 'connected' : 'disconnected'
-  };
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+async function withTimeout<T, F>(promise: Promise<T>, timeoutMs: number, fallback: F): Promise<T | F> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      promise,
-      new Promise<T>(resolve => {
+      promise.catch(() => fallback),
+      new Promise<F>(resolve => {
         timeout = setTimeout(() => resolve(fallback), timeoutMs);
       })
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);
-  }
-}
-
-function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
-  return {
-    id: config.id,
-    type: config.type,
-    alias: config.alias,
-    status: 'disconnected'
-  };
-}
-
-async function getIndexingStatus(getIndexingQueue: () => Promise<IndexingStatusQueue>): Promise<ServiceStatus> {
-  try {
-    const indexingQueue = await getIndexingQueue();
-    const counts = await indexingQueue.getJobCounts('active', 'waiting', 'delayed', 'failed');
-    if ((counts.active ?? 0) > 0) return 'active';
-    if ((counts.waiting ?? 0) > 0 || (counts.delayed ?? 0) > 0) return 'queued';
-    if ((counts.failed ?? 0) > 0) return 'failed';
-    return 'idle';
-  } catch {
-    return 'disconnected';
   }
 }

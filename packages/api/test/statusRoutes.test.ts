@@ -4,6 +4,7 @@ import { after, afterEach, test } from 'node:test';
 import type { Request, Response as ExpressResponse } from 'express';
 import type { Agent, AgentConfig } from '@propr/core';
 import type { RedisClientType } from 'redis';
+import knex from 'knex';
 import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY, PROPR_VERSION } from '@propr/shared';
 
 type StatusRoutesDeps = {
@@ -11,8 +12,10 @@ type StatusRoutesDeps = {
   agentRegistry?: StatusAgentRegistry;
   loadAgents?: () => Promise<AgentConfig[]>;
   getIndexingQueue?: () => Promise<{ getJobCounts: (...statuses: string[]) => Promise<Record<string, number>> }>;
+  getRepositoryIndexingStatus?: () => Promise<'active' | 'idle' | 'failed' | undefined>;
   agentStatusCacheTtlMs?: number;
   agentHealthTimeoutMs?: number;
+  notificationProbeTimeoutMs?: number;
   now?: () => number;
   loadSummarizationRuntimeState?: () => Promise<{
     primary_quota_failures: number;
@@ -104,7 +107,10 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
-function createAgent(config: AgentConfig, healthCheck: () => Promise<boolean>): Agent {
+function createAgent(
+  config: AgentConfig,
+  healthCheck: (signal?: AbortSignal) => Promise<boolean>
+): Agent {
   return {
     config,
     healthCheck,
@@ -152,6 +158,7 @@ async function readStatus(overrides: Partial<StatusRoutesDeps> = {}, configureEn
     loadAgents: async () => [],
     agentRegistry: createRegistry(),
     getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
     ...overrides,
   });
 
@@ -175,6 +182,23 @@ after(async () => {
   await shutdownQueue();
 });
 
+test('indexing worker health rejects heartbeats beyond bounded future skew', async () => {
+  const {
+    INDEXING_WORKER_MAX_FUTURE_SKEW_MS,
+    resolveIndexingWorkerStatus,
+  } = await import('../routes/statusIndexingHealth.js');
+  const now = Date.now();
+
+  assert.equal(resolveIndexingWorkerStatus(
+    String(now + INDEXING_WORKER_MAX_FUTURE_SKEW_MS),
+    now
+  ), 'connected');
+  assert.equal(resolveIndexingWorkerStatus(
+    String(now + INDEXING_WORKER_MAX_FUTURE_SKEW_MS + 1),
+    now
+  ), 'disconnected');
+});
+
 test('/api/status omits disabled configured agents', async () => {
   const body = await readStatus({
     loadAgents: async () => [createAgentConfig({ enabled: false })],
@@ -185,6 +209,15 @@ test('/api/status omits disabled configured agents', async () => {
   assert.equal(body.uiCompatibility, PROPR_UI_COMPATIBILITY);
   assert.deepEqual(body.agents, []);
   assert.equal(body.claudeAuth, 'disconnected');
+});
+
+test('/api/status remains available when warning collection fails', async () => {
+  const status = await readStatus({
+    loadSummarizationRuntimeState: async () => { throw new Error('warnings unavailable'); },
+  });
+
+  assert.equal(status.api, 'healthy');
+  assert.equal(status.redis, 'connected');
 });
 
 test('/api/compatibility returns public version contract metadata', async () => {
@@ -212,6 +245,40 @@ test('/api/status returns default Claude fallback when no agents are configured'
     type: 'claude',
     alias: 'default',
     status: 'disconnected',
+  }]);
+});
+
+test('/api/status falls back to disconnected agents when the registry snapshot throws', async () => {
+  const config = createAgentConfig();
+  const body = await readStatus({
+    loadAgents: async () => [config],
+    agentRegistry: createRegistry([], {
+      getAllAgents: () => { throw new Error('registry unavailable'); },
+    }),
+  });
+
+  assert.deepEqual(body.agents, [{
+    id: config.id,
+    type: config.type,
+    alias: config.alias,
+    status: 'disconnected',
+  }]);
+});
+
+test('/api/status uses the live registry when agent configuration loading fails', async () => {
+  const config = createAgentConfig();
+  const body = await readStatus({
+    loadAgents: async () => { throw new Error('configuration store unavailable'); },
+    agentRegistry: createRegistry([
+      createAgent(config, async () => true),
+    ]),
+  });
+
+  assert.deepEqual(body.agents, [{
+    id: config.id,
+    type: config.type,
+    alias: config.alias,
+    status: 'connected',
   }]);
 });
 
@@ -293,6 +360,42 @@ test('/api/status caches agent health checks briefly', async () => {
 
   assert.equal(healthChecks, 1);
   assert.deepEqual(first.body().agents, second.body().agents);
+});
+
+test('/api/status aborts timed-out agent probes and caps their concurrency', async () => {
+  configureStatusEnv();
+  let activeChecks = 0;
+  let maximumActiveChecks = 0;
+  let abortedChecks = 0;
+  const configs = Array.from({ length: 6 }, (_value, index) => createAgentConfig({
+    id: `codex-${index}`,
+    alias: `codex-${index}`,
+  }));
+  const agents = configs.map(config => createAgent(config, signal => new Promise(resolve => {
+    activeChecks += 1;
+    maximumActiveChecks = Math.max(maximumActiveChecks, activeChecks);
+    signal?.addEventListener('abort', () => {
+      abortedChecks += 1;
+      activeChecks -= 1;
+      resolve(false);
+    }, { once: true });
+  })));
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    loadAgents: async () => configs,
+    agentRegistry: createRegistry(agents),
+    getIndexingQueue: async () => createIndexingQueue(),
+    agentHealthTimeoutMs: 5,
+  });
+  const response = createJsonResponse();
+
+  await routes.getStatus({} as Request, response.response);
+
+  assert.equal(maximumActiveChecks, 4);
+  assert.equal(abortedChecks, configs.length);
+  assert.equal(activeChecks, 0);
+  const statuses = response.body().agents as Array<{ status: string }>;
+  assert.equal(statuses.every(agent => agent.status === 'disconnected'), true);
 });
 
 test('/api/status reports resolved auth mode and event intake mode', async () => {
@@ -485,7 +588,9 @@ test('/api/status maps indexing queue states', async () => {
     [{ active: 1, waiting: 0, delayed: 0, failed: 0 }, 'active'],
     [{ active: 0, waiting: 1, delayed: 0, failed: 0 }, 'queued'],
     [{ active: 0, waiting: 0, delayed: 1, failed: 0 }, 'queued'],
-    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, 'failed'],
+    // Retained failed jobs alone are historical diagnostics; durable state below
+    // determines whether the latest repository run is still failed.
+    [{ active: 0, waiting: 0, delayed: 0, failed: 1 }, 'idle'],
     [{ active: 0, waiting: 0, delayed: 0, failed: 0 }, 'idle'],
   ];
 
@@ -495,6 +600,160 @@ test('/api/status maps indexing queue states', async () => {
     });
     assert.equal(body.indexing, expected);
   }
+});
+
+test('/api/status preserves a durable current indexing failure after the queue run ends', async () => {
+  const body = await readStatus({
+    getIndexingQueue: async () => createIndexingQueue({ active: 0, waiting: 0, delayed: 0, failed: 1 }),
+    getRepositoryIndexingStatus: async () => 'failed',
+  });
+
+  assert.equal(body.indexing, 'failed');
+});
+
+test('durable indexing health includes manual repositories regardless of name casing', async () => {
+  const database = knex({
+    client: 'better-sqlite3',
+    connection: { filename: ':memory:' },
+    useNullAsDefault: true,
+  });
+  try {
+    await database.schema.createTable('repositories', table => {
+      table.text('full_name').notNullable();
+      table.text('branch').notNullable();
+      table.text('indexing_status').notNullable();
+    });
+    await database('repositories').insert({
+      full_name: 'Acme/Manual-Only',
+      branch: 'main',
+      indexing_status: 'FAILED',
+    });
+    const { loadRepositoryIndexingStatus } = await import('../routes/statusRoutes.js');
+    assert.equal(await loadRepositoryIndexingStatus(database), 'failed');
+  } finally {
+    await database.destroy();
+  }
+});
+
+test('notification health collection skips agent probes and warning scans', async () => {
+  configureStatusEnv();
+  let healthChecks = 0;
+  let warningScans = 0;
+  const config = createAgentConfig();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    loadAgents: async () => [config],
+    agentRegistry: createRegistry([createAgent(config, async () => { healthChecks++; return true; })]),
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
+    loadSummarizationRuntimeState: async () => {
+      warningScans++;
+      return {
+        primary_quota_failures: 0,
+        primary_quota_failures_by_alias: {},
+        cooldowns: {},
+      };
+    },
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+  assert.equal(healthChecks, 0);
+  assert.equal(warningScans, 0);
+  assert.equal('agents' in snapshot, false);
+  assert.equal('warnings' in snapshot, false);
+  assert.equal('api' in snapshot, false);
+});
+
+test('notification health keeps repository failure separate from indexing service health', async () => {
+  configureStatusEnv();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => 'failed',
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.equal(snapshot.indexing, 'failed');
+  assert.equal(snapshot.indexingService, 'connected');
+});
+
+test('notification health reports an absent indexing worker separately from queue access', async () => {
+  configureStatusEnv();
+  const routes = await createRoutes({
+    redisClient: {
+      ...createRedisClient(),
+      get: async (key: string) => {
+        if (key === 'system:status:indexing-worker') return null;
+        if (key === 'system:status:routing') return null;
+        return Date.now().toString();
+      },
+    } as never,
+    getIndexingQueue: async () => createIndexingQueue({ waiting: 1 }),
+    getRepositoryIndexingStatus: async () => undefined,
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.equal(snapshot.indexing, 'queued');
+  assert.equal(snapshot.indexingService, 'disconnected');
+});
+
+test('notification health collection bounds Redis commands that never settle', async () => {
+  configureStatusEnv();
+  const never = <T>(): Promise<T> => new Promise<T>(() => undefined);
+  const routes = await createRoutes({
+    redisClient: {
+      ping: async () => 'PONG',
+      get: async () => never<string | null>(),
+      sCard: async () => never<number>(),
+    } as never,
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
+    notificationProbeTimeoutMs: 10,
+  });
+  const startedAt = Date.now();
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(snapshot.redis, 'connected');
+  assert.equal(snapshot.daemon, 'unknown');
+  assert.equal(snapshot.worker, 'unknown');
+
+  const pingRoutes = await createRoutes({
+    redisClient: {
+      ping: async () => never<string>(),
+      get: async () => null,
+      sCard: async () => 0,
+    } as never,
+    getIndexingQueue: async () => createIndexingQueue(),
+    getRepositoryIndexingStatus: async () => undefined,
+    notificationProbeTimeoutMs: 10,
+  });
+  assert.equal((await pingRoutes.getNotificationHealthSnapshot()).redis, 'disconnected');
+});
+
+test('notification health collection translates rejected probes into stable values', async () => {
+  configureStatusEnv();
+  const routes = await createRoutes({
+    redisClient: {
+      ping: async () => { throw new Error('redis unavailable'); },
+      get: async () => { throw new Error('redis unavailable'); },
+      sCard: async () => { throw new Error('redis unavailable'); },
+    } as never,
+    getIndexingQueue: async () => { throw new Error('queue unavailable'); },
+    getRepositoryIndexingStatus: async () => { throw new Error('database unavailable'); },
+    notificationProbeTimeoutMs: 10,
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.equal(snapshot.redis, 'disconnected');
+  assert.equal(snapshot.daemon, 'unknown');
+  assert.equal(snapshot.worker, 'unknown');
+  assert.equal(snapshot.indexing, 'disconnected');
+  assert.equal(snapshot.indexingService, 'disconnected');
 });
 
 test('/api/status caps summarization cooldown warnings', async () => {

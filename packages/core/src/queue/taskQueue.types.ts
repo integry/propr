@@ -126,6 +126,12 @@ export interface IndexingJobData {
     fullReindex?: boolean;   // Force full re-index even if summaries exist
     baseBranch?: string;     // Optional specific branch to index (defaults to repo default branch)
     ignoreCooldown?: boolean; // Manual/admin indexing override for summarization cooldowns
+    /** Queue-boundary identity; required for newly accepted jobs. */
+    runId?: string;
+    /** Run transition time, replaced with the database-authoritative value after acceptance. */
+    transitionAt?: string;
+    /** The API/producer persisted run ownership after BullMQ accepted this job. */
+    durablyAccepted?: boolean;
 }
 
 export interface MergeConflictJobData {

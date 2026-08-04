@@ -20,23 +20,85 @@ await mock.module('ioredis', {
 });
 
 // Mock database with proper chain methods
-const mockDbTasksInsert = mock.fn(() => ({
-    onConflict: mock.fn(() => ({
-        ignore: mock.fn(async () => [1])
-    }))
-}));
+let latestTaskRow: Record<string, unknown> = {};
+let latestHistoryRow: Record<string, unknown> = {};
+const durableTaskRows = new Map<string, Record<string, unknown>>();
+const durableHistoryRows = new Map<string, Record<string, unknown>>();
+const mockDbTasksInsert = mock.fn((row: Record<string, unknown>) => {
+    return {
+        onConflict: mock.fn(() => ({
+            ignore: mock.fn(async () => {
+                const taskId = String(row.task_id);
+                if (!durableTaskRows.has(taskId)) durableTaskRows.set(taskId, row);
+                latestTaskRow = durableTaskRows.get(taskId)!;
+                return [1];
+            })
+        }))
+    };
+});
 
-const mockDbHistoryInsert = mock.fn(async () => [1]);
+const mockDbHistoryInsert = mock.fn((row: Record<string, unknown>) => {
+    return {
+        onConflict: mock.fn(() => ({
+            ignore: mock.fn(async () => {
+                const identity = `${String(row.task_id)}\0${String(row.transition_key)}`;
+                if (!durableHistoryRows.has(identity)) {
+                    durableHistoryRows.set(identity, {
+                        history_id: 1,
+                        ...row,
+                    });
+                }
+                latestHistoryRow = durableHistoryRows.get(identity)!;
+                return [latestHistoryRow.history_id];
+            })
+        }))
+    };
+});
 
-const mockDb = (tableName: string) => {
+type MockTransaction = ((tableName: string) => unknown) & {
+    schema: { hasTable(tableName: string): Promise<boolean> };
+};
+let mockDbTransaction: ((callback: (transaction: MockTransaction) => Promise<unknown>) => Promise<unknown>) | undefined;
+
+const mockDb = Object.assign((tableName: string) => {
     if (tableName === 'tasks') {
-        return { insert: mockDbTasksInsert };
+        let where: Record<string, unknown> = {};
+        return {
+            insert: mockDbTasksInsert,
+            where(values: Record<string, unknown>) { where = { ...where, ...values }; return this; },
+            first: async () => durableTaskRows.get(String(where.task_id)) ?? latestTaskRow,
+        };
     }
     if (tableName === 'task_history') {
-        return { insert: mockDbHistoryInsert };
+        let where: Record<string, unknown> = {};
+        let descending = false;
+        return {
+            insert: mockDbHistoryInsert,
+            where(values: Record<string, unknown>) { where = { ...where, ...values }; return this; },
+            orderBy(_column: string, direction = 'asc') {
+                descending = direction === 'desc';
+                return this;
+            },
+            select: async () => {
+                const rows = [...durableHistoryRows.values()]
+                    .filter(row => where.task_id === undefined || row.task_id === where.task_id)
+                    .sort((left, right) => Number(left.history_id) - Number(right.history_id));
+                return descending ? rows.reverse() : rows;
+            },
+            first: async () => durableHistoryRows.get(
+                `${String(where.task_id)}\0${String(where.transition_key)}`
+            ) ?? latestHistoryRow,
+        };
     }
     return { insert: mock.fn(async () => [1]) };
-};
+}, {
+    schema: { hasTable: async () => true },
+    transaction: async (callback: (transaction: MockTransaction) => Promise<unknown>) => {
+        return mockDbTransaction
+            ? mockDbTransaction(callback)
+            : callback(mockDb as unknown as MockTransaction);
+    }
+});
 
 await mock.module('../packages/core/src/db/connection.js', {
     namedExports: {
@@ -340,7 +402,7 @@ test('createTaskState sets correct initial history entry', async () => {
     await stateManager.close();
 });
 
-test('createTaskState handles database error gracefully', async () => {
+test('createTaskState does not mutate Redis when durable persistence fails', async () => {
     mockRedisInstance.setex.mock.resetCalls();
     mockCorrelatedLogger.error.mock.resetCalls();
 
@@ -362,12 +424,11 @@ test('createTaskState handles database error gracefully', async () => {
         repoName: 'error-repo'
     };
 
-    // Should not throw - database errors are caught and logged
-    const result = await stateManager.createTaskState(taskId, issueRef);
-
-    // State should still be created in Redis
-    assert.strictEqual(result.taskId, taskId);
-    assert.strictEqual(result.state, TaskStates.PENDING);
+    await assert.rejects(
+        stateManager.createTaskState(taskId, issueRef),
+        /Database connection failed/
+    );
+    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 0);
 
     // Verify error was logged
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
@@ -582,7 +643,7 @@ test('updateTaskState publishes real-time event', async () => {
         previousState: string;
         repository: string;
         issueNumber: number;
-        metadata?: { attempts: number; reason?: string };
+        metadata?: { attempts: number; reason?: string; transitionSequence?: number };
     };
 
     assert.strictEqual(eventPayload.taskId, 'task-event-update');
@@ -591,6 +652,7 @@ test('updateTaskState publishes real-time event', async () => {
     assert.strictEqual(eventPayload.repository, 'event-owner/event-repo');
     assert.strictEqual(eventPayload.issueNumber, 88);
     assert.strictEqual(eventPayload.metadata?.reason, 'Claude execution started');
+    assert.strictEqual(eventPayload.metadata?.transitionSequence, 1);
 
     await stateManager.close();
 });
@@ -987,7 +1049,7 @@ test('updateTaskState stores historyMetadata in history entry', async () => {
     await stateManager.close();
 });
 
-test('updateTaskState handles database error gracefully', async () => {
+test('updateTaskState does not mutate Redis when durable history fails', async () => {
     const existingState: TaskStateData = {
         taskId: 'task-db-error-update',
         issueRef: { number: 140, repoOwner: 'error-owner', repoName: 'error-repo' },
@@ -1014,14 +1076,12 @@ test('updateTaskState handles database error gracefully', async () => {
         stateExpiry: TEST_STATE_EXPIRY
     });
 
-    // Should not throw - database errors are caught and logged
-    const result = await stateManager.updateTaskState('task-db-error-update', TaskStates.PROCESSING, {
-        reason: 'Processing started'
-    });
-
-    // State should still be updated in Redis
-    assert.strictEqual(result.state, TaskStates.PROCESSING);
-    assert.strictEqual(result.history.length, 2);
+    await assert.rejects(stateManager.updateTaskState(
+        'task-db-error-update',
+        TaskStates.PROCESSING,
+        { reason: 'Processing started' }
+    ), /Database connection failed/);
+    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 0);
 
     // Verify error was logged
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
@@ -1030,6 +1090,99 @@ test('updateTaskState handles database error gracefully', async () => {
     mockDbHistoryInsert.mock.mockImplementation(originalHistoryInsert);
 
     await stateManager.close();
+});
+
+test('updateTaskState retry reuses the durable transition after Redis fails', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-redis-recovery',
+        issueRef: { number: 141, repoOwner: 'recovery-owner', repoName: 'recovery-repo' },
+        correlationId: 'corr-redis-recovery',
+        state: TaskStates.PENDING,
+        createdAt: '2026-08-04T01:00:00.000Z',
+        updatedAt: '2026-08-04T01:00:00.000Z',
+        attempts: 0,
+        history: [{
+            state: TaskStates.PENDING,
+            timestamp: '2026-08-04T01:00:00.000Z',
+            reason: 'Task created',
+        }],
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    let redisWrites = 0;
+    const originalSetex = mockRedisInstance.setex.mock.mockImplementation;
+    mockRedisInstance.setex.mock.mockImplementation(async () => {
+        redisWrites++;
+        if (redisWrites === 1) throw new Error('Redis write failed after SQLite commit');
+        return 'OK';
+    });
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    const metadata = { reason: 'Start durable work', idempotencyKey: 'delivery-141' };
+    try {
+        await assert.rejects(
+            stateManager.updateTaskState(existingState.taskId, TaskStates.PROCESSING, metadata),
+            /Redis write failed/
+        );
+        const recovered = await stateManager.updateTaskState(
+            existingState.taskId,
+            TaskStates.PROCESSING,
+            metadata
+        );
+
+        const inserted = mockDbHistoryInsert.mock.calls.map(call =>
+            call.arguments[0] as Record<string, unknown>);
+        assert.strictEqual(inserted.length, 2);
+        assert.strictEqual(inserted[0].transition_key, inserted[1].transition_key);
+        assert.strictEqual(recovered.history.length, 2);
+        assert.strictEqual(recovered.history[1].timestamp, inserted[0].timestamp);
+        assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 1);
+    } finally {
+        mockRedisInstance.setex.mock.mockImplementation(originalSetex);
+        await stateManager.close();
+    }
+});
+
+test('updateTaskState rejects an explicit idempotency key reused for another payload', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-idempotency-conflict',
+        issueRef: { number: 142, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: 'corr-idempotency-conflict',
+        state: TaskStates.PENDING,
+        createdAt: '2026-08-04T01:00:00.000Z',
+        updatedAt: '2026-08-04T01:00:00.000Z',
+        attempts: 0,
+        history: [{
+            state: TaskStates.PENDING,
+            timestamp: '2026-08-04T01:00:00.000Z',
+            reason: 'Task created',
+        }],
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    try {
+        await stateManager.updateTaskState(existingState.taskId, TaskStates.PROCESSING, {
+            reason: 'Start work',
+            idempotencyKey: 'delivery-142',
+        });
+
+        await assert.rejects(
+            stateManager.updateTaskState(existingState.taskId, TaskStates.FAILED, {
+                reason: 'Different operation',
+                idempotencyKey: 'delivery-142',
+            }),
+            /idempotency key resolved to a different state/
+        );
+    } finally {
+        await stateManager.close();
+    }
 });
 
 test('updateTaskState includes commitHash in database metadata', async () => {
@@ -2743,6 +2896,109 @@ test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
     assert.ok(cleanedCount >= 0, 'Should return valid count');
 
     await stateManager.close();
+});
+
+test('historical metadata enrichment publishes the located history state', async () => {
+    const transitionAt = '2026-08-03T10:00:00.000Z';
+    const currentAt = '2026-08-03T11:00:00.000Z';
+    const state: TaskStateData = {
+        taskId: 'historical-metadata-task',
+        issueRef: { number: 1734, repoOwner: 'integry', repoName: 'propr', type: 'issue' },
+        correlationId: 'history-metadata-correlation',
+        state: TaskStates.COMPLETED,
+        createdAt: transitionAt,
+        updatedAt: currentAt,
+        attempts: 1,
+        history: [
+            { state: TaskStates.FAILED, timestamp: transitionAt, metadata: {} },
+            { state: TaskStates.COMPLETED, timestamp: currentAt, metadata: {} }
+        ]
+    };
+    let enrichmentState: string | undefined;
+    const historyBuilder = {
+        select() { return this; },
+        where() { return this; },
+        orderBy() { return this; },
+        first: async () => ({ history_id: 7, metadata: '{}' }),
+        update: async () => 1
+    };
+    const transaction = Object.assign((tableName: string) => {
+        if (tableName === 'task_history') return historyBuilder;
+        return {
+            insert: (row: { state?: string }) => {
+                if (tableName === 'task_notification_enrichments') enrichmentState = row.state;
+                return {
+                    onConflict() { return this; },
+                    ignore: async () => [1],
+                };
+            }
+        };
+    }, {
+        schema: { hasTable: async () => true }
+    }) as MockTransaction;
+
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(state));
+    mockPublishTaskUpdate.mock.resetCalls();
+    mockDbTransaction = async (callback) => callback(transaction);
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+    try {
+        await stateManager.updateHistoryMetadata(
+            state.taskId,
+            TaskStates.FAILED,
+            { reason: 'late failure detail' }
+        );
+
+        assert.strictEqual(enrichmentState, TaskStates.FAILED);
+        assert.strictEqual(
+            mockPublishTaskUpdate.mock.calls[0]?.arguments[0].state,
+            TaskStates.FAILED
+        );
+    } finally {
+        mockDbTransaction = undefined;
+        await stateManager.close();
+    }
+});
+
+test('enrichment persistence failures leave Redis unchanged', async () => {
+    const transitionAt = '2026-08-03T10:00:00.000Z';
+    const state: TaskStateData = {
+        taskId: 'failed-enrichment-task',
+        issueRef: { number: 1734, repoOwner: 'integry', repoName: 'propr', type: 'issue' },
+        correlationId: 'failed-enrichment-correlation',
+        state: TaskStates.COMPLETED,
+        createdAt: transitionAt,
+        updatedAt: transitionAt,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: transitionAt, metadata: {} }]
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(state));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbTransaction = async () => { throw new Error('enrichment database unavailable'); };
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+    try {
+        await assert.rejects(
+            stateManager.updateIssueRef(state.taskId, { pullRequestNumber: 1734 }),
+            /enrichment database unavailable/
+        );
+        await assert.rejects(
+            stateManager.updateHistoryMetadata(
+                state.taskId,
+                TaskStates.COMPLETED,
+                { prNumber: 1734 }
+            ),
+            /enrichment database unavailable/
+        );
+        assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 0);
+    } finally {
+        mockDbTransaction = undefined;
+        await stateManager.close();
+    }
 });
 
 // Force exit due to module-level initialization in @propr/core

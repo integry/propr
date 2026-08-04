@@ -21,6 +21,10 @@ import {
 } from '../src/services/notificationService.js';
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as allowNotificationEventEnrichment }
+    from '../src/db/migrations/20260804050000_allow_notification_event_enrichment.js';
+import { up as versionNotificationEventEnrichment }
+    from '../src/db/migrations/20260804070000_version_notification_event_enrichment.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -85,6 +89,8 @@ beforeEach(async () => {
     database = createDatabase();
     await up(database);
     await addPreferenceApis(database);
+    await allowNotificationEventEnrichment(database);
+    await versionNotificationEventEnrichment(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -97,6 +103,146 @@ afterEach(async () => database.destroy());
 after(async () => closeConnection());
 
 describe('notification service', { concurrency: false }, () => {
+    test('enriches presentation fields when target and metadata are unchanged', async () => {
+        const baseInput = {
+            eventId: 'presentation-enrichment',
+            deduplicationKey: 'presentation-enrichment',
+            kind: 'task' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'presentation-task'
+            },
+            title: 'Initial title',
+            body: 'Initial body',
+            occurredAt: '2026-08-02T08:00:00.000Z'
+        };
+        await service.createNotificationEvent(baseInput);
+
+        const enriched = await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                title: 'Improved title',
+                body: 'Improved body',
+                enrichmentSequence: 1,
+                action: { type: 'navigate', label: 'Open task', href: '/tasks/presentation-task' }
+            })
+        );
+
+        assert.equal(enriched.title, 'Improved title');
+        assert.equal(enriched.body, 'Improved body');
+        assert.deepEqual(enriched.action, {
+            type: 'navigate', label: 'Open task', href: '/tasks/presentation-task'
+        });
+    });
+
+    test('only enriches a task PR number while preserving omitted severity', async () => {
+        const baseInput = {
+            eventId: 'task-pr-enrichment',
+            deduplicationKey: 'task-pr-enrichment',
+            kind: 'task' as const,
+            severity: 'warning' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'task-pr-enrichment'
+            },
+            title: 'Task needs attention',
+            body: 'Initial details',
+            occurredAt: '2026-08-02T08:00:00.000Z'
+        };
+        await service.createNotificationEvent(baseInput);
+
+        const enriched = await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                severity: undefined,
+                target: { ...baseInput.target, prNumber: 1734 },
+                enrichmentSequence: 1,
+                body: 'Pull request is ready'
+            })
+        );
+
+        assert.equal(enriched.severity, 'warning');
+        assert.deepEqual(enriched.target, { ...baseInput.target, prNumber: 1734 });
+    });
+
+    test('does not let a stale enrichment replace newer presentation fields', async () => {
+        const baseInput = {
+            eventId: 'monotonic-enrichment',
+            deduplicationKey: 'monotonic-enrichment',
+            kind: 'task' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'monotonic-task'
+            },
+            title: 'Initial title',
+            body: 'Initial body',
+            occurredAt: '2026-08-02T08:00:00.000Z'
+        };
+        await service.createNotificationEvent(baseInput);
+        await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                title: 'Newest title',
+                body: 'Newest body',
+                enrichmentSequence: 2,
+                action: { type: 'navigate', label: 'Open latest', href: '/tasks/monotonic-task' }
+            })
+        );
+
+        const stale = await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                title: 'Stale title',
+                body: 'Stale body',
+                enrichmentSequence: 1,
+                action: { type: 'navigate', label: 'Open stale', href: '/tasks/stale' }
+            })
+        );
+
+        assert.equal(stale.title, 'Newest title');
+        assert.equal(stale.body, 'Newest body');
+        assert.deepEqual(stale.action, {
+            type: 'navigate', label: 'Open latest', href: '/tasks/monotonic-task'
+        });
+    });
+
+    test('rejects retargeting enrichment before assigning new recipients', async () => {
+        const baseInput = {
+            eventId: 'immutable-target-enrichment',
+            deduplicationKey: 'immutable-target-enrichment',
+            kind: 'task' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'immutable-target-task'
+            },
+            title: 'Original task',
+            body: 'Original body',
+            occurredAt: '2026-08-02T08:00:00.000Z',
+            recipients: ['user-a']
+        };
+        await service.createNotificationEvent(baseInput);
+
+        await assert.rejects(database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                target: { ...baseInput.target, repository: 'other/private' },
+                recipients: ['user-b']
+            })
+        ), /cannot change target identity/);
+        assert.deepEqual(await database('notification_user_states')
+            .where({ event_id: baseInput.eventId }).pluck('user_id'), ['user-a']);
+        await assert.rejects(
+            database('notification_events').where({ event_id: baseInput.eventId }).update({
+                target_json: JSON.stringify({ ...baseInput.target, taskId: 'other-task' })
+            }),
+            /notification event identity is immutable|notification enrichment sequence cannot regress/
+        );
+    });
+
     test('returns the original event and assigns new recipients on a duplicate', async () => {
         const original = await service.createNotificationEvent({
             eventId: 'original-event',

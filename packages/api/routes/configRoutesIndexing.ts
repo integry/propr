@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import * as configManager from '@propr/core';
-import { publishIndexingStatus } from '@propr/core';
 import { cancelDelayedReindex, queueIndexingJob, queueResummarizationForAllRepos, scheduleDelayedReindex, stopIndexingJob } from './indexingQueueHelpers.js';
 import { validateIndexingInput, validateStopIndexingInput } from './indexingRouteHelpers.js';
 import type { AgentConfig } from '@propr/core';
@@ -52,13 +51,6 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
       // Report the normalized branch the job was actually queued under so clients
       // and status matching stay consistent when baseBranch is omitted/whitespace.
       const effectiveBranch = result.baseBranch ?? 'HEAD';
-
-      // Best-effort optimistic status for newly accepted jobs only.
-      try {
-        await publishIndexingStatus(repository, effectiveBranch, 'indexing');
-      } catch (pubErr) {
-        console.warn('Failed to publish optimistic indexing status:', pubErr);
-      }
 
       await logActivityHelper(
         `Triggered ${shouldRunFullReindex ? 'full re-' : ''}indexing for ${repository} (branch: ${effectiveBranch})`,
@@ -134,30 +126,21 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      // Emit idle immediately for both removed queued jobs and cancellation requests.
-      // Active workers may still emit a later terminal event after they observe the
-      // cancellation flag, but the UI should reflect the stop request right away.
-      const branchesToPublish = new Set([
-        ...result.cancelledActiveBranches,
-        ...result.removedQueuedBranches
-      ]);
-      for (const queuedBranch of branchesToPublish) {
-        try {
-          await publishIndexingStatus(repository, queuedBranch, 'idle');
-        } catch {
-          // Best-effort — don't fail the stop request if publishing fails
-        }
+      const stoppedCount = result.cancelledActiveRuns.length + result.removedQueuedRuns.length;
+      if (stoppedCount > 0) {
+        const branchInfo = branch ? ` (branch: ${branch})` : '';
+        await logActivityHelper(
+          `Stopped indexing for ${repository}${branchInfo}`,
+          'indexing-stop',
+          'indexing_stopped',
+          req.user?.username
+        );
       }
 
-      const branchInfo = branch ? ` (branch: ${branch})` : '';
-      await logActivityHelper(
-        `Stopped indexing for ${repository}${branchInfo}`,
-        'indexing-stop',
-        'indexing_stopped',
-        req.user?.username
-      );
-
-      res.json({ success: true });
+      res.json({
+        success: true,
+        ...(result.message === undefined ? {} : { message: result.message })
+      });
     } catch (error) {
       console.error('Error in /api/config/repos/stop-indexing POST:', error);
       res.status(500).json({ error: 'Failed to stop indexing' });

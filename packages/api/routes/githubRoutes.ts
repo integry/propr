@@ -6,14 +6,32 @@ import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
+import { clearSessionCookie } from '../auth.js';
+import { getSessionAuthGeneration } from '../authSessionGeneration.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
+import { logger, withNotificationDeadline } from '@propr/core';
+import {
+  invalidateNotificationRepositoryEntitlements,
+  listAccessibleRepositories,
+  refreshNotificationRepositoryEntitlements,
+} from './notificationEntitlementRefresh.js';
+export {
+  createNotificationEntitlementRefreshMiddleware,
+  persistNotificationRepositoryEntitlementsBestEffort,
+  refreshNotificationRepositoryEntitlements,
+} from './notificationEntitlementRefresh.js';
 
 interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
+  invalidateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
+  refreshNotificationEntitlements?: typeof refreshNotificationRepositoryEntitlements;
+  listNotificationRepositories?: typeof listAccessibleRepositories;
 }
+
+const AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS = 5_000;
 
 /**
  * Check if an error is a GitHub authentication error (401)
@@ -32,15 +50,19 @@ function isAuthError(error: unknown): boolean {
 /**
  * Handle GitHub authentication errors by attempting token refresh before clearing session
  */
-export async function handleAuthError(req: Request, res: Response): Promise<void> {
-  console.warn('GitHub token expired or revoked, attempting token refresh');
+export async function handleAuthError(
+  req: Request,
+  res: Response,
+  invalidateEntitlements?: (userId: string, authGeneration: string) => Promise<void>
+): Promise<void> {
+  logger.warn('GitHub token expired or revoked; attempting token refresh');
 
   // Try to refresh the token before logging out
   const refreshResult = await refreshGitHubTokenWithResult(req, true);
 
   if (refreshResult.status === 'refreshed') {
     // Token was successfully refreshed, tell client to retry
-    console.log('Token refresh successful, client should retry');
+    logger.info('GitHub token refresh succeeded; client should retry');
     res.status(401).json({
       error: 'Token refreshed',
       code: 'TOKEN_REFRESHED',
@@ -59,17 +81,40 @@ export async function handleAuthError(req: Request, res: Response): Promise<void
   }
 
   // Token refresh failed, clear the session to force re-login
-  console.warn('Token refresh failed, clearing session for re-authentication');
+  logger.warn('GitHub token refresh failed; clearing session for re-authentication');
+  const userId = req.user?.id;
+  try {
+    if (userId && invalidateEntitlements) {
+      await withNotificationDeadline(
+        invalidateEntitlements(userId, getSessionAuthGeneration(req)),
+        AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
+        'persisting notification entitlement invalidation after GitHub auth error'
+      );
+    }
+  } catch (error) {
+    logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
+      'Could not persist repository notification access invalidation');
+    res.status(503).json({
+      error: 'Session cleanup unavailable',
+      code: 'AUTH_CLEANUP_UNAVAILABLE',
+      message: 'Authorization cleanup could not be persisted. Please retry.',
+    });
+    return;
+  }
 
   await new Promise<void>((resolve) => {
     req.logout((err) => {
-      if (err) console.error('Error during logout:', err);
+      if (err) logger.error({ error: err.message }, 'Passport logout failed after GitHub auth error');
       req.session.destroy((destroyErr) => {
-        if (destroyErr) console.error('Error destroying session:', destroyErr);
+        if (destroyErr) {
+          logger.error({ error: destroyErr.message },
+            'Session destruction failed after GitHub auth error');
+        }
         resolve();
       });
     });
   });
+  clearSessionCookie(res);
 
   res.status(401).json({
     error: 'GitHub authentication expired',
@@ -79,7 +124,37 @@ export async function handleAuthError(req: Request, res: Response): Promise<void
 }
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
-  const { redisClient, taskQueue } = deps;
+  const { redisClient, taskQueue, db } = deps;
+  const invalidateEntitlements = deps.invalidateNotificationEntitlements
+    ?? (async (userId: string, authGeneration: string) => {
+      await invalidateNotificationRepositoryEntitlements(db, userId, authGeneration);
+    });
+  const refreshNotificationEntitlements = deps.refreshNotificationEntitlements
+    ?? refreshNotificationRepositoryEntitlements;
+  const listNotificationRepositories = deps.listNotificationRepositories
+    ?? listAccessibleRepositories;
+
+  async function invalidateEntitlementsOrRespond(req: Request, res: Response): Promise<boolean> {
+    const userId = req.user?.id;
+    if (!userId) return true;
+    try {
+      await withNotificationDeadline(
+        invalidateEntitlements(userId, getSessionAuthGeneration(req)),
+        AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
+        'persisting notification entitlement invalidation for GitHub route'
+      );
+      return true;
+    } catch (error) {
+      logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
+        'Could not persist repository notification access invalidation');
+      res.status(503).json({
+        error: 'Session cleanup unavailable',
+        code: 'AUTH_CLEANUP_UNAVAILABLE',
+        message: 'Authorization cleanup could not be persisted. Please retry.',
+      });
+      return false;
+    }
+  }
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -97,10 +172,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       const newJob = await taskQueue.add('processTaskImport', { taskDescription, repository, correlationId, user: req.user?.username }, { jobId, removeOnComplete: { age: 24 * 3600, count: 100 }, removeOnFail: { age: 7 * 24 * 3600 } });
       await redisClient.lPush('system:activity:log', JSON.stringify({ id: `activity-${Date.now()}-${jobId}`, type: 'task_import', timestamp: new Date().toISOString(), user: req.user?.username, repository, description: `Task import job created for ${repository}`, status: 'pending' }));
       await redisClient.lTrim('system:activity:log', 0, 999);
-      console.log(`Created task import job ${jobId} for repository ${repository}`);
+      logger.info({ jobId, repository }, 'Created task import job');
       res.json({ jobId: newJob.id });
     } catch (error) {
-      console.error('Error in /api/import-tasks:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'Task import route failed');
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -114,43 +190,60 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
 
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
+      const userId = req.user?.id;
+      if (!userId) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
       if (!accessToken) {
+        if (!await invalidateEntitlementsOrRespond(req, res)) return;
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
 
-      // Create Octokit instance with user's token and pagination support
-      const PaginatedOctokit = Octokit.plugin(paginateRest);
-      const octokit = new PaginatedOctokit({ auth: accessToken });
-
-      // Fetch all repositories the user has access to with pagination
-      const repos: string[] = [];
-
-      // Use paginate.iterator to fetch all pages of repos
-      for await (const response of octokit.paginate.iterator('GET /user/repos', {
-        per_page: 100,
-        sort: 'full_name',
-        direction: 'asc',
-        affiliation: 'owner,collaborator,organization_member'
-      })) {
-        for (const repo of response.data) {
-          if (repo.full_name) {
-            repos.push(repo.full_name);
-          }
+      let repos: string[] = [];
+      let repositoriesScanned = false;
+      try {
+        const refreshed = await refreshNotificationEntitlements({
+          userId,
+          accessToken,
+          database: db,
+          force: true,
+          listRepositories: async (token, signal) => {
+            repos = await listNotificationRepositories(token, signal);
+            repositoriesScanned = true;
+            return repos;
+          },
+        });
+        if (!refreshed && !repositoriesScanned) {
+          res.status(503).json({
+            error: 'Repository entitlement refresh unavailable',
+            code: 'ENTITLEMENT_REFRESH_UNAVAILABLE',
+            message: 'Repository access could not be refreshed. Please retry shortly.'
+          });
+          return;
         }
+        if (!refreshed) {
+          logger.warn({ userId },
+            'Repository scan completed after losing its entitlement persistence fence');
+        }
+      } catch (error) {
+        // Keep repository browsing available when the GitHub scan succeeded but
+        // durable entitlement bookkeeping failed. Delivery remains fail-closed.
+        if (!repositoriesScanned) throw error;
+        logger.warn({ error: error instanceof Error ? error.message : String(error) },
+          'Failed to persist repository notification access');
       }
-
-      // Sort alphabetically
-      repos.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
       res.json({ repos });
     } catch (error) {
       // Check if this is a token expiration/revocation error
       if (isAuthError(error)) {
-        await handleAuthError(req, res);
+        await handleAuthError(req, res, invalidateEntitlements);
         return;
       }
-      console.error('Error in /api/github/repos:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'GitHub repositories route failed');
       res.status(500).json({ error: 'Failed to fetch repositories from GitHub' });
     }
   }
@@ -177,6 +270,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
+        if (req.user?.id
+            && !await invalidateEntitlementsOrRespond(req, res)) return;
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -199,10 +294,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       } catch (error) {
         // Check for auth error on repo info request
         if (isAuthError(error)) {
-          await handleAuthError(req, res);
+          await handleAuthError(req, res, invalidateEntitlements);
           return;
         }
-        console.error('Error fetching repo info for default branch:', error);
+        logger.warn({ owner, repo, error: error instanceof Error ? error.message : String(error) },
+          'Could not load repository default branch');
         // Continue without default branch info
       }
 
@@ -230,10 +326,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     } catch (error) {
       // Check if this is a token expiration/revocation error
       if (isAuthError(error)) {
-        await handleAuthError(req, res);
+        await handleAuthError(req, res, invalidateEntitlements);
         return;
       }
-      console.error('Error in /api/github/repos/:owner/:repo/branches:', error);
+      logger.error({ error: error instanceof Error ? error.message : String(error) },
+        'GitHub repository branches route failed');
       res.status(500).json({ error: 'Failed to fetch branches from GitHub' });
     }
   }

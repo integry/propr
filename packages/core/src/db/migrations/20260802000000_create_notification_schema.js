@@ -32,7 +32,7 @@ const WEB_PUSH_ENDPOINT_HOST_SUFFIXES = ['.push.apple.com'];
 const PAYLOAD_LIMITS = {
   identifierBytes: 255,
   deduplicationKeyBytes: 512,
-  repositoryBytes: 255,
+  repositoryBytes: 140,
   titleBytes: 256,
   bodyBytes: 4096,
   actionLabelBytes: 128,

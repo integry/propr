@@ -193,7 +193,7 @@ export interface Agent {
     /**
      * Verifies the agent is ready (e.g. docker image exists).
      */
-    healthCheck(): Promise<boolean>;
+    healthCheck(signal?: AbortSignal): Promise<boolean>;
 }
 
 // Re-export types that are commonly needed with agent types

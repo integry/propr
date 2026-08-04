@@ -44,6 +44,8 @@ export {
   type DraftStatus,
   type StepStatus,
   type DraftUpdateGenerationTrace,
+  type ProjectionEventPayload,
+  parseProjectionEventPayload,
 } from './events.js';
 
 // Export usage configuration and metrics types
@@ -195,6 +197,7 @@ export {
   NOTIFICATION_SEVERITIES,
   NOTIFICATION_ACTION_TYPES,
   MAX_CANONICAL_TIMESTAMP_EPOCH_MS,
+  GITHUB_REPOSITORY_IDENTITY_PATTERN_SOURCE,
   WEB_PUSH_ENDPOINT_HOSTS,
   WEB_PUSH_ENDPOINT_HOST_SUFFIXES,
   NOTIFICATION_PAYLOAD_LIMITS,
@@ -205,6 +208,7 @@ export {
   NOTIFICATION_SOURCE_ACTIVITY_TYPES,
   NOTIFICATION_SOURCE_ACTIVITY_STATUSES,
   normalizeISO8601Timestamp,
+  normalizeGithubRepositoryIdentity,
   parseISO8601Timestamp,
   parseNotificationTarget,
   parseNotificationAction,

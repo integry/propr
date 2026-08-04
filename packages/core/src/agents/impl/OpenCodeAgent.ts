@@ -161,9 +161,10 @@ export class OpenCodeAgent implements Agent {
         }
     }
 
-    async healthCheck(): Promise<boolean> {
+    async healthCheck(signal?: AbortSignal): Promise<boolean> {
         try {
-            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage], { timeout: 10000 });
+            const result = await executeDockerCommand('docker', ['images', '-q', this.config.dockerImage],
+                { timeout: 10000, signal });
             return !!result.stdout.trim();
         } catch (error) {
             logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'OpenCode health check failed');

@@ -1,31 +1,40 @@
 import 'dotenv/config';
-import { Job, Worker } from 'bullmq';
+import { Worker } from 'bullmq';
+import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
-import { createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
-import type { IndexingJobData, JobResult } from '@propr/core';
+import { closeEventPublisher, createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
+import type { IndexingJobData, RepositoryStatusTransition } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
-import { indexRepo, updateRepositoryStatus } from '@propr/core';
+import {
+    updateRepositoryStatus, createIndexingRunIdentity,
+    createIndexingQueueDeduplicationId, createIndexingQueueJobId,
+    INDEXING_FAILED_JOB_RETENTION, INDEXING_JOB_ACCEPTANCE_DELAY_MS,
+    publishIndexingStatus,
+    INDEXING_WORKER_HEARTBEAT_INTERVAL_MS, INDEXING_WORKER_HEARTBEAT_KEY,
+    INDEXING_WORKER_HEARTBEAT_TTL_SECONDS
+} from '@propr/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
 import type { RepoToMonitor } from '@propr/core';
 import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@propr/core';
+import {
+    handleIndexingJobFailure,
+    reconcileFailedIndexingJobs
+} from './indexingWorkerFailure.js';
+import { processIndexingJob, type IndexingResult } from './indexingJobProcessor.js';
 
-process.on('uncaughtException', (error: Error) => {
-    logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in indexing worker');
-    process.exit(1);
-});
+function installFatalProcessHandlers(): void {
+    process.on('uncaughtException', (error: Error) => {
+        logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in indexing worker');
+        process.exit(1);
+    });
 
-process.on('unhandledRejection', (reason: unknown) => {
-    logger.fatal({ reason }, 'Unhandled rejection in indexing worker');
-    process.exit(1);
-});
-
-interface IndexingResult extends JobResult {
-    success: boolean;
-    filesProcessed?: number;
-    duration?: number;
+    process.on('unhandledRejection', (reason: unknown) => {
+        logger.fatal({ reason }, 'Unhandled rejection in indexing worker');
+        process.exit(1);
+    });
 }
 
 // How often to scan for repos needing indexing (default: 5 minutes)
@@ -33,54 +42,6 @@ const SCAN_INTERVAL_MS = parseInt(process.env.INDEXING_SCAN_INTERVAL_MS || '3000
 
 // How often to re-index repos that are already indexed (default: 24 hours)
 const REINDEX_INTERVAL_MS = parseInt(process.env.INDEXING_REINDEX_INTERVAL_MS || '86400000', 10);
-
-/**
- * Process a single indexing job
- */
-async function processIndexingJob(job: Job<IndexingJobData>): Promise<IndexingResult> {
-    const { repository, repoPath, correlationId, fullReindex, baseBranch = 'HEAD', ignoreCooldown } = job.data;
-    const correlatedLogger = logger.withCorrelation(correlationId);
-    const startTime = Date.now();
-
-    correlatedLogger.info({ repository, repoPath, fullReindex, branch: baseBranch }, 'Starting indexing job...');
-
-    try {
-        // Check if summarization is enabled
-        const settings = await loadSummarizationSettings();
-        if (!settings.enabled) {
-            correlatedLogger.info('Summarization is disabled, skipping indexing job');
-            return { status: 'skipped', success: true };
-        }
-
-        // Run the indexing
-        // Note: We no longer clear summaries before indexing. If fullReindex is true,
-        // indexRepo will process all files but preserve existing summaries as fallback
-        // in case of failure. Old summaries for deleted files are cleaned up by indexRepo.
-        await indexRepo(repoPath, {
-            correlationId,
-            fullName: repository,
-            branch: baseBranch,
-            fullReindex,
-            ignoreCooldown
-        });
-
-        const duration = Date.now() - startTime;
-        correlatedLogger.info({ repository, duration }, 'Indexing job completed successfully');
-
-        return {
-            status: 'completed',
-            success: true,
-            duration
-        };
-    } catch (error) {
-        const err = error as Error;
-        correlatedLogger.error(
-            { repository, error: err.message, stack: err.stack },
-            'Indexing job failed'
-        );
-        throw error;
-    }
-}
 
 interface RepoStatus {
     full_name: string;
@@ -98,6 +59,7 @@ interface IndexDecision {
 
 // Consider indexing stuck if status hasn't changed in 30 minutes
 const STUCK_INDEXING_TIMEOUT_MS = 30 * 60 * 1000;
+const FAILURE_RECONCILIATION_INTERVAL_MS = 60 * 1000;
 
 /**
  * Determine if a repository needs indexing based on its status
@@ -173,7 +135,8 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
     // (the earlier check may be stale due to slow clone operations)
     const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
     const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-        j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
+        j.data.repository.toLowerCase() === repoName.toLowerCase()
+          && (j.data.baseBranch || 'HEAD') === branch
     );
 
     if (alreadyQueued) {
@@ -184,22 +147,76 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
     const jobCorrelationId = generateCorrelationId();
     const priority = reason === 'previous indexing failed' ? 'high' : 'normal';
 
-    await indexingQueue.add(
+    const requestedRun = createIndexingRunIdentity();
+    const deduplicationId = createIndexingQueueDeduplicationId(repoName, branch);
+    const jobId = createIndexingQueueJobId(repoName, branch, requestedRun.runId);
+    const job = await indexingQueue.add(
         'indexRepository',
         {
             repository: repoName,
             repoPath,
             correlationId: jobCorrelationId,
             priority,
-            baseBranch: branch
+            baseBranch: branch,
+            ...requestedRun
         },
         {
-            jobId: `index-${repoName.replace('/', '-')}-${branch}-${Date.now()}`,
-            priority: reason === 'previous indexing failed' ? 1 : 5
+            jobId,
+            // The stable deduplication ID owns the repository/branch while the
+            // unique job ID identifies which producer BullMQ accepted.
+            deduplication: { id: deduplicationId },
+            priority: reason === 'previous indexing failed' ? 1 : 5,
+            delay: INDEXING_JOB_ACCEPTANCE_DELAY_MS,
+            removeOnComplete: true,
+            removeOnFail: INDEXING_FAILED_JOB_RETENTION
         }
     );
+    if (job.id !== jobId) {
+        log.debug({ repository: repoName, branch, existingJobId: job.id },
+            'Indexing job won an atomic enqueue race, skipping duplicate');
+        return;
+    }
+    let acceptedRun: RepositoryStatusTransition;
+    try {
+        acceptedRun = await updateRepositoryStatus(repoName, 'indexing', branch, {
+            ...requestedRun,
+            startNewRun: true
+        });
+    } catch (error) {
+        await job.remove().catch((removeError) => {
+            log.warn({
+                repository: repoName,
+                branch,
+                runId: requestedRun.runId,
+                error: removeError instanceof Error ? removeError.message : String(removeError),
+            }, 'Rejected indexing job remains queued behind the durable-acceptance fence');
+        });
+        throw error;
+    }
+    if (!acceptedRun.applied) {
+        log.debug({ repository: repoName, branch, runId: requestedRun.runId },
+            'Accepted indexing run already reached a terminal state');
+        return;
+    }
+    try {
+        await job.updateData({ ...job.data, ...acceptedRun, durablyAccepted: true });
+    } catch (error) {
+        log.debug({ repository: repoName, branch, runId: acceptedRun.runId, error },
+            'Indexing job left the queue before its accepted identity could be enriched');
+    }
+    await job.promote().catch((error) => {
+        log.warn({ repository: repoName, branch, runId: acceptedRun.runId, error },
+            'Durably accepted indexing job will wait for its fallback delay');
+    });
+    try {
+        await publishIndexingStatus(repoName, branch, 'indexing', acceptedRun);
+    } catch (error) {
+        log.warn({ repository: repoName, branch, error: (error as Error).message },
+            'Failed to publish accepted indexing run');
+    }
 
-    log.info({ repository: repoName, branch, reason, jobCorrelationId }, 'Queued repository for indexing');
+    log.info({ repository: repoName, branch, reason, jobCorrelationId, runId: acceptedRun.runId },
+        'Queued repository for indexing');
 }
 
 /**
@@ -213,7 +230,8 @@ async function processRepositoryForIndexing(
     const branch = repoConfig.baseBranch || 'HEAD';
 
     const repoStatus = await db('repositories')
-        .where({ full_name: repoName, branch })
+        .whereRaw('lower(full_name) = ?', [repoName.trim().toLowerCase()])
+        .where({ branch })
         .first() as RepoStatus | undefined;
 
     // If currently indexing, perform quick stuck check without cloning
@@ -228,7 +246,8 @@ async function processRepositoryForIndexing(
     // Check if job already queued before cloning to save bandwidth
     const existingJobs = await indexingQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
     const alreadyQueued = existingJobs.some((j: { data: IndexingJobData }) =>
-        j.data.repository === repoName && (j.data.baseBranch || 'HEAD') === branch
+        j.data.repository.toLowerCase() === repoName.toLowerCase()
+          && (j.data.baseBranch || 'HEAD') === branch
     );
 
     if (alreadyQueued) {
@@ -328,6 +347,11 @@ async function scanAndQueueRepositories(): Promise<void> {
 async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingResult>> {
     const workerId = `indexing-worker:${generateCorrelationId()}`;
 
+    // This process can be started independently of the API/daemon. Ensure the
+    // run-ownership and append-only transition tables exist before accepting
+    // indexing work.
+    await db.migrate.latest();
+
     logger.info({
         queue: INDEXING_QUEUE_NAME,
         concurrency: 1, // Process one repo at a time to avoid overwhelming the system
@@ -342,24 +366,52 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         { concurrency: 1 }
     );
 
-    // Handle failed jobs - update repository status
-    worker.on('failed', async (job, error) => {
-        if (job?.data?.repository) {
-            const branch = job.data.baseBranch || 'HEAD';
-            logger.error(
-                { repository: job.data.repository, branch, error: error.message },
-                'Indexing job failed, marking repository as failed'
-            );
-            try {
-                await updateRepositoryStatus(job.data.repository, 'failed', branch);
-            } catch (updateError) {
-                logger.error(
-                    { repository: job.data.repository, branch, error: (updateError as Error).message },
-                    'Failed to update repository status after job failure'
-                );
-            }
-        }
+    const heartbeatRedis = new Redis({
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        retryStrategy: (times: number) => Math.min(times * 50, 2000)
     });
+    const sendHeartbeat = async (): Promise<void> => {
+        try {
+            await heartbeatRedis.set(
+                INDEXING_WORKER_HEARTBEAT_KEY,
+                Date.now(),
+                'EX',
+                INDEXING_WORKER_HEARTBEAT_TTL_SECONDS
+            );
+        } catch (error) {
+            logger.error({ error: (error as Error).message },
+                'Failed to send indexing worker heartbeat');
+        }
+    };
+    await sendHeartbeat();
+    const heartbeatInterval = setInterval(sendHeartbeat, INDEXING_WORKER_HEARTBEAT_INTERVAL_MS);
+
+    const failureFinalizations = new Set<Promise<void>>();
+    worker.on('failed', (job, error) => {
+        const finalization = handleIndexingJobFailure(job, error)
+            .then(() => undefined)
+            .catch((finalizationError) => {
+                logger.error({ error: (finalizationError as Error).message },
+                    'Unhandled indexing failure-finalization error');
+            });
+        failureFinalizations.add(finalization);
+        void finalization.finally(() => failureFinalizations.delete(finalization));
+    });
+
+    const reconcileFailures = async (): Promise<void> => {
+        try {
+            await reconcileFailedIndexingJobs(indexingQueue);
+        } catch (error) {
+            logger.error({ error: (error as Error).message },
+                'Failed to reconcile retained indexing failures');
+        }
+    };
+    void reconcileFailures();
+    const failureReconciliationInterval = setInterval(
+        reconcileFailures,
+        FAILURE_RECONCILIATION_INTERVAL_MS
+    );
 
     // Start periodic repository scanning
     const scanInterval = setInterval(async () => {
@@ -371,7 +423,7 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
     }, SCAN_INTERVAL_MS);
 
     // Run initial scan after a short delay to allow worker to fully start
-    setTimeout(async () => {
+    const initialScanTimeout = setTimeout(async () => {
         try {
             logger.info('Running initial repository scan...');
             await scanAndQueueRepositories();
@@ -380,19 +432,26 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         }
     }, 5000);
 
-    process.on('SIGINT', async () => {
-        logger.info('Indexing Worker received SIGINT, shutting down gracefully...');
+    let shutdownStarted = false;
+    const shutdown = async (signal: 'SIGINT' | 'SIGTERM'): Promise<void> => {
+        if (shutdownStarted) return;
+        shutdownStarted = true;
+        logger.info({ signal }, 'Indexing Worker shutting down gracefully...');
         clearInterval(scanInterval);
+        clearInterval(heartbeatInterval);
+        clearInterval(failureReconciliationInterval);
+        clearTimeout(initialScanTimeout);
         await worker.close();
+        while (failureFinalizations.size > 0) {
+            await Promise.allSettled([...failureFinalizations]);
+        }
+        await closeEventPublisher();
+        await heartbeatRedis.quit();
         process.exit(0);
-    });
+    };
 
-    process.on('SIGTERM', async () => {
-        logger.info('Indexing Worker received SIGTERM, shutting down gracefully...');
-        clearInterval(scanInterval);
-        await worker.close();
-        process.exit(0);
-    });
+    process.once('SIGINT', () => { void shutdown('SIGINT'); });
+    process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
 
     return worker;
 }
@@ -400,6 +459,7 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
 export { processIndexingJob, startIndexingWorker, scanAndQueueRepositories };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+    installFatalProcessHandlers();
     startIndexingWorker().catch(err => {
         logger.error({ error: err.message }, 'Failed to start indexing worker');
         process.exit(1);
