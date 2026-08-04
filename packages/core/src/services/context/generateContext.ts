@@ -2,15 +2,19 @@
  * Main context generation using repomix.
  */
 
-import { pack } from 'repomix';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import type { Logger } from 'pino';
+import type { PackResult } from 'repomix';
+import { chmod, lstat, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import logger from '../../utils/logger.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO } from '../../config/modelLimits.js';
-import { generateOptimizedContext } from './optimizedContext.js';
-import type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './types.js';
-import { SecurityException } from './types.js';
+import { generateOptimizedContext, packWithSecurityExclusions } from './optimizedContext.js';
+import type { ContextGenerationOptions, ContextGenerationResult, RepomixPackConfig, SuspiciousFile } from './types.js';
+import { ContextTokenLimitError, SecurityException } from './types.js';
+
+const TEMP_OUTPUT_PREFIX = 'propr-repomix-';
+const STALE_TEMP_OUTPUT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Get the token ratio for converting between tiktoken and actual model tokens.
@@ -50,6 +54,58 @@ function getFilesForOptimization(
   return allPackedFiles;
 }
 
+async function cleanupStaleOutputDirectories(contextLogger: Pick<Logger, 'debug' | 'warn'>): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(tmpdir(), { withFileTypes: true });
+  } catch (error) {
+    contextLogger.warn({ error: (error as Error).message }, 'Unable to inspect stale Repomix output directories');
+    return;
+  }
+
+  const staleBefore = Date.now() - STALE_TEMP_OUTPUT_MAX_AGE_MS;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(TEMP_OUTPUT_PREFIX)) {
+      continue;
+    }
+
+    const directoryPath = path.join(tmpdir(), entry.name);
+    try {
+      const stats = await lstat(directoryPath);
+      if (stats.mtimeMs < staleBefore) {
+        await rm(directoryPath, { recursive: true, force: true });
+        contextLogger.debug({ directoryPath }, 'Removed stale Repomix output directory');
+      }
+    } catch (error) {
+      contextLogger.warn(
+        { directoryPath, error: (error as Error).message },
+        'Unable to remove stale Repomix output directory',
+      );
+    }
+  }
+}
+
+function getSuspiciousFilesFromError(error: unknown): SuspiciousFile[] {
+  if (typeof error !== 'object' || error === null || !('suspiciousFilesResults' in error)) {
+    return [];
+  }
+
+  const results = (error as { suspiciousFilesResults?: unknown }).suspiciousFilesResults;
+  if (!Array.isArray(results)) {
+    return [];
+  }
+
+  return results.flatMap((file): SuspiciousFile[] => {
+    if (typeof file !== 'object' || file === null || !('filePath' in file) || typeof file.filePath !== 'string') {
+      return [];
+    }
+    const messages = 'messages' in file && Array.isArray(file.messages)
+      ? file.messages.filter((message: unknown): message is string => typeof message === 'string')
+      : [];
+    return [{ filePath: file.filePath, messages }];
+  });
+}
+
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
   const { repoPath, filesToInclude, priorityFiles, tokenLimit, correlationId, includeFullDirectoryStructure = true, compress = false, modelId } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -60,10 +116,11 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
   correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit, compress }, 'Starting context generation with repomix');
 
-  const outputDirectory = await mkdtemp(path.join(tmpdir(), 'propr-repomix-'));
+  await cleanupStaleOutputDirectories(correlatedLogger);
+  const outputDirectory = await mkdtemp(path.join(tmpdir(), TEMP_OUTPUT_PREFIX));
   const outputFilePath = path.join(outputDirectory, 'repomix-output.xml');
 
-  const config = {
+  const config: RepomixPackConfig = {
     cwd: repoPath,
     input: {
       maxFileSize: 10 * 1024 * 1024, // 10MB
@@ -109,69 +166,40 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     },
   };
 
-  let capturedOutput = '';
+  const skippedSecurityFiles = new Map<string, SuspiciousFile>();
+  const recordSuspiciousFiles = (files: SuspiciousFile[]): void => {
+    const newlySkippedFiles = files.filter(file => !skippedSecurityFiles.has(file.filePath));
+    for (const file of files) {
+      skippedSecurityFiles.set(file.filePath, file);
+    }
+    if (newlySkippedFiles.length === 0) {
+      return;
+    }
 
-  const captureOutput = async (): Promise<void> => {
-    capturedOutput = await readFile(outputFilePath, 'utf8');
+    correlatedLogger.warn(
+      {
+        suspiciousFilesCount: newlySkippedFiles.length,
+        files: newlySkippedFiles.slice(0, 5).map(file => file.filePath),
+      },
+      'Suspicious files detected during context generation - excluding them',
+    );
   };
 
-  let skippedSecurityFiles: SuspiciousFile[] | undefined;
-
   try {
-    // repomix v1.9+ expects rootDirs as first argument (array of directories)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let result = await (pack as any)([repoPath], config, () => {});
-    await captureOutput();
+    // Restrict repository content even on hosts with a permissive process umask.
+    await chmod(outputDirectory, 0o700);
 
-    // Check if we got a security exception and need to retry without problematic files
-    if (result.suspiciousFilesResults && result.suspiciousFilesResults.length > 0) {
-      const suspiciousFiles: SuspiciousFile[] = result.suspiciousFilesResults.map(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (file: any) => ({
-          filePath: file.filePath,
-          messages: file.messages || [],
-        })
-      );
-
-      correlatedLogger.warn(
-        { suspiciousFilesCount: suspiciousFiles.length, files: suspiciousFiles.slice(0, 5).map(f => f.filePath) },
-        'Suspicious files detected during context generation - excluding them'
-      );
-
-      // Store skipped files for reporting
-      skippedSecurityFiles = suspiciousFiles;
-
-      // Create a new config that excludes the suspicious files
-      const suspiciousFilePaths = suspiciousFiles.map(f => f.filePath);
-
-      // If we have specific files to include, filter out suspicious ones
-      // Otherwise, add suspicious files to the ignore list
-      const updatedConfig = {
-        ...config,
-        include: filesToInclude
-          ? filesToInclude.filter(f => !suspiciousFilePaths.includes(f))
-          : [],
-        ignore: {
-          ...config.ignore,
-          customPatterns: [
-            ...config.ignore.customPatterns,
-            ...suspiciousFilePaths.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-          ],
-        },
-        security: {
-          enableSecurityCheck: false,  // Disable security check on retry since we've already filtered
-        },
-      };
-
-      // Retry without suspicious files
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      result = await (pack as any)([repoPath], updatedConfig, () => {});
-      await captureOutput();
-    }
+    const initialPack = await packWithSecurityExclusions(repoPath, config, recordSuspiciousFiles);
+    let result: PackResult = initialPack.result;
+    const effectiveConfig = initialPack.effectiveConfig;
 
     // Check if result exceeds token limit and needs truncation
     if (result.totalTokens > tiktokenLimit) {
-      const filesForOptimization = getFilesForOptimization(filesToInclude, priorityFiles, result.fileTokenCounts);
+      const filesForOptimization = getFilesForOptimization(
+        filesToInclude && filesToInclude.length > 0 ? effectiveConfig.include : undefined,
+        priorityFiles,
+        result.fileTokenCounts,
+      );
 
       if (filesForOptimization.length > 0) {
         correlatedLogger.info(
@@ -183,10 +211,10 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         const optimizedResult = await generateOptimizedContext({
           repoPath,
           initialFiles: filesForOptimization,
-          baseConfig: config,
+          baseConfig: effectiveConfig,
           tiktokenLimit,
           contextLogger: correlatedLogger,
-          captureOutput,
+          onSuspiciousFiles: recordSuspiciousFiles,
         });
 
         result = optimizedResult.result;
@@ -203,6 +231,14 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       }
     }
 
+    if (result.totalTokens > tiktokenLimit) {
+      throw new ContextTokenLimitError(result.totalTokens, tiktokenLimit);
+    }
+
+    // Read only the final successful pack so the returned output and metrics
+    // always describe the same attempt.
+    const capturedOutput = await readFile(outputFilePath, 'utf8');
+
     correlatedLogger.info(
       { totalFiles: result.totalFiles, totalCharacters: result.totalCharacters, totalTokens: result.totalTokens },
       'Repomix context generation completed'
@@ -216,19 +252,14 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       fileCharCounts: result.fileCharCounts,
       fileTokenCounts: result.fileTokenCounts,
       includedFiles: Object.keys(result.fileTokenCounts || {}),
-      skippedSecurityFiles,
+      skippedSecurityFiles: skippedSecurityFiles.size > 0
+        ? [...skippedSecurityFiles.values()]
+        : undefined,
     };
   } catch (error) {
     // Check if repomix threw a security exception
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const err = error as any;
-    if (err.suspiciousFilesResults && Array.isArray(err.suspiciousFilesResults) && err.suspiciousFilesResults.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const suspiciousFiles: SuspiciousFile[] = err.suspiciousFilesResults.map((file: any) => ({
-        filePath: file.filePath,
-        messages: file.messages || [],
-      }));
-
+    const suspiciousFiles = getSuspiciousFilesFromError(error);
+    if (suspiciousFiles.length > 0) {
       correlatedLogger.error(
         { suspiciousFilesCount: suspiciousFiles.length, files: suspiciousFiles.map(f => f.filePath) },
         'Security check failed: suspicious files detected'
@@ -243,6 +274,13 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     correlatedLogger.error({ error: (error as Error).message }, 'Failed to generate context with repomix');
     throw error;
   } finally {
-    await rm(outputDirectory, { recursive: true, force: true });
+    try {
+      await rm(outputDirectory, { recursive: true, force: true });
+    } catch (cleanupError) {
+      correlatedLogger.warn(
+        { outputDirectory, error: (cleanupError as Error).message },
+        'Failed to clean up Repomix output directory',
+      );
+    }
   }
 }

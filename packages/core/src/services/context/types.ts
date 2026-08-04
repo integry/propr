@@ -2,6 +2,11 @@
  * Type definitions for context generation services.
  */
 
+import type { Logger } from 'pino';
+import type { pack } from 'repomix';
+
+export type RepomixPackConfig = Parameters<typeof pack>[1];
+
 export interface ContextGenerationOptions {
   repoPath: string;
   filesToInclude?: string[];
@@ -42,6 +47,18 @@ export class SecurityException extends Error {
   }
 }
 
+export class ContextTokenLimitError extends Error {
+  public readonly totalTokens: number;
+  public readonly tokenLimit: number;
+
+  constructor(totalTokens: number, tokenLimit: number) {
+    super(`Repomix context cannot fit within the ${tokenLimit} token limit (smallest attempted bundle: ${totalTokens} tokens)`);
+    this.name = 'ContextTokenLimitError';
+    this.totalTokens = totalTokens;
+    this.tokenLimit = tokenLimit;
+  }
+}
+
 export interface DroppedFile {
   path: string;
   tokens: number;
@@ -58,10 +75,8 @@ export interface FileSelectionResult {
 export interface GenerateOptimizedContextOptions {
   repoPath: string;
   initialFiles: string[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  baseConfig: any;
+  baseConfig: RepomixPackConfig;
   tiktokenLimit: number;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  contextLogger: any;
-  captureOutput: () => Promise<void>;
+  contextLogger: Pick<Logger, 'info' | 'warn'>;
+  onSuspiciousFiles?: (files: SuspiciousFile[]) => void;
 }
