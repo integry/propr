@@ -24,6 +24,7 @@ import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import fs from 'fs';
 import path from 'path';
 import { resolveAgentTerminationReason } from '../termination.js';
+import { createContainerExecutionId } from './utils/containerExecutionId.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -375,8 +376,7 @@ export class AntigravityAgent implements Agent {
         const envVars: string[] = [];
         if (this.config.envVars) { for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`); }
         if (environment) { for (const [key, value] of Object.entries(environment)) envVars.push('-e', `${key}=${value}`); }
-        const timestamp = Date.now().toString(36);
-        const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
+        const shortTaskId = createContainerExecutionId(taskId);
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
         const containerName = this.buildContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);

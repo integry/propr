@@ -3,8 +3,7 @@ import { Agent } from '../../agents/types.js';
 import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { loadSettings } from '../../config/configManager.js';
-
-const CONTEXT_ANALYSIS_TIMEOUT_MS = 5 * 60 * 1000;
+import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 
 // --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
 
@@ -154,7 +153,7 @@ export async function extractKeywordsWithLLM(
 
     const analysisResult = await agent.analyze(llmPrompt, {
       ...(contextModel ? { model: contextModel } : {}),
-      timeoutMs: CONTEXT_ANALYSIS_TIMEOUT_MS,
+      timeoutMs: resolveContextAnalysisTimeoutMs(),
       executionType: 'context-analysis',
       correlationId,
       metadata: { callType: 'keyword_extraction' },

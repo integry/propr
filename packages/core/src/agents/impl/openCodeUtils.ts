@@ -5,6 +5,7 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
 import type { AgentConfig } from '../types.js';
+import { createContainerExecutionId } from './utils/containerExecutionId.js';
 export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from './openCodeModelIds.js';
 export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
@@ -71,8 +72,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
     const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, dataPath, managedCredentials);
-    const timestamp = Date.now().toString(36);
-    const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
+    const shortTaskId = createContainerExecutionId(taskId);
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId, modelName);
     const workspaceMode = (readOnlyWorkspace ?? issueNumber === 0) ? 'ro' : 'rw';
