@@ -182,6 +182,31 @@ export async function updateRepositoryStatus(
       };
     }
 
+    let supersededTransitionAt: string | undefined;
+    if (replacingRun
+        && existing?.indexing_status === 'indexing'
+        && existing.indexing_run_id
+        && existing.indexing_run_id !== requestedRunId) {
+      supersededTransitionAt = now;
+      if (existing.indexing_transition_at
+          && supersededTransitionAt <= existing.indexing_transition_at) {
+        supersededTransitionAt = new Date(
+          Date.parse(existing.indexing_transition_at) + 1
+        ).toISOString();
+      }
+      await transaction('repository_indexing_transitions')
+        .insert({
+          full_name: existing.full_name ?? fullName,
+          branch,
+          run_id: existing.indexing_run_id,
+          status: 'idle',
+          transition_at: supersededTransitionAt,
+          observed_at: now
+        })
+        .onConflict()
+        .ignore();
+    }
+
     const statusChanged = existing?.indexing_status !== status;
     const storedFullName = existing?.full_name ?? fullName;
     const runId = requestedRunId ?? (
@@ -200,6 +225,9 @@ export async function updateRepositoryStatus(
         : existing?.indexing_transition_at ?? options.transitionAt ?? now;
     if (runChanged && existing?.indexing_transition_at && transitionAt <= existing.indexing_transition_at) {
       transitionAt = new Date(Date.parse(existing.indexing_transition_at) + 1).toISOString();
+    }
+    if (supersededTransitionAt && transitionAt <= supersededTransitionAt) {
+      transitionAt = new Date(Date.parse(supersededTransitionAt) + 1).toISOString();
     }
     const lastIndexedHash = options.commitInfo?.hash;
     const lastIndexedCommitMessage = options.commitInfo?.message;

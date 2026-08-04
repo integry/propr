@@ -9,7 +9,7 @@ after(async () => {
     await shutdownQueue();
 });
 
-test('BullMQ performs a real second indexing attempt after indexRepo throws', {
+test('BullMQ preserves one indexing run across queue-data and indexing retries', {
     skip: !process.env.REDIS_HOST,
     timeout: 15_000,
 }, async () => {
@@ -22,27 +22,41 @@ test('BullMQ performs a real second indexing attempt after indexRepo throws', {
     const queue = new Queue<IndexingJobData>(queueName, { connection });
     let indexAttempts = 0;
     let ownershipChecks = 0;
-    const processor = createIndexingJobProcessor({
+    let durableRun: { runId: string; transitionAt: string } | undefined;
+    const observedRunIds: string[] = [];
+    const processJob = createIndexingJobProcessor({
         indexRepo: async (_repoPath, options) => {
             indexAttempts++;
             assert.equal(options.deferFailureFinalization, true);
+            observedRunIds.push(options.runId);
             if (indexAttempts === 1) throw new Error('transient index failure');
             return 'indexed';
         },
         updateRepositoryStatus: async (_repository, _status, _branch, run = {}) => {
             ownershipChecks++;
-            return {
+            durableRun ??= {
                 runId: run.runId ?? 'retry-run',
                 transitionAt: run.transitionAt ?? '2026-08-03T10:00:00.000Z',
-                applied: true,
             };
+            return { ...durableRun, applied: true };
         },
+        getActiveRepositoryIndexingRuns: async () => durableRun ? [{
+            fullName: 'acme/api', branch: 'main', ...durableRun,
+        }] : [],
         createIndexingRunIdentity: () => ({
             runId: 'retry-run',
             transitionAt: '2026-08-03T10:00:00.000Z',
         }),
         clearIndexingRuntimeStateBestEffort: async () => undefined,
     });
+    let firstQueueDataWrite = true;
+    const processor = async (job: Parameters<typeof processJob>[0]) => {
+        if (firstQueueDataWrite) {
+            firstQueueDataWrite = false;
+            job.updateData = async () => { throw new Error('transient Redis data write failure'); };
+        }
+        return processJob(job);
+    };
     const worker = new Worker<IndexingJobData>(queueName, processor, { connection });
 
     try {
@@ -65,11 +79,8 @@ test('BullMQ performs a real second indexing attempt after indexRepo throws', {
             repoPath: '/tmp/acme-api',
             correlationId: 'retry-correlation',
             baseBranch: 'main',
-            runId: 'retry-run',
-            transitionAt: '2026-08-03T10:00:00.000Z',
-            durablyAccepted: true,
         }, {
-            attempts: 2,
+            attempts: 3,
             backoff: { type: 'fixed', delay: 10 },
             removeOnComplete: false,
             removeOnFail: false,
@@ -78,7 +89,8 @@ test('BullMQ performs a real second indexing attempt after indexRepo throws', {
 
         assert.equal(result.status, 'completed');
         assert.equal(indexAttempts, 2);
-        assert.equal(ownershipChecks, 2);
+        assert.equal(ownershipChecks, 3);
+        assert.deepEqual(observedRunIds, ['retry-run', 'retry-run']);
     } finally {
         await worker.close();
         await queue.obliterate({ force: true }).catch(() => undefined);

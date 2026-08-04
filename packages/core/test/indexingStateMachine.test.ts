@@ -108,6 +108,15 @@ describe('repository indexing run state machine', { concurrency: false }, () => 
       await database('repositories').first('indexing_run_id').then((row) => row?.indexing_run_id),
       'run-accepted-later'
     );
+    const history = await database('repository_indexing_transitions')
+      .orderBy('transition_id')
+      .select('run_id', 'status', 'transition_at');
+    assert.deepEqual(history.map(({ run_id, status }) => ({ run_id, status })), [
+      { run_id: 'run-newer-clock', status: 'indexing' },
+      { run_id: 'run-newer-clock', status: 'idle' },
+      { run_id: 'run-accepted-later', status: 'indexing' },
+    ]);
+    assert.ok(Date.parse(history[1].transition_at) < Date.parse(history[2].transition_at));
   });
 
   test('a legacy terminal callback cannot overwrite an already terminal run', async () => {

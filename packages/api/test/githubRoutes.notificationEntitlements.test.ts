@@ -152,9 +152,12 @@ test('a live database refresh lease coalesces work across API replicas', async (
 
 test('ordinary API middleware does not await a full entitlement refresh', async () => {
   let finishRefresh!: () => void;
+  let markRefreshStarted!: () => void;
+  const refreshStarted = new Promise<void>(resolve => { markRefreshStarted = resolve; });
   let refreshFinished = false;
   const middleware = createNotificationEntitlementRefreshMiddleware(database, {
     refresh: async () => {
+      markRefreshStarted();
       await new Promise<void>(resolve => { finishRefresh = resolve; });
       refreshFinished = true;
     },
@@ -168,6 +171,7 @@ test('ordinary API middleware does not await a full entitlement refresh', async 
 
   assert.equal(nextCalls, 1);
   assert.equal(refreshFinished, false);
+  await refreshStarted;
   finishRefresh();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(refreshFinished, true);
@@ -209,23 +213,42 @@ test('scheduled entitlement refresh does not resurrect an invalidated user', asy
     verified_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 1_000).toISOString(),
   });
+  await database('notification_repository_entitlements').insert({
+    user_id: 'logged-out-user',
+    repository: 'acme/private',
+    verified_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 1_000).toISOString(),
+  });
   let refreshes = 0;
-  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+  const refreshingReplica = createNotificationEntitlementRefreshMiddleware(database, {
     refresh: async () => { refreshes++; return true; },
   });
+  const logoutReplica = createNotificationEntitlementRefreshMiddleware(database);
   try {
-    middleware({
+    refreshingReplica({
       user: { id: 'logged-out-user', accessToken: 'token' },
       path: '/github/repos',
     } as never, {} as never, () => undefined);
-    await database('notification_repository_entitlement_snapshots')
-      .where({ user_id: 'logged-out-user' })
-      .delete();
+    let registration: unknown;
+    for (let attempt = 0; attempt < 10 && !registration; attempt++) {
+      registration = await database('notification_repository_entitlement_refresh_leases')
+        .where({ user_id: 'logged-out-user' }).first('user_id');
+      if (!registration) await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.ok(registration, 'refreshing replica should register its retained token durably');
+    await logoutReplica.invalidate('logged-out-user');
 
     await new Promise(resolve => setTimeout(resolve, 25));
     assert.equal(refreshes, 0);
+    assert.equal(await database('notification_repository_entitlements').count({ count: '*' }).first()
+      .then(row => Number(row?.count)), 0);
+    assert.equal(await database('notification_repository_entitlement_snapshots').count({ count: '*' }).first()
+      .then(row => Number(row?.count)), 0);
+    assert.equal(await database('notification_repository_entitlement_refresh_leases')
+      .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
   } finally {
-    middleware.close();
+    refreshingReplica.close();
+    logoutReplica.close();
     if (previousTtl === undefined) delete process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS;
     else process.env.NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = previousTtl;
   }

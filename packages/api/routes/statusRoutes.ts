@@ -1,10 +1,8 @@
-/* eslint-disable max-lines -- status aggregation and health probes share one diagnostic contract */
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
 import {
   getProprCompatibilityMetadata,
-  AGENT_DEFAULTS,
   resolveGithubAuthMode,
   resolveGithubEventIntakeMode,
   ROUTING_STATUS_REDIS_KEY,
@@ -12,14 +10,26 @@ import {
 } from '@propr/shared';
 import {
   AgentRegistry,
-  db as coreDb,
   getIndexingQueue as loadIndexingQueue,
+  INDEXING_WORKER_HEARTBEAT_KEY,
   loadAgents as loadAgentConfigs,
   loadSummarizationRuntimeState
 } from '@propr/core';
-import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
-import path from 'node:path';
-import os from 'node:os';
+import type { AgentConfig } from '@propr/core';
+import {
+  getAgentStatuses,
+  type AgentStatus,
+  type StatusAgentRegistry,
+} from './statusAgentHealth.js';
+import {
+  getIndexingHealth,
+  loadRepositoryIndexingStatus,
+  resolveIndexingWorkerStatus,
+  type IndexingStatusQueue,
+  type ServiceStatus,
+} from './statusIndexingHealth.js';
+
+export { loadRepositoryIndexingStatus } from './statusIndexingHealth.js';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
@@ -34,23 +44,6 @@ interface StatusRoutesDeps {
   loadSummarizationRuntimeState?: typeof loadSummarizationRuntimeState;
 }
 
-interface IndexingStatusQueue {
-  getJobCounts(...statuses: Array<'active' | 'waiting' | 'delayed'>): Promise<Record<string, number>>;
-}
-
-type StatusAgentRegistry = Pick<AgentRegistry, 'ensureInitialized' | 'getAllAgents' | 'getAgentById' | 'getAgentByAlias'> & {
-  createAgentFromConfig(config: AgentConfig): Agent;
-  getOperationalStatus?: () => AgentRegistryOperationalStatus;
-};
-
-type ServiceStatus = 'connected' | 'disconnected' | 'active' | 'queued' | 'idle' | 'failed' | 'unknown';
-
-interface AgentStatus {
-  id: string;
-  type: AgentConfig['type'];
-  alias: string;
-  status: 'connected' | 'disconnected';
-}
 
 export function createStatusRoutes(deps: StatusRoutesDeps) {
   const {
@@ -88,6 +81,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         githubEventIntakeStatus: 'connected',
         claudeAuth: 'connected',
         indexing: 'idle',
+        indexingService: 'connected',
         warnings: [],
         agents: [{
           id: 'default-claude-agent',
@@ -113,6 +107,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       timestamp: new Date(now()).toISOString()
     };
 
+    let indexingWorkerStatus: ServiceStatus = 'unknown';
     try {
       await redisClient.ping();
       status.redis = 'connected';
@@ -123,6 +118,10 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       const activeWorkers = await redisClient.sCard('system:status:workers');
       status.worker = activeWorkers > 0 ? 'running' : 'stopped';
       status.workerCount = activeWorkers;
+      indexingWorkerStatus = resolveIndexingWorkerStatus(
+        await redisClient.get(INDEXING_WORKER_HEARTBEAT_KEY),
+        now()
+      );
     } catch {
       status.redis = 'disconnected';
     }
@@ -160,7 +159,13 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     status.claudeAuth = agents.some(agent => agent.type === 'claude' && agent.status === 'connected')
       ? 'connected'
       : 'disconnected';
-    status.indexing = await getIndexingStatus(getIndexingQueue, getRepositoryIndexingStatus);
+    const indexingHealth = await getIndexingHealth(
+      getIndexingQueue,
+      getRepositoryIndexingStatus,
+      indexingWorkerStatus
+    );
+    status.indexing = indexingHealth.activity;
+    status.indexingService = indexingHealth.service;
     const warnings = await getSystemWarnings(loadSummarizationRuntimeStateDep);
     const agentRuntime = agentRegistry.getOperationalStatus?.();
     if (agentRuntime) {
@@ -213,13 +218,19 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       timestamp: new Date(now()).toISOString()
     };
     const probeTimedOut = Symbol('notification health probe timed out');
+    let indexingWorkerStatus: ServiceStatus = 'unknown';
     try {
       const ping = await withTimeout(redisClient.ping(), notificationProbeTimeoutMs, probeTimedOut);
       if (ping === probeTimedOut) throw new Error('Redis notification health ping timed out');
       status.redis = 'connected';
-      const [daemonHeartbeat, activeWorkers] = await Promise.all([
+      const [daemonHeartbeat, activeWorkers, indexingWorkerHeartbeat] = await Promise.all([
         withTimeout(redisClient.get('system:status:daemon'), notificationProbeTimeoutMs, probeTimedOut),
-        withTimeout(redisClient.sCard('system:status:workers'), notificationProbeTimeoutMs, probeTimedOut)
+        withTimeout(redisClient.sCard('system:status:workers'), notificationProbeTimeoutMs, probeTimedOut),
+        withTimeout(
+          redisClient.get(INDEXING_WORKER_HEARTBEAT_KEY),
+          notificationProbeTimeoutMs,
+          probeTimedOut
+        )
       ]);
       status.daemon = daemonHeartbeat === probeTimedOut
         ? 'unknown'
@@ -227,6 +238,9 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       status.worker = activeWorkers === probeTimedOut
         ? 'unknown'
         : activeWorkers > 0 ? 'running' : 'stopped';
+      indexingWorkerStatus = indexingWorkerHeartbeat === probeTimedOut
+        ? 'unknown'
+        : resolveIndexingWorkerStatus(indexingWorkerHeartbeat, now());
     } catch {
       status.redis = 'disconnected';
     }
@@ -242,7 +256,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       ? 'unknown'
       : resolveIntakeStatus(intakeMode, routing, status.daemon);
     const indexingHealth = await withTimeout(
-      getIndexingHealth(getIndexingQueue, getRepositoryIndexingStatus),
+      getIndexingHealth(getIndexingQueue, getRepositoryIndexingStatus, indexingWorkerStatus),
       notificationProbeTimeoutMs,
       { activity: 'unknown' as ServiceStatus, service: 'unknown' as ServiceStatus }
     );
@@ -411,88 +425,6 @@ function formatCooldownUntil(until: string): string {
   });
 }
 
-async function getAgentStatuses(
-  loadAgents: () => Promise<AgentConfig[]>,
-  registry: StatusAgentRegistry,
-  healthTimeoutMs: number
-): Promise<AgentStatus[]> {
-  let configuredAgents: AgentConfig[];
-  try {
-    configuredAgents = await loadAgents();
-  } catch (error) {
-    console.error('Error loading agent status configuration:', error);
-    return [];
-  }
-
-  try {
-    await registry.ensureInitialized();
-  } catch (error) {
-    console.error('Error initializing agent registry for status:', error);
-  }
-
-  if (configuredAgents.length === 0) {
-    const defaultAgent = registry.getAgentById('default-claude-agent') ?? registry.getAgentByAlias('default');
-    if (defaultAgent?.config.type === 'claude') {
-      return [await buildRegisteredAgentStatus(defaultAgent, healthTimeoutMs)];
-    }
-    return [buildDisconnectedAgentStatus(getDefaultClaudeConfig())];
-  }
-
-  const registeredById = new Map(registry.getAllAgents().map(agent => [agent.config.id, agent]));
-  const registeredByAlias = new Map(registry.getAllAgents().map(agent => [agent.config.alias, agent]));
-
-  return Promise.all(configuredAgents
-    .filter(agent => agent.enabled)
-    .map(async (config) => {
-      const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
-      if (!registeredAgent) {
-        return buildConfiguredAgentStatus(config, registry, healthTimeoutMs);
-      }
-      return buildRegisteredAgentStatus(registeredAgent, healthTimeoutMs);
-    }));
-}
-
-function getDefaultClaudeConfig(): AgentConfig {
-  return {
-    id: 'default-claude-agent',
-    type: 'claude',
-    alias: 'default',
-    enabled: true,
-    dockerImage: process.env.AGENT_DOCKER_IMAGE || 'propr/agent:latest',
-    configPath: process.env.CLAUDE_CONFIG_PATH || path.join(os.homedir(), '.claude'),
-    supportedModels: [...AGENT_DEFAULTS.claude.defaultModels],
-    defaultModel: process.env.CLAUDE_MODEL || undefined
-  };
-}
-
-async function buildConfiguredAgentStatus(
-  config: AgentConfig,
-  registry: StatusAgentRegistry,
-  healthTimeoutMs: number
-): Promise<AgentStatus> {
-  try {
-    return await buildRegisteredAgentStatus(registry.createAgentFromConfig(config), healthTimeoutMs);
-  } catch (error) {
-    console.error('Error checking configured agent status:', error);
-    return buildDisconnectedAgentStatus(config);
-  }
-}
-
-async function buildRegisteredAgentStatus(agent: Agent, healthTimeoutMs: number): Promise<AgentStatus> {
-  let healthy = false;
-  try {
-    healthy = await withTimeout(agent.healthCheck(), healthTimeoutMs, false);
-  } catch {
-    healthy = false;
-  }
-  return {
-    id: agent.config.id,
-    type: agent.config.type,
-    alias: agent.config.alias,
-    status: healthy ? 'connected' : 'disconnected'
-  };
-}
-
 async function withTimeout<T, F>(promise: Promise<T>, timeoutMs: number, fallback: F): Promise<T | F> {
   let timeout: NodeJS.Timeout | undefined;
   try {
@@ -505,62 +437,4 @@ async function withTimeout<T, F>(promise: Promise<T>, timeoutMs: number, fallbac
   } finally {
     if (timeout) clearTimeout(timeout);
   }
-}
-
-function buildDisconnectedAgentStatus(config: AgentConfig): AgentStatus {
-  return {
-    id: config.id,
-    type: config.type,
-    alias: config.alias,
-    status: 'disconnected'
-  };
-}
-
-export async function loadRepositoryIndexingStatus(
-  database = coreDb
-): Promise<ServiceStatus | undefined> {
-  if (!await database.schema.hasTable('repositories')) return undefined;
-  // Every current repository row is installation-relevant, including manual
-  // indexing runs that are not part of the periodic monitored-repo config.
-  const failed = await database('repositories')
-    .whereRaw('lower(indexing_status) = ?', ['failed'])
-    .first('indexing_status');
-  if (failed) return 'failed';
-  const active = await database('repositories')
-    .whereRaw('lower(indexing_status) = ?', ['indexing'])
-    .first('indexing_status');
-  if (active) return 'active';
-  return await database('repositories').first('indexing_status') ? 'idle' : undefined;
-}
-
-interface IndexingHealth {
-  activity: ServiceStatus;
-  service: ServiceStatus;
-}
-
-async function getIndexingHealth(
-  getIndexingQueue: () => Promise<IndexingStatusQueue>,
-  getRepositoryStatus: () => Promise<ServiceStatus | undefined>
-): Promise<IndexingHealth> {
-  try {
-    const [indexingQueue, repositoryStatus] = await Promise.all([
-      getIndexingQueue(),
-      getRepositoryStatus(),
-    ]);
-    const counts = await indexingQueue.getJobCounts('active', 'waiting', 'delayed');
-    if ((counts.active ?? 0) > 0) return { activity: 'active', service: 'connected' };
-    if ((counts.waiting ?? 0) > 0 || (counts.delayed ?? 0) > 0) {
-      return { activity: 'queued', service: 'connected' };
-    }
-    return { activity: repositoryStatus ?? 'idle', service: 'connected' };
-  } catch {
-    return { activity: 'disconnected', service: 'disconnected' };
-  }
-}
-
-async function getIndexingStatus(
-  getIndexingQueue: () => Promise<IndexingStatusQueue>,
-  getRepositoryStatus: () => Promise<ServiceStatus | undefined> = loadRepositoryIndexingStatus
-): Promise<ServiceStatus> {
-  return (await getIndexingHealth(getIndexingQueue, getRepositoryStatus)).activity;
 }

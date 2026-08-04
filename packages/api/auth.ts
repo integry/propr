@@ -15,6 +15,22 @@ import './authTypes.js';
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
 
+interface AuthLifecycleHooks {
+    invalidateNotificationEntitlements?: (userId: string) => Promise<void>;
+}
+
+let authLifecycleHooks: AuthLifecycleHooks = {};
+
+async function invalidateRequestEntitlements(req: Request): Promise<void> {
+    const userId = req.user?.id;
+    if (!userId || !authLifecycleHooks.invalidateNotificationEntitlements) return;
+    try {
+        await authLifecycleHooks.invalidateNotificationEntitlements(userId);
+    } catch (error) {
+        console.error('Failed to invalidate notification entitlements during session cleanup:', error);
+    }
+}
+
 export function getSessionCookieDomain(): string | undefined {
     if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
     return undefined;
@@ -47,7 +63,12 @@ function clearSessionCookie(res: Response): void {
     });
 }
 
-export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
+export function setupAuth(
+    app: Express,
+    demoModeAtStartup = isDemoMode(),
+    lifecycleHooks: AuthLifecycleHooks = {}
+): void {
+    authLifecycleHooks = lifecycleHooks;
     configureDemoMode(demoModeAtStartup);
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
@@ -145,10 +166,11 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
     } else {
         app.get('/api/auth/github/callback',
             passport.authenticate('github', { failureRedirect: '/login' }),
-            (req: Request, res: Response) => {
+            async (req: Request, res: Response) => {
                 // Reject logins from users not on the access whitelist, before a
                 // session is usable. (No-op when no whitelist is configured.)
                 if (!isUserWhitelisted(req.user?.username)) {
+                    await invalidateRequestEntitlements(req);
                     req.logout(() => {
                         req.session.destroy(() => {
                             clearSessionCookie(res);
@@ -179,12 +201,13 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         );
     }
 
-    app.get('/api/auth/logout', (req: Request, res: Response) => {
+    app.get('/api/auth/logout', async (req: Request, res: Response) => {
         if (demoModeAtStartup) {
             res.redirect(`${process.env.FRONTEND_URL}/`);
             return;
         }
 
+        await invalidateRequestEntitlements(req);
         req.logout((err) => {
             if (err) {
                 console.error('Logout error:', err);
@@ -221,12 +244,14 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
     // Session-based auth (Passport)
     if (req.isAuthenticated()) {
         if (req.user?.githubAuthInvalid) {
+            await invalidateRequestEntitlements(req);
             await clearSessionForReauth(req);
             res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
             return;
         }
 
         if (!isUserWhitelisted(req.user?.username)) {
+            await invalidateRequestEntitlements(req);
             req.logout(() => {
                 req.session.destroy(() => {
                     clearSessionCookie(res);
@@ -239,7 +264,10 @@ export async function ensureAuthenticated(req: Request, res: Response, next: Nex
         if (isGitHubTokenExpired(req)) {
             const refreshResult = await refreshGitHubTokenWithResult(req, true);
             if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
-                if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
+                if (req.user?.githubAuthInvalid) {
+                    await invalidateRequestEntitlements(req);
+                    await clearSessionForReauth(req);
+                }
                 res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
                 return;
             }

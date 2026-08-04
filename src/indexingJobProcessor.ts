@@ -2,6 +2,7 @@ import type { Job } from 'bullmq';
 import {
     clearIndexingRuntimeStateBestEffort,
     createIndexingRunIdentity,
+    getActiveRepositoryIndexingRuns,
     indexRepo,
     logger,
     updateRepositoryStatus,
@@ -20,6 +21,7 @@ interface IndexingJobProcessorDeps {
     indexRepo: typeof indexRepo;
     updateRepositoryStatus: typeof updateRepositoryStatus;
     createIndexingRunIdentity: typeof createIndexingRunIdentity;
+    getActiveRepositoryIndexingRuns: typeof getActiveRepositoryIndexingRuns;
     clearIndexingRuntimeStateBestEffort: typeof clearIndexingRuntimeStateBestEffort;
 }
 
@@ -27,27 +29,24 @@ const defaultDeps: IndexingJobProcessorDeps = {
     indexRepo,
     updateRepositoryStatus,
     createIndexingRunIdentity,
+    getActiveRepositoryIndexingRuns,
     clearIndexingRuntimeStateBestEffort,
 };
 
-async function persistAcceptedRunBestEffort(
+async function persistAcceptedRun(
     job: Job<IndexingJobData>,
-    indexingRun: IndexingRunIdentity,
-    warn: (error: unknown) => void
+    indexingRun: IndexingRunIdentity
 ): Promise<void> {
     const acceptedData: IndexingJobData = {
         ...job.data,
         ...indexingRun,
         durablyAccepted: true,
     };
-    // Failure finalization observes this Job instance even when the Redis data
-    // enrichment fails. Durable database ownership remains authoritative.
+    // Failure finalization observes this Job instance immediately. Do not begin
+    // indexing unless Redis also owns the identity: throwing here makes BullMQ
+    // retry, and the next attempt recovers the durable owner before continuing.
     Object.assign(job.data, acceptedData);
-    try {
-        await job.updateData(acceptedData);
-    } catch (error) {
-        warn(error);
-    }
+    await job.updateData(acceptedData);
 }
 
 async function processWithDeps(
@@ -67,11 +66,14 @@ async function processWithDeps(
             ? { runId: job.data.runId, transitionAt: job.data.transitionAt }
             : undefined;
         if (!indexingRun) {
-            const requestedRun = deps.createIndexingRunIdentity();
-            const transition = await deps.updateRepositoryStatus(repository, 'indexing', baseBranch, {
-                ...requestedRun,
-                startNewRun: true
-            });
+            const [ownedRun] = await deps.getActiveRepositoryIndexingRuns(repository, baseBranch);
+            const requestedRun = ownedRun ?? deps.createIndexingRunIdentity();
+            const transition = await deps.updateRepositoryStatus(
+                repository,
+                'indexing',
+                baseBranch,
+                ownedRun ? requestedRun : { ...requestedRun, startNewRun: true }
+            );
             if (!transition.applied) {
                 await deps.clearIndexingRuntimeStateBestEffort(
                     repository, baseBranch, requestedRun.runId
@@ -79,10 +81,7 @@ async function processWithDeps(
                 return { status: 'skipped', success: true };
             }
             indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
-            await persistAcceptedRunBestEffort(job, indexingRun, (error) => {
-                correlatedLogger.warn({ error },
-                    'Could not persist accepted indexing run identity to queue data');
-            });
+            await persistAcceptedRun(job, indexingRun);
         } else {
             let transition = await deps.updateRepositoryStatus(
                 repository, 'indexing', baseBranch, indexingRun
@@ -104,10 +103,7 @@ async function processWithDeps(
             indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
             if (job.data.durablyAccepted !== true
                 || job.data.transitionAt !== transition.transitionAt) {
-                await persistAcceptedRunBestEffort(job, indexingRun, (error) => {
-                    correlatedLogger.warn({ error },
-                        'Could not persist accepted indexing run identity to queue data');
-                });
+                await persistAcceptedRun(job, indexingRun);
             }
         }
 

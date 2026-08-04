@@ -14,6 +14,8 @@ import {
 } from './notificationEntitlementRefreshScheduler.js';
 
 export type { NotificationEntitlementRefreshMiddleware };
+export { invalidateNotificationRepositoryEntitlements }
+  from './notificationEntitlementRefreshScheduler.js';
 
 const entitlementRefreshes = new Map<string, Promise<boolean>>();
 const legacyRetryAfter = new Map<string, number>();
@@ -30,13 +32,24 @@ interface EntitlementRefreshLease extends NotificationRepositoryEntitlementFence
 
 async function withEntitlementRefreshDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
-  timeoutMs: number
+  timeoutMs: number,
+  externalSignal?: AbortSignal
 ): Promise<T> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError('Repository entitlement refresh timeout must be a positive safe integer');
   }
   const controller = new AbortController();
   let timeout: NodeJS.Timeout | undefined;
+  let rejectCancellation: ((error: Error) => void) | undefined;
+  const cancel = (): void => {
+    controller.abort();
+    rejectCancellation?.(new Error('Repository entitlement refresh was cancelled'));
+  };
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+  if (externalSignal?.aborted) cancel();
+  else externalSignal?.addEventListener('abort', cancel, { once: true });
   const deadline = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
       controller.abort();
@@ -46,9 +59,10 @@ async function withEntitlementRefreshDeadline<T>(
     }, timeoutMs);
   });
   try {
-    return await Promise.race([operation(controller.signal), deadline]);
+    return await Promise.race([operation(controller.signal), deadline, cancellation]);
   } finally {
     if (timeout) clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', cancel);
   }
 }
 
@@ -229,6 +243,7 @@ export interface RefreshNotificationRepositoryEntitlementsOptions {
   database: Knex;
   force?: boolean;
   operationTimeoutMs?: number;
+  signal?: AbortSignal;
   listRepositories?: (accessToken: string, signal?: AbortSignal) => Promise<string[]>;
 }
 
@@ -279,7 +294,8 @@ async function runEntitlementRefresh(
         options.accessToken,
         signal
       ),
-      options.operationTimeoutMs ?? DEFAULT_ENTITLEMENT_REFRESH_TIMEOUT_MS
+      options.operationTimeoutMs ?? DEFAULT_ENTITLEMENT_REFRESH_TIMEOUT_MS,
+      options.signal
     );
     if (leaseLost || !await renewEntitlementRefreshLease(options.userId, lease, options.database)) {
       return false;
@@ -337,6 +353,7 @@ export async function persistNotificationRepositoryEntitlementsBestEffort(option
 
 interface NotificationEntitlementRefreshMiddlewareOptions {
   refresh?: (options: RefreshNotificationRepositoryEntitlementsOptions) => Promise<unknown>;
+  maxScheduledRefreshes?: number;
 }
 
 /** Schedules authorization refresh without adding GitHub latency to API traffic. */
@@ -345,5 +362,7 @@ export function createNotificationEntitlementRefreshMiddleware(
   options: NotificationEntitlementRefreshMiddlewareOptions = {}
 ): NotificationEntitlementRefreshMiddleware {
   const refresh = options.refresh ?? refreshNotificationRepositoryEntitlements;
-  return createScheduledEntitlementRefreshMiddleware(database, refresh);
+  return createScheduledEntitlementRefreshMiddleware(database, refresh, {
+    maxScheduledRefreshes: options.maxScheduledRefreshes,
+  });
 }

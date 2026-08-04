@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
+import { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
 import { closeEventPublisher, createWorker, INDEXING_QUEUE_NAME, indexingQueue } from '@propr/core';
@@ -10,12 +11,17 @@ import { db } from '@propr/core';
 import {
     updateRepositoryStatus, createIndexingRunIdentity,
     createIndexingQueueDeduplicationId, createIndexingQueueJobId,
-    INDEXING_FAILED_JOB_RETENTION, publishIndexingStatus
+    INDEXING_FAILED_JOB_RETENTION, publishIndexingStatus,
+    INDEXING_WORKER_HEARTBEAT_INTERVAL_MS, INDEXING_WORKER_HEARTBEAT_KEY,
+    INDEXING_WORKER_HEARTBEAT_TTL_SECONDS
 } from '@propr/core';
 import { loadSummarizationSettings, loadMonitoredReposRaw } from '@propr/core';
 import type { RepoToMonitor } from '@propr/core';
 import { ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit, fetchLatestChanges } from '@propr/core';
-import { handleIndexingJobFailure } from './indexingWorkerFailure.js';
+import {
+    handleIndexingJobFailure,
+    reconcileFailedIndexingJobs
+} from './indexingWorkerFailure.js';
 import { processIndexingJob, type IndexingResult } from './indexingJobProcessor.js';
 
 function installFatalProcessHandlers(): void {
@@ -52,6 +58,7 @@ interface IndexDecision {
 
 // Consider indexing stuck if status hasn't changed in 30 minutes
 const STUCK_INDEXING_TIMEOUT_MS = 30 * 60 * 1000;
+const FAILURE_RECONCILIATION_INTERVAL_MS = 60 * 1000;
 
 /**
  * Determine if a repository needs indexing based on its status
@@ -346,15 +353,52 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         { concurrency: 1 }
     );
 
+    const heartbeatRedis = new Redis({
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        retryStrategy: (times: number) => Math.min(times * 50, 2000)
+    });
+    const sendHeartbeat = async (): Promise<void> => {
+        try {
+            await heartbeatRedis.set(
+                INDEXING_WORKER_HEARTBEAT_KEY,
+                Date.now(),
+                'EX',
+                INDEXING_WORKER_HEARTBEAT_TTL_SECONDS
+            );
+        } catch (error) {
+            logger.error({ error: (error as Error).message },
+                'Failed to send indexing worker heartbeat');
+        }
+    };
+    await sendHeartbeat();
+    const heartbeatInterval = setInterval(sendHeartbeat, INDEXING_WORKER_HEARTBEAT_INTERVAL_MS);
+
     const failureFinalizations = new Set<Promise<void>>();
     worker.on('failed', (job, error) => {
-        const finalization = handleIndexingJobFailure(job, error).catch((finalizationError) => {
-            logger.error({ error: (finalizationError as Error).message },
-                'Unhandled indexing failure-finalization error');
-        });
+        const finalization = handleIndexingJobFailure(job, error)
+            .then(() => undefined)
+            .catch((finalizationError) => {
+                logger.error({ error: (finalizationError as Error).message },
+                    'Unhandled indexing failure-finalization error');
+            });
         failureFinalizations.add(finalization);
         void finalization.finally(() => failureFinalizations.delete(finalization));
     });
+
+    const reconcileFailures = async (): Promise<void> => {
+        try {
+            await reconcileFailedIndexingJobs(indexingQueue);
+        } catch (error) {
+            logger.error({ error: (error as Error).message },
+                'Failed to reconcile retained indexing failures');
+        }
+    };
+    void reconcileFailures();
+    const failureReconciliationInterval = setInterval(
+        reconcileFailures,
+        FAILURE_RECONCILIATION_INTERVAL_MS
+    );
 
     // Start periodic repository scanning
     const scanInterval = setInterval(async () => {
@@ -381,12 +425,15 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
         shutdownStarted = true;
         logger.info({ signal }, 'Indexing Worker shutting down gracefully...');
         clearInterval(scanInterval);
+        clearInterval(heartbeatInterval);
+        clearInterval(failureReconciliationInterval);
         clearTimeout(initialScanTimeout);
         await worker.close();
         while (failureFinalizations.size > 0) {
             await Promise.allSettled([...failureFinalizations]);
         }
         await closeEventPublisher();
+        await heartbeatRedis.quit();
         process.exit(0);
     };
 

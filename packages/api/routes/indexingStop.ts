@@ -136,7 +136,7 @@ export async function stopIndexingJob(
     }
 
     let message: string | undefined;
-    if (matchingJobs.length === 0) {
+    if (cancelledActiveRuns.length + removedQueuedRuns.length === 0) {
       const normalizedBranch = branch === undefined
         ? undefined
         : configManager.normalizeSummarizationBranch(branch);
@@ -165,9 +165,11 @@ export async function stopIndexingJob(
           transitionAt: transition.transitionAt,
         });
       }
-      message = cancelledActiveRuns.length > 0
-        ? `Stopped ${cancelledActiveRuns.length} orphaned durable indexing run(s)`
-        : 'No queued or durable active indexing run matched the request';
+      if (cancelledActiveRuns.length > 0) {
+        message = `Stopped ${cancelledActiveRuns.length} orphaned durable indexing run(s)`;
+      } else if (matchingJobs.length === 0) {
+        message = 'No queued or durable active indexing run matched the request';
+      }
     }
 
     return {

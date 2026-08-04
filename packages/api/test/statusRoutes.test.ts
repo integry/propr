@@ -588,6 +588,27 @@ test('notification health keeps repository failure separate from indexing servic
   assert.equal(snapshot.indexingService, 'connected');
 });
 
+test('notification health reports an absent indexing worker separately from queue access', async () => {
+  configureStatusEnv();
+  const routes = await createRoutes({
+    redisClient: {
+      ...createRedisClient(),
+      get: async (key: string) => {
+        if (key === 'system:status:indexing-worker') return null;
+        if (key === 'system:status:routing') return null;
+        return Date.now().toString();
+      },
+    } as never,
+    getIndexingQueue: async () => createIndexingQueue({ waiting: 1 }),
+    getRepositoryIndexingStatus: async () => undefined,
+  });
+
+  const snapshot = await routes.getNotificationHealthSnapshot();
+
+  assert.equal(snapshot.indexing, 'queued');
+  assert.equal(snapshot.indexingService, 'disconnected');
+});
+
 test('notification health collection bounds Redis commands that never settle', async () => {
   configureStatusEnv();
   const never = <T>(): Promise<T> => new Promise<T>(() => undefined);

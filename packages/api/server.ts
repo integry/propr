@@ -1,13 +1,12 @@
-/* eslint-disable max-lines -- route registration and process lifecycle are centralized */
 import express, { Request, Response, RequestHandler } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
-import { createClient, RedisClientType } from 'redis';
+import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
-import { Redis, RedisOptions } from 'ioredis';
+import { Redis } from 'ioredis';
 import { setupAuth, ensureAuthenticated } from './auth.js';
-import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
+import { configureDemoMode, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import { createCorsOriginValidator } from './corsValidation.js';
@@ -34,10 +33,8 @@ import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js'
 import { createNotificationEntitlementRefreshMiddleware } from './routes/githubRoutes.js';
 import {
   generateCorrelationId,
-  logger,
   processWebhookEvent,
   initializeWebhookHandler,
-  buildRedisRuntimeConfig,
   db,
   loadSettingsFromConfig,
   processDetectedIssue as processDetectedIssueBase,
@@ -46,13 +43,11 @@ import {
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME,
   NotificationStalledDetector,
   NotificationSystemSampler,
   getNotificationStalledCheckIntervalMs,
   getNotificationSystemCheckIntervalMs,
   getNotificationProjectionLeaseTtlMs,
-  withNotificationDeadline,
   closeEventPublisher
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
@@ -60,48 +55,15 @@ import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfi
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
+import { closeResources, createNotificationProjectionLease, getRedisRuntimeConfig,
+  initializeServerRedis, type ShutdownTask } from './serverRuntime.js';
 
 type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 type RouteHandler = RequestHandler;
 type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
-type ShutdownTask = { name: string; close: () => Promise<unknown> };
-const NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS = 5_000;
-const SHUTDOWN_TASK_TIMEOUT_MS = 10_000;
-
 const demoMode = configureDemoMode();
-
-function buildRedisUrlFromOptions(options: RedisOptions): string {
-  const protocol = options.tls ? 'rediss' : 'redis';
-  const host = options.host || 'redis';
-  const port = options.port || 6379;
-  const credentials = options.username
-    ? `${encodeURIComponent(options.username)}:${encodeURIComponent(options.password || '')}@`
-    : options.password
-      ? `:${encodeURIComponent(options.password)}@`
-      : '';
-  const database = typeof options.db === 'number' ? `/${options.db}` : '';
-
-  return `${protocol}://${credentials}${host}:${port}${database}`;
-}
-
-function getRedisRuntimeConfig(): { url: string; options: RedisOptions } {
-  const runtimeConfig = buildRedisRuntimeConfig();
-  return {
-    url: runtimeConfig.url || buildRedisUrlFromOptions(runtimeConfig.options),
-    options: { ...runtimeConfig.options }
-  };
-}
-
-async function closeResources(tasks: ShutdownTask[]): Promise<void> {
-  const results = await Promise.allSettled(tasks.map(async ({ name, close }) =>
-    withNotificationDeadline(close(), SHUTDOWN_TASK_TIMEOUT_MS, `closing ${name}`)
-  ));
-  results.forEach((result, index) => {
-    if (result.status === 'rejected') {
-      console.error(`Failed to close ${tasks[index].name}:`, result.reason);
-    }
-  });
-}
+const notificationEntitlementRefreshMiddleware =
+  createNotificationEntitlementRefreshMiddleware(db);
 
 function assertNoDuplicateRoutes(routes: RouteEntry[]): void {
   const seen = new Set<string>();
@@ -182,7 +144,10 @@ app.use(express.json());
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode);
+setupAuth(app, demoMode, {
+  invalidateNotificationEntitlements: (userId) =>
+    notificationEntitlementRefreshMiddleware.invalidate(userId)
+});
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
@@ -190,125 +155,12 @@ let runtimeBuildQueue: Queue;
 let notificationStalledDetector: NotificationStalledDetector | null = null;
 let notificationSystemSampler: NotificationSystemSampler | null = null;
 
-function createDemoTaskQueue(): Queue {
-  return {
-    add: async () => { throw new Error('Task queue is disabled in demo mode'); },
-    close: async () => undefined,
-    getWaitingCount: async () => 0,
-    getActiveCount: async () => 0,
-    getCompletedCount: async () => 0,
-    getFailedCount: async () => 0,
-    getDelayedCount: async () => 0,
-    getJob: async () => null,
-  } as unknown as Queue;
-}
-
 async function initRedis(): Promise<void> {
-  if (demoMode) {
-    redisClient = createDemoRedisClient();
-    taskQueue = createDemoTaskQueue();
-    runtimeBuildQueue = createDemoTaskQueue();
-    console.log('Demo mode: Redis and task queue clients are disabled; using read-only in-memory facades');
-    return;
-  }
-
-  redisClient = createClient({
-    url: redisRuntimeConfig.url
-  });
-  
-  redisClient.on('error', (err) => console.error('Redis Client Error', err));
-  await redisClient.connect();
-  
-  const queueName = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
-  taskQueue = new Queue(queueName, {
-    connection: { ...redisRuntimeConfig.options }
-  });
-  runtimeBuildQueue = new Queue(AGENT_RUNTIME_BUILD_QUEUE_NAME, {
-    connection: { ...redisRuntimeConfig.options }
-  });
-  await runtimeBuildQueue.setGlobalConcurrency(1);
-  
-  console.log('Connected to Redis');
-}
-
-function createNotificationProjectionLease(
-  name: string,
-  ttlMs: number
-): () => Promise<boolean | {
-  renew: () => Promise<boolean>;
-  release: () => Promise<void>;
-  renewalIntervalMs: number;
-}> {
-  const key = `notification:projection-lease:${name}`;
-  const acquireScript = `
-    if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then
-      return 1
-    end
-    return 0
-  `;
-  const renewScript = `
-    if redis.call('GET', KEYS[1]) == ARGV[1] then
-      redis.call('PEXPIRE', KEYS[1], ARGV[2])
-      return 1
-    end
-    return 0
-  `;
-  const releaseScript = `
-    if redis.call('GET', KEYS[1]) == ARGV[1] then
-      redis.call('DEL', KEYS[1])
-      return 1
-    end
-    return 0
-  `;
-  return async () => {
-    const owner = `${process.pid}:${generateCorrelationId()}`;
-    try {
-      const acquired = await withNotificationDeadline(redisClient.eval(acquireScript, {
-          keys: [key],
-          arguments: [owner, String(ttlMs)]
-        }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `acquiring ${name} notification projection lease`);
-      if (Number(acquired) !== 1) return false;
-      return {
-        renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
-        renew: async () => {
-          try {
-            const renewed = await withNotificationDeadline(redisClient.eval(renewScript, {
-                keys: [key],
-                arguments: [owner, String(ttlMs)]
-              }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `renewing ${name} notification projection lease`);
-            return Number(renewed) === 1;
-          } catch (error) {
-            logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
-              'Could not renew notification projection lease');
-            // Once acquired, an unconfirmed renewal must be treated as lease loss;
-            // another replica may legitimately acquire after the old TTL expires.
-            return false;
-          }
-        },
-        release: async () => {
-          try {
-            await withNotificationDeadline(redisClient.eval(releaseScript, {
-                keys: [key],
-                arguments: [owner]
-              }), NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS, `releasing ${name} notification projection lease`);
-          } catch (error) {
-            logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
-              'Could not release notification projection lease');
-          }
-        }
-      };
-    } catch (error) {
-      // Projection deduplication remains the safety net when Redis cannot
-      // coordinate replicas; fail open so health monitoring is not disabled.
-      logger.warn({ name, error: error instanceof Error ? error.message : String(error) },
-        'Could not acquire notification projection lease');
-      return {
-        renewalIntervalMs: Math.max(1000, Math.floor(ttlMs / 3)),
-        renew: async () => true,
-        release: async () => undefined
-      };
-    }
-  };
+  ({ redisClient, taskQueue, runtimeBuildQueue } =
+    await initializeServerRedis(demoMode, redisRuntimeConfig));
+  console.log(demoMode
+    ? 'Demo mode: Redis and task queue clients are disabled; using read-only in-memory facades'
+    : 'Connected to Redis');
 }
 
 function setupRoutes(): ReturnType<typeof createStatusRoutes> {
@@ -322,7 +174,7 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
   app.use('/api', ensureAuthenticated);
-  app.use('/api', createNotificationEntitlementRefreshMiddleware(db));
+  app.use('/api', notificationEntitlementRefreshMiddleware);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -331,7 +183,13 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
   const dockerRoutes = createDockerRoutes({ redisClient });
-  const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });
+  const githubRoutes = createGitHubRoutes({
+    redisClient,
+    taskQueue,
+    db,
+    invalidateNotificationEntitlements: (userId) =>
+      notificationEntitlementRefreshMiddleware.invalidate(userId)
+  });
   const llmMetricsRoutes = createLLMMetricsRoutes();
   const llmLogsRoutes = createLlmLogsRoutes({ db });
   const plannerRoutes = createPlannerRoutes({ db });
@@ -504,6 +362,7 @@ async function start(): Promise<void> {
       notificationStalledDetector = new NotificationStalledDetector({
         intervalMs: stalledIntervalMs,
         acquireLease: createNotificationProjectionLease(
+          redisClient,
           'stalled-activity',
           getNotificationProjectionLeaseTtlMs(stalledIntervalMs)
         )
@@ -528,6 +387,7 @@ async function start(): Promise<void> {
         getSnapshot: statusRoutes.getNotificationHealthSnapshot,
         intervalMs: systemCheckIntervalMs,
         acquireLease: createNotificationProjectionLease(
+          redisClient,
           'system-health',
           getNotificationProjectionLeaseTtlMs(systemCheckIntervalMs)
         )
@@ -578,6 +438,10 @@ async function start(): Promise<void> {
         ]);
       }
       const shutdownTasks: ShutdownTask[] = [
+        {
+          name: 'notification entitlement refresh middleware',
+          close: async () => notificationEntitlementRefreshMiddleware.close()
+        },
         { name: 'task queue', close: () => taskQueue.close() },
         { name: 'agent runtime build queue', close: () => runtimeBuildQueue.close() },
         { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },

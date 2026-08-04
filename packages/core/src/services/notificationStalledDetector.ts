@@ -134,8 +134,10 @@ export class NotificationStalledDetector {
         abortController.abort();
         if (this.activeRun !== run) return;
         this.runGeneration++;
-        this.activeRun = null;
-        this.activeRunAbortController = null;
+        // The abort signal fences any remaining writes, but an arbitrary projector
+        // or SQLite call may not be cancellable. Keep this concurrency slot occupied
+        // until the underlying promise actually settles so repeated deadlines cannot
+        // accumulate orphaned work.
     }
 
     private async executeRun(runGeneration: number, signal: AbortSignal): Promise<number> {

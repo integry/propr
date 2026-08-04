@@ -17,8 +17,14 @@ export async function withNotificationDeadline<T>(
             promise,
             new Promise<never>((_resolve, reject) => {
                 timeout = setTimeout(() => {
-                    onTimeout?.();
-                    reject(new NotificationOperationTimeoutError(operation, timeoutMs));
+                    const timeoutError = new NotificationOperationTimeoutError(operation, timeoutMs);
+                    try {
+                        onTimeout?.();
+                    } catch {
+                        // Timeout cleanup is best-effort; the deadline must still reject.
+                    } finally {
+                        reject(timeoutError);
+                    }
                 }, timeoutMs);
             })
         ]);

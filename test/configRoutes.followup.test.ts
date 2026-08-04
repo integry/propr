@@ -2886,6 +2886,41 @@ describe('config route follow-up helpers', () => {
         });
     });
 
+    test('stopIndexingJob falls back to a durable run when a snapshotted job turns terminal', async () => {
+        let durableLookups = 0;
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    data: { repository: 'acme/api', baseBranch: 'main', runId: 'vanished-run' },
+                    getState: async () => 'completed',
+                    remove: async () => { throw new Error('job completed during remove'); },
+                }],
+            } as never),
+            getActiveRepositoryIndexingRuns: async () => {
+                durableLookups++;
+                return [{
+                    fullName: 'acme/api',
+                    branch: 'main',
+                    runId: 'orphaned-owner',
+                    transitionAt: '2026-08-03T10:00:00.000Z',
+                }];
+            },
+            updateRepositoryStatus: async (_repository, _status, _branch, options) => ({
+                runId: options.runId!,
+                transitionAt: '2026-08-03T10:01:00.000Z',
+                applied: true,
+            }),
+            publishIndexingStatus: async () => undefined,
+        });
+
+        assert.strictEqual(durableLookups, 1);
+        assert.deepStrictEqual(result.cancelledActiveRuns, [{
+            branch: 'main',
+            runId: 'orphaned-owner',
+            transitionAt: '2026-08-03T10:01:00.000Z',
+        }]);
+    });
+
     test('stopIndexingJob reports a meaningful no-op when nothing is active', async () => {
         const result = await stopIndexingJob('acme/api', 'main', {
             getIndexingQueue: async () => ({ getJobs: async () => [] } as never),

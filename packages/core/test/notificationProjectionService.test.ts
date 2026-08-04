@@ -22,6 +22,7 @@ import {
     getNotificationProjectionLeaseTtlMs,
     NotificationSystemSampler
 } from '../src/services/notificationSystemSampler.js';
+import { withNotificationDeadline } from '../src/services/notificationSchedulerTiming.js';
 import { closeEventPublisher, EventPublisher, getEventPublisher } from '../src/utils/eventPublisher.js';
 import { NotificationProjectionQueue } from '../src/utils/notificationProjectionQueue.js';
 import type { TaskProjectionContext } from '../src/services/notificationProjectionStore.js';
@@ -2150,7 +2151,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         await sampler.stop();
     });
 
-    test('expires a hung system-health generation so a later scan can proceed', async () => {
+    test('keeps a timed-out system-health generation in the concurrency slot', async () => {
         let attempts = 0;
         const sampler = new NotificationSystemSampler({
             getSnapshot: async () => {
@@ -2166,7 +2167,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(await sampler.runOnce(), false);
         assert.equal(await sampler.runOnce(), false);
 
-        assert.equal(attempts, 2);
+        assert.equal(attempts, 1);
         assert.ok(Date.now() - startedAt < 500);
     });
 
@@ -2263,7 +2264,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(stopped, true);
     });
 
-    test('expires a hung stalled-activity generation so a later scan can proceed', async () => {
+    test('keeps a timed-out stalled-activity generation in the concurrency slot', async () => {
         let attempts = 0;
         const detector = new NotificationStalledDetector({
             projector: {
@@ -2279,7 +2280,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
 
         assert.equal(await detector.runOnce(), 0);
         assert.equal(await detector.runOnce(), 0);
-        assert.equal(attempts, 2);
+        assert.equal(attempts, 1);
     });
 
     test('releases a stalled-activity lease when an uninterruptible scan times out', async () => {
@@ -2328,5 +2329,17 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         await new Promise(resolve => setTimeout(resolve, 30));
         assert.equal(continuedAfterDeadline, false);
         assert.equal(releases, 1);
+    });
+
+    test('deadline rejection survives a throwing timeout callback', async () => {
+        await assert.rejects(
+            withNotificationDeadline(
+                new Promise<never>(() => undefined),
+                5,
+                'throwing timeout cleanup',
+                () => { throw new Error('cleanup failed'); }
+            ),
+            /throwing timeout cleanup timed out/
+        );
     });
 });

@@ -10,6 +10,7 @@ import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
 import { logger } from '@propr/core';
 import {
+  invalidateNotificationRepositoryEntitlements,
   listAccessibleRepositories,
   refreshNotificationRepositoryEntitlements,
 } from './notificationEntitlementRefresh.js';
@@ -23,26 +24,7 @@ interface GitHubRoutesDeps {
   redisClient: RedisClientType;
   taskQueue: Queue;
   db: Knex;
-}
-
-async function clearNotificationRepositoryEntitlements(userId: string | undefined, database: Knex): Promise<void> {
-  if (!userId) return;
-  try {
-    const hasRefreshLeases = await database.schema
-      .hasTable('notification_repository_entitlement_refresh_leases');
-    await database.transaction(async (transaction) => {
-      await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
-      await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
-      if (hasRefreshLeases) {
-        // Deleting the lease also fences any in-flight scan for this logged-out user.
-        await transaction('notification_repository_entitlement_refresh_leases')
-          .where({ user_id: userId }).delete();
-      }
-    });
-  } catch (error) {
-    logger.warn({ error: error instanceof Error ? error.message : String(error) },
-      'Failed to clear cached repository notification access');
-  }
+  invalidateNotificationEntitlements?: (userId: string) => Promise<void>;
 }
 
 /**
@@ -62,7 +44,11 @@ function isAuthError(error: unknown): boolean {
 /**
  * Handle GitHub authentication errors by attempting token refresh before clearing session
  */
-export async function handleAuthError(req: Request, res: Response): Promise<void> {
+export async function handleAuthError(
+  req: Request,
+  res: Response,
+  invalidateEntitlements?: (userId: string) => Promise<void>
+): Promise<void> {
   console.warn('GitHub token expired or revoked, attempting token refresh');
 
   // Try to refresh the token before logging out
@@ -90,6 +76,8 @@ export async function handleAuthError(req: Request, res: Response): Promise<void
 
   // Token refresh failed, clear the session to force re-login
   console.warn('Token refresh failed, clearing session for re-authentication');
+  const userId = req.user?.id;
+  if (userId) await invalidateEntitlements?.(userId);
 
   await new Promise<void>((resolve) => {
     req.logout((err) => {
@@ -110,6 +98,8 @@ export async function handleAuthError(req: Request, res: Response): Promise<void
 
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   const { redisClient, taskQueue, db } = deps;
+  const invalidateEntitlements = deps.invalidateNotificationEntitlements
+    ?? ((userId: string) => invalidateNotificationRepositoryEntitlements(db, userId));
 
   async function importTasks(req: Request, res: Response): Promise<void> {
     try {
@@ -150,7 +140,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
         return;
       }
       if (!accessToken) {
-        await clearNotificationRepositoryEntitlements(userId, db);
+        await invalidateEntitlements(userId);
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -163,8 +153,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
           accessToken,
           database: db,
           force: true,
-          listRepositories: async (token) => {
-            repos = await listAccessibleRepositories(token);
+          listRepositories: async (token, signal) => {
+            repos = await listAccessibleRepositories(token, signal);
             repositoriesScanned = true;
             return repos;
           },
@@ -181,8 +171,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     } catch (error) {
       // Check if this is a token expiration/revocation error
       if (isAuthError(error)) {
-        await clearNotificationRepositoryEntitlements(req.user?.id, db);
-        await handleAuthError(req, res);
+        await handleAuthError(req, res, invalidateEntitlements);
         return;
       }
       console.error('Error in /api/github/repos:', error);
@@ -212,7 +201,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       // Get user's access token from session
       const accessToken = req.user?.accessToken;
       if (!accessToken) {
-        await clearNotificationRepositoryEntitlements(req.user?.id, db);
+        if (req.user?.id) await invalidateEntitlements(req.user.id);
         res.status(401).json({ error: 'No GitHub access token available', code: 'NO_TOKEN' });
         return;
       }
@@ -235,8 +224,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       } catch (error) {
         // Check for auth error on repo info request
         if (isAuthError(error)) {
-          await clearNotificationRepositoryEntitlements(req.user?.id, db);
-          await handleAuthError(req, res);
+          await handleAuthError(req, res, invalidateEntitlements);
           return;
         }
         console.error('Error fetching repo info for default branch:', error);
@@ -267,8 +255,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     } catch (error) {
       // Check if this is a token expiration/revocation error
       if (isAuthError(error)) {
-        await clearNotificationRepositoryEntitlements(req.user?.id, db);
-        await handleAuthError(req, res);
+        await handleAuthError(req, res, invalidateEntitlements);
         return;
       }
       console.error('Error in /api/github/repos/:owner/:repo/branches:', error);

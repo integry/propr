@@ -178,8 +178,8 @@ export class NotificationSystemSampler {
         abortController.abort();
         if (this.activeRun !== run) return;
         this.runGeneration++;
-        this.activeRun = null;
-        this.activeRunAbortController = null;
+        // getSnapshot/projectSnapshot may be backed by uncancellable I/O. Retain
+        // the slot until it settles instead of allowing timed-out runs to pile up.
     }
 
     private async executeRun(runGeneration: number, signal: AbortSignal): Promise<boolean> {
