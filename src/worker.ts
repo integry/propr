@@ -2,7 +2,6 @@ import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeEventPublisher, createWorker } from '@propr/core';
-import type { IssueJobData, CommentJobData, TaskImportJobData, SystemTaskJobData, MergeConflictJobData, JobResult } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';

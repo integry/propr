@@ -1,10 +1,17 @@
-import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
-import fs from 'fs';
+import { execSync, ChildProcess } from 'child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
-import { getEventPublisher } from '../../utils/eventPublisher.js';
-
+import {
+    captureJsonLineMessages,
+    cleanupRedisStreaming,
+    createTaskProgressReporter,
+    detectContainerId,
+    initRedisStreaming,
+    initTaskLivenessHeartbeat,
+    spawnExecutionCommand,
+    type RedisStreamingState
+} from './dockerExecutionRuntime.js';
 
 export interface ExecutionResult {
     stdout: string;
@@ -24,10 +31,6 @@ export interface DockerCommandOptions {
     onSessionId?: (sessionId: string, conversationId?: string) => void; onContainerId?: (containerId: string, containerName: string) => void;
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
 }
-
-interface JsonLineMessage { type?: string; message?: { id?: string; model?: string; }; session_id?: string; conversation_id?: string; }
-
-const TASK_LIVENESS_HEARTBEAT_MS = 30_000;
 
 interface AbortCheckerOptions {
     taskId: string;
@@ -75,13 +78,6 @@ export function plannerAbortSignalKeyForTask(taskId: string): string {
     return context
         ? buildPlannerAbortSignalKey(context.draftId, context.runId)
         : buildPlannerAbortSignalKey(taskId);
-}
-
-// ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
-const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
-
-function stripAnsiCodes(text: string): string {
-    return text.replace(ANSI_REGEX, '');
 }
 
 /**
@@ -240,16 +236,6 @@ async function clearWorkerAbortSignalWithClient(taskId: string, redis: AbortRedi
     }
 }
 
-function resolveDockerPath(command: string): string {
-    if (command !== 'docker') return command;
-    const paths = ['/usr/bin/docker', '/usr/local/bin/docker', '/bin/docker'];
-    for (const p of paths) {
-        try { if (fs.existsSync(p)) { fs.accessSync(p, fs.constants.X_OK); logger.debug({ dockerPath: p }, 'Found docker executable'); return p; } } catch { /* continue */ }
-    }
-    logger.debug('Using docker from PATH');
-    return 'docker';
-}
-
 const PLANNER_ABORT_LOOKUP_FAILURE_LIMIT = 2;
 
 /**
@@ -355,19 +341,8 @@ export async function findRunningDockerContainerForTask(
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
-        const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(args) : null;
-        const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
-        if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
-        else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
-
-        const child: ChildProcess = spawn(executablePath, args, spawnOptions);
-        if (stdinData && child.stdin) {
-            child.stdin.on('error', (err) => { logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error'); });
-            child.stdin.write(stdinData);
-            child.stdin.end();
-            logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
-        }
+        const child = spawnExecutionCommand(command, args, { cwd, stdinData });
 
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
@@ -399,8 +374,8 @@ export function executeDockerCommand(command: string, args: string[], options: D
             }
             return extraOutput ? `${primaryOutput}${primaryOutput ? '\n' : ''}${extraOutput}` : primaryOutput;
         };
-        const redisState = {
-            client: null as Redis | null,
+        const redisState: RedisStreamingState = {
+            client: null,
             interval: null as ReturnType<typeof setInterval> | null,
             lastLen: 0
         };
@@ -413,14 +388,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             const chunk = data.toString(), ts = new Date().toISOString();
             stdout += chunk;
             if (chunk.length > 0) reportTaskProgress?.();
-            for (const line of chunk.split('\n')) {
-                if (!line.trim()) continue;
-                try {
-                    const j: JsonLineMessage = JSON.parse(line);
-                    if (j.type === 'assistant' || j.type === 'user') messageTimestamps.set(j.message?.id || `${j.type}-${JSON.stringify(j).substring(0, 100)}`, ts);
-                    if (!state.sessionIdDetected && onSessionId && j.session_id) { state.sessionIdDetected = true; onSessionId(j.session_id, j.conversation_id); }
-                } catch { /* skip */ }
-            }
+            captureJsonLineMessages(chunk, ts, { state, messageTimestamps, onSessionId });
         });
         child.stderr?.on('data', (data: Buffer) => {
             const chunk = data.toString();
@@ -455,75 +423,6 @@ export function executeDockerCommand(command: string, args: string[], options: D
             reject(error);
         });
     });
-}
-
-function initRedisStreaming(
-    taskId: string,
-    stripAnsi: boolean | undefined,
-    getStdout: () => string,
-    state: {
-        client: Redis | null;
-        interval: ReturnType<typeof setInterval> | null;
-        lastLen: number;
-    }
-): void {
-    (async () => {
-        try {
-            state.client = new Redis({ host: process.env.REDIS_HOST || 'redis', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
-            const redisKey = `agent:output:${taskId}`;
-            state.interval = setInterval(async () => {
-                const stdout = getStdout();
-                if (stdout.length > state.lastLen && state.client) {
-                    try { await state.client.setex(redisKey, 3600, stripAnsi ? stripAnsiCodes(stdout) : stdout); state.lastLen = stdout.length; }
-                    catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to stream output to Redis'); }
-                }
-            }, 2000);
-            logger.debug({ taskId, redisKey }, 'Started streaming output to Redis');
-        } catch (err) { logger.warn({ error: (err as Error).message }, 'Failed to initialize Redis streaming'); }
-    })();
-}
-
-function initTaskLivenessHeartbeat(taskId: string): ReturnType<typeof setInterval> {
-    const heartbeat = async () => {
-        try { await getEventPublisher().projectTaskHeartbeat(taskId); }
-        catch (err) {
-            logger.debug({ error: (err as Error).message }, 'Failed to project task liveness heartbeat');
-        }
-    };
-    void heartbeat();
-    const interval = setInterval(() => { void heartbeat(); }, TASK_LIVENESS_HEARTBEAT_MS);
-    interval.unref();
-    return interval;
-}
-
-function createTaskProgressReporter(taskId: string): () => void {
-    let lastReportedAt = 0;
-    return () => {
-        const observedAt = Date.now();
-        if (observedAt - lastReportedAt < TASK_LIVENESS_HEARTBEAT_MS) return;
-        lastReportedAt = observedAt;
-        void getEventPublisher().projectTaskProgress(taskId, new Date(observedAt).toISOString())
-            .catch((err) => logger.debug({ error: (err as Error).message },
-                'Failed to project observable task progress'));
-    };
-}
-
-async function cleanupRedisStreaming(state: { client: Redis | null; interval: ReturnType<typeof setInterval> | null }, taskId: string | undefined, stripAnsi: boolean | undefined, stdout: string): Promise<void> {
-    if (state.interval) clearInterval(state.interval);
-    if (state.client && taskId) {
-        try { await state.client.setex(`agent:output:${taskId}`, 3600, stripAnsi ? stripAnsiCodes(stdout) : stdout); await state.client.quit(); }
-        catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to cleanup Redis streaming'); }
-    }
-}
-
-function detectContainerId(worktreePath: string, state: { containerIdDetected: boolean; containerId: { value: string | null } }, onContainerId?: (containerId: string, containerName: string) => void): void {
-    setTimeout(() => {
-        if (state.containerIdDetected) return;
-        try {
-            const out = execSync(`/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`, { encoding: 'utf8', timeout: 5000 }).trim();
-            if (out) { const [id, name] = out.split(':'); state.containerIdDetected = true; state.containerId.value = id; if (onContainerId) onContainerId(id, name); logger.debug({ containerId: id, containerName: name, worktreePath }, 'Detected Docker container ID'); }
-        } catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to detect container ID'); }
-    }, 2000);
 }
 
 // Re-export image builder functions for backward compatibility
