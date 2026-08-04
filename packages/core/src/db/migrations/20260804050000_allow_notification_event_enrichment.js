@@ -17,6 +17,20 @@ export async function up(knex) {
       OR NEW.severity IS NOT OLD.severity
       OR NEW.occurred_at IS NOT OLD.occurred_at
       OR NEW.created_at IS NOT OLD.created_at
+      OR (
+        NEW.target_json IS NOT OLD.target_json
+        AND (
+          OLD.kind IS NOT 'task'
+          OR NEW.kind IS NOT 'task'
+          OR json_remove(NEW.target_json, '$.prNumber')
+             IS NOT json_remove(OLD.target_json, '$.prNumber')
+          OR (
+            json_type(OLD.target_json, '$.prNumber') IS NOT NULL
+            AND json_extract(NEW.target_json, '$.prNumber')
+                IS NOT json_extract(OLD.target_json, '$.prNumber')
+          )
+        )
+      )
     BEGIN
       SELECT RAISE(ABORT, 'notification event identity is immutable');
     END

@@ -348,12 +348,13 @@ export class CodexAgent implements Agent {
         return runtimeLevel;
     }
 
-    async healthCheck(): Promise<boolean> {
+    async healthCheck(signal?: AbortSignal): Promise<boolean> {
         const { alias: agentAlias } = this.config;
         const dockerImage = this.config.dockerImage;
         logger.debug({ agentAlias, dockerImage }, 'Running health check for Codex agent...');
         try {
-            const result = await executeDockerCommand('docker', ['images', '-q', dockerImage], { timeout: 10000 });
+            const result = await executeDockerCommand('docker', ['images', '-q', dockerImage],
+                { timeout: 10000, signal });
             const imageExists = !!result.stdout.trim();
             logger.info({ agentAlias, dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
             return imageExists;

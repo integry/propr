@@ -4,6 +4,7 @@ import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 
 const TASK_LIVENESS_HEARTBEAT_MS = 30_000;
+const MAX_JSON_LINE_BUFFER_CHARS = 1024 * 1024;
 const ANSI_REGEX = new RegExp(
     '[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b)
     + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]',
@@ -14,6 +15,7 @@ export interface RedisStreamingState {
     client: Redis | null;
     interval: ReturnType<typeof setInterval> | null;
     lastLen: number;
+    pendingWrite: Promise<void> | null;
 }
 
 interface ContainerDetectionState {
@@ -29,7 +31,12 @@ interface JsonLineMessage {
 }
 
 interface MessageCaptureContext {
-    state: { sessionIdDetected: boolean; jsonLineBuffer?: string };
+    state: {
+        sessionIdDetected: boolean;
+        jsonLineBuffer?: string;
+        jsonLineTimestamp?: string;
+        discardJsonLineUntilNewline?: boolean;
+    };
     messageTimestamps: Map<string, string>;
     onSessionId?: (sessionId: string, conversationId?: string) => void;
 }
@@ -105,23 +112,59 @@ export function captureJsonLineMessages(
     timestamp: string,
     context: MessageCaptureContext
 ): void {
-    const lines = `${context.state.jsonLineBuffer ?? ''}${chunk}`.split('\n');
-    context.state.jsonLineBuffer = lines.pop() ?? '';
-    for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-            const message: JsonLineMessage = JSON.parse(line);
-            if (message.type === 'assistant' || message.type === 'user') {
-                const key = message.message?.id
-                    || `${message.type}-${JSON.stringify(message).substring(0, 100)}`;
-                context.messageTimestamps.set(key, timestamp);
-            }
-            if (!context.state.sessionIdDetected && context.onSessionId && message.session_id) {
-                context.state.sessionIdDetected = true;
-                context.onSessionId(message.session_id, message.conversation_id);
-            }
-        } catch { /* Ignore non-JSON output lines. */ }
+    let nextChunk = chunk;
+    if (context.state.discardJsonLineUntilNewline) {
+        const boundary = nextChunk.indexOf('\n');
+        if (boundary < 0) return;
+        nextChunk = nextChunk.slice(boundary + 1);
+        context.state.discardJsonLineUntilNewline = false;
     }
+    const lines = `${context.state.jsonLineBuffer ?? ''}${nextChunk}`.split('\n');
+    const trailing = lines.pop() ?? '';
+    if (trailing.length > MAX_JSON_LINE_BUFFER_CHARS) {
+        context.state.jsonLineBuffer = '';
+        context.state.jsonLineTimestamp = undefined;
+        context.state.discardJsonLineUntilNewline = true;
+    } else {
+        context.state.jsonLineBuffer = trailing;
+        context.state.jsonLineTimestamp = trailing ? timestamp : undefined;
+    }
+    for (const line of lines) {
+        if (line.length <= MAX_JSON_LINE_BUFFER_CHARS) captureJsonLine(line, timestamp, context);
+    }
+}
+
+/** Processes a valid trailing JSONL record even when the child omits the final newline. */
+export function flushJsonLineMessages(
+    fallbackTimestamp: string,
+    context: MessageCaptureContext
+): void {
+    const line = context.state.jsonLineBuffer ?? '';
+    const timestamp = context.state.jsonLineTimestamp ?? fallbackTimestamp;
+    context.state.jsonLineBuffer = '';
+    context.state.jsonLineTimestamp = undefined;
+    if (!context.state.discardJsonLineUntilNewline) captureJsonLine(line, timestamp, context);
+    context.state.discardJsonLineUntilNewline = false;
+}
+
+function captureJsonLine(
+    line: string,
+    timestamp: string,
+    context: MessageCaptureContext
+): void {
+    if (!line.trim()) return;
+    try {
+        const message: JsonLineMessage = JSON.parse(line);
+        if (message.type === 'assistant' || message.type === 'user') {
+            const key = message.message?.id
+                || `${message.type}-${JSON.stringify(message).substring(0, 100)}`;
+            context.messageTimestamps.set(key, timestamp);
+        }
+        if (!context.state.sessionIdDetected && context.onSessionId && message.session_id) {
+            context.state.sessionIdDetected = true;
+            context.onSessionId(message.session_id, message.conversation_id);
+        }
+    } catch { /* Ignore non-JSON output lines. */ }
 }
 
 export function initRedisStreaming(
@@ -137,19 +180,27 @@ export function initRedisStreaming(
                 port: parseInt(process.env.REDIS_PORT || '6379', 10)
             });
             const redisKey = `agent:output:${taskId}`;
-            state.interval = setInterval(async () => {
+            state.interval = setInterval(() => {
                 const stdout = getStdout();
-                if (stdout.length > state.lastLen && state.client) {
-                    try {
-                        await state.client.setex(
-                            redisKey,
-                            3600,
-                            stripAnsi ? stripAnsiCodes(stdout) : stdout
-                        );
-                        state.lastLen = stdout.length;
-                    } catch (err) {
-                        logger.debug({ error: (err as Error).message }, 'Failed to stream output to Redis');
-                    }
+                if (stdout.length > state.lastLen && state.client && !state.pendingWrite) {
+                    const client = state.client;
+                    const write = (async () => {
+                        try {
+                            await client.setex(
+                                redisKey,
+                                3600,
+                                stripAnsi ? stripAnsiCodes(stdout) : stdout
+                            );
+                            state.lastLen = stdout.length;
+                        } catch (err) {
+                            logger.debug({ error: (err as Error).message },
+                                'Failed to stream output to Redis');
+                        }
+                    })();
+                    state.pendingWrite = write;
+                    void write.finally(() => {
+                        if (state.pendingWrite === write) state.pendingWrite = null;
+                    });
                 }
             }, 2000);
             logger.debug({ taskId, redisKey }, 'Started streaming output to Redis');
@@ -193,22 +244,31 @@ export function createTaskProgressReporter(taskId: string): () => void {
 }
 
 export async function cleanupRedisStreaming(
-    state: Pick<RedisStreamingState, 'client' | 'interval'>,
+    state: Pick<RedisStreamingState, 'client' | 'interval' | 'pendingWrite'>,
     taskId: string | undefined,
     stripAnsi: boolean | undefined,
     stdout: string
 ): Promise<void> {
     if (state.interval) clearInterval(state.interval);
-    if (state.client && taskId) {
+    if (state.pendingWrite) await state.pendingWrite;
+    const client = state.client;
+    if (client) {
         try {
-            await state.client.setex(
-                `agent:output:${taskId}`,
-                3600,
-                stripAnsi ? stripAnsiCodes(stdout) : stdout
-            );
-            await state.client.quit();
+            if (taskId) {
+                await client.setex(
+                    `agent:output:${taskId}`,
+                    3600,
+                    stripAnsi ? stripAnsiCodes(stdout) : stdout
+                );
+            }
         } catch (err) {
             logger.debug({ error: (err as Error).message }, 'Failed to cleanup Redis streaming');
+        } finally {
+            try {
+                await client.quit();
+            } catch (err) {
+                logger.debug({ error: (err as Error).message }, 'Failed to close Redis streaming client');
+            }
         }
     }
 }

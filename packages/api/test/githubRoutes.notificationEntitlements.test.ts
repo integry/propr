@@ -457,6 +457,65 @@ test('a fresh login generation replaces an older active generation', async () =>
   }
 });
 
+test('logging out the newest session transfers refresh ownership to an older session', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    const userId = 'multi-session-logout-user';
+    await middleware.activate(userId, 'older-login-generation');
+    await middleware.activate(userId, 'fresh-login-generation');
+    const verifiedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    await database('notification_repository_entitlements').insert({
+      user_id: userId,
+      repository: 'acme/private',
+      verified_at: verifiedAt,
+      expires_at: expiresAt,
+    });
+    await database('notification_repository_entitlement_snapshots').insert({
+      user_id: userId,
+      verified_at: verifiedAt,
+      expires_at: expiresAt,
+    });
+
+    await middleware.invalidate(userId, 'fresh-login-generation');
+
+    assert.deepEqual(await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: userId })
+      .first('auth_generation', 'invalidated_at'), {
+      auth_generation: 'older-login-generation',
+      invalidated_at: null,
+    });
+    assert.equal(await database('notification_repository_entitlements')
+      .where({ user_id: userId }).count({ count: '*' }).first()
+      .then(row => Number(row?.count)), 1);
+    assert.equal(await database('notification_repository_entitlement_snapshots')
+      .where({ user_id: userId }).count({ count: '*' }).first()
+      .then(row => Number(row?.count)), 1);
+  } finally {
+    await middleware.close();
+  }
+});
+
+test('activation prunes session tombstones beyond the session safety window', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    await database('notification_repository_entitlement_generations').insert({
+      user_id: 'expired-tombstone-user',
+      auth_generation: 'expired-generation',
+      activated_at: '2025-01-01T00:00:00.000Z',
+      invalidated_at: '2025-01-02T00:00:00.000Z',
+    });
+
+    await middleware.activate('gc-trigger-user', 'active-generation');
+
+    assert.equal(await database('notification_repository_entitlement_generations')
+      .where({ user_id: 'expired-tombstone-user' })
+      .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+  } finally {
+    await middleware.close();
+  }
+});
+
 test('an older session cannot invalidate a newer login generation', async () => {
   const middleware = createNotificationEntitlementRefreshMiddleware(database);
   try {

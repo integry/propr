@@ -6,6 +6,7 @@ import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import { RequestError } from '@octokit/request-error';
 import { refreshGitHubTokenWithResult } from '../authGithubTokens.js';
+import { clearSessionCookie } from '../auth.js';
 import { getSessionAuthGeneration } from '../authSessionGeneration.js';
 import { isDemoMode } from '../demoMode.js';
 import { loadDemoConfiguredRepoNames, loadDemoRepositoryMetadata } from './demoRepositoryMetadata.js';
@@ -91,22 +92,29 @@ export async function handleAuthError(
       );
     }
   } catch (error) {
-      logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
-        'Could not persist repository notification access invalidation');
-  } finally {
-    await new Promise<void>((resolve) => {
-      req.logout((err) => {
-        if (err) logger.error({ error: err.message }, 'Passport logout failed after GitHub auth error');
-        req.session.destroy((destroyErr) => {
-          if (destroyErr) {
-            logger.error({ error: destroyErr.message },
-              'Session destruction failed after GitHub auth error');
-          }
-          resolve();
-        });
+    logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
+      'Could not persist repository notification access invalidation');
+    res.status(503).json({
+      error: 'Session cleanup unavailable',
+      code: 'AUTH_CLEANUP_UNAVAILABLE',
+      message: 'Authorization cleanup could not be persisted. Please retry.',
+    });
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    req.logout((err) => {
+      if (err) logger.error({ error: err.message }, 'Passport logout failed after GitHub auth error');
+      req.session.destroy((destroyErr) => {
+        if (destroyErr) {
+          logger.error({ error: destroyErr.message },
+            'Session destruction failed after GitHub auth error');
+        }
+        resolve();
       });
     });
-  }
+  });
+  clearSessionCookie(res);
 
   res.status(401).json({
     error: 'GitHub authentication expired',

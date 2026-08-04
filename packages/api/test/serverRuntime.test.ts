@@ -53,6 +53,10 @@ test('notification projection lease validates its Redis TTL', () => {
     /lease TTL/
   );
   assert.throws(
+    () => createNotificationProjectionLease(redisClient, 'too-short-ttl', 2_999),
+    /at least 3000ms/
+  );
+  assert.throws(
     () => createNotificationProjectionLease(redisClient, 'oversized-ttl', 2_147_483_648),
     /lease TTL/
   );

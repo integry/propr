@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { captureJsonLineMessages }
+import {
+    captureJsonLineMessages,
+    cleanupRedisStreaming,
+    flushJsonLineMessages
+}
     from '../src/claude/docker/dockerExecutionRuntime.js';
 
 test('JSON-line capture retains records fragmented across stdout chunks', () => {
@@ -37,9 +41,66 @@ test('JSON-line capture retains records fragmented across stdout chunks', () => 
     );
     assert.equal(messageTimestamps.has('message-2'), false);
 
-    captureJsonLineMessages('\n', '2026-08-04T10:00:02.000Z', context);
+    flushJsonLineMessages('2026-08-04T10:00:02.000Z', context);
     assert.equal(
         messageTimestamps.get('message-2'),
-        '2026-08-04T10:00:02.000Z'
+        '2026-08-04T10:00:01.000Z'
     );
+});
+
+test('JSON-line capture flushes an unterminated final session record', () => {
+    const state = { sessionIdDetected: false };
+    const messageTimestamps = new Map<string, string>();
+    const sessions: string[] = [];
+    const context = {
+        state,
+        messageTimestamps,
+        onSessionId: (sessionId: string) => { sessions.push(sessionId); }
+    };
+    captureJsonLineMessages(
+        '{"type":"assistant","message":{"id":"final"},"session_id":"final-session"}',
+        '2026-08-04T10:00:03.000Z',
+        context
+    );
+
+    flushJsonLineMessages('2026-08-04T10:00:04.000Z', context);
+
+    assert.deepEqual(sessions, ['final-session']);
+    assert.equal(messageTimestamps.get('final'), '2026-08-04T10:00:03.000Z');
+});
+
+test('JSON-line capture bounds a non-newline record and resumes at the next boundary', () => {
+    const state: {
+        sessionIdDetected: boolean;
+        jsonLineBuffer?: string;
+        discardJsonLineUntilNewline?: boolean;
+    } = { sessionIdDetected: false };
+    const messageTimestamps = new Map<string, string>();
+    const context = { state, messageTimestamps };
+
+    captureJsonLineMessages('x'.repeat(1024 * 1024 + 1), '2026-08-04T10:00:00.000Z', context);
+    assert.equal(state.jsonLineBuffer, '');
+    assert.equal(state.discardJsonLineUntilNewline, true);
+    captureJsonLineMessages(
+        'discarded-tail\n{"type":"assistant","message":{"id":"recovered"}}\n',
+        '2026-08-04T10:00:01.000Z',
+        context
+    );
+    assert.equal(messageTimestamps.get('recovered'), '2026-08-04T10:00:01.000Z');
+});
+
+test('Redis streaming cleanup closes the client when its final write fails', async () => {
+    let quitCalls = 0;
+    const client = {
+        setex: async () => { throw new Error('final write failed'); },
+        quit: async () => { quitCalls++; }
+    };
+
+    await cleanupRedisStreaming({
+        client: client as never,
+        interval: null,
+        pendingWrite: null
+    }, 'task-1', false, 'final output');
+
+    assert.equal(quitCalls, 1);
 });

@@ -12,6 +12,7 @@ const CHECKPOINT_TABLE = 'notification_projection_checkpoints';
 const RETRY_TABLE = 'notification_projection_retries';
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_CAP_MS = 60 * 60 * 1_000;
+const MAX_PROJECTION_RETRY_ATTEMPTS = 168;
 const NUMERIC_CHECKPOINTS = new Set<NotificationProjectionCheckpointSource>([
     'terminal-task-history',
     'task-notification-enrichments',
@@ -147,10 +148,16 @@ export class NotificationProjectionCheckpointStore {
         }));
     }
 
-    async markRetryDeferred(retry: NotificationProjectionRetry): Promise<void> {
-        if (!await this.hasTable(RETRY_TABLE)) return;
+    /** Returns false after the retry reaches the terminal attempt policy. */
+    async markRetryDeferred(retry: NotificationProjectionRetry): Promise<boolean> {
+        if (!await this.hasTable(RETRY_TABLE)) return false;
         const updatedAt = normalizeISO8601Timestamp(this.now());
         const attemptCount = Math.min(Number.MAX_SAFE_INTEGER, retry.attemptCount + 1);
+        if (!Number.isSafeInteger(attemptCount)
+            || attemptCount >= MAX_PROJECTION_RETRY_ATTEMPTS) {
+            await this.deleteRetry(retry);
+            return false;
+        }
         const exponent = Math.min(30, Math.max(0, attemptCount - 1));
         const delayMs = Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_BASE_MS * (2 ** exponent));
         const nextAttemptAt = normalizeISO8601Timestamp(Date.parse(updatedAt) + delayMs);
@@ -165,6 +172,7 @@ export class NotificationProjectionCheckpointStore {
                 next_attempt_at: nextAttemptAt,
                 updated_at: updatedAt
             });
+        return true;
     }
 
     async deleteRetry(retry: NotificationProjectionRetry): Promise<void> {

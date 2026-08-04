@@ -7,15 +7,30 @@ import {
 } from '@propr/core';
 import {
   loadRecoverableEntitlementCredentials,
-  type RecoveredEntitlementCredential,
 } from './notificationEntitlementSessionRecovery.js';
 import {
   activateNotificationRepositoryEntitlements,
   ensureEntitlementRefreshRegistration,
-  ENTITLEMENT_REFRESH_LEASE_TABLE,
-  invalidateNotificationRepositoryEntitlements,
 } from './notificationEntitlementFencing.js';
 import { createSessionAuthGeneration } from '../authSessionGeneration.js';
+import {
+  DEFAULT_TIMER_SCHEDULER,
+  getMaxScheduledRefreshes,
+  hasEntitlementRefreshRegistration,
+  rememberEntitlementSessionCredential,
+  updateEntitlementSessionCredential,
+  type EntitlementRefreshTimer,
+  type NotificationEntitlementRefreshMiddleware,
+  type RefreshInput,
+  type ScheduledEntitlementRefreshOptions,
+} from './notificationEntitlementRefreshSchedulerSupport.js';
+import { invalidateScheduledEntitlementRefresh }
+  from './notificationEntitlementRefreshInvalidation.js';
+export type {
+  EntitlementRefreshTimer,
+  EntitlementRefreshTimerScheduler,
+  NotificationEntitlementRefreshMiddleware,
+} from './notificationEntitlementRefreshSchedulerSupport.js';
 export {
   activateNotificationRepositoryEntitlements,
   ensureEntitlementRefreshRegistration,
@@ -23,14 +38,13 @@ export {
 } from './notificationEntitlementFencing.js';
 
 const REFRESH_RETRY_DELAY_MS = 60_000;
-const MAX_SCHEDULED_REFRESHES = 1_000;
-const MAX_SCHEDULED_REFRESHES_ENV = 'NOTIFICATION_ENTITLEMENT_MAX_SCHEDULED_REFRESHES';
 const RECOVERY_CONCURRENCY = 4;
 const REFRESH_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 interface ScheduledRefresh {
   accessToken: string;
   authGeneration?: string;
+  credentials: Map<string, string>;
   timer?: EntitlementRefreshTimer;
   controller?: AbortController;
   registrationEstablished: boolean;
@@ -38,74 +52,10 @@ interface ScheduledRefresh {
   retry: boolean;
 }
 
-interface RefreshInput {
-  userId: string;
-  accessToken: string;
-  database: Knex;
-  signal?: AbortSignal;
-}
-
-export interface EntitlementRefreshTimer {
-  unref(): void;
-}
-
-export interface EntitlementRefreshTimerScheduler {
-  setTimeout(callback: () => void, delayMs: number): EntitlementRefreshTimer;
-  clearTimeout(timer: EntitlementRefreshTimer): void;
-}
-
-interface ScheduledEntitlementRefreshOptions {
-  maxScheduledRefreshes?: number;
-  timerScheduler?: EntitlementRefreshTimerScheduler;
-  ensureRegistration?: typeof ensureEntitlementRefreshRegistration;
-  loadRecoveryCredentials?: (
-    database: Knex,
-    maxCredentials: number
-  ) => Promise<RecoveredEntitlementCredential[]>;
-}
-
-const DEFAULT_TIMER_SCHEDULER: EntitlementRefreshTimerScheduler = {
-  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
-  clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout),
-};
-
-async function hasEntitlementRefreshRegistration(
-  database: Knex,
-  userId: string,
-  retry: boolean
-): Promise<boolean> {
-  const snapshot = await database('notification_repository_entitlement_snapshots')
-    .where({ user_id: userId })
-    .first('user_id');
-  if (snapshot !== undefined) return true;
-  if (!retry || !await database.schema
-    .hasTable(ENTITLEMENT_REFRESH_LEASE_TABLE)) return false;
-  const retryLeaseQuery = database(ENTITLEMENT_REFRESH_LEASE_TABLE).where({ user_id: userId });
-  if (await database.schema.hasColumn(ENTITLEMENT_REFRESH_LEASE_TABLE, 'invalidated_at')) {
-    retryLeaseQuery.whereNull('invalidated_at');
-  }
-  const retryLease = await retryLeaseQuery
-    .first('user_id');
-  return retryLease !== undefined;
-}
-
-export interface NotificationEntitlementRefreshMiddleware {
-  (req: Request, res: Response, next: NextFunction): void;
-  invalidate(userId: string, authGeneration: string): Promise<void>;
-  activate(userId: string, authGeneration: string): Promise<void>;
-  updateCredential(userId: string, accessToken: string): void;
-  recover(): Promise<void>;
-  close(): Promise<void>;
-}
-
-function getMaxScheduledRefreshes(): number {
-  const configured = process.env[MAX_SCHEDULED_REFRESHES_ENV];
-  if (configured === undefined) return MAX_SCHEDULED_REFRESHES;
-  const parsed = Number(configured);
-  if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
-  logger.warn({ value: configured, fallback: MAX_SCHEDULED_REFRESHES },
-    `${MAX_SCHEDULED_REFRESHES_ENV} must be a positive safe integer`);
-  return MAX_SCHEDULED_REFRESHES;
+interface ScheduleOptions {
+  retry?: boolean;
+  registrationEstablished?: boolean;
+  authGeneration?: string;
 }
 
 /** Keeps refreshing observed authenticated users after request traffic stops. */
@@ -131,12 +81,9 @@ export function createScheduledEntitlementRefreshMiddleware(
   const activeRefreshes = new Set<Promise<void>>();
 
   const rememberAuthGeneration = (userId: string, authGeneration: string): void => {
-    const entry = scheduled.get(userId);
-    if (entry) {
-      entry.authGeneration = authGeneration;
-      activeAuthGenerations.delete(userId);
-      return;
-    }
+    // Activation precedes the first request carrying the new session's OAuth
+    // credential. Remember the generation without retargeting an existing
+    // schedule to a credential that still belongs to an older session.
     activeAuthGenerations.delete(userId);
     activeAuthGenerations.set(userId, authGeneration);
     if (activeAuthGenerations.size > maxScheduledRefreshes) {
@@ -168,13 +115,19 @@ export function createScheduledEntitlementRefreshMiddleware(
       });
       if (closed || scheduled.get(userId) !== entry || controller.signal.aborted) return;
       if (entry.controller === controller) entry.controller = undefined;
-      schedule(userId, entry.accessToken, result === false, entry.registrationEstablished);
+      schedule(userId, entry.accessToken, {
+        retry: result === false,
+        registrationEstablished: entry.registrationEstablished,
+      });
     } catch (error) {
       if (closed || scheduled.get(userId) !== entry || controller.signal.aborted) return;
       if (entry.controller === controller) entry.controller = undefined;
       logger.warn({ error: error instanceof Error ? error.message : String(error) },
         'Repository notification access refresh failed');
-      schedule(userId, entry.accessToken, true, entry.registrationEstablished);
+      schedule(userId, entry.accessToken, {
+        retry: true,
+        registrationEstablished: entry.registrationEstablished,
+      });
     }
   };
 
@@ -191,16 +144,33 @@ export function createScheduledEntitlementRefreshMiddleware(
   const schedule = (
     userId: string,
     accessToken: string,
-    retry?: boolean,
-    registrationEstablished?: boolean
+    options: ScheduleOptions = {}
   ): void => {
+    const { retry, registrationEstablished, authGeneration: observedAuthGeneration } = options;
     if (closed) return;
     const previous = scheduled.get(userId);
     if (previous) {
-      previous.accessToken = accessToken;
       const pendingGeneration = activeAuthGenerations.get(userId);
-      if (pendingGeneration) previous.authGeneration = pendingGeneration;
-      activeAuthGenerations.delete(userId);
+      if (observedAuthGeneration) {
+        rememberEntitlementSessionCredential(previous, observedAuthGeneration, accessToken);
+        // The request may land on a different replica from the OAuth callback.
+        // Durable registration validation below rejects stale generations before
+        // their next scan; locally, bind the credential to the observed session.
+        previous.authGeneration = observedAuthGeneration;
+        previous.accessToken = accessToken;
+        if (pendingGeneration === observedAuthGeneration) {
+          activeAuthGenerations.delete(userId);
+        }
+      } else {
+        previous.accessToken = accessToken;
+        if (previous.authGeneration) {
+          rememberEntitlementSessionCredential(
+            previous,
+            previous.authGeneration,
+            accessToken
+          );
+        }
+      }
       if (retry !== undefined) previous.retry = retry;
       if (registrationEstablished !== undefined) {
         previous.registrationEstablished = registrationEstablished;
@@ -225,11 +195,17 @@ export function createScheduledEntitlementRefreshMiddleware(
     }
     const entry: ScheduledRefresh = {
       accessToken,
-      authGeneration: activeAuthGenerations.get(userId),
+      authGeneration: observedAuthGeneration,
+      credentials: new Map(),
       retry: retry ?? false,
       registrationEstablished: retainedRegistration,
     };
-    activeAuthGenerations.delete(userId);
+    if (observedAuthGeneration) {
+      rememberEntitlementSessionCredential(entry, observedAuthGeneration, accessToken);
+      if (activeAuthGenerations.get(userId) === observedAuthGeneration) {
+        activeAuthGenerations.delete(userId);
+      }
+    }
     scheduled.set(userId, entry);
     armTimer(userId, entry);
   };
@@ -257,7 +233,10 @@ export function createScheduledEntitlementRefreshMiddleware(
           logger.warn({ error: error instanceof Error ? error.message : String(error) },
             'Scheduled repository notification access refresh failed');
           if (!closed && scheduled.get(userId) === entry) {
-            schedule(userId, entry.accessToken, true, entry.registrationEstablished);
+            schedule(userId, entry.accessToken, {
+              retry: true,
+              registrationEstablished: entry.registrationEstablished,
+            });
           }
         });
     }, delayMs);
@@ -274,10 +253,23 @@ export function createScheduledEntitlementRefreshMiddleware(
     const registration = (async () => {
       let registered = false;
       if (checkExisting) {
-        registered = await hasEntitlementRefreshRegistration(database, userId, entry.retry);
+        registered = await hasEntitlementRefreshRegistration({
+          database,
+          userId,
+          retry: entry.retry,
+          authGeneration: entry.authGeneration,
+        });
         if (!registered && entry.registrationEstablished) return false;
       }
       if (!registered) registered = await ensureRegistration(database, userId);
+      if (registered && entry.authGeneration) {
+        registered = await hasEntitlementRefreshRegistration({
+          database,
+          userId,
+          retry: true,
+          authGeneration: entry.authGeneration,
+        });
+      }
       if (!closed && scheduled.get(userId) === entry) {
         entry.registrationEstablished = registered;
       }
@@ -299,12 +291,11 @@ export function createScheduledEntitlementRefreshMiddleware(
       return;
     }
     const alreadyScheduled = scheduled.has(userId);
-    schedule(userId, accessToken);
+    const authGeneration = typeof req.sessionID === 'string' && req.sessionID.trim()
+      ? createSessionAuthGeneration(req.sessionID)
+      : undefined;
+    schedule(userId, accessToken, { authGeneration });
     const entry = scheduled.get(userId)!;
-    if (typeof req.sessionID === 'string' && req.sessionID.trim()) {
-      entry.authGeneration = createSessionAuthGeneration(req.sessionID);
-      activeAuthGenerations.delete(userId);
-    }
     const refreshImmediately = req.path !== '/github/repos';
     if (alreadyScheduled) {
       next();
@@ -325,38 +316,44 @@ export function createScheduledEntitlementRefreshMiddleware(
         if (!closed && scheduled.get(userId) === entry) {
           if (entry.timer) timerScheduler.clearTimeout(entry.timer);
           entry.timer = undefined;
-          schedule(userId, entry.accessToken, true, false);
+          schedule(userId, entry.accessToken, { retry: true, registrationEstablished: false });
         }
       });
     next();
   };
   middleware.invalidate = async (userId: string, authGeneration: string): Promise<void> => {
-    const generation = authGeneration.trim();
     const entry = scheduled.get(userId);
-    const activeGeneration = entry?.authGeneration ?? activeAuthGenerations.get(userId);
-    if (activeGeneration === generation) {
-      activeAuthGenerations.delete(userId);
-      if (entry) removeEntry(userId, entry);
-    }
-    const invalidated = await invalidateNotificationRepositoryEntitlements(
+    await invalidateScheduledEntitlementRefresh({
       database,
       userId,
-      generation
-    );
-    // Recovered/legacy schedules may not yet have an in-memory generation.
-    // Remove those only after the durable generation check accepted the logout.
-    if (invalidated && activeGeneration === undefined) {
-      const entry = scheduled.get(userId);
-      if (entry) removeEntry(userId, entry);
-    }
+      authGeneration,
+      entry,
+      pendingAuthGeneration: activeAuthGenerations.get(userId),
+      isClosed: () => closed,
+      forgetPendingGeneration: () => activeAuthGenerations.delete(userId),
+      removeEntry: target => removeEntry(userId, target as ScheduledRefresh),
+      restoreEntry: session => {
+        schedule(userId, session.accessToken, {
+          retry: session.retry,
+          registrationEstablished: session.registrationEstablished,
+          authGeneration: session.authGeneration,
+        });
+        const replacementEntry = scheduled.get(userId);
+        if (replacementEntry) replacementEntry.credentials = session.credentials;
+      },
+    });
   };
   middleware.activate = async (userId: string, authGeneration: string): Promise<void> => {
     await activateNotificationRepositoryEntitlements(database, userId, authGeneration);
     if (!closed) rememberAuthGeneration(userId, authGeneration.trim());
   };
-  middleware.updateCredential = (userId: string, accessToken: string): void => {
+  middleware.updateCredential = (
+    userId: string,
+    accessToken: string,
+    authGeneration?: string
+  ): void => {
     const entry = scheduled.get(userId);
-    if (entry && accessToken) entry.accessToken = accessToken;
+    if (entry) updateEntitlementSessionCredential(entry, accessToken, authGeneration);
   };
   middleware.recover = async (): Promise<void> => {
     const available = Math.max(0, maxScheduledRefreshes - scheduled.size);
@@ -377,10 +374,13 @@ export function createScheduledEntitlementRefreshMiddleware(
           skipped++;
           return;
         }
-        schedule(credential.userId, credential.accessToken, false, true);
+        schedule(credential.userId, credential.accessToken, {
+          retry: false,
+          registrationEstablished: true,
+          authGeneration: credential.authGeneration,
+        });
         const entry = scheduled.get(credential.userId);
         if (!entry) return;
-        if (credential.authGeneration) entry.authGeneration = credential.authGeneration;
         recovered++;
         await startRefresh(credential.userId, entry);
       }));

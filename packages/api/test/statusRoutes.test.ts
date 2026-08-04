@@ -107,7 +107,10 @@ function createAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
-function createAgent(config: AgentConfig, healthCheck: () => Promise<boolean>): Agent {
+function createAgent(
+  config: AgentConfig,
+  healthCheck: (signal?: AbortSignal) => Promise<boolean>
+): Agent {
   return {
     config,
     healthCheck,
@@ -357,6 +360,42 @@ test('/api/status caches agent health checks briefly', async () => {
 
   assert.equal(healthChecks, 1);
   assert.deepEqual(first.body().agents, second.body().agents);
+});
+
+test('/api/status aborts timed-out agent probes and caps their concurrency', async () => {
+  configureStatusEnv();
+  let activeChecks = 0;
+  let maximumActiveChecks = 0;
+  let abortedChecks = 0;
+  const configs = Array.from({ length: 6 }, (_value, index) => createAgentConfig({
+    id: `codex-${index}`,
+    alias: `codex-${index}`,
+  }));
+  const agents = configs.map(config => createAgent(config, signal => new Promise(resolve => {
+    activeChecks += 1;
+    maximumActiveChecks = Math.max(maximumActiveChecks, activeChecks);
+    signal?.addEventListener('abort', () => {
+      abortedChecks += 1;
+      activeChecks -= 1;
+      resolve(false);
+    }, { once: true });
+  })));
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    loadAgents: async () => configs,
+    agentRegistry: createRegistry(agents),
+    getIndexingQueue: async () => createIndexingQueue(),
+    agentHealthTimeoutMs: 5,
+  });
+  const response = createJsonResponse();
+
+  await routes.getStatus({} as Request, response.response);
+
+  assert.equal(maximumActiveChecks, 4);
+  assert.equal(abortedChecks, configs.length);
+  assert.equal(activeChecks, 0);
+  const statuses = response.body().agents as Array<{ status: string }>;
+  assert.equal(statuses.every(agent => agent.status === 'disconnected'), true);
 });
 
 test('/api/status reports resolved auth mode and event intake mode', async () => {

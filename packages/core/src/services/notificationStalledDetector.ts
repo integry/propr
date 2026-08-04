@@ -51,9 +51,12 @@ export interface NotificationStalledDetectorOptions {
     intervalMs?: number;
     operationTimeoutMs?: number;
     drainTimeoutMs?: number;
+    timeoutRetryDelayMs?: number;
     now?: () => string | number | Date;
     acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
 }
+
+const MAX_DETACHED_STALLED_RUNS = 2;
 
 export class NotificationStalledDetector {
     private readonly projector: Pick<NotificationProjectionService, 'detectStalledActivities'>
@@ -62,11 +65,15 @@ export class NotificationStalledDetector {
     private readonly intervalMs: number;
     private readonly operationTimeoutMs: number;
     private readonly drainTimeoutMs: number;
+    private readonly timeoutRetryDelayMs: number;
     private readonly now: () => string | number | Date;
     private readonly acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
     private timer: NodeJS.Timeout | null = null;
     private activeRun: Promise<number> | null = null;
     private activeRunAbortController: AbortController | null = null;
+    private readonly expiredRuns = new Set<Promise<number>>();
+    private replacementNotBefore = 0;
+    private consecutiveTimeouts = 0;
     private runGeneration = 0;
 
     constructor(options: NotificationStalledDetectorOptions = {}) {
@@ -75,6 +82,7 @@ export class NotificationStalledDetector {
         this.intervalMs = options.intervalMs ?? getNotificationStalledCheckIntervalMs();
         this.operationTimeoutMs = options.operationTimeoutMs ?? DEFAULT_NOTIFICATION_OPERATION_TIMEOUT_MS;
         this.drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS;
+        this.timeoutRetryDelayMs = options.timeoutRetryDelayMs ?? this.intervalMs;
         this.now = options.now ?? (() => new Date());
         this.acquireLease = options.acquireLease;
         if (!Number.isSafeInteger(this.stalledAfterMs) || this.stalledAfterMs <= 0) {
@@ -83,7 +91,8 @@ export class NotificationStalledDetector {
         for (const [name, value] of [
             ['intervalMs', this.intervalMs],
             ['operationTimeoutMs', this.operationTimeoutMs],
-            ['drainTimeoutMs', this.drainTimeoutMs]
+            ['drainTimeoutMs', this.drainTimeoutMs],
+            ['timeoutRetryDelayMs', this.timeoutRetryDelayMs]
         ] as const) {
             if (!isNotificationTimerDelay(value)) {
                 throw new TypeError(
@@ -103,7 +112,9 @@ export class NotificationStalledDetector {
     }
 
     async runOnce(): Promise<number> {
-        if (this.activeRun) return 0;
+        if (this.activeRun
+            || this.expiredRuns.size >= MAX_DETACHED_STALLED_RUNS
+            || Date.now() < this.replacementNotBefore) return 0;
         const abortController = new AbortController();
         const run = this.executeRun(this.runGeneration, abortController.signal);
         this.activeRun = run;
@@ -113,12 +124,15 @@ export class NotificationStalledDetector {
             () => { this.clearActiveRun(run); }
         );
         try {
-            return await withNotificationDeadline(
+            const completed = await withNotificationDeadline(
                 run,
                 this.operationTimeoutMs,
                 'notification stalled-activity run',
                 () => this.expireActiveRun(run, abortController)
             );
+            this.consecutiveTimeouts = 0;
+            this.replacementNotBefore = 0;
+            return completed;
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
                 'Failed to detect stalled notification activity');
@@ -131,8 +145,14 @@ export class NotificationStalledDetector {
         this.activeRunAbortController?.abort();
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
-        const activeRun = this.activeRun;
-        if (activeRun && !await settlesWithin(activeRun, this.drainTimeoutMs)) {
+        const unfinishedRuns = [
+            ...(this.activeRun ? [this.activeRun] : []),
+            ...this.expiredRuns,
+        ];
+        if (unfinishedRuns.length > 0 && !await settlesWithin(
+            Promise.allSettled(unfinishedRuns),
+            this.drainTimeoutMs
+        )) {
             logger.warn({ drainTimeoutMs: this.drainTimeoutMs },
                 'Notification stalled-task detector stopped with unfinished work');
         }
@@ -149,10 +169,20 @@ export class NotificationStalledDetector {
         abortController.abort();
         if (this.activeRun !== run) return;
         this.runGeneration++;
-        // The abort signal fences any remaining writes, but an arbitrary projector
-        // or SQLite call may not be cancellable. Keep this concurrency slot occupied
-        // until the underlying promise actually settles so repeated deadlines cannot
-        // accumulate orphaned work.
+        this.activeRun = null;
+        this.activeRunAbortController = null;
+        this.expiredRuns.add(run);
+        void run.then(
+            () => this.expiredRuns.delete(run),
+            () => this.expiredRuns.delete(run)
+        );
+        this.consecutiveTimeouts++;
+        const multiplier = 2 ** Math.min(10, this.consecutiveTimeouts - 1);
+        const retryDelayMs = Math.min(
+            MAX_NOTIFICATION_TIMER_DELAY_MS,
+            this.timeoutRetryDelayMs * multiplier
+        );
+        this.replacementNotBefore = Date.now() + retryDelayMs;
     }
 
     private async executeRun(runGeneration: number, signal: AbortSignal): Promise<number> {

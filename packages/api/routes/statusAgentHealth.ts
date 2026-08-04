@@ -22,6 +22,28 @@ export interface AgentStatus {
   status: 'connected' | 'disconnected';
 }
 
+const AGENT_HEALTH_CHECK_CONCURRENCY = 4;
+
+async function mapAgentStatuses<T>(
+  items: readonly T[],
+  mapper: (item: T) => Promise<AgentStatus>
+): Promise<AgentStatus[]> {
+  const results = new Array<AgentStatus>(items.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]);
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(AGENT_HEALTH_CHECK_CONCURRENCY, items.length) },
+    () => worker()
+  ));
+  return results;
+}
+
 export async function getAgentStatuses(
   loadAgents: () => Promise<AgentConfig[]>,
   registry: StatusAgentRegistry,
@@ -50,9 +72,10 @@ export async function getAgentStatuses(
 
   if (configuredAgents === undefined) {
     return registryAvailable
-      ? Promise.all(registeredAgents
-        .filter(agent => agent.config.enabled)
-        .map(agent => buildRegisteredAgentStatus(agent, healthTimeoutMs)))
+      ? mapAgentStatuses(
+        registeredAgents.filter(agent => agent.config.enabled),
+        agent => buildRegisteredAgentStatus(agent, healthTimeoutMs)
+      )
       : [];
   }
 
@@ -75,12 +98,12 @@ export async function getAgentStatuses(
   const registeredByAlias = new Map(
     registeredAgents.map(agent => [agent.config.alias, agent])
   );
-  return Promise.all(configuredAgents.filter(agent => agent.enabled).map(async (config) => {
+  return mapAgentStatuses(configuredAgents.filter(agent => agent.enabled), async (config) => {
     const registeredAgent = registeredById.get(config.id) ?? registeredByAlias.get(config.alias);
     return registeredAgent
       ? buildRegisteredAgentStatus(registeredAgent, healthTimeoutMs)
       : buildConfiguredAgentStatus(config, registry, healthTimeoutMs);
-  }));
+  });
 }
 
 function getDefaultClaudeConfig(): AgentConfig {
@@ -116,7 +139,11 @@ async function buildRegisteredAgentStatus(
   agent: Agent,
   healthTimeoutMs: number
 ): Promise<AgentStatus> {
-  const healthy = await withTimeout(agent.healthCheck(), healthTimeoutMs, false);
+  const healthy = await withTimeout(
+    signal => agent.healthCheck(signal),
+    healthTimeoutMs,
+    false
+  );
   return {
     id: agent.config.id,
     type: agent.config.type,
@@ -125,12 +152,22 @@ async function buildRegisteredAgentStatus(
   };
 }
 
-async function withTimeout<T, F>(promise: Promise<T>, timeoutMs: number, fallback: F): Promise<T | F> {
+async function withTimeout<T, F>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  fallback: F
+): Promise<T | F> {
+  const controller = new AbortController();
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      promise.catch(() => fallback),
-      new Promise<F>(resolve => { timeout = setTimeout(() => resolve(fallback), timeoutMs); })
+      Promise.resolve().then(() => operation(controller.signal)).catch(() => fallback),
+      new Promise<F>(resolve => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          resolve(fallback);
+        }, timeoutMs);
+      })
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);

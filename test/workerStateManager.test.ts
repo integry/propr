@@ -1147,6 +1147,44 @@ test('updateTaskState retry reuses the durable transition after Redis fails', as
     }
 });
 
+test('updateTaskState rejects an explicit idempotency key reused for another payload', async () => {
+    const existingState: TaskStateData = {
+        taskId: 'task-idempotency-conflict',
+        issueRef: { number: 142, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: 'corr-idempotency-conflict',
+        state: TaskStates.PENDING,
+        createdAt: '2026-08-04T01:00:00.000Z',
+        updatedAt: '2026-08-04T01:00:00.000Z',
+        attempts: 0,
+        history: [{
+            state: TaskStates.PENDING,
+            timestamp: '2026-08-04T01:00:00.000Z',
+            reason: 'Task created',
+        }],
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    try {
+        await stateManager.updateTaskState(existingState.taskId, TaskStates.PROCESSING, {
+            reason: 'Start work',
+            idempotencyKey: 'delivery-142',
+        });
+
+        await assert.rejects(
+            stateManager.updateTaskState(existingState.taskId, TaskStates.FAILED, {
+                reason: 'Different operation',
+                idempotencyKey: 'delivery-142',
+            }),
+            /idempotency key resolved to a different state/
+        );
+    } finally {
+        await stateManager.close();
+    }
+});
+
 test('updateTaskState includes commitHash in database metadata', async () => {
     const existingState: TaskStateData = {
         taskId: 'task-commit',

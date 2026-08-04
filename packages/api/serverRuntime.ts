@@ -11,6 +11,7 @@ import {
 } from '@propr/core';
 
 const NOTIFICATION_REDIS_OPERATION_TIMEOUT_MS = 5_000;
+const MIN_NOTIFICATION_REDIS_LEASE_TTL_MS = 3_000;
 const SHUTDOWN_TASK_TIMEOUT_MS = 10_000;
 
 export interface ShutdownTask {
@@ -163,8 +164,10 @@ export function createNotificationProjectionLease(
   if (!isNotificationTimerDelay(operationTimeoutMs)) {
     throw new TypeError('notification Redis operation timeout must be a schedulable positive integer');
   }
-  if (!isNotificationTimerDelay(ttlMs)) {
-    throw new TypeError('notification Redis lease TTL must be a schedulable positive integer');
+  if (!isNotificationTimerDelay(ttlMs) || ttlMs < MIN_NOTIFICATION_REDIS_LEASE_TTL_MS) {
+    throw new TypeError(
+      `notification Redis lease TTL must be at least ${MIN_NOTIFICATION_REDIS_LEASE_TTL_MS}ms`
+    );
   }
   const key = `notification:projection-lease:${name}`;
   const acquireScript = "return redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') and 1 or 0";

@@ -1965,8 +1965,8 @@ describe('durable notification schema', { concurrency: false }, () => {
       {
         name: 'repositoryBytes',
         minimum: 'a/b',
-        maximum: 'a/' + 'r'.repeat(NOTIFICATION_PAYLOAD_LIMITS.repositoryBytes - 2),
-        overflow: 'a/' + 'r'.repeat(NOTIFICATION_PAYLOAD_LIMITS.repositoryBytes - 1),
+        maximum: 'o'.repeat(39) + '/' + 'r'.repeat(100),
+        overflow: 'o'.repeat(39) + '/' + 'r'.repeat(101),
         parse: (value) => parseNotificationTarget({
           type: 'task',
           repository: value,

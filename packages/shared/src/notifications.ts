@@ -57,7 +57,7 @@ export const WEB_PUSH_ENDPOINT_HOST_SUFFIXES = ['.push.apple.com'] as const;
 export const NOTIFICATION_PAYLOAD_LIMITS = {
   identifierBytes: 255,
   deduplicationKeyBytes: 512,
-  repositoryBytes: 255,
+  repositoryBytes: 140,
   titleBytes: 256,
   bodyBytes: 4_096,
   actionLabelBytes: 128,
@@ -698,7 +698,8 @@ function parseRepository(value: unknown, path: string): string {
     false,
     NOTIFICATION_PAYLOAD_LIMITS.repositoryBytes,
   );
-  if (!/^[^/\s]+\/[^/\s]+$/.test(repository)) {
+  if (!/^(?![^/]*--)[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9._-]{1,100}$/i
+    .test(repository)) {
     return invalid(path, 'a repository in owner/name form');
   }
   return repository;

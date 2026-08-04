@@ -16,6 +16,10 @@ export async function up(knex) {
       ['user_id', 'invalidated_at'],
       'notification_repository_entitlement_generations_invalidation_idx'
     );
+    table.index(
+      'invalidated_at',
+      'notification_repository_entitlement_generations_gc_idx'
+    );
     table.check(
       'length(trim(user_id)) BETWEEN 1 AND 255 '
         + 'AND length(trim(auth_generation)) BETWEEN 1 AND 255',

@@ -6,6 +6,9 @@ export const ENTITLEMENT_REFRESH_LEASE_TABLE =
 const ENTITLEMENT_GENERATION_TABLE = 'notification_repository_entitlement_generations';
 const REGISTRATION_TOKEN = 'notification-scheduler-registration';
 const INVALIDATION_TOKEN = 'notification-logout-tombstone';
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const TOMBSTONE_SAFETY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const TOMBSTONE_GC_BATCH_SIZE = 100;
 const tombstoneSupport = new WeakMap<object, Promise<boolean>>();
 
 export async function ensureEntitlementRefreshRegistration(
@@ -53,6 +56,37 @@ async function supportsEntitlementInvalidationTombstones(database: Knex): Promis
   return supported;
 }
 
+async function pruneExpiredGenerationTombstones(
+  transaction: Knex.Transaction,
+  observedAt: Date
+): Promise<void> {
+  const cutoff = new Date(
+    observedAt.getTime() - SESSION_MAX_AGE_MS - TOMBSTONE_SAFETY_WINDOW_MS
+  ).toISOString();
+  const expired = await transaction(ENTITLEMENT_GENERATION_TABLE)
+    .select('user_id', 'auth_generation')
+    .whereNotNull('invalidated_at')
+    .andWhere('invalidated_at', '<', cutoff)
+    .orderBy('invalidated_at', 'asc')
+    .limit(TOMBSTONE_GC_BATCH_SIZE) as Array<{
+      user_id: string;
+      auth_generation: string;
+    }>;
+  if (expired.length === 0) return;
+  await transaction(ENTITLEMENT_GENERATION_TABLE)
+    .where((identities) => {
+      expired.forEach((row, index) => {
+        const identity = {
+          user_id: row.user_id,
+          auth_generation: row.auth_generation,
+        };
+        if (index === 0) identities.where(identity);
+        else identities.orWhere(identity);
+      });
+    })
+    .delete();
+}
+
 export async function activateNotificationRepositoryEntitlements(
   database: Knex,
   userId: string,
@@ -67,7 +101,8 @@ export async function activateNotificationRepositoryEntitlements(
   }
   const expiresAt = new Date(0).toISOString();
   await database.transaction(async (transaction) => {
-    const activatedAt = new Date().toISOString();
+    const observedAt = new Date();
+    const activatedAt = observedAt.toISOString();
     await transaction(ENTITLEMENT_GENERATION_TABLE).insert({
       user_id: userId,
       auth_generation: generation,
@@ -107,6 +142,7 @@ export async function activateNotificationRepositoryEntitlements(
     if (!activated) {
       throw new Error('Authenticated session generation has already been invalidated');
     }
+    await pruneExpiredGenerationTombstones(transaction, observedAt);
   });
 }
 
@@ -122,7 +158,8 @@ export async function invalidateNotificationRepositoryEntitlements(
       && await supportsEntitlementInvalidationTombstones(database);
     return await database.transaction(async (transaction) => {
       if (hasTombstones) {
-        const invalidatedAt = new Date().toISOString();
+        const observedAt = new Date();
+        const invalidatedAt = observedAt.toISOString();
         await transaction(ENTITLEMENT_GENERATION_TABLE).insert({
           user_id: userId,
           auth_generation: generation,
@@ -138,9 +175,49 @@ export async function invalidateNotificationRepositoryEntitlements(
         const currentGeneration = typeof current?.auth_generation === 'string'
           ? current.auth_generation.trim()
           : '';
-        // A later login owns both the entitlement snapshot and the refresh
-        // fence. A delayed logout from an older session must not revoke it.
-        if (currentGeneration && currentGeneration !== generation) return false;
+        const currentIsActive = currentGeneration
+          ? await transaction(ENTITLEMENT_GENERATION_TABLE)
+            .where({ user_id: userId, auth_generation: currentGeneration })
+            .whereNull('invalidated_at')
+            .first('auth_generation')
+          : undefined;
+        // A delayed logout from an older session must not revoke the active
+        // user-wide snapshot or disturb the credential that currently refreshes it.
+        if (currentGeneration && currentGeneration !== generation && currentIsActive) {
+          await pruneExpiredGenerationTombstones(transaction, observedAt);
+          return false;
+        }
+        const replacement = await transaction(ENTITLEMENT_GENERATION_TABLE)
+          .where({ user_id: userId })
+          .whereNull('invalidated_at')
+          .orderBy('activated_at', 'desc')
+          .first('auth_generation') as { auth_generation?: unknown } | undefined;
+        const replacementGeneration = typeof replacement?.auth_generation === 'string'
+          ? replacement.auth_generation.trim()
+          : '';
+        if (replacementGeneration) {
+          const expiresAt = new Date(0).toISOString();
+          await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE).insert({
+            user_id: userId,
+            lease_token: REGISTRATION_TOKEN,
+            fencing_token: 1,
+            expires_at: expiresAt,
+            retry_after: null,
+            invalidated_at: null,
+            auth_generation: replacementGeneration,
+          }).onConflict('user_id').merge({
+            lease_token: REGISTRATION_TOKEN,
+            fencing_token: transaction.raw(
+              `${ENTITLEMENT_REFRESH_LEASE_TABLE}.fencing_token + 1`
+            ),
+            expires_at: expiresAt,
+            retry_after: null,
+            invalidated_at: null,
+            auth_generation: replacementGeneration,
+          });
+          await pruneExpiredGenerationTombstones(transaction, observedAt);
+          return false;
+        }
       }
       await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
       await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
@@ -169,6 +246,9 @@ export async function invalidateNotificationRepositoryEntitlements(
           .orWhere('auth_generation', generation));
       } else if (hasRefreshLeases) {
         await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE).where({ user_id: userId }).delete();
+      }
+      if (hasTombstones) {
+        await pruneExpiredGenerationTombstones(transaction, new Date());
       }
       return true;
     });

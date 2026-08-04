@@ -306,6 +306,43 @@ test('terminal fencing archives post-terminal history and cascade evidence', asy
   }
 });
 
+test('terminal fencing cleans large legacy histories in bounded batches', async () => {
+  const database = await createDatabase();
+  try {
+    const taskId = 'large-terminal-history';
+    await database('tasks').insert(taskData(taskId));
+    await database('task_history').insert([
+      {
+        task_id: taskId, state: 'pending', timestamp: '2026-08-04T01:00:00.000Z',
+        transition_key: 'pending',
+      },
+      {
+        task_id: taskId, state: 'failed', timestamp: '2026-08-04T02:00:00.000Z',
+        transition_key: 'failed',
+      },
+    ]);
+    const lateRows = Array.from({ length: 450 }, (_value, index) => ({
+      task_id: taskId,
+      state: 'processing',
+      timestamp: new Date(Date.parse('2026-08-04T03:00:00.000Z') + index).toISOString(),
+      transition_key: `late-${index}`,
+    }));
+    for (let offset = 0; offset < lateRows.length; offset += 100) {
+      await database('task_history').insert(lateRows.slice(offset, offset + 100));
+    }
+
+    await fenceTerminalTaskTransitions(database);
+
+    assert.deepEqual(await database('task_history').where({ task_id: taskId })
+      .orderBy('history_id').pluck('state'), ['pending', 'failed']);
+    assert.equal(await database('task_terminal_transition_cleanup_audit')
+      .where({ task_id: taskId, record_type: 'task_history' })
+      .count({ count: '*' }).first().then(row => Number(row?.count)), lateRows.length);
+  } finally {
+    await database.destroy();
+  }
+});
+
 test('same-state fallback transitions receive a distinct operation identity', () => {
   const metadata = { reason: 'Observed the same state' };
   const first = buildTaskTransitionKey('same-state-task', 'task-created:same-state-task',

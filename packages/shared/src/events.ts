@@ -124,6 +124,10 @@ const DRAFT_STATUSES = new Set<DraftStatus>([
 const INDEXING_PHASES = new Set<IndexingPhase>([
   'indexing', 'files', 'directories', 'completed', 'failed', 'idle'
 ]);
+const TASK_UPDATE_STATES = new Set([
+  'pending', 'processing', 'claude_execution', 'post_processing',
+  'completed', 'failed', 'cancelled'
+]);
 
 function eventRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -176,11 +180,19 @@ function requiredEventTimestamp(payload: Record<string, unknown>, field: string)
 
 function validateTaskUpdatePayload(payload: Record<string, unknown>): TaskUpdatePayload {
   requiredEventString(payload, 'taskId');
-  requiredEventString(payload, 'state');
+  if (!TASK_UPDATE_STATES.has(requiredEventString(payload, 'state'))) {
+    throw new TypeError('event payload state is not a supported task state');
+  }
   requiredEventTimestamp(payload, 'timestamp');
-  optionalEventString(payload, 'previousState');
+  if (payload.previousState !== undefined
+      && !TASK_UPDATE_STATES.has(requiredEventString(payload, 'previousState'))) {
+    throw new TypeError('event payload previousState is not a supported task state');
+  }
   optionalEventString(payload, 'repository');
   optionalEventNumber(payload, 'issueNumber', true);
+  if (typeof payload.issueNumber === 'number' && payload.issueNumber <= 0) {
+    throw new TypeError('event payload issueNumber must be a positive integer');
+  }
   optionalEventRecord(payload, 'metadata');
   return payload as unknown as TaskUpdatePayload;
 }
@@ -225,11 +237,30 @@ function validateIndexingUpdatePayload(payload: Record<string, unknown>): Indexi
     throw new TypeError('event payload phase is not a supported indexing phase');
   }
   optionalEventString(payload, 'branch');
-  optionalEventString(payload, 'transitionAt');
+  if (payload.transitionAt !== undefined) requiredEventTimestamp(payload, 'transitionAt');
   optionalEventString(payload, 'runId');
+  optionalEventNumber(payload, 'progress');
+  if (typeof payload.progress === 'number'
+      && (payload.progress < 0 || payload.progress > 100)) {
+    throw new TypeError('event payload progress must be between 0 and 100');
+  }
   for (const field of [
-    'progress', 'totalFiles', 'processedFiles', 'totalDirectories', 'processedDirectories'
-  ]) optionalEventNumber(payload, field);
+    'totalFiles', 'processedFiles', 'totalDirectories', 'processedDirectories'
+  ]) {
+    optionalEventNumber(payload, field, true);
+    if (typeof payload[field] === 'number' && payload[field] < 0) {
+      throw new TypeError(`event payload ${field} must be a non-negative integer`);
+    }
+  }
+  if (typeof payload.processedFiles === 'number' && typeof payload.totalFiles === 'number'
+      && payload.processedFiles > payload.totalFiles) {
+    throw new TypeError('event payload processedFiles cannot exceed totalFiles');
+  }
+  if (typeof payload.processedDirectories === 'number'
+      && typeof payload.totalDirectories === 'number'
+      && payload.processedDirectories > payload.totalDirectories) {
+    throw new TypeError('event payload processedDirectories cannot exceed totalDirectories');
+  }
   return payload as unknown as IndexingUpdatePayload;
 }
 

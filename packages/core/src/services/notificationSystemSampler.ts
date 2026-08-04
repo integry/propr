@@ -79,8 +79,11 @@ export interface NotificationSystemSamplerOptions {
     startupGraceMs?: number;
     operationTimeoutMs?: number;
     drainTimeoutMs?: number;
+    timeoutRetryDelayMs?: number;
     acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
 }
+
+const MAX_DETACHED_SYSTEM_RUNS = 2;
 
 /** Samples installation health independently from dashboard polling. */
 export class NotificationSystemSampler {
@@ -90,11 +93,15 @@ export class NotificationSystemSampler {
     private readonly startupGraceMs: number;
     private readonly operationTimeoutMs: number;
     private readonly drainTimeoutMs: number;
+    private readonly timeoutRetryDelayMs: number;
     private readonly acquireLease?: () => Promise<boolean | NotificationProjectionLease>;
     private startupTimer: NodeJS.Timeout | null = null;
     private intervalTimer: NodeJS.Timeout | null = null;
     private activeRun: Promise<boolean> | null = null;
     private activeRunAbortController: AbortController | null = null;
+    private readonly expiredRuns = new Set<Promise<boolean>>();
+    private replacementNotBefore = 0;
+    private consecutiveTimeouts = 0;
     private runGeneration = 0;
 
     constructor(options: NotificationSystemSamplerOptions) {
@@ -104,12 +111,14 @@ export class NotificationSystemSampler {
         this.startupGraceMs = options.startupGraceMs ?? getNotificationSystemStartupGraceMs();
         this.operationTimeoutMs = options.operationTimeoutMs ?? DEFAULT_NOTIFICATION_OPERATION_TIMEOUT_MS;
         this.drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS;
+        this.timeoutRetryDelayMs = options.timeoutRetryDelayMs ?? this.intervalMs;
         this.acquireLease = options.acquireLease;
         for (const [name, value, allowZero] of [
             ['intervalMs', this.intervalMs, false],
             ['startupGraceMs', this.startupGraceMs, true],
             ['operationTimeoutMs', this.operationTimeoutMs, false],
-            ['drainTimeoutMs', this.drainTimeoutMs, false]
+            ['drainTimeoutMs', this.drainTimeoutMs, false],
+            ['timeoutRetryDelayMs', this.timeoutRetryDelayMs, false]
         ] as const) {
             if (!isNotificationTimerDelay(value, allowZero)) {
                 throw new TypeError(
@@ -135,7 +144,9 @@ export class NotificationSystemSampler {
     }
 
     async runOnce(): Promise<boolean> {
-        if (this.activeRun) return false;
+        if (this.activeRun
+            || this.expiredRuns.size >= MAX_DETACHED_SYSTEM_RUNS
+            || Date.now() < this.replacementNotBefore) return false;
         const abortController = new AbortController();
         const run = this.executeRun(this.runGeneration, abortController.signal);
         this.activeRun = run;
@@ -145,12 +156,15 @@ export class NotificationSystemSampler {
             () => { this.clearActiveRun(run); }
         );
         try {
-            return await withNotificationDeadline(
+            const completed = await withNotificationDeadline(
                 run,
                 this.operationTimeoutMs,
                 'notification system-health run',
                 () => this.expireActiveRun(run, abortController)
             );
+            this.consecutiveTimeouts = 0;
+            this.replacementNotBefore = 0;
+            return completed;
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
                 'Failed to sample system health for notifications');
@@ -165,8 +179,14 @@ export class NotificationSystemSampler {
         if (this.intervalTimer) clearInterval(this.intervalTimer);
         this.startupTimer = null;
         this.intervalTimer = null;
-        const activeRun = this.activeRun;
-        if (activeRun && !await settlesWithin(activeRun, this.drainTimeoutMs)) {
+        const unfinishedRuns = [
+            ...(this.activeRun ? [this.activeRun] : []),
+            ...this.expiredRuns,
+        ];
+        if (unfinishedRuns.length > 0 && !await settlesWithin(
+            Promise.allSettled(unfinishedRuns),
+            this.drainTimeoutMs
+        )) {
             logger.warn({ drainTimeoutMs: this.drainTimeoutMs },
                 'Notification system-health sampler stopped with unfinished work');
         }
@@ -183,8 +203,20 @@ export class NotificationSystemSampler {
         abortController.abort();
         if (this.activeRun !== run) return;
         this.runGeneration++;
-        // getSnapshot/projectSnapshot may be backed by uncancellable I/O. Retain
-        // the slot until it settles instead of allowing timed-out runs to pile up.
+        this.activeRun = null;
+        this.activeRunAbortController = null;
+        this.expiredRuns.add(run);
+        void run.then(
+            () => this.expiredRuns.delete(run),
+            () => this.expiredRuns.delete(run)
+        );
+        this.consecutiveTimeouts++;
+        const multiplier = 2 ** Math.min(10, this.consecutiveTimeouts - 1);
+        const retryDelayMs = Math.min(
+            MAX_NOTIFICATION_TIMER_DELAY_MS,
+            this.timeoutRetryDelayMs * multiplier
+        );
+        this.replacementNotBefore = Date.now() + retryDelayMs;
     }
 
     private async executeRun(runGeneration: number, signal: AbortSignal): Promise<boolean> {

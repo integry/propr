@@ -132,6 +132,70 @@ describe('notification service', { concurrency: false }, () => {
         });
     });
 
+    test('only enriches a task PR number while preserving omitted severity', async () => {
+        const baseInput = {
+            eventId: 'task-pr-enrichment',
+            deduplicationKey: 'task-pr-enrichment',
+            kind: 'task' as const,
+            severity: 'warning' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'task-pr-enrichment'
+            },
+            title: 'Task needs attention',
+            body: 'Initial details',
+            occurredAt: '2026-08-02T08:00:00.000Z'
+        };
+        await service.createNotificationEvent(baseInput);
+
+        const enriched = await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                severity: undefined,
+                target: { ...baseInput.target, prNumber: 1734 },
+                body: 'Pull request is ready'
+            })
+        );
+
+        assert.equal(enriched.severity, 'warning');
+        assert.deepEqual(enriched.target, { ...baseInput.target, prNumber: 1734 });
+    });
+
+    test('rejects retargeting enrichment before assigning new recipients', async () => {
+        const baseInput = {
+            eventId: 'immutable-target-enrichment',
+            deduplicationKey: 'immutable-target-enrichment',
+            kind: 'task' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'immutable-target-task'
+            },
+            title: 'Original task',
+            body: 'Original body',
+            occurredAt: '2026-08-02T08:00:00.000Z',
+            recipients: ['user-a']
+        };
+        await service.createNotificationEvent(baseInput);
+
+        await assert.rejects(database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                target: { ...baseInput.target, repository: 'other/private' },
+                recipients: ['user-b']
+            })
+        ), /cannot change target identity/);
+        assert.deepEqual(await database('notification_user_states')
+            .where({ event_id: baseInput.eventId }).pluck('user_id'), ['user-a']);
+        await assert.rejects(
+            database('notification_events').where({ event_id: baseInput.eventId }).update({
+                target_json: JSON.stringify({ ...baseInput.target, taskId: 'other-task' })
+            }),
+            /notification event identity is immutable/
+        );
+    });
+
     test('returns the original event and assigns new recipients on a duplicate', async () => {
         const original = await service.createNotificationEvent({
             eventId: 'original-event',

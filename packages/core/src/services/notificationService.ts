@@ -268,17 +268,16 @@ function buildEnrichedNotificationEvent<K extends NotificationKind>(
     stored: NotificationEvent<K>,
     input: CreateNotificationEventInput<K>
 ): NotificationEvent<K> {
-    const mergedTarget = { ...stored.target, ...input.target };
     const mergedMetadata = input.metadata === undefined && stored.metadata === undefined
         ? undefined
         : { ...(stored.metadata ?? {}), ...(input.metadata ?? {}) };
     const enrichedAction = input.action ?? stored.action;
-    return parseNotificationEvent({
+    const requested = parseNotificationEvent({
         id: stored.id,
         deduplicationKey: input.deduplicationKey,
         kind: input.kind,
-        severity: input.severity ?? 'info',
-        target: mergedTarget,
+        severity: input.severity ?? stored.severity,
+        target: input.target,
         title: input.title,
         body: input.body,
         ...(enrichedAction === undefined ? {} : { action: enrichedAction }),
@@ -288,6 +287,28 @@ function buildEnrichedNotificationEvent<K extends NotificationKind>(
             : normalizeISO8601Timestamp(input.occurredAt),
         createdAt: stored.createdAt
     }) as NotificationEvent<K>;
+    if (stored.target.type !== requested.target.type) {
+        throw new Error('Notification enrichment cannot change target type');
+    }
+    let enrichedTarget = stored.target as NotificationTargetFor<K>;
+    if (stored.target.type === 'task' && requested.target.type === 'task') {
+        const { prNumber: storedPrNumber, ...storedIdentity } = stored.target;
+        const { prNumber: requestedPrNumber, ...requestedIdentity } = requested.target;
+        if (JSON.stringify(storedIdentity) !== JSON.stringify(requestedIdentity)) {
+            throw new Error('Notification enrichment cannot change target identity');
+        }
+        if (storedPrNumber !== undefined && requestedPrNumber !== undefined
+            && storedPrNumber !== requestedPrNumber) {
+            throw new Error('Notification enrichment cannot replace an assigned PR number');
+        }
+        enrichedTarget = {
+            ...stored.target,
+            ...(requestedPrNumber === undefined ? {} : { prNumber: requestedPrNumber })
+        } as NotificationTargetFor<K>;
+    } else if (JSON.stringify(stored.target) !== JSON.stringify(requested.target)) {
+        throw new Error('Notification enrichment cannot change target identity');
+    }
+    return { ...requested, target: enrichedTarget } as NotificationEvent<K>;
 }
 
 export class NotificationService {
@@ -390,7 +411,7 @@ export class NotificationService {
         const stored = await this.createNotificationEventInTransaction(
             transaction,
             input,
-            recipients
+            []
         );
         const requestedId = input.eventId ?? input.id;
         if (requestedId !== undefined && requestedId !== stored.id) {
@@ -403,6 +424,7 @@ export class NotificationService {
             || stored.occurredAt !== enriched.occurredAt) {
             throw new Error('Notification enrichment cannot change durable event identity');
         }
+        await this.assignRecipients(transaction, stored, normalizeRecipients(recipients));
         if (stored.title === enriched.title
             && stored.body === enriched.body
             && JSON.stringify(stored.target) === JSON.stringify(enriched.target)

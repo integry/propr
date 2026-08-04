@@ -6,7 +6,10 @@ import { isNotificationTimerDelay } from './notificationSchedulerTiming.js';
 
 export const DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = 60 * 60 * 1000;
 
-const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+// GitHub owners are 1-39 alphanumeric/hyphen characters without leading,
+// trailing, or consecutive hyphens. Repository names are at most 100 of the
+// characters GitHub preserves in canonical full_name values.
+const REPOSITORY_PATTERN = /^(?![^/]*--)[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9._-]{1,100}$/;
 const INSERT_CHUNK_SIZE = 200;
 type RepositoryAccessDatabase = Knex | Knex.Transaction;
 

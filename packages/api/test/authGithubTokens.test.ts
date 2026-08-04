@@ -325,7 +325,7 @@ test('a proactive OAuth refresh updates the scheduled entitlement credential', a
   assert.equal(await updatedCredential, 'proactively-refreshed-token');
 });
 
-test('failed entitlement invalidation does not prevent session cleanup', async () => {
+test('failed entitlement invalidation retains the session for a cleanup retry', async () => {
   configureDemoMode(false);
   const middleware = createEnsureAuthenticated({
     invalidateNotificationEntitlements: async () => { throw new Error('database unavailable'); },
@@ -335,14 +335,14 @@ test('failed entitlement invalidation does not prevent session cleanup', async (
 
   await middleware(req, response, (() => undefined) as NextFunction);
 
-  assert.equal(status(), 401);
+  assert.equal(status(), 503);
   assert.deepEqual(body(), {
-    error: 'GitHub authentication expired',
-    code: 'GITHUB_REAUTH_REQUIRED',
-    message: 'Your GitHub session has expired. Please log in again.',
+    error: 'Session cleanup unavailable',
+    code: 'AUTH_CLEANUP_UNAVAILABLE',
+    message: 'Authorization cleanup could not be persisted. Please retry.',
   });
-  assert.equal(req.logoutCalls, 1);
-  assert.equal(req.destroyCalls, 1);
+  assert.equal(req.logoutCalls, 0);
+  assert.equal(req.destroyCalls, 0);
 });
 
 test('session cleanup waits for durable entitlement invalidation to settle', async () => {
@@ -415,7 +415,7 @@ test('GitHub route session invalidation invokes entitlement cancellation before 
   assert.equal(req.destroyCalls, 1);
 });
 
-test('GitHub route clears the session when durable entitlement invalidation fails', async () => {
+test('GitHub route retains the session when durable entitlement invalidation fails', async () => {
   const req = createRequest(createUser());
   const { response, status, body } = createJsonResponse();
   globalThis.fetch = async () => new Response(JSON.stringify({
@@ -428,14 +428,14 @@ test('GitHub route clears the session when durable entitlement invalidation fail
 
   await handleAuthError(req, response, async () => { throw new Error('database unavailable'); });
 
-  assert.equal(status(), 401);
+  assert.equal(status(), 503);
   assert.deepEqual(body(), {
-    error: 'GitHub authentication expired',
-    code: 'TOKEN_EXPIRED',
-    message: 'Your GitHub session has expired. Please log in again.',
+    error: 'Session cleanup unavailable',
+    code: 'AUTH_CLEANUP_UNAVAILABLE',
+    message: 'Authorization cleanup could not be persisted. Please retry.',
   });
-  assert.equal(req.logoutCalls, 1);
-  assert.equal(req.destroyCalls, 1);
+  assert.equal(req.logoutCalls, 0);
+  assert.equal(req.destroyCalls, 0);
 });
 
 test('GitHub auth-error cleanup waits for durable entitlement invalidation', async () => {

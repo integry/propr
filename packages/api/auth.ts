@@ -21,7 +21,11 @@ export type { GitHubUser } from './authTypes.js';
 export interface AuthLifecycleHooks {
     invalidateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
     activateNotificationEntitlements?: (userId: string, authGeneration: string) => Promise<void>;
-    updateNotificationCredential?: (userId: string, accessToken: string) => void;
+    updateNotificationCredential?: (
+        userId: string,
+        accessToken: string,
+        authGeneration: string
+    ) => void;
 }
 
 const AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS = 5_000;
@@ -32,17 +36,40 @@ async function invalidateRequestEntitlements(
 ): Promise<void> {
     const userId = req.user?.id;
     if (!userId || !lifecycleHooks.invalidateNotificationEntitlements) return;
+    const authGeneration = getSessionAuthGeneration(req);
+    await withNotificationDeadline(
+        lifecycleHooks.invalidateNotificationEntitlements(userId, authGeneration),
+        AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
+        'persisting notification entitlement invalidation'
+    );
+}
+
+async function invalidateBeforeSessionCleanup(
+    req: Request,
+    res: Response,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<boolean> {
     try {
-        const authGeneration = getSessionAuthGeneration(req);
-        await withNotificationDeadline(
-            lifecycleHooks.invalidateNotificationEntitlements(userId, authGeneration),
-            AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
-            'persisting notification entitlement invalidation'
-        );
+        await invalidateRequestEntitlements(req, lifecycleHooks);
+        return true;
     } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) },
-            'Failed to invalidate notification entitlements during session cleanup');
+        logger.error({
+            userId: req.user?.id,
+            error: error instanceof Error ? error.message : String(error)
+        }, 'Failed to invalidate notification entitlements during session cleanup');
+        res.status(503).json({
+            error: 'Session cleanup unavailable',
+            code: 'AUTH_CLEANUP_UNAVAILABLE',
+            message: 'Authorization cleanup could not be persisted. Please retry.'
+        });
+        return false;
     }
+}
+
+function saveSession(req: Request): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        req.session.save(error => error ? reject(error) : resolve());
+    });
 }
 
 export function getSessionCookieDomain(): string | undefined {
@@ -63,7 +90,7 @@ export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): 
     }
 }
 
-function clearSessionCookie(res: Response): void {
+export function clearSessionCookie(res: Response): void {
     const domain = getSessionCookieDomain();
     // Mirror the attributes used when the session cookie is set — browsers match
     // on name/domain/path, but mirroring secure/httpOnly/sameSite is the safer
@@ -186,28 +213,51 @@ export function setupAuth(
                 // Reject logins from users not on the access whitelist, before a
                 // session is usable. (No-op when no whitelist is configured.)
                 if (!isUserWhitelisted(req.user?.username)) {
-                    try {
-                        await invalidateRequestEntitlements(req, lifecycleHooks);
-                    } finally {
-                        await clearSessionForReauth(req);
-                    }
+                    if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+                    await clearSessionForReauth(req);
                     clearSessionCookie(res);
                     res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
                     return;
                 }
 
                 const userId = req.user?.id;
-                if (userId && lifecycleHooks.activateNotificationEntitlements) {
+                const authGeneration = userId ? getSessionAuthGeneration(req) : undefined;
+
+                // Persist the authenticated session before activating its durable
+                // notification generation. A failed save therefore cannot strand
+                // an active generation without a session that can revoke it.
+                try {
+                    await saveSession(req);
+                } catch (error) {
+                    logger.error({
+                        userId,
+                        error: error instanceof Error ? error.message : String(error)
+                    }, 'Session save failed after login');
+                    await clearSessionForReauth(req);
+                    clearSessionCookie(res);
+                    res.status(503).json({
+                        error: 'Login session unavailable',
+                        code: 'AUTH_SESSION_UNAVAILABLE',
+                        message: 'Your authenticated session could not be persisted. Please retry login.'
+                    });
+                    return;
+                }
+
+                if (userId && authGeneration && lifecycleHooks.activateNotificationEntitlements) {
                     try {
                         await lifecycleHooks.activateNotificationEntitlements(
                             userId,
-                            getSessionAuthGeneration(req)
+                            authGeneration
                         );
                     } catch (error) {
                         logger.error({
                             userId,
                             error: error instanceof Error ? error.message : String(error),
                         }, 'Failed to activate notification entitlements after login');
+                        // Activation hooks are expected to be transactional, but
+                        // explicitly tombstone the generation in case a custom hook
+                        // persisted activation before reporting an error.
+                        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
                         await clearSessionForReauth(req);
                         clearSessionCookie(res);
                         res.status(503).json({
@@ -227,15 +277,7 @@ export function setupAuth(
                 }
 
                 const finalRedirect = redirectTo || getDefaultRedirectUrl();
-
-                // Explicitly save session before redirect to ensure cookie is set
-                // This is required when using Redis store with async operations
-                req.session.save((err) => {
-                    if (err) {
-                        logger.error({ error: err.message }, 'Session save failed after login');
-                    }
-                    res.redirect(finalRedirect);
-                });
+                res.redirect(finalRedirect);
             }
         );
     }
@@ -246,11 +288,8 @@ export function setupAuth(
             return;
         }
 
-        try {
-            await invalidateRequestEntitlements(req, lifecycleHooks);
-        } finally {
-            await clearSessionForReauth(req);
-        }
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
         clearSessionCookie(res);
         res.redirect(`${process.env.FRONTEND_URL}/login?logged_out=true`);
     });
@@ -295,21 +334,15 @@ async function authenticateSessionRequest(
     lifecycleHooks: AuthLifecycleHooks
 ): Promise<void> {
     if (req.user?.githubAuthInvalid) {
-        try {
-            await invalidateRequestEntitlements(req, lifecycleHooks);
-        } finally {
-            await clearSessionForReauth(req);
-        }
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
         clearSessionCookie(res);
         respondGitHubReauthRequired(res);
         return;
     }
     if (!isUserWhitelisted(req.user?.username)) {
-        try {
-            await invalidateRequestEntitlements(req, lifecycleHooks);
-        } finally {
-            await clearSessionForReauth(req);
-        }
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
         clearSessionCookie(res);
         res.status(403).json({ error: 'Forbidden', code: 'USER_NOT_WHITELISTED', message: 'Your GitHub account is not authorized for this ProPR instance. Ask an admin to add you to the user whitelist.' });
         return;
@@ -322,7 +355,11 @@ async function authenticateSessionRequest(
         const userId = req.user?.id;
         const accessToken = req.user?.accessToken;
         if (result.status === 'refreshed' && userId && accessToken) {
-            lifecycleHooks.updateNotificationCredential?.(userId, accessToken);
+            lifecycleHooks.updateNotificationCredential?.(
+                userId,
+                accessToken,
+                getSessionAuthGeneration(req)
+            );
         }
     }).catch((error) => {
         logger.error({ error: error instanceof Error ? error.message : String(error) },
@@ -339,11 +376,8 @@ async function authenticateExpiredSession(
 ): Promise<void> {
     const refreshResult = await refreshGitHubTokenWithResult(req, true);
     if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
-        try {
-            await invalidateRequestEntitlements(req, lifecycleHooks);
-        } finally {
-            await clearSessionForReauth(req);
-        }
+        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        await clearSessionForReauth(req);
         clearSessionCookie(res);
         respondGitHubReauthRequired(res);
         return;
@@ -355,7 +389,11 @@ async function authenticateExpiredSession(
     const userId = req.user?.id;
     const accessToken = req.user?.accessToken;
     if (refreshResult.status === 'refreshed' && userId && accessToken) {
-        lifecycleHooks.updateNotificationCredential?.(userId, accessToken);
+        lifecycleHooks.updateNotificationCredential?.(
+            userId,
+            accessToken,
+            getSessionAuthGeneration(req)
+        );
     }
     next();
 }

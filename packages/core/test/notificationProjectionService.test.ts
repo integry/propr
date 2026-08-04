@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
+import { parseProjectionEventPayload } from '@propr/shared';
 import { closeConnection, type BetterSqliteConnection } from '../src/db/connection.js';
 import { up as createNotificationSchema } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addNotificationPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
@@ -45,7 +46,8 @@ import {
 } from '../src/services/notificationSchedulerTiming.js';
 import {
     DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS,
-    getNotificationRepositoryEntitlementTtlMs
+    getNotificationRepositoryEntitlementTtlMs,
+    normalizeNotificationRepositoryIdentity
 } from '../src/services/notificationRepositoryAccess.js';
 import { closeEventPublisher, EventPublisher, getEventPublisher } from '../src/utils/eventPublisher.js';
 import { NotificationProjectionQueue } from '../src/utils/notificationProjectionQueue.js';
@@ -1597,6 +1599,22 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.equal((await checkpoints.loadRetries(10)).length, 1);
     });
 
+    test('discards projection retries after the terminal attempt limit', async () => {
+        const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
+        await checkpoints.enqueueRetry('terminal-task-history', 'exhausted', {
+            eventType: 'task:update', taskId: 'exhausted', state: 'failed', timestamp: EVENT_TIME
+        });
+        await database('notification_projection_retries')
+            .where({ transition_key: 'exhausted' })
+            .update({ attempt_count: 167 });
+        const [retry] = await checkpoints.loadRetries(1);
+
+        assert.equal(await checkpoints.markRetryDeferred(retry), false);
+        assert.equal(await database('notification_projection_retries')
+            .where({ transition_key: 'exhausted' })
+            .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+    });
+
     test('does not delete a replacement payload when an older retry completes', async () => {
         const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
         const original = { eventType: 'task:update', taskId: 'retry-race', state: 'failed' };
@@ -1659,6 +1677,38 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.equal(projections, 0);
         assert.equal(await database('notification_projection_retries')
             .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+    });
+
+    test('rejects semantically invalid durable projection payloads at the JSON boundary', () => {
+        const invalidPayloads = [
+            {
+                eventType: 'task:update', taskId: 'task', state: 'unknown',
+                timestamp: EVENT_TIME
+            },
+            {
+                eventType: 'task:update', taskId: 'task', state: 'failed',
+                previousState: 'unknown', timestamp: EVENT_TIME
+            },
+            {
+                eventType: 'task:update', taskId: 'task', state: 'failed', issueNumber: -1,
+                timestamp: EVENT_TIME
+            },
+            {
+                eventType: 'indexing:update', repository: 'integry/propr', phase: 'files',
+                progress: 101, timestamp: EVENT_TIME
+            },
+            {
+                eventType: 'indexing:update', repository: 'integry/propr', phase: 'files',
+                processedFiles: -1, timestamp: EVENT_TIME
+            },
+            {
+                eventType: 'indexing:update', repository: 'integry/propr', phase: 'completed',
+                transitionAt: 'not-a-time', timestamp: EVENT_TIME
+            }
+        ];
+        for (const payload of invalidPayloads) {
+            assert.throws(() => parseProjectionEventPayload(payload), TypeError);
+        }
     });
 
     test('prunes terminal indexing activity only after its durable checkpoint advances', async () => {
@@ -2085,6 +2135,19 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         }
     });
 
+    test('accepts only GitHub-compatible repository identities for entitlements', () => {
+        assert.equal(
+            normalizeNotificationRepositoryIdentity('Octo-Org/repo.name'),
+            'octo-org/repo.name'
+        );
+        for (const repository of [
+            '-owner/repo', 'owner-/repo', 'owner--name/repo',
+            'owner/repo:name', 'owner/repo\u0000name'
+        ]) {
+            assert.equal(normalizeNotificationRepositoryIdentity(repository), undefined);
+        }
+    });
+
     test('recreates the event-publisher singleton after a completed close', async () => {
         const first = getEventPublisher();
         await closeEventPublisher();
@@ -2480,7 +2543,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         await sampler.stop();
     });
 
-    test('keeps a timed-out system-health generation in the concurrency slot', async () => {
+    test('holds a timed-out system-health generation during its circuit cooldown', async () => {
         let attempts = 0;
         const sampler = new NotificationSystemSampler({
             getSnapshot: async () => {
@@ -2498,6 +2561,28 @@ describe('notification projection schedulers', { concurrency: false }, () => {
 
         assert.equal(attempts, 1);
         assert.ok(Date.now() - startedAt < 500);
+    });
+
+    test('replaces a never-settling system-health run after its circuit cooldown', async () => {
+        let attempts = 0;
+        const sampler = new NotificationSystemSampler({
+            getSnapshot: async () => {
+                attempts++;
+                return new Promise<never>(() => undefined);
+            },
+            projector: { projectSnapshot: async () => undefined },
+            intervalMs: 60_000,
+            operationTimeoutMs: 5,
+            timeoutRetryDelayMs: 5
+        });
+
+        assert.equal(await sampler.runOnce(), false);
+        await new Promise(resolve => setTimeout(resolve, 6));
+        assert.equal(await sampler.runOnce(), false);
+        assert.equal(attempts, 2);
+        await new Promise(resolve => setTimeout(resolve, 11));
+        assert.equal(await sampler.runOnce(), false);
+        assert.equal(attempts, 2);
     });
 
     test('renews and releases the replica lease during a slow system scan', async () => {
@@ -2593,7 +2678,7 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(stopped, true);
     });
 
-    test('keeps a timed-out stalled-activity generation in the concurrency slot', async () => {
+    test('holds a timed-out stalled-activity generation during its circuit cooldown', async () => {
         let attempts = 0;
         const detector = new NotificationStalledDetector({
             projector: {
@@ -2610,6 +2695,30 @@ describe('notification projection schedulers', { concurrency: false }, () => {
         assert.equal(await detector.runOnce(), 0);
         assert.equal(await detector.runOnce(), 0);
         assert.equal(attempts, 1);
+    });
+
+    test('replaces a never-settling stalled scan after its circuit cooldown', async () => {
+        let attempts = 0;
+        const detector = new NotificationStalledDetector({
+            projector: {
+                detectStalledActivities: async () => {
+                    attempts++;
+                    return new Promise<never>(() => undefined);
+                }
+            },
+            intervalMs: 60_000,
+            stalledAfterMs: 30_000,
+            operationTimeoutMs: 5,
+            timeoutRetryDelayMs: 5
+        });
+
+        assert.equal(await detector.runOnce(), 0);
+        await new Promise(resolve => setTimeout(resolve, 6));
+        assert.equal(await detector.runOnce(), 0);
+        assert.equal(attempts, 2);
+        await new Promise(resolve => setTimeout(resolve, 11));
+        assert.equal(await detector.runOnce(), 0);
+        assert.equal(attempts, 2);
     });
 
     test('releases a stalled-activity lease when an uninterruptible scan times out', async () => {

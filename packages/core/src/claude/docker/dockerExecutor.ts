@@ -7,6 +7,7 @@ import {
     cleanupRedisStreaming,
     createTaskProgressReporter,
     detectContainerId,
+    flushJsonLineMessages,
     initRedisStreaming,
     initTaskLivenessHeartbeat,
     spawnExecutionCommand,
@@ -30,6 +31,7 @@ export interface DockerCommandOptions {
     preserveOutputOnTimeout?: boolean;
     onSessionId?: (sessionId: string, conversationId?: string) => void; onContainerId?: (containerId: string, containerName: string) => void;
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
+    signal?: AbortSignal;
 }
 
 interface AbortCheckerOptions {
@@ -346,6 +348,15 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
+        const abortFromSignal = () => {
+            state.aborted.value = true;
+            const containerToStop = state.containerId.value || namedContainer;
+            if (containerToStop) void stopDockerContainer(containerToStop, 1);
+            child.kill('SIGTERM');
+            setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 1000);
+        };
+        options.signal?.addEventListener('abort', abortFromSignal, { once: true });
+        if (options.signal?.aborted) abortFromSignal();
         const messageTimestamps = new Map<string, string>();
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
@@ -377,7 +388,8 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const redisState: RedisStreamingState = {
             client: null,
             interval: null as ReturnType<typeof setInterval> | null,
-            lastLen: 0
+            lastLen: 0,
+            pendingWrite: null
         };
         const livenessInterval = taskId ? initTaskLivenessHeartbeat(taskId) : null;
         const reportTaskProgress = taskId ? createTaskProgressReporter(taskId) : null;
@@ -398,6 +410,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            options.signal?.removeEventListener('abort', abortFromSignal);
+            flushJsonLineMessages(new Date().toISOString(), {
+                state, messageTimestamps, onSessionId
+            });
             if (abortChecker) await abortChecker.close();
             if (livenessInterval) clearInterval(livenessInterval);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
@@ -416,6 +432,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         });
         child.on('error', async (error: Error) => {
             clearTimeout(timeoutHandle);
+            options.signal?.removeEventListener('abort', abortFromSignal);
             if (abortChecker) await abortChecker.close();
             if (livenessInterval) clearInterval(livenessInterval);
             if (redisState.interval) clearInterval(redisState.interval);

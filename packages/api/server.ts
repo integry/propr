@@ -148,7 +148,12 @@ const appEnsureAuthenticated = setupAuth(app, demoMode, {
     notificationEntitlementRefreshMiddleware.invalidate(userId, authGeneration),
   activateNotificationEntitlements: (userId, authGeneration) =>
     notificationEntitlementRefreshMiddleware.activate(userId, authGeneration),
-  updateNotificationCredential: (userId, accessToken) => notificationEntitlementRefreshMiddleware.updateCredential(userId, accessToken)
+  updateNotificationCredential: (userId, accessToken, authGeneration) =>
+    notificationEntitlementRefreshMiddleware.updateCredential(
+      userId,
+      accessToken,
+      authGeneration
+    )
 });
 
 let redisClient: RedisClientType;
