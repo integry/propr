@@ -82,7 +82,8 @@ describe('OpenCode API routes', () => {
 
     test('POST /api/config/agents normalizes stale default OpenCode CLI version payloads before applying config', async () => {
         const redisClient = {
-            set: mock.fn(async () => 'OK')
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async () => 1)
         };
         const applyAgentsUpdateFn = mock.fn(async () => ({ status: 200, body: { success: true } }));
         const routes = createAgentsRoutes({

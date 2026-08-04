@@ -1,11 +1,11 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { test, describe, beforeEach, after, mock } from 'node:test';
 import assert from 'node:assert';
-import * as configManager from '../packages/core/src/index.ts';
+import * as configManager from '@propr/core';
 import { applyAgentsUpdate, createAgentsRoutes } from '../packages/api/routes/configRoutesAgents.ts';
-import { normalizeAgentsConfig } from '../packages/api/routes/configHelpers.ts';
-import { withConfigLock } from '../packages/api/routes/configHelpers.ts';
+import { normalizeAgentsConfig, resolveConfigStore, withConfigLock } from '../packages/api/routes/configHelpers.ts';
 import { queueResummarizationForAllRepos } from '../packages/api/routes/indexingQueueHelpers.ts';
 import { createConfigRoutes } from '../packages/api/routes/configRoutes.ts';
+import { prepareAgentsUpdate } from '../packages/api/routes/configRoutesAgentsPreparation.ts';
 import { saveSettingsWithRollback } from '../packages/api/routes/configRoutesSettings.ts';
 import { appendClaudeUserMessageEvents, parseClaudeOutputToConversationResult, parseCodexOutputToConversationResult } from '../packages/api/routes/liveDetailsCodexParser.ts';
 import { parseOpenCodeOutputToConversationResult } from '../packages/api/routes/liveDetailsOpenCodeParser.ts';
@@ -15,6 +15,10 @@ import {
     parseStoredOutputContent,
 } from '../packages/api/routes/liveDetailsRoutes.ts';
 import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
+
+after(async () => {
+    await configManager.closeConnection();
+});
 
 describe('config route follow-up helpers', () => {
     let currentSettings: Record<string, unknown>;
@@ -26,6 +30,57 @@ describe('config route follow-up helpers', () => {
     let currentUltrafixMaxCycles = 5;
     let currentUltrafixPauseSeconds = 60;
     let failAutoFollowupSave = false;
+    let configWriteFailure: ((key: string, value: unknown) => Error | null) | null;
+
+    function createTestDatabase() {
+        return {
+            transaction: async () => {
+                let stagedSettings = structuredClone(currentSettings);
+                let stagedAgents = structuredClone(currentAgents);
+                let stagedAutoFollowup = currentAutoFollowup;
+                let stagedAutoResolve = currentAutoResolveMergeConflicts;
+                let stagedPrReviewModel = currentPrReviewModel;
+                let stagedUltrafixGoal = currentUltrafixRatingGoal;
+                let stagedUltrafixCycles = currentUltrafixMaxCycles;
+                let stagedUltrafixPause = currentUltrafixPauseSeconds;
+                const trx = Object.assign(
+                    ((_table: string) => ({
+                        insert: (row: { key: string; value: string }) => ({
+                            onConflict: () => ({
+                                merge: async () => {
+                                    const value = JSON.parse(row.value) as unknown;
+                                    const failure = configWriteFailure?.(row.key, value);
+                                    if (failure) throw failure;
+                                    if (row.key === 'settings') stagedSettings = value as Record<string, unknown>;
+                                    else if (row.key === 'agents') stagedAgents = value as Array<Record<string, unknown>>;
+                                    else if (row.key === 'auto_followup_score_threshold') stagedAutoFollowup = value as number;
+                                    else if (row.key === 'auto_resolve_merge_conflicts') stagedAutoResolve = value as boolean;
+                                    else if (row.key === 'pr_review_model') stagedPrReviewModel = value as string;
+                                    else if (row.key === 'ultrafix_rating_goal') stagedUltrafixGoal = value as number;
+                                    else if (row.key === 'ultrafix_max_cycles') stagedUltrafixCycles = value as number;
+                                    else if (row.key === 'ultrafix_pause_seconds') stagedUltrafixPause = value as number;
+                                },
+                            }),
+                        }),
+                    })) as never,
+                    {
+                        commit: async () => {
+                            currentSettings = stagedSettings;
+                            currentAgents = stagedAgents;
+                            currentAutoFollowup = stagedAutoFollowup;
+                            currentAutoResolveMergeConflicts = stagedAutoResolve;
+                            currentPrReviewModel = stagedPrReviewModel;
+                            currentUltrafixRatingGoal = stagedUltrafixGoal;
+                            currentUltrafixMaxCycles = stagedUltrafixCycles;
+                            currentUltrafixPauseSeconds = stagedUltrafixPause;
+                        },
+                        rollback: async () => {},
+                    },
+                );
+                return trx;
+            },
+        };
+    }
 
     beforeEach(() => {
         currentSettings = { default_agent_alias: 'old-default', worker_concurrency: 5, keep: 'unchanged' };
@@ -47,6 +102,12 @@ describe('config route follow-up helpers', () => {
         currentUltrafixMaxCycles = 5;
         currentUltrafixPauseSeconds = 60;
         failAutoFollowupSave = false;
+        configWriteFailure = null;
+    });
+
+    test('resolveConfigStore preserves the production namespace when no overrides are injected', () => {
+        assert.strictEqual(resolveConfigStore(), configManager);
+        assert.notStrictEqual(resolveConfigStore({}), configManager);
     });
 
     test('applyAgentsUpdate reapplies the new default alias to the live registry', async () => {
@@ -67,7 +128,6 @@ describe('config route follow-up helpers', () => {
                 return true;
             },
         };
-
         const result = await applyAgentsUpdate({
             agents: [
                 {
@@ -84,6 +144,7 @@ describe('config route follow-up helpers', () => {
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
             configStore,
+            database: createTestDatabase(),
             registry,
         });
 
@@ -145,6 +206,9 @@ describe('config route follow-up helpers', () => {
         };
 
         failAutoFollowupSave = true;
+        configWriteFailure = key => key === 'auto_followup_score_threshold' && failAutoFollowupSave
+            ? new Error('save failed')
+            : null;
 
         const result = await saveSettingsWithRollback({
             settings: {
@@ -156,6 +220,7 @@ describe('config route follow-up helpers', () => {
                 published.push(subtype);
             },
             configStore,
+            database: createTestDatabase(),
         });
 
         assert.strictEqual(result.status, 500);
@@ -165,8 +230,7 @@ describe('config route follow-up helpers', () => {
             keep: 'unchanged',
         });
         assert.deepStrictEqual(result.body, {
-            error: 'Failed to save "auto_followup_score_threshold". Earlier changes were rolled back.',
-            rolled_back: ['general'],
+            error: 'Failed to save "auto_followup_score_threshold". No settings were committed. Please retry or check system logs.',
         });
         assert.deepStrictEqual(published, []);
     });
@@ -221,6 +285,7 @@ describe('config route follow-up helpers', () => {
             },
             publishConfigUpdate: async () => {},
             configStore,
+            database: createTestDatabase(),
         });
 
         assert.strictEqual(result.status, 200);
@@ -337,6 +402,10 @@ describe('config route follow-up helpers', () => {
                 return true;
             },
         };
+        configWriteFailure = (key, value) => key === 'agents'
+            && (value as Array<Record<string, unknown>>)[0]?.alias === 'old-default'
+            ? new Error('rollback save failed')
+            : null;
 
         const result = await applyAgentsUpdate({
             agents: [
@@ -353,6 +422,7 @@ describe('config route follow-up helpers', () => {
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
             configStore,
+            database: createTestDatabase(),
             registry,
         });
 
@@ -363,7 +433,7 @@ describe('config route follow-up helpers', () => {
         });
     });
 
-    test('applyAgentsUpdate restores the previous default alias when settings save fails after agents persist', async () => {
+    test('applyAgentsUpdate leaves no partial state when the atomic settings write fails', async () => {
         const registry = {
             refresh: mock.fn(async () => {}),
             setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
@@ -388,7 +458,8 @@ describe('config route follow-up helpers', () => {
             },
         };
 
-        await assert.rejects(async () => applyAgentsUpdate({
+        configWriteFailure = key => key === 'settings' ? new Error('settings save failed') : null;
+        const result = await applyAgentsUpdate({
             agents: [
                 {
                     id: 'new-agent',
@@ -403,9 +474,14 @@ describe('config route follow-up helpers', () => {
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
             configStore,
+            database: createTestDatabase(),
             registry,
-        }));
+        });
 
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(result.body, {
+            error: 'Failed to persist agent configuration. No changes were committed. Please retry or check system logs.',
+        });
         assert.deepStrictEqual(currentAgents, [
             {
                 id: 'old-agent',
@@ -460,6 +536,7 @@ describe('config route follow-up helpers', () => {
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
             configStore,
+            database: createTestDatabase(),
             registry,
         });
 
@@ -512,6 +589,7 @@ describe('config route follow-up helpers', () => {
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
             configStore,
+            database: createTestDatabase(),
             registry,
         });
 
@@ -564,6 +642,7 @@ describe('config route follow-up helpers', () => {
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
             configStore,
+            database: createTestDatabase(),
             registry,
         });
 
@@ -742,7 +821,7 @@ describe('config route follow-up helpers', () => {
             }),
             eval: mock.fn(async () => 1),
         };
-        const resolveVersionMock = mock.method(configManager, 'resolveVersion', async () => {
+        const resolveVersionMock = mock.fn(async () => {
             assert.strictEqual(lockAcquired, false);
             return '1.2.3';
         });
@@ -751,6 +830,11 @@ describe('config route follow-up helpers', () => {
             redisClient: redisClient as never,
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
+            preparationDeps: { resolveVersion: resolveVersionMock },
+            applyAgentsUpdateFn: async params => ({
+                status: 200,
+                body: { success: true, agents: params.processedAgents ?? params.agents },
+            }),
         });
         const res = {
             statusCode: 200,
@@ -790,7 +874,7 @@ describe('config route follow-up helpers', () => {
         const redisClient = {
             set: mock.fn(async () => 'OK'),
         };
-        const resolveVersionMock = mock.method(configManager, 'resolveVersion', async () => {
+        const resolveVersionMock = mock.fn(async () => {
             throw new Error('network timeout');
         });
 
@@ -798,6 +882,7 @@ describe('config route follow-up helpers', () => {
             redisClient: redisClient as never,
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
+            preparationDeps: { resolveVersion: resolveVersionMock },
         });
         const res = {
             statusCode: 200,
@@ -831,17 +916,70 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(res.statusCode, 502);
         assert.deepStrictEqual(res.body, {
-            error: "Failed to resolve version for agent 'new-default': network timeout",
+            code: 'AGENT_VERSION_LOOKUP_UNAVAILABLE',
+            error: "Failed to resolve version for agent 'new-default': Agent version lookup is temporarily unavailable",
         });
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
+    });
+
+    test('prepareAgentsUpdate does not resolve versions for disabled agents', async () => {
+        const resolveVersionMock = mock.fn(async () => {
+            throw new Error('registry unavailable');
+        });
+        const result = await prepareAgentsUpdate([
+            {
+                id: 'disabled-agent',
+                alias: 'disabled-custom',
+                type: 'claude',
+                enabled: false,
+                dockerImage: 'old:image',
+                configPath: '/tmp/claude-disabled',
+                supportedModels: [],
+                cliVersionType: 'custom',
+                cliVersion: 'github:example/claude-fork',
+                cliVersionResolved: 'github:example/claude-fork#resolved',
+            },
+        ], {
+            resolveVersion: resolveVersionMock,
+            computeContentHash: () => 'content-hash',
+            generateAgentBundleImageTag: () => 'propr/agent:test',
+        });
+
+        assert.strictEqual(result.error, undefined);
+        assert.strictEqual(resolveVersionMock.mock.calls.length, 0);
+        assert.strictEqual(result.processedAgents?.[0].cliVersionResolved, 'github:example/claude-fork#resolved');
+    });
+
+    test('prepareAgentsUpdate does not mislabel local TypeErrors as registry outages', async () => {
+        const result = await prepareAgentsUpdate([
+            {
+                id: 'new-agent',
+                alias: 'new-default',
+                type: 'claude',
+                enabled: true,
+                dockerImage: 'new:image',
+                configPath: '/tmp/claude',
+                supportedModels: [],
+                cliVersionType: 'default',
+            },
+        ], {
+            resolveVersion: async () => {
+                throw new TypeError('Cannot read properties of undefined');
+            },
+            computeContentHash: () => 'content-hash',
+            generateAgentBundleImageTag: () => 'propr/agent:test',
+        });
+
+        assert.strictEqual(result.status, 500);
+        assert.deepStrictEqual(result.error, "Failed to resolve version for agent 'new-default': Agent version resolution failed");
     });
 
     test('postAgents reports internal agent image derivation failures as server errors', async () => {
         const redisClient = {
             set: mock.fn(async () => 'OK'),
         };
-        const computeContentHashMock = mock.method(configManager, 'computeContentHash', () => {
+        const computeContentHashMock = mock.fn(() => {
             throw new Error('hash generation failed');
         });
 
@@ -849,6 +987,7 @@ describe('config route follow-up helpers', () => {
             redisClient: redisClient as never,
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
+            preparationDeps: { computeContentHash: computeContentHashMock },
         });
         const res = {
             statusCode: 200,
@@ -881,21 +1020,21 @@ describe('config route follow-up helpers', () => {
 
         assert.strictEqual(res.statusCode, 500);
         assert.deepStrictEqual(res.body, {
-            error: "Failed to resolve version for agent 'new-default': hash generation failed",
+            error: 'Failed to derive managed agent image',
         });
         assert.strictEqual(redisClient.set.mock.calls.length, 0);
-        computeContentHashMock.mock.restore();
     });
 
     test('postAgents rejects malformed cliVersion fields before version resolution or lock acquisition', async () => {
         const redisClient = {
             set: mock.fn(async () => 'OK'),
         };
-        const resolveVersionMock = mock.method(configManager, 'resolveVersion', async () => '1.2.3');
+        const resolveVersionMock = mock.fn(async () => '1.2.3');
         const routes = createAgentsRoutes({
             redisClient: redisClient as never,
             publishConfigUpdate: async () => {},
             logActivityHelper: async () => {},
+            preparationDeps: { resolveVersion: resolveVersionMock },
         });
         const res = {
             statusCode: 200,
@@ -937,14 +1076,26 @@ describe('config route follow-up helpers', () => {
     });
 
     test('getSettings preserves legacy string-backed integer settings', async () => {
-        const routes = createConfigRoutes({ redisClient: {} as never });
-        const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => '7' as never);
-        const autoResolveMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => false);
-        const prReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => '');
-        const ultrafixGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => '8' as never);
-        const ultrafixCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => '9' as never);
-        const ultrafixPauseMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => '12' as never);
-        const settingsMock = mock.method(configManager, 'loadSettings', async () => ({}));
+        const autoFollowupMock = mock.fn(async () => '7' as never);
+        const autoResolveMock = mock.fn(async () => false);
+        const prReviewModelMock = mock.fn(async () => '');
+        const ultrafixGoalMock = mock.fn(async () => '8' as never);
+        const ultrafixCyclesMock = mock.fn(async () => '9' as never);
+        const ultrafixPauseMock = mock.fn(async () => '12' as never);
+        const settingsMock = mock.fn(async () => ({}));
+        const routes = createConfigRoutes({
+            redisClient: {} as never,
+            configStore: {
+                loadSettings: settingsMock,
+                loadModelReasoningLevel: async () => '',
+                loadAutoFollowupScoreThreshold: autoFollowupMock,
+                loadAutoResolveMergeConflicts: autoResolveMock,
+                loadPrReviewModel: prReviewModelMock,
+                loadUltrafixRatingGoal: ultrafixGoalMock,
+                loadUltrafixMaxCycles: ultrafixCyclesMock,
+                loadUltrafixPauseSeconds: ultrafixPauseMock,
+            },
+        });
         const res = {
             body: undefined as Record<string, unknown> | undefined,
             json(payload: Record<string, unknown>) {
@@ -965,8 +1116,10 @@ describe('config route follow-up helpers', () => {
             analysis_model_fast: '',
             planner_context_model: '',
             planner_generation_model: '',
+            pr_review_prompt: '',
             auto_followup_score_threshold: 7,
             auto_resolve_merge_conflicts: false,
+            model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
@@ -982,14 +1135,13 @@ describe('config route follow-up helpers', () => {
     });
 
     test('getSettings returns a persisted default agent alias', async () => {
-        const routes = createConfigRoutes({ redisClient: {} as never });
-        const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 4);
-        const autoResolveMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => true);
-        const prReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => 'review-model');
-        const ultrafixGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => 8);
-        const ultrafixCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => 9);
-        const ultrafixPauseMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => 12);
-        const settingsMock = mock.method(configManager, 'loadSettings', async () => ({
+        const autoFollowupMock = mock.fn(async () => 4);
+        const autoResolveMock = mock.fn(async () => true);
+        const prReviewModelMock = mock.fn(async () => 'review-model');
+        const ultrafixGoalMock = mock.fn(async () => 8);
+        const ultrafixCyclesMock = mock.fn(async () => 9);
+        const ultrafixPauseMock = mock.fn(async () => 12);
+        const settingsMock = mock.fn(async () => ({
             default_agent_alias: 'claude',
             worker_concurrency: 6,
             github_user_whitelist: ['alice'],
@@ -997,6 +1149,19 @@ describe('config route follow-up helpers', () => {
             planner_context_model: 'context-model',
             planner_generation_model: 'generation-model',
         }));
+        const routes = createConfigRoutes({
+            redisClient: {} as never,
+            configStore: {
+                loadSettings: settingsMock,
+                loadModelReasoningLevel: async () => '',
+                loadAutoFollowupScoreThreshold: autoFollowupMock,
+                loadAutoResolveMergeConflicts: autoResolveMock,
+                loadPrReviewModel: prReviewModelMock,
+                loadUltrafixRatingGoal: ultrafixGoalMock,
+                loadUltrafixMaxCycles: ultrafixCyclesMock,
+                loadUltrafixPauseSeconds: ultrafixPauseMock,
+            },
+        });
         const res = {
             body: undefined as Record<string, unknown> | undefined,
             json(payload: Record<string, unknown>) {
@@ -1017,8 +1182,10 @@ describe('config route follow-up helpers', () => {
             analysis_model_fast: 'fast-model',
             planner_context_model: 'context-model',
             planner_generation_model: 'generation-model',
+            pr_review_prompt: '',
             auto_followup_score_threshold: 4,
             auto_resolve_merge_conflicts: true,
+            model_reasoning_level: '',
             pr_review_model: 'review-model',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
@@ -1034,14 +1201,26 @@ describe('config route follow-up helpers', () => {
     });
 
     test('getSettings falls back to defaults when persisted integer-backed settings are invalid', async () => {
-        const routes = createConfigRoutes({ redisClient: {} as never });
-        const autoFollowupMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 'invalid' as never);
-        const autoResolveMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => false);
-        const prReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => '');
-        const ultrafixGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => 8);
-        const ultrafixCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => 9);
-        const ultrafixPauseMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => 12);
-        const settingsMock = mock.method(configManager, 'loadSettings', async () => ({}));
+        const autoFollowupMock = mock.fn(async () => 'invalid' as never);
+        const autoResolveMock = mock.fn(async () => false);
+        const prReviewModelMock = mock.fn(async () => '');
+        const ultrafixGoalMock = mock.fn(async () => 8);
+        const ultrafixCyclesMock = mock.fn(async () => 9);
+        const ultrafixPauseMock = mock.fn(async () => 12);
+        const settingsMock = mock.fn(async () => ({}));
+        const routes = createConfigRoutes({
+            redisClient: {} as never,
+            configStore: {
+                loadSettings: settingsMock,
+                loadModelReasoningLevel: async () => '',
+                loadAutoFollowupScoreThreshold: autoFollowupMock,
+                loadAutoResolveMergeConflicts: autoResolveMock,
+                loadPrReviewModel: prReviewModelMock,
+                loadUltrafixRatingGoal: ultrafixGoalMock,
+                loadUltrafixMaxCycles: ultrafixCyclesMock,
+                loadUltrafixPauseSeconds: ultrafixPauseMock,
+            },
+        });
         const res = {
             statusCode: 200,
             body: undefined as Record<string, unknown> | undefined,
@@ -1065,8 +1244,10 @@ describe('config route follow-up helpers', () => {
             analysis_model_fast: '',
             planner_context_model: '',
             planner_generation_model: '',
+            pr_review_prompt: '',
             auto_followup_score_threshold: 4,
             auto_resolve_merge_conflicts: false,
+            model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
@@ -1109,6 +1290,7 @@ describe('config route follow-up helpers', () => {
                 loadSettings: async () => currentSettings,
                 handleSettingsSaveSideEffects: () => {},
             },
+            database: createTestDatabase(),
             registry,
         });
 
@@ -1137,7 +1319,7 @@ describe('config route follow-up helpers', () => {
     });
 
     test('applyAgentsUpdate accepts agents without dockerImage and derives it server-side', async () => {
-        const contentHashMock = mock.method(configManager, 'computeContentHash', () => 'abc123');
+        const contentHashMock = mock.fn(() => 'abc123');
         const registry = {
             refresh: mock.fn(async () => {}),
             setDefaultAgentAlias: mock.fn((_alias: string | null) => {}),
@@ -1161,6 +1343,8 @@ describe('config route follow-up helpers', () => {
                 loadSettings: async () => currentSettings,
                 handleSettingsSaveSideEffects: () => {},
             },
+            database: createTestDatabase(),
+            preparationDeps: { computeContentHash: contentHashMock },
             registry,
         });
 
@@ -1308,7 +1492,7 @@ describe('config route follow-up helpers', () => {
     test('postRepos logs activity after releasing the repo config lock', async () => {
         const redisState = new Map<string, string>();
         let lockHeldDuringActivityLog: boolean | null = null;
-        const saveReposMock = mock.method(configManager, 'saveMonitoredRepos', async () => true);
+        const saveReposMock = mock.fn(async () => true);
         const routes = createConfigRoutes({
             redisClient: {
                 set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
@@ -1334,6 +1518,14 @@ describe('config route follow-up helpers', () => {
                     return 1;
                 }),
                 lTrim: mock.fn(async () => 'OK'),
+            } as never,
+            configStore: {
+                loadMonitoredReposRaw: async () => [],
+                saveMonitoredRepos: saveReposMock,
+                clearRemovedRepositoryIndexData: async () => {},
+            },
+            database: {
+                transaction: async (callback: (trx: never) => Promise<unknown>) => callback({} as never),
             } as never,
         });
         const res = {
@@ -1473,13 +1665,54 @@ describe('config route follow-up helpers', () => {
             { timeoutSeconds: 1, renewalIntervalMs: 10 },
         );
 
-        assert.strictEqual(result.status, 200);
+        assert.strictEqual(result.status, 409);
         assert.deepStrictEqual(result.body, {
             success: true,
             warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
             committed: true,
             lock_lost_after_commit: true,
         });
+    });
+
+    test('withConfigLock reports committed state when the final ownership check first detects replacement', async () => {
+        let currentLockValue: string | null = null;
+        let renewalCalls = 0;
+        const redisClient = {
+            set: mock.fn(async (_key: string, value: string) => {
+                currentLockValue = value;
+                return 'OK';
+            }),
+            eval: mock.fn(async (_script: string, options: { arguments: string[] }) => {
+                const [lockValue, timeoutSeconds] = options.arguments;
+                if (timeoutSeconds === undefined) {
+                    if (currentLockValue === lockValue) currentLockValue = null;
+                    return 1;
+                }
+                renewalCalls += 1;
+                if (renewalCalls === 1) currentLockValue = 'replacement-owner';
+                return 0;
+            }),
+        };
+
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async lock => {
+                lock.markCommitted();
+                return { status: 200, body: { success: true } };
+            },
+            { renewalIntervalMs: 0 },
+        );
+
+        assert.strictEqual(renewalCalls, 1);
+        assert.strictEqual(result.status, 409);
+        assert.deepStrictEqual(result.body, {
+            success: true,
+            warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
+            committed: true,
+            lock_lost_after_commit: true,
+        });
+        assert.strictEqual(currentLockValue, 'replacement-owner');
     });
 
     test('parseClaudeOutputToConversationResult preserves usage on assistant lines with content', () => {
@@ -1547,14 +1780,13 @@ describe('config route follow-up helpers', () => {
                 throw new Error('redis unavailable');
             },
             configStore,
+            database: createTestDatabase(),
             registry,
         });
 
         assert.strictEqual(result.status, 200);
-        assert.deepStrictEqual(result.body, {
-            success: true,
-            agents: currentAgents,
-        });
+        assert.strictEqual(result.body.success, true);
+        assert.match(String(result.body.agents?.[0]?.dockerImage), /^propr\/agent:bundle-/);
         assert.strictEqual(currentSettings.default_agent_alias, 'new-default');
     });
 
@@ -1586,6 +1818,7 @@ describe('config route follow-up helpers', () => {
             },
             logActivityHelper: async () => {},
             configStore,
+            database: createTestDatabase(),
             registry,
         });
 
@@ -1811,10 +2044,10 @@ describe('config route follow-up helpers', () => {
             todos: [],
             currentTask: null,
             tokenUsage: {
-                input_tokens: 15,
+                input_tokens: 9,
                 output_tokens: 4,
                 cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
+                cache_read_input_tokens: 3,
             },
         });
     });
@@ -2094,7 +2327,7 @@ describe('config route follow-up helpers', () => {
         ]);
 
         assert.deepStrictEqual(result.events, [
-            { type: 'message', content: 'hi', timestamp: '2026-05-05T00:00:00.000Z' },
+            { type: 'thought', content: 'hi', timestamp: '2026-05-05T00:00:00.000Z' },
         ]);
     });
 
@@ -2104,7 +2337,7 @@ describe('config route follow-up helpers', () => {
         ]);
 
         assert.deepStrictEqual(result.events, [
-            { type: 'message', content: 'Duplicated', timestamp: result.events[0].timestamp },
+            { type: 'thought', content: 'Duplicated', timestamp: result.events[0].timestamp },
         ]);
     });
 
@@ -2114,7 +2347,7 @@ describe('config route follow-up helpers', () => {
         ]);
 
         assert.deepStrictEqual(result.events, [
-            { type: 'message', content: 'Duplicated', timestamp: result.events[0].timestamp },
+            { type: 'thought', content: 'Duplicated', timestamp: result.events[0].timestamp },
         ]);
     });
 
@@ -2157,7 +2390,7 @@ describe('config route follow-up helpers', () => {
     });
 
     test('config routes log activity for generic admin config updates', async () => {
-        const savePrLabelMock = mock.method(configManager, 'savePrLabel', async (_value: string) => true);
+        const savePrLabelMock = mock.fn(async (_value: string) => true);
         const redisClient = {
             set: mock.fn(async () => 'OK'),
             eval: mock.fn(async () => 1),
@@ -2165,7 +2398,10 @@ describe('config route follow-up helpers', () => {
             lPush: mock.fn(async () => 1),
             lTrim: mock.fn(async () => 1),
         };
-        const routes = createConfigRoutes({ redisClient: redisClient as never });
+        const routes = createConfigRoutes({
+            redisClient: redisClient as never,
+            configStore: { savePrLabel: savePrLabelMock },
+        });
         const res = {
             statusCode: 200,
             body: undefined as Record<string, unknown> | undefined,
@@ -2190,7 +2426,6 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(activity.type, 'config_updated');
         assert.strictEqual(activity.user, 'alice');
         assert.match(activity.description, /Updated PR label/);
-        savePrLabelMock.mock.restore();
     });
 
     test('applyAgentsUpdate rejects blank supported model entries', async () => {
@@ -2217,7 +2452,7 @@ describe('config route follow-up helpers', () => {
     });
 
     test('postFollowupKeywords trims and deduplicates keywords', async () => {
-        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
         const redisClient = {
             set: mock.fn(async () => 'OK'),
             eval: mock.fn(async () => 1),
@@ -2225,7 +2460,10 @@ describe('config route follow-up helpers', () => {
             lPush: mock.fn(async () => 1),
             lTrim: mock.fn(async () => 1),
         };
-        const routes = createConfigRoutes({ redisClient: redisClient as never });
+        const routes = createConfigRoutes({
+            redisClient: redisClient as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
+        });
         const res = {
             statusCode: 200,
             body: undefined as Record<string, unknown> | undefined,
@@ -2249,11 +2487,48 @@ describe('config route follow-up helpers', () => {
             followup_keywords: ['bug', 'feature'],
         });
         assert.deepStrictEqual(saveKeywordsMock.mock.calls[0].arguments[0], ['bug', 'feature']);
-        saveKeywordsMock.mock.restore();
+    });
+
+    test('postFollowupKeywords rejects a false save result without publishing', async () => {
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => false);
+        const redisClient = {
+            set: mock.fn(async () => 'OK'),
+            eval: mock.fn(async () => 1),
+            publish: mock.fn(async () => 1),
+            lPush: mock.fn(async () => 1),
+            lTrim: mock.fn(async () => 1),
+        };
+        const routes = createConfigRoutes({
+            redisClient: redisClient as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['bug'] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Configuration update was not persisted. No update notification was published.',
+        });
+        assert.strictEqual(redisClient.publish.mock.calls.length, 0);
+        assert.strictEqual(redisClient.lPush.mock.calls.length, 0);
     });
 
     test('postFollowupKeywords reports committed state when publish fails after save', async () => {
-        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
         const redisClient = {
             set: mock.fn(async () => 'OK'),
             eval: mock.fn(async () => 1),
@@ -2263,7 +2538,10 @@ describe('config route follow-up helpers', () => {
             lPush: mock.fn(async () => 1),
             lTrim: mock.fn(async () => 1),
         };
-        const routes = createConfigRoutes({ redisClient: redisClient as never });
+        const routes = createConfigRoutes({
+            redisClient: redisClient as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
+        });
         const res = {
             statusCode: 200,
             body: undefined as Record<string, unknown> | undefined,
@@ -2287,12 +2565,11 @@ describe('config route follow-up helpers', () => {
             committed: true,
         });
         assert.strictEqual(saveKeywordsMock.mock.calls.length, 1);
-        saveKeywordsMock.mock.restore();
     });
 
     test('postFollowupKeywords preserves committed lock-loss warnings when the lock is lost after save', async () => {
         const redisState = new Map<string, string>();
-        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
         const routes = createConfigRoutes({
             redisClient: {
                 set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
@@ -2320,6 +2597,7 @@ describe('config route follow-up helpers', () => {
                 lPush: mock.fn(async () => 1),
                 lTrim: mock.fn(async () => 1),
             } as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
         });
         const res = {
             statusCode: 200,
@@ -2338,7 +2616,7 @@ describe('config route follow-up helpers', () => {
             body: { followup_keywords: ['bug'] },
         } as never, res as never);
 
-        assert.strictEqual(res.statusCode, 200);
+        assert.strictEqual(res.statusCode, 409);
         assert.deepStrictEqual(res.body, {
             success: true,
             followup_keywords: ['bug'],
@@ -2347,12 +2625,11 @@ describe('config route follow-up helpers', () => {
             lock_lost_after_commit: true,
         });
         assert.strictEqual(redisState.get('config:keywords:lock'), 'someone-else');
-        saveKeywordsMock.mock.restore();
     });
 
-    test('postFollowupKeywords reports lock loss instead of a committed save when publish fails before completion', async () => {
+    test('postFollowupKeywords preserves committed state when publish fails after lock loss', async () => {
         const redisState = new Map<string, string>();
-        const saveKeywordsMock = mock.method(configManager, 'saveFollowupKeywords', async (_value: string[]) => true);
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
         const routes = createConfigRoutes({
             redisClient: {
                 set: mock.fn(async (key: string, value: string, opts: { NX?: boolean; EX?: number }) => {
@@ -2379,6 +2656,46 @@ describe('config route follow-up helpers', () => {
                 lPush: mock.fn(async () => 1),
                 lTrim: mock.fn(async () => 1),
             } as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
+        });
+        const res = {
+            statusCode: 200,
+            body: undefined as Record<string, unknown> | undefined,
+            status(code: number) {
+                this.statusCode = code;
+                return this;
+            },
+            json(payload: Record<string, unknown>) {
+                this.body = payload;
+                return this;
+            },
+        };
+
+        await routes.postFollowupKeywords({
+            body: { followup_keywords: ['bug'] },
+        } as never, res as never);
+
+        assert.strictEqual(res.statusCode, 500);
+        assert.deepStrictEqual(res.body, {
+            error: 'Follow-up keywords were saved, but publishing the config update notification failed. Persisted config may require a follow-up check.',
+            committed: true,
+            warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
+            lock_lost_after_commit: true,
+        });
+    });
+
+    test('postFollowupKeywords refuses to save after ownership is lost', async () => {
+        const saveKeywordsMock = mock.fn(async (_value: string[]) => true);
+        const routes = createConfigRoutes({
+            redisClient: {
+                set: mock.fn(async () => 'OK'),
+                eval: mock.fn(async (_script: string, options: { arguments: string[] }) =>
+                    options.arguments.length === 2 ? 0 : 1),
+                publish: mock.fn(async () => 1),
+                lPush: mock.fn(async () => 1),
+                lTrim: mock.fn(async () => 1),
+            } as never,
+            configStore: { saveFollowupKeywords: saveKeywordsMock },
         });
         const res = {
             statusCode: 200,
@@ -2402,7 +2719,7 @@ describe('config route follow-up helpers', () => {
             error: 'Configuration update lock was lost before the operation completed. Verify the current configuration before retrying.',
             lock_lost: true,
         });
-        saveKeywordsMock.mock.restore();
+        assert.strictEqual(saveKeywordsMock.mock.calls.length, 0);
     });
 
     test('queueResummarizationForAllRepos uses enabled raw repo names when scheduling jobs', async () => {
@@ -2478,7 +2795,7 @@ describe('config route follow-up helpers', () => {
     }
 
     test('postRepos reports committed state when publish fails after save', async () => {
-        const saveReposMock = mock.method(configManager, 'saveMonitoredRepos', async () => true);
+        const saveReposMock = mock.fn(async () => true);
         const routes = createConfigRoutes({
             redisClient: {
                 set: mock.fn(async () => 'OK'),
@@ -2488,6 +2805,14 @@ describe('config route follow-up helpers', () => {
                 eval: mock.fn(async () => 1),
                 lPush: mock.fn(async () => 1),
                 lTrim: mock.fn(async () => 'OK'),
+            } as never,
+            configStore: {
+                loadMonitoredReposRaw: async () => [],
+                saveMonitoredRepos: saveReposMock,
+                clearRemovedRepositoryIndexData: async () => {},
+            },
+            database: {
+                transaction: async (callback: (trx: never) => Promise<unknown>) => callback({} as never),
             } as never,
         });
         const res = {
@@ -2517,11 +2842,10 @@ describe('config route follow-up helpers', () => {
             committed: true,
         });
         assert.strictEqual(saveReposMock.mock.calls.length, 1);
-        saveReposMock.mock.restore();
     });
 
     test('postPrimaryProcessingLabels reports committed state when publish fails after save', async () => {
-        const saveLabelsMock = mock.method(configManager, 'savePrimaryProcessingLabels', async () => true);
+        const saveLabelsMock = mock.fn(async () => true);
         const routes = createConfigRoutes({
             redisClient: {
                 set: mock.fn(async () => 'OK'),
@@ -2532,6 +2856,7 @@ describe('config route follow-up helpers', () => {
                 lPush: mock.fn(async () => 1),
                 lTrim: mock.fn(async () => 'OK'),
             } as never,
+            configStore: { savePrimaryProcessingLabels: saveLabelsMock },
         });
         const res = {
             statusCode: 200,
@@ -2556,30 +2881,41 @@ describe('config route follow-up helpers', () => {
             committed: true,
         });
         assert.strictEqual(saveLabelsMock.mock.calls.length, 1);
-        saveLabelsMock.mock.restore();
     });
 
     test('getSettings preserves intentionally empty persisted planner models', async () => {
-        const loadSettingsMock = mock.method(configManager, 'loadSettings', async () => ({
+        const loadSettingsMock = mock.fn(async () => ({
             worker_concurrency: 7,
             github_user_whitelist: ['alice'],
             analysis_model_fast: 'fast-model',
             planner_context_model: '',
             planner_generation_model: '',
         }));
-        const loadAutoFollowupScoreThresholdMock = mock.method(configManager, 'loadAutoFollowupScoreThreshold', async () => 4);
-        const loadAutoResolveMergeConflictsMock = mock.method(configManager, 'loadAutoResolveMergeConflicts', async () => false);
-        const loadPrReviewModelMock = mock.method(configManager, 'loadPrReviewModel', async () => 'review-model');
-        const loadUltrafixRatingGoalMock = mock.method(configManager, 'loadUltrafixRatingGoal', async () => 7);
-        const loadUltrafixMaxCyclesMock = mock.method(configManager, 'loadUltrafixMaxCycles', async () => 5);
-        const loadUltrafixPauseSecondsMock = mock.method(configManager, 'loadUltrafixPauseSeconds', async () => 60);
+        const loadAutoFollowupScoreThresholdMock = mock.fn(async () => 4);
+        const loadAutoResolveMergeConflictsMock = mock.fn(async () => false);
+        const loadPrReviewModelMock = mock.fn(async () => 'review-model');
+        const loadUltrafixRatingGoalMock = mock.fn(async () => 7);
+        const loadUltrafixMaxCyclesMock = mock.fn(async () => 5);
+        const loadUltrafixPauseSecondsMock = mock.fn(async () => 60);
         const previousPlannerContextModel = process.env.PLANNER_CONTEXT_MODEL;
         const previousPlannerGenerationModel = process.env.PLANNER_GENERATION_MODEL;
         process.env.PLANNER_CONTEXT_MODEL = 'env-context';
         process.env.PLANNER_GENERATION_MODEL = 'env-generation';
 
         try {
-            const routes = createConfigRoutes({ redisClient: {} as never });
+            const routes = createConfigRoutes({
+                redisClient: {} as never,
+                configStore: {
+                    loadSettings: loadSettingsMock,
+                    loadModelReasoningLevel: async () => '',
+                    loadAutoFollowupScoreThreshold: loadAutoFollowupScoreThresholdMock,
+                    loadAutoResolveMergeConflicts: loadAutoResolveMergeConflictsMock,
+                    loadPrReviewModel: loadPrReviewModelMock,
+                    loadUltrafixRatingGoal: loadUltrafixRatingGoalMock,
+                    loadUltrafixMaxCycles: loadUltrafixMaxCyclesMock,
+                    loadUltrafixPauseSeconds: loadUltrafixPauseSecondsMock,
+                },
+            });
             const res = {
                 payload: undefined as Record<string, unknown> | undefined,
                 json(body: Record<string, unknown>) {
@@ -2600,8 +2936,10 @@ describe('config route follow-up helpers', () => {
                 analysis_model_fast: 'fast-model',
                 planner_context_model: '',
                 planner_generation_model: '',
+                pr_review_prompt: '',
                 auto_followup_score_threshold: 4,
                 auto_resolve_merge_conflicts: false,
+                model_reasoning_level: '',
                 pr_review_model: 'review-model',
                 ultrafix_rating_goal: 7,
                 ultrafix_max_cycles: 5,
@@ -2618,13 +2956,6 @@ describe('config route follow-up helpers', () => {
             } else {
                 process.env.PLANNER_GENERATION_MODEL = previousPlannerGenerationModel;
             }
-            loadSettingsMock.mock.restore();
-            loadAutoFollowupScoreThresholdMock.mock.restore();
-            loadAutoResolveMergeConflictsMock.mock.restore();
-            loadPrReviewModelMock.mock.restore();
-            loadUltrafixRatingGoalMock.mock.restore();
-            loadUltrafixMaxCyclesMock.mock.restore();
-            loadUltrafixPauseSecondsMock.mock.restore();
         }
     });
 });

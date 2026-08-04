@@ -1,20 +1,20 @@
 export interface Task {
   id: string;
   repository?: string;
-  repositoryOwner?: string;
-  repositoryName?: string;
+  repositoryOwner?: string | null;
+  repositoryName?: string | null;
   issueNumber?: number;
-  prNumber?: number;
+  prNumber?: number | null;
   linkedIssueNumber?: number | null;
-  title?: string;
-  subtitle?: string;
+  title?: string | null;
+  subtitle?: string | null;
   status: string;
   createdAt: string;
-  processedAt?: string;
-  completedAt?: string;
-  modelName?: string;
-  model?: string;
-  llmProvider?: string;
+  processedAt?: string | null;
+  completedAt?: string | null;
+  modelName?: string | null;
+  model?: string | null;
+  llmProvider?: string | null;
   planIssueStatus?: string | null;
   critiqueScore?: number | null;
 }
@@ -40,6 +40,6 @@ export interface TaskGroup {
   key: string;
   repoOwner: string;
   repoName: string;
-  prNumber?: number;
+  prNumber?: number | null;
   tasks: Task[]; // Sorted newest first
 }

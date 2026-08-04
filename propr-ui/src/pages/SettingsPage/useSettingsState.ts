@@ -26,6 +26,7 @@ import { Settings } from './types';
 import { parseLoadedData } from './parseLoadedData';
 import { useListManagement } from './useListManagement';
 import type { TriggerReindexAllResponse } from '../../api/proprApi';
+import { isCommittedConfigWriteError } from '../../api/apiClient';
 
 // Debounce delay for prompt changes (in milliseconds)
 const PROMPT_DEBOUNCE_DELAY = 800;
@@ -54,6 +55,10 @@ export function useSettingsState() {
   const summarizationSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const summarizationSaveInProgressRef = useRef<Promise<void> | null>(null);
   const pendingSummarizationSettingsRef = useRef<SummarizationSettings | null>(null);
+  const reloadConfigurationRef = useRef<() => Promise<void>>(async () => {
+    throw new Error('Configuration reload is not ready');
+  });
+  const configurationReloadRequiredRef = useRef(false);
 
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
@@ -85,12 +90,18 @@ export function useSettingsState() {
   const [agentTankAvailable, setAgentTankAvailable] = useState<boolean | null>(null);
   const [agentTankCheckingStatus, setAgentTankCheckingStatus] = useState(false);
 
-  const beginSave = useCallback(() => {
+  const beginSave = useCallback((): boolean => {
+    if (configurationReloadRequiredRef.current) {
+      setSaveStatus('error');
+      setGlobalError('Reload the current configuration before saving again.');
+      return false;
+    }
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
     setSaveStatus('saving');
     setGlobalError(null);
+    return true;
   }, []);
 
   const completeSave = useCallback((warnings: string[] = []) => {
@@ -108,8 +119,22 @@ export function useSettingsState() {
     setGlobalError((err as Error).message || fallbackMessage);
   }, []);
 
+  const reconcileSaveFailure = useCallback(async (err: unknown): Promise<unknown> => {
+    if (!isCommittedConfigWriteError(err)) return err;
+    try {
+      // Keep this save pending until every configuration field has been
+      // replaced with the authoritative persisted state.
+      await reloadConfigurationRef.current();
+      return err;
+    } catch (refreshError) {
+      configurationReloadRequiredRef.current = true;
+      const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+      return new Error(`${err.message} Automatic refresh failed (${refreshMessage}). Reload this page before editing configuration again.`);
+    }
+  }, []);
+
   const saveSettingsOnly = useCallback(async (settingsToSave: Settings) => {
-    beginSave();
+    if (!beginSave()) return;
     try {
       const concurrency = parseInt(settingsToSave.worker_concurrency);
       if (settingsToSave.worker_concurrency && isNaN(concurrency)) {
@@ -132,22 +157,22 @@ export function useSettingsState() {
       });
       completeSave(result.warnings);
     } catch (err) {
-      failSave(err, 'Failed to save settings');
+      failSave(await reconcileSaveFailure(err), 'Failed to save settings');
     }
-  }, [beginSave, completeSave, failSave]);
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const saveWhitelistOnly = useCallback(async (whitelistToSave: string[]) => {
-    beginSave();
+    if (!beginSave()) return;
     try {
       await updateSettings({ github_user_whitelist: whitelistToSave });
       completeSave();
     } catch (err) {
-      failSave(err, 'Failed to save whitelist');
+      failSave(await reconcileSaveFailure(err), 'Failed to save whitelist');
     }
-  }, [beginSave, completeSave, failSave]);
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const savePrLabelOnly = useCallback(async (prLabelToSave: string) => {
-    beginSave();
+    if (!beginSave()) return;
     try {
       if (!prLabelToSave.trim()) {
         throw new Error('PR Label cannot be empty');
@@ -155,12 +180,12 @@ export function useSettingsState() {
       await updatePrLabel(prLabelToSave.trim());
       completeSave();
     } catch (err) {
-      failSave(err, 'Failed to save PR label');
+      failSave(await reconcileSaveFailure(err), 'Failed to save PR label');
     }
-  }, [beginSave, completeSave, failSave]);
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const savePrimaryLabelsOnly = useCallback(async (primaryLabelsToSave: string[]) => {
-    beginSave();
+    if (!beginSave()) return;
     try {
       if (primaryLabelsToSave.length === 0) {
         throw new Error('At least one primary processing label is required');
@@ -168,29 +193,29 @@ export function useSettingsState() {
       await updatePrimaryProcessingLabels(primaryLabelsToSave);
       completeSave();
     } catch (err) {
-      failSave(err, 'Failed to save primary processing labels');
+      failSave(await reconcileSaveFailure(err), 'Failed to save primary processing labels');
     }
-  }, [beginSave, completeSave, failSave]);
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const saveKeywordsOnly = useCallback(async (keywordsToSave: string[]) => {
-    beginSave();
+    if (!beginSave()) return;
     try {
       await updateFollowupKeywords(keywordsToSave);
       completeSave();
     } catch (err) {
-      failSave(err, 'Failed to save follow-up keywords');
+      failSave(await reconcileSaveFailure(err), 'Failed to save follow-up keywords');
     }
-  }, [beginSave, completeSave, failSave]);
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const saveIgnoreKeywordsOnly = useCallback(async (ignoreKeywordsToSave: string[]) => {
-    beginSave();
+    if (!beginSave()) return;
     try {
       await updateFollowupIgnoreKeywords(ignoreKeywordsToSave);
       completeSave();
     } catch (err) {
-      failSave(err, 'Failed to save follow-up ignore keywords');
+      failSave(await reconcileSaveFailure(err), 'Failed to save follow-up ignore keywords');
     }
-  }, [beginSave, completeSave, failSave]);
+  }, [beginSave, completeSave, failSave, reconcileSaveFailure]);
 
   const lists = useListManagement(
     saveWhitelistOnly,
@@ -199,43 +224,51 @@ export function useSettingsState() {
     saveIgnoreKeywordsOnly
   );
 
-  // Load all data with Promise.all
-  useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        const results = await Promise.all([
-          getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
-          getPrLabel(), getPrimaryProcessingLabels(), getAgents(),
-          getSummarizationSettings(),
-          getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }))
-        ]);
-        const parsed = parseLoadedData(results);
-        setSettings(parsed.settings);
-        lists.setWhitelist(parsed.whitelist);
-        lists.setKeywords(parsed.keywords);
-        lists.setIgnoreKeywords(parsed.ignoreKeywords);
-        setPrLabel(parsed.prLabel);
-        lists.setPrimaryLabels(parsed.primaryLabels);
-        setAgents(parsed.agents);
-        setSummarizationSettings(parsed.summarizationSettings);
-        setAgentTankSettings(parsed.agentTankSettings);
-        if (parsed.agentTankSettings.enabled) {
-          setAgentTankCheckingStatus(true);
-          getAgentTankStatus()
-            .then(status => setAgentTankAvailable(status.available))
-            .catch(() => setAgentTankAvailable(false))
-            .finally(() => setAgentTankCheckingStatus(false));
-        }
-      } catch (err) {
-        setGlobalError((err as Error).message || 'Failed to load settings');
-      } finally {
-        setLoading(false);
+  const { setWhitelist, setKeywords, setIgnoreKeywords, setPrimaryLabels } = lists;
+  const loadData = useCallback(async (requireCompleteConfiguration = false): Promise<void> => {
+    setLoading(true);
+    try {
+      const agentTankSettingsRequest = requireCompleteConfiguration
+        ? getAgentTankSettings()
+        : getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }));
+      const results = await Promise.all([
+        getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
+        getPrLabel(), getPrimaryProcessingLabels(), getAgents(),
+        getSummarizationSettings(),
+        agentTankSettingsRequest
+      ]);
+      const parsed = parseLoadedData(results);
+      configurationReloadRequiredRef.current = false;
+      setSettings(parsed.settings);
+      setWhitelist(parsed.whitelist);
+      setKeywords(parsed.keywords);
+      setIgnoreKeywords(parsed.ignoreKeywords);
+      setPrLabel(parsed.prLabel);
+      setPrimaryLabels(parsed.primaryLabels);
+      setAgents(parsed.agents);
+      setSummarizationSettings(parsed.summarizationSettings);
+      setAgentTankSettings(parsed.agentTankSettings);
+      if (parsed.agentTankSettings.enabled) {
+        setAgentTankCheckingStatus(true);
+        getAgentTankStatus()
+          .then(status => setAgentTankAvailable(status.available))
+          .catch(() => setAgentTankAvailable(false))
+          .finally(() => setAgentTankCheckingStatus(false));
       }
-    };
-    loadData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    } catch (err) {
+      setGlobalError((err as Error).message || 'Failed to load settings');
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, [setIgnoreKeywords, setKeywords, setPrimaryLabels, setWhitelist]);
+  reloadConfigurationRef.current = () => loadData(true);
+
+  // Load all configuration once, and reuse the same authoritative refresh
+  // after a server reports that a write committed with a warning.
+  useEffect(() => {
+    void loadData().catch(() => undefined);
+  }, [loadData]);
 
   useEffect(() => {
     return () => {
@@ -269,16 +302,19 @@ export function useSettingsState() {
         } catch { /* Continue with save even if previous operation timed out */ }
       }
       if (pendingSummarizationSettingsRef.current && pendingSummarizationSettingsRef.current !== settingsToSave) return;
-      setSaveStatus('saving');
-      setGlobalError(null);
+      if (!beginSave()) {
+        pendingSummarizationSettingsRef.current = null;
+        return;
+      }
       const savePromise = (async () => {
         try {
           await updateSummarizationSettings(settingsToSave);
           setSaveStatus('saved');
           saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
         } catch (err) {
+          const reconciledError = await reconcileSaveFailure(err);
           setSaveStatus('error');
-          setGlobalError((err as Error).message || 'Failed to save summarization settings');
+          setGlobalError((reconciledError as Error).message || 'Failed to save summarization settings');
         } finally {
           summarizationSaveInProgressRef.current = null;
           pendingSummarizationSettingsRef.current = null;
@@ -294,7 +330,7 @@ export function useSettingsState() {
     } else {
       performSave(newSettings);
     }
-  }, []);
+  }, [beginSave, reconcileSaveFailure]);
 
   const handleSummarizationModelChange = useCallback((agentAlias: string) => {
     handleSummarizationChange({ ...summarizationSettings, agent_alias: agentAlias });

@@ -1,41 +1,38 @@
-name: Full Test Suite (Label Triggered)
+name: Full Test Suite
 
 on:
   pull_request:
-    types: [labeled]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 concurrency:
-  group: pr-test-on-label-${{ github.event.pull_request.number }}
+  group: full-test-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
     name: Run Full Test Suite
-    if: github.event.label.name == 'run-tests'
-    runs-on: [self-hosted, linux, x64, propr]
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
-      pull-requests: write
-
-    services:
-      redis:
-        image: redis:alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    outputs:
+      test_result: ${{ steps.tests.outputs.test_result }}
+      install_result: ${{ steps.install.outcome }}
+      build_result: ${{ steps.build.outcome }}
+      docs_result: ${{ steps.docs.outcome }}
+      redis_result: ${{ steps.redis.outcome }}
+      test_step_result: ${{ steps.tests.outcome }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -46,28 +43,32 @@ jobs:
             packages/core/package-lock.json
 
       - name: Install Dependencies
+        id: install
         run: npm ci
 
       - name: Build workspace packages
-        run: |
-          npm run build --workspace=packages/shared
-          npm run build --workspace=packages/core
+        id: build
+        run: npm run test:prepare
 
       - name: Validate docs site
+        id: docs
         env:
           PROPR_WORKSPACE: ${{ github.workspace }}
+          PROPR_WORKSPACE_PREPARED: 'true'
         run: ./.propr/setup.sh
+
+      - name: Start isolated Redis
+        id: redis
+        run: ./scripts/ci-redis.sh start
 
       - name: Run Full Test Suite
         id: tests
         continue-on-error: true
         env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
           NODE_ENV: test
         run: |
           echo "Running full test suite with Redis..."
-          npx tsx --test test/*.test.ts 2>&1 | tee test_output.txt
+          npm run test:full:prepared 2>&1 | tee test_output.txt
           TEST_EXIT_CODE=${PIPESTATUS[0]}
 
           if [ $TEST_EXIT_CODE -eq 0 ]; then
@@ -80,86 +81,128 @@ jobs:
 
           exit $TEST_EXIT_CODE
 
-      - name: Post Success Comment
-        if: steps.tests.outcome == 'success'
-        uses: actions/github-script@v7
+      - name: Sanitize test output
+        if: always()
+        env:
+          GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
+        run: node scripts/sanitize-ci-output.mjs test_output.txt test_output.sanitized.txt
+
+      - name: Remove raw test output
+        if: always()
+        run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt"
+
+      - name: Upload test output
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          script: |
-            const fs = require('fs');
-            const prNumber = context.issue.number;
-            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
-
-            let output = '';
-            try { output = fs.readFileSync('test_output.txt', 'utf8'); }
-            catch (e) { output = 'Output file not available.'; }
-
-            if (output.length > 60000) {
-              output = output.substring(0, 60000) + "\n\n...(truncated)";
-            }
-
-            const body = [
-              '### Full Test Suite Results',
-              '',
-              'All tests passed.',
-              '',
-              '<details>',
-              '<summary>View Test Output</summary>',
-              '',
-              '~~~text',
-              output,
-              '~~~',
-              '</details>',
-              '',
-              '**[View Workflow](' + runUrl + ')**'
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
-            });
-
-      - name: Post Failure Comment
-        if: steps.tests.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const prNumber = context.issue.number;
-            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
-
-            let output = '';
-            try { output = fs.readFileSync('test_output.txt', 'utf8'); }
-            catch (e) { output = 'Output file not available.'; }
-
-            if (output.length > 60000) {
-              output = output.substring(0, 60000) + "\n\n...(truncated)";
-            }
-
-            const body = [
-              '### Full Test Suite Results',
-              '',
-              'Some tests failed. Please review the output below.',
-              '',
-              '<details>',
-              '<summary>View Test Output</summary>',
-              '',
-              '~~~text',
-              output,
-              '~~~',
-              '</details>',
-              '',
-              '**[View Workflow](' + runUrl + ')**'
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body
-            });
+          name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test_output.sanitized.txt
+          if-no-files-found: ignore
 
       - name: Fail Job
         if: steps.tests.outcome == 'failure'
         run: exit 1
+
+      - name: Stop isolated Redis
+        if: always()
+        run: ./scripts/ci-redis.sh stop
+
+  comment:
+    name: Report Full Test Result
+    needs: test
+    if: >-
+      ${{ always() && github.event_name == 'pull_request' &&
+          needs.test.result != 'skipped' &&
+          needs.test.result != 'cancelled' &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Download test output
+        continue-on-error: true
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Post result comment
+        continue-on-error: true
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          TEST_JOB_RESULT: ${{ needs.test.result }}
+          TEST_STEP_RESULT: ${{ needs.test.outputs.test_result }}
+          INSTALL_RESULT: ${{ needs.test.outputs.install_result }}
+          BUILD_RESULT: ${{ needs.test.outputs.build_result }}
+          DOCS_RESULT: ${{ needs.test.outputs.docs_result }}
+          REDIS_RESULT: ${{ needs.test.outputs.redis_result }}
+          TEST_STEP_OUTCOME: ${{ needs.test.outputs.test_step_result }}
+        with:
+          script: |
+            const fs = require('fs');
+            const succeeded = process.env.TEST_JOB_RESULT === 'success' && process.env.TEST_STEP_RESULT === 'success';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const outcomes = {
+              'Dependency install': process.env.INSTALL_RESULT,
+              'Workspace build': process.env.BUILD_RESULT,
+              'Docs validation': process.env.DOCS_RESULT,
+              'Redis startup': process.env.REDIS_RESULT,
+              'Full test suite': process.env.TEST_STEP_OUTCOME,
+            };
+            const failedStages = Object.entries(outcomes)
+              .filter(([, outcome]) => outcome === 'failure')
+              .map(([stage]) => stage);
+            const summary = succeeded
+              ? 'All tests passed.'
+              : failedStages.length > 0
+                ? `Validation failed during: ${failedStages.join(', ')}.`
+                : 'Validation did not complete successfully.';
+            let output = 'Output file not available.';
+            try { output = fs.readFileSync('test_output.sanitized.txt', 'utf8'); } catch {}
+            if (output.length > 60000) output = output.substring(0, 60000) + '\n\n...(truncated)';
+            const marker = '<!-- propr-full-test-results -->';
+            const body = [
+              marker,
+              '### Full Test Suite Results',
+              '',
+              summary,
+              '',
+              ...Object.entries(outcomes).map(([stage, outcome]) => `- ${stage}: ${outcome || 'not run'}`),
+              '',
+              '<details>',
+              '<summary>View Test Output</summary>',
+              '',
+              '~~~text',
+              output,
+              '~~~',
+              '</details>',
+              '',
+              `**[View Workflow](${runUrl})**`,
+            ].join('\n');
+            const commentParams = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            };
+            const comments = await github.paginate(github.rest.issues.listComments, commentParams);
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

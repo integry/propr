@@ -1,5 +1,5 @@
 // User Repository Preferences API
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 /**
  * User-specific repository preferences.

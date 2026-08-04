@@ -11,75 +11,174 @@ concurrency:
 jobs:
   validate:
     name: Validate Changes
-    runs-on: [self-hosted, linux, x64, propr]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-
+      pull-requests: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Check Node.js
+      - name: Initialize diagnostic log
+        if: always()
         run: |
-          node --version
-          npm --version
+          echo "Build check diagnostics for run ${{ github.run_id }}, attempt ${{ github.run_attempt }}" > build_log.txt
+          echo "Checkout outcome: ${{ steps.checkout.outcome }}" >> build_log.txt
+
+      - name: Lint GitHub Actions workflows
+        id: actionlint
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- GitHub Actions workflow lint ---"
+            # Standalone shellcheck below owns the release scripts; disabling
+            # actionlint's embedded shellcheck keeps this focused on workflows.
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE:/work:ro" \
+              --workdir /work \
+              rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+              -color -shellcheck=
+          } > >(tee -a build_log.txt) 2>&1
+
+      - name: Lint release shell scripts
+        id: release_shellcheck
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- Release shell script lint ---"
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE:/work:ro" \
+              --workdir /work \
+              --entrypoint shellcheck \
+              rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+              --exclude=SC2016 \
+              scripts/build-images.sh \
+              scripts/ci-redis.sh \
+              scripts/smoke-test-images.sh
+          } > >(tee -a build_log.txt) 2>&1
+
+      - name: Enforce pre-setup validation
+        id: preflight
+        if: steps.actionlint.outcome == 'failure' || steps.release_shellcheck.outcome == 'failure'
+        run: |
+          echo "Pre-setup validation failed; see captured lint output above." | tee -a build_log.txt >&2
+          exit 1
+
+      - name: Set up Node.js
+        id: node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            propr-ui/package-lock.json
+            docs/package-lock.json
+            packages/shared/package-lock.json
+            packages/api/package-lock.json
+            packages/core/package-lock.json
+
+      - name: Check toolchain
+        id: toolchain
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- Toolchain ---"
+            node --version
+            npm --version
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Install Dependencies
         id: install
-        run: npm ci
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "--- Dependency installation ---"
+            npm ci
+          } > >(tee -a build_log.txt) 2>&1
+
+      - name: Verify release-candidate metadata
+        env:
+          RELEASE_CANDIDATE: 'true'
+        run: npm run release:verify
 
       - name: Run Fast Unit Tests
         id: unit_tests
         run: |
-          echo "Running fast unit tests (no Redis/Docker dependencies)..."
-          npm run test:unit
-          echo "✅ Fast unit tests passed"
+          set -euo pipefail
+          {
+            echo
+            echo "--- Fast unit tests ---"
+            echo "Running fast unit tests (no Redis/Docker dependencies)..."
+            npm run test:unit
+            echo "✅ Fast unit tests passed"
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Run Hosted Tunnel Regression Tests
         id: tunnel_tests
         run: |
-          echo "Running hosted tunnel regression tests..."
-          # Build @propr/shared first: the tsx and UI tests below import from it,
-          # so a stale or missing dist in a clean checkout would fail or use old
-          # output. Build once, up front, before anything that depends on it.
-          npm run build -w @propr/shared
-          PROPR_DEMO_MODE=true npx tsx --test \
-            test/orchestratorConfig.test.mjs \
-            packages/cli/src/commands/tunnelCommand.test.ts \
-            test/orchestratorTunnelLifecycle.test.mjs \
-            test/orchestratorTunnelStatus.test.mjs \
-            test/orchestratorProprUrlsDrift.test.ts \
-            test/routingWebSocketProtocol.test.ts \
-            test/routingWebSocketIntakeService.test.ts \
-            packages/api/test/corsValidation.test.ts
-          npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
-          echo "✅ Hosted tunnel regression tests passed"
+          set -euo pipefail
+          {
+            echo
+            echo "--- Hosted tunnel regression tests ---"
+            echo "Running hosted tunnel regression tests..."
+            # Build @propr/shared first: the tsx and UI tests below import from it,
+            # so a stale or missing dist in a clean checkout would fail or use old
+            # output. Build once, up front, before anything that depends on it.
+            npm run build -w @propr/shared
+            PROPR_DEMO_MODE=true npx tsx --test \
+              test/orchestratorConfig.test.mjs \
+              packages/cli/src/commands/tunnelCommand.test.ts \
+              test/orchestratorTunnelLifecycle.test.mjs \
+              test/orchestratorTunnelStatus.test.mjs \
+              test/orchestratorProprUrlsDrift.test.ts \
+              test/routingWebSocketProtocol.test.ts \
+              test/routingWebSocketIntakeService.test.ts \
+              packages/api/test/corsValidation.test.ts
+            npm --workspace propr-ui test -- runtimeConfig.test.ts compatibility.test.ts
+            echo "✅ Hosted tunnel regression tests passed"
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Verify CLI Release Package
         id: cli_pack
         run: |
-          echo "Verifying propr-cli release package..."
-          npm run cli:pack
-          echo "✅ propr-cli release package verified"
+          set -euo pipefail
+          {
+            echo
+            echo "--- CLI release package ---"
+            echo "Verifying propr-cli release package..."
+            npm run cli:pack
+            echo "✅ propr-cli release package verified"
+          } > >(tee -a build_log.txt) 2>&1
 
       - name: Detect Changes
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         with:
           filters: |
             core:
               - 'src/**'
               - 'Dockerfile*'
               - 'package*.json'
+              - 'packages/core/**'
               - 'packages/shared/**'
             ui:
               - 'propr-ui/**'
               - 'packages/shared/**'
             docs:
               - 'docs/**'
+            cli:
+              - 'packages/cli/**'
             api:
               - 'packages/api/**'
+              - 'packages/core/**'
               - 'packages/shared/**'
             core_package:
               - 'packages/core/**'
@@ -89,14 +188,14 @@ jobs:
         id: build
         continue-on-error: true
         run: |
-          # Initialize log
+          # Preserve diagnostics from every earlier validation stage.
           touch build_log.txt
           EXIT_CODE=0
-          echo "Starting validation process..." > build_log.txt
+          echo "Starting changed-area validation process..." >> build_log.txt
           SHARED_BUILT=0
           SHARED_FAILED=0
-          CORE_PKG_BUILT=0
-          CORE_PKG_FAILED=0
+          CORE_BUILD_ATTEMPTED=0
+          CORE_BUILD_FAILED=0
 
           build_shared_once() {
             if [ $SHARED_BUILT -eq 1 ]; then
@@ -115,18 +214,18 @@ jobs:
           }
 
           build_core_package_once() {
-            if [ $CORE_PKG_BUILT -eq 1 ]; then
-              return $CORE_PKG_FAILED
+            if [ $CORE_BUILD_ATTEMPTED -eq 1 ]; then
+              return $CORE_BUILD_FAILED
             fi
 
             echo "Building @propr/core (dependency)..."
             CORE_BUILD_OUTPUT=$(npm run build -w @propr/core 2>&1) || {
-              CORE_PKG_FAILED=1
-              CORE_PKG_BUILT=1
+              CORE_BUILD_FAILED=1
+              CORE_BUILD_ATTEMPTED=1
               return 1
             }
 
-            CORE_PKG_BUILT=1
+            CORE_BUILD_ATTEMPTED=1
             return 0
           }
 
@@ -159,7 +258,7 @@ jobs:
 
           # --- UI ---
           if [ "${{ steps.filter.outputs.ui }}" == 'true' ]; then
-            echo -e "\n--- UI: Lint & Build ---" >> build_log.txt
+            echo -e "\n--- UI: Typecheck, Lint & Build ---" >> build_log.txt
             UI_FAILED=0
 
             # Dependencies already installed in earlier step
@@ -168,6 +267,18 @@ jobs:
               echo "$SHARED_OUTPUT" >> build_log.txt
               UI_FAILED=1
               EXIT_CODE=1
+            fi
+
+            if [ $UI_FAILED -eq 0 ]; then
+              TYPECHECK_OUTPUT=$(npm run typecheck -w propr-ui 2>&1) || {
+                echo "❌ UI Typecheck FAILED" >> build_log.txt
+                echo "$TYPECHECK_OUTPUT" >> build_log.txt
+                UI_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $UI_FAILED -eq 0 ]; then
+                echo "✅ UI Typecheck passed" >> build_log.txt
+              fi
             fi
 
             if [ $UI_FAILED -eq 0 ]; then
@@ -236,41 +347,56 @@ jobs:
           # --- CORE PACKAGE ---
           if [ "${{ steps.filter.outputs.core_package }}" == 'true' ]; then
             echo -e "\n--- Core Package: Build & Lint ---" >> build_log.txt
-            CORE_PKG_FAILED=0
+            CORE_SECTION_FAILED=0
 
             # Dependencies already installed in earlier step
             if ! build_shared_once; then
               echo "❌ Shared Package Build FAILED (core dependency)" >> build_log.txt
               echo "$SHARED_OUTPUT" >> build_log.txt
-              CORE_PKG_FAILED=1
+              CORE_SECTION_FAILED=1
               EXIT_CODE=1
             fi
 
-            if [ $CORE_PKG_FAILED -eq 0 ]; then
+            if [ $CORE_SECTION_FAILED -eq 0 ]; then
               # 1. Build Verification
               if ! build_core_package_once; then
                 echo "❌ Core Package Build FAILED" >> build_log.txt
                 echo "$CORE_BUILD_OUTPUT" >> build_log.txt
-                CORE_PKG_FAILED=1
+                CORE_SECTION_FAILED=1
                 EXIT_CODE=1
               fi
-              if [ $CORE_PKG_FAILED -eq 0 ]; then
+              if [ $CORE_SECTION_FAILED -eq 0 ]; then
                 echo "✅ Core Package Build passed" >> build_log.txt
               fi
             fi
 
-            if [ $CORE_PKG_FAILED -eq 0 ]; then
+            if [ $CORE_SECTION_FAILED -eq 0 ]; then
               # 2. Lint Verification
               echo "Linting @propr/core..."
               LINT_OUTPUT=$(npm run lint -w @propr/core -- --max-warnings 0 2>&1) || {
                 echo "❌ Core Package Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
-                CORE_PKG_FAILED=1
+                CORE_SECTION_FAILED=1
                 EXIT_CODE=1
               }
-              if [ $CORE_PKG_FAILED -eq 0 ]; then
+              if [ $CORE_SECTION_FAILED -eq 0 ]; then
                 echo "✅ Core Package Lint passed" >> build_log.txt
               fi
+            fi
+          fi
+
+          # --- CLI ---
+          if [ "${{ steps.filter.outputs.cli }}" == 'true' ]; then
+            echo -e "\n--- CLI: Lint ---" >> build_log.txt
+            CLI_FAILED=0
+            CLI_LINT_OUTPUT=$(npm run lint -w @propr/cli -- --max-warnings 0 2>&1) || {
+              echo "❌ CLI Lint FAILED" >> build_log.txt
+              echo "$CLI_LINT_OUTPUT" >> build_log.txt
+              CLI_FAILED=1
+              EXIT_CODE=1
+            }
+            if [ $CLI_FAILED -eq 0 ]; then
+              echo "✅ CLI Lint passed" >> build_log.txt
             fi
           fi
 
@@ -329,49 +455,102 @@ jobs:
 
           exit $EXIT_CODE
 
-      - name: Post Failure Comment
-        if: steps.build.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - name: Finalize failure diagnostics
+        if: always() && (failure() || steps.build.outcome == 'failure')
         run: |
-          LOG_FILE=build_log.txt
-          if [ ! -f "$LOG_FILE" ]; then
-            printf '%s\n' 'Log file missing.' > "$LOG_FILE"
-          fi
+          {
+            echo
+            echo "--- Stage outcomes ---"
+            echo "Workflow lint: ${{ steps.actionlint.outcome }}"
+            echo "Release shell lint: ${{ steps.release_shellcheck.outcome }}"
+            echo "Pre-setup gate: ${{ steps.preflight.outcome }}"
+            echo "Node setup: ${{ steps.node.outcome }}"
+            echo "Toolchain: ${{ steps.toolchain.outcome }}"
+            echo "Dependency install: ${{ steps.install.outcome }}"
+            echo "Fast tests: ${{ steps.unit_tests.outcome }}"
+            echo "Hosted tunnel tests: ${{ steps.tunnel_tests.outcome }}"
+            echo "CLI packaging: ${{ steps.cli_pack.outcome }}"
+            echo "Changed-area checks: ${{ steps.build.outcome }}"
+          } >> build_log.txt
 
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          log = Path("build_log.txt").read_text()
-          if len(log) > 60000:
-              log = log[:60000] + "\n\n...(truncated)"
-
-          run_url = os.environ["RUN_URL"]
-          body = "\n".join([
-              "### Checks Failed",
-              "Linting or build errors were detected.",
-              "",
-              "<details>",
-              "<summary>View Logs</summary>",
-              "",
-              "~~~text",
-              log,
-              "~~~",
-              "</details>",
-              "",
-              f"**[View Workflow]({run_url})**",
-          ])
-
-          Path("failure_comment.md").write_text(body)
-          PY
-          gh api \
-            --method POST \
-            repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
-            -f body="$(cat failure_comment.md)"
+      - name: Upload failure log
+        if: always() && (failure() || steps.build.outcome == 'failure')
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: build-check-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build_log.txt
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Fail Job
         if: steps.build.outcome == 'failure'
         run: exit 1
+
+  comment:
+    name: Report Build Failure
+    needs: validate
+    if: >-
+      ${{ always() && needs.validate.result == 'failure' &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Download failure log
+        continue-on-error: true
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: build-check-output-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Post failure comment
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let log = 'Log file missing.';
+            try { log = fs.readFileSync('build_log.txt', 'utf8'); } catch {}
+            log = log.replace(/~~~/g, '~~\u200b~');
+            if (log.length > 60000) log = log.substring(0, 60000) + '\n\n...(truncated)';
+            const marker = '<!-- propr-build-check-results -->';
+            const body = [
+              marker,
+              '### Checks Failed',
+              'Validation failed during setup, tests, CLI packaging, linting, or build checks.',
+              '',
+              '<details>',
+              '<summary>View Logs</summary>',
+              '',
+              '~~~text',
+              log,
+              '~~~',
+              '</details>',
+              '',
+              `**[View Workflow](${runUrl})**`,
+            ].join('\n');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

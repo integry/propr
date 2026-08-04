@@ -44,11 +44,21 @@ const mockRegistryInstance = {
     getAgentByAlias: (alias: string) => mockAgentConfigs.find(a => a.config.alias === alias) as any,
 };
 
+const mockResolveLlmLabel = mock.fn(async (label: string) => {
+    const agent = mockAgentConfigs.find(candidate =>
+        candidate.config.supportedModels.some(model => model === label)
+    );
+    if (!agent) throw new Error(`Unknown test model: ${label}`);
+    return { agentAlias: agent.config.alias, model: label };
+});
+
+const actualCore = await import('@propr/core');
 await mock.module('@propr/core', {
     namedExports: {
-        ...(await import('@propr/core')),
+        ...actualCore,
         loadPrReviewModel: mockLoadPrReviewModel,
         loadSettings: mock.fn(async () => ({ default_agent_alias: 'claude' })),
+        resolveLlmLabel: mockResolveLlmLabel,
         AgentRegistry: {
             getInstance: () => mockRegistryInstance,
         },
@@ -57,6 +67,7 @@ await mock.module('@propr/core', {
 
 // Import AFTER mocking
 const { resolveReviewAssignments } = await import('../src/jobs/prCommentReviewJob.ts');
+const { applyPendingCommentCommandContext } = await import('../src/jobs/prPendingComments.ts');
 
 test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
 
@@ -73,16 +84,16 @@ test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
         assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 0);
     });
 
-    await t.test('uses llm parameter when no requestedModels, ignoring pr_review_model', async () => {
+    await t.test('uses pr_review_model when no requestedModels, ignoring the llm parameter', async () => {
         mockPrReviewModel = 'antigravity-gemini-2.5-pro';
         mockLoadPrReviewModel.mock.resetCalls();
 
         const assignments = await resolveReviewAssignments(undefined, 'claude-sonnet-4-6', mockLogger as any);
 
         assert.strictEqual(assignments.length, 1);
-        assert.strictEqual(assignments[0].model, 'claude-sonnet-4-6');
-        // loadPrReviewModel should NOT be called when llm is provided
-        assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 0);
+        assert.strictEqual(assignments[0].agentAlias, 'antigravity');
+        assert.strictEqual(assignments[0].model, 'antigravity-gemini-2.5-pro');
+        assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 1);
     });
 
     await t.test('falls back to pr_review_model when no requestedModels and no llm', async () => {
@@ -131,9 +142,50 @@ test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
         assert.strictEqual(assignments[0].model, 'claude-opus-4-6');
         assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 1);
     });
+
+    await t.test('carries a batched /use selection through a model-less /review assignment', async () => {
+        mockPrReviewModel = 'antigravity-gemini-2.5-pro';
+        mockLoadPrReviewModel.mock.resetCalls();
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'owner',
+            repoName: 'repo',
+            correlationId: 'review-use-override',
+            commandMode: 'default' as const,
+            llm: 'claude-sonnet-4-6',
+            requestedModels: undefined as string[] | undefined,
+        };
+        const comments = [
+            {
+                id: 1,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                requestedModels: ['claude-opus-4-6'],
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 2,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, comments, mockLogger as any);
+        const assignments = await resolveReviewAssignments(jobData.requestedModels, jobData.llm, mockLogger as any);
+
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
+        assert.strictEqual(assignments.length, 1);
+        assert.strictEqual(assignments[0].agentAlias, 'claude');
+        assert.strictEqual(assignments[0].model, 'claude-opus-4-6');
+        assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 0);
+    });
 });
 
-// Force exit due to module-level initialization in @propr/core
-after(() => {
-    process.exit(0);
+after(async () => {
+    await actualCore.closeConnection();
 });

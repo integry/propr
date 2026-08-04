@@ -208,9 +208,9 @@ test('Antigravity display log keeps planner analysis and drops tool output', () 
 });
 
 test('Antigravity session recovery reads and removes the exported transient transcript', async () => {
-    const transcriptRoot = '/tmp/git-processor/propr-cache/antigravity/transcripts';
-    await fs.promises.mkdir(transcriptRoot, { recursive: true });
-    const tempDir = await fs.promises.mkdtemp(path.join(transcriptRoot, 'test-'));
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'propr-antigravity-transcript-'));
+    const previousTranscriptRoot = process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT;
+    process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT = tempDir;
 
     try {
         const sessionId = '758451e9-8997-4c87-b246-c99436a3629d';
@@ -238,6 +238,8 @@ test('Antigravity session recovery reads and removes the exported transient tran
         assert.equal(recovered.conversationLog.length, 1);
         assert.equal(fs.existsSync(transcriptPath), false);
     } finally {
+        if (previousTranscriptRoot === undefined) delete process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT;
+        else process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT = previousTranscriptRoot;
         await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
 });
@@ -260,16 +262,18 @@ test('Antigravity config path uses stored config when no env override is set', (
     });
 });
 
-test('Antigravity labels resolve to Antigravity models', async () => {
+test('Antigravity labels resolve to Antigravity models', async (t) => {
     const registry = AgentRegistry.getInstance() as unknown as {
         initialized: boolean;
         agents: Map<string, Agent>;
         agentsByAlias: Map<string, Agent>;
         defaultAgentAlias: string | null;
+        ensureInitialized(): Promise<void>;
     };
     const config = createAntigravityConfig();
     const fakeAgent = { config } as Agent;
 
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
     registry.initialized = true;
     registry.defaultAgentAlias = config.alias;
     registry.agents = new Map([[config.id, fakeAgent]]);

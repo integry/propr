@@ -49,4 +49,4 @@ Run from source when you want to:
 - Validate the documentation site
 - Develop new agent integrations
 
-For that path, install Node.js 20+, run `npm ci`, and use the development Compose stack or direct service commands — see [CLI Workflows](./cli-workflows.md) and [Source Setup](../tutorials/setup-source.md).
+For that path, install Node.js 22+, run `npm ci`, and use the development Compose stack or direct service commands — see [CLI Workflows](./cli-workflows.md) and [Source Setup](../tutorials/setup-source.md).

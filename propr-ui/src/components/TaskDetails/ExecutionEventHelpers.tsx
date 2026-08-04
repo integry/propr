@@ -1,8 +1,7 @@
 import React from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { LiveEvent, TaskInfo } from './types';
 import { formatDisplayPath } from './utils';
+import { SyntaxHighlighter, vscDarkPlus } from './syntaxHighlighter';
 import {
   FileText,
   FileCode,

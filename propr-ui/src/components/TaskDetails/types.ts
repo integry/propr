@@ -83,10 +83,10 @@ export interface LogFileInfo {
 }
 
 export interface LogFilesData {
-  sessionId?: string;
-  logFiles?: LogFileInfo[];
-  error?: string;
-  files?: Record<string, string>;
+  sessionId?: string | null;
+  logFiles?: LogFileInfo[] | null;
+  error?: string | null;
+  files?: Record<string, string> | null;
 }
 
 export interface SelectedLogFileData {
@@ -106,9 +106,12 @@ export interface LiveEvent {
   content?: string;
   timestamp?: string;
   toolName?: string;
-  input?: { file_path?: string; command?: string };
-  result?: string | object;
+  input?: Record<string, unknown> & { file_path?: string; command?: string };
+  id?: string;
+  toolUseId?: string;
+  result?: unknown;
   isError?: boolean;
+  isSubagentSummary?: boolean;
 }
 
 export interface LiveDetails {
@@ -124,6 +127,10 @@ export interface AnalysisData {
   content?: string;
   error?: string;
 }
+
+export type AnalysisApiData = {
+  [Key in keyof AnalysisData]?: AnalysisData[Key] | null;
+};
 
 export interface ParsedAnalysis {
   recommendations?: string[];

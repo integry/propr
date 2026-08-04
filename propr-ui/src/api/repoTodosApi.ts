@@ -1,5 +1,5 @@
 // Repository To-Dos API
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 /**
  * Represents a to-do category for organizing to-dos

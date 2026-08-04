@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
+import { closeConnection } from '@propr/core';
 import { getSessionCookieDomain, shouldUseSecureSessionCookie } from '../auth.js';
 
 const originalApiPublicUrl = process.env.API_PUBLIC_URL;
@@ -13,6 +14,10 @@ afterEach(() => {
   else process.env.COOKIE_DOMAIN = originalCookieDomain;
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = originalNodeEnv;
+});
+
+after(async () => {
+  await closeConnection();
 });
 
 test('session cookie domain only comes from COOKIE_DOMAIN', () => {

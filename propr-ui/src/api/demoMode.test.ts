@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import {
   apiFetch,
+  CommittedConfigWriteError,
   getDemoModeStatus,
   handleApiResponse,
-  INSTANCE_AUTHORIZATION_CHANGED_EVENT
+  INSTANCE_AUTHORIZATION_CHANGED_EVENT,
+  TokenRefreshRetryRequiredError,
 } from './proprApi';
 
 describe('demo mode API helpers', () => {
@@ -52,21 +54,61 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/github/repos', { credentials: 'include' });
   });
 
-  it('does not retry refreshed-token responses for mutating requests', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      code: 'TOKEN_REFRESHED',
-    }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    }));
-
-    const response = await apiFetch('/api/tasks/import', {
+  it('does not automatically replay JSON writes after a token refresh response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    const request = {
       method: 'POST',
       body: JSON.stringify({ repository: 'integry/propr' }),
-    });
+    };
+
+    const response = await apiFetch('/api/tasks/import', request);
 
     expect(response.status).toBe(401);
     expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/tasks/import', request);
+  });
+
+  it('replays a JSON write only when the route contract is explicitly opted in', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    const request = {
+      method: 'POST',
+      body: JSON.stringify({ repository: 'integry/propr' }),
+    };
+
+    const response = await apiFetch('/api/tasks/import', request, {
+      replayMutationAfterTokenRefresh: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces an unreplayed token refresh as retry-required without logging out', async () => {
+    const response = new Response(JSON.stringify({
+      code: 'TOKEN_REFRESHED',
+      message: 'Token refreshed; retry this upload.',
+    }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toMatchObject({
+      code: 'TOKEN_REFRESHED',
+      message: 'Token refreshed; retry this upload.',
+      name: TokenRefreshRetryRequiredError.name,
+    });
   });
 
   it('retries replayable Request instances after a token refresh response', async () => {
@@ -137,6 +179,59 @@ describe('demo mode API helpers', () => {
 
     expect(listener).toHaveBeenCalledOnce();
     window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+  });
+
+  it.each([
+    { status: 409, lockLostAfterCommit: true },
+    { status: 500, lockLostAfterCommit: false },
+  ])('preserves committed configuration metadata for HTTP $status responses', async ({ status, lockLostAfterCommit }) => {
+    const response = new Response(JSON.stringify({
+      success: status === 409,
+      committed: true,
+      error: status === 500 ? 'Notification publication failed after saving.' : undefined,
+      warning: status === 409 ? 'The lock was lost after saving.' : undefined,
+      lock_lost_after_commit: lockLostAfterCommit,
+    }), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const error = await handleApiResponse(response).catch(caught => caught);
+
+    expect(error).toBeInstanceOf(CommittedConfigWriteError);
+    expect(error).toMatchObject({
+      committed: true,
+      status,
+      lockLostAfterCommit,
+      responseBody: { committed: true },
+    });
+  });
+
+  it('surfaces explicitly allowlisted public messages for server errors', async () => {
+    const response = new Response(JSON.stringify({
+      code: 'AGENT_VERSION_LOOKUP_UNAVAILABLE',
+      error: "Failed to resolve version for agent 'codex': Agent version lookup is temporarily unavailable",
+    }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toThrow(
+      "Failed to resolve version for agent 'codex': Agent version lookup is temporarily unavailable"
+    );
+  });
+
+  it('continues to hide unclassified server error bodies', async () => {
+    const response = new Response(JSON.stringify({
+      error: 'Internal database details must not be displayed',
+    }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await expect(handleApiResponse(response)).rejects.toThrow(
+      'The server ran into a problem (HTTP 502). Please try again in a moment.'
+    );
   });
 
   it('continues to allow GET requests in demo mode', async () => {

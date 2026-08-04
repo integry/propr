@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { GripVertical, MessageSquare, Settings } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -10,6 +10,7 @@ import {
 import AgentsListSection from './SettingsPage/AgentsListSection';
 import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
 import { useDemoMode } from '../contexts/DemoModeContext';
+import { isCommittedConfigWriteError } from '../api/apiClient';
 
 const AiAgentsPage: React.FC = () => {
   useDocumentTitle('AI Agents');
@@ -20,6 +21,7 @@ const AiAgentsPage: React.FC = () => {
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
   const [agentsWarning, setAgentsWarning] = useState<string | null>(null);
+  const agentsReloadRequiredRef = useRef(false);
 
   // Mobile tab state: 'config' or 'playground'
   const [mobileTab, setMobileTab] = useState<'config' | 'playground'>('playground');
@@ -32,6 +34,7 @@ const AiAgentsPage: React.FC = () => {
         setAgentsError(null);
         const data = await getAgents();
         setAgents(data.agents || []);
+        agentsReloadRequiredRef.current = false;
       } catch (err) {
         setAgentsError((err as Error).message || 'Failed to load agents');
       } finally {
@@ -46,6 +49,10 @@ const AiAgentsPage: React.FC = () => {
       setAgentsError('Demo mode is read-only. Agent settings cannot be saved.');
       return undefined;
     }
+    if (agentsReloadRequiredRef.current) {
+      setAgentsError('Reload the current agent configuration before saving again.');
+      return undefined;
+    }
     try {
       setAgentsSaving(true);
       setAgentsError(null);
@@ -57,6 +64,18 @@ const AiAgentsPage: React.FC = () => {
       setAgentsSuccess('Agents updated successfully! Changes are applied immediately.');
       return result.agents || updatedAgents;
     } catch (err) {
+      if (isCommittedConfigWriteError(err)) {
+        try {
+          const current = await getAgents();
+          setAgents(current.agents || []);
+          agentsReloadRequiredRef.current = false;
+        } catch (refreshError) {
+          agentsReloadRequiredRef.current = true;
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+          setAgentsError(`${err.message} Automatic refresh failed (${refreshMessage}). Reload this page before editing agents again.`);
+          return undefined;
+        }
+      }
       setAgentsError((err as Error).message || 'Failed to update agents');
       return undefined;
     } finally {

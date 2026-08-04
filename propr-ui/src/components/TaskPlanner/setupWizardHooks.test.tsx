@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeIsGenerateDisabled, useBranchesLoader, useRepoInfoLoader, useDraftCreation, useGenerationHandlers, usePlannerSettingsPersistence, useDraftContextConfigSync, usePromptPersistence, useDraftSettingsPersistence, type PlannerConfig } from './setupWizardHooks';
-import { getRepoBranches, createDraft, generatePlan, updateDraft } from '../../api/proprApi';
+import { getRepoBranches, createDraft, generatePlan, updateDraft, type PlannerDraft } from '../../api/proprApi';
 import { savePlannerSettings } from '../../hooks/usePlannerSettings';
 import { baseConfig, createDeferred, makeDraft } from './setupWizardHooks.testUtils';
 
@@ -21,7 +21,12 @@ const mockSavePlannerSettings = vi.mocked(savePlannerSettings);
 describe('useGenerationHandlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGeneratePlan.mockResolvedValue(undefined);
+    mockGeneratePlan.mockResolvedValue({
+      success: true,
+      status: 'generating',
+      message: 'Plan generation started',
+      runId: 'generation-run-1',
+    });
   });
 
   it('waits for a stale context preview before starting generation', async () => {
@@ -51,13 +56,57 @@ describe('useGenerationHandlers', () => {
 
     expect(startPolling).not.toHaveBeenCalled();
     expect(mockGeneratePlan).not.toHaveBeenCalled();
+    expect(result.current.isStartingGeneration).toBe(true);
 
     preview.resolve(true);
     await act(async () => generation);
 
     expect(startPolling).toHaveBeenCalledOnce();
     expect(mockGeneratePlan).toHaveBeenCalledOnce();
+    expect(result.current.isStartingGeneration).toBe(false);
     expect(setError).not.toHaveBeenCalledWith(expect.stringContaining('did not complete'));
+  });
+
+  it('disables duplicate starts while the generation request is pending', async () => {
+    const generationResponse = createDeferred<Awaited<ReturnType<typeof generatePlan>>>();
+    mockGeneratePlan.mockImplementationOnce(() => generationResponse.promise);
+    const startPolling = vi.fn();
+    const onGenerationStarted = vi.fn();
+    const { result } = renderHook(() => useGenerationHandlers({
+      draft: makeDraft() as never,
+      config: baseConfig,
+      branchError: null,
+      contextHelpers: {
+        isContextStale: false,
+        clearCountdown: vi.fn(),
+        fetchPreview: vi.fn(),
+      },
+      startPolling,
+      stopPolling: vi.fn(),
+      onGenerationStarted,
+      setError: vi.fn(),
+      setGenerationError: vi.fn(),
+    }));
+
+    let firstStart!: Promise<void>;
+    act(() => {
+      firstStart = result.current.handleGenerateForExistingDraft();
+      void result.current.handleGenerateForExistingDraft();
+    });
+    expect(result.current.isStartingGeneration).toBe(true);
+    expect(mockGeneratePlan).toHaveBeenCalledOnce();
+
+    generationResponse.resolve({
+      success: true,
+      status: 'generating',
+      message: 'Plan generation started',
+      runId: 'generation-run-2',
+    });
+    await act(async () => firstStart);
+
+    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2');
+    expect(startPolling).toHaveBeenCalledWith('generation-run-2');
+    expect(result.current.isStartingGeneration).toBe(false);
   });
 
   it('does not generate when the required context preview fails', async () => {
@@ -94,7 +143,7 @@ function renderBranchesLoader(repo: string, configuredBaseBranch = '', initialCo
   }, { initialProps: { currentRepo: repo, currentBaseBranch: configuredBaseBranch } });
 }
 
-function renderRepoInfoLoader(draft = makeDraft(), initialConfig: PlannerConfig = baseConfig) {
+function renderRepoInfoLoader(draft: PlannerDraft | undefined = makeDraft(), initialConfig: PlannerConfig = baseConfig) {
   return renderHook(({ currentDraft }) => {
     const [config, setConfig] = useState<PlannerConfig>(initialConfig);
     const state = useRepoInfoLoader(false, currentDraft as never, setConfig);
@@ -160,12 +209,13 @@ describe('setupWizardHooks branch resolution', () => {
 
   it('preserves the current base branch when an edit-mode draft is temporarily unavailable', async () => {
     const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
+    const initialProps: { draft: PlannerDraft | undefined } = { draft: makeDraft() };
     mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
-    const { result, rerender } = renderHook(({ draft }) => {
+    const { result, rerender } = renderHook(({ draft }: { draft: PlannerDraft | undefined }) => {
       const [config, setConfig] = useState<PlannerConfig>({ ...baseConfig, baseBranch: 'develop' });
-      const state = useRepoInfoLoader(false, draft as never, setConfig);
+      const state = useRepoInfoLoader(false, draft, setConfig);
       return { config, state };
-    }, { initialProps: { draft: makeDraft() } });
+    }, { initialProps });
 
     await waitFor(() => expect(result.current.state.isLoading).toBe(true));
     rerender({ draft: undefined });

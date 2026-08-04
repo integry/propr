@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-08-03
+
 ### Added
 
+- **Release validation**: pull requests and nightly runs now exercise the
+  complete server/UI suite on Node.js 22 with isolated Redis, while release
+  metadata discovery automatically includes publishable `@propr/*` workspaces.
 - **Per-agent Web login**: adding Claude, Codex, Antigravity, or OpenCode can
   now create and authenticate an isolated account directly, without entering a
   host path. Managed credentials live below ProPR's credential root and allow
@@ -22,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fail-closed runtime safety**: webhook and merge checks require verified
+  signals, configuration writes reconcile post-commit failures, and planner
+  cancellation/live progress are isolated by generation run ID.
 - **Web UI**: dead `/agents` link in the no-models helper (now `/ai-agents`)
   plus a catch-all 404 route; "Planner Studio" tab title; Agent Tank banner
   reframed to rate-limit capacity; human-readable API error messages;
@@ -149,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.6]: https://github.com/integry/propr/releases/tag/v0.8.6
 [0.8.5]: https://github.com/integry/propr/releases/tag/v0.8.5
 [0.8.3]: https://github.com/integry/propr/releases/tag/v0.8.3
 [0.8.2]: https://github.com/integry/propr/releases/tag/v0.8.2

@@ -1,5 +1,5 @@
 // API for fetching file changes during task execution
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export interface FileChange {
   path: string;

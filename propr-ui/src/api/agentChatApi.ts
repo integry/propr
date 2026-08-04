@@ -1,5 +1,5 @@
 // Agent Chat Types and API
-import { API_BASE_URL, apiFetch, handleApiResponse } from './proprApi';
+import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export interface ChatQuery {
   agentId: string;

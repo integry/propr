@@ -445,8 +445,7 @@ export async function storePromptInRedis(options: StorePromptOptions): Promise<v
             promptKeys.push(conversationKey);
         }
 
-        const timestamp = Date.now();
-        const issueKey = `execution:prompt:issue:${issueRef.repoOwner}:${issueRef.repoName}:${issueRef.number}:${timestamp}`;
+        const issueKey = `execution:prompt:issue:${issueRef.repoOwner}:${issueRef.repoName}:${issueRef.number}:${Date.now()}`;
         await redis.set(issueKey, JSON.stringify(promptData), 'EX', 86400 * 30);
         promptKeys.push(issueKey);
 

@@ -1,4 +1,4 @@
-import { test, mock, describe } from 'node:test';
+import { after, test, mock, describe } from 'node:test';
 import assert from 'node:assert';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 
@@ -20,14 +20,15 @@ await mock.module('simple-git', {
 
 // Mock ioredis
 await mock.module('ioredis', {
-    defaultExport: function Redis(...args: unknown[]) {
-        redisConstructorCalls.push(args);
-        return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
-    },
     namedExports: {
         Redis: function Redis(...args: unknown[]) {
             redisConstructorCalls.push(args);
-            return { on: mock.fn(), get: mockRedisGet, quit: mock.fn(async () => {}) };
+            return {
+                on: mock.fn(),
+                get: mockRedisGet,
+                quit: mock.fn(async () => {}),
+                disconnect: mock.fn(),
+            };
         }
     }
 });
@@ -88,6 +89,7 @@ const mockUpdatePlanIssueByPR = mock.fn(async () => {});
 
 await mock.module('../packages/core/src/config/planIssueManager.js', {
     namedExports: {
+        PlanIssueStatus: { MERGED: 'merged' },
         findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
         findPlanIssueByRepoAndNumber: mockFindPlanIssueByRepoAndNumber,
         updatePlanIssueByPR: mockUpdatePlanIssueByPR
@@ -127,7 +129,15 @@ const {
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
 const { handleCheckRunEvent, shouldAutoMergePR } = await import('../packages/core/src/webhook/checkRunHandler.js');
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 import type { PRMergeContext } from '../packages/core/src/webhook/checkRunHandler.js';
+
+after(async () => {
+    resetUltrafixStateRedisForTests();
+    await shutdownQueue();
+    await closeConnection();
+});
 
 // Helper to reset all mocks
 function resetMocks(): void {
@@ -936,6 +946,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -970,6 +982,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1047,6 +1061,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'different-sha-456' }, // Different SHA
                         body: ''
@@ -1078,6 +1094,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1104,6 +1122,36 @@ describe('handleCheckRunEvent', () => {
         assert.ok(mergeCall, 'Should merge when SHA matches');
     });
 
+    test('does not merge after one successful check while GitHub still reports required checks blocked', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        labels: [{ name: 'auto-merge' }],
+                        draft: false,
+                        mergeable: false,
+                        mergeable_state: 'blocked',
+                        base: { ref: 'main' },
+                        head: { ref: 'feature', sha: 'abc123sha' },
+                        body: ''
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) {
+                return { data: { check_runs: [{ name: 'Unrelated fast check', status: 'completed', conclusion: 'success' }] } };
+            }
+            return { data: {} };
+        });
+
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+
+        const mergeCall = mockOctokit.request.mock.calls.find((call: { arguments: [string] }) =>
+            call.arguments[0].includes('merge')
+        );
+        assert.strictEqual(mergeCall, undefined);
+    });
+
     test('handles errors gracefully without throwing', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async () => {
@@ -1127,6 +1175,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1167,6 +1217,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1237,6 +1289,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: '800-epic-short-name-x7y', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1271,6 +1325,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1305,6 +1361,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: {
                             ref: 'feature',
@@ -1353,6 +1411,8 @@ describe('shouldAutoMergePR', () => {
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
+        mergeable?: boolean | null;
+        mergeableState?: string;
     }): PRMergeContext {
         const {
             owner = 'test-owner',
@@ -1366,7 +1426,9 @@ describe('shouldAutoMergePR', () => {
             ultrafixStateUnavailable = false,
             isDraft = false,
             baseBranch = 'main',
-            headBranch = 'feature-branch'
+            headBranch = 'feature-branch',
+            mergeable = true,
+            mergeableState = 'clean'
         } = options;
 
         return {
@@ -1382,7 +1444,9 @@ describe('shouldAutoMergePR', () => {
                 ultrafixStateUnavailable,
                 isDraft,
                 baseBranch,
-                headBranch
+                headBranch,
+                mergeable,
+                mergeableState
             },
             log: mockLogger.withCorrelation('test-correlation')
         };
@@ -1426,7 +1490,7 @@ describe('shouldAutoMergePR', () => {
         assert.strictEqual(mockTriggerNextPendingIssue.mock.calls.length, 0);
     });
 
-    test('does not hard-block auto-merge solely because the ultrafix label remains without Redis state', async () => {
+    test('keeps auto-merge blocked while the ultrafix label remains without a success state', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1436,10 +1500,10 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
-    test('falls back to auto-merge when ultrafix state is unavailable while ultrafix is still labeled', async () => {
+    test('fails closed when ultrafix state is unavailable while ultrafix is still labeled', async () => {
         resetMocks();
         const ctx = createMockPRMergeContext({
             hasLabel: true,
@@ -1449,10 +1513,10 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
-    test('falls back to linked issue auto-merge when ultrafix state is unavailable and PR has no direct label', async () => {
+    test('does not use a linked issue to bypass unavailable ultrafix state', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint.includes('pulls')) {
@@ -1472,7 +1536,7 @@ describe('shouldAutoMergePR', () => {
         });
 
         const result = await shouldAutoMergePR(ctx);
-        assert.strictEqual(result, true);
+        assert.strictEqual(result, false);
     });
 
     test('blocks auto-merge when ultrafix finished unsuccessfully', async () => {

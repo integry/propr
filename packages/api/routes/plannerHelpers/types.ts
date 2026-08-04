@@ -56,6 +56,7 @@ export interface BackgroundGenerationOptions {
   worktreePath: string;
   authToken: string;
   correlationId: string;
+  runId: string;
 }
 
 export interface ValidateContextRepositoryResponse {

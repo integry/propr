@@ -22,7 +22,7 @@ export interface PlanEditorMobileLayoutProps {
   granularityEnforcement?: { enforced: boolean; message?: string; originalTaskCount?: number; finalTaskCount?: number };
   enforcementNoticeDismissed: boolean;
   plan: PlanTask[];
-  highlightedIds: Set<string>;
+  highlightedIds: string[];
   draftId: string;
   chatHistory?: ChatMessage[];
   refinementProgress?: RefinementProgress;
@@ -37,7 +37,7 @@ export interface PlanEditorMobileLayoutProps {
   onSetEnforcementNoticeDismissed: (value: boolean) => void;
   onTaskChange: (taskId: string, updates: Partial<PlanTask>) => void;
   onDeleteTask: (taskId: string) => void;
-  onReorderTasks: (taskIds: string[]) => void;
+  onReorderTasks: (activeId: string, overId: string) => void;
   onFinalize: () => void;
   onSetChatExpanded: (value: boolean) => void;
   onRefine: (message: string, signal?: AbortSignal, generationModel?: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;

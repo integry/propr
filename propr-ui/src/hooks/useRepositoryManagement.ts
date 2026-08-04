@@ -17,6 +17,7 @@ import { useSocket } from '../contexts/useSocket';
 import { IndexingUpdatePayload } from '@propr/shared';
 import { buildUpdatedStatus } from '../utils/indexingStatusHelpers';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
+import { isCommittedConfigWriteError } from '../api/apiClient';
 
 const generateId = (): string => crypto.randomUUID();
 const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_status']>(['idle', 'completed', 'failed']);
@@ -78,6 +79,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const [showHiddenRepos, setShowHiddenRepos] = useState<boolean>(false);
   const [_userRepoPrefs, setUserRepoPrefs] = useState<UserRepoPreferences>({});
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const configurationReloadRequiredRef = useRef(false);
   const pendingOptimisticUpdatesRef = useRef<Set<string>>(new Set());
   const terminalSocketUpdatesRef = useRef<Set<string>>(new Set());
 
@@ -123,8 +125,10 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           return true;
         });
       setRepos(validRepos);
+      configurationReloadRequiredRef.current = false;
     } catch (err) {
       setError((err as Error).message || 'Failed to load repositories');
+      throw err;
     } finally {
       setLoading(false);
     }
@@ -193,7 +197,11 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }
   }, []);
 
-  useEffect(() => { loadRepos(); loadAvailableRepos(); loadIndexingStatuses(); }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
+  useEffect(() => {
+    void loadRepos().catch(() => undefined);
+    void loadAvailableRepos();
+    void loadIndexingStatuses();
+  }, [loadRepos, loadAvailableRepos, loadIndexingStatuses]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -209,6 +217,11 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const performAutoSave = useCallback(async (reposToSave: Repo[]) => {
     if (!canManageRepositories) {
       setError('Administrator access is required to change repository configuration');
+      return false;
+    }
+    if (configurationReloadRequiredRef.current) {
+      setSaveStatus('error');
+      setError('Reload the current repository configuration before saving again.');
       return false;
     }
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -227,11 +240,23 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
       return true;
     } catch (err) {
+      let reportedError = err instanceof Error ? err : new Error(String(err));
+      if (isCommittedConfigWriteError(err)) {
+        // The write is durable even though publication/lock finalization failed.
+        // Keep the save pending while replacing optimistic state from the server.
+        try {
+          await loadRepos();
+        } catch (refreshError) {
+          configurationReloadRequiredRef.current = true;
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+          reportedError = new Error(`${err.message} Automatic refresh failed (${refreshMessage}). Reload this page before editing repositories again.`);
+        }
+      }
       setSaveStatus('error');
-      setError((err as Error).message || 'Failed to save repository configuration');
+      setError(reportedError.message || 'Failed to save repository configuration');
       return false;
     }
-  }, [canManageRepositories]);
+  }, [canManageRepositories, loadRepos]);
 
   const handleStopIndexing = async (repoName: string, baseBranch?: string) => {
     if (!canManageRepositories) return;
@@ -327,7 +352,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   };
 
   const handleToggleShowHidden = () => setShowHiddenRepos(prev => !prev);
-  const handleRetry = () => { setError(null); loadRepos(); };
+  const handleRetry = () => { setError(null); void loadRepos().catch(() => undefined); };
 
   const hiddenCount = repos.filter(r => r.hidden).length;
   const filteredRepos = showHiddenRepos ? repos : repos.filter(r => !r.hidden);
