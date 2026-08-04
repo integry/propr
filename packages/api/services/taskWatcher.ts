@@ -320,7 +320,13 @@ export class TaskWatcherManager {
       const result = await parseConversationFile(conversationPath);
 
       // Determine which events to send
-      const stableEvents = withStableLiveEventIds(taskId, 'conversation', result.events, result.totalEventCount);
+      const stableEvents = withStableLiveEventIds({
+        taskId: this.normalizeTaskId(taskId),
+        source: 'conversation',
+        events: result.events,
+        totalEventCount: result.totalEventCount,
+        executionNamespace: watcherInfo.sessionId,
+      });
       let eventsToSend = stableEvents;
 
       if (isInitial) {
@@ -429,7 +435,13 @@ export class TaskWatcherManager {
       const result = parseRedisOutput(lines, { executionStartTimestamp });
 
       // Determine which events to send
-      const stableEvents = withStableLiveEventIds(taskId, 'redis', result.events, result.totalEventCount);
+      const stableEvents = withStableLiveEventIds({
+        taskId: this.normalizeTaskId(taskId),
+        source: 'redis',
+        events: result.events,
+        totalEventCount: result.totalEventCount,
+        executionNamespace: executionStartTimestamp ?? watcherInfo.sessionId,
+      });
       let eventsToSend = stableEvents;
       if (!isInitial) {
         const lastSentCount = watcherInfo.lastSentEventCount;

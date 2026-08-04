@@ -65,7 +65,7 @@ const GeneratingView: React.FC<{ draft: GeneratingDraft }> = ({ draft }) => (
 
 const TaskPlannerPage: React.FC = () => {
   const { draftId } = useParams<{ draftId: string }>();
-  const { draft, loading, error, refetch } = useDraft(draftId || '');
+  const { draft, loading, error, refetch, activateGenerationRun } = useDraft(draftId || '');
 
   // Set document title with plan/draft name or repository
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -129,6 +129,7 @@ const TaskPlannerPage: React.FC = () => {
     <SetupWizard 
       draft={draft} 
       onGenerateComplete={refetch}
+      onGenerationStarted={activateGenerationRun}
     />
   );
 };

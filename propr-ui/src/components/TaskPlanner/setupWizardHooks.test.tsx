@@ -56,13 +56,57 @@ describe('useGenerationHandlers', () => {
 
     expect(startPolling).not.toHaveBeenCalled();
     expect(mockGeneratePlan).not.toHaveBeenCalled();
+    expect(result.current.isStartingGeneration).toBe(true);
 
     preview.resolve(true);
     await act(async () => generation);
 
     expect(startPolling).toHaveBeenCalledOnce();
     expect(mockGeneratePlan).toHaveBeenCalledOnce();
+    expect(result.current.isStartingGeneration).toBe(false);
     expect(setError).not.toHaveBeenCalledWith(expect.stringContaining('did not complete'));
+  });
+
+  it('disables duplicate starts while the generation request is pending', async () => {
+    const generationResponse = createDeferred<Awaited<ReturnType<typeof generatePlan>>>();
+    mockGeneratePlan.mockImplementationOnce(() => generationResponse.promise);
+    const startPolling = vi.fn();
+    const onGenerationStarted = vi.fn();
+    const { result } = renderHook(() => useGenerationHandlers({
+      draft: makeDraft() as never,
+      config: baseConfig,
+      branchError: null,
+      contextHelpers: {
+        isContextStale: false,
+        clearCountdown: vi.fn(),
+        fetchPreview: vi.fn(),
+      },
+      startPolling,
+      stopPolling: vi.fn(),
+      onGenerationStarted,
+      setError: vi.fn(),
+      setGenerationError: vi.fn(),
+    }));
+
+    let firstStart!: Promise<void>;
+    act(() => {
+      firstStart = result.current.handleGenerateForExistingDraft();
+      void result.current.handleGenerateForExistingDraft();
+    });
+    expect(result.current.isStartingGeneration).toBe(true);
+    expect(mockGeneratePlan).toHaveBeenCalledOnce();
+
+    generationResponse.resolve({
+      success: true,
+      status: 'generating',
+      message: 'Plan generation started',
+      runId: 'generation-run-2',
+    });
+    await act(async () => firstStart);
+
+    expect(onGenerationStarted).toHaveBeenCalledWith('generation-run-2');
+    expect(startPolling).toHaveBeenCalledWith('generation-run-2');
+    expect(result.current.isStartingGeneration).toBe(false);
   });
 
   it('does not generate when the required context preview fails', async () => {

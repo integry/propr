@@ -7,7 +7,6 @@ import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
 import {
   isConversationResultEmpty,
-  parseClaudeConversationFile,
   parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult,
   type ConversationResult
@@ -17,7 +16,8 @@ import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodePa
 import { parseExecutionDetailsRows, type ExecutionDetailRow } from './liveDetailsExecutionParser.js';
 import { detectStoredOutputFormat, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 import { parseRedisOutput } from '../services/redisOutputParser.js';
-import { withStableLiveEventIds } from '../services/liveEventIds.js';
+import { parseConversationFile } from '../services/conversationParser.js';
+import { withStableLiveEventIds, type LiveEventSource } from '../services/liveEventIds.js';
 
 export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
@@ -61,7 +61,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         console.log('[live-details] Claude conversation file not found, trying stored execution output fallback');
         const fallbackResult = await parseStoredExecutionOutput(redisClient, sessionId);
         if (fallbackResult) {
-          res.json(fallbackResult);
+          res.json(withStableResultEventIds(taskId, 'stored', sessionId, fallbackResult));
           return;
         }
         console.log('[live-details] Stored execution output fallback unavailable, trying database fallback');
@@ -69,20 +69,26 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         if (!dbFallbackResult) {
           const rawStoredOutput = await loadStoredExecutionOutput(redisClient, sessionId);
           if (rawStoredOutput?.rawFallback) {
-            res.json(rawStoredOutput.rawFallback);
+            res.json(withStableResultEventIds(taskId, 'stored', sessionId, rawStoredOutput.rawFallback));
             return;
           }
           res.json({ events: [], todos: [], currentTask: null });
           return;
         }
-        res.json(dbFallbackResult);
+        res.json(withStableResultEventIds(taskId, 'database', sessionId, dbFallbackResult));
         return;
       }
-      const result = await parseClaudeConversationFile(conversationPath);
+      const result = await parseConversationFile(conversationPath);
       console.log(`[live-details] Returning: ${result.events.length} events, ${result.todos.length} todos, currentTask: ${result.currentTask ? 'yes' : 'no'}`);
       res.json({
         ...result,
-        events: withStableLiveEventIds(taskId, 'conversation', result.events, result.events.length),
+        events: withStableLiveEventIds({
+          taskId,
+          source: 'conversation',
+          events: result.events,
+          totalEventCount: result.totalEventCount,
+          executionNamespace: sessionId,
+        }),
       });
     } catch (error) {
       console.error(`Error in /api/task/:taskId/live-details:`, error);
@@ -96,6 +102,24 @@ function normalizeTaskId(jobId: string): string {
   const parts = jobId.replace(/^issue-/, '').split('-');
   parts.pop();
   return parts.join('-');
+}
+
+function withStableResultEventIds(
+  taskId: string,
+  source: LiveEventSource,
+  executionNamespace: string,
+  result: ConversationResult,
+): ConversationResult {
+  return {
+    ...result,
+    events: withStableLiveEventIds({
+      taskId,
+      source,
+      events: result.events,
+      totalEventCount: result.events.length,
+      executionNamespace,
+    }),
+  };
 }
 async function findSessionId(redisClient: RedisClientType, db: Knex, taskId: string): Promise<string | null> {
   const redisSessionId = await findSessionIdFromRedis(redisClient, taskId);
@@ -245,14 +269,23 @@ async function parseActiveExecutionOutput(redisClient: RedisClientType, db: Knex
   const redisParsed = parseRedisOutput(output.split('\n').filter(line => line.trim()), { executionStartTimestamp });
   if (redisParsed.events.length > 0 || redisParsed.todos.length > 0 || redisParsed.currentTask || redisParsed.tokenUsage) {
     return {
-      events: withStableLiveEventIds(taskId, 'redis', redisParsed.events, redisParsed.totalEventCount) as unknown as Array<Record<string, unknown>>,
+      events: withStableLiveEventIds({
+        taskId,
+        source: 'redis',
+        events: redisParsed.events,
+        totalEventCount: redisParsed.totalEventCount,
+        executionNamespace: executionStartTimestamp ?? taskId,
+      }) as unknown as Array<Record<string, unknown>>,
       todos: redisParsed.todos,
       currentTask: redisParsed.currentTask,
       tokenUsage: redisParsed.tokenUsage
     };
   }
   const parsedOutput = parseStoredOutputContent(output);
-  return parsedOutput.parsed ?? parsedOutput.rawFallback;
+  const result = parsedOutput.parsed ?? parsedOutput.rawFallback;
+  return result
+    ? withStableResultEventIds(taskId, 'redis', executionStartTimestamp ?? taskId, result)
+    : null;
 }
 export function parseStoredOutputContent(output: string): ParsedStoredOutput {
   if (!output.trim()) return { parsed: null, rawFallback: null, format: 'unknown' };

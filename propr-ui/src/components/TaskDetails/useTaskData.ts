@@ -55,14 +55,22 @@ export const normalizeLiveTodos = (todos: TaskLiveUpdatePayload['todos']): TodoI
   });
 };
 
-const eventFingerprint = (event: LiveDetails['events'][number]) => {
-  if (event.id) return `event:${event.id}`;
+const legacyEventFingerprint = (event: LiveDetails['events'][number]) => {
   // A tool use and its result intentionally share toolUseId, so retain the
   // event type while still distinguishing otherwise identical tool calls.
-  if (event.toolUseId) return `tool:${event.type}:${event.toolUseId}`;
+  if (event.toolUseId) return `tool:${JSON.stringify({
+    type: event.type,
+    toolUseId: event.toolUseId,
+    timestamp: event.timestamp,
+    toolName: event.toolName,
+    input: event.input,
+    result: event.result,
+    isError: event.isError,
+  })}`;
   return `legacy:${JSON.stringify({
     type: event.type,
     content: event.content,
+    timestamp: event.timestamp,
     toolName: event.toolName,
     input: event.input,
     result: event.result,
@@ -75,11 +83,24 @@ const appendUniqueEvents = (
   newEvents: LiveDetails['events']
 ) => {
   if (newEvents.length === 0) return currentEvents;
-  const seen = new Set(currentEvents.map(eventFingerprint));
+  const seenIds = new Set(currentEvents.flatMap(event => event.id ? [event.id] : []));
+  const existingLegacyOccurrences = new Map<string, number>();
+  for (const event of currentEvents) {
+    if (event.id) continue;
+    const fingerprint = legacyEventFingerprint(event);
+    existingLegacyOccurrences.set(fingerprint, (existingLegacyOccurrences.get(fingerprint) ?? 0) + 1);
+  }
+  const incomingLegacyOccurrences = new Map<string, number>();
   const uniqueNewEvents = newEvents.filter(event => {
-    const fingerprint = eventFingerprint(event);
-    if (seen.has(fingerprint)) return false;
-    seen.add(fingerprint);
+    if (event.id) {
+      if (seenIds.has(event.id)) return false;
+      seenIds.add(event.id);
+      return true;
+    }
+    const fingerprint = legacyEventFingerprint(event);
+    const occurrence = incomingLegacyOccurrences.get(fingerprint) ?? 0;
+    incomingLegacyOccurrences.set(fingerprint, occurrence + 1);
+    if (occurrence < (existingLegacyOccurrences.get(fingerprint) ?? 0)) return false;
     return true;
   });
   return uniqueNewEvents.length > 0 ? [...currentEvents, ...uniqueNewEvents] : currentEvents;

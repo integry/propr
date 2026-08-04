@@ -85,27 +85,11 @@ jobs:
         if: always()
         env:
           GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-          let output = 'Test output file not available.';
-          try { output = fs.readFileSync('test_output.txt', 'utf8'); } catch {}
-          const knownSecrets = [process.env.GITHUB_TOKEN_TO_REDACT]
-            .filter(secret => secret && secret.length > 0);
-          for (const secret of knownSecrets) output = output.split(secret).join('[REDACTED]');
-          const credentialPatterns = [
-            [/(\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|token)?\s*)[^\s,;]+/gi, '$1[REDACTED]'],
-            [/(\b(?:GITHUB_TOKEN|PROPR_E2E_TOKEN)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]'],
-            [/(["'](?:access_?token|api_?key|client_?secret|password)["']\s*:\s*["'])[^"']+(["'])/gi, '$1[REDACTED]$2'],
-            [/\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]'],
-            [/(https?:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi, '$1[REDACTED]@'],
-          ];
-          for (const [pattern, replacement] of credentialPatterns) {
-            output = output.replace(pattern, replacement);
-          }
-          output = output.replace(/~~~/g, '~~\u200b~');
-          fs.writeFileSync('test_output.sanitized.txt', output);
-          NODE
+        run: node scripts/sanitize-ci-output.mjs test_output.txt test_output.sanitized.txt
+
+      - name: Remove raw test output
+        if: always()
+        run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt"
 
       - name: Upload test output
         if: always()
@@ -177,17 +161,6 @@ jobs:
                 : 'Validation did not complete successfully.';
             let output = 'Output file not available.';
             try { output = fs.readFileSync('test_output.sanitized.txt', 'utf8'); } catch {}
-            const credentialPatterns = [
-              [/(\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|token)?\s*)[^\s,;]+/gi, '$1[REDACTED]'],
-              [/(\b(?:GITHUB_TOKEN|PROPR_E2E_TOKEN)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]'],
-              [/(["'](?:access_?token|api_?key|client_?secret|password)["']\s*:\s*["'])[^"']+(["'])/gi, '$1[REDACTED]$2'],
-              [/\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]'],
-              [/(https?:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi, '$1[REDACTED]@'],
-            ];
-            for (const [pattern, replacement] of credentialPatterns) {
-              output = output.replace(pattern, replacement);
-            }
-            output = output.replace(/~~~/g, '~~\u200b~');
             if (output.length > 60000) output = output.substring(0, 60000) + '\n\n...(truncated)';
             const marker = '<!-- propr-full-test-results -->';
             const body = [

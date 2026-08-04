@@ -54,7 +54,25 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/github/repos', { credentials: 'include' });
   });
 
-  it('retries replayable JSON writes after a token refresh response', async () => {
+  it('does not automatically replay JSON writes after a token refresh response', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    const request = {
+      method: 'POST',
+      body: JSON.stringify({ repository: 'integry/propr' }),
+    };
+
+    const response = await apiFetch('/api/tasks/import', request);
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/tasks/import', request);
+  });
+
+  it('replays a JSON write only when the route contract is explicitly opted in', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
         status: 401,
@@ -69,12 +87,12 @@ describe('demo mode API helpers', () => {
       body: JSON.stringify({ repository: 'integry/propr' }),
     };
 
-    const response = await apiFetch('/api/tasks/import', request);
+    const response = await apiFetch('/api/tasks/import', request, {
+      replayMutationAfterTokenRefresh: true,
+    });
 
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/tasks/import', request);
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/tasks/import', request);
   });
 
   it('surfaces an unreplayed token refresh as retry-required without logging out', async () => {

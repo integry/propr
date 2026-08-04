@@ -12,6 +12,7 @@ interface UseDraftResult {
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
+  activateGenerationRun: (runId: string) => void;
 }
 
 function ensureArray(value: unknown): unknown[] {
@@ -91,6 +92,8 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
   });
   const [loading, setLoading] = useState<boolean>(() => !useInitialData);
   const [error, setError] = useState<string | null>(null);
+  const activeRunIdRef = useRef(draft?.generation_trace?.runId);
+  activeRunIdRef.current = draft?.generation_trace?.runId;
 
   // Fetch function - only sets loading for explicit refetch, not background refresh
   const fetchDraft = useCallback(async (showLoading = true) => {
@@ -102,7 +105,9 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
       }
       setError(null);
       const data = await getDraft(draftId);
-      setDraft(parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft);
+      const parsedDraft = parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft;
+      activeRunIdRef.current = parsedDraft.generation_trace?.runId;
+      setDraft(parsedDraft);
     } catch (err) {
       setError((err as Error).message || 'Failed to fetch draft');
     } finally {
@@ -150,10 +155,22 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     });
   }, []);
 
+  const activateGenerationRun = useCallback((runId: string) => {
+    activeRunIdRef.current = runId;
+    setDraft(currentDraft => {
+      if (!currentDraft || currentDraft.draft_id !== draftId) return currentDraft;
+      return {
+        ...currentDraft,
+        status: 'generating',
+        generation_trace: { steps: [], runId },
+      };
+    });
+  }, [draftId]);
+
   // Handle draft update from WebSocket
   const handleDraftUpdate = useCallback(async (payload: DraftUpdatePayload) => {
     if (payload.draftId !== draftId) return;
-    const activeRunId = draft?.generation_trace?.runId;
+    const activeRunId = activeRunIdRef.current;
     if (activeRunId && payload.runId !== activeRunId) return;
 
     console.log('[useDraft] Received draft update via WebSocket:', payload);
@@ -164,7 +181,7 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     if (payload.draftStatus && payload.draftStatus !== 'generating') {
       await fetchDraft(false);
     }
-  }, [draftId, draft?.generation_trace?.runId, applySocketSnapshot, fetchDraft]);
+  }, [draftId, applySocketSnapshot, fetchDraft]);
 
   // Subscribe to WebSocket events for this draft when generating
   useEffect(() => {
@@ -184,5 +201,5 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
     };
   }, [draftId, draft?.status, isConnected, subscribeToDraft, unsubscribeFromDraft, onDraftUpdate, handleDraftUpdate]);
 
-  return { draft, loading, error, refetch: () => fetchDraft(true) };
+  return { draft, loading, error, refetch: () => fetchDraft(true), activateGenerationRun };
 };

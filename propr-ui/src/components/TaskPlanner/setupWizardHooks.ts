@@ -27,7 +27,7 @@ export interface Repo { name: string; enabled: boolean; baseBranch?: string; sta
 export interface PlannerConfig { prompt: string; baseBranch: string; granularity: Granularity; contextLevel: number; compress: boolean; files: PlannerAttachment[]; contextRepositories: { repository: string; branch?: string }[]; generationModel: string | null; manualFiles: string[]; excludedFiles: string[]; }
 
 interface RepoInfoState { isLoading: boolean; error: string | null; }
-interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: (runId?: string) => void; stopPolling: () => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
+interface GenerationHandlersParams { draft: PlannerDraft | undefined; config: PlannerConfig; branchError: string | null; contextHelpers: { isContextStale: boolean; clearCountdown: () => void; fetchPreview: () => Promise<boolean> }; startPolling: (runId?: string) => void; stopPolling: () => void; onGenerationStarted?: (runId: string) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setGenerationError: (error: string | null) => void; }
 interface DraftCreationParams { selectedRepo: string; config: PlannerConfig; localFiles: File[]; onDraftCreated?: (draftId: string) => void; navigate: (path: string, options?: { replace?: boolean; state?: unknown }) => void; setError: React.Dispatch<React.SetStateAction<string | null>>; setIsCreating: React.Dispatch<React.SetStateAction<boolean>>; todoIds?: string[]; }
 interface GenerateDisabledParams { isNewMode: boolean; isCreating: boolean; selectedRepo: string; promptTrimmed: string; reposLoading: boolean; isGenerating: boolean; branchError: string | null; repoInfoLoading: boolean; repoError: string | null; baseBranch: string; }
 
@@ -206,10 +206,14 @@ export function useFileHandling(isNewMode: boolean, draft: PlannerDraft | undefi
   }, [handleUpload, setError]);
   return { localFiles, isUploading, handleUpload, handleRemoveFile, handleRemoveLocalFile, handlePaste };
 }
-export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError }: GenerationHandlersParams) {
+export function useGenerationHandlers({ draft, config, branchError, contextHelpers, startPolling, stopPolling, onGenerationStarted, setError, setGenerationError }: GenerationHandlersParams) {
+  const [isStartingGeneration, setIsStartingGeneration] = useState(false);
+  const isStartingGenerationRef = useRef(false);
   const handleGenerateForExistingDraft = useCallback(async () => {
-    if (!draft) return;
+    if (!draft || isStartingGenerationRef.current) return;
     if (branchError) return void setError('Please fix the branch name before generating');
+    isStartingGenerationRef.current = true;
+    setIsStartingGeneration(true);
     setError(null);
     setGenerationError(null);
     try {
@@ -222,12 +226,16 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
         }
       }
       const generation = await generatePlan(draft.draft_id, buildGenerationPayload(config));
+      onGenerationStarted?.(generation.runId);
       startPolling(generation.runId);
     } catch (err) {
       stopPolling();
       setError((err as Error).message || 'Failed to start plan generation');
+    } finally {
+      isStartingGenerationRef.current = false;
+      setIsStartingGeneration(false);
     }
-  }, [draft, config, branchError, contextHelpers, startPolling, stopPolling, setError, setGenerationError]);
+  }, [draft, config, branchError, contextHelpers, startPolling, stopPolling, onGenerationStarted, setError, setGenerationError]);
   const handleAbortGeneration = useCallback(async () => {
     if (!draft) return;
     try {
@@ -237,7 +245,7 @@ export function useGenerationHandlers({ draft, config, branchError, contextHelpe
       setError((err as Error).message || 'Failed to abort generation');
     }
   }, [draft, stopPolling, setError]);
-  return { handleGenerateForExistingDraft, handleAbortGeneration };
+  return { isStartingGeneration, handleGenerateForExistingDraft, handleAbortGeneration };
 }
 export function useDraftCreation({ selectedRepo, config, localFiles, onDraftCreated, navigate, setError, setIsCreating, todoIds }: DraftCreationParams) {
   return useCallback(async () => {

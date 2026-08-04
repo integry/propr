@@ -115,6 +115,7 @@ interface SetupWizardLeftPaneProps {
   error: string | null;
   generationError: string | null;
   isGenerating: boolean;
+  showGenerationProgress?: boolean;
   generationTrace?: GenerationTrace;
   onAbort: () => Promise<void>;
   // Manual file selection props
@@ -154,6 +155,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   error,
   generationError,
   isGenerating,
+  showGenerationProgress = isGenerating,
   generationTrace,
   onAbort,
   manualFiles,
@@ -244,7 +246,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
         {error || generationError}
       </div>
     )}
-    {isGenerating && (
+    {showGenerationProgress && (
       <div className="px-6 py-3 border-b border-gray-100">
         <GenerationProgress trace={generationTrace} onAbort={onAbort} />
       </div>

@@ -47,6 +47,7 @@ interface SetupWizardProps {
   onGenerateComplete: () => void;
   onDraftCreated?: (draftId: string) => void;
   onDraftCreatedInPlace?: (draft: PlannerDraft) => void;
+  onGenerationStarted?: (runId: string) => void;
 }
 
 type SetupWizardContentProps = { isNewMode: boolean; draft: PlannerDraft | undefined; config: PlannerConfig; setConfig: React.Dispatch<React.SetStateAction<PlannerConfig>>; repoLoader: ReturnType<typeof useRepositoryLoader>; newModeBranches: ReturnType<typeof useBranchesLoader>; repoInfo: ReturnType<typeof useRepoInfoLoader>; fileHandling: ReturnType<typeof useFileHandling>; generationPolling: ReturnType<typeof useGenerationPolling>; contextExport: ReturnType<typeof useContextExport>; contextRefresh: ReturnType<typeof useContextRefresh>; generationHandlers: ReturnType<typeof useGenerationHandlers>; autoResize: () => void; textareaRef: React.RefObject<HTMLTextAreaElement | null>; fileInputRef: React.RefObject<HTMLInputElement | null>; error: string | null; branchError: string | null; isCreating: boolean; initialConfiguredBaseBranch: string; handleRepoChangeInEditMode: (repo: string, selection?: RepoSelection) => Promise<void>; handleFileInputChange: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>; handleExportContext: () => void; handleGenerate: () => Promise<void>; agents: ReturnType<typeof useAgentsLoader>; availableRepos: ReturnType<typeof useIndexedRepositoriesLoader>; previewTrace?: GenerationTrace };
@@ -72,7 +73,7 @@ function getGenerateDisabledState(props: SetupWizardContentProps, promptTrimmed:
     selectedRepo: props.repoLoader.selectedRepo,
     promptTrimmed,
     reposLoading: props.repoLoader.reposLoading,
-    isGenerating: props.generationPolling.isGenerating,
+    isGenerating: props.generationPolling.isGenerating || props.generationHandlers.isStartingGeneration,
     branchError: props.branchError,
     repoInfoLoading: modeValues.isRepoLoading,
     repoError: modeValues.repoError,
@@ -103,7 +104,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const handleRemoveManualFile = (filePath: string) =>
     setConfig(prev => ({ ...prev, manualFiles: prev.manualFiles.filter(value => value !== filePath) }));
   const handleExcludeFile = appendConfigArrayValue(setConfig, 'excludedFiles');
-  const isGenerating = generationPolling.isGenerating;
+  const isGenerating = generationPolling.isGenerating || generationHandlers.isStartingGeneration;
   const isMobile = useIsMobile(768);
   const stats = contextRefresh.preview.data?.stats;
   const showPreviewProgress = shouldShowPreviewProgress(isGenerating, isMobile);
@@ -139,6 +140,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           error={error}
           generationError={generationPolling.generationError}
           isGenerating={isGenerating}
+          showGenerationProgress={generationPolling.isGenerating}
           generationTrace={generationPolling.generationTrace}
           onAbort={generationHandlers.handleAbortGeneration}
           manualFiles={config.manualFiles}
@@ -348,7 +350,7 @@ function useRepoChangeInEditMode({ draft, config, locationTodoIds, navigate, onD
   }, [config, draft, locationTodoIds, navigate, onDraftCreated, setError, setIsCreating]);
 }
 
-export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated, onDraftCreatedInPlace }) => {
+export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateComplete, onDraftCreated, onDraftCreatedInPlace, onGenerationStarted }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const locationState = location.state as LocationState | undefined;
@@ -381,7 +383,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ draft, onGenerateCompl
   const previewTrace = usePreviewTrace(draft, draftId, contextRefresh.preview.isLoading);
   const setupSnapshot = useMemo(() => getDraftSetupSnapshot(config), [config]);
   const generationHandlers = useGenerationHandlers({ draft, config, branchError, contextHelpers: { isContextStale: contextRefresh.isContextStale, clearCountdown: contextRefresh.clearCountdown, fetchPreview: contextRefresh.fetchPreview },
-    startPolling: generationPolling.startPolling, stopPolling: generationPolling.stopPolling, setError, setGenerationError: generationPolling.setGenerationError });
+    startPolling: generationPolling.startPolling, stopPolling: generationPolling.stopPolling, onGenerationStarted, setError, setGenerationError: generationPolling.setGenerationError });
   const todoIds = locationState?.todoIds;
   const handleCreateDraftAndGenerate = useDraftCreation({
     selectedRepo: repoLoader.selectedRepo, config, localFiles: fileHandling.localFiles,

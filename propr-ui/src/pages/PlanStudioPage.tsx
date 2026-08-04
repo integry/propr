@@ -158,7 +158,7 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
   </div>
 );
 
-const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
+const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void; onGenerationStarted: (runId: string) => void }> = ({ currentStage, draft, onRefetch, onGenerationStarted }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
@@ -170,6 +170,7 @@ const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRe
       <SetupWizard
         draft={draft}
         onGenerateComplete={onRefetch}
+        onGenerationStarted={onGenerationStarted}
       />
     </div>
   </div>
@@ -203,7 +204,8 @@ const NewDraftView: React.FC<{
   draft?: PlannerDraft;
   onDraftCreated?: (draft: PlannerDraft) => void;
   onRefetch?: () => void;
-}> = ({ draft, onDraftCreated, onRefetch }) => (
+  onGenerationStarted?: (runId: string) => void;
+}> = ({ draft, onDraftCreated, onRefetch, onGenerationStarted }) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
@@ -216,6 +218,7 @@ const NewDraftView: React.FC<{
         draft={draft}
         onGenerateComplete={onRefetch || (() => {})}
         onDraftCreatedInPlace={onDraftCreated}
+        onGenerationStarted={onGenerationStarted}
       />
     </div>
   </div>
@@ -225,7 +228,8 @@ const NewDraftView: React.FC<{
 const renderDraftView = (
   draft: PlannerDraft,
   currentStage: StudioStage,
-  refetch: () => void
+  refetch: () => void,
+  onGenerationStarted: (runId: string) => void,
 ): React.ReactElement => {
   if (isGeneratingStatus(draft.status)) {
     return <GeneratingView currentStage={currentStage} draft={draft} onRefetch={refetch} />;
@@ -239,7 +243,7 @@ const renderDraftView = (
     return <ReviewView currentStage={currentStage} draft={draft as DraftWithPlan} onRefetch={refetch} />;
   }
 
-  return <DraftView currentStage={currentStage} draft={draft} onRefetch={refetch} />;
+  return <DraftView currentStage={currentStage} draft={draft} onRefetch={refetch} onGenerationStarted={onGenerationStarted} />;
 };
 
 const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
@@ -271,7 +275,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
     ? (inPlaceDraft?.draft_id || '')
     : (draftId || '');
 
-  const { draft, loading, error, refetch } = useDraft(
+  const { draft, loading, error, refetch, activateGenerationRun } = useDraft(
     effectiveDraftId,
     { initialData: isNew ? inPlaceDraft : initialDraft }
   );
@@ -295,6 +299,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
         draft={inPlaceDraft || undefined}
         onDraftCreated={handleDraftCreatedInPlace}
         onRefetch={refetch}
+        onGenerationStarted={activateGenerationRun}
       />
     );
   }
@@ -307,7 +312,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
     return <ErrorView error={error} />;
   }
 
-  return renderDraftView(draft, currentStage, refetch);
+  return renderDraftView(draft, currentStage, refetch, activateGenerationRun);
 };
 
 export default PlanStudioPage;

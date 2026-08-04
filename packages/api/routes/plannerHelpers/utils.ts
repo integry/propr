@@ -14,6 +14,20 @@ export interface BackgroundGenerationDependencies {
 }
 
 const FAILURE_PERSIST_ATTEMPTS = 3;
+const RESTRICTED_PLANNER_FAILURE = 'Plan generation failed. Detailed diagnostics are available in server logs.';
+const SAFE_PLANNER_FAILURE_CLASSES: Array<{ pattern: RegExp; summary: string }> = [
+  { pattern: /\b(timeout|timed out|deadline)\b/i, summary: 'Plan generation timed out.' },
+  { pattern: /\b(rate limit|quota|too many requests)\b/i, summary: 'The plan generation service is rate limited. Please try again later.' },
+  { pattern: /\b(auth(?:entication|orization)?|unauthorized|forbidden|credential)\b/i, summary: 'Plan generation could not authenticate with a required service.' },
+  { pattern: /\b(cancelled|canceled|aborted)\b/i, summary: 'Plan generation was cancelled.' },
+];
+
+export function getSafePlannerFailureMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message.trim() : '';
+  if (!detail) return RESTRICTED_PLANNER_FAILURE;
+  return SAFE_PLANNER_FAILURE_CLASSES.find(({ pattern }) => pattern.test(detail))?.summary
+    ?? RESTRICTED_PLANNER_FAILURE;
+}
 
 /** Select the request override, then the model persisted on the draft, then the global default. */
 export function selectRefinementModel(
@@ -55,7 +69,7 @@ async function persistGenerationFailure(
         step.status === 'pending' || step.status === 'in_progress' ? { ...step, status: 'failed' as const } : step
       ),
       runId,
-      error: error instanceof Error ? error.message : 'Plan generation failed',
+      error: getSafePlannerFailureMessage(error),
       failedAt: new Date().toISOString(),
     };
     let failureQuery = db('task_drafts').where({ draft_id: draftId, status: 'generating' });

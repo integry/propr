@@ -61,6 +61,7 @@ const errors = validateRelease({
   expectedVersion: process.env.EXPECTED_VERSION?.trim(),
   releaseCandidate: process.env.RELEASE_CANDIDATE === "true",
   packages,
+  externalInternalDependencies: rootPackage.proprRelease?.externalInternalDependencies ?? [],
   launcherManifest: readJson("docker/launcher/manifest.json"),
   changelog: readFileSync(join(root, "CHANGELOG.md"), "utf8"),
 });

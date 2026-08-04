@@ -168,6 +168,38 @@ describe('planner background abort reconciliation', () => {
     assert.equal(current.generation_trace, cancellationTrace);
   });
 
+  test('publishes a classified planner failure without raw paths or credentials', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    const draftId = 'generation-sensitive-failure';
+    const runId = 'generation-run-sensitive';
+    await database('task_drafts').insert({
+      draft_id: draftId,
+      status: 'generating',
+      generation_trace: JSON.stringify({ steps: [{ name: 'llm', status: 'in_progress' }], runId }),
+    });
+    const publishDraftUpdate = mock.fn(async () => true);
+    const rawError = 'provider failed at /srv/private/repo: https://user:secret@example.test/api?token=secret';
+
+    await runBackgroundGeneration({
+      db: database,
+      draftId,
+      worktreePath: '/tmp/worktree',
+      authToken: 'token',
+      correlationId: runId,
+      runId,
+    }, {
+      generate: async () => { throw new Error(rawError); },
+      getPublisher: () => ({ publishDraftUpdate }) as never,
+    });
+
+    const current = await database('task_drafts').where({ draft_id: draftId }).first();
+    const failure = JSON.parse(current.generation_trace);
+    const publishedTrace = publishDraftUpdate.mock.calls[0].arguments[0].generationTrace;
+    assert.equal(failure.error, 'Plan generation failed. Detailed diagnostics are available in server logs.');
+    assert.equal(JSON.stringify(failure).includes(rawError), false);
+    assert.equal(JSON.stringify(publishedTrace).includes(rawError), false);
+  });
+
   test('retries a failure CAS miss while the same generation run remains active', async t => {
     t.mock.method(console, 'error', () => undefined);
     t.mock.method(console, 'log', () => undefined);

@@ -19,6 +19,7 @@ export function validateRelease({
   expectedVersion,
   releaseCandidate = false,
   packages,
+  externalInternalDependencies = [],
   launcherManifest,
   changelog,
 }) {
@@ -49,10 +50,16 @@ export function validateRelease({
   }
 
   const releasePackages = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  const allowedExternalInternalDependencies = new Set(externalInternalDependencies);
   for (const pkg of packages) {
     for (const [dependencyName, dependencyRange] of Object.entries(pkg.internalDependencies ?? {})) {
       const dependency = releasePackages.get(dependencyName);
-      if (!dependency) continue;
+      if (!dependency) {
+        if (!allowedExternalInternalDependencies.has(dependencyName)) {
+          errors.push(`${pkg.name} depends on undiscovered internal package ${dependencyName}; add its workspace or explicitly allowlist it`);
+        }
+        continue;
+      }
       const expectedRange = `^${dependency.version}`;
       if (dependencyRange !== expectedRange) {
         errors.push(`${pkg.name} must depend on ${dependencyName}@${expectedRange}; found ${dependencyRange}`);
