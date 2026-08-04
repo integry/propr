@@ -85,3 +85,52 @@ export type {
   PrSplitIntakeDependencies,
   PrSplitIntakeResult,
 } from './intake.js';
+
+export { readPrSnapshot, fetchPrSnapshot } from './prSnapshot.js';
+export type {
+  PrSnapshotClient,
+  PrSnapshotGitHubResponse,
+  ReadPrSnapshotRequest,
+} from './prSnapshot.js';
+
+export { inferValidationHints, detectValidationHints } from './validationHints.js';
+
+export {
+  buildSplitCandidates,
+  constructSplitCandidates,
+  rankSplitCandidates,
+  validateSplitCandidate,
+  isGeneratedSplitFile,
+  isSecretBearingSplitFile,
+} from './candidatePlanner.js';
+
+export {
+  SplitPlannerResponseError,
+  createSplitPlan,
+  parseSplitPlannerChoice,
+  planSplit,
+  planPrSplit,
+} from './splitPlanner.js';
+
+export type {
+  PrSplitRepository,
+  PrSnapshotFileStatus,
+  PrSnapshotFile,
+  PrSnapshotCommit,
+  PrSnapshot,
+  PullRequestSnapshot,
+  PullRequestSnapshotFile,
+  PullRequestSnapshotCommit,
+  ValidationHintSource,
+  ValidationHint,
+  ValidationPlan,
+  SplitCandidateKind,
+  SplitCandidate,
+  SplitCandidateSafetyAssessment,
+  SplitPlannerJudgementInput,
+  SplitPlannerChoice,
+  SplitCandidateJudge,
+  SplitPlannerAgent,
+  SplitPlannerOptions,
+  SplitPlan,
+} from './types.js';
