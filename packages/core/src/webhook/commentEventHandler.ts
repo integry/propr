@@ -20,6 +20,7 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { parseSplitCommand } from '../services/prSplit/command.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -109,6 +110,13 @@ function getCommentEventDetails(
         const issuePayload = payload as IssueCommentEvent;
         if (!issuePayload.issue.pull_request) {
             correlatedLogger.debug({ repository: repoFullName }, 'Issue comment is not on a PR, skipping');
+            return null;
+        }
+
+        // Webhook intake handles `/split` before this generic processor. Keep
+        // polling/synthetic callers from turning it into an implementation job.
+        if (parseSplitCommand(issuePayload.comment.body)) {
+            correlatedLogger.debug({ repository: repoFullName, commentId: issuePayload.comment.id }, 'Skipping /split outside webhook intake');
             return null;
         }
 

@@ -27,6 +27,7 @@ import type {
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { handlePrSplitComment } from '../services/prSplit/intake.js';
 
 /** Runtime-accessible list of supported webhook event types — single source of truth. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
@@ -333,6 +334,14 @@ export async function processWebhookEvent(
     correlationId: string,
 ): Promise<DeliveryDisposition> {
     const correlatedLogger = logger.withCorrelation(correlationId);
+
+    // `/split` owns a separate authorization and durable-operation boundary.
+    // Intercept it before plan tracking or generic PR follow-up processing so a
+    // command can never be mistaken for an implementation request.
+    if (eventType === 'issue_comment' && isIssueCommentEvent(payload)) {
+        const splitResult = await handlePrSplitComment(payload, correlationId);
+        if (splitResult.handled) return splitResult.disposition;
+    }
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 
