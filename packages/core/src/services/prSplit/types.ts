@@ -121,41 +121,6 @@ export interface ValidationPlan {
   explanation: string;
 }
 
-export type SplitCandidateKind =
-  | 'instruction'
-  | 'atomic-commit'
-  | 'module-boundary'
-  | 'dependency-closed';
-
-/** A deterministic, source-diff-preserving split option. */
-export interface SplitCandidate {
-  id: string;
-  kind: SplitCandidateKind;
-  summary: string;
-  includedFiles: string[];
-  excludedScope: string[];
-  commitShas: string[];
-  dependencyFiles: string[];
-  instructionMatchScore: number;
-  changedLines: number;
-  score: number;
-  rankingReasons: string[];
-  riskNotes: string[];
-  validationPlan: ValidationPlan;
-  rejected: boolean;
-  rejectionReasons: string[];
-  /** Scope-level deterministic checks passed; this is not a guarantee that the diff is secret-free. */
-  safeToCreatePr: boolean;
-}
-
-export interface SplitCandidateSafetyAssessment {
-  rejected: boolean;
-  rejectionReasons: string[];
-  riskNotes: string[];
-  missingDependencyFiles: string[];
-  safeToCreatePr: boolean;
-}
-
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
   ? T
   : T extends readonly (infer Item)[]
@@ -167,20 +132,23 @@ export type DeepReadonly<T> = T extends (...args: never[]) => unknown
 export interface SplitPlannerJudgementInput {
   snapshot: DeepReadonly<PrSnapshot>;
   instruction: string;
-  candidates: readonly DeepReadonly<SplitCandidate>[];
   prompt: string;
   /** Aborted when the bounded judgement deadline expires. */
   signal: AbortSignal;
 }
 
 export interface SplitPlannerChoice {
-  candidateId: string;
-  reason?: string;
-  /** If supplied by a model, this must exactly equal the candidate's files. */
-  includedFiles?: string[];
+  /** The model may explicitly decide that the source PR has no coherent file-level split. */
+  canSplit: boolean;
+  /** Model-authored description of the proposed review unit. Empty when canSplit is false. */
+  selectedSummary: string;
+  /** Exact source-PR paths selected by the model. Empty when canSplit is false. */
+  includedFiles: string[];
+  reason: string;
+  riskNotes: string[];
 }
 
-export type SplitCandidateJudge = (
+export type SplitPlannerJudge = (
   input: SplitPlannerJudgementInput,
 ) => Promise<unknown>;
 
@@ -194,9 +162,9 @@ export interface SplitPlannerAgent {
 
 export interface SplitPlannerOptions {
   instruction?: string;
-  /** A narrow dependency-injection seam for an LLM or another read-only judge. */
-  judge?: SplitCandidateJudge;
-  /** Existing Agent-compatible judgement. `judge` takes precedence when both are supplied. */
+  /** A narrow dependency-injection seam for the LLM that authors the split scope. */
+  judge?: SplitPlannerJudge;
+  /** Existing Agent-compatible planner. `judge` takes precedence when both are supplied. */
   agent?: SplitPlannerAgent;
   /** Optional shorter deadline for judgement; the service maximum still applies. */
   judgementTimeoutMs?: number;
@@ -213,7 +181,6 @@ export interface SplitPlanSourceDiff {
 
 /** The complete analysis result consumed by the later branch/publication layer. */
 export interface SplitPlan {
-  selectedCandidateId: string | null;
   selectedSummary: string;
   includedFiles: string[];
   excludedScope: string[];

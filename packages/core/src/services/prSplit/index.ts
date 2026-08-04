@@ -97,15 +97,6 @@ export type {
 export { inferValidationHints, detectValidationHints } from './validationHints.js';
 
 export {
-  buildSplitCandidates,
-  constructSplitCandidates,
-  rankSplitCandidates,
-  validateSplitCandidate,
-  isGeneratedSplitFile,
-  isSecretBearingSplitFile,
-} from './candidatePlanner.js';
-
-export {
   SplitPlannerResponseError,
   createSplitPlan,
   parseSplitPlannerChoice,
@@ -127,13 +118,10 @@ export type {
   ValidationHint,
   ValidationCommand,
   ValidationPlan,
-  SplitCandidateKind,
-  SplitCandidate,
-  SplitCandidateSafetyAssessment,
   DeepReadonly,
   SplitPlannerJudgementInput,
   SplitPlannerChoice,
-  SplitCandidateJudge,
+  SplitPlannerJudge,
   SplitPlannerAgent,
   SplitPlannerOptions,
   SplitPlanSourceDiff,
