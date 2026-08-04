@@ -10,6 +10,7 @@ interface ScheduledRefresh {
   timer?: EntitlementRefreshTimer;
   controller?: AbortController;
   registrationEstablished: boolean;
+  registration?: Promise<boolean>;
   retry: boolean;
 }
 
@@ -43,6 +44,7 @@ const DEFAULT_TIMER_SCHEDULER: EntitlementRefreshTimerScheduler = {
 const LEASE_TABLE = 'notification_repository_entitlement_refresh_leases';
 const REGISTRATION_TOKEN = 'notification-scheduler-registration';
 const INVALIDATION_TOKEN = 'notification-logout-tombstone';
+const tombstoneSupport = new WeakMap<object, Promise<boolean>>();
 
 async function hasEntitlementRefreshRegistration(
   database: Knex,
@@ -89,10 +91,23 @@ export interface NotificationEntitlementRefreshMiddleware {
 }
 
 async function supportsEntitlementInvalidationTombstones(database: Knex): Promise<boolean> {
-  return await database.schema.hasTable(LEASE_TABLE)
-    && await database.schema.hasColumn(LEASE_TABLE, 'fencing_token')
-    && await database.schema.hasColumn(LEASE_TABLE, 'retry_after')
-    && await database.schema.hasColumn(LEASE_TABLE, 'invalidated_at');
+  let supported = tombstoneSupport.get(database);
+  if (!supported) {
+    supported = (async () => await database.schema.hasTable(LEASE_TABLE)
+      && await database.schema.hasColumn(LEASE_TABLE, 'fencing_token')
+      && await database.schema.hasColumn(LEASE_TABLE, 'retry_after')
+      && await database.schema.hasColumn(LEASE_TABLE, 'invalidated_at'))();
+    tombstoneSupport.set(database, supported);
+    void supported.then(
+      (value) => { if (!value && tombstoneSupport.get(database) === supported) {
+        tombstoneSupport.delete(database);
+      } },
+      () => { if (tombstoneSupport.get(database) === supported) {
+        tombstoneSupport.delete(database);
+      } }
+    );
+  }
+  return supported;
 }
 
 export async function activateNotificationRepositoryEntitlements(
@@ -117,7 +132,7 @@ export async function activateNotificationRepositoryEntitlements(
     expires_at: expiresAt,
     retry_after: null,
     invalidated_at: null,
-  });
+  }).whereNotNull('invalidated_at');
 }
 
 export async function invalidateNotificationRepositoryEntitlements(
@@ -209,14 +224,14 @@ export function createScheduledEntitlementRefreshMiddleware(
   const schedule = (
     userId: string,
     accessToken: string,
-    retry = false,
+    retry?: boolean,
     registrationEstablished?: boolean
   ): void => {
     if (closed) return;
     const previous = scheduled.get(userId);
     if (previous) {
       previous.accessToken = accessToken;
-      previous.retry = retry;
+      if (retry !== undefined) previous.retry = retry;
       if (registrationEstablished !== undefined) {
         previous.registrationEstablished = registrationEstablished;
       }
@@ -224,7 +239,7 @@ export function createScheduledEntitlementRefreshMiddleware(
       // cancelling work that is already scanning GitHub.
       scheduled.delete(userId);
       scheduled.set(userId, previous);
-      if (!previous.controller) armTimer(userId, previous);
+      if (!previous.controller && !previous.timer) armTimer(userId, previous);
       return;
     }
     const retainedRegistration = registrationEstablished
@@ -240,7 +255,7 @@ export function createScheduledEntitlementRefreshMiddleware(
     }
     const entry: ScheduledRefresh = {
       accessToken,
-      retry,
+      retry: retry ?? false,
       registrationEstablished: retainedRegistration,
     };
     scheduled.set(userId, entry);
@@ -249,7 +264,7 @@ export function createScheduledEntitlementRefreshMiddleware(
 
   const armTimer = (userId: string, entry: ScheduledRefresh): void => {
     if (closed || scheduled.get(userId) !== entry || entry.controller) return;
-    if (entry.timer) timerScheduler.clearTimeout(entry.timer);
+    if (entry.timer) return;
     const ttlMs = getNotificationRepositoryEntitlementTtlMs();
     const delayMs = entry.retry
       ? Math.max(1, Math.min(REFRESH_RETRY_DELAY_MS, Math.floor(ttlMs / 4)))
@@ -257,19 +272,12 @@ export function createScheduledEntitlementRefreshMiddleware(
     entry.timer = timerScheduler.setTimeout(() => {
       entry.timer = undefined;
       if (closed || scheduled.get(userId) !== entry) return;
-      void hasEntitlementRefreshRegistration(database, userId, entry.retry)
-        .then(async (registered) => {
+      void establishRegistration(userId, entry, true)
+        .then((registered) => {
           if (closed || scheduled.get(userId) !== entry) return;
           if (!registered) {
-            if (entry.registrationEstablished) {
-              removeEntry(userId, entry);
-              return;
-            }
-            entry.registrationEstablished = await ensureRegistration(database, userId);
-            if (!entry.registrationEstablished) {
-              removeEntry(userId, entry);
-              return;
-            }
+            removeEntry(userId, entry);
+            return;
           }
           runRefresh(userId, entry);
         })
@@ -284,6 +292,33 @@ export function createScheduledEntitlementRefreshMiddleware(
     entry.timer.unref();
   };
 
+  const establishRegistration = (
+    userId: string,
+    entry: ScheduledRefresh,
+    checkExisting: boolean
+  ): Promise<boolean> => {
+    if (!checkExisting && entry.registrationEstablished) return Promise.resolve(true);
+    if (entry.registration) return entry.registration;
+    const registration = (async () => {
+      let registered = false;
+      if (checkExisting) {
+        registered = await hasEntitlementRefreshRegistration(database, userId, entry.retry);
+        if (!registered && entry.registrationEstablished) return false;
+      }
+      if (!registered) registered = await ensureRegistration(database, userId);
+      if (!closed && scheduled.get(userId) === entry) {
+        entry.registrationEstablished = registered;
+      }
+      return registered;
+    })();
+    entry.registration = registration;
+    void registration.then(
+      () => { if (entry.registration === registration) entry.registration = undefined; },
+      () => { if (entry.registration === registration) entry.registration = undefined; }
+    );
+    return registration;
+  };
+
   const middleware = (req: Request, _res: Response, next: NextFunction): void => {
     const userId = req.user?.id;
     const accessToken = req.user?.accessToken;
@@ -291,18 +326,17 @@ export function createScheduledEntitlementRefreshMiddleware(
       next();
       return;
     }
+    const alreadyScheduled = scheduled.has(userId);
     schedule(userId, accessToken);
     const entry = scheduled.get(userId)!;
     const refreshImmediately = req.path !== '/github/repos';
-    if (entry.registrationEstablished) {
-      if (refreshImmediately) runRefresh(userId, entry);
+    if (alreadyScheduled) {
       next();
       return;
     }
-    void ensureRegistration(database, userId)
+    void establishRegistration(userId, entry, false)
       .then((registered) => {
         if (closed || scheduled.get(userId) !== entry) return;
-        entry.registrationEstablished = registered;
         if (!registered) {
           removeEntry(userId, entry);
         } else if (refreshImmediately) {
@@ -313,6 +347,8 @@ export function createScheduledEntitlementRefreshMiddleware(
         logger.warn({ error: error instanceof Error ? error.message : String(error) },
           'Failed to register repository notification access refresh');
         if (!closed && scheduled.get(userId) === entry) {
+          if (entry.timer) timerScheduler.clearTimeout(entry.timer);
+          entry.timer = undefined;
           schedule(userId, entry.accessToken, true, false);
         }
       });

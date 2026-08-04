@@ -5,19 +5,29 @@ import {
 } from './notificationProjectionService.js';
 import {
     DEFAULT_NOTIFICATION_OPERATION_TIMEOUT_MS,
-    DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS,
-    type NotificationProjectionLease
+    DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS
 } from './notificationSystemSampler.js';
-import { settlesWithin, withNotificationDeadline } from './notificationSchedulerTiming.js';
+import {
+    MAX_NOTIFICATION_TIMER_DELAY_MS,
+    isNotificationTimerDelay,
+    settlesWithin,
+    withNotificationDeadline
+} from './notificationSchedulerTiming.js';
+import {
+    runWithNotificationLease,
+    type NotificationProjectionLease
+} from './notificationLeaseRunner.js';
 
 export const DEFAULT_NOTIFICATION_STALLED_AFTER_MS = 30 * 60 * 1000;
 export const DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS = 60 * 1000;
 
-function positiveIntegerEnv(name: string, fallback: number): number {
+function positiveIntegerEnv(name: string, fallback: number, timerDelay = false): number {
     const raw = process.env[name];
     if (raw === undefined || raw.trim() === '') return fallback;
     const value = Number(raw);
-    if (Number.isSafeInteger(value) && value > 0) return value;
+    if (timerDelay
+        ? isNotificationTimerDelay(value)
+        : Number.isSafeInteger(value) && value > 0) return value;
     logger.warn({ name, value: raw }, 'Ignoring invalid notification timing configuration');
     return fallback;
 }
@@ -29,7 +39,8 @@ export function getNotificationStalledAfterMs(): number {
 export function getNotificationStalledCheckIntervalMs(): number {
     return positiveIntegerEnv(
         'NOTIFICATION_STALLED_CHECK_INTERVAL_MS',
-        DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS
+        DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS,
+        true
     );
 }
 
@@ -66,14 +77,18 @@ export class NotificationStalledDetector {
         this.drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_NOTIFICATION_SHUTDOWN_DRAIN_MS;
         this.now = options.now ?? (() => new Date());
         this.acquireLease = options.acquireLease;
+        if (!Number.isSafeInteger(this.stalledAfterMs) || this.stalledAfterMs <= 0) {
+            throw new TypeError('stalledAfterMs must be a positive safe integer');
+        }
         for (const [name, value] of [
-            ['stalledAfterMs', this.stalledAfterMs],
             ['intervalMs', this.intervalMs],
             ['operationTimeoutMs', this.operationTimeoutMs],
             ['drainTimeoutMs', this.drainTimeoutMs]
         ] as const) {
-            if (!Number.isSafeInteger(value) || value <= 0) {
-                throw new TypeError(`${name} must be a positive safe integer`);
+            if (!isNotificationTimerDelay(value)) {
+                throw new TypeError(
+                    `${name} must be between 1 and ${MAX_NOTIFICATION_TIMER_DELAY_MS} milliseconds`
+                );
             }
         }
     }
@@ -141,89 +156,31 @@ export class NotificationStalledDetector {
     }
 
     private async executeRun(runGeneration: number, signal: AbortSignal): Promise<number> {
-        let lease: NotificationProjectionLease | undefined;
-        let renewalTimer: NodeJS.Timeout | undefined;
-        let renewalInFlight: Promise<boolean> | null = null;
-        let leaseLost = false;
-        let runValid = true;
-        let releaseInFlight: Promise<void> | null = null;
-        const renewLease = (): Promise<boolean> => {
-            const currentLease = lease;
-            if (!currentLease || leaseLost || signal.aborted) {
-                return Promise.resolve(!leaseLost && !signal.aborted);
-            }
-            if (renewalInFlight) return renewalInFlight;
-            const renewal = (async () => {
-                try {
-                    const renewed = await currentLease.renew();
-                    if (!renewed) leaseLost = true;
-                } catch (error) {
-                    leaseLost = true;
-                    logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                        'Failed to renew notification stalled-activity lease');
-                }
-                return !leaseLost;
-            })();
-            renewalInFlight = renewal;
-            void renewal.then(() => {
-                if (renewalInFlight === renewal) renewalInFlight = null;
-            });
-            return renewal;
-        };
-        const releaseLease = (): Promise<void> => {
-            if (releaseInFlight) return releaseInFlight;
-            const currentLease = lease;
-            lease = undefined;
-            if (!currentLease) return Promise.resolve();
-            releaseInFlight = currentLease.release().catch((error) => {
-                logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                    'Failed to release notification stalled-activity lease');
-            });
-            return releaseInFlight;
-        };
-        const cancelRemainingWork = (): void => {
-            runValid = false;
-            if (renewalTimer) clearInterval(renewalTimer);
-            renewalTimer = undefined;
-            void releaseLease();
-        };
-        signal.addEventListener('abort', cancelRemainingWork, { once: true });
         try {
-            if (this.acquireLease) {
-                const acquired = await this.acquireLease();
-                if (acquired === false) return 0;
-                if (typeof acquired === 'object') {
-                    lease = acquired;
-                    if (signal.aborted) return 0;
-                    renewalTimer = setInterval(() => { void renewLease(); },
-                        lease.renewalIntervalMs ?? Math.max(1000, Math.floor(this.intervalMs / 2)));
-                    renewalTimer.unref();
+            return await runWithNotificationLease({
+                acquireLease: this.acquireLease,
+                fallbackRenewalIntervalMs: Math.max(1000, Math.floor(this.intervalMs / 2)),
+                generationIsCurrent: () => runGeneration === this.runGeneration,
+                label: 'notification stalled-activity',
+                signal,
+                skippedValue: 0,
+                work: async ({ hasLease, renewLease, shouldContinue }) => {
+                    if (hasLease && !await renewLease()) return 0;
+                    if (this.projector.reconcileTerminalTransitions) {
+                        await this.projector.reconcileTerminalTransitions(shouldContinue);
+                    }
+                    if (!shouldContinue()) return 0;
+                    return this.projector.detectStalledActivities(
+                        this.stalledAfterMs,
+                        this.now(),
+                        shouldContinue
+                    );
                 }
-            }
-            if (signal.aborted || runGeneration !== this.runGeneration) return 0;
-            if (lease && !await renewLease()) return 0;
-            const shouldContinue = () => runValid
-                && !leaseLost
-                && !signal.aborted
-                && runGeneration === this.runGeneration;
-            if (this.projector.reconcileTerminalTransitions) {
-                await this.projector.reconcileTerminalTransitions(shouldContinue);
-            }
-            if (!shouldContinue()) return 0;
-            return await this.projector.detectStalledActivities(
-                this.stalledAfterMs,
-                this.now(),
-                shouldContinue
-            );
+            });
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
                 'Failed to detect stalled notification activity');
             return 0;
-        } finally {
-            runValid = false;
-            signal.removeEventListener('abort', cancelRemainingWork);
-            if (renewalTimer) clearInterval(renewalTimer);
-            await releaseLease();
         }
     }
 }

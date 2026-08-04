@@ -177,9 +177,13 @@ export { indexRepo, getFileSummary, getDirectorySummary, getRepositorySummaries,
 export type { FileSummary, DirectorySummary, IndexingOptions, IndexingOutcome } from './services/relevance/summaryMiner.js';
 export {
   INDEXING_FAILED_JOB_RETENTION,
+  INDEXING_JOB_ACCEPTANCE_DELAY_MS,
   createIndexingQueueDeduplicationId,
   createIndexingQueueJobId,
-  createIndexingRunIdentity,
+  createLegacyIndexingRunIdForJob,
+  createIndexingRunIdentity
+} from './services/relevance/indexingQueueIdentity.js';
+export {
   getActiveRepositoryIndexingRuns,
   recordSkippedIndexingRun
 } from './services/relevance/summaryMinerQueries.js';

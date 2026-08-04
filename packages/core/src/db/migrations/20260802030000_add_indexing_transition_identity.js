@@ -1,6 +1,18 @@
 import { createHash } from 'node:crypto';
 
 const CASE_INSENSITIVE_UNIQUE_INDEX = 'repositories_full_name_ci_branch_unique';
+const EXACT_REPOSITORY_REFERENCES = [
+  ['task_drafts', 'repository'],
+  ['plan_issues', 'repository'],
+  ['tasks', 'repository'],
+  ['llm_logs', 'repository'],
+  ['llm_logs', 'work_repository'],
+  ['repo_chat_messages', 'repository'],
+  ['repo_todo_categories', 'repository'],
+  ['repo_todos', 'repository'],
+  ['notification_source_activity', 'repository'],
+];
+const SUMMARY_PATH_REFERENCES = ['file_summaries', 'directory_summaries'];
 
 /**
  * Give repository indexing state its own transition identity. repositories.updated_at
@@ -65,9 +77,7 @@ async function canonicalizeRepositories(knex) {
     'icon_path',
     'created_at',
   ].filter((column) => column in columnInfo);
-  const rows = await knex('repositories').select(
-    'full_name', 'branch', 'indexing_transition_at', 'updated_at', ...metadataColumns
-  );
+  const rows = await knex('repositories').select('*');
   const groups = new Map();
   for (const row of rows) {
     const canonicalName = row.full_name.trim().toLowerCase();
@@ -80,24 +90,156 @@ async function canonicalizeRepositories(knex) {
     const [canonicalName] = JSON.parse(key);
     group.sort((left, right) => rowTransitionTime(right) - rowTransitionTime(left)
       || left.full_name.localeCompare(right.full_name));
-    const [winner, ...duplicates] = group;
+    const [winner] = group;
     const mergedMetadata = mergeRepositoryMetadata(winner, group, metadataColumns);
-    for (const duplicate of duplicates) {
+    const aliases = [...new Set(group.map((row) => row.full_name))];
+    const canonicalRow = group.find((row) => row.full_name === canonicalName);
+    const canonicalData = { ...winner, ...mergedMetadata, full_name: canonicalName };
+    if (canonicalRow) {
+      const update = { ...canonicalData };
+      delete update.full_name;
+      delete update.branch;
       await knex('repositories').where({
-        full_name: duplicate.full_name,
-        branch: duplicate.branch,
-      }).delete();
-    }
-    if (winner.full_name !== canonicalName || Object.keys(mergedMetadata).length > 0) {
-      await knex('repositories').where({
-        full_name: winner.full_name,
+        full_name: canonicalName,
         branch: winner.branch,
-      }).update({
-        ...(winner.full_name === canonicalName ? {} : { full_name: canonicalName }),
-        ...mergedMetadata,
-      });
+      }).update(update);
+    } else {
+      await knex('repositories').insert(canonicalData);
     }
+    await canonicalizeDependentRepositoryData(
+      knex, aliases, canonicalName, winner.branch
+    );
+    await knex('repositories')
+      .where({ branch: winner.branch })
+      .whereIn('full_name', aliases.filter((name) => name !== canonicalName))
+      .delete();
   }
+}
+
+async function canonicalizeDependentRepositoryData(knex, aliases, canonicalName, branch) {
+  for (const [table, column] of EXACT_REPOSITORY_REFERENCES) {
+    if (!await knex.schema.hasTable(table)
+        || !await knex.schema.hasColumn(table, column)) continue;
+    await knex(table).whereRaw('lower(trim(??)) = ?', [column, canonicalName])
+      .whereNot(column, canonicalName)
+      .update({ [column]: canonicalName });
+  }
+  for (const table of SUMMARY_PATH_REFERENCES) {
+    if (!await knex.schema.hasTable(table)
+        || !await knex.schema.hasColumn(table, 'path')) continue;
+    await canonicalizeSummaryPaths(knex, table, aliases, canonicalName);
+  }
+  if (await knex.schema.hasTable('repository_indexing_transitions')
+      && await knex.schema.hasColumn('repository_indexing_transitions', 'full_name')) {
+    await knex('repository_indexing_transitions')
+      .where({ branch })
+      .whereRaw('lower(trim(full_name)) = ?', [canonicalName])
+      .whereNot('full_name', canonicalName)
+      .update({ full_name: canonicalName });
+  }
+  if (await knex.schema.hasTable('notification_events')
+      && await knex.schema.hasColumn('notification_events', 'target_json')) {
+    await knex('notification_events')
+      .whereRaw("json_valid(target_json) AND lower(json_extract(target_json, '$.repository')) = ?", [canonicalName])
+      .update({
+        target_json: knex.raw("json_set(target_json, '$.repository', ?)", [canonicalName])
+      });
+  }
+  await canonicalizeUserRepositoryPreferences(knex, canonicalName);
+  await canonicalizeTaskJobData(knex, canonicalName);
+}
+
+async function canonicalizeSummaryPaths(knex, table, aliases, canonicalName) {
+  const rows = await knex(table).select('*').whereRaw(
+    'lower(path) = ? OR substr(lower(path), 1, ?) = ?',
+    [canonicalName, canonicalName.length + 1, `${canonicalName}/`]
+  );
+  for (const row of rows) {
+    const alias = aliases.find((candidate) => row.path.toLowerCase() === candidate.toLowerCase()
+      || row.path.toLowerCase().startsWith(`${candidate.toLowerCase()}/`));
+    if (!alias) continue;
+    const canonicalPath = `${canonicalName}${row.path.slice(alias.length)}`;
+    if (canonicalPath === row.path) continue;
+    const identity = { path: canonicalPath, branch: row.branch };
+    const existing = await knex(table).where(identity).first();
+    if (!existing) {
+      await knex(table).where({ path: row.path, branch: row.branch })
+        .update({ path: canonicalPath });
+      continue;
+    }
+    if (summaryUpdatedAt(row) > summaryUpdatedAt(existing)) {
+      const merged = { ...row };
+      delete merged.path;
+      delete merged.branch;
+      await knex(table).where(identity).update(merged);
+    }
+    await knex(table).where({ path: row.path, branch: row.branch }).delete();
+  }
+}
+
+function summaryUpdatedAt(row) {
+  const parsed = typeof row.last_updated_at === 'string'
+    ? Date.parse(row.last_updated_at)
+    : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function canonicalizeUserRepositoryPreferences(knex, canonicalName) {
+  if (!await knex.schema.hasTable('system_configs')
+      || !await knex.schema.hasColumn('system_configs', 'value')) return;
+  const rows = await knex('system_configs').select('key', 'value')
+    .where('key', 'like', 'user_repo_prefs_%');
+  for (const row of rows) {
+    let preferences;
+    try {
+      preferences = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+    } catch {
+      continue;
+    }
+    if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) continue;
+    const entries = Object.entries(preferences);
+    const matches = entries.filter(([repository]) =>
+      repository.trim().toLowerCase() === canonicalName);
+    if (matches.length === 0
+        || (matches.length === 1 && matches[0][0] === canonicalName)) continue;
+    const merged = {};
+    const orderedMatches = [...matches].sort(([left], [right]) =>
+      Number(left === canonicalName) - Number(right === canonicalName));
+    for (const [, preference] of orderedMatches) {
+      if (preference && typeof preference === 'object' && !Array.isArray(preference)) {
+        Object.assign(merged, preference);
+      }
+    }
+    const normalized = Object.fromEntries(entries.filter(([repository]) =>
+      repository.trim().toLowerCase() !== canonicalName));
+    normalized[canonicalName] = merged;
+    await knex('system_configs').where({ key: row.key })
+      .update({ value: JSON.stringify(normalized) });
+  }
+}
+
+async function canonicalizeTaskJobData(knex, canonicalName) {
+  if (!await knex.schema.hasTable('tasks')
+      || !await knex.schema.hasColumn('tasks', 'initial_job_data')) return;
+  const [owner, repositoryName] = canonicalName.split('/');
+  await knex('tasks')
+    .whereRaw("json_valid(initial_job_data) AND lower(trim(json_extract(initial_job_data, '$.repository'))) = ?", [canonicalName])
+    .update({
+      initial_job_data: knex.raw(
+        "json_set(initial_job_data, '$.repository', ?)",
+        [canonicalName]
+      )
+    });
+  await knex('tasks')
+    .whereRaw(`json_valid(initial_job_data)
+      AND lower(trim(json_extract(initial_job_data, '$.repoOwner')) || '/' ||
+        trim(json_extract(initial_job_data, '$.repoName'))) = ?`, [canonicalName])
+    .update({
+      initial_job_data: knex.raw(
+        "json_set(initial_job_data, '$.repoOwner', ?, '$.repoName', ?)",
+        [owner, repositoryName]
+      )
+    });
 }
 
 function hasMetadata(value) {

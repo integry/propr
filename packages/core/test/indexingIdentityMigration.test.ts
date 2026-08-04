@@ -17,6 +17,7 @@ test('indexing identity migration canonicalizes repositories and backfills activ
     useNullAsDefault: true,
   });
   try {
+    await database.raw('PRAGMA foreign_keys = ON');
     await database.schema.createTable('repositories', (table) => {
       table.text('full_name').notNullable();
       table.text('branch').notNullable();
@@ -28,6 +29,53 @@ test('indexing identity migration canonicalizes repositories and backfills activ
       table.text('created_at').notNullable();
       table.text('updated_at').notNullable();
       table.primary(['full_name', 'branch']);
+    });
+    for (const tableName of [
+      'task_drafts', 'plan_issues', 'tasks', 'repo_chat_messages',
+      'repo_todo_categories', 'repo_todos', 'notification_source_activity'
+    ]) {
+      await database.schema.createTable(tableName, (table) => {
+        table.increments('id').primary();
+        table.text('repository').notNullable();
+        if (tableName === 'tasks') table.text('initial_job_data');
+      });
+    }
+    await database.schema.createTable('system_configs', (table) => {
+      table.text('key').primary();
+      table.text('value');
+    });
+    await database.schema.createTable('llm_logs', (table) => {
+      table.increments('id').primary();
+      table.text('repository');
+      table.text('work_repository');
+    });
+    await database.schema.createTable('file_summaries', (table) => {
+      table.text('path').notNullable();
+      table.text('branch').notNullable();
+      table.text('summary').notNullable();
+      table.text('commit_hash').notNullable();
+      table.text('model_used');
+      table.text('last_updated_at');
+      table.primary(['path', 'branch']);
+    });
+    await database.schema.createTable('directory_summaries', (table) => {
+      table.text('path').notNullable();
+      table.text('branch').notNullable();
+      table.text('summary').notNullable();
+      table.text('hash').notNullable();
+      table.text('last_updated_at');
+      table.primary(['path', 'branch']);
+    });
+    await database.schema.createTable('notification_events', (table) => {
+      table.increments('id').primary();
+      table.text('target_json').notNullable();
+    });
+    await database.schema.createTable('repository_indexing_transitions', (table) => {
+      table.increments('transition_id').primary();
+      table.text('full_name').notNullable();
+      table.text('branch').notNullable();
+      table.foreign(['full_name', 'branch']).references(['full_name', 'branch'])
+        .inTable('repositories');
     });
     await database('repositories').insert([
       {
@@ -45,6 +93,50 @@ test('indexing identity migration canonicalizes repositories and backfills activ
         updated_at: '2026-08-02T01:00:00.000Z',
       },
     ]);
+    for (const tableName of [
+      'task_drafts', 'plan_issues', 'tasks', 'repo_chat_messages',
+      'repo_todo_categories', 'repo_todos', 'notification_source_activity'
+    ]) {
+      await database(tableName).insert({
+        repository: 'ACME/api',
+        ...(tableName === 'tasks' ? {
+          initial_job_data: JSON.stringify({
+            repoOwner: 'ACME', repoName: 'API', repository: 'Acme/API'
+          })
+        } : {})
+      });
+    }
+    await database('system_configs').insert({
+      key: 'user_repo_prefs_user-1',
+      value: JSON.stringify({
+        'ACME/api': { starred: true },
+        'acme/api': { hidden: true },
+        'other/repo': { starred: true }
+      })
+    });
+    await database('llm_logs').insert({
+      repository: 'Acme/API', work_repository: 'Acme/API'
+    });
+    await database('file_summaries').insert([
+      {
+        path: 'Acme/API/src/index.ts', branch: 'main', summary: 'new summary',
+        commit_hash: 'new-hash', last_updated_at: '2026-08-02T00:00:00.000Z'
+      },
+      {
+        path: 'acme/api/src/index.ts', branch: 'main', summary: 'old summary',
+        commit_hash: 'old-hash', last_updated_at: '2026-08-01T00:00:00.000Z'
+      }
+    ]);
+    await database('directory_summaries').insert({
+      path: 'Acme/API', branch: 'main', summary: 'root summary', hash: 'root-hash',
+      last_updated_at: '2026-08-02T00:00:00.000Z'
+    });
+    await database('notification_events').insert({
+      target_json: JSON.stringify({ type: 'task', repository: 'Acme/API', taskId: 'task-1' })
+    });
+    await database('repository_indexing_transitions').insert({
+      full_name: 'Acme/API', branch: 'main'
+    });
 
     await addIndexingTransitionIdentity(database);
 
@@ -74,6 +166,34 @@ test('indexing identity migration canonicalizes repositories and backfills activ
       transitionAt: '2026-08-02T01:00:00.000Z',
       runId: expectedRunId,
     }]);
+    for (const tableName of [
+      'task_drafts', 'plan_issues', 'tasks', 'repo_chat_messages',
+      'repo_todo_categories', 'repo_todos', 'notification_source_activity'
+    ]) {
+      assert.deepEqual(await database(tableName).pluck('repository'), ['acme/api']);
+    }
+    assert.deepEqual(await database('llm_logs').first('repository', 'work_repository'), {
+      repository: 'acme/api', work_repository: 'acme/api'
+    });
+    assert.deepEqual(JSON.parse((await database('tasks').first('initial_job_data'))
+      .initial_job_data), {
+      repoOwner: 'acme', repoName: 'api', repository: 'acme/api'
+    });
+    assert.deepEqual(JSON.parse((await database('system_configs').first('value')).value), {
+      'other/repo': { starred: true },
+      'acme/api': { starred: true, hidden: true }
+    });
+    assert.deepEqual(await database('file_summaries').first(
+      'path', 'summary', 'commit_hash'
+    ), {
+      path: 'acme/api/src/index.ts', summary: 'new summary', commit_hash: 'new-hash'
+    });
+    assert.deepEqual(await database('directory_summaries').pluck('path'), ['acme/api']);
+    assert.equal(JSON.parse((await database('notification_events').first('target_json')).target_json)
+      .repository, 'acme/api');
+    assert.deepEqual(await database('repository_indexing_transitions').first(
+      'full_name', 'branch'
+    ), { full_name: 'acme/api', branch: 'main' });
     await assert.rejects(database('repositories').insert({
       full_name: 'ACME/API',
       branch: 'main',

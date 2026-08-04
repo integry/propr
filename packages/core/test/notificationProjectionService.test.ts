@@ -16,14 +16,31 @@ import { up as scheduleProjectionRetries } from '../src/db/migrations/2026080401
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
 import { NotificationProjectionCheckpointStore } from '../src/services/notificationProjectionCheckpointStore.js';
+import { reconcileNotificationProjectionRetries }
+    from '../src/services/notificationProjectionRetryReconciler.js';
 import { NotificationService } from '../src/services/notificationService.js';
-import { NotificationStalledDetector } from '../src/services/notificationStalledDetector.js';
+import {
+    DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS,
+    getNotificationStalledCheckIntervalMs,
+    NotificationStalledDetector
+} from '../src/services/notificationStalledDetector.js';
 import { NotificationSystemProjection } from '../src/services/notificationSystemProjection.js';
 import {
+    DEFAULT_NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS,
+    DEFAULT_NOTIFICATION_SYSTEM_STARTUP_GRACE_MS,
+    getNotificationSystemCheckIntervalMs,
+    getNotificationSystemStartupGraceMs,
     getNotificationProjectionLeaseTtlMs,
     NotificationSystemSampler
 } from '../src/services/notificationSystemSampler.js';
-import { withNotificationDeadline } from '../src/services/notificationSchedulerTiming.js';
+import {
+    MAX_NOTIFICATION_TIMER_DELAY_MS,
+    withNotificationDeadline
+} from '../src/services/notificationSchedulerTiming.js';
+import {
+    DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS,
+    getNotificationRepositoryEntitlementTtlMs
+} from '../src/services/notificationRepositoryAccess.js';
 import { closeEventPublisher, EventPublisher, getEventPublisher } from '../src/utils/eventPublisher.js';
 import { NotificationProjectionQueue } from '../src/utils/notificationProjectionQueue.js';
 import type { TaskProjectionContext } from '../src/services/notificationProjectionStore.js';
@@ -1535,6 +1552,46 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.equal((await checkpoints.loadRetries(10)).length, 1);
     });
 
+    test('does not delete a replacement payload when an older retry completes', async () => {
+        const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
+        const original = { eventType: 'task:update', taskId: 'retry-race', state: 'failed' };
+        const replacement = { ...original, metadata: { prNumber: 1734 } };
+        await checkpoints.enqueueRetry('terminal-task-history', 'retry-race', original);
+        const [loaded] = await checkpoints.loadRetries(1);
+
+        await checkpoints.enqueueRetry('terminal-task-history', 'retry-race', replacement);
+        await checkpoints.deleteRetry(loaded);
+
+        const [retained] = await checkpoints.loadRetries(1);
+        assert.deepEqual(JSON.parse(retained.payloadJson), replacement);
+    });
+
+    test('backs off a throwing retry and continues with later independent rows', async () => {
+        const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
+        const first = { eventType: 'task:update', taskId: 'broken-retry', state: 'failed' } as const;
+        const second = { eventType: 'task:update', taskId: 'ready-retry', state: 'failed' } as const;
+        await checkpoints.enqueueRetry('terminal-task-history', '1', first);
+        await checkpoints.enqueueRetry('terminal-task-history', '2', second);
+
+        const repaired = await reconcileNotificationProjectionRetries({
+            checkpoints,
+            batchSize: 10,
+            shouldContinue: () => true,
+            projectTaskUpdate: async (payload) => {
+                if (payload.taskId === first.taskId) throw new Error('invalid task projection');
+                return 'completed';
+            },
+            projectIndexingUpdate: async () => 'completed',
+            projectDraftUpdate: async () => 'completed'
+        });
+
+        assert.equal(repaired, 1);
+        assert.deepEqual(await database('notification_projection_retries')
+            .orderBy('transition_key').select('transition_key', 'attempt_count'), [{
+            transition_key: '1', attempt_count: 1
+        }]);
+    });
+
     test('prunes terminal indexing activity only after its durable checkpoint advances', async () => {
         const previousRetention = process.env.NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS;
         try {
@@ -1889,6 +1946,57 @@ describe('notification projection schedulers', { concurrency: false }, () => {
     test('derives a lease TTL that exceeds renewal clamps and operation deadlines', () => {
         assert.equal(getNotificationProjectionLeaseTtlMs(100), 20_000);
         assert.equal(getNotificationProjectionLeaseTtlMs(60_000), 120_000);
+    });
+
+    test('rejects notification timing values that Node would clamp to a hot timer', async () => {
+        const names = [
+            'NOTIFICATION_STALLED_CHECK_INTERVAL_MS',
+            'NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS',
+            'NOTIFICATION_SYSTEM_STARTUP_GRACE_MS',
+            'NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS'
+        ] as const;
+        const previous = new Map(names.map((name) => [name, process.env[name]]));
+        try {
+            for (const name of names) {
+                process.env[name] = String(MAX_NOTIFICATION_TIMER_DELAY_MS + 1);
+            }
+            assert.equal(
+                getNotificationStalledCheckIntervalMs(),
+                DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS
+            );
+            assert.equal(
+                getNotificationSystemCheckIntervalMs(),
+                DEFAULT_NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS
+            );
+            assert.equal(
+                getNotificationSystemStartupGraceMs(),
+                DEFAULT_NOTIFICATION_SYSTEM_STARTUP_GRACE_MS
+            );
+            assert.equal(
+                getNotificationRepositoryEntitlementTtlMs(),
+                DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS
+            );
+            assert.throws(() => new NotificationSystemSampler({
+                getSnapshot: async () => ({ redis: 'connected', timestamp: EVENT_TIME }),
+                intervalMs: MAX_NOTIFICATION_TIMER_DELAY_MS + 1
+            }), /schedulable/);
+            assert.throws(() => new NotificationStalledDetector({
+                intervalMs: MAX_NOTIFICATION_TIMER_DELAY_MS + 1
+            }), /must be between/);
+            await assert.rejects(
+                withNotificationDeadline(
+                    Promise.resolve(),
+                    MAX_NOTIFICATION_TIMER_DELAY_MS + 1,
+                    'oversized timer'
+                ),
+                /schedulable/
+            );
+        } finally {
+            for (const [name, value] of previous) {
+                if (value === undefined) delete process.env[name];
+                else process.env[name] = value;
+            }
+        }
     });
 
     test('recreates the event-publisher singleton after a completed close', async () => {

@@ -11,7 +11,8 @@ import { db } from '@propr/core';
 import {
     updateRepositoryStatus, createIndexingRunIdentity,
     createIndexingQueueDeduplicationId, createIndexingQueueJobId,
-    INDEXING_FAILED_JOB_RETENTION, publishIndexingStatus,
+    INDEXING_FAILED_JOB_RETENTION, INDEXING_JOB_ACCEPTANCE_DELAY_MS,
+    publishIndexingStatus,
     INDEXING_WORKER_HEARTBEAT_INTERVAL_MS, INDEXING_WORKER_HEARTBEAT_KEY,
     INDEXING_WORKER_HEARTBEAT_TTL_SECONDS
 } from '@propr/core';
@@ -165,6 +166,7 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
             // unique job ID identifies which producer BullMQ accepted.
             deduplication: { id: deduplicationId },
             priority: reason === 'previous indexing failed' ? 1 : 5,
+            delay: INDEXING_JOB_ACCEPTANCE_DELAY_MS,
             removeOnComplete: true,
             removeOnFail: INDEXING_FAILED_JOB_RETENTION
         }
@@ -181,7 +183,14 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
             startNewRun: true
         });
     } catch (error) {
-        await job.remove().catch(() => undefined);
+        await job.remove().catch((removeError) => {
+            log.warn({
+                repository: repoName,
+                branch,
+                runId: requestedRun.runId,
+                error: removeError instanceof Error ? removeError.message : String(removeError),
+            }, 'Rejected indexing job remains queued behind the durable-acceptance fence');
+        });
         throw error;
     }
     if (!acceptedRun.applied) {
@@ -195,6 +204,10 @@ async function queueIndexingJob(options: QueueIndexingJobOptions): Promise<void>
         log.debug({ repository: repoName, branch, runId: acceptedRun.runId, error },
             'Indexing job left the queue before its accepted identity could be enriched');
     }
+    await job.promote().catch((error) => {
+        log.warn({ repository: repoName, branch, runId: acceptedRun.runId, error },
+            'Durably accepted indexing job will wait for its fallback delay');
+    });
     try {
         await publishIndexingStatus(repoName, branch, 'indexing', acceptedRun);
     } catch (error) {

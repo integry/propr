@@ -2,18 +2,18 @@ import type { Logger } from 'pino';
 import {
     logger,
     clearIndexingRuntimeStateBestEffort,
-    getActiveRepositoryIndexingRuns,
+    createLegacyIndexingRunIdForJob,
     publishIndexingStatus,
     updateRepositoryStatus,
     type IndexingJobData,
 } from '@propr/core';
 
 interface FailedIndexingJob {
+    id?: string | number;
     data: IndexingJobData;
     attemptsMade: number;
     opts: { attempts?: number };
     failedReason?: string;
-    finishedOn?: number;
     remove?: () => Promise<void>;
 }
 
@@ -25,7 +25,7 @@ interface IndexingFailureDeps {
     log: Pick<Logger, 'error' | 'warn'>;
     publishIndexingStatus: typeof publishIndexingStatus;
     updateRepositoryStatus: typeof updateRepositoryStatus;
-    getActiveRepositoryIndexingRuns: typeof getActiveRepositoryIndexingRuns;
+    createLegacyIndexingRunIdForJob: typeof createLegacyIndexingRunIdForJob;
     clearIndexingRuntimeStateBestEffort: typeof clearIndexingRuntimeStateBestEffort;
 }
 
@@ -39,7 +39,7 @@ export async function handleIndexingJobFailure(
         log: logger,
         publishIndexingStatus,
         updateRepositoryStatus,
-        getActiveRepositoryIndexingRuns,
+        createLegacyIndexingRunIdForJob,
         clearIndexingRuntimeStateBestEffort,
         ...overrides,
     };
@@ -57,22 +57,12 @@ export async function handleIndexingJobFailure(
     }
 
     let runId = job.data.runId;
-    if (!runId) {
-        const [ownedRun] = await deps.getActiveRepositoryIndexingRuns(
+    if (!runId && job.id !== undefined) {
+        runId = deps.createLegacyIndexingRunIdForJob(
             job.data.repository,
-            branch
+            branch,
+            String(job.id)
         );
-        const ownedTransitionTime = ownedRun ? Date.parse(ownedRun.transitionAt) : Number.NaN;
-        const ownedAtFailure = ownedRun && Number.isFinite(ownedTransitionTime)
-            && (job.finishedOn === undefined || ownedTransitionTime <= job.finishedOn);
-        runId = ownedAtFailure ? ownedRun.runId : undefined;
-        if (ownedAtFailure) {
-            Object.assign(job.data, {
-                runId: ownedRun.runId,
-                transitionAt: ownedRun.transitionAt,
-                durablyAccepted: true,
-            });
-        }
     }
     if (!runId) {
         deps.log.error({ repository: job.data.repository, branch, error: error.message },
@@ -98,16 +88,19 @@ export async function handleIndexingJobFailure(
         }, 'Failed to update repository status after job failure; retaining failed job for reconciliation');
         return false;
     }
-    if (transition.applied) {
-        try {
-            await deps.publishIndexingStatus(job.data.repository, branch, 'failed', transition);
-        } catch (publicationError) {
-            deps.log.warn({
-                repository: job.data.repository,
-                branch,
-                error: (publicationError as Error).message,
-            }, 'Failed to publish durable indexing failure; reconciliation will retry projection');
-        }
+    if (!transition.applied) {
+        deps.log.warn({ repository: job.data.repository, branch, runId },
+            'Failed indexing job does not own a durable run; retaining it for reconciliation');
+        return false;
+    }
+    try {
+        await deps.publishIndexingStatus(job.data.repository, branch, 'failed', transition);
+    } catch (publicationError) {
+        deps.log.warn({
+            repository: job.data.repository,
+            branch,
+            error: (publicationError as Error).message,
+        }, 'Failed to publish durable indexing failure; reconciliation will retry projection');
     }
     await deps.clearIndexingRuntimeStateBestEffort(job.data.repository, branch, runId);
     return true;

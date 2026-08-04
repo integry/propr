@@ -54,6 +54,37 @@ function statusOptions(runId: string, transitionAt = '2000-01-01T00:00:00.000Z')
 }
 
 describe('repository indexing run state machine', { concurrency: false }, () => {
+  test('a consumer cannot create a producer-owned run before durable acceptance', async () => {
+    const transition = await updateRepositoryStatus('acme/api', 'indexing', 'main', {
+      ...statusOptions('producer-run'),
+      requireExistingRun: true,
+    });
+
+    assert.equal(transition.applied, false);
+    assert.equal(await database('repositories').count<{ count: number }>('* as count')
+      .first().then((row) => Number(row?.count)), 0);
+    assert.equal(await database('repository_indexing_transitions')
+      .count<{ count: number }>('* as count').first().then((row) => Number(row?.count)), 0);
+  });
+
+  test('a stable legacy job identity cannot adopt a replacement run', async () => {
+    await updateRepositoryStatus('acme/api', 'indexing', 'main', {
+      ...statusOptions('replacement-run'),
+      startNewRun: true,
+    });
+
+    const legacy = await updateRepositoryStatus('acme/api', 'indexing', 'main', {
+      ...statusOptions('legacy-job-run'),
+      startNewRunIfIdle: true,
+    });
+
+    assert.equal(legacy.applied, false);
+    assert.deepEqual(
+      await database('repositories').first('indexing_status', 'indexing_run_id'),
+      { indexing_status: 'indexing', indexing_run_id: 'replacement-run' }
+    );
+  });
+
   test('a successful stop rejects late completion and failure from the same run', async () => {
     const started = await updateRepositoryStatus('acme/api', 'indexing', 'main', {
       ...statusOptions('run-1'),

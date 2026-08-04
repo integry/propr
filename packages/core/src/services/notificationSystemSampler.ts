@@ -4,7 +4,16 @@ import {
     notificationSystemProjection,
     type SystemStatusSnapshot
 } from './notificationSystemProjection.js';
-import { settlesWithin, withNotificationDeadline } from './notificationSchedulerTiming.js';
+import {
+    MAX_NOTIFICATION_TIMER_DELAY_MS,
+    isNotificationTimerDelay,
+    settlesWithin,
+    withNotificationDeadline
+} from './notificationSchedulerTiming.js';
+import {
+    runWithNotificationLease,
+    type NotificationProjectionLease
+} from './notificationLeaseRunner.js';
 
 export const DEFAULT_NOTIFICATION_SYSTEM_CHECK_INTERVAL_MS = 30 * 1000;
 export const DEFAULT_NOTIFICATION_SYSTEM_STARTUP_GRACE_MS = 2 * 60 * 1000;
@@ -20,22 +29,22 @@ export function getNotificationProjectionLeaseTtlMs(
         ['checkIntervalMs', checkIntervalMs],
         ['operationTimeoutMs', operationTimeoutMs]
     ] as const) {
-        if (!Number.isSafeInteger(value) || value <= 0) {
-            throw new TypeError(`${name} must be a positive safe integer`);
+        if (!isNotificationTimerDelay(value)) {
+            throw new TypeError(`${name} must be a schedulable positive integer`);
         }
     }
-    return Math.max(
+    return Math.min(MAX_NOTIFICATION_TIMER_DELAY_MS, Math.max(
         checkIntervalMs * 2,
         operationTimeoutMs * 2,
         MIN_NOTIFICATION_LEASE_RENEWAL_INTERVAL_MS * 3
-    );
+    ));
 }
 
 function positiveIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];
     if (raw === undefined || raw.trim() === '') return fallback;
     const value = Number(raw);
-    if (Number.isSafeInteger(value) && value > 0) return value;
+    if (isNotificationTimerDelay(value)) return value;
     logger.warn({ name, value: raw }, 'Ignoring invalid notification timing configuration');
     return fallback;
 }
@@ -44,7 +53,7 @@ function nonNegativeIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];
     if (raw === undefined || raw.trim() === '') return fallback;
     const value = Number(raw);
-    if (Number.isSafeInteger(value) && value >= 0) return value;
+    if (isNotificationTimerDelay(value, true)) return value;
     logger.warn({ name, value: raw }, 'Ignoring invalid notification timing configuration');
     return fallback;
 }
@@ -61,12 +70,6 @@ export function getNotificationSystemStartupGraceMs(): number {
         'NOTIFICATION_SYSTEM_STARTUP_GRACE_MS',
         DEFAULT_NOTIFICATION_SYSTEM_STARTUP_GRACE_MS
     );
-}
-
-export interface NotificationProjectionLease {
-    renew(): Promise<boolean>;
-    release(): Promise<void>;
-    renewalIntervalMs?: number;
 }
 
 export interface NotificationSystemSamplerOptions {
@@ -108,8 +111,10 @@ export class NotificationSystemSampler {
             ['operationTimeoutMs', this.operationTimeoutMs, false],
             ['drainTimeoutMs', this.drainTimeoutMs, false]
         ] as const) {
-            if (!Number.isSafeInteger(value) || (allowZero ? value < 0 : value <= 0)) {
-                throw new TypeError(`${name} must be ${allowZero ? 'a non-negative' : 'a positive'} safe integer`);
+            if (!isNotificationTimerDelay(value, allowZero)) {
+                throw new TypeError(
+                    `${name} must be a schedulable ${allowZero ? 'non-negative' : 'positive'} integer`
+                );
             }
         }
     }
@@ -183,84 +188,26 @@ export class NotificationSystemSampler {
     }
 
     private async executeRun(runGeneration: number, signal: AbortSignal): Promise<boolean> {
-        let lease: NotificationProjectionLease | undefined;
-        let renewalTimer: NodeJS.Timeout | undefined;
-        let renewalInFlight: Promise<boolean> | null = null;
-        let leaseLost = false;
-        let runValid = true;
-        let releaseInFlight: Promise<void> | null = null;
-        const releaseLease = (): Promise<void> => {
-            if (releaseInFlight) return releaseInFlight;
-            const currentLease = lease;
-            lease = undefined;
-            if (!currentLease) return Promise.resolve();
-            releaseInFlight = currentLease.release().catch((error) => {
-                logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                    'Failed to release notification system-health lease');
-            });
-            return releaseInFlight;
-        };
-        const renewLease = (): Promise<boolean> => {
-            if (!lease || leaseLost || signal.aborted) {
-                return Promise.resolve(!leaseLost && !signal.aborted);
-            }
-            if (renewalInFlight) return renewalInFlight;
-            const renewal = (async () => {
-                try {
-                    const renewed = await lease.renew();
-                    if (!renewed) leaseLost = true;
-                } catch (error) {
-                    leaseLost = true;
-                    logger.warn({ error: error instanceof Error ? error.message : String(error) },
-                        'Failed to renew notification system-health lease');
-                }
-                return !leaseLost;
-            })();
-            renewalInFlight = renewal;
-            void renewal.then(() => {
-                if (renewalInFlight === renewal) renewalInFlight = null;
-            });
-            return renewal;
-        };
-        const cancelRemainingWork = (): void => {
-            runValid = false;
-            if (renewalTimer) clearInterval(renewalTimer);
-            renewalTimer = undefined;
-            void releaseLease();
-        };
-        signal.addEventListener('abort', cancelRemainingWork, { once: true });
         try {
-            if (this.acquireLease) {
-                const acquired = await this.acquireLease();
-                if (acquired === false) return false;
-                if (typeof acquired === 'object') {
-                    lease = acquired;
-                    if (signal.aborted) return false;
-                    renewalTimer = setInterval(() => { void renewLease(); },
-                        lease.renewalIntervalMs ?? Math.max(1000, Math.floor(this.intervalMs / 2)));
-                    renewalTimer.unref();
+            return await runWithNotificationLease({
+                acquireLease: this.acquireLease,
+                fallbackRenewalIntervalMs: Math.max(1000, Math.floor(this.intervalMs / 2)),
+                generationIsCurrent: () => runGeneration === this.runGeneration,
+                label: 'notification system-health',
+                signal,
+                skippedValue: false,
+                work: async ({ hasLease, renewLease, shouldContinue }) => {
+                    const snapshot = await this.getSnapshot();
+                    if (!shouldContinue()) return false;
+                    if (hasLease && !await renewLease()) return false;
+                    await this.projector.projectSnapshot(snapshot, [], shouldContinue);
+                    return shouldContinue();
                 }
-            }
-            if (signal.aborted) return false;
-            const snapshot = await this.getSnapshot();
-            if (signal.aborted || runGeneration !== this.runGeneration) return false;
-            if (lease && !await renewLease()) return false;
-            await this.projector.projectSnapshot(
-                snapshot,
-                [],
-                () => runValid && !leaseLost && !signal.aborted
-                    && runGeneration === this.runGeneration
-            );
-            return !leaseLost && !signal.aborted && runGeneration === this.runGeneration;
+            });
         } catch (error) {
             logger.warn({ error: error instanceof Error ? error.message : String(error) },
                 'Failed to sample system health for notifications');
             return false;
-        } finally {
-            runValid = false;
-            signal.removeEventListener('abort', cancelRemainingWork);
-            if (renewalTimer) clearInterval(renewalTimer);
-            await releaseLease();
         }
     }
 }

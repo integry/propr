@@ -2,6 +2,7 @@ import type { Knex } from 'knex';
 import { normalizeISO8601Timestamp } from '@propr/shared';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
+import { isNotificationTimerDelay } from './notificationSchedulerTiming.js';
 
 export const DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = 60 * 60 * 1000;
 
@@ -18,7 +19,7 @@ function positiveIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];
     if (raw === undefined || raw.trim() === '') return fallback;
     const value = Number(raw);
-    if (Number.isSafeInteger(value) && value > 0) return value;
+    if (isNotificationTimerDelay(value)) return value;
     logger.warn({ name, value: raw }, 'Ignoring invalid notification repository-access configuration');
     return fallback;
 }

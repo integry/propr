@@ -25,6 +25,8 @@ interface GitHubRoutesDeps {
   taskQueue: Queue;
   db: Knex;
   invalidateNotificationEntitlements?: (userId: string) => Promise<void>;
+  refreshNotificationEntitlements?: typeof refreshNotificationRepositoryEntitlements;
+  listNotificationRepositories?: typeof listAccessibleRepositories;
 }
 
 /**
@@ -111,6 +113,10 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   const { redisClient, taskQueue, db } = deps;
   const invalidateEntitlements = deps.invalidateNotificationEntitlements
     ?? ((userId: string) => invalidateNotificationRepositoryEntitlements(db, userId));
+  const refreshNotificationEntitlements = deps.refreshNotificationEntitlements
+    ?? refreshNotificationRepositoryEntitlements;
+  const listNotificationRepositories = deps.listNotificationRepositories
+    ?? listAccessibleRepositories;
 
   async function invalidateEntitlementsOrRespond(userId: string, res: Response): Promise<boolean> {
     try {
@@ -175,17 +181,29 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
       let repos: string[] = [];
       let repositoriesScanned = false;
       try {
-        await refreshNotificationRepositoryEntitlements({
+        const refreshed = await refreshNotificationEntitlements({
           userId,
           accessToken,
           database: db,
           force: true,
           listRepositories: async (token, signal) => {
-            repos = await listAccessibleRepositories(token, signal);
+            repos = await listNotificationRepositories(token, signal);
             repositoriesScanned = true;
             return repos;
           },
         });
+        if (!refreshed && !repositoriesScanned) {
+          res.status(503).json({
+            error: 'Repository entitlement refresh unavailable',
+            code: 'ENTITLEMENT_REFRESH_UNAVAILABLE',
+            message: 'Repository access could not be refreshed. Please retry shortly.'
+          });
+          return;
+        }
+        if (!refreshed) {
+          logger.warn({ userId },
+            'Repository scan completed after losing its entitlement persistence fence');
+        }
       } catch (error) {
         // Keep repository browsing available when the GitHub scan succeeded but
         // durable entitlement bookkeeping failed. Delivery remains fail-closed.

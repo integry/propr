@@ -64,7 +64,18 @@ export async function reconcileNotificationProjectionRetries(
             await options.checkpoints.deleteRetry(retry);
             continue;
         }
-        const outcome = await projectRetryPayload(options, payload);
+        let outcome: ProjectionOutcome;
+        try {
+            outcome = await projectRetryPayload(options, payload);
+        } catch (error) {
+            logger.warn({
+                source: retry.source,
+                transitionKey: retry.transitionKey,
+                error: error instanceof Error ? error.message : String(error)
+            }, 'Durable notification projection retry failed; deferring it');
+            await options.checkpoints.markRetryDeferred(retry);
+            continue;
+        }
         if (outcome === 'deferred') {
             await options.checkpoints.markRetryDeferred(retry);
             continue;

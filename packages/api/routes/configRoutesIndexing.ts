@@ -126,13 +126,16 @@ export function createIndexingRoutes(deps: IndexingRoutesDeps) {
         return;
       }
 
-      const branchInfo = branch ? ` (branch: ${branch})` : '';
-      await logActivityHelper(
-        `Stopped indexing for ${repository}${branchInfo}`,
-        'indexing-stop',
-        'indexing_stopped',
-        req.user?.username
-      );
+      const stoppedCount = result.cancelledActiveRuns.length + result.removedQueuedRuns.length;
+      if (stoppedCount > 0) {
+        const branchInfo = branch ? ` (branch: ${branch})` : '';
+        await logActivityHelper(
+          `Stopped indexing for ${repository}${branchInfo}`,
+          'indexing-stop',
+          'indexing_stopped',
+          req.user?.username
+        );
+      }
 
       res.json({
         success: true,

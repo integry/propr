@@ -1,11 +1,12 @@
 import path from 'node:path';
 import os from 'node:os';
 import { AGENT_DEFAULTS } from '@propr/shared';
-import type {
-  Agent,
-  AgentConfig,
-  AgentRegistry,
-  AgentRegistryOperationalStatus,
+import {
+  logger,
+  type Agent,
+  type AgentConfig,
+  type AgentRegistry,
+  type AgentRegistryOperationalStatus,
 } from '@propr/core';
 
 export type StatusAgentRegistry =
@@ -30,7 +31,8 @@ export async function getAgentStatuses(
   try {
     configuredAgents = await loadAgents();
   } catch (error) {
-    console.error('Error loading agent status configuration:', error);
+    logger.error({ error: error instanceof Error ? error.message : String(error) },
+      'Error loading agent status configuration');
     return [];
   }
 
@@ -43,7 +45,8 @@ export async function getAgentStatuses(
     registeredAgents = registry.getAllAgents();
     registryAvailable = true;
   } catch (error) {
-    console.error('Error reading agent registry for status:', error);
+    logger.error({ error: error instanceof Error ? error.message : String(error) },
+      'Error reading agent registry for status');
   }
 
   if (!registryAvailable) {
@@ -94,7 +97,10 @@ async function buildConfiguredAgentStatus(
   try {
     return await buildRegisteredAgentStatus(registry.createAgentFromConfig(config), healthTimeoutMs);
   } catch (error) {
-    console.error('Error checking configured agent status:', error);
+    logger.error({
+      agentId: config.id,
+      error: error instanceof Error ? error.message : String(error)
+    }, 'Error checking configured agent status');
     return buildDisconnectedAgentStatus(config);
   }
 }

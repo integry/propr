@@ -14,9 +14,13 @@ export {
 } from './summaryMiner.js';
 export {
   INDEXING_FAILED_JOB_RETENTION,
+  INDEXING_JOB_ACCEPTANCE_DELAY_MS,
   createIndexingQueueDeduplicationId,
   createIndexingQueueJobId,
-  createIndexingRunIdentity,
+  createLegacyIndexingRunIdForJob,
+  createIndexingRunIdentity
+} from './indexingQueueIdentity.js';
+export {
   getActiveRepositoryIndexingRuns,
   recordSkippedIndexingRun,
   updateRepositoryStatus

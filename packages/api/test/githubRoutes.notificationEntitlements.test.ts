@@ -9,10 +9,12 @@ import { up as fenceNotificationEntitlements } from '../../core/src/db/migration
 import { up as fenceEntitlementInvalidation } from '../../core/src/db/migrations/20260804000000_fence_notification_entitlement_invalidation.js';
 import { replaceNotificationRepositoryEntitlements } from '@propr/core';
 import {
+  createGitHubRoutes,
   createNotificationEntitlementRefreshMiddleware,
   persistNotificationRepositoryEntitlementsBestEffort,
   refreshNotificationRepositoryEntitlements,
 } from '../routes/githubRoutes.js';
+import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
 import {
   ensureEntitlementRefreshRegistration,
   type EntitlementRefreshTimerScheduler,
@@ -401,6 +403,58 @@ test('a successful login activation clears a prior entitlement tombstone', async
     assert.equal(row.invalidated_at, null);
   } finally {
     middleware.close();
+  }
+});
+
+test('repeated authenticated activation does not rotate an active entitlement fence', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    await middleware.activate('active-session-user');
+    const before = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'active-session-user' })
+      .first('lease_token', 'fencing_token', 'invalidated_at');
+
+    await middleware.activate('active-session-user');
+
+    const afterActivation = await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'active-session-user' })
+      .first('lease_token', 'fencing_token', 'invalidated_at');
+    assert.deepEqual(afterActivation, before);
+  } finally {
+    middleware.close();
+  }
+});
+
+test('repository listing returns a retry error when a forced refresh never scans GitHub', async () => {
+  configureDemoMode(false);
+  let scans = 0;
+  let statusCode = 200;
+  let responseBody: unknown;
+  const response = {
+    status(code: number) { statusCode = code; return this; },
+    json(body: unknown) { responseBody = body; return this; },
+  };
+  const routes = createGitHubRoutes({
+    redisClient: {} as never,
+    taskQueue: {} as never,
+    db: database,
+    refreshNotificationEntitlements: async () => false,
+    listNotificationRepositories: async () => { scans++; return []; },
+  });
+  try {
+    await routes.getRepos({
+      user: { id: 'fenced-user', accessToken: 'valid-token' },
+    } as never, response as never);
+
+    assert.equal(scans, 0);
+    assert.equal(statusCode, 503);
+    assert.deepEqual(responseBody, {
+      error: 'Repository entitlement refresh unavailable',
+      code: 'ENTITLEMENT_REFRESH_UNAVAILABLE',
+      message: 'Repository access could not be refreshed. Please retry shortly.',
+    });
+  } finally {
+    resetConfiguredDemoMode();
   }
 });
 

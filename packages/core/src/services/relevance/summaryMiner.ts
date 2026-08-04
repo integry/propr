@@ -27,11 +27,11 @@ import type { IndexingPhase } from '@propr/shared';
 import {
   updateRepositoryStatus,
   getRepositoryIndexingStatus,
-  createIndexingRunIdentity,
   recordSkippedIndexingRun,
   type IndexingRunIdentity,
   type RepositoryStatusTransition
 } from './summaryMinerQueries.js';
+import { createIndexingRunIdentity } from './indexingQueueIdentity.js';
 import { scanProcessableGitFiles } from './summaryFileFilter.js';
 import { deleteFileSummaries, identifyStaleFiles } from './summaryMinerStaleness.js';
 

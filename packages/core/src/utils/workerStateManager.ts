@@ -55,18 +55,13 @@ export class WorkerStateManager {
             history: [{ state: TaskStates.PENDING, timestamp: transitionAt, reason: 'Task created' }]
         };
         const key = this.getTaskKey(taskId);
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId, issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, state: TaskStates.PENDING
-        }, 'Task state created');
-
+        const repoOwner = issueRef.repoOwner ?? 'unknown';
+        const repoName = issueRef.repoName ?? 'unknown';
+        const repository = `${repoOwner}/${repoName}`;
+        let transitionSequence: number | undefined;
         try {
             // Validate repository name components before storing
-            const repoOwner = issueRef.repoOwner ?? 'unknown';
-            const repoName = issueRef.repoName ?? 'unknown';
-            const repository = `${repoOwner}/${repoName}`;
             const taskData = {
                 task_id: taskId, job_id: null, correlation_id: state.correlationId,
                 repository,
@@ -80,10 +75,19 @@ export class WorkerStateManager {
                 timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
             };
             const insertedHistory = await db('task_history').insert(historyData);
-            const transitionSequence = insertedSequence(insertedHistory);
+            transitionSequence = insertedSequence(insertedHistory);
             correlatedLogger.debug({ taskId }, 'Task state persisted to database');
-
-            // Publish real-time event for task creation
+        } catch (error) {
+            correlatedLogger.error({ error: (error as Error).message, taskId },
+                'Failed to persist task state to database');
+            throw error;
+        }
+        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        correlatedLogger.info({
+            taskId, issueNumber: issueRef.number,
+            repository, state: TaskStates.PENDING
+        }, 'Task state created');
+        try {
             const eventPublisher = getEventPublisher();
             await eventPublisher.publishTaskUpdate({
                 taskId,
@@ -94,7 +98,8 @@ export class WorkerStateManager {
                 timestamp: transitionAt
             });
         } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
+            correlatedLogger.warn({ error: (error as Error).message, taskId },
+                'Failed to publish durable task creation update');
         }
         return state;
     }
@@ -132,15 +137,8 @@ export class WorkerStateManager {
             reason: metadata.reason ?? `State changed from ${previousState}`,
             metadata: metadata.historyMetadata ?? {}
         });
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId, issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            previousState, newState, attempts: state.attempts
-        }, 'Task state updated');
-
+        let transitionSequence: number | undefined;
         try {
             const historyData = {
                 task_id: taskId, state: newState, timestamp: transitionAt,
@@ -152,10 +150,20 @@ export class WorkerStateManager {
                 })
             };
             const insertedHistory = await db('task_history').insert(historyData);
-            const transitionSequence = insertedSequence(insertedHistory);
+            transitionSequence = insertedSequence(insertedHistory);
             correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
-
-            // Publish real-time event for task state change
+        } catch (error) {
+            correlatedLogger.error({ error: (error as Error).message, taskId },
+                'Failed to persist task state update to database');
+            throw error;
+        }
+        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        correlatedLogger.info({
+            taskId, issueNumber: state.issueRef.number,
+            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+            previousState, newState, attempts: state.attempts
+        }, 'Task state updated');
+        try {
             const eventPublisher = getEventPublisher();
             await eventPublisher.publishTaskUpdate({
                 taskId,
@@ -172,7 +180,8 @@ export class WorkerStateManager {
                 timestamp: transitionAt
             });
         } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
+            correlatedLogger.warn({ error: (error as Error).message, taskId },
+                'Failed to publish durable task state update');
         }
         return state;
     }
@@ -205,24 +214,30 @@ export class WorkerStateManager {
             ?? state.updatedAt;
         state.issueRef = { ...state.issueRef, ...issueRefPatch };
         state.updatedAt = new Date().toISOString();
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
 
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId,
-            issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            updatedFields: Object.keys(issueRefPatch)
-        }, 'Task issue reference updated');
-
+        let publicationMetadata: Record<string, unknown>;
         try {
-            const publicationMetadata = await persistIssueRefNotificationEnrichment({
+            publicationMetadata = await persistIssueRefNotificationEnrichment({
                 database: db,
                 taskId,
                 state,
                 issueRefPatch,
                 transitionAt
             });
+        } catch (error) {
+            correlatedLogger.warn({ error: (error as Error).message, taskId },
+                'Failed to persist issue reference update');
+            throw error;
+        }
+        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        correlatedLogger.info({
+            taskId,
+            issueNumber: state.issueRef.number,
+            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+            updatedFields: Object.keys(issueRefPatch)
+        }, 'Task issue reference updated');
+        try {
             const eventPublisher = getEventPublisher();
             await eventPublisher.publishTaskUpdate({
                 taskId,
@@ -233,7 +248,7 @@ export class WorkerStateManager {
             });
         } catch (error) {
             correlatedLogger.warn({ error: (error as Error).message, taskId },
-                'Failed to persist or publish issue reference update');
+                'Failed to publish durable issue reference update');
         }
 
         return state;
@@ -284,13 +299,10 @@ export class WorkerStateManager {
             const transitionAt = state.history[historyIndex].timestamp;
             state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
             state.updatedAt = new Date().toISOString();
-            await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
-
-            // Publish real-time event for metadata update so UI can refresh
+            let publicationMetadata: Record<string, unknown>;
             try {
-                const publicationMetadata =
+                publicationMetadata =
                     await persistHistoryMetadataNotificationEnrichment({
                         database: db,
                         taskId,
@@ -300,6 +312,14 @@ export class WorkerStateManager {
                         metadata,
                         transitionAt
                 });
+            } catch (error) {
+                correlatedLogger.warn({ error: (error as Error).message, taskId },
+                    'Failed to persist history metadata update');
+                throw error;
+            }
+            await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+            correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
+            try {
                 const eventPublisher = getEventPublisher();
                 await eventPublisher.publishTaskUpdate({
                     taskId,
@@ -310,7 +330,7 @@ export class WorkerStateManager {
                 });
             } catch (error) {
                 correlatedLogger.warn({ error: (error as Error).message, taskId },
-                    'Failed to persist or publish metadata update');
+                    'Failed to publish durable history metadata update');
             }
         } else {
             logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');

@@ -67,10 +67,10 @@ export {
   getNotificationSystemCheckIntervalMs,
   getNotificationSystemStartupGraceMs
 } from './services/notificationSystemSampler.js';
-export type {
-  NotificationProjectionLease,
-  NotificationSystemSamplerOptions
-} from './services/notificationSystemSampler.js';
+export type { NotificationProjectionLease }
+  from './services/notificationLeaseRunner.js';
+export type { NotificationSystemSamplerOptions }
+  from './services/notificationSystemSampler.js';
 export {
   NotificationStalledDetector,
   DEFAULT_NOTIFICATION_STALLED_AFTER_MS,
@@ -81,7 +81,9 @@ export {
 export type { NotificationStalledDetectorOptions }
   from './services/notificationStalledDetector.js';
 export {
+  MAX_NOTIFICATION_TIMER_DELAY_MS,
   NotificationOperationTimeoutError,
+  isNotificationTimerDelay,
   settlesWithin,
   withNotificationDeadline
 } from './services/notificationSchedulerTiming.js';

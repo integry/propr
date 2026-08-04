@@ -350,7 +350,7 @@ test('createTaskState sets correct initial history entry', async () => {
     await stateManager.close();
 });
 
-test('createTaskState handles database error gracefully', async () => {
+test('createTaskState does not mutate Redis when durable persistence fails', async () => {
     mockRedisInstance.setex.mock.resetCalls();
     mockCorrelatedLogger.error.mock.resetCalls();
 
@@ -372,12 +372,11 @@ test('createTaskState handles database error gracefully', async () => {
         repoName: 'error-repo'
     };
 
-    // Should not throw - database errors are caught and logged
-    const result = await stateManager.createTaskState(taskId, issueRef);
-
-    // State should still be created in Redis
-    assert.strictEqual(result.taskId, taskId);
-    assert.strictEqual(result.state, TaskStates.PENDING);
+    await assert.rejects(
+        stateManager.createTaskState(taskId, issueRef),
+        /Database connection failed/
+    );
+    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 0);
 
     // Verify error was logged
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
@@ -998,7 +997,7 @@ test('updateTaskState stores historyMetadata in history entry', async () => {
     await stateManager.close();
 });
 
-test('updateTaskState handles database error gracefully', async () => {
+test('updateTaskState does not mutate Redis when durable history fails', async () => {
     const existingState: TaskStateData = {
         taskId: 'task-db-error-update',
         issueRef: { number: 140, repoOwner: 'error-owner', repoName: 'error-repo' },
@@ -1025,14 +1024,12 @@ test('updateTaskState handles database error gracefully', async () => {
         stateExpiry: TEST_STATE_EXPIRY
     });
 
-    // Should not throw - database errors are caught and logged
-    const result = await stateManager.updateTaskState('task-db-error-update', TaskStates.PROCESSING, {
-        reason: 'Processing started'
-    });
-
-    // State should still be updated in Redis
-    assert.strictEqual(result.state, TaskStates.PROCESSING);
-    assert.strictEqual(result.history.length, 2);
+    await assert.rejects(stateManager.updateTaskState(
+        'task-db-error-update',
+        TaskStates.PROCESSING,
+        { reason: 'Processing started' }
+    ), /Database connection failed/);
+    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 0);
 
     // Verify error was logged
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
@@ -2811,6 +2808,45 @@ test('historical metadata enrichment publishes the located history state', async
             mockPublishTaskUpdate.mock.calls[0]?.arguments[0].state,
             TaskStates.FAILED
         );
+    } finally {
+        mockDbTransaction = undefined;
+        await stateManager.close();
+    }
+});
+
+test('enrichment persistence failures leave Redis unchanged', async () => {
+    const transitionAt = '2026-08-03T10:00:00.000Z';
+    const state: TaskStateData = {
+        taskId: 'failed-enrichment-task',
+        issueRef: { number: 1734, repoOwner: 'integry', repoName: 'propr', type: 'issue' },
+        correlationId: 'failed-enrichment-correlation',
+        state: TaskStates.COMPLETED,
+        createdAt: transitionAt,
+        updatedAt: transitionAt,
+        attempts: 0,
+        history: [{ state: TaskStates.COMPLETED, timestamp: transitionAt, metadata: {} }]
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(state));
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbTransaction = async () => { throw new Error('enrichment database unavailable'); };
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY
+    });
+    try {
+        await assert.rejects(
+            stateManager.updateIssueRef(state.taskId, { pullRequestNumber: 1734 }),
+            /enrichment database unavailable/
+        );
+        await assert.rejects(
+            stateManager.updateHistoryMetadata(
+                state.taskId,
+                TaskStates.COMPLETED,
+                { prNumber: 1734 }
+            ),
+            /enrichment database unavailable/
+        );
+        assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 0);
     } finally {
         mockDbTransaction = undefined;
         await stateManager.close();

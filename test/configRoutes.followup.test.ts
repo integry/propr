@@ -2465,6 +2465,22 @@ describe('config route follow-up helpers', () => {
         });
     });
 
+    test('indexing jobs remain delayed until durable acceptance promotes them', async () => {
+        const queueDelays: number[] = [];
+        const promotions: string[] = [];
+        const result = await queueResummarizationForAllRepos({
+            deps: createQueueResummarizationDeps({
+                repos: [{ id: '1', name: 'acme/alpha', enabled: true }],
+                queueDelays,
+                promotions,
+            })
+        });
+
+        assert.strictEqual(result.queued, 1);
+        assert.deepStrictEqual(queueDelays, [configManager.INDEXING_JOB_ACCEPTANCE_DELAY_MS]);
+        assert.strictEqual(promotions.length, 1);
+    });
+
     test('concurrent resummarization requests share one atomic repository job key', async () => {
         const queueAdds: Array<{ repository: string; runId?: string; transitionAt?: string }> = [];
         let run = 0;
@@ -2974,6 +2990,8 @@ describe('config route follow-up helpers', () => {
         queueAdds?: Array<{ repository: string; runId?: string; transitionAt?: string }>;
         createRun?: () => { runId: string; transitionAt: string };
         queueAddError?: Error;
+        queueDelays?: number[];
+        promotions?: string[];
         statusMutations?: string[];
         publications?: string[];
         removeWinnerOnDuplicate?: boolean;
@@ -3023,8 +3041,13 @@ describe('config route follow-up helpers', () => {
                     repository: string;
                     runId?: string;
                     transitionAt?: string;
-                }, jobOptions: { jobId?: string; deduplication?: { id: string } }) => {
+                }, jobOptions: {
+                    jobId?: string;
+                    delay?: number;
+                    deduplication?: { id: string };
+                }) => {
                     if (options.queueAddError) throw options.queueAddError;
+                    if (jobOptions.delay !== undefined) options.queueDelays?.push(jobOptions.delay);
                     options.queueAdds?.push({
                         repository: data.repository,
                         runId: data.runId,
@@ -3042,7 +3065,10 @@ describe('config route follow-up helpers', () => {
                         return { id: existingJobId };
                     }
                     queuedByDeduplicationId.set(deduplicationId, requestedJobId);
-                    return { id: requestedJobId };
+                    return {
+                        id: requestedJobId,
+                        promote: async () => { options.promotions?.push(requestedJobId); }
+                    };
                 },
             } as never),
         };

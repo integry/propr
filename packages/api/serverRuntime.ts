@@ -5,6 +5,7 @@ import {
   AGENT_RUNTIME_BUILD_QUEUE_NAME,
   buildRedisRuntimeConfig,
   generateCorrelationId,
+  isNotificationTimerDelay,
   logger,
   withNotificationDeadline,
 } from '@propr/core';
@@ -106,8 +107,8 @@ export function createNotificationProjectionLease(
   release: () => Promise<void>;
   renewalIntervalMs: number;
 }> {
-  if (!Number.isSafeInteger(operationTimeoutMs) || operationTimeoutMs <= 0) {
-    throw new TypeError('notification Redis operation timeout must be a positive safe integer');
+  if (!isNotificationTimerDelay(operationTimeoutMs)) {
+    throw new TypeError('notification Redis operation timeout must be a schedulable positive integer');
   }
   const key = `notification:projection-lease:${name}`;
   const acquireScript = "return redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') and 1 or 0";

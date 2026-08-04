@@ -170,7 +170,11 @@ export class NotificationProjectionCheckpointStore {
     async deleteRetry(retry: NotificationProjectionRetry): Promise<void> {
         if (!await this.hasTable(RETRY_TABLE)) return;
         await this.database(RETRY_TABLE)
-            .where({ source: retry.source, transition_key: retry.transitionKey })
+            .where({
+                source: retry.source,
+                transition_key: retry.transitionKey,
+                payload_json: retry.payloadJson
+            })
             .delete();
     }
 

@@ -4,6 +4,7 @@ import {
   getIndexingQueue, generateCorrelationId, ensureRepoCloned, getRepoUrl, getAuthenticatedOctokit,
   updateRepositoryStatus, createIndexingRunIdentity, createIndexingQueueDeduplicationId,
   createIndexingQueueJobId, INDEXING_FAILED_JOB_RETENTION,
+  INDEXING_JOB_ACCEPTANCE_DELAY_MS,
   fetchLatestChanges, publishIndexingStatus, db, logger
 } from '@propr/core';
 import type { IndexingJobData, RepositoryStatusTransition } from '@propr/core';
@@ -178,6 +179,7 @@ async function queueResummarizationForRepo({
       jobId,
       deduplication: { id: deduplicationId },
       priority: 2,
+      delay: INDEXING_JOB_ACCEPTANCE_DELAY_MS,
       removeOnComplete: true,
       removeOnFail: INDEXING_FAILED_JOB_RETENTION
     }
@@ -193,12 +195,21 @@ async function queueResummarizationForRepo({
       startNewRun: true
     });
   } catch (error) {
-    if (typeof job.remove === 'function') await job.remove().catch(() => undefined);
+    if (typeof job.remove === 'function') {
+      await job.remove().catch((removeError) => {
+        logger.warn({
+          repository: repoFullName,
+          branch: effectiveBranch,
+          runId: requestedRun.runId,
+          error: removeError instanceof Error ? removeError.message : String(removeError)
+        }, 'Rejected indexing job remains queued behind the durable-acceptance fence');
+      });
+    }
     throw error;
   }
   if (!acceptedRun.applied) {
-    // The worker can start and terminally commit before Queue.add() returns to
-    // this producer. Never reopen or remove that already-finished run.
+    // A concurrent stop can tombstone the delayed run before producer
+    // acceptance. Leave any removal race behind the consumer-side fence.
     queuedRepoBranches?.add(repoBranchKey);
     return 'queued';
   }
@@ -209,6 +220,12 @@ async function queueResummarizationForRepo({
       logger.debug({ repository: repoFullName, runId: acceptedRun.runId, error },
         'Indexing job left the queue before its accepted identity could be enriched');
     }
+  }
+  if (typeof job.promote === 'function') {
+    await job.promote().catch((error) => {
+      logger.warn({ repository: repoFullName, runId: acceptedRun.runId, error },
+        'Durably accepted indexing job will wait for its fallback delay');
+    });
   }
   await publishIndexingRunBestEffort({
     publisher: deps.publishIndexingStatus, repository: repoFullName,
@@ -346,6 +363,7 @@ export async function queueIndexingJob(
       jobId,
       deduplication: { id: deduplicationId },
       priority: 1,
+      delay: INDEXING_JOB_ACCEPTANCE_DELAY_MS,
       removeOnComplete: true,
       removeOnFail: INDEXING_FAILED_JOB_RETENTION
     }
@@ -360,7 +378,14 @@ export async function queueIndexingJob(
       startNewRun: true
     });
   } catch (error) {
-    await job.remove().catch(() => undefined);
+    await job.remove().catch((removeError) => {
+      logger.warn({
+        repository,
+        branch: effectiveBranch,
+        runId: requestedRun.runId,
+        error: removeError instanceof Error ? removeError.message : String(removeError)
+      }, 'Rejected indexing job remains queued behind the durable-acceptance fence');
+    });
     throw error;
   }
   if (!acceptedRun.applied) {
@@ -376,6 +401,12 @@ export async function queueIndexingJob(
   } catch (error) {
     logger.debug({ repository, runId: acceptedRun.runId, error },
       'Indexing job left the queue before its accepted identity could be enriched');
+  }
+  if (typeof job.promote === 'function') {
+    await job.promote().catch((error) => {
+      logger.warn({ repository, runId: acceptedRun.runId, error },
+        'Durably accepted indexing job will wait for its fallback delay');
+    });
   }
   await publishIndexingRunBestEffort({
     publisher: publishIndexingStatus, repository,

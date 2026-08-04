@@ -254,6 +254,42 @@ test('authentication lifecycle hooks stay local to their application middleware'
   assert.equal(req.destroyCalls, 1);
 });
 
+test('a valid existing session reactivates notification entitlements', async () => {
+  configureDemoMode(false);
+  const activations: string[] = [];
+  const middleware = createEnsureAuthenticated({
+    activateNotificationEntitlements: async userId => { activations.push(userId); },
+  });
+  const req = createRequest(createUser({ tokenExpiresAt: undefined }));
+  const { response } = createJsonResponse();
+  let nextCalls = 0;
+
+  await middleware(req, response, (() => { nextCalls++; }) as NextFunction);
+
+  assert.deepEqual(activations, ['123']);
+  assert.equal(nextCalls, 1);
+});
+
+test('an activation persistence failure fails authenticated traffic closed', async () => {
+  configureDemoMode(false);
+  const middleware = createEnsureAuthenticated({
+    activateNotificationEntitlements: async () => { throw new Error('database unavailable'); },
+  });
+  const req = createRequest(createUser({ tokenExpiresAt: undefined }));
+  const { response, status, body } = createJsonResponse();
+  let nextCalls = 0;
+
+  await middleware(req, response, (() => { nextCalls++; }) as NextFunction);
+
+  assert.equal(nextCalls, 0);
+  assert.equal(status(), 503);
+  assert.deepEqual(body(), {
+    error: 'Authorization activation unavailable',
+    code: 'AUTH_ACTIVATION_UNAVAILABLE',
+    message: 'Authorization activation could not be persisted. Please retry.',
+  });
+});
+
 test('failed entitlement invalidation prevents session cleanup from being acknowledged', async () => {
   configureDemoMode(false);
   const middleware = createEnsureAuthenticated({

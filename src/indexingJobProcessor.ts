@@ -1,8 +1,7 @@
 import type { Job } from 'bullmq';
 import {
     clearIndexingRuntimeStateBestEffort,
-    createIndexingRunIdentity,
-    getActiveRepositoryIndexingRuns,
+    createLegacyIndexingRunIdForJob,
     indexRepo,
     logger,
     updateRepositoryStatus,
@@ -20,16 +19,14 @@ export interface IndexingResult extends JobResult {
 interface IndexingJobProcessorDeps {
     indexRepo: typeof indexRepo;
     updateRepositoryStatus: typeof updateRepositoryStatus;
-    createIndexingRunIdentity: typeof createIndexingRunIdentity;
-    getActiveRepositoryIndexingRuns: typeof getActiveRepositoryIndexingRuns;
+    createLegacyIndexingRunIdForJob: typeof createLegacyIndexingRunIdForJob;
     clearIndexingRuntimeStateBestEffort: typeof clearIndexingRuntimeStateBestEffort;
 }
 
 const defaultDeps: IndexingJobProcessorDeps = {
     indexRepo,
     updateRepositoryStatus,
-    createIndexingRunIdentity,
-    getActiveRepositoryIndexingRuns,
+    createLegacyIndexingRunIdForJob,
     clearIndexingRuntimeStateBestEffort,
 };
 
@@ -62,39 +59,52 @@ async function processWithDeps(
         'Starting indexing job...');
 
     try {
-        let indexingRun = job.data.runId && job.data.transitionAt
-            ? { runId: job.data.runId, transitionAt: job.data.transitionAt }
-            : undefined;
+        const producerIdentity = typeof job.data.runId === 'string'
+            && job.data.runId.length > 0;
+        const stableJobId = job.id === undefined ? undefined : String(job.id);
+        let indexingRun: IndexingRunIdentity | undefined = producerIdentity
+            ? {
+                runId: job.data.runId!,
+                transitionAt: job.data.transitionAt
+                    ?? new Date(job.timestamp ?? 0).toISOString(),
+            }
+            : stableJobId === undefined ? undefined : {
+                runId: deps.createLegacyIndexingRunIdForJob(
+                    repository,
+                    baseBranch,
+                    stableJobId
+                ),
+                transitionAt: new Date(job.timestamp ?? 0).toISOString(),
+            };
         if (!indexingRun) {
-            const [ownedRun] = await deps.getActiveRepositoryIndexingRuns(repository, baseBranch);
-            const requestedRun = ownedRun ?? deps.createIndexingRunIdentity();
+            throw new Error('Identity-less indexing job has no stable BullMQ job ID');
+        }
+        if (!producerIdentity) {
             const transition = await deps.updateRepositoryStatus(
                 repository,
                 'indexing',
                 baseBranch,
-                ownedRun ? requestedRun : { ...requestedRun, startNewRun: true }
+                { ...indexingRun, startNewRunIfIdle: true }
             );
             if (!transition.applied) {
                 await deps.clearIndexingRuntimeStateBestEffort(
-                    repository, baseBranch, requestedRun.runId
+                    repository, baseBranch, indexingRun.runId
                 );
                 return { status: 'skipped', success: true };
             }
             indexingRun = { runId: transition.runId, transitionAt: transition.transitionAt };
             await persistAcceptedRun(job, indexingRun);
         } else {
-            let transition = await deps.updateRepositoryStatus(
-                repository, 'indexing', baseBranch, indexingRun
+            const transition = await deps.updateRepositoryStatus(
+                repository,
+                'indexing',
+                baseBranch,
+                { ...indexingRun, requireExistingRun: true }
             );
-            // Legacy jobs acquired ownership on worker startup. Newly accepted
-            // jobs must never reopen a run cancelled after enqueue.
-            if (!transition.applied && job.data.durablyAccepted !== true) {
-                transition = await deps.updateRepositoryStatus(repository, 'indexing', baseBranch, {
-                    ...indexingRun,
-                    startNewRun: true
-                });
-            }
             if (!transition.applied) {
+                if (job.data.durablyAccepted !== true) {
+                    throw new Error('Indexing job is waiting for durable producer acceptance');
+                }
                 await deps.clearIndexingRuntimeStateBestEffort(
                     repository, baseBranch, indexingRun.runId
                 );

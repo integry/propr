@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { db } from '../../db/connection.js';
 
 // Inline type definitions to avoid circular dependency with summaryMiner.ts
@@ -17,8 +17,6 @@ interface DirectorySummaryResult {
   last_updated_at: Date;
 }
 
-export const INDEXING_FAILED_JOB_RETENTION = { age: 7 * 24 * 60 * 60, count: 1_000 } as const;
-
 export interface IndexingRunIdentity {
   runId: string;
   transitionAt: string;
@@ -26,6 +24,10 @@ export interface IndexingRunIdentity {
 
 export interface UpdateRepositoryStatusOptions extends Partial<IndexingRunIdentity> {
   startNewRun?: boolean;
+  /** Start a legacy queue run only when no other run currently owns the branch. */
+  startNewRunIfIdle?: boolean;
+  /** Verify an existing owner without allowing a queue consumer to create it. */
+  requireExistingRun?: boolean;
   commitInfo?: { hash?: string; message?: string; iconPath?: string | null };
   /** Optional database boundary for atomic callers and isolated tests. */
   database?: typeof db;
@@ -38,28 +40,6 @@ export interface RepositoryStatusTransition extends IndexingRunIdentity {
 export interface ActiveRepositoryIndexingRun extends IndexingRunIdentity {
   fullName: string;
   branch: string;
-}
-
-export function createIndexingRunIdentity(now: Date = new Date()): IndexingRunIdentity {
-  return { runId: randomUUID(), transitionAt: now.toISOString() };
-}
-
-/** BullMQ's atomic repository/branch deduplication key for live indexing work. */
-export function createIndexingQueueDeduplicationId(fullName: string, branch: string = 'HEAD'): string {
-  const digest = createHash('sha256')
-    .update(`${fullName.trim().toLowerCase()}\0${branch}`)
-    .digest('hex');
-  return `index-repository-${digest}`;
-}
-
-/** A run-scoped job ID lets Queue.add() report whether deduplication accepted this run. */
-export function createIndexingQueueJobId(
-  fullName: string,
-  branch: string = 'HEAD',
-  runId?: string
-): string {
-  const deduplicationId = createIndexingQueueDeduplicationId(fullName, branch);
-  return runId ? `${deduplicationId}-${runId}` : deduplicationId;
 }
 
 /**
@@ -89,6 +69,7 @@ export async function updateRepositoryStatus(
     const now = new Date().toISOString();
     const requestedRunId = options.runId;
     const replacingRun = status === 'indexing' && options.startNewRun === true;
+    const startingLegacyRun = status === 'indexing' && options.startNewRunIfIdle === true;
     if (requestedRunId) {
       const alreadyTerminal = await transaction('repository_indexing_transitions')
         .whereRaw('lower(full_name) = ?', [fullName.trim().toLowerCase()])
@@ -121,6 +102,24 @@ export async function updateRepositoryStatus(
           applied: sameTerminal
         };
       }
+    }
+    if (requestedRunId && status === 'indexing' && options.requireExistingRun === true
+        && (!existing || existing.indexing_status !== 'indexing'
+          || existing.indexing_run_id !== requestedRunId)) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? existing?.indexing_transition_at ?? now,
+        applied: false
+      };
+    }
+    if (requestedRunId && startingLegacyRun
+        && existing?.indexing_status === 'indexing'
+        && existing.indexing_run_id !== requestedRunId) {
+      return {
+        runId: requestedRunId,
+        transitionAt: options.transitionAt ?? now,
+        applied: false
+      };
     }
     if (status !== 'indexing' && existing?.indexing_status
       && existing.indexing_status !== 'indexing'

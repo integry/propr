@@ -4,6 +4,7 @@ import { Octokit } from '@octokit/core';
 import { paginateRest } from '@octokit/plugin-paginate-rest';
 import {
   getNotificationRepositoryEntitlementTtlMs,
+  isNotificationTimerDelay,
   logger,
   replaceNotificationRepositoryEntitlements,
   type NotificationRepositoryEntitlementFence,
@@ -36,8 +37,8 @@ async function withEntitlementRefreshDeadline<T>(
   timeoutMs: number,
   externalSignal?: AbortSignal
 ): Promise<T> {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new TypeError('Repository entitlement refresh timeout must be a positive safe integer');
+  if (!isNotificationTimerDelay(timeoutMs)) {
+    throw new TypeError('Repository entitlement refresh timeout must be a schedulable positive integer');
   }
   const controller = new AbortController();
   let timeout: NodeJS.Timeout | undefined;

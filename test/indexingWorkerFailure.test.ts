@@ -33,7 +33,14 @@ function failedJob(attemptsMade: number, attempts = 3) {
 
 describe('indexing worker failure finalization', () => {
     test('recovers a legacy run identity on a reconstructed BullMQ attempt', async () => {
-        const firstJob: { data: IndexingJobData; updateData: () => Promise<never> } = {
+        const firstJob: {
+            id: string;
+            timestamp: number;
+            data: IndexingJobData;
+            updateData: () => Promise<never>;
+        } = {
+            id: 'legacy-job-42',
+            timestamp: Date.parse('2026-08-03T10:00:00.000Z'),
             data: {
                 repository: 'acme/api',
                 repoPath: '/tmp/acme-api',
@@ -42,7 +49,14 @@ describe('indexing worker failure finalization', () => {
             },
             updateData: async () => { throw new Error('Redis update failed'); },
         };
-        const secondJob: { data: IndexingJobData; updateData: (data: IndexingJobData) => Promise<void> } = {
+        const secondJob: {
+            id: string;
+            timestamp: number;
+            data: IndexingJobData;
+            updateData: (data: IndexingJobData) => Promise<void>;
+        } = {
+            id: firstJob.id,
+            timestamp: firstJob.timestamp,
             data: { ...firstJob.data },
             updateData: async (data) => { secondJob.data = data; },
         };
@@ -50,16 +64,10 @@ describe('indexing worker failure finalization', () => {
         let identitiesCreated = 0;
         let indexingAttempts = 0;
         const processor = createIndexingJobProcessor({
-            createIndexingRunIdentity: () => {
+            createLegacyIndexingRunIdForJob: () => {
                 identitiesCreated++;
-                return {
-                    runId: 'accepted-legacy-run',
-                    transitionAt: '2026-08-03T10:00:00.000Z',
-                };
+                return 'accepted-legacy-run';
             },
-            getActiveRepositoryIndexingRuns: async () => durableRun ? [{
-                fullName: 'acme/api', branch: 'main', ...durableRun,
-            }] : [],
             updateRepositoryStatus: async (_repository, _status, _branch, options) => {
                 durableRun ??= {
                     runId: options.runId!,
@@ -78,7 +86,7 @@ describe('indexing worker failure finalization', () => {
         assert.equal((await processor(secondJob as never)).status, 'completed');
         assert.equal(secondJob.data.runId, 'accepted-legacy-run');
         assert.equal(secondJob.data.durablyAccepted, true);
-        assert.equal(identitiesCreated, 1);
+        assert.equal(identitiesCreated, 2);
         assert.equal(indexingAttempts, 1);
     });
 
@@ -93,6 +101,35 @@ describe('indexing worker failure finalization', () => {
             },
         });
         assert.equal(statusWrites, 0);
+    });
+
+    test('does not execute a producer job before its durable acceptance exists', async () => {
+        let indexingAttempts = 0;
+        const processor = createIndexingJobProcessor({
+            updateRepositoryStatus: async () => ({
+                runId: 'rejected-api-run',
+                transitionAt: '2026-08-03T10:00:00.000Z',
+                applied: false,
+            }),
+            indexRepo: async () => { indexingAttempts++; return 'indexed'; },
+            clearIndexingRuntimeStateBestEffort: clearRuntimeState,
+        });
+        const job = {
+            id: 'modern-job',
+            timestamp: Date.parse('2026-08-03T10:00:00.000Z'),
+            data: {
+                repository: 'acme/api',
+                repoPath: '/tmp/acme-api',
+                correlationId: 'rejected-api-request',
+                baseBranch: 'main',
+                runId: 'rejected-api-run',
+                transitionAt: '2026-08-03T10:00:00.000Z',
+            },
+            updateData: async () => undefined,
+        };
+
+        await assert.rejects(processor(job as never), /waiting for durable producer acceptance/);
+        assert.equal(indexingAttempts, 0);
     });
 
     test('does not publish failure when cancellation already won the terminal CAS', async () => {
@@ -113,25 +150,27 @@ describe('indexing worker failure finalization', () => {
     test('does not let an identity-less retained failure claim a newer active run', async () => {
         let statusWrites = 0;
         const job = {
+            id: 'stale-failed-job',
             data: { repository: 'acme/api', baseBranch: 'main' } as IndexingJobData,
             attemptsMade: 3,
             opts: { attempts: 3 },
-            finishedOn: Date.parse('2026-08-03T10:00:00.000Z'),
         };
+        let failedRunId: string | undefined;
         assert.equal(await handleIndexingJobFailure(job, new Error('old failure'), {
             log: silentLogger,
-            getActiveRepositoryIndexingRuns: async () => [{
-                fullName: 'acme/api',
-                branch: 'main',
-                runId: 'replacement-run',
-                transitionAt: '2026-08-03T10:00:01.000Z',
-            }],
-            updateRepositoryStatus: async () => {
+            createLegacyIndexingRunIdForJob: () => 'stable-stale-job-run',
+            updateRepositoryStatus: async (_repository, _status, _branch, options) => {
                 statusWrites++;
-                return {} as RepositoryStatusTransition;
+                failedRunId = options.runId;
+                return {
+                    runId: options.runId!,
+                    transitionAt: '2026-08-03T10:00:00.000Z',
+                    applied: false,
+                };
             },
         }), false);
-        assert.equal(statusWrites, 0);
+        assert.equal(statusWrites, 1);
+        assert.equal(failedRunId, 'stable-stale-job-run');
     });
 
     test('publishes the durable failure after the final attempt', async () => {

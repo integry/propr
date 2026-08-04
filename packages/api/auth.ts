@@ -20,6 +20,27 @@ export interface AuthLifecycleHooks {
     activateNotificationEntitlements?: (userId: string) => Promise<void>;
 }
 
+async function activateAuthenticatedEntitlements(
+    req: Request,
+    res: Response,
+    lifecycleHooks: AuthLifecycleHooks
+): Promise<boolean> {
+    const userId = req.user?.id;
+    if (!userId || !lifecycleHooks.activateNotificationEntitlements) return true;
+    try {
+        await lifecycleHooks.activateNotificationEntitlements(userId);
+        return true;
+    } catch (error) {
+        console.error('Failed to activate notification entitlements for authenticated request:', error);
+        res.status(503).json({
+            error: 'Authorization activation unavailable',
+            code: 'AUTH_ACTIVATION_UNAVAILABLE',
+            message: 'Authorization activation could not be persisted. Please retry.'
+        });
+        return false;
+    }
+}
+
 async function invalidateRequestEntitlements(
     req: Request,
     lifecycleHooks: AuthLifecycleHooks
@@ -281,7 +302,7 @@ export function createEnsureAuthenticated(
 
         return req.isAuthenticated()
             ? authenticateSessionRequest(req, res, next, lifecycleHooks)
-            : authenticateBearerRequest(req, res, next);
+            : authenticateBearerRequest(req, res, next, lifecycleHooks);
     };
 }
 
@@ -314,6 +335,7 @@ async function authenticateSessionRequest(
     refreshGitHubTokenIfNeeded(req).catch((error) => {
         console.error('Background token refresh failed:', error);
     });
+    if (!await activateAuthenticatedEntitlements(req, res, lifecycleHooks)) return;
     next();
 }
 
@@ -336,13 +358,15 @@ async function authenticateExpiredSession(
         res.status(503).json({ error: 'GitHub token refresh unavailable', code: 'GITHUB_TOKEN_REFRESH_UNAVAILABLE', message: 'GitHub authentication could not be refreshed right now. Please retry shortly.' });
         return;
     }
+    if (!await activateAuthenticatedEntitlements(req, res, lifecycleHooks)) return;
     next();
 }
 
 async function authenticateBearerRequest(
     req: Request,
     res: Response,
-    next: NextFunction
+    next: NextFunction,
+    lifecycleHooks: AuthLifecycleHooks
 ): Promise<void> {
     const authHeader = req.headers.authorization;
     if (process.env.ENABLE_BEARER_AUTH === 'false' || !authHeader?.startsWith('Bearer ')) {
@@ -360,6 +384,7 @@ async function authenticateBearerRequest(
             return;
         }
         (req as Request & { user: GitHubUser }).user = user;
+        if (!await activateAuthenticatedEntitlements(req, res, lifecycleHooks)) return;
         next();
     } catch {
         res.status(401).json({ error: 'Unauthorized: token validation failed' });

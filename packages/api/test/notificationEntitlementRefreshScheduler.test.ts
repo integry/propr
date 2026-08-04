@@ -187,6 +187,34 @@ test('ordinary traffic preserves an active repository entitlement refresh', asyn
   }
 });
 
+test('ordinary traffic does not reschedule or rerun a fresh entitlement refresh', async () => {
+  let refreshes = 0;
+  let registrations = 0;
+  let markInitial!: () => void;
+  const initial = new Promise<void>(resolve => { markInitial = resolve; });
+  const timers = createManualTimers();
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    timerScheduler: timers.scheduler,
+    ensureRegistration: async () => { registrations++; return true; },
+    refresh: async () => { refreshes++; markInitial(); return true; },
+  });
+  const request = () => middleware({
+    user: { id: 'fresh-traffic-user', accessToken: 'token' }, path: '/config/repos',
+  } as never, {} as never, () => undefined);
+  try {
+    request();
+    await waitForSignal(initial, 'the initial entitlement refresh');
+    await new Promise(resolve => setImmediate(resolve));
+    for (let index = 0; index < 100; index++) request();
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(registrations, 1);
+    assert.equal(refreshes, 1);
+  } finally {
+    middleware.close();
+  }
+});
+
 test('closing entitlement middleware aborts retained OAuth work', async () => {
   let signal: AbortSignal | undefined;
   let markStarted!: () => void;
