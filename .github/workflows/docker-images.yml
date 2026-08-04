@@ -166,17 +166,19 @@ jobs:
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
-      DOCKER_CONFIG: ${{ runner.temp }}/propr-docker-config-${{ github.run_id }}-${{ github.run_attempt }}-images
       PUSH_LATEST: 'false'
 
     steps:
+      - name: Prepare isolated Docker credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-images"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-
-      - name: Prepare isolated Docker credentials
-        run: install -d -m 700 "$DOCKER_CONFIG"
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -394,14 +396,16 @@ jobs:
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
-      DOCKER_CONFIG: ${{ runner.temp }}/propr-docker-config-${{ github.run_id }}-${{ github.run_attempt }}-latest
 
     steps:
+      - name: Prepare isolated Docker credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-latest"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Prepare isolated Docker credentials
-        run: install -d -m 700 "$DOCKER_CONFIG"
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
