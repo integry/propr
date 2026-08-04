@@ -8,6 +8,7 @@ const mockRedisInstance = {
     on: mock.fn(),
     quit: mock.fn(async () => {}),
     keys: mock.fn(async () => []),
+    scan: mock.fn(async () => ['0', []] as [string, string[]]),
     del: mock.fn(async () => 1)
 };
 
@@ -86,6 +87,32 @@ import type { IssueRef, TaskStateData } from '../packages/core/src/utils/workerS
 // Test configuration
 const TEST_KEY_PREFIX = 'test:worker:state:';
 const TEST_STATE_EXPIRY = 3600; // 1 hour for testing
+
+test('getNonTerminalTasks scans Redis without including terminal states', async () => {
+    const pending = {
+        taskId: 'pending-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'pending-correlation',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const completed = { ...pending, taskId: 'completed-task', state: TaskStates.COMPLETED };
+    mockRedisInstance.scan.mock.mockImplementation(async () => [
+        '0',
+        [`${TEST_KEY_PREFIX}pending-task`, `${TEST_KEY_PREFIX}completed-task`],
+    ]);
+    mockRedisInstance.get.mock.mockImplementation(async key => (
+        key.endsWith('pending-task') ? JSON.stringify(pending) : JSON.stringify(completed)
+    ));
+
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+    const result = await stateManager.getNonTerminalTasks();
+
+    assert.deepStrictEqual(result.map(task => task.taskId), ['pending-task']);
+});
 
 test('createTaskState creates state with correct structure', async () => {
     // Reset mocks

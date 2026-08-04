@@ -24,6 +24,7 @@ import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
+import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -317,6 +318,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         },
     });
 
+    const taskStateRecovery = await startWorkerTaskStateRecovery(worker);
+
     const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
         AGENT_RUNTIME_BUILD_QUEUE_NAME,
         async (job) => {
@@ -352,6 +355,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await worker.close();
+        await taskStateRecovery.close();
         await runtimeBuildWorker.close();
     };
 

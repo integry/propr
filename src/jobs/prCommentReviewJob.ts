@@ -29,6 +29,7 @@ import {
 import type { Redis } from 'ioredis';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
+import { finalizePRCommentTaskResult } from './prCommentTaskFinalizer.js';
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -320,7 +321,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
     if (validation.skip) {
         correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping review processing');
-        return { status: 'skipped', reason: validation.reason, pullRequestNumber };
+        const result = { status: 'skipped', reason: validation.reason, pullRequestNumber };
+        await finalizePRCommentTaskResult(taskId, stateManager, result);
+        return result;
     }
 
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;

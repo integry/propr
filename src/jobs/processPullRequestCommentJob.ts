@@ -47,6 +47,7 @@ import {
     releasePRProcessingLock,
     startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
+import { finalizePRCommentTaskResult } from './prCommentTaskFinalizer.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -221,7 +222,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
     if (validation.skip) {
         correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping PR comment processing');
-        return { status: 'skipped', reason: validation.reason, pullRequestNumber };
+        const result = { status: 'skipped', reason: validation.reason, pullRequestNumber };
+        await finalizePRCommentTaskResult(taskId, stateManager, result);
+        return result;
     }
 
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;

@@ -1,8 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 
-export const PR_PROCESSING_LOCK_TTL_SECONDS = 60 * 60;
 export const PR_PROCESSING_LOCK_RENEW_INTERVAL_MS = 30 * 1000;
+export const DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS = 2 * 60;
+
+function readLockTtlSeconds(): number {
+    const configured = Number(process.env.PR_PROCESSING_LOCK_TTL_SECONDS);
+    const minimumSafeTtl = Math.ceil((PR_PROCESSING_LOCK_RENEW_INTERVAL_MS * 2) / 1000);
+    if (!Number.isFinite(configured) || configured < minimumSafeTtl) {
+        return DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS;
+    }
+    return Math.floor(configured);
+}
+
+/**
+ * A short renewable lease. If a worker disappears, another attempt can make
+ * progress within minutes instead of waiting for the previous one-hour TTL.
+ */
+export const PR_PROCESSING_LOCK_TTL_SECONDS = readLockTtlSeconds();
 
 export type PRProcessingLockRedisClient = Pick<Redis, 'set' | 'eval'>;
 

@@ -341,6 +341,40 @@ export class WorkerStateManager {
     }
 
     /**
+     * Gets all tasks that have not reached a terminal state. Used by the worker
+     * reconciler to repair state after an unclean restart.
+     */
+    async getNonTerminalTasks(): Promise<TaskStateData[]> {
+        const pattern = `${this.keyPrefix}*`;
+        const keys: string[] = [];
+        let cursor = '0';
+        do {
+            const [nextCursor, batch] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+            cursor = nextCursor;
+            keys.push(...batch);
+        } while (cursor !== '0');
+        const nonTerminalTasks: TaskStateData[] = [];
+        const nonTerminalStates: TaskState[] = [
+            TaskStates.PENDING,
+            TaskStates.PROCESSING,
+            TaskStates.CLAUDE_EXECUTION,
+            TaskStates.POST_PROCESSING,
+        ];
+
+        for (const key of keys) {
+            try {
+                const stateJson = await this.redis.get(key);
+                if (!stateJson) continue;
+                const state: TaskStateData = JSON.parse(stateJson);
+                if (nonTerminalStates.includes(state.state)) nonTerminalTasks.push(state);
+            } catch (error) {
+                logger.warn({ key, error: (error as Error).message }, 'Failed to parse task state during reconciliation scan');
+            }
+        }
+        return nonTerminalTasks;
+    }
+
+    /**
      * Gets all tasks in processing states (for recovery)
      * @returns Array of processing tasks
      */
