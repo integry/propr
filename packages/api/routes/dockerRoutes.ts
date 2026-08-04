@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { execSync } from 'child_process';
 import { stopDockerContainer, getStateManager, getIssueQueue } from '@propr/core';
@@ -404,7 +405,7 @@ async function stopRunningTaskContainer(taskId: string, state: TaskState, option
 export function createDockerRoutes(deps: DockerRoutesDeps) {
   const { redisClient } = deps;
 
-  async function getDockerInfo(req: Request, res: Response): Promise<void> {
+  async function getDockerInfo(req: FlatRequest, res: Response): Promise<void> {
     try {
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(req.params.taskId);
@@ -432,7 +433,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
     }
   }
 
-  async function getDockerLogs(req: Request, res: Response): Promise<void> {
+  async function getDockerLogs(req: FlatRequest, res: Response): Promise<void> {
     try {
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(req.params.taskId);
@@ -478,7 +479,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
     }
   }
 
-  async function stopTask(req: Request, res: Response): Promise<void> {
+  async function stopTask(req: FlatRequest, res: Response): Promise<void> {
     try {
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(req.params.taskId);

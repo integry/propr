@@ -15,7 +15,9 @@ import {
 } from './permissionGuards.js';
 
 export type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
-export type RouteEntry = [RouteMethod, string, ...RequestHandler[]];
+// A route matrix contains handlers with different inferred parameter shapes.
+// `never` erases those shapes while retaining their request/response contract.
+export type RouteEntry = [RouteMethod, string, ...RequestHandler<never>[]];
 
 interface ManagementRouteDeps {
   adminRoutes: ReturnType<typeof createAdminRoutes>;
