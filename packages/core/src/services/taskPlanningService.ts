@@ -40,6 +40,17 @@ const DEFAULT_GENERATION_MODEL = 'opus';
 const MAX_ATTACHMENT_PERCENT = 0.25;
 const BUDGET_SAFETY_FACTOR = 0.85;
 
+function updateGenerationTrace(
+  draftId: string,
+  step: string,
+  status: Parameters<typeof updateTrace>[2],
+  options: { runId?: string; data?: Record<string, unknown> },
+) {
+  return options.runId
+    ? updateTraceForRun(draftId, step, status, { expectedRunId: options.runId, data: options.data })
+    : updateTrace(draftId, step, status, options.data);
+}
+
 interface GenerationCompletionOptions {
   database: Knex;
   draftId: string;
@@ -107,10 +118,13 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const contextStartedAt = new Date().toISOString();
 
   // Update trace with in_progress status and estimated duration
-  await updateTrace(draftId, 'context', 'in_progress', {
-    estimatedDuration: estimatedContextDuration,
-    startedAt: contextStartedAt,
-    fileCount: relevantFilePaths.length
+  await updateGenerationTrace(draftId, 'context', 'in_progress', {
+    runId,
+    data: {
+      estimatedDuration: estimatedContextDuration,
+      startedAt: contextStartedAt,
+      fileCount: relevantFilePaths.length
+    }
   });
   correlatedLogger.info({ fileCount: relevantFilePaths.length, compress: config.compress, estimatedDurationMs: estimatedContextDuration }, 'Generating context');
 
@@ -131,13 +145,16 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   // Generate context with retry logic
   const { fullContext, contextResult } = await generateContextWithRetry({
     worktreePath, config, relevantFilePaths, candidateSummaries, budgets, base64Images,
-    draft, draftId, githubToken, correlationId, generationModel, contextModel, correlatedLogger
+    draft, draftId, runId, githubToken, correlationId, generationModel, contextModel, correlatedLogger
   });
 
-  await updateTrace(draftId, 'context', 'completed', { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens });
+  await updateGenerationTrace(draftId, 'context', 'completed', {
+    runId,
+    data: { includedFiles: contextResult.includedFiles, tokenCount: contextResult.totalTokens }
+  });
 
   const { plan, enforcementMetadata } = await callLLMForPlan({
-    draftId, fullContext: fullContext!, worktreePath, githubToken, repository: draft.repository,
+    draftId, runId, fullContext: fullContext!, worktreePath, githubToken, repository: draft.repository,
     correlationId, tokenLimit: config.tokenLimit, model: generationModel, granularity: config.granularity
   });
 
@@ -147,16 +164,17 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   // Add trace step for granularity enforcement if tasks were merged
   if (enforcementMetadata.enforced) {
-    await updateTrace(draftId, 'granularity_enforcement', 'completed', {
-      originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount,
-      granularity: enforcementMetadata.granularity, message: enforcementMetadata.message
+    await updateGenerationTrace(draftId, 'granularity_enforcement', 'completed', {
+      runId,
+      data: {
+        originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount,
+        granularity: enforcementMetadata.granularity, message: enforcementMetadata.message
+      }
     });
     correlatedLogger.info({ originalTaskCount: enforcementMetadata.originalTaskCount, finalTaskCount: enforcementMetadata.finalTaskCount }, 'Granularity enforcement applied - added trace step');
   }
 
-  const finalTrace = runId
-    ? await updateTraceForRun(draftId, 'llm', 'completed', runId)
-    : await updateTrace(draftId, 'llm', 'completed');
+  const finalTrace = await updateGenerationTrace(draftId, 'llm', 'completed', { runId });
 
   const updatedContextConfig = { ...parsedContextConfig, granularityEnforcement: enforcementMetadata };
 

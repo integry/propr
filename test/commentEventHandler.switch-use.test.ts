@@ -707,7 +707,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.requestedModels, undefined);
     });
 
-    test('/use job does not include requestedModels', async () => {
+    test('/use job preserves its explicit model as requestedModels', async () => {
         const event = createPRCommentEvent('/use sonnet\nDo something');
         const config = createTestConfig();
 
@@ -715,7 +715,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.requestedModels, undefined);
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-sonnet-5']);
     });
 
     test('/review job includes requestedModels from command args', async () => {
@@ -1020,5 +1020,44 @@ describe('applyPendingCommentCommandContext', () => {
         assert.strictEqual(jobData.commandMode, 'fix');
         assert.strictEqual(jobData.commandInstructions, 'Fix the auth bug');
         assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+    });
+
+    test('promotes a /use override when a later model-less /review becomes active', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-review',
+            commandMode: 'default' as const,
+            llm: 'claude-sonnet-4-6',
+            requestedModels: undefined as string[] | undefined,
+        };
+        const commentsToProcess = [
+            {
+                id: 102,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                requestedModels: ['claude-opus-4-6'],
+                commandInstructions: '',
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 103,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+                commandInstructions: '',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
     });
 });

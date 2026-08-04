@@ -67,6 +67,7 @@ await mock.module('@propr/core', {
 
 // Import AFTER mocking
 const { resolveReviewAssignments } = await import('../src/jobs/prCommentReviewJob.ts');
+const { applyPendingCommentCommandContext } = await import('../src/jobs/prPendingComments.ts');
 
 test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
 
@@ -140,6 +141,48 @@ test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
         assert.strictEqual(assignments.length, 1);
         assert.strictEqual(assignments[0].model, 'claude-opus-4-6');
         assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 1);
+    });
+
+    await t.test('carries a batched /use selection through a model-less /review assignment', async () => {
+        mockPrReviewModel = 'antigravity-gemini-2.5-pro';
+        mockLoadPrReviewModel.mock.resetCalls();
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'owner',
+            repoName: 'repo',
+            correlationId: 'review-use-override',
+            commandMode: 'default' as const,
+            llm: 'claude-sonnet-4-6',
+            requestedModels: undefined as string[] | undefined,
+        };
+        const comments = [
+            {
+                id: 1,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                requestedModels: ['claude-opus-4-6'],
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 2,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, comments, mockLogger as any);
+        const assignments = await resolveReviewAssignments(jobData.requestedModels, jobData.llm, mockLogger as any);
+
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
+        assert.strictEqual(assignments.length, 1);
+        assert.strictEqual(assignments[0].agentAlias, 'claude');
+        assert.strictEqual(assignments[0].model, 'claude-opus-4-6');
+        assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 0);
     });
 });
 

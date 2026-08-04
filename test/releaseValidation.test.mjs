@@ -63,13 +63,25 @@ describe("release validation", () => {
     assert.ok(errors.some((error) => error.includes("CHANGELOG.md")));
   });
 
-  it("allows unreleased branch validation without a dated changelog section", () => {
+  it("allows ordinary branch validation without a dated changelog section", () => {
     const input = validInput();
     input.tag = "";
     input.expectedVersion = "";
     input.changelog = "# Changelog\n\n## [Unreleased]\n";
 
     assert.deepEqual(validateRelease(input), []);
+  });
+
+  it("requires the current version changelog section in release-candidate mode", () => {
+    const input = validInput();
+    input.tag = "";
+    input.expectedVersion = "";
+    input.releaseCandidate = true;
+    input.changelog = "# Changelog\n\n## [Unreleased]\n";
+
+    assert.deepEqual(validateRelease(input), [
+      "CHANGELOG.md needs a dated ## [1.2.3] release section before release validation",
+    ]);
   });
 
   it("rejects drift in every internal workspace dependency range", () => {

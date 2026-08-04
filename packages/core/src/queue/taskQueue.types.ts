@@ -57,7 +57,7 @@ export interface CommentJobData {
     commandMeta?: CommandMeta;
     /** Flattened command mode for queue serialization; defaults to 'default' when absent */
     commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
-    /** Requested model labels for /review commands */
+    /** Explicit model selections from /review or /use commands */
     requestedModels?: string[];
     /** Extra instructions from the slash command body */
     commandInstructions?: string;
@@ -76,6 +76,7 @@ export interface UnprocessedComment {
     hasCodeContext?: boolean;
     commandMeta?: CommandMeta;
     commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+    /** Explicit model selections from /review or /use commands */
     requestedModels?: string[];
     commandInstructions?: string;
     llmOverride?: string | null;

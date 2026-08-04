@@ -19,6 +19,7 @@ function getImageBasename(image) {
 export function validateRelease({
   tag,
   expectedVersion,
+  releaseCandidate = false,
   packages,
   launcherManifest,
   changelog,
@@ -82,11 +83,11 @@ export function validateRelease({
     errors.push(`Expected version ${expectedVersion} does not match package version ${version}`);
   }
 
-  if (tag) {
+  if (tag || releaseCandidate) {
     const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const heading = new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m");
     if (!heading.test(changelog)) {
-      errors.push(`CHANGELOG.md needs a dated ## [${version}] release section before tagging`);
+      errors.push(`CHANGELOG.md needs a dated ## [${version}] release section before release validation`);
     }
   }
 

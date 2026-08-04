@@ -151,6 +151,49 @@ describe('planner background abort reconciliation', () => {
     assert.equal(current.generation_trace, cancellationTrace);
   });
 
+  test('recovers the active refinement when abort lookup is unavailable', async t => {
+    t.mock.method(console, 'error', () => undefined);
+    const draftId = 'refinement-abort-lookup-failure';
+    const runId = 'refinement-run-redis-failure';
+    await database('task_drafts').insert({
+      draft_id: draftId,
+      status: 'refining',
+      refinement_result: JSON.stringify({ status: 'in_progress', runId }),
+      generated_context: 'context',
+    });
+
+    let abortChecks = 0;
+    let refineCalls = 0;
+    await runBackgroundRefinement({
+      db: database,
+      draftId,
+      currentPlan: [],
+      instruction: 'change it',
+      generationModel: 'test-model',
+      correlationId: runId,
+      accessToken: 'token',
+      runId,
+    }, {
+      checkAborted: async () => {
+        abortChecks += 1;
+        throw new Error('abort lookup failed');
+      },
+      getRepoContext: async () => ({ worktreePath: '/tmp/worktree', repository: 'owner/repo', authToken: 'token' }),
+      refine: async () => {
+        refineCalls += 1;
+        throw new Error('refinement should not start');
+      },
+    });
+
+    const current = await database('task_drafts').where({ draft_id: draftId }).first();
+    const failure = JSON.parse(current.refinement_result);
+    assert.equal(abortChecks, 2);
+    assert.equal(refineCalls, 0);
+    assert.equal(current.status, 'review');
+    assert.equal(failure.status, 'failed');
+    assert.equal(failure.error, 'abort lookup failed');
+  });
+
   test('commits generation completion only for the matching active run snapshot', async () => {
     const draftId = 'generation-completion-race';
     const runId = 'generation-run-1';

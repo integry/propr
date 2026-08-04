@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-08-03
+
 ### Added
 
 - **Per-agent Web login**: adding Claude, Codex, Antigravity, or OpenCode can
@@ -149,6 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.6]: https://github.com/integry/propr/releases/tag/v0.8.6
 [0.8.5]: https://github.com/integry/propr/releases/tag/v0.8.5
 [0.8.3]: https://github.com/integry/propr/releases/tag/v0.8.3
 [0.8.2]: https://github.com/integry/propr/releases/tag/v0.8.2

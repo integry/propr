@@ -236,7 +236,7 @@ export function createRefineHandler(db: Knex) {
         correlationId,
         accessToken: req.user!.accessToken || '',
         runId: correlationId
-      });
+      }).catch(error => console.error(`[refine] Detached refinement failed for draft ${draftId}:`, error));
     } catch (error) {
       console.error('Refine plan error:', error);
       if (refinementClaimed && !res.headersSent) {

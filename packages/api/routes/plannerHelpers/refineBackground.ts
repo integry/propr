@@ -154,17 +154,26 @@ export async function runBackgroundRefinement(
     // Only revert status to review on failure if not aborted. Persist the
     // error into refinement_result so the UI can surface it to the user
     // instead of silently returning to review with no explanation.
-    if (!(await checkAborted())) {
-      const failureMeta = {
-        status: 'failed',
-        error: errorMessage,
-        model: generationModel,
-        timestamp: new Date().toISOString()
-      };
-      await persistActiveRefinement(db, draftId, runId, {
-        status: 'review',
-        refinement_result: JSON.stringify(failureMeta),
-      });
+    let aborted = false;
+    try {
+      aborted = await checkAborted();
+    } catch (abortCheckError) {
+      console.error(`[refine] Failed to check abort state while recovering draft ${draftId}:`, abortCheckError);
+    }
+    if (aborted) return;
+
+    const failureMeta = {
+      status: 'failed',
+      error: errorMessage,
+      model: generationModel,
+      timestamp: new Date().toISOString()
+    };
+    const persisted = await persistActiveRefinement(db, draftId, runId, {
+      status: 'review',
+      refinement_result: JSON.stringify(failureMeta),
+    });
+    if (!persisted) {
+      console.log(`[refine] Refinement run ${runId} is no longer active for draft ${draftId}, not saving failure`);
     }
   }
 }

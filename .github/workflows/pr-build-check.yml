@@ -81,6 +81,11 @@ jobs:
             npm ci
           } > >(tee -a build_log.txt) 2>&1
 
+      - name: Verify release-candidate metadata
+        env:
+          RELEASE_CANDIDATE: 'true'
+        run: npm run release:verify
+
       - name: Run Fast Unit Tests
         id: unit_tests
         run: |

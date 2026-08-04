@@ -137,7 +137,8 @@ export function updateTraceForRun(
   draftId: string,
   step: string,
   status: StepStatus,
-  expectedRunId: string,
+  options: { expectedRunId: string; data?: Record<string, unknown> },
 ): Promise<GenerationTrace> {
-  return updateTraceWithOptions({ draftId, step, status, expectedRunId });
+  const { expectedRunId, data } = options;
+  return updateTraceWithOptions({ draftId, step, status, data, expectedRunId });
 }

@@ -8,7 +8,7 @@ import { parseLlmJson, JsonParseError } from '../../utils/jsonUtils.js';
 import logger from '../../utils/logger.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import {
-  updateTrace, validatePromptTokens, CLAUDE_CODE_OVERHEAD, PlanningFailedError, getModelHardLimit, getRawInputCharLimit
+  updateTrace, updateTraceForRun, validatePromptTokens, CLAUDE_CODE_OVERHEAD, PlanningFailedError, getModelHardLimit, getRawInputCharLimit
 } from '../planning/index.js';
 import { enforceGranularity } from './granularity.js';
 import type { Plan } from '../../claude/prompts/plannerPrompts.js';
@@ -19,7 +19,7 @@ const DEFAULT_GENERATION_MODEL = 'opus';
 const MAX_JSON_REPAIR_RESPONSE_CHARS = 20000;
 
 export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL, granularity } = opts;
+  const { draftId, runId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL, granularity } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Use model's hard limit for validation (context level is a guideline, not a hard limit)
@@ -78,12 +78,17 @@ export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPl
   }, 'LLM duration estimation completed');
 
   // Update trace with in_progress status, estimated duration, and start time
-  await updateTrace(draftId, 'llm', 'in_progress', {
+  const traceData = {
     estimatedDuration: estimation.estimatedDurationMs,
     startedAt,
     isHistoricalEstimate: estimation.isHistoricalEstimate,
     sampleCount: estimation.sampleCount
-  });
+  };
+  if (runId) {
+    await updateTraceForRun(draftId, 'llm', 'in_progress', { expectedRunId: runId, data: traceData });
+  } else {
+    await updateTrace(draftId, 'llm', 'in_progress', traceData);
+  }
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
   // Build metadata for LLM log tracking

@@ -35,6 +35,7 @@ const packages = packagePaths.map((path) => {
 const errors = validateRelease({
   tag: process.env.RELEASE_TAG?.trim(),
   expectedVersion: process.env.EXPECTED_VERSION?.trim(),
+  releaseCandidate: process.env.RELEASE_CANDIDATE === "true",
   packages,
   launcherManifest: readJson("docker/launcher/manifest.json"),
   changelog: readFileSync(join(root, "CHANGELOG.md"), "utf8"),

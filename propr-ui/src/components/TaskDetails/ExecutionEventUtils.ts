@@ -144,7 +144,7 @@ export const formatToolResult = (result: unknown): string => {
     resultText = extractTextFromContentBlocks(result);
   } else {
     try {
-      resultText = JSON.stringify(result, null, 2);
+      resultText = JSON.stringify(result, null, 2) ?? String(result);
     } catch {
       resultText = String(result);
     }

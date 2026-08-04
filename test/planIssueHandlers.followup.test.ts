@@ -136,10 +136,11 @@ test('planIssueHandlers follow-up fixes', async (t) => {
     mockUpdatePlanIssue.mock.mockImplementation(async () => {
       throw new Error('db write failed');
     });
+    let labelSyncCall = 0;
     mockSafeUpdateLabels.mock.mockImplementation(async () => {
-      if (mockSafeUpdateLabels.mock.calls.length >= 1) {
-        throw new Error('rollback label sync failed');
-      }
+      const isRollback = labelSyncCall === 1;
+      labelSyncCall += 1;
+      if (isRollback) throw new Error('rollback label sync failed');
     });
 
     const req = {
@@ -183,8 +184,10 @@ test('planIssueHandlers follow-up fixes', async (t) => {
       agent_alias: 'codex',
       model_name: 'gpt-5.4',
     }));
+    let updateCall = 0;
     mockUpdatePlanIssue.mock.mockImplementation(async () => {
-      const callNumber = mockUpdatePlanIssue.mock.calls.length;
+      const callNumber = updateCall;
+      updateCall += 1;
       if (callNumber === 0) {
         return {
           issue_number: 18,

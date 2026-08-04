@@ -10,8 +10,7 @@ cd "$WORKSPACE"
 export npm_config_cache="$PROPR_CACHE_DIR/npm"
 mkdir -p "$npm_config_cache"
 npm ci
-npm run build --workspace packages/shared
-npm run build --workspace packages/core
+npm run test:prepare
 
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required to validate the docs site." >&2
