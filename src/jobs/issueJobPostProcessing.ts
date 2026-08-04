@@ -2,7 +2,7 @@ import type { Logger } from 'pino';
 import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse } from '@propr/core';
 import type { WorktreeInfo, CommitResult, WorkerStateManager } from '@propr/core';
-import { cleanupWorktree, commitChanges, pushBranch, TaskStates } from '@propr/core';
+import { cleanupWorktree, commitChanges, pushBranch, TaskStates, describeAgentTermination, resolveAgentTerminationReason } from '@propr/core';
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
@@ -25,6 +25,19 @@ function formatErrorBlock(title: string, message: string): string {
 
 function getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+function buildImplementationCompletionNote(claudeResult: ClaudeCodeResponse): string {
+    const terminationReason = resolveAgentTerminationReason(claudeResult);
+    if (terminationReason) return `Partial implementation: ${describeAgentTermination(terminationReason)}`;
+    return claudeResult.success
+        ? 'Implementation completed successfully.'
+        : 'Implementation attempted - see PR comments for details.';
+}
+
+function hasPublishableAgentWork(claudeResult: ClaudeCodeResponse | null): boolean {
+    if (!claudeResult) return false;
+    return claudeResult.success || resolveAgentTerminationReason(claudeResult) !== undefined;
 }
 
 function formatFallbackDiagnostics(claudeResult: ClaudeCodeResponse, postProcessingError: unknown): string {
@@ -77,7 +90,8 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
     let postProcessingResult: PostProcessingResult | null = null;
 
     try {
-        let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by ProPR AI using ${modelName} model.\n\n${claudeResult?.success ? 'Implementation completed successfully.' : 'Implementation attempted - see PR comments for details.'}`;
+        const completionNote = buildImplementationCompletionNote(claudeResult);
+        let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by ProPR AI using ${modelName} model.\n\n${completionNote}`;
 
         if (claudeResult?.commitMessage) {
             commitMessage = claudeResult.commitMessage;
@@ -88,6 +102,8 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             AI_COMMIT_AUTHOR,
             { issueNumber: issueRef.number, issueTitle: currentIssueData.data.title }
         );
+
+        claudeResult.modifiedFiles = commitResult?.filesChanged || claudeResult.modifiedFiles;
 
         // Handle the case where no code changes were needed (work already complete)
         if (commitResult === null && claudeResult?.success) {
@@ -209,11 +225,12 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
 
     // Only retry PR creation if:
     // 1. PR validation failed (no PR found)
-    // 2. Claude execution was successful
+    // 2. Agent execution completed, or stopped at a publishable timeout/turn limit
     // 3. There were actual commits (commitResult !== null means changes were made and a PR is expected)
-    if (!finalPRValidation.isValid && claudeResult?.success && commitResult !== null) {
+    const shouldPublishAgentWork = hasPublishableAgentWork(claudeResult);
+    if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult !== null) {
         await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger });
-    } else if (!finalPRValidation.isValid && claudeResult?.success && commitResult === null) {
+    } else if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult === null) {
         correlatedLogger.info({ issueNumber: issueRef.number }, 'No PR validation needed - no code changes were made');
     }
     return postProcessingResult;

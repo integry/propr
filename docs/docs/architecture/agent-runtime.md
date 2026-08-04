@@ -51,6 +51,8 @@ Timeouts prevent runaway jobs and make failures visible in task state. Defaults 
 
 These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Analysis calls use separate, shorter timeouts.
 
+When an implementation run reaches its execution timeout or maximum turn limit, ProPR preserves any workspace changes produced before the interruption. If changes exist, it commits and pushes them, opens the issue PR or updates the existing follow-up PR, and marks the result as potentially incomplete with the agent's last available summary and explicit remaining-work guidance. Other execution errors still fail normally, and an interrupted run with no changes has nothing to publish.
+
 When tuning these values, consider repository size, task complexity, provider rate limits, worker concurrency, and host CPU and memory. Increase timeouts only after checking task and worker logs; a timeout may indicate missing context, provider slowness, a task that should be split, or an agent loop.
 
 ## Security Boundary

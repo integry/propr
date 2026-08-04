@@ -186,7 +186,7 @@ export async function scoreSemanticRelevance(
         const parsed = parseSemanticResponse(response);
 
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = modelId || agent.config.defaultModel || 'haiku';
+        const modelUsed = modelId || agent.config.defaultModel || 'unknown';
 
         // Log metrics for this chunk
         await logSummarizationCall({
@@ -225,7 +225,7 @@ export async function scoreSemanticRelevance(
         return parsed.files;
       } catch (err) {
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = modelId || agent.config.defaultModel || 'haiku';
+        const modelUsed = modelId || agent.config.defaultModel || 'unknown';
         const errorMessage = (err as Error).message;
 
         correlatedLogger.warn({

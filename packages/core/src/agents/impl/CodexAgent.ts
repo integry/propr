@@ -16,6 +16,7 @@ import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
 import { executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import { resolveAgentTerminationReason } from '../termination.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -78,7 +79,8 @@ export class CodexAgent implements Agent {
                     worktreePath,
                     stdinData: prompt,
                     taskId,
-                    streamToRedis: true
+                    streamToRedis: true,
+                    preserveOutputOnTimeout: true
                 })
             );
 
@@ -112,8 +114,12 @@ export class CodexAgent implements Agent {
         usageMetrics: CodexUsageMetrics;
     }): AgentExecutionResult {
         const { parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics } = params;
+        const terminationReason = resolveAgentTerminationReason({
+            timedOut: result.timedOut,
+            error: parsedOutput.error || result.stderr
+        });
         return {
-            success: parsedOutput.success && result.exitCode === 0,
+            success: parsedOutput.success && result.exitCode === 0 && !terminationReason,
             executionTimeMs: executionTime,
             logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
             exitCode: result.exitCode,
@@ -128,6 +134,7 @@ export class CodexAgent implements Agent {
             summary: parsedOutput.result ?? undefined,
             prompt,
             error: parsedOutput.error || (result.exitCode === 0 ? undefined : result.stderr?.trim() || undefined),
+            terminationReason,
             tokenUsage: parsedOutput.tokenUsage,
             usageMetrics: usageMetrics ?? undefined
         };
@@ -233,7 +240,7 @@ export class CodexAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
-            if (result.exitCode === 0 || parsedOutput.result) {
+            if (!result.timedOut && (result.exitCode === 0 || parsedOutput.result)) {
                 return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, effectiveReasoningLevel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata, suppressLlmLog });
             }
 

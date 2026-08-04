@@ -3,7 +3,10 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger, { type EnhancedLogger } from '../utils/logger.js';
 import { type Logger } from 'pino';
 import { generateAndSaveTaskTitle } from './taskExecutionHelpers.js';
+import { resolveEpicTitleGenerationModel } from './epicTitleModel.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
+import { loadSummarizationSettings } from '../config/configManager.js';
+import { resolveConfiguredModel } from '../config/configuredModel.js';
 import {
   processTaskAndCreateIssue,
   type PlanTask,
@@ -213,9 +216,14 @@ export async function executeDraft(draftId: string, userId: string, correlationI
   });
 
   try {
+    const summarizationSettings = await loadSummarizationSettings();
+    const titleGenerationModel = await resolveConfiguredModel(
+      resolveEpicTitleGenerationModel(summarizationSettings.agent_alias),
+    );
     await generateAndSaveTaskTitle({
       draftId,
       planJson,
+      model: titleGenerationModel,
       owner,
       repoName,
       oldName: draft.name,

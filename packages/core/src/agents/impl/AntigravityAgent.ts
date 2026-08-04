@@ -23,6 +23,7 @@ import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import fs from 'fs';
 import path from 'path';
+import { resolveAgentTerminationReason } from '../termination.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -95,7 +96,7 @@ export class AntigravityAgent implements Agent {
                 this.getRuntimeName(),
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
-                    taskId, streamToRedis: true
+                    taskId, streamToRedis: true, preserveOutputOnTimeout: true
                 })
             );
 
@@ -116,7 +117,7 @@ export class AntigravityAgent implements Agent {
     }
 
     private async processExecutionResult(opts: {
-        result: { stdout: string; stderr: string; exitCode: number | null }; executionTime: number;
+        result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
         prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string) => void;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
@@ -130,12 +131,15 @@ export class AntigravityAgent implements Agent {
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const resolvedModel = response.modelUsed || effectiveModel || 'unknown';
+        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: result.stderr });
         const agentResult: AgentExecutionResult = {
-            success: result.exitCode === 0, executionTimeMs: executionTime,
+            success: result.exitCode === 0 && !terminationReason, executionTimeMs: executionTime,
             logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
             exitCode: result.exitCode, rawOutput: result.stdout, modelUsed: resolvedModel, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId: response.sessionId, conversationLog: response.conversationLog,
-            tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined
+            tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
+            error: result.exitCode === 0 && !terminationReason ? undefined : result.stderr || 'Antigravity execution failed',
+            terminationReason
         };
 
         await this.persistImplementationLog({ executionTime, issueRef, resolvedModel, finalTokenUsage, agentResult, taskId, prNumber, isRetry, retryReason, usageMetrics });
@@ -311,7 +315,7 @@ export class AntigravityAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const { summary, tokenUsage, sessionId } = parseAntigravityJsonl(result.stdout);
 
-            if (result.exitCode === 0 || summary) {
+            if (!result.timedOut && (result.exitCode === 0 || summary)) {
                 const analysisText = (summary || '').trim();
                 // agy --print emits plain text with no token stats, so
                 // parseAntigravityJsonl returns empty usage. Estimate from the

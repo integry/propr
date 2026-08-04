@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
-import { AgentRegistry, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
-import { getDefaultModel, loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
+import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
+import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
 import type { AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
@@ -11,7 +11,6 @@ import type { Redis } from 'ioredis';
 import type { GitHubToken } from './githubTypes.js';
 import type { ReasoningLevel } from '@propr/shared';
 
-const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
 const CONFIGURED_TITLE_GENERATION_TIMEOUT_MS = Number.parseInt(process.env.PR_TASK_TITLE_GENERATION_TIMEOUT_MS || '5000', 10);
 const TITLE_GENERATION_TIMEOUT_MS = Number.isFinite(CONFIGURED_TITLE_GENERATION_TIMEOUT_MS) ? CONFIGURED_TITLE_GENERATION_TIMEOUT_MS : 5000;
@@ -97,15 +96,13 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
     });
 }
 
-async function runWorktreeFreeTitleAnalysis(options: TitleAnalysisOptions, correlatedLogger: Logger): Promise<string> {
+async function runWorktreeFreeTitleAnalysis(options: TitleAnalysisOptions): Promise<string> {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    const resolution = options.model === 'haiku'
-        ? await resolveDefaultAgentAndModel(registry, correlatedLogger)
-        : await resolveLlmLabel(options.model);
-    const agentAlias = 'resolvedAlias' in resolution ? resolution.resolvedAlias : resolution.agentAlias;
-    const model = 'resolvedModel' in resolution ? resolution.resolvedModel : resolution.model;
+    const resolution = await resolveLlmLabel(options.model);
+    const agentAlias = resolution.agentAlias;
+    const model = resolution.model;
     const agent = registry.getAgentByAlias(agentAlias);
     if (!agent) throw new Error(`Agent not found for alias: ${agentAlias}`);
 
@@ -134,7 +131,6 @@ function runTitleAnalysis(options: {
     analysisOptions: TitleAnalysisOptionsWithoutWorktree;
     analysisRunner?: typeof runLightweightLLMAnalysis;
     worktreeInfo?: WorktreeInfo;
-    correlatedLogger: Logger;
 }): Promise<string> {
     if (options.analysisRunner) {
         return options.analysisRunner({
@@ -151,7 +147,7 @@ function runTitleAnalysis(options: {
     return runWorktreeFreeTitleAnalysis({
         ...options.analysisOptions,
         worktreePath: '',
-    }, options.correlatedLogger);
+    });
 }
 
 export async function generateSummaryTitle(options: SummaryTitleOptions): Promise<string> {
@@ -167,12 +163,15 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
         const prText = prTitle && !isGenericPrTitleText(prTitle) ? `PR #${pullRequestNumber}: ${prTitle}` : `PR #${pullRequestNumber}`;
         const summaryRequest = `Summarize this ${workflowText} as a concise task subtitle for ${prText}. Focus on the concrete action or discussion context, not the slash command itself.\n\nContext:\n${contextToSummarize}`;
         const summarizationSettings = await (options.summarizationSettingsLoader || loadSummarizationSettings)();
-        const configuredModel = summarizationSettings.agent_alias?.trim();
-        const model = configuredModel || 'haiku';
+        const summarizationModel = summarizationSettings.agent_alias?.trim();
+        if (!summarizationModel) {
+            throw new Error('No summarization model configured for PR task title generation.');
+        }
+        const configuredModel = await resolveConfiguredModel(summarizationModel);
         const timeoutMs = options.titleGenerationTimeoutMs ?? TITLE_GENERATION_TIMEOUT_MS;
         const analysisOptions: TitleAnalysisOptionsWithoutWorktree = {
             prompt: `${summaryRequest}\n\nYour output must be ONLY the summary string itself, with no other text.`,
-            model,
+            model: configuredModel,
             correlationId,
             githubToken: githubToken.token,
             issueRef: { number: pullRequestNumber, repoOwner, repoName },
@@ -181,7 +180,7 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             executionType: 'title-generation',
             metadata: {
                 taskKind: titleGenerationTaskKind(workflowLabel),
-                configuredVia: configuredModel ? 'summarization.agent_alias' : 'fallback'
+                configuredVia: 'summarization.agent_alias'
             },
             timeoutMs,
         };
@@ -189,7 +188,6 @@ export async function generateSummaryTitle(options: SummaryTitleOptions): Promis
             analysisOptions,
             analysisRunner: options.analysisRunner,
             worktreeInfo,
-            correlatedLogger,
         });
         const title = await withTimeout(titlePromise, timeoutMs, 'PR task title generation');
         const sanitizedTitle = sanitizeGeneratedSubtitle(title, deterministicFallback);
@@ -217,7 +215,7 @@ export async function resolveDefaultAgentAndModel(
             const configuredAgent = registry.getAgentByAlias(settings.default_agent_alias as string);
             if (configuredAgent && configuredAgent.config.enabled) {
                 const resolvedAlias = settings.default_agent_alias as string;
-                const resolvedModel = configuredAgent.config.defaultModel || DEFAULT_MODEL_NAME;
+                const resolvedModel = configuredAgent.config.defaultModel;
                 if (!resolvedModel) {
                     throw new NoDefaultModelConfiguredError();
                 }
@@ -231,9 +229,9 @@ export async function resolveDefaultAgentAndModel(
     }
 
     const defaultAgent = registry.getDefaultAgent();
-    const resolvedAlias = defaultAgent?.config.alias || 'claude';
-    const resolvedModel = defaultAgent?.config.defaultModel || DEFAULT_MODEL_NAME;
-    if (!resolvedModel) {
+    const resolvedAlias = defaultAgent?.config.alias;
+    const resolvedModel = defaultAgent?.config.defaultModel;
+    if (!resolvedAlias || !resolvedModel) {
         throw new NoDefaultModelConfiguredError();
     }
     correlatedLogger.debug({ fallbackAgent: resolvedAlias, fallbackModel: resolvedModel }, 'Using fallback default agent');
@@ -241,13 +239,13 @@ export async function resolveDefaultAgentAndModel(
 }
 
 export async function resolvePRCommentModelName(llm: string | null | undefined, correlatedLogger: Logger = NOOP_LOGGER): Promise<string> {
-    let modelName: string | null = DEFAULT_MODEL_NAME;
+    let modelName: string | null = null;
     if (llm) {
         try {
             modelName = (await resolveLlmLabel(llm)).model;
         } catch (labelError) {
             correlatedLogger.warn({ llm, error: (labelError as Error).message }, 'Failed to resolve explicit LLM label for PR comment task state');
-            modelName = DEFAULT_MODEL_NAME || llm;
+            modelName = llm;
         }
     } else {
         const registry = AgentRegistry.getInstance();

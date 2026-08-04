@@ -5,6 +5,7 @@ import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
+    describeAgentTermination, resolveAgentTerminationReason,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
 } from '@propr/core';
@@ -25,6 +26,7 @@ export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         finalResult: response.finalResult,
         conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
         error: response.error,
+        terminationReason: response.terminationReason,
         tokenUsage: response.tokenUsage,
         usageMetrics: response.usageMetrics ?? undefined
     };
@@ -109,13 +111,17 @@ export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
+    const terminationReason = resolveAgentTerminationReason(claudeResult);
+    const partialExecutionNote = terminationReason
+        ? `\n\nPartial execution: ${describeAgentTermination(terminationReason)}`
+        : '';
     return `feat(ai): ${changesSummary ? changesSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
 ${changesSummary ? changesSummary : `Implemented changes requested by ${authorsText}`}
 
 PR: #${pullRequestNumber}
 ${commentReferences}
-Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}`;
+Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}${partialExecutionNote}`;
 }
 
 export interface PromptOptions {

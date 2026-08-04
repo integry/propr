@@ -10,7 +10,9 @@ import {
   loadSettings,
   estimateTokens,
   REFINER_SYSTEM_PROMPT,
-  getEventPublisher, type Plan
+  getEventPublisher,
+  resolveConfiguredModel,
+  type Plan
 } from '@propr/core';
 import {
   checkDbAndAuth,
@@ -61,8 +63,8 @@ function parseDraftGenerationModel(contextConfig: unknown): string | undefined {
 
 function selectRefinementModel(
   requestedModel: string | undefined, contextConfig: unknown, configuredModel: string | undefined
-): string {
-  return requestedModel || parseDraftGenerationModel(contextConfig) || configuredModel || 'opus';
+): string | undefined {
+  return requestedModel || parseDraftGenerationModel(contextConfig) || configuredModel;
 }
 
 export function createGenerateHandler(db: Knex) {
@@ -190,9 +192,9 @@ export function createRefineHandler(db: Knex) {
       const estimatedInputTokens = estimateTokens(roughPrompt);
 
       const settings = await loadSettings();
-      const generationModel = selectRefinementModel(
+      const generationModel = await resolveConfiguredModel(selectRefinementModel(
         requestedModel, draftForContext?.context_config, settings.planner_generation_model
-      );
+      ));
 
       const estimation = await estimateLlmDuration({
         executionType: 'plan-refinement',

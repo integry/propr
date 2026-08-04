@@ -5,6 +5,7 @@ import { getAgentRegistry } from '../../agents/AgentRegistry.js';
 import { parseFileReferences, getResolvedPaths } from '../relevance/fileReferenceParser.js';
 import logger from '../../utils/logger.js';
 import { getModelPricing } from '../pricingService.js';
+import { getOpenRouterId } from '../../config/modelAliases.js';
 
 import {
   CLAUDE_CODE_OVERHEAD,
@@ -19,7 +20,6 @@ export { getModelHardLimit };
 
 const API_VALIDATION_THRESHOLD = 0.80;
 const DEFAULT_OUTPUT_TOKENS = 4000;
-const SONNET_MODEL_ID = 'anthropic/claude-sonnet-4-20250514';
 
 export function parseContextConfig(contextConfig: TaskDraftConfig | null, modelId?: string): ParsedContextConfig {
   const effectiveModelId = contextConfig?.generationModel || modelId;
@@ -99,11 +99,15 @@ export async function validatePromptTokens(
 export async function calculateCostEstimate(
   totalTokens: number,
   warnings: string[],
-  correlatedLogger: { warn: typeof logger.warn }
+  correlatedLogger: { warn: typeof logger.warn },
+  modelId?: string,
 ): Promise<number> {
   try {
-    const pricing = await getModelPricing(SONNET_MODEL_ID);
-    if (pricing) return totalTokens * pricing.prompt + DEFAULT_OUTPUT_TOKENS * pricing.completion;
+    if (modelId) {
+      const routedModelId = modelId.includes(':') ? modelId.substring(modelId.indexOf(':') + 1) : modelId;
+      const pricing = await getModelPricing(getOpenRouterId(routedModelId));
+      if (pricing) return totalTokens * pricing.prompt + DEFAULT_OUTPUT_TOKENS * pricing.completion;
+    }
     warnings.push('Using fallback pricing - could not fetch current model pricing');
   } catch (e) {
     warnings.push('Using fallback pricing - pricing service error');

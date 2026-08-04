@@ -26,6 +26,7 @@ interface CommitOptions {
 export interface CommitResult {
     commitHash: string;
     commitMessage: string;
+    filesChanged?: string[];
 }
 
 async function validateWorktree(worktreePath: string, issueNumber?: number): Promise<void> {
@@ -147,7 +148,11 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
 
         logger.info({ worktreePath, commitHash, filesChanged: status.files.length, issueNumber, commitMessage: finalCommitMessage }, 'Changes committed successfully');
 
-        return { commitHash, commitMessage: finalCommitMessage };
+        return {
+            commitHash,
+            commitMessage: finalCommitMessage,
+            filesChanged: status.files.map((file: FileStatusResult) => file.path)
+        };
 
     } catch (error) {
         handleError(error, `Failed to commit changes in worktree ${worktreePath}`);

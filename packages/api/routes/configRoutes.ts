@@ -250,7 +250,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         configStore.loadUltrafixPauseSeconds()
       ]);
       const settings = loadedSettings as Record<string, unknown>;
-      const envDefaults = { worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10), github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()), analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || 'claude-3-5-haiku-20241022', planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '', planner_generation_model: process.env.PLANNER_GENERATION_MODEL || '' };
+      const envDefaults = { worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10), github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()), analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || '', planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '', planner_generation_model: process.env.PLANNER_GENERATION_MODEL || '' };
       const invalidIntegerSettings: Record<string, unknown> = {};
       const autoFollowup = getIntegerSettingOrDefault({ name: 'auto_followup_score_threshold', value: autoFollowupThreshold, defaultValue: DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD, minimum: 0, maximum: 9 });
       const ultrafixGoal = getIntegerSettingOrDefault({ name: 'ultrafix_rating_goal', value: ultrafixRatingGoal, defaultValue: DEFAULT_ULTRAFIX_RATING_GOAL, minimum: 1, maximum: 10 });

@@ -145,6 +145,7 @@ export type JobData = IssueJobData | CommentJobData | TaskImportJobData | Analys
 
 export interface ClaudeOutputResult {
     type?: string;
+    subtype?: string;
     is_error?: boolean;
     result?: string;
     total_cost_usd?: number;
@@ -170,6 +171,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
+    terminationReason?: 'timeout' | 'max_turns';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }

@@ -14,13 +14,12 @@ import { enforceGranularity } from './granularity.js';
 import type { Plan } from '../../claude/prompts/plannerPrompts.js';
 import type { CallLLMOptions, CallLLMForPlanResult } from './types.js';
 
-/** Default model for plan generation (high capability) */
-const DEFAULT_GENERATION_MODEL = 'opus';
 const MAX_JSON_REPAIR_RESPONSE_CHARS = 20000;
 
 export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPlanResult> {
-  const { draftId, runId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model = DEFAULT_GENERATION_MODEL, granularity } = opts;
+  const { draftId, runId, fullContext, worktreePath, githubToken, repository, correlationId, tokenLimit, model, granularity } = opts;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
+  if (!model) throw new PlanningFailedError('No model configured for plan generation. Select a Planning Model in Settings.');
 
   // Use model's hard limit for validation (context level is a guideline, not a hard limit)
   const modelHardLimit = getModelHardLimit(model);

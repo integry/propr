@@ -6,8 +6,9 @@ import {
   ensureEpicPR,
   updatePlanIssue,
   PlanIssueStatus,
-  loadSettings,
   AgentRegistry,
+  resolvePlanIssueDefaultSelection,
+  NoDefaultModelConfiguredError,
   toProprOpenCodeModelId,
   buildDynamicLlmLabel,
   buildAgentModelLlmLabel,
@@ -74,44 +75,26 @@ async function enqueueIssueImplementationJob(params: {
 }
 
 /**
- * Gets the default model from the configured default agent.
- * Falls back to the latest Claude Sonnet model if no default agent is configured.
- */
-async function getConfiguredDefaultModel(): Promise<string> {
-  try {
-    const settings = await loadSettings();
-    const defaultAgentAlias = settings.default_agent_alias as string | undefined;
-
-    if (defaultAgentAlias) {
-      const registry = AgentRegistry.getInstance();
-      await registry.ensureInitialized();
-      const agent = registry.getAgentByAlias(defaultAgentAlias);
-
-      if (agent?.config.defaultModel) {
-        return agent.config.defaultModel;
-      }
-    }
-  } catch (err) {
-    logger.warn({ error: (err as Error).message }, 'Failed to get configured default model, using fallback');
-  }
-
-  return 'claude-sonnet-5'; // Fallback
-}
-
-/**
  * Gets the LLM GitHub label for a given model name.
  * Falls back to the default agent's model if model_name is null.
  */
 export async function getLlmLabel(modelName: string | null, agentAlias?: string | null): Promise<string | null> {
-  const effectiveModel = modelName || await getConfiguredDefaultModel();
+  let effectiveModel = modelName;
+  let effectiveAgentAlias = agentAlias;
+  if (!effectiveModel) {
+    const selection = await resolvePlanIssueDefaultSelection();
+    effectiveModel = selection.model_name;
+    effectiveAgentAlias = effectiveAgentAlias || selection.agent_alias;
+  }
+  if (!effectiveModel) throw new NoDefaultModelConfiguredError();
   const modelInfo = MODEL_INFO_MAP[effectiveModel];
-  if (modelInfo?.githubLabel && !agentAlias) return modelInfo.githubLabel;
+  if (modelInfo?.githubLabel && !effectiveAgentAlias) return modelInfo.githubLabel;
 
   try {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    let agent = agentAlias ? registry.getAgentByAlias(agentAlias) : undefined;
+    let agent = effectiveAgentAlias ? registry.getAgentByAlias(effectiveAgentAlias) : undefined;
     if (!agent) {
       agent = registry.getAllAgents().find(a =>
         a.config.supportedModels.some(model => {

@@ -8,13 +8,17 @@ import {
   findPlanIssueByRepoAndNumber,
   PlanIssueStatus,
   triggerNextPendingIssue,
-  updatePlanIssueStatus
+  updatePlanIssueStatus,
+  resolveAgentTerminationReason
 } from '@propr/core';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
 
-function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
+export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
+  if (postProcessingResult?.pr && claudeResult && resolveAgentTerminationReason(claudeResult)) {
+    return 'partial_with_pr';
+  }
   if (!claudeResult?.success) {
     return 'claude_processing_failed';
   }
