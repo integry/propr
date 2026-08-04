@@ -1,32 +1,38 @@
-import React, { useEffect, useState } from 'react'
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
-import Dashboard from './components/Dashboard'
-import RepositoriesPage from './pages/RepositoriesPage'
-import TasksPage from './pages/TasksPage'
-// TaskPlannerPage removed - all plan routes now use PlanStudioPage
-import PlanStudioPage from './pages/PlanStudioPage'
-import PlansPage from './pages/PlansPage'
-import AiAgentsPage from './pages/AiAgentsPage'
-import SettingsPage from './pages/SettingsPage'
-import SummaryBrowserPage from './pages/SummaryBrowserPage'
-import LlmLogsPage from './pages/LlmLogsPage'
-import LoginPage from './pages/LoginPage'
-import RevertPage from './pages/RevertPage'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
 import { useDemoMode } from './contexts/DemoModeContext'
 import { DemoModeProvider } from './contexts/DemoModeProvider'
 import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
-import { getCurrentUser } from './api/proprApi'
+import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
 import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
+import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
+import type { CurrentUser, InstancePermission } from './api/proprTypes'
+import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
+
+const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
+const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
+const Dashboard = lazy(() => import('./components/Dashboard'))
+const LlmLogsPage = lazy(() => import('./pages/LlmLogsPage'))
+const LoginPage = lazy(() => import('./pages/LoginPage'))
+const PlansPage = lazy(() => import('./pages/PlansPage'))
+const PlanStudioPage = lazy(() => import('./pages/PlanStudioPage'))
+const RepositoriesPage = lazy(() => import('./pages/RepositoriesPage'))
+const RevertPage = lazy(() => import('./pages/RevertPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const SummaryBrowserPage = lazy(() => import('./pages/SummaryBrowserPage'))
+const TasksPage = lazy(() => import('./pages/TasksPage'))
 
 type CompatibilityState =
   | { status: 'checking' }
   | { status: 'ready' }
   | { status: 'blocked'; title: string; message: string };
+
+const AUTHORIZATION_REFRESH_INTERVAL_MS = 60_000;
 
 const LoadingSpinner: React.FC = () => (
   <div className="flex h-screen w-full items-center justify-center bg-gray-50">
@@ -74,10 +80,39 @@ const HostedConnectionBlocked: React.FC<{ title: string; message: string }> = ({
   </div>
 );
 
+const PermissionRequired: React.FC<{
+  permission: InstancePermission;
+  children: React.ReactNode;
+}> = ({ permission, children }) => {
+  const user = useCurrentUser();
+  if (userHasPermission(user, permission)) return children;
+  return (
+    <div className="mx-auto max-w-2xl py-20 text-center">
+      <h1 className="text-2xl font-semibold text-gray-900">Administrator access required</h1>
+      <p className="mt-3 text-sm text-gray-600">
+        Your instance role does not allow you to manage this installation.
+      </p>
+    </div>
+  );
+};
+
 const AppContent: React.FC = () => {
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   // Auth check state - start loading unless already on login page
   const [isLoading, setIsLoading] = useState(window.location.pathname !== '/login');
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const refreshPromiseRef = useRef<Promise<void> | null>(null);
+
+  const refreshCurrentUser = useCallback(async () => {
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    const request = getCurrentUser()
+      .then(user => { setCurrentUser(user); })
+      .finally(() => {
+        if (refreshPromiseRef.current === request) refreshPromiseRef.current = null;
+      });
+    refreshPromiseRef.current = request;
+    return request;
+  }, []);
 
   // Perform initial auth check
   useEffect(() => {
@@ -91,7 +126,7 @@ const AppContent: React.FC = () => {
       }
 
       try {
-        await getCurrentUser();
+        await refreshCurrentUser();
         // Session is valid
         setIsLoading(false);
       } catch (error) {
@@ -105,130 +140,181 @@ const AppContent: React.FC = () => {
     };
 
     checkSession();
-  }, [isDemoModeLoading]);
+  }, [isDemoModeLoading, refreshCurrentUser]);
+
+  useEffect(() => {
+    const handleAuthorizationChanged = () => {
+      void refreshCurrentUser().catch(error => {
+        console.error('Failed to refresh instance authorization:', error);
+      });
+    };
+    window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChanged);
+    return () => window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, handleAuthorizationChanged);
+  }, [refreshCurrentUser]);
+
+  useEffect(() => {
+    if (isDemoMode || window.location.pathname === '/login') return;
+    const refreshAuthorization = () => {
+      if (document.visibilityState === 'hidden') return;
+      void refreshCurrentUser().catch(error => {
+        console.error('Failed to synchronize instance authorization:', error);
+      });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshAuthorization();
+    };
+    const interval = window.setInterval(refreshAuthorization, AUTHORIZATION_REFRESH_INTERVAL_MS);
+    window.addEventListener('focus', refreshAuthorization);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshAuthorization);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isDemoMode, refreshCurrentUser]);
 
 
   // Render spinner while checking auth
   if (isDemoModeLoading || isLoading) return <LoadingSpinner />;
 
   return (
-      <SocketProvider disabled={isDemoMode}>
-        <ToastProvider>
-          <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
-            <DemoModeBanner />
-            <div className="min-h-0 flex-1">
+    <SocketProvider disabled={isDemoMode}>
+      <ToastProvider>
+        <div className={`flex h-screen flex-col ${isDemoMode ? 'pt-9' : ''}`}>
+          <DemoModeBanner />
+          <div className="min-h-0 flex-1">
+            <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <Router>
-              <Routes>
-                <Route path="/login" element={<LoginPage />} />
-                <Route path="/revert" element={<RevertPage />} />
-                <Route
-                  path="/"
-                  element={
-                    <Layout>
-                      <Dashboard />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/repositories"
-                  element={
-                    <Layout>
-                      <RepositoriesPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/tasks"
-                  element={
-                    <Layout>
-                      <TasksPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/tasks/:taskId"
-                  element={
-                    <Layout>
-                      <TasksPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/studio/new"
-                  element={
-                    <Layout>
-                      <PlanStudioPage isNew />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/studio/:draftId"
-                  element={
-                    <Layout>
-                      <PlanStudioPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/plans"
-                  element={
-                    <Layout>
-                      <PlansPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/ai-agents"
-                  element={
-                    <Layout>
-                      <AiAgentsPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/settings"
-                  element={
-                    <Layout>
-                      <SettingsPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/summaries/:owner/:repo"
-                  element={
-                    <Layout>
-                      <SummaryBrowserPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="/llm-logs"
-                  element={
-                    <Layout>
-                      <LlmLogsPage />
-                    </Layout>
-                  }
-                />
-                <Route
-                  path="*"
-                  element={
-                    <Layout>
-                      <div className="text-center py-20">
-                        <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
-                        <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
-                        <a href="/" className="text-primary-600 hover:text-primary-700 underline">
-                          Back to dashboard
-                        </a>
-                      </div>
-                    </Layout>
-                  }
-                />
-              </Routes>
+                <RouteChunkErrorBoundary>
+                  <Suspense fallback={<LoadingSpinner />}>
+                    <Routes>
+                    <Route path="/login" element={<LoginPage />} />
+                    <Route path="/revert" element={<RevertPage />} />
+                    <Route
+                      path="/"
+                      element={
+                        <Layout>
+                          <Dashboard />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/repositories"
+                      element={
+                        <Layout>
+                          <RepositoriesPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/tasks"
+                      element={
+                        <Layout>
+                          <TasksPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/tasks/:taskId"
+                      element={
+                        <Layout>
+                          <TasksPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/studio/new"
+                      element={
+                        <Layout>
+                          <PlanStudioPage isNew />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/studio/:draftId"
+                      element={
+                        <Layout>
+                          <PlanStudioPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/plans"
+                      element={
+                        <Layout>
+                          <PlansPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/ai-agents"
+                      element={
+                        <Layout>
+                          <PermissionRequired permission="instance.manage_agents">
+                            <AiAgentsPage />
+                          </PermissionRequired>
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/settings"
+                      element={
+                        <Layout>
+                          <PermissionRequired permission="instance.manage_settings">
+                            <SettingsPage />
+                          </PermissionRequired>
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/admin/members"
+                      element={
+                        <Layout>
+                          <PermissionRequired permission="instance.manage_members">
+                            <AccessManagementPage />
+                          </PermissionRequired>
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/summaries/:owner/:repo"
+                      element={
+                        <Layout>
+                          <SummaryBrowserPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="/llm-logs"
+                      element={
+                        <Layout>
+                          <LlmLogsPage />
+                        </Layout>
+                      }
+                    />
+                    <Route
+                      path="*"
+                      element={
+                        <Layout>
+                          <div className="text-center py-20">
+                            <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
+                            <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
+                            <a href="/" className="text-primary-600 hover:text-primary-700 underline">
+                              Back to dashboard
+                            </a>
+                          </div>
+                        </Layout>
+                      }
+                    />
+                    </Routes>
+                  </Suspense>
+                </RouteChunkErrorBoundary>
               </Router>
-            </div>
+            </AuthProvider>
           </div>
-        </ToastProvider>
-      </SocketProvider>
+        </div>
+      </ToastProvider>
+    </SocketProvider>
   );
 };
 

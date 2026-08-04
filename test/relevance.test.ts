@@ -1,10 +1,15 @@
-import { test, describe, beforeEach, mock } from 'node:test';
+import { after, test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 
 process.env.NODE_ENV = 'test';
 import { extractKeywords } from '../packages/core/src/services/relevance/keywordExtractor.js';
 import { formatCommitLog } from '../packages/core/src/services/relevance/gitMiner.js';
 import type { CommitInfo } from '../packages/core/src/services/relevance/gitMiner.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('Keyword Extractor', () => {
     test('extracts CamelCase identifiers', () => {
@@ -25,6 +30,13 @@ describe('Keyword Extractor', () => {
     test('extracts file extensions', () => {
         const keywords = extractKeywords('Update config.json settings');
         assert.ok(keywords.some(k => k.includes('config.json')));
+    });
+
+    test('keeps complete multi-extension filenames without sentence punctuation', () => {
+        const keywords = extractKeywords('Update component.test.tsx. Then inspect src/foo.ts.');
+        assert.ok(keywords.includes('component.test.tsx'));
+        assert.ok(keywords.includes('src/foo.ts'));
+        assert.ok(!keywords.includes('src/foo.ts.'));
     });
 
     test('filters stop words', () => {

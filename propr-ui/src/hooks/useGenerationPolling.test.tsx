@@ -373,6 +373,38 @@ describe('useGenerationPolling', () => {
     expect(result.current.isGenerating).toBe(true);
   });
 
+  it('ignores a late socket event from a replaced generation run', async () => {
+    const onComplete = vi.fn();
+    const { result } = renderHook(() => useGenerationPolling({ draftId: 'draft-1', onComplete }));
+
+    act(() => {
+      result.current.startPolling('generation-run-2');
+    });
+
+    await act(async () => {
+      await Promise.all(
+        [...draftUpdateListeners].map(listener => listener({
+          eventType: 'draft:update',
+          draftId: 'draft-1',
+          runId: 'generation-run-1',
+          step: 'complete',
+          status: 'failed',
+          timestamp: '2026-05-05T00:00:10Z',
+          draftStatus: 'failed',
+          generationTrace: {
+            runId: 'generation-run-1',
+            steps: [{ name: 'llm', status: 'failed' }],
+            error: 'stale failure',
+          },
+        }))
+      );
+    });
+
+    expect(result.current.isGenerating).toBe(true);
+    expect(result.current.generationError).toBeNull();
+    expect(result.current.generationTrace?.runId).toBe('generation-run-2');
+  });
+
   it('clears stale trace errors when polling finds a completed draft', async () => {
     const onComplete = vi.fn();
     socketState.isConnected = false;

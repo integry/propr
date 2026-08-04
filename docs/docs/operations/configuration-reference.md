@@ -55,8 +55,7 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PR_LABEL` | `propr` | Label applied to PRs ProPR creates. | Optional. |
 | `GITHUB_BOT_USERNAME` | Placeholder / code falls back to `propr-dev[bot]` | The bot identity, used to filter its own comments out of triggers. | Optional. |
 | `GITHUB_USER_WHITELIST` / `GITHUB_USER_BLACKLIST` | Empty | Comma-separated allow/deny lists for who can trigger processing. | Optional. |
-| `PROPR_ADMIN_USERS` | Empty | Comma-separated authenticated GitHub usernames allowed to change installation-level agent runtime packages. Empty denies changes unless `PROPR_AGENT_RUNTIME_ADMIN_ANY_USER=true` is set. | Optional. |
-| `PROPR_AGENT_RUNTIME_ADMIN_ANY_USER` | `false` | Explicit opt-in that lets any authenticated ProPR user change installation-level agent runtime packages when `PROPR_ADMIN_USERS` is empty. **Warning:** runtime packages are installed as root into the trusted agent image, so enabling this grants every logged-in user root-equivalent control over the environment all agent jobs run in. Prefer listing specific admins in `PROPR_ADMIN_USERS`. | Optional. |
+| `PROPR_ADMIN_USERS` | Empty | Comma-separated authenticated GitHub usernames that bootstrap instance administrators. Non-demo startup fails when neither this list nor a durable administrator exists. The list remains an independent, authoritative override while configured. **Username risk:** GitHub usernames can be renamed or recycled; store the bootstrap role from **Web UI → Access** to bind it to the numeric GitHub ID, then remove or carefully maintain the environment entry. | Initial setup, or optional break-glass access. |
 | `PR_FOLLOWUP_TRIGGER_KEYWORDS` | `!propr` | Keywords in PR comments that trigger follow-up work. See [PR Follow-up](../features/pr-followup.md). | Optional. |
 | `LABEL_APPLIER_TIMELINE_MAX_PAGES` | `5` | With a whitelist set, polling resolves who applied the trigger label from the issue timeline (page 1 + the most recent N pages). Raise it if long-lived issues are skipped with "Could not determine label applier". | Optional. |
 
@@ -72,6 +71,7 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `CLAUDE_MAX_TURNS` | Shipped `10` / code falls back to `1000` if unset | Maximum agent turns per Claude run. | Optional. |
 | `CLAUDE_TIMEOUT_MS` | `86400000` (24 hours) | Claude task run timeout. | Optional. |
 | `CODEX_TIMEOUT_MS` | `86400000` (24 hours) | Codex task run timeout. | Optional. |
+| `CONTEXT_ANALYSIS_TIMEOUT_MS` | `1800000` (30 minutes) | Timeout for planner keyword extraction and semantic relevance scoring calls. | Optional. |
 | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Antigravity task run timeout. | Optional. |
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |

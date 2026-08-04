@@ -12,7 +12,7 @@ export { redisClient, DEFAULT_MODEL_NAME, getPrimaryProcessingLabels, getPrLabel
 export { initializeJobContext } from './context.js';
 
 // GitHub operations
-export { getAuthenticatedClient, checkLabelConditions, fetchIssueComments } from './github.js';
+export { getAuthenticatedClient, checkLabelConditions, ensureProcessingLabel, fetchIssueComments } from './github.js';
 
 // Agent execution
 export { toClaudeResult, agentResultToClaudeResponse, executeAgentAndRecordMetrics } from './agent.js';

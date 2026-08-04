@@ -1,6 +1,10 @@
 /* eslint-disable max-lines */
 import type { ConversationEvent, TodoItem, TokenUsageInfo } from '@propr/shared';
-import { isOpenCodeJsonlEvent, normalizeOpenCodeUsage } from '@propr/core';
+import {
+  isOpenCodeJsonlEvent,
+  normalizeOpenCodeTimestamp,
+  normalizeOpenCodeUsage,
+} from '@propr/core';
 import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParserVibe.js';
 
 /** Result from parsing Redis output */
@@ -17,12 +21,15 @@ interface ParseState {
   events: ConversationEvent[];
   todos: TodoItem[];
   tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
+  codexTurnCompletedUsage: ParseState['tokenUsage'] | null;
+  codexResultUsage: ParseState['tokenUsage'] | null;
   lastOpenCodeCumulativeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
   pendingAssistantMessage: string; pendingAssistantTimestamp: string | null;
   antigravityStreamActive: boolean;
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
+  emittedAntigravityToolUseIds: Set<string>;
   emittedOpenCodeToolUseIds: Set<string>;
   emittedOpenCodeToolResultIds: Set<string>;
 }
@@ -174,9 +181,26 @@ function processCodexItemUpdated(event: CodexEvent, _timestamp: string, state: P
 
 function processCodexTurnCompleted(event: CodexEvent, _timestamp: string, state: ParseState): boolean {
   if (!event.usage) return false;
-  state.tokenUsage.input_tokens += (event.usage.input_tokens ?? 0) + (event.usage.cached_input_tokens ?? 0);
-  state.tokenUsage.output_tokens += event.usage.output_tokens ?? 0;
+  const usage = {
+    input_tokens: event.usage.input_tokens ?? 0,
+    output_tokens: event.usage.output_tokens ?? 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: event.usage.cached_input_tokens ?? 0,
+  };
+  if (event.type === 'result') {
+    // Legacy result usage is a cumulative fallback. A transcript containing
+    // turn.completed events uses those per-turn records as the authority.
+    state.codexResultUsage = usage;
+    return true;
+  }
+  state.codexTurnCompletedUsage ??= emptyRedisTokenUsage();
+  addRedisTokenUsage(state.codexTurnCompletedUsage, usage);
   return true;
+}
+
+function applyAuthoritativeCodexUsage(state: ParseState): void {
+  const usage = state.codexTurnCompletedUsage ?? state.codexResultUsage;
+  if (usage) addRedisTokenUsage(state.tokenUsage, usage);
 }
 
 function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseState): boolean {
@@ -189,7 +213,7 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
     case 'tool_result':
       return processCodexToolResult(event, timestamp, state);
     case 'result':
-      return true;
+      return event.usage ? processCodexTurnCompleted(event, timestamp, state) : true;
     case 'item.completed':
       return processCodexItemCompleted(event, timestamp, state);
     case 'item.updated':
@@ -204,6 +228,24 @@ function processCodexEvent(event: CodexEvent, timestamp: string, state: ParseSta
 /**
  * Process Antigravity events (message, tool_use, tool_result, result)
  */
+function processAntigravityToolUse(
+  event: { tool_name?: string; parameters?: unknown; tool_id?: string },
+  timestamp: string,
+  state: ParseState
+): void {
+  flushPendingMessage(state, timestamp);
+  const id = event.tool_id;
+  if (id && state.emittedAntigravityToolUseIds.has(id)) return;
+  if (id) state.emittedAntigravityToolUseIds.add(id);
+  state.events.push({
+    type: 'tool_use' as const,
+    toolName: event.tool_name,
+    input: event.parameters as Record<string, unknown> | undefined,
+    id,
+    timestamp
+  });
+}
+
 function processAntigravityEvent(
   event: { type?: string; source?: string; role?: string; delta?: boolean; content?: string; tool_name?: string; parameters?: unknown; tool_id?: string; output?: string; result?: unknown; status?: string; stats?: { input_tokens?: number; output_tokens?: number; inputTokens?: number; outputTokens?: number } },
   timestamp: string,
@@ -229,7 +271,7 @@ function processAntigravityEvent(
     return;
   }
   if (event.type === 'tool_use') {
-    flushPendingMessage(state, timestamp);
+    processAntigravityToolUse(event, timestamp, state);
     return;
   }
   if (event.type === 'tool_result') {
@@ -604,16 +646,28 @@ function isAntigravityStreamEvent(
 function parseLine(line: string, state: ParseState): void {
   try {
     const event = JSON.parse(line);
-    const timestamp = event.created_at || event.timestamp || getNextSyntheticTimestamp(state);
+    const rawTimestamp = event.created_at || event.timestamp;
+    const timestamp = typeof rawTimestamp === 'number'
+      ? normalizeOpenCodeTimestamp(rawTimestamp)
+      : rawTimestamp || getNextSyntheticTimestamp(state);
 
-    if (isAntigravityStreamEvent(event, state)) {
+    // Session-qualified OpenCode events overlap with Antigravity's tool
+    // envelopes, so preserve their stronger identity before generic routing.
+    if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
+
+    if (event.type === 'message' && event.role === 'assistant' && event.delta === true && !hasOpenCodeSessionId(event)) {
       state.antigravityStreamActive = true;
       processAntigravityEvent(event, timestamp, state);
       return;
     }
 
+    if (isAntigravityStreamEvent(event, state)) {
+      processAntigravityEvent(event, timestamp, state);
+      state.antigravityStreamActive = true;
+      return;
+    }
+
     // Try OpenCode before Codex when session ID is present (their envelopes overlap)
-    if (shouldProcessOpenCodeBeforeCodex(event) && processOpenCodeEvent(event, timestamp, state)) return;
     // Try Codex event processing
     if (!processCodexEvent(event, timestamp, state)) {
       // Try OpenCode
@@ -643,6 +697,8 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     events: [],
     todos: [],
     tokenUsage: emptyRedisTokenUsage(),
+    codexTurnCompletedUsage: null,
+    codexResultUsage: null,
     lastOpenCodeCumulativeTopLevelUsage: null,
     pendingAssistantMessage: '',
     pendingAssistantTimestamp: null,
@@ -650,6 +706,7 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
     syntheticTimestampIndex: 0,
     seenEventFingerprints: new Set(),
+    emittedAntigravityToolUseIds: new Set(),
     emittedOpenCodeToolUseIds: new Set(),
     emittedOpenCodeToolResultIds: new Set()
   };
@@ -668,6 +725,7 @@ export function parseRedisOutput(lines: string[], options: RedisOutputParseOptio
   for (const line of lines) {
     parseLine(line, state);
   }
+  applyAuthoritativeCodexUsage(state);
 
   // Flush any remaining pending message
   flushPendingMessage(state, new Date().toISOString());

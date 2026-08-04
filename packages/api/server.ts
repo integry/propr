@@ -1,4 +1,4 @@
-import express, { Request, Response, RequestHandler } from 'express';
+import express, { Request, Response } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
 import { RedisClientType } from 'redis';
@@ -26,7 +26,11 @@ import {
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
-  createAgentRuntimeRoutes, createNotificationRoutes, attachmentUpload
+  createAgentRuntimeRoutes,
+  createNotificationRoutes,
+  createAdminRoutes,
+  createInstanceCatalogRoutes,
+  attachmentUpload
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
@@ -57,22 +61,17 @@ import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
 import { closeResources, createNotificationProjectionLease, getRedisRuntimeConfig,
   initializeServerRedis, type ShutdownTask } from './serverRuntime.js';
-
-type RouteMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
-type RouteHandler = RequestHandler;
-type RouteEntry = [RouteMethod, string, ...RouteHandler[]];
+import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
+import {
+  assertNoDuplicateRoutes,
+  createManagementRouteEntries,
+  createMemberCatalogRouteEntries,
+  registerRouteEntries,
+  type RouteEntry
+} from './routeRegistry.js';
 const demoMode = configureDemoMode();
 const notificationEntitlementRefreshMiddleware =
   createNotificationEntitlementRefreshMiddleware(db);
-
-function assertNoDuplicateRoutes(routes: RouteEntry[]): void {
-  const seen = new Set<string>();
-  routes.forEach(([method, path]) => {
-    const key = `${method} ${path}`;
-    if (seen.has(key)) throw new Error(`Duplicate route registration detected for ${key}`);
-    seen.add(key);
-  });
-}
 
 const redisRuntimeConfig = getRedisRuntimeConfig();
 const ioRedisClient = demoMode ? null : new Redis(redisRuntimeConfig.url, redisRuntimeConfig.options);
@@ -138,7 +137,7 @@ app.use('/api', (_req, res, next) => {
 });
 
 app.use('/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
@@ -174,7 +173,7 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   // compatibility dates). All other /api routes registered after this line are
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
-  app.use('/api', appEnsureAuthenticated);
+  app.use('/api', appEnsureAuthenticated, resolveAuthorization);
   app.use('/api', notificationEntitlementRefreshMiddleware);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
@@ -202,22 +201,16 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
   const repoImprovementsRoutes = createRepoImprovementsRoutes();
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
-  const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue }), notificationRoutes = createNotificationRoutes();
-  const register = (method: RouteMethod, path: string, ...handlers: RouteHandler[]): void => {
-    app[method](path, ...handlers);
-  };
+  const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
+  const notificationRoutes = createNotificationRoutes();
+  const adminRoutes = createAdminRoutes();
+  const instanceCatalogRoutes = createInstanceCatalogRoutes();
+  const agentVersionRoutes = createAgentVersionRoutes();
 
-  const routes: RouteEntry[] = [
+  const operationalRoutes: RouteEntry[] = [
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
     ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask], ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
-    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/config/followup-keywords', configRoutes.getFollowupKeywords], ['post', '/api/config/followup-keywords', configRoutes.postFollowupKeywords], ['get', '/api/config/followup-ignore-keywords', configRoutes.getFollowupIgnoreKeywords],
-    ['post', '/api/config/followup-ignore-keywords', configRoutes.postFollowupIgnoreKeywords], ['get', '/api/config/repos', configRoutes.getRepos], ['post', '/api/config/repos', configRoutes.postRepos], ['get', '/api/config/settings', configRoutes.getSettings],
-    ['post', '/api/config/settings', configRoutes.postSettings], ['get', '/api/config/pr-label', configRoutes.getPrLabel], ['post', '/api/config/pr-label', configRoutes.postPrLabel], ['get', '/api/config/ai-primary-tag', configRoutes.getAiPrimaryTag],
-    ['post', '/api/config/ai-primary-tag', configRoutes.postAiPrimaryTag], ['get', '/api/config/primary-processing-labels', configRoutes.getPrimaryProcessingLabels], ['post', '/api/config/primary-processing-labels', configRoutes.postPrimaryProcessingLabels], ['get', '/api/config/agents', configRoutes.getAgents],
-    ['post', '/api/config/agents', configRoutes.postAgents], ['get', '/api/config/summarization', configRoutes.getSummarizationSettings], ['post', '/api/config/summarization', configRoutes.postSummarizationSettings], ['get', '/api/config/repos/indexing-status', configRoutes.getRepositoriesIndexingStatus],
-    ['post', '/api/config/repos/trigger-indexing', configRoutes.triggerIndexing], ['post', '/api/config/repos/stop-indexing', configRoutes.stopIndexing], ['post', '/api/config/summarization/reindex-all', configRoutes.triggerReindexAll], ['get', '/api/config/agent-tank', configRoutes.getAgentTankSettings],
-    ['post', '/api/config/agent-tank', configRoutes.postAgentTankSettings], ['get', '/api/config/agent-tank/status', configRoutes.getAgentTankStatus], ['get', '/api/config/agent-tank/usage', configRoutes.getAgentTankUsage], ['post', '/api/config/agent-tank/refresh', configRoutes.postAgentTankRefresh],
-    ['get', '/api/config/agent-tank/detect', configRoutes.getAgentTankDetect], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
+    ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
     ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
     ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
@@ -237,29 +230,20 @@ function setupRoutes(): ReturnType<typeof createStatusRoutes> {
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
     ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences], ['get', '/api/notifications', notificationRoutes.getNotifications], ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount], ['get', '/api/notifications/config', notificationRoutes.getConfiguration], ['get', '/api/notifications/capabilities', notificationRoutes.getCapabilities],
     ['get', '/api/notifications/preferences', notificationRoutes.getPreferences], ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences], ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions], ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription], ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription], ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
-    ['get', '/api/agent-runtime/packages', agentRuntimeRoutes.getRuntimePackages],
-    ['get', '/api/agent-runtime/packages/search', agentRuntimeRoutes.searchRuntimePackages],
-    ['post', '/api/agent-runtime/packages/validate', agentRuntimeRoutes.validateRuntimePackages],
-    ['put', '/api/agent-runtime/packages', agentRuntimeRoutes.putRuntimePackages],
-    ['post', '/api/agent-runtime/packages/apply', agentRuntimeRoutes.applyRuntimePackages],
-    ['post', '/api/agents/:agentId/login-sessions', agentLoginRoutes.startLogin],
-    ['get', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.getLogin],
-    ['post', '/api/agents/:agentId/login-sessions/:sessionId/input', agentLoginRoutes.sendInput],
-    ['delete', '/api/agents/:agentId/login-sessions/:sessionId', agentLoginRoutes.cancelLogin],
+  ];
+  const routes = [
+    ...operationalRoutes,
+    ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
+    ...createManagementRouteEntries({
+      adminRoutes,
+      agentLoginRoutes,
+      agentRuntimeRoutes,
+      agentVersionRoutes,
+      configRoutes,
+    }),
   ];
   assertNoDuplicateRoutes(routes);
-  routes.forEach(([method, path, ...handlers]) => register(method, path, ...handlers));
-
-  const agentVersionRoutes = createAgentVersionRoutes();
-  const agentVersionRouteEntries: RouteEntry[] = [
-    ['get', '/api/agents/versions/:agentType', agentVersionRoutes.getVersions],
-    ['post', '/api/agents/:agentId/build-image', agentVersionRoutes.buildImage],
-    ['delete', '/api/agents/:agentType/images/cleanup', agentVersionRoutes.cleanupImages],
-    ['get', '/api/agents/:agentType/images', agentVersionRoutes.listImages],
-    ['post', '/api/agents/resolve-version', agentVersionRoutes.resolveVersionEndpoint],
-    ['get', '/api/agents/:agentType/image-tag', agentVersionRoutes.getImageTag],
-  ];
-  agentVersionRouteEntries.forEach(([method, path, handler]) => register(method, path, handler));
+  registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
 
   setupWebhookRoute();
@@ -355,6 +339,7 @@ async function start(): Promise<void> {
     await db.migrate.latest();
     logger.info('Database migrations completed successfully');
     if (demoMode) logger.info('Demo mode enabled with read-only synthetic user');
+    await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
       void notificationEntitlementRefreshMiddleware.recover().catch(error => logger.warn({ error: (error as Error).message }, 'Entitlement schedule recovery failed'));

@@ -1,6 +1,6 @@
 // CI trigger: 2026-02-18
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getTasks, getRepoConfig, MonitoredRepo } from '../api/proprApi';
+import { getTasks, getInstanceCatalog, MonitoredRepo } from '../api/proprApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
 
 // Debounce delay in milliseconds
@@ -61,10 +61,11 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
   useEffect(() => {
     const fetchRepositories = async () => {
       try {
-        const config = await getRepoConfig();
-        repositoriesCache.current = config.repos_to_monitor.filter(
-          (repo) => repo.enabled
-        );
+        const catalog = await getInstanceCatalog();
+        repositoriesCache.current = catalog.repositories.map(repository => ({
+          ...repository,
+          id: `${repository.name}:${repository.baseBranch || ''}`
+        }));
       } catch (err) {
         console.error('Failed to fetch repositories:', err);
       }

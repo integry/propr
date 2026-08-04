@@ -1,4 +1,16 @@
-import type { ReasoningLevel } from '@propr/shared';
+import type { AuthenticatedInstanceUser, ReasoningLevel } from '@propr/shared';
+
+export type CurrentUser = AuthenticatedInstanceUser;
+export type {
+  InstanceCatalogAgent,
+  InstanceCatalogRepository,
+  InstanceCatalogResponse,
+  InstanceMember,
+  InstanceMembersResponse,
+  InstancePermission,
+  InstanceRole,
+  InstanceRoleAuditEntry,
+} from '@propr/shared';
 
 export interface SystemAgentStatus {
   id: string;
@@ -119,7 +131,12 @@ export interface AgentConfig {
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
   modelReasoningLevels?: Record<string, ReasoningLevel>;
+  cliVersionType?: CliVersionType;
+  cliVersion?: string;
+  cliVersionResolved?: string;
 }
+
+export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 
 export interface SystemSettings {
   default_agent_alias?: string;

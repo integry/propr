@@ -7,6 +7,15 @@ import { getTasks, getRepositoryStats } from '../api/proprApi';
 const mockGetTasks = vi.mocked(getTasks);
 const mockGetRepositoryStats = vi.mocked(getRepositoryStats);
 
+const repositoryStats = (repository: string, total: number) => ({
+  repository,
+  total,
+  completed: 0,
+  failed: 0,
+  inProgress: 0,
+  successRate: 0,
+});
+
 let taskUpdateHandler: (() => void) | null = null;
 
 vi.mock('../api/proprApi', () => ({
@@ -77,7 +86,7 @@ describe('TaskList', () => {
   });
 
   it('keeps the repository filter visible in a loading state while stats are loading', async () => {
-    const statsRequest = deferred<{ repositories: Array<{ repository: string; total: number }> }>();
+    const statsRequest = deferred<Awaited<ReturnType<typeof getRepositoryStats>>>();
     mockGetTasks.mockResolvedValue({ tasks: [], total: 0 });
     mockGetRepositoryStats.mockReturnValue(statsRequest.promise);
 
@@ -91,7 +100,7 @@ describe('TaskList', () => {
     expect(screen.getByTestId('repos-loading').textContent).toBe('true');
 
     await act(async () => {
-      statsRequest.resolve({ repositories: [{ repository: 'integry/propr', total: 3 }] });
+      statsRequest.resolve({ repositories: [repositoryStats('integry/propr', 3)] });
       await statsRequest.promise;
     });
 
@@ -102,8 +111,8 @@ describe('TaskList', () => {
   it('refreshes repository stats when live task updates arrive', async () => {
     mockGetTasks.mockResolvedValue({ tasks: [], total: 0 });
     mockGetRepositoryStats
-      .mockResolvedValueOnce({ repositories: [{ repository: 'integry/propr', total: 1 }] })
-      .mockResolvedValueOnce({ repositories: [{ repository: 'integry/propr', total: 2 }] });
+      .mockResolvedValueOnce({ repositories: [repositoryStats('integry/propr', 1)] })
+      .mockResolvedValueOnce({ repositories: [repositoryStats('integry/propr', 2)] });
 
     render(
       <MemoryRouter>
@@ -124,7 +133,7 @@ describe('TaskList', () => {
 
   it('does not refetch repository stats when task query params change', async () => {
     mockGetTasks.mockResolvedValue({ tasks: [], total: 0 });
-    mockGetRepositoryStats.mockResolvedValue({ repositories: [{ repository: 'integry/propr', total: 1 }] });
+    mockGetRepositoryStats.mockResolvedValue({ repositories: [repositoryStats('integry/propr', 1)] });
 
     render(
       <MemoryRouter initialEntries={['/tasks']}>

@@ -41,6 +41,14 @@ export function applyPendingCommentCommandContext(jobData: CommentJobData, comme
     if (latestOverrideComment?.llmOverride !== undefined) {
         jobData.llm = latestOverrideComment.llmOverride;
     }
+    if (
+        latestCommandComment?.commandMode === 'review'
+        && !latestCommandComment.requestedModels?.length
+        && latestOverrideComment?.commandMode === 'use'
+        && latestOverrideComment.llmOverride
+    ) {
+        jobData.requestedModels = [latestOverrideComment.llmOverride];
+    }
 
     correlatedLogger.info({
         commandMode: jobData.commandMode,

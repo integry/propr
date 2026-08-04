@@ -78,7 +78,7 @@ const RepoImprovementsPanel: React.FC<RepoImprovementsPanelProps> = ({
   disabled = false,
   suggestions = [],
   onToggleSuggestion,
-  defaultModel = 'claude:claude-haiku-4-5-20251001',
+  defaultModel = '',
   defaultContextLevel = 50,
   lastGenerationTiming,
   onTodosSaved,

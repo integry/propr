@@ -15,7 +15,7 @@ import type { PostProcessingResult } from './issueJobHelpers.js';
 import { performFinalValidation } from './issueJobPostProcessing.js';
 import {
   initializeJobContext, getAuthenticatedClient, checkLabelConditions,
-  executeWorktreeOperations, markTaskComplete
+  ensureProcessingLabel, executeWorktreeOperations, markTaskComplete
 } from './issueJob/index.js';
 import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
 
@@ -87,9 +87,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     const labelCheck = checkLabelConditions(currentLabels, context);
     if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
 
-    if (!currentLabels.includes(AI_PROCESSING_TAG)) {
-      await safeAddLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
-    }
+    await ensureProcessingLabel(currentLabels, context, octokit);
 
     const updatedIssueRef: IssueJobData = { ...issueRef, title: `New Issue: ${currentIssueData.data.title}`, subtitle: `Preparing a PR for issue #${issueRef.number}` };
     await updateTaskTitleInStorage(taskId, updatedIssueRef, stateManager, correlatedLogger);

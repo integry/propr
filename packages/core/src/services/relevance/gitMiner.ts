@@ -1,6 +1,7 @@
 import { simpleGit, SimpleGit } from 'simple-git';
 import logger from '../../utils/logger.js';
 import { runLightweightLLMAnalysis, RunLightweightLLMAnalysisOptions } from '../../claude/claudeService.js';
+import { resolveConfiguredModel } from '../../config/configuredModel.js';
 
 export interface FileScore {
   path: string;
@@ -34,6 +35,7 @@ export interface SemanticMiningOptions {
     repoName: string;
   };
   correlationId?: string;
+  model?: string;
 }
 
 const MAX_COMMITS_PER_KEYWORD = 50;
@@ -211,9 +213,10 @@ export async function mineGitHistoryWithLLM(
       promptLength: userPrompt.length,
     };
 
+    const model = await resolveConfiguredModel(options.model);
     const llmOptions: RunLightweightLLMAnalysisOptions = {
       prompt,
-      model: 'haiku',
+      model,
       correlationId: options.correlationId || 'semantic-mining',
       worktreePath: options.worktreePath,
       githubToken: options.githubToken,

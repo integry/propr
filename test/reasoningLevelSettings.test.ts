@@ -525,6 +525,23 @@ describe('agent runtime reasoning level wiring', () => {
     assert.ok(configIndexes.some(index => args[index + 1] === 'model_reasoning_effort="xhigh"'));
   });
 
+  test('runs automated Codex executions without persisting resumable sessions', () => {
+    const args = (new CodexAgent(codexConfig) as unknown as {
+      buildDockerArgs(params: {
+        worktreePath: string;
+        githubToken: string;
+        issueNumber: number;
+      }): string[];
+    }).buildDockerArgs({
+      worktreePath: '/tmp/worktree',
+      githubToken: '',
+      issueNumber: 42,
+    });
+
+    const codexIndex = args.indexOf('codex');
+    assert.deepEqual(args.slice(codexIndex, codexIndex + 3), ['codex', 'exec', '--ephemeral']);
+  });
+
   test('passes Claude reasoning level through --effort', () => {
     const args = buildClaudeDockerArgs(claudeConfig, 1000, {
       worktreePath: '/tmp/worktree',
@@ -535,6 +552,7 @@ describe('agent runtime reasoning level wiring', () => {
     });
 
     assert.equal(args[args.indexOf('--effort') + 1], 'ultracode');
+    assert.ok(args.includes('--no-session-persistence'));
   });
 
   test('passes Claude auto through --effort', () => {

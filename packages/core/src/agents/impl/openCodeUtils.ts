@@ -5,12 +5,15 @@ import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
 import type { AgentConfig } from '../types.js';
+import { createContainerExecutionId } from './utils/containerExecutionId.js';
 export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from './openCodeModelIds.js';
 export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
 import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
+const CONTAINER_SOURCE_DATA_PATH = '/home/node/.local/share/opencode-source';
+const CONTAINER_RUNTIME_DATA_HOME = '/tmp/propr-opencode-data';
 
 // Hardening for user-configured agent env vars forwarded into the OpenCode
 // container: enforce POSIX-valid names, never forward GitHub credentials or
@@ -69,8 +72,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     ensureConfigPath(configPath);
     const envVars = buildEnvVars(config);
     const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, dataPath, managedCredentials);
-    const timestamp = Date.now().toString(36);
-    const shortTaskId = taskId ? taskId.slice(-8) : timestamp;
+    const shortTaskId = createContainerExecutionId(taskId);
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId, modelName);
     const workspaceMode = (readOnlyWorkspace ?? issueNumber === 0) ? 'ro' : 'rw';
@@ -88,7 +90,8 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
         '-v', `${worktreePath}:/home/node/workspace:${workspaceMode}`, '-v', '/tmp/git-processor:/tmp/git-processor:rw',
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
-        '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', 'XDG_DATA_HOME=/home/node/.local/share',
+        '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
+        '-e', 'PROPR_EPHEMERAL_STATE=1',
         ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars,
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
     ];
@@ -111,9 +114,9 @@ function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMo
         dockerArgs.indexOf('-w'),
         0,
         '-v',
-        `${dataMount.hostPath}:/home/node/.local/share/opencode:${dataMount.mode}`,
+        `${dataMount.hostPath}:${CONTAINER_SOURCE_DATA_PATH}:${dataMount.mode}`,
         '-e',
-        'XDG_DATA_HOME=/home/node/.local/share'
+        `PROPR_OPENCODE_SOURCE_DATA=${CONTAINER_SOURCE_DATA_PATH}`
     );
 }
 

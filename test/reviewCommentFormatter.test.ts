@@ -1,7 +1,12 @@
-import { test, describe } from 'node:test';
+import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
 const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
+const { closeConnection } = await import('@propr/core');
+
+after(async () => {
+    await closeConnection();
+});
 
 describe('buildReviewComment', () => {
     test('includes files omitted from the review diff', () => {

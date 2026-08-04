@@ -9,11 +9,9 @@ import logger from '../../utils/logger.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { loadSettings } from '../../config/configManager.js';
+import { resolveConfiguredModel } from '../../config/configuredModel.js';
 import { PlanningFailedError, getRawInputCharLimit, type MinimalLogger } from '../planning/index.js';
 import type { RefinePlanOptions, RefinePlanResult, RefinePlanEstimation } from './types.js';
-
-/** Default model for plan generation (high capability) */
-const DEFAULT_GENERATION_MODEL = 'opus';
 
 const TRUNCATION_MARKER = '\n\n…[truncated to fit the model input limit]…\n\n';
 
@@ -177,9 +175,9 @@ export async function refinePlan(options: RefinePlanOptions): Promise<RefinePlan
 
   // Refine with the model the plan was generated with (passed by the caller
   // from the draft) so refinement matches the original plan; fall back to the
-  // planner generation setting, then the default.
+  // planner generation setting, then the configured default agent.
   const settings = await loadSettings();
-  const generationModel = options.generationModel || settings.planner_generation_model || DEFAULT_GENERATION_MODEL;
+  const generationModel = await resolveConfiguredModel(options.generationModel || settings.planner_generation_model);
   correlatedLogger.info({ instruction, taskCount: currentPlan.length, repository, generationModel, hasOriginalContext: !!originalContext, draftId }, 'Refining plan');
 
   // Assemble within the model's raw input character limit so oversized plans /

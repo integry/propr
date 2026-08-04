@@ -161,6 +161,8 @@ export interface AgentExecutionResult {
     rawOutput?: string;
     exitCode?: number | null;
     error?: string;
+    /** Why an otherwise publishable implementation run stopped before completion. */
+    terminationReason?: AgentTerminationReason;
     commitMessage?: string | null;
     prompt?: string;
 
@@ -168,6 +170,8 @@ export interface AgentExecutionResult {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     conversationLog?: any[];
 }
+
+export type AgentTerminationReason = 'timeout' | 'max_turns';
 
 export interface Agent {
     readonly config: AgentConfig;

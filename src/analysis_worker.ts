@@ -7,7 +7,7 @@ import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import { getExecutionAnalysis } from '@propr/core';
 import { loadSettings, loadAutoFollowupScoreThreshold } from '@propr/core';
-import { resolveModelAlias } from '@propr/core';
+import { resolveConfiguredModel } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 
 process.on('uncaughtException', (error: Error) => {
@@ -255,8 +255,7 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
 
     try {
         const settings = await loadSettings();
-        const configuredModel = (settings.analysis_model_fast as string) || 'haiku';
-        const fastModel = resolveModelAlias(configuredModel);
+        const fastModel = await resolveConfiguredModel(settings.analysis_model_fast);
 
         const analysisReport = await getExecutionAnalysis({
             executionId,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -14,8 +14,7 @@ vi.mock('../../api/proprApi', () => ({
   uploadAttachment: vi.fn(),
   removeAttachment: vi.fn(),
   abortGeneration: vi.fn(),
-  getAgents: vi.fn(),
-  getRepoConfig: vi.fn(),
+  getInstanceCatalog: vi.fn(),
   getRepoBranches: vi.fn(),
   createDraft: vi.fn(),
   updateDraft: vi.fn(),

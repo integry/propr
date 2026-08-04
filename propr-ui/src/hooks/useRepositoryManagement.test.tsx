@@ -2,13 +2,20 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { useRepositoryManagement } from './useRepositoryManagement';
 import {
+  getInstanceCatalog,
   getRepoConfig,
   getAvailableGithubRepos,
   getRepositoriesIndexingStatus,
   getUserRepoPreferences,
-  stopRepositoryIndexing
+  stopRepositoryIndexing,
+  updateRepoConfig
 } from '../api/proprApi';
 import { triggerRepositoryIndexing } from '../api/repoIndexingApi';
+import { CommittedConfigWriteError } from '../api/apiClient';
+
+const authState = vi.hoisted(() => ({
+  permissions: ['instance.manage_settings']
+}));
 
 const socketState = vi.hoisted(() => ({
   isConnected: false,
@@ -31,12 +38,19 @@ const socketState = vi.hoisted(() => ({
 
 vi.mock('../api/proprApi', () => ({
   getRepoConfig: vi.fn(),
+  getInstanceCatalog: vi.fn(),
   updateRepoConfig: vi.fn(),
   getAvailableGithubRepos: vi.fn(),
   getRepositoriesIndexingStatus: vi.fn(),
   getUserRepoPreferences: vi.fn(),
   stopRepositoryIndexing: vi.fn(),
   updateUserRepoPreferences: vi.fn()
+}));
+
+vi.mock('../contexts/AuthContext', () => ({
+  useCurrentUser: () => authState,
+  userHasPermission: (user: { permissions: string[] } | null, permission: string) =>
+    user?.permissions.includes(permission) === true
 }));
 
 vi.mock('../api/repoIndexingApi', () => ({
@@ -57,12 +71,14 @@ vi.mock('../contexts/useSocket', () => ({
   })
 }));
 
+const mockGetInstanceCatalog = vi.mocked(getInstanceCatalog);
 const mockGetRepoConfig = vi.mocked(getRepoConfig);
 const mockGetAvailableGithubRepos = vi.mocked(getAvailableGithubRepos);
 const mockGetRepositoriesIndexingStatus = vi.mocked(getRepositoriesIndexingStatus);
 const mockGetUserRepoPreferences = vi.mocked(getUserRepoPreferences);
 const mockStopRepositoryIndexing = vi.mocked(stopRepositoryIndexing);
 const mockTriggerRepositoryIndexing = vi.mocked(triggerRepositoryIndexing);
+const mockUpdateRepoConfig = vi.mocked(updateRepoConfig);
 
 describe('useRepositoryManagement', () => {
   beforeEach(() => {
@@ -74,6 +90,7 @@ describe('useRepositoryManagement', () => {
     socketState.subscribeToIndexingUpdates.mockReset();
     socketState.unsubscribeFromIndexingUpdates.mockReset();
     socketState.onIndexingUpdate.mockReset();
+    authState.permissions = ['instance.manage_settings'];
 
     mockGetRepoConfig.mockResolvedValue({
       repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }]
@@ -92,6 +109,7 @@ describe('useRepositoryManagement', () => {
     mockGetUserRepoPreferences.mockResolvedValue({});
     mockStopRepositoryIndexing.mockResolvedValue({ success: true });
     mockTriggerRepositoryIndexing.mockResolvedValue({ success: true });
+    mockUpdateRepoConfig.mockResolvedValue({ success: true, repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] });
   });
 
   afterEach(() => {
@@ -132,6 +150,66 @@ describe('useRepositoryManagement', () => {
     });
 
     expect(mockGetRepositoriesIndexingStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the sanitized catalog and keeps installation controls inert for members', async () => {
+    authState.permissions = [];
+    mockGetInstanceCatalog.mockResolvedValue({
+      agents: [],
+      repositories: [{
+        name: 'integry/propr',
+        enabled: true,
+        baseBranch: 'release/2026'
+      }]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(mockGetRepoConfig).not.toHaveBeenCalled();
+    expect(mockGetInstanceCatalog).toHaveBeenCalledTimes(1);
+    expect(mockGetAvailableGithubRepos).not.toHaveBeenCalled();
+    expect(result.current.repos[0]).toMatchObject({
+      name: 'integry/propr',
+      enabled: true,
+      baseBranch: 'release/2026'
+    });
+
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+
+    expect(result.current.repos[0].enabled).toBe(true);
+    expect(mockUpdateRepoConfig).not.toHaveBeenCalled();
+  });
+
+  it('reloads authoritative repositories before surfacing a committed-write warning', async () => {
+    mockGetRepoConfig
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] })
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-current', name: 'integry/propr', enabled: true, alias: 'server-current', baseBranch: 'release/2026' }] });
+    mockUpdateRepoConfig.mockRejectedValueOnce(new CommittedConfigWriteError(409, {
+      committed: true,
+      warning: 'Repositories were saved, but the lock was lost afterward.',
+      lock_lost_after_commit: true,
+    }));
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    await waitFor(() => expect(result.current.saveStatus).toBe('error'));
+    expect(mockGetRepoConfig).toHaveBeenCalledTimes(2);
+    expect(result.current.repos[0]).toMatchObject({ id: 'repo-current', enabled: true, alias: 'server-current' });
+    expect(result.current.error).toContain('saved');
+  });
+
+  it('blocks a blind retry when committed repository state cannot be refreshed', async () => {
+    mockGetRepoConfig
+      .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] })
+      .mockRejectedValueOnce(new Error('refresh unavailable'));
+    mockUpdateRepoConfig.mockRejectedValueOnce(new CommittedConfigWriteError(500, { committed: true, error: 'Repositories were saved, but publication failed.' }));
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    await waitFor(() => expect(result.current.saveStatus).toBe('error'));
+    expect(result.current.error).toContain('Reload this page before editing repositories again');
+    act(() => result.current.handleToggleRepo(result.current.repos[0].id)); expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1);
   });
 
   it('applies branch-aware websocket updates and clears stale progress for terminal states', async () => {

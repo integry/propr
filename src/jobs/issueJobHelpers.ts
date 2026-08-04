@@ -8,7 +8,8 @@ import {
     MODEL_INFO_MAP,
     buildAgentModelLlmLabel,
     getAgentTypeFromModel,
-    isEpicBranch
+    isEpicBranch,
+    resolveAgentTerminationReason
 } from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
 export {
@@ -52,6 +53,15 @@ interface CreatePROptions {
     PR_LABEL: string;
     correlatedLogger: Logger;
     issueTitle: string;
+}
+
+export function buildIssueReference(
+    issueNumber: number,
+    hasCommit: boolean,
+    claudeResult: ClaudeCodeResponse | null
+): string {
+    const incompleteExecution = claudeResult ? resolveAgentTerminationReason(claudeResult) : undefined;
+    return hasCommit && !incompleteExecution ? `Closes #${issueNumber}` : `Addresses #${issueNumber}`;
 }
 
 export function getPullRequestModelLabel(
@@ -170,7 +180,7 @@ export async function createPullRequest(
     const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
     const prBody = `## AI Implementation Summary
 
-${commitResult ? `Closes #${issueRef.number}` : `Addresses #${issueRef.number}`}
+${buildIssueReference(issueRef.number, commitResult !== null, claudeResult)}
 
 **Branch:** \`${worktreeInfo.branchName}\`
 **Commits:** ${commitResult ? `✅ Changes committed (${commitResult.commitHash.substring(0, 7)})` : '❌ No changes made'}

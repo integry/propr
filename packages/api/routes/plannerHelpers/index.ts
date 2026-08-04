@@ -18,8 +18,20 @@ export { setupRepoContext, getRefineRepoContext } from './repoSetup.js';
 // Background refinement
 export { runBackgroundRefinement } from './refineBackground.js';
 
+// Long-running operation guards
+export {
+  ACTIVE_DRAFT_OPERATION_STATUSES,
+  claimDraftPreparation,
+  claimDraftOperation,
+  hasRunningPlannerContainer,
+  isDraftOperationActive,
+  releaseDraftPreparation,
+  recoverStaleRefinement,
+  REFINEMENT_STALE_AFTER_MS
+} from './operationGuard.js';
+
 // Utility functions
-export { updateDraftContextConfig, runBackgroundGeneration, scoreDraftsBySearch, buildIssueSummaries, parseDraftJsonFields } from './utils.js';
+export { updateDraftContextConfig, runBackgroundGeneration, selectRefinementModel, scoreDraftsBySearch, buildIssueSummaries, parseDraftJsonFields } from './utils.js';
 
 // Handlers
 export * from './handlers/index.js';

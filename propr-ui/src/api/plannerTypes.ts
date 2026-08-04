@@ -21,6 +21,13 @@ export interface GenerationTrace extends Omit<DraftUpdateGenerationTrace, 'steps
   steps: GenerationStep[];
 }
 
+export interface GenerationStartResponse {
+  success: true;
+  status: 'generating';
+  message: string;
+  runId: string;
+}
+
 export interface PlannerAttachment {
   id: string;
   originalName: string;
@@ -79,6 +86,7 @@ export interface PreviewStats {
   maxTokens?: number;
   modelName?: string;
   modelMaxContextTokens?: number;
+  attachmentTokens?: number;
   /** Estimated percentage of the 5-hour session usage this task will consume */
   usageEstimatePercent?: number;
 }
@@ -154,7 +162,7 @@ export interface DraftContextConfig {
   autoFiles?: string[];
   contextRepositories?: ContextRepository[];
   granularityEnforcement?: GranularityEnforcementMetadata;
-  generationModel?: string;
+  generationModel?: string | null;
   /** Files manually excluded from context by the user */
   excludedFiles?: string[];
   contextCache?: { fileTokenCounts?: Record<string, number> };
@@ -177,7 +185,7 @@ export interface DraftContextConfig {
 
 export interface RefinementResult {
   status?: 'in_progress' | 'completed' | 'failed';
-  action?: 'modified' | 'answered' | 'both';
+  action?: 'modified' | 'answered' | 'both' | 'cancelled';
   summary?: string;
   /** Error message when status is 'failed', for display to the user. */
   error?: string;

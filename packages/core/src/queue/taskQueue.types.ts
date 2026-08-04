@@ -57,7 +57,7 @@ export interface CommentJobData {
     commandMeta?: CommandMeta;
     /** Flattened command mode for queue serialization; defaults to 'default' when absent */
     commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
-    /** Requested model labels for /review commands */
+    /** Explicit model selections from /review or /use commands */
     requestedModels?: string[];
     /** Extra instructions from the slash command body */
     commandInstructions?: string;
@@ -76,6 +76,7 @@ export interface UnprocessedComment {
     hasCodeContext?: boolean;
     commandMeta?: CommandMeta;
     commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+    /** Explicit model selections from /review or /use commands */
     requestedModels?: string[];
     commandInstructions?: string;
     llmOverride?: string | null;
@@ -150,6 +151,7 @@ export type JobData = IssueJobData | CommentJobData | TaskImportJobData | Analys
 
 export interface ClaudeOutputResult {
     type?: string;
+    subtype?: string;
     is_error?: boolean;
     result?: string;
     total_cost_usd?: number;
@@ -175,6 +177,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
+    terminationReason?: 'timeout' | 'max_turns';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }

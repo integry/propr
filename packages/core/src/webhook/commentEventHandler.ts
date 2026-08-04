@@ -709,10 +709,16 @@ function buildCommandJobFields(commandMeta: CommandMeta): CommandJobFields {
         ? commandMeta.mode
         : 'default';
 
+    const requestedModels = commandMeta.mode === 'review'
+        ? commandMeta.models
+        : commandMeta.mode === 'use' && commandMeta.models.length > 0
+            ? [resolveModelAlias(commandMeta.models[0])]
+            : undefined;
+
     return {
         commandMeta,
         commandMode,
-        requestedModels: commandMeta.mode === 'review' ? commandMeta.models : undefined,
+        requestedModels,
         commandInstructions: 'instructions' in commandMeta ? commandMeta.instructions : undefined,
     };
 }

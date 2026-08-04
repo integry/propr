@@ -1,4 +1,5 @@
 import { getAuthenticatedOctokit } from '@propr/core';
+import { resolveAgentTerminationReason } from '@propr/core';
 import type { ClaudeCodeResponse, AgentExecutionResult } from '@propr/core';
 
 export interface PRFile {
@@ -253,6 +254,7 @@ function isDocumentationFile(filename: string): boolean {
  * with existing post-processing code.
  */
 export function agentResultToClaudeResponse(result: AgentExecutionResult): ClaudeCodeResponse {
+    const terminationReason = resolveAgentTerminationReason(result);
     return {
         success: result.success,
         model: result.modelUsed,
@@ -261,12 +263,15 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
         output: null,
         sessionId: result.sessionId || null,
         conversationId: result.conversationId,
-        finalResult: result.summary ? { type: 'result', result: result.summary } : null,
+        finalResult: result.summary || terminationReason === 'max_turns'
+            ? { type: 'result', result: result.summary, subtype: terminationReason === 'max_turns' ? 'error_max_turns' : undefined }
+            : null,
         rawOutput: result.rawOutput,
         summary: result.summary || null,
         logs: result.logs,
         exitCode: result.exitCode ?? null,
         error: result.error,
+        terminationReason,
         modifiedFiles: result.modifiedFiles,
         commitMessage: result.commitMessage || null,
         conversationLog: result.conversationLog,

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities';
+import type { DraggableAttributes } from '@dnd-kit/core';
+import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities';
 import {
   Plus,
   ChevronDown,
@@ -22,7 +23,7 @@ export interface CategoryHeaderProps {
   onDeleteCategory?: (categoryId: string) => void;
   disabled?: boolean;
   isSortable?: boolean;
-  sortableAttributes?: Record<string, unknown>;
+  sortableAttributes?: DraggableAttributes;
   sortableListeners?: SyntheticListenerMap;
 }
 

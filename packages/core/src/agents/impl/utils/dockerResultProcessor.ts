@@ -9,6 +9,8 @@ import { AgentExecutionResult, TokenUsage } from '../../types.js';
 import { ExecutionResult } from '../../../claude/docker/dockerExecutor.js';
 import { parseStreamJsonOutput } from '../../../claude/claudeHelpers.js';
 import { getCorrectedTokenUsage, ensurePromptInConversationLog } from './tokenUtils.js';
+import { getClaudeAnalysisText } from './claudeOutputHelpers.js';
+import { describeAgentTermination, resolveAgentTerminationReason } from '../../termination.js';
 
 /**
  * Extracts a commit message from Claude's summary.
@@ -107,13 +109,19 @@ export function processDockerResult(
     );
 
     // Extract commit message from Claude's summary
-    const summary = claudeOutput.finalResult?.result ?? undefined;
-    const commitMessage = extractCommitMessage(summary);
     const executionError = extractExecutionError(claudeOutput, result.stderr || '');
+    const terminationReason = resolveAgentTerminationReason({
+        timedOut: result.timedOut,
+        subtype: claudeOutput.finalResult?.subtype,
+        error: executionError
+    });
+    const summary = claudeOutput.finalResult?.result
+        ?? (terminationReason ? getClaudeAnalysisText(claudeOutput) || undefined : undefined);
+    const commitMessage = extractCommitMessage(summary);
 
     // Build the agent execution response
     const response: AgentExecutionResult = {
-        success: claudeOutput.success,
+        success: claudeOutput.success && !terminationReason,
         executionTimeMs: executionTime,
         logs: result.stderr || '',
         exitCode: result.exitCode,
@@ -125,7 +133,8 @@ export function processDockerResult(
         modifiedFiles: [],
         commitMessage,
         summary,
-        error: executionError,
+        error: executionError || (terminationReason ? describeAgentTermination(terminationReason) : undefined),
+        terminationReason,
         prompt,
         conversationLog: fullConversationLog,
         tokenUsage: correctedTokenUsage

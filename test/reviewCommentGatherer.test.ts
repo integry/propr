@@ -383,6 +383,9 @@ describe('getPendingReviewState logic', () => {
         };
     }
 
+    const recentIso = (hoursAgo: number): string =>
+        new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
+
     function simulatePendingReviewState(
         allComments: PRComment2[],
         processedIds: string[] = [],
@@ -423,8 +426,8 @@ describe('getPendingReviewState logic', () => {
     }
 
     test('returns latest score from most recent comment', () => {
-        const older = makeScoredComment(1, 4, '2026-04-27T10:00:00Z');
-        const newer = makeScoredComment(2, 7, '2026-04-28T10:00:00Z');
+        const older = makeScoredComment(1, 4, recentIso(24));
+        const newer = makeScoredComment(2, 7, recentIso(1));
         const state = simulatePendingReviewState([older, newer]);
         assert.strictEqual(state.latestScore, 7);
         assert.strictEqual(state.hasPendingReview, true);
@@ -432,12 +435,12 @@ describe('getPendingReviewState logic', () => {
     });
 
     test('skips error comments when finding latest score', () => {
-        const good = makeScoredComment(1, 6, '2026-04-27T10:00:00Z');
+        const good = makeScoredComment(1, 6, recentIso(24));
         const errComment: PRComment2 = {
             id: 2,
             body: '## Review\nFailed\nScore: 9/10\n<!-- propr:ai-review model="x" error="true" -->',
             user: { login: 'propr-bot' },
-            created_at: '2026-04-28T10:00:00Z',
+            created_at: recentIso(1),
         };
         const state = simulatePendingReviewState([good, errComment]);
         assert.strictEqual(state.latestScore, 6);
@@ -464,8 +467,8 @@ describe('getPendingReviewState logic', () => {
     });
 
     test('skips processed comments and finds score from remaining', () => {
-        const processed = makeScoredComment(1, 3, '2026-04-27T10:00:00Z');
-        const unprocessed = makeScoredComment(2, 8, '2026-04-28T10:00:00Z');
+        const processed = makeScoredComment(1, 3, recentIso(24));
+        const unprocessed = makeScoredComment(2, 8, recentIso(1));
         const state = simulatePendingReviewState([processed, unprocessed], ['1']);
         assert.strictEqual(state.latestScore, 8);
         assert.strictEqual(state.unprocessedComments.length, 1);
@@ -476,9 +479,9 @@ describe('getPendingReviewState logic', () => {
             id: 1,
             body: '## Review\nFindings only.\n<!-- propr:ai-review model="x" -->',
             user: { login: 'propr-bot' },
-            created_at: '2026-04-28T12:00:00Z',
+            created_at: recentIso(1),
         };
-        const scored = makeScoredComment(2, 5, '2026-04-28T10:00:00Z');
+        const scored = makeScoredComment(2, 5, recentIso(3));
         const state = simulatePendingReviewState([unscored, scored]);
         // Most recent (unscored) has no score, so falls through to scored one
         assert.strictEqual(state.latestScore, 5);

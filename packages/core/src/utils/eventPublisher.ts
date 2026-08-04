@@ -232,6 +232,7 @@ class EventPublisher {
    */
   async publishDraftUpdate(params: {
     draftId: string;
+    runId?: string;
     step: string;
     status: StepStatus;
     data?: Record<string, unknown>;
@@ -242,6 +243,7 @@ class EventPublisher {
     const payload: DraftUpdatePayload = {
       eventType: DRAFT_UPDATE,
       draftId: params.draftId,
+      runId: params.runId,
       step: params.step,
       status: params.status,
       timestamp: params.timestamp ?? this.now().toISOString(),

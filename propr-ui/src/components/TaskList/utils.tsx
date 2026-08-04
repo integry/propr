@@ -137,7 +137,7 @@ export const formatRelativeTime = (dateString: string | undefined): string => {
   return date.toLocaleDateString();
 };
 
-export const formatDuration = (startTime: string | undefined, endTime: string | undefined): string => {
+export const formatDuration = (startTime: string | null | undefined, endTime: string | null | undefined): string => {
   if (!startTime) return '--';
 
   const end = endTime ? new Date(endTime) : new Date();

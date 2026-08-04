@@ -8,6 +8,7 @@ import {
   DraftWithPlan,
   DraftContextConfig
 } from '../../api/proprApi';
+import { getDraftContextConfig } from './setupWizardDraftConfig';
 
 export type DraftSetupSnapshot = Pick<
   DraftContextConfig,
@@ -31,19 +32,15 @@ export function constructDraftWithPlan(draft: PlannerDraft, setupSnapshot?: Draf
     ...draft,
     plan_json: [],
     chat_history: [],
-    context_config: setupSnapshot ? { ...draft.context_config, ...setupSnapshot } : draft.context_config,
+    context_config: { ...(getDraftContextConfig(draft) ?? {}), ...setupSnapshot },
     refinement_result: undefined
   };
 }
 
 export function attachResolvedBaseBranch<T extends PlannerDraft>(draft: T, setupSnapshot?: DraftSetupSnapshot): T & { context_config?: DraftContextConfig } {
-  if (!setupSnapshot) {
-    return draft;
-  }
-
   return {
     ...draft,
-    context_config: { ...draft.context_config, ...setupSnapshot }
+    context_config: { ...(getDraftContextConfig(draft) ?? {}), ...setupSnapshot }
   };
 }
 

@@ -117,7 +117,7 @@ function applyOpenCodeUsage(event: OpenCodeEvent, state: OpenCodeParseState): vo
     }
 }
 
-export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; tool?: unknown; tool_name?: unknown; name?: unknown; input?: unknown; parameters?: unknown; args?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {
+export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; tool?: unknown; tool_name?: unknown; name?: unknown; input?: unknown; parameters?: unknown; args?: unknown; error?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {
     const type = typeof event.type === 'string' ? event.type.toLowerCase() : undefined;
     const message = event.message && typeof event.message === 'object'
         ? event.message as { role?: unknown; parts?: unknown[] }
@@ -131,7 +131,7 @@ export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknow
     );
 }
 
-function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }, type: string | undefined, message: { role?: unknown; parts?: unknown[] } | null): boolean {
+function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; error?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }, type: string | undefined, message: { role?: unknown; parts?: unknown[] } | null): boolean {
     const hasOpenCodeIdentity = Boolean(event.sessionID || event.sessionId || event.session_id);
     const hasUsage = hasOpenCodeResultUsage(event, type, hasOpenCodeIdentity);
     const hasNestedUsage = hasOpenCodeNestedUsage(event);
@@ -145,6 +145,7 @@ function hasOpenCodeEventPayload(event: { sessionID?: unknown; sessionId?: unkno
         hasResponseText,
         Boolean(type && OPEN_CODE_TEXT_EVENT_TYPES.has(type) && hasOpenCodeTextField(event)),
         Boolean(hasOpenCodeIdentity && type && OPEN_CODE_TOOL_EVENT_TYPES.has(type)),
+        Boolean(hasOpenCodeIdentity && type === 'error' && event.error),
         Boolean(type === 'result' && hasUsage),
         Boolean(hasOpenCodeIdentity && (hasUsage || hasNestedUsage))
     ];

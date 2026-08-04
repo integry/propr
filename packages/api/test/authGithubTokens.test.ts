@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, test } from 'node:test';
+import { closeConnection } from '@propr/core';
 import type { NextFunction, Request, Response as ExpressResponse } from 'express';
-import { closeConnection } from '../../core/src/db/connection.js';
 import { createEnsureAuthenticated, ensureAuthenticated } from '../auth.js';
 import { isGitHubTokenExpired } from '../authGithubTokens.js';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
@@ -10,8 +10,6 @@ import type { GitHubUser } from '../authTypes.js';
 
 const originalFetch = globalThis.fetch;
 const originalDateNow = Date.now;
-
-after(async () => closeConnection());
 
 function createUser(overrides: Partial<GitHubUser> = {}): GitHubUser {
   return {
@@ -93,6 +91,10 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   Date.now = originalDateNow;
   resetConfiguredDemoMode();
+});
+
+after(async () => {
+  await closeConnection();
 });
 
 test('isGitHubTokenExpired handles missing, future, exact, and past expiry values', () => {

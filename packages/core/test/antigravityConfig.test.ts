@@ -207,22 +207,16 @@ test('Antigravity display log keeps planner analysis and drops tool output', () 
     assert.deepEqual(filtered[0], transcript[0]);
 });
 
-test('Antigravity session recovery reads last conversation cache and transcript', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'antigravity-config-'));
-    const previousConfigPath = process.env.ANTIGRAVITY_CONFIG_PATH;
-    process.env.ANTIGRAVITY_CONFIG_PATH = tempDir;
+test('Antigravity session recovery reads and removes the exported transient transcript', async () => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'propr-antigravity-transcript-'));
+    const previousTranscriptRoot = process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT;
+    process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT = tempDir;
 
     try {
         const sessionId = '758451e9-8997-4c87-b246-c99436a3629d';
-        await fs.promises.mkdir(path.join(tempDir, 'antigravity-cli', 'cache'), { recursive: true });
-        await fs.promises.mkdir(path.join(tempDir, 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs'), { recursive: true });
+        const transcriptPath = path.join(tempDir, 'transcript.jsonl');
         await fs.promises.writeFile(
-            path.join(tempDir, 'antigravity-cli', 'cache', 'last_conversations.json'),
-            JSON.stringify({ '/home/node/workspace': sessionId }),
-            'utf8'
-        );
-        await fs.promises.writeFile(
-            path.join(tempDir, 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl'),
+            transcriptPath,
             JSON.stringify({
                 step_index: 2,
                 source: 'MODEL',
@@ -236,15 +230,16 @@ test('Antigravity session recovery reads last conversation cache and transcript'
 
         const agent = new AntigravityAgent(createAntigravityConfig());
         const recovered = await (agent as unknown as {
-            readPersistedSessionOutput(worktreePath: string): Promise<{ sessionId?: string; summary?: string; conversationLog: unknown[]; tokenUsage?: { input_tokens?: number; output_tokens?: number } }>;
-        }).readPersistedSessionOutput('/tmp/worktree');
+            readTransientSessionOutput(transcriptPath: string, sessionId: string): Promise<{ sessionId?: string; summary?: string; conversationLog: unknown[]; tokenUsage?: { input_tokens?: number; output_tokens?: number } }>;
+        }).readTransientSessionOutput(transcriptPath, sessionId);
 
         assert.equal(recovered.sessionId, sessionId);
         assert.equal(recovered.summary, 'persisted-session-ok');
         assert.equal(recovered.conversationLog.length, 1);
+        assert.equal(fs.existsSync(transcriptPath), false);
     } finally {
-        if (previousConfigPath === undefined) delete process.env.ANTIGRAVITY_CONFIG_PATH;
-        else process.env.ANTIGRAVITY_CONFIG_PATH = previousConfigPath;
+        if (previousTranscriptRoot === undefined) delete process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT;
+        else process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT = previousTranscriptRoot;
         await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
 });
@@ -254,7 +249,7 @@ test('Antigravity config path uses ANTIGRAVITY_CONFIG_PATH env override', () => 
         const agent = new AntigravityAgent(createAntigravityConfig({ configPath: '/tmp/stored-config' }));
         const args = buildDockerArgs(agent);
 
-        assert.ok(args.includes('/tmp/antigravity-config:/home/node/.gemini:rw'));
+        assert.ok(args.includes('/tmp/antigravity-config:/home/node/.gemini-source:rw'));
     });
 });
 
@@ -263,20 +258,22 @@ test('Antigravity config path uses stored config when no env override is set', (
         const agent = new AntigravityAgent(createAntigravityConfig({ configPath: '~/.gemini-test' }));
         const args = buildDockerArgs(agent);
 
-        assert.ok(args.includes(`${os.homedir()}/.gemini-test:/home/node/.gemini:rw`));
+        assert.ok(args.includes(`${os.homedir()}/.gemini-test:/home/node/.gemini-source:rw`));
     });
 });
 
-test('Antigravity labels resolve to Antigravity models', async () => {
+test('Antigravity labels resolve to Antigravity models', async (t) => {
     const registry = AgentRegistry.getInstance() as unknown as {
         initialized: boolean;
         agents: Map<string, Agent>;
         agentsByAlias: Map<string, Agent>;
         defaultAgentAlias: string | null;
+        ensureInitialized(): Promise<void>;
     };
     const config = createAntigravityConfig();
     const fakeAgent = { config } as Agent;
 
+    t.mock.method(registry, 'ensureInitialized', async () => undefined);
     registry.initialized = true;
     registry.defaultAgentAlias = config.alias;
     registry.agents = new Map([[config.id, fakeAgent]]);

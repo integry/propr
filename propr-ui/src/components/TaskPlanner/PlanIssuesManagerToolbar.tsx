@@ -2,7 +2,7 @@ import React from 'react';
 import { Check, CheckCircle, Info, Layers, Loader2, ArrowDownToLine } from 'lucide-react';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
-import { AgentConfig } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import AgentModelSelector from './AgentModelSelector';
 import { UltrafixSettingsControls } from './PlanIssueRowComponents';
 
@@ -59,11 +59,11 @@ export const TasksBeingCreated: React.FC<{
 );
 
 interface ExecutionOptionsToolbarProps {
-  agents: AgentConfig[];
-  globalAgent: string; globalModel: string; globalIsMulti: boolean;
+  agents: InstanceCatalogAgent[];
+  globalAgent: string | null; globalModel: string | null; globalIsMulti: boolean;
   globalSelectedModels: AgentModelPair[]; applyingGlobal: boolean;
-  handleGlobalAgentChange: (agent: string) => void;
-  handleGlobalModelChange: (model: string) => void;
+  handleGlobalAgentChange: (agent: string | null) => void;
+  handleGlobalModelChange: (model: string | null) => void;
   handleGlobalMultiToggle: (isMulti: boolean) => void;
   handleGlobalMultiModelChange: (models: AgentModelPair[]) => void;
   handleApplyToAll: () => void;

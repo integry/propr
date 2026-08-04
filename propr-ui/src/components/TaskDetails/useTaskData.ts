@@ -11,36 +11,127 @@ import {
   HistoryItem,
   TaskInfo,
   LiveDetails,
+  LiveEvent,
+  TodoItem,
   AnalysisData,
   UsageMetricRecord
 } from './types';
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
-import { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import type { TaskUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import { isAnalysisData, normalizeAnalysisData } from './apiDataGuards';
 
-const eventFingerprint = (event: LiveDetails['events'][number]) => JSON.stringify({
-  type: event.type,
-  content: event.content,
-  toolName: event.toolName,
-  input: event.input,
-  toolUseId: event.toolUseId,
-  result: event.result,
-  isError: event.isError,
-});
+interface TaskHistoryData {
+  history?: HistoryItem[];
+  taskInfo?: TaskInfo | null;
+  usageMetricRecords?: UsageMetricRecord[];
+}
+
+const normalizeTodoStatus = (status: string): TodoItem['status'] => {
+  if (status === 'in_progress' || status === 'completed') return status;
+  return 'pending';
+};
+
+const stableTodoContentId = (content: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `todo-${(hash >>> 0).toString(36)}`;
+};
+
+export const normalizeLiveTodos = (todos: TaskLiveUpdatePayload['todos']): TodoItem[] => {
+  const occurrences = new Map<string, number>();
+  return todos.map(todo => {
+    const baseId = todo.id?.trim() || stableTodoContentId(todo.content);
+    const occurrence = occurrences.get(baseId) ?? 0;
+    occurrences.set(baseId, occurrence + 1);
+    return {
+      id: occurrence === 0 ? baseId : `${baseId}-${occurrence}`,
+      content: todo.content,
+      status: normalizeTodoStatus(todo.status)
+    };
+  });
+};
+
+const legacyEventFingerprint = (event: LiveDetails['events'][number]) => {
+  // A tool use and its result intentionally share toolUseId, so retain the
+  // event type while still distinguishing otherwise identical tool calls.
+  if (event.toolUseId) return `tool:${JSON.stringify({
+    type: event.type,
+    toolUseId: event.toolUseId,
+    timestamp: event.timestamp,
+    toolName: event.toolName,
+    input: event.input,
+    result: event.result,
+    isError: event.isError,
+  })}`;
+  return `legacy:${JSON.stringify({
+    type: event.type,
+    content: event.content,
+    timestamp: event.timestamp,
+    toolName: event.toolName,
+    input: event.input,
+    result: event.result,
+    isError: event.isError,
+  })}`;
+};
 
 const appendUniqueEvents = (
   currentEvents: LiveDetails['events'],
   newEvents: LiveDetails['events']
 ) => {
   if (newEvents.length === 0) return currentEvents;
-  const seen = new Set(currentEvents.map(eventFingerprint));
+  const seenIds = new Set(currentEvents.flatMap(event => event.id ? [event.id] : []));
+  const existingLegacyOccurrences = new Map<string, number>();
+  for (const event of currentEvents) {
+    if (event.id) continue;
+    const fingerprint = legacyEventFingerprint(event);
+    existingLegacyOccurrences.set(fingerprint, (existingLegacyOccurrences.get(fingerprint) ?? 0) + 1);
+  }
+  const incomingLegacyOccurrences = new Map<string, number>();
   const uniqueNewEvents = newEvents.filter(event => {
-    const fingerprint = eventFingerprint(event);
-    if (seen.has(fingerprint)) return false;
-    seen.add(fingerprint);
+    if (event.id) {
+      if (seenIds.has(event.id)) return false;
+      seenIds.add(event.id);
+      return true;
+    }
+    const fingerprint = legacyEventFingerprint(event);
+    const occurrence = incomingLegacyOccurrences.get(fingerprint) ?? 0;
+    incomingLegacyOccurrences.set(fingerprint, occurrence + 1);
+    if (occurrence < (existingLegacyOccurrences.get(fingerprint) ?? 0)) return false;
     return true;
   });
   return uniqueNewEvents.length > 0 ? [...currentEvents, ...uniqueNewEvents] : currentEvents;
+};
+
+export type IncrementalTaskLiveUpdatePayload = Pick<TaskLiveUpdatePayload, 'taskId'>
+  & Partial<Omit<TaskLiveUpdatePayload, 'taskId'>>;
+
+const hasUpdateField = (
+  payload: IncrementalTaskLiveUpdatePayload,
+  field: keyof TaskLiveUpdatePayload
+): boolean =>
+  Object.prototype.hasOwnProperty.call(payload, field);
+
+export const mergeIncrementalLiveDetails = (
+  previous: LiveDetails,
+  payload: IncrementalTaskLiveUpdatePayload
+): LiveDetails => {
+  const newEvents: LiveEvent[] = payload.events || [];
+  return {
+    events: appendUniqueEvents(previous.events, newEvents),
+    todos: hasUpdateField(payload, 'todos')
+      ? normalizeLiveTodos(payload.todos ?? [])
+      : previous.todos,
+    currentTask: hasUpdateField(payload, 'currentTask')
+      ? payload.currentTask ?? null
+      : previous.currentTask,
+    tokenUsage: hasUpdateField(payload, 'tokenUsage')
+      ? payload.tokenUsage ?? null
+      : previous.tokenUsage,
+  };
 };
 
 export const useTaskData = (taskId: string | undefined) => {
@@ -67,7 +158,7 @@ export const useTaskData = (taskId: string | undefined) => {
     if (!taskId) return;
 
     try {
-      const data = await getTaskHistory(taskId);
+      const data = await getTaskHistory(taskId) as TaskHistoryData;
       setHistory(data.history || []);
       setTaskInfo(data.taskInfo || null);
       setUsageMetricRecords(data.usageMetricRecords || []);
@@ -128,7 +219,8 @@ export const useTaskData = (taskId: string | undefined) => {
   const handleTaskLiveUpdate = useCallback((payload: TaskLiveUpdatePayload) => {
     if (payload.taskId !== taskId) return;
 
-    const newEvents = payload.events || [];
+    const newEvents: LiveEvent[] = payload.events || [];
+    const newTodos = normalizeLiveTodos(payload.todos || []);
 
     if (!hasReceivedInitialDataRef.current) {
       // First message: this is the initial full state
@@ -136,18 +228,15 @@ export const useTaskData = (taskId: string | undefined) => {
       hasReceivedInitialDataRef.current = true;
       setLiveDetails({
         events: newEvents,
-        todos: payload.todos || [],
+        todos: newTodos,
         currentTask: payload.currentTask || null,
+        tokenUsage: payload.tokenUsage || null,
       });
     } else {
       // Subsequent messages: these are incremental updates (only new events)
       // Append new events to existing ones
       console.log(`[useTaskData] Received incremental update via WebSocket: ${newEvents.length} new events`);
-      setLiveDetails(prev => ({
-        events: appendUniqueEvents(prev.events, newEvents),
-        todos: payload.todos || [],
-        currentTask: payload.currentTask || null,
-      }));
+      setLiveDetails(prev => mergeIncrementalLiveDetails(prev, payload));
     }
   }, [taskId]);
 
@@ -205,7 +294,14 @@ export const useTaskData = (taskId: string | undefined) => {
       try {
         setAnalysisLoading(true);
         const analysisData = await getTaskAnalysis(taskId);
-        setAnalysis(analysisData.analysis);
+        const nextAnalysis = analysisData.analysis;
+        setAnalysis(
+          isAnalysisData(nextAnalysis)
+            ? normalizeAnalysisData(nextAnalysis)
+            : typeof nextAnalysis === 'string'
+              ? { analysis: nextAnalysis }
+              : null
+        );
       } catch (err) {
         console.error('Error fetching analysis:', err);
       } finally {

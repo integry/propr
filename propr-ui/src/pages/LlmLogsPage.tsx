@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
-import { getAgentTankStatus } from '../api/revertApi';
 import { Filter, Clock, Cpu, Zap, Info, X } from 'lucide-react';
 import {
   formatDuration,
@@ -20,13 +19,15 @@ import {
   PaginationFooter,
 } from './LlmLogsPageComponents';
 import { UsageBadge } from '../components/ui/UsageBadge';
-
-const DISMISSED_AGENT_TANK_SUGGESTION_KEY = 'dismissed_agent_tank_suggestion';
+import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
+import { useAgentTankSuggestion } from '../hooks/useAgentTankSuggestion';
 
 const DEFAULT_PAGE_SIZE = 20;
 
 const LlmLogsPage: React.FC = () => {
   useDocumentTitle('LLM Log');
+  const currentUser = useCurrentUser();
+  const canManageAgents = userHasPermission(currentUser, 'instance.manage_agents');
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Derive state from URL parameters
@@ -42,28 +43,10 @@ const LlmLogsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-  // Agent Tank suggestion state
-  const [showAgentTankSuggestion, setShowAgentTankSuggestion] = useState(false);
-
-  useEffect(() => {
-    const dismissed = localStorage.getItem(DISMISSED_AGENT_TANK_SUGGESTION_KEY);
-    if (dismissed === 'true') return;
-    getAgentTankStatus()
-      .then(status => {
-        if (!status.available) {
-          setShowAgentTankSuggestion(true);
-        }
-      })
-      .catch(() => {
-        // If we can't check status, show the suggestion
-        setShowAgentTankSuggestion(true);
-      });
-  }, []);
-
-  const dismissAgentTankSuggestion = useCallback(() => {
-    setShowAgentTankSuggestion(false);
-    localStorage.setItem(DISMISSED_AGENT_TANK_SUGGESTION_KEY, 'true');
-  }, []);
+  const {
+    dismissSuggestion: dismissAgentTankSuggestion,
+    showSuggestion: showAgentTankSuggestion,
+  } = useAgentTankSuggestion(canManageAgents);
 
   // Extract unique values for filters
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
@@ -265,7 +248,7 @@ const LlmLogsPage: React.FC = () => {
       {/* Scrollable Content Area */}
       <div className="flex-1 overflow-auto">
         {/* Agent Tank Suggestion Banner */}
-        {showAgentTankSuggestion && (
+        {canManageAgents && showAgentTankSuggestion && (
           <div className="mx-4 sm:mx-6 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
             <Zap size={16} className="text-amber-500 mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">

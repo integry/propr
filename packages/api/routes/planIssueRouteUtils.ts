@@ -383,18 +383,35 @@ export function buildNormalizedUltrafixUpdate(params: {
 }
 
 export function buildIssueUpdate(
-  body: UpdateIssueRequestBody
+  body: UpdateIssueRequestBody,
+  existing: {
+    existingRunUltrafix?: boolean | number | null;
+  } = {}
 ) {
   const hasRunUltrafix = body.run_ultrafix !== undefined;
   const hasUltrafixGoal = body.ultrafix_goal !== undefined;
   const hasUltrafixMaxCycles = body.ultrafix_max_cycles !== undefined;
   const normalizedUltrafixUpdate = buildNormalizedUltrafixUpdate({ runUltrafix: body.run_ultrafix, ultrafixGoal: body.ultrafix_goal, ultrafixMaxCycles: body.ultrafix_max_cycles, hasRunUltrafix, hasUltrafixGoal, hasUltrafixMaxCycles });
+  let runUltrafix = normalizedUltrafixUpdate.runUltrafix;
+  let ultrafixGoal = normalizedUltrafixUpdate.ultrafixGoal;
+  let ultrafixMaxCycles = normalizedUltrafixUpdate.ultrafixMaxCycles;
+
+  if (hasRunUltrafix && (runUltrafix === false || runUltrafix === null)) {
+    ultrafixGoal = null;
+    ultrafixMaxCycles = null;
+  } else if (runUltrafix === undefined && existing.existingRunUltrafix !== undefined) {
+    runUltrafix = normalizeRunUltrafix(existing.existingRunUltrafix);
+    if (runUltrafix === false) {
+      ultrafixGoal = null;
+      ultrafixMaxCycles = null;
+    }
+  }
   return {
     agent_alias: body.agent_alias !== undefined ? body.agent_alias : undefined,
     model_name: body.model_name !== undefined ? body.model_name : undefined,
     status: body.status !== undefined ? body.status : undefined,
-    run_ultrafix: normalizedUltrafixUpdate.runUltrafix,
-    ultrafix_goal: normalizedUltrafixUpdate.ultrafixGoal,
-    ultrafix_max_cycles: normalizedUltrafixUpdate.ultrafixMaxCycles
+    run_ultrafix: runUltrafix,
+    ultrafix_goal: ultrafixGoal,
+    ultrafix_max_cycles: ultrafixMaxCycles
   };
 }

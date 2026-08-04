@@ -3,6 +3,7 @@ import { Agent } from '../../agents/types.js';
 import logger from '../../utils/logger.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { loadSettings } from '../../config/configManager.js';
+import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 
 // --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
 
@@ -38,6 +39,7 @@ const STOP_WORDS = new Set([
   // Common action words that don't help file matching
   'add', 'remove', 'change', 'update', 'fix', 'modify', 'edit', 'create',
   'delete', 'replace', 'make', 'set', 'get', 'put', 'use', 'find', 'show',
+  'refactor', 'implement', 'bug', 'code', 'file', 'component', 'page',
   'hide', 'move', 'copy', 'paste', 'cut', 'save', 'load', 'open', 'close',
   'please', 'want', 'need', 'like', 'help', 'try', 'let', 'see', 'look'
 ]);
@@ -50,28 +52,45 @@ const MIN_KEYWORD_LENGTH = 2;
  * Extracts meaningful words that might appear in file paths or names.
  */
 export function extractKeywords(prompt: string): string[] {
-  // Extract words, including hyphenated and underscored terms
-  const words = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9\s_-]/g, ' ')
-    .split(/\s+/)
-    .filter(word =>
-      word.length >= MIN_KEYWORD_LENGTH &&
-      !STOP_WORDS.has(word) &&
-      !/^\d+$/.test(word) // Exclude pure numbers
-    );
+  const keywords: string[] = [];
+  const seen = new Set<string>();
+  const addKeyword = (value: string, preserveCase = false): void => {
+    const normalized = value.replace(/^[`'"([{]+|[.`'"\])},;:!?]+$/g, '');
+    const comparison = normalized.toLowerCase();
+    if (comparison.length < MIN_KEYWORD_LENGTH
+        || STOP_WORDS.has(comparison)
+        || /^\d+$/.test(comparison)
+        || seen.has(comparison)) {
+      return;
+    }
+    seen.add(comparison);
+    keywords.push(preserveCase ? normalized : comparison);
+  };
 
-  // Also extract camelCase and PascalCase parts
-  const camelCaseWords: string[] = [];
-  for (const word of prompt.match(/[a-zA-Z][a-z]+/g) || []) {
-    const lower = word.toLowerCase();
-    if (lower.length >= MIN_KEYWORD_LENGTH && !STOP_WORDS.has(lower)) {
-      camelCaseWords.push(lower);
+  // Paths and filenames carry the strongest signal. Preserve separators and
+  // extensions so path scoring can perform exact and directory matches.
+  for (const match of prompt.matchAll(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]*[A-Za-z0-9_-]|\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\b/g)) {
+    addKeyword(match[0], true);
+  }
+
+  // Preserve source identifiers exactly for diagnostics and git searches,
+  // while also adding their constituent words for broader path matching.
+  for (const match of prompt.matchAll(/\b[A-Za-z][A-Za-z0-9_]*\b/g)) {
+    const token = match[0];
+    const isStructuredIdentifier = token.includes('_') || /[a-z0-9][A-Z]/.test(token);
+    if (!isStructuredIdentifier) continue;
+    addKeyword(token, true);
+    for (const part of token.replace(/_/g, ' ').split(/\s+|(?=[A-Z])/)) {
+      addKeyword(part);
     }
   }
 
-  // Deduplicate and return
-  return [...new Set([...words, ...camelCaseWords])];
+  // Finally retain ordinary technical terms and hyphenated identifiers.
+  for (const match of prompt.matchAll(/\b[A-Za-z0-9][A-Za-z0-9_-]*\b/g)) {
+    addKeyword(match[0]);
+  }
+
+  return keywords;
 }
 
 // --- LLM-based Keyword Extraction ---
@@ -132,7 +151,17 @@ export async function extractKeywordsWithLLM(
 
     correlatedLogger.debug({ promptLength: prompt.length, model: contextModel }, 'Extracting keywords with LLM');
 
-    const analysisResult = await agent.analyze(llmPrompt, contextModel ? { model: contextModel } : {});
+    const analysisResult = await agent.analyze(llmPrompt, {
+      ...(contextModel ? { model: contextModel } : {}),
+      timeoutMs: resolveContextAnalysisTimeoutMs(),
+      executionType: 'context-analysis',
+      correlationId,
+      metadata: { callType: 'keyword_extraction' },
+      suppressLlmLog: true
+    });
+    if (!analysisResult.success) {
+      throw new Error(analysisResult.error || 'Context keyword analysis failed');
+    }
     const response = analysisResult.response;
 
     const parsed = parseLlmJson<{ primary: string[]; alternatives: string[] }>(response);
