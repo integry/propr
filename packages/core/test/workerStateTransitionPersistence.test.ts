@@ -8,9 +8,15 @@ import {
   up as addWorkerStateTransitionIdentity,
 }
   from '../src/db/migrations/20260804030000_idempotent_worker_state_transitions.js';
-import { persistIssueRefNotificationEnrichment }
+import { up as fenceTerminalTaskTransitions }
+  from '../src/db/migrations/20260804040000_fence_terminal_task_transitions.js';
+import {
+  persistHistoryMetadataNotificationEnrichment,
+  persistIssueRefNotificationEnrichment,
+}
   from '../src/utils/workerStateNotificationPersistence.js';
 import {
+  buildTaskTransitionKey,
   persistTaskCreation,
   persistTaskTransition,
 } from '../src/utils/workerStateTransitionPersistence.js';
@@ -159,6 +165,107 @@ test('task creation and transitions reuse their durable row on retry', async () 
   }
 });
 
+test('duplicate task creation reconstructs the latest durable history', async () => {
+  const database = await createDatabase();
+  try {
+    await persistTaskCreation(creationInput(
+      database,
+      'creation-redelivery',
+      '2026-08-04T01:00:00.000Z'
+    ));
+    await persistTaskTransition({
+      database,
+      taskId: 'creation-redelivery',
+      transitionKey: 'task-transition:processing',
+      fallbackTimestamp: '2026-08-04T02:00:00.000Z',
+      historyData: {
+        task_id: 'creation-redelivery',
+        state: 'processing',
+        timestamp: '2026-08-04T02:00:00.000Z',
+        reason: 'Processing',
+        metadata: JSON.stringify({ attempts: 1, transitionFingerprint: 'processing' }),
+      },
+    });
+
+    const redelivered = await persistTaskCreation(creationInput(
+      database,
+      'creation-redelivery',
+      '2026-08-04T03:00:00.000Z'
+    ));
+
+    assert.deepEqual(redelivered.histories.map(row => row.state), ['pending', 'processing']);
+    assert.equal(redelivered.histories.at(-1)?.transition_key, 'task-transition:processing');
+  } finally {
+    await database.destroy();
+  }
+});
+
+test('the first terminal task transition fences competing and late callbacks', async () => {
+  const database = await createDatabase();
+  try {
+    await fenceTerminalTaskTransitions(database);
+    await persistTaskCreation(creationInput(
+      database,
+      'terminal-race',
+      '2026-08-04T01:00:00.000Z'
+    ));
+    const completed = await persistTaskTransition({
+      database,
+      taskId: 'terminal-race',
+      transitionKey: 'task-transition:completed',
+      fallbackTimestamp: '2026-08-04T02:00:00.000Z',
+      historyData: {
+        task_id: 'terminal-race', state: 'completed',
+        timestamp: '2026-08-04T02:00:00.000Z', reason: 'Completed',
+        metadata: JSON.stringify({ transitionFingerprint: 'completed' }),
+      },
+    });
+    const failed = await persistTaskTransition({
+      database,
+      taskId: 'terminal-race',
+      transitionKey: 'task-transition:failed',
+      fallbackTimestamp: '2026-08-04T02:00:01.000Z',
+      historyData: {
+        task_id: 'terminal-race', state: 'failed',
+        timestamp: '2026-08-04T02:00:01.000Z', reason: 'Failed',
+        metadata: JSON.stringify({ transitionFingerprint: 'failed' }),
+      },
+    });
+    const lateProgress = await persistTaskTransition({
+      database,
+      taskId: 'terminal-race',
+      transitionKey: 'task-transition:late-progress',
+      fallbackTimestamp: '2026-08-04T02:00:02.000Z',
+      historyData: {
+        task_id: 'terminal-race', state: 'processing',
+        timestamp: '2026-08-04T02:00:02.000Z', reason: 'Late progress',
+        metadata: JSON.stringify({ transitionFingerprint: 'late-progress' }),
+      },
+    });
+
+    assert.equal(completed.applied, true);
+    assert.equal(failed.applied, false);
+    assert.equal(failed.transition_key, completed.transition_key);
+    assert.equal(lateProgress.applied, false);
+    assert.deepEqual(await database('task_history')
+      .where({ task_id: 'terminal-race' }).orderBy('history_id').pluck('state'), [
+      'pending',
+      'completed',
+    ]);
+  } finally {
+    await database.destroy();
+  }
+});
+
+test('same-state fallback transitions receive a distinct operation identity', () => {
+  const metadata = { reason: 'Observed the same state' };
+  const first = buildTaskTransitionKey('same-state-task', 'task-created:same-state-task',
+    'processing', metadata);
+  const second = buildTaskTransitionKey('same-state-task', first, 'processing', metadata);
+
+  assert.notEqual(first, second);
+});
+
 test('notification enrichment retry keeps a single durable change row', async () => {
   const database = await createDatabase();
   try {
@@ -202,6 +309,71 @@ test('notification enrichment retry keeps a single durable change row', async ()
       .where({ task_id: state.taskId });
     assert.equal(changes.length, 1);
     assert.equal(changes[0].changed_at, '2026-08-04T02:00:00.000Z');
+  } finally {
+    await database.destroy();
+  }
+});
+
+test('history enrichment targets transition_key when timestamps collide', async () => {
+  const database = await createDatabase();
+  try {
+    await persistTaskCreation(creationInput(
+      database,
+      'same-time-enrichment',
+      '2026-08-04T01:00:00.000Z'
+    ));
+    const transitionAt = '2026-08-04T02:00:00.000Z';
+    for (const transitionKey of ['task-transition:first', 'task-transition:second']) {
+      await database('task_history').insert({
+        task_id: 'same-time-enrichment',
+        state: 'processing',
+        timestamp: transitionAt,
+        reason: transitionKey,
+        metadata: '{}',
+        transition_key: transitionKey,
+      });
+    }
+    const state: TaskStateData = {
+      taskId: 'same-time-enrichment',
+      issueRef: { number: 1734, repoOwner: 'integry', repoName: 'propr' },
+      correlationId: 'same-time-correlation',
+      state: 'processing',
+      createdAt: '2026-08-04T01:00:00.000Z',
+      updatedAt: '2026-08-04T03:00:00.000Z',
+      attempts: 0,
+      history: [
+        { state: 'pending', timestamp: '2026-08-04T01:00:00.000Z', reason: 'created' },
+        {
+          state: 'processing', timestamp: transitionAt, reason: 'first',
+          transitionKey: 'task-transition:first', metadata: { prNumber: 1734 },
+        },
+        {
+          state: 'processing', timestamp: transitionAt, reason: 'second',
+          transitionKey: 'task-transition:second',
+        },
+      ],
+    };
+
+    await persistHistoryMetadataNotificationEnrichment({
+      database,
+      taskId: state.taskId,
+      state,
+      historyState: 'processing',
+      historyIndex: 1,
+      metadata: { prNumber: 1734 },
+      transitionAt,
+      transitionKey: 'task-transition:first',
+      changeKey: 'task-enrichment:first',
+    });
+
+    const rows = await database('task_history')
+      .where({ task_id: state.taskId })
+      .whereIn('transition_key', ['task-transition:first', 'task-transition:second'])
+      .orderBy('history_id');
+    assert.deepEqual(rows.map(row => JSON.parse(String(row.metadata))), [
+      { prNumber: 1734 },
+      {},
+    ]);
   } finally {
     await database.destroy();
   }

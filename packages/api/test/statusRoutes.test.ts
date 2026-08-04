@@ -179,6 +179,23 @@ after(async () => {
   await shutdownQueue();
 });
 
+test('indexing worker health rejects heartbeats beyond bounded future skew', async () => {
+  const {
+    INDEXING_WORKER_MAX_FUTURE_SKEW_MS,
+    resolveIndexingWorkerStatus,
+  } = await import('../routes/statusIndexingHealth.js');
+  const now = Date.now();
+
+  assert.equal(resolveIndexingWorkerStatus(
+    String(now + INDEXING_WORKER_MAX_FUTURE_SKEW_MS),
+    now
+  ), 'connected');
+  assert.equal(resolveIndexingWorkerStatus(
+    String(now + INDEXING_WORKER_MAX_FUTURE_SKEW_MS + 1),
+    now
+  ), 'disconnected');
+});
+
 test('/api/status omits disabled configured agents', async () => {
   const body = await readStatus({
     loadAgents: async () => [createAgentConfig({ enabled: false })],

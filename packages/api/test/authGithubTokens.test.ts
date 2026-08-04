@@ -76,6 +76,9 @@ function createJsonResponse(): { response: ExpressResponse; status: () => number
       payload = body;
       return response;
     },
+    clearCookie() {
+      return response;
+    },
   } as unknown as ExpressResponse;
   return { response, status: () => statusCode, body: () => payload };
 }
@@ -181,14 +184,22 @@ test('ensureAuthenticated rejects an expired GitHub token with no refresh token'
   configureDemoMode(false);
   const req = createRequest(createUser({ refreshToken: undefined }));
   const { response, status } = createJsonResponse();
+  let invalidations = 0;
+  const middleware = createEnsureAuthenticated({
+    invalidateNotificationEntitlements: async () => { invalidations++; },
+  });
   globalThis.fetch = async () => {
     throw new Error('fetch should not be called without a refresh token');
   };
 
-  const nextCalled = await runEnsureAuthenticated(req, response);
+  let nextCalled = false;
+  await middleware(req, response, (() => { nextCalled = true; }) as NextFunction);
 
   assert.equal(nextCalled, false);
   assert.equal(status(), 401);
+  assert.equal(invalidations, 1);
+  assert.equal(req.logoutCalls, 1);
+  assert.equal(req.destroyCalls, 1);
 });
 
 test('ensureAuthenticated reports a temporary error when refresh omits an access token', async () => {
@@ -311,7 +322,7 @@ test('a proactive OAuth refresh updates the scheduled entitlement credential', a
   assert.equal(await updatedCredential, 'proactively-refreshed-token');
 });
 
-test('failed entitlement invalidation prevents session cleanup from being acknowledged', async () => {
+test('failed entitlement invalidation does not prevent session cleanup', async () => {
   configureDemoMode(false);
   const middleware = createEnsureAuthenticated({
     invalidateNotificationEntitlements: async () => { throw new Error('database unavailable'); },
@@ -321,14 +332,14 @@ test('failed entitlement invalidation prevents session cleanup from being acknow
 
   await middleware(req, response, (() => undefined) as NextFunction);
 
-  assert.equal(status(), 503);
+  assert.equal(status(), 401);
   assert.deepEqual(body(), {
-    error: 'Session cleanup unavailable',
-    code: 'AUTH_CLEANUP_UNAVAILABLE',
-    message: 'Authorization cleanup could not be persisted. Please retry.',
+    error: 'GitHub authentication expired',
+    code: 'GITHUB_REAUTH_REQUIRED',
+    message: 'Your GitHub session has expired. Please log in again.',
   });
-  assert.equal(req.logoutCalls, 0);
-  assert.equal(req.destroyCalls, 0);
+  assert.equal(req.logoutCalls, 1);
+  assert.equal(req.destroyCalls, 1);
 });
 
 test('GitHub route auth error emits TOKEN_REFRESHED after a successful refresh', async () => {
@@ -376,7 +387,7 @@ test('GitHub route session invalidation invokes entitlement cancellation before 
   assert.equal(req.destroyCalls, 1);
 });
 
-test('GitHub route keeps the session when durable entitlement invalidation fails', async () => {
+test('GitHub route clears the session when durable entitlement invalidation fails', async () => {
   const req = createRequest(createUser());
   const { response, status, body } = createJsonResponse();
   globalThis.fetch = async () => new Response(JSON.stringify({
@@ -389,12 +400,12 @@ test('GitHub route keeps the session when durable entitlement invalidation fails
 
   await handleAuthError(req, response, async () => { throw new Error('database unavailable'); });
 
-  assert.equal(status(), 503);
+  assert.equal(status(), 401);
   assert.deepEqual(body(), {
-    error: 'Session cleanup unavailable',
-    code: 'AUTH_CLEANUP_UNAVAILABLE',
-    message: 'Authorization cleanup could not be persisted. Please retry.',
+    error: 'GitHub authentication expired',
+    code: 'TOKEN_EXPIRED',
+    message: 'Your GitHub session has expired. Please log in again.',
   });
-  assert.equal(req.logoutCalls, 0);
-  assert.equal(req.destroyCalls, 0);
+  assert.equal(req.logoutCalls, 1);
+  assert.equal(req.destroyCalls, 1);
 });

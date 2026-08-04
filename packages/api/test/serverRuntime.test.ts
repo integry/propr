@@ -6,6 +6,19 @@ import { createNotificationProjectionLease } from '../serverRuntime.js';
 
 after(async () => closeConnection());
 
+test('notification projection lease validates its Redis TTL', () => {
+  const redisClient = { eval: async () => 1 } as unknown as RedisClientType;
+
+  assert.throws(
+    () => createNotificationProjectionLease(redisClient, 'invalid-ttl', 0),
+    /lease TTL/
+  );
+  assert.throws(
+    () => createNotificationProjectionLease(redisClient, 'oversized-ttl', 2_147_483_648),
+    /lease TTL/
+  );
+});
+
 test('notification projection lease acquisition fails closed when Redis rejects', async () => {
   const redisClient = {
     eval: async () => { throw new Error('Redis unavailable'); },

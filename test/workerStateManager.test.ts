@@ -71,9 +71,20 @@ const mockDb = Object.assign((tableName: string) => {
     }
     if (tableName === 'task_history') {
         let where: Record<string, unknown> = {};
+        let descending = false;
         return {
             insert: mockDbHistoryInsert,
             where(values: Record<string, unknown>) { where = { ...where, ...values }; return this; },
+            orderBy(_column: string, direction = 'asc') {
+                descending = direction === 'desc';
+                return this;
+            },
+            select: async () => {
+                const rows = [...durableHistoryRows.values()]
+                    .filter(row => where.task_id === undefined || row.task_id === where.task_id)
+                    .sort((left, right) => Number(left.history_id) - Number(right.history_id));
+                return descending ? rows.reverse() : rows;
+            },
             first: async () => durableHistoryRows.get(
                 `${String(where.task_id)}\0${String(where.transition_key)}`
             ) ?? latestHistoryRow,

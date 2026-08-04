@@ -14,6 +14,7 @@ import { createNotificationEntitlementRefreshMiddleware }
   from '../routes/notificationEntitlementRefresh.js';
 import type { EntitlementRefreshTimerScheduler }
   from '../routes/notificationEntitlementRefreshScheduler.js';
+import { createSessionAuthGeneration } from '../authSessionGeneration.js';
 
 let database: Knex;
 
@@ -253,6 +254,51 @@ test('credential rotation updates a scheduled refresh after request traffic stop
   }
 });
 
+test('a stale logout cannot evict a newer login generation refresh', async () => {
+  let markStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  let refreshSignal: AbortSignal | undefined;
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    timerScheduler: createManualTimers().scheduler,
+    refresh: async ({ signal }) => {
+      refreshSignal = signal;
+      markStarted();
+      await refreshGate;
+      return true;
+    },
+  });
+  const loginReplica = createNotificationEntitlementRefreshMiddleware(database);
+  const userId = 'generation-scheduled-user';
+  const olderSessionId = 'older-scheduled-session';
+  const newerSessionId = 'newer-scheduled-session';
+  const olderGeneration = createSessionAuthGeneration(olderSessionId);
+  const newerGeneration = createSessionAuthGeneration(newerSessionId);
+  try {
+    await middleware.activate(userId, olderGeneration);
+    middleware({
+      user: { id: userId, accessToken: 'older-token' },
+      sessionID: olderSessionId,
+      path: '/config/repos',
+    } as never, {} as never, () => undefined);
+    await waitForSignal(started, 'the active generation refresh');
+
+    await loginReplica.activate(userId, newerGeneration);
+    middleware({
+      user: { id: userId, accessToken: 'newer-token' },
+      sessionID: newerSessionId,
+      path: '/github/repos',
+    } as never, {} as never, () => undefined);
+    await middleware.invalidate(userId, olderGeneration);
+
+    assert.equal(refreshSignal?.aborted, false);
+  } finally {
+    releaseRefresh();
+    await Promise.all([middleware.close(), loginReplica.close()]);
+  }
+});
+
 test('restart recovery rebuilds durable session schedules with bounded concurrency', async () => {
   let active = 0;
   let peakActive = 0;
@@ -262,10 +308,14 @@ test('restart recovery rebuilds durable session schedules with bounded concurren
     accessToken: `recovered-token-${index}`,
     sessionExpiresAt: Date.now() + 60_000 - index,
   }));
+  let requestedCredentialLimit = 0;
   const middleware = createNotificationEntitlementRefreshMiddleware(database, {
     maxScheduledRefreshes: 6,
     timerScheduler: createManualTimers().scheduler,
-    loadRecoveryCredentials: async () => credentials,
+    loadRecoveryCredentials: async (_database, maxCredentials) => {
+      requestedCredentialLimit = maxCredentials;
+      return credentials;
+    },
     refresh: async ({ userId }) => {
       active++;
       peakActive = Math.max(peakActive, active);
@@ -277,6 +327,7 @@ test('restart recovery rebuilds durable session schedules with bounded concurren
   });
   try {
     await middleware.recover();
+    assert.equal(requestedCredentialLimit, 6);
     assert.equal(peakActive, 4);
     assert.deepEqual(refreshedUsers.sort(), credentials.map(value => value.userId).sort());
   } finally {
@@ -301,6 +352,33 @@ test('closing entitlement middleware aborts retained OAuth work', async () => {
     user: { id: 'shutdown-user', accessToken: 'shutdown-token' }, path: '/config/repos',
   } as never, {} as never, () => undefined);
   await started;
-  middleware.close();
+  await middleware.close();
   assert.equal(signal?.aborted, true);
+});
+
+test('closing entitlement middleware drains refresh work that ignores abort', async () => {
+  let releaseRefresh!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const gate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    refresh: async () => {
+      markStarted();
+      await gate;
+      return true;
+    },
+  });
+  middleware({
+    user: { id: 'slow-shutdown-user', accessToken: 'shutdown-token' },
+    path: '/config/repos',
+  } as never, {} as never, () => undefined);
+  await started;
+
+  let closed = false;
+  const closing = middleware.close().then(() => { closed = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closed, false);
+  releaseRefresh();
+  await closing;
+  assert.equal(closed, true);
 });

@@ -2664,6 +2664,41 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(publications, 0);
     });
 
+    test('stopIndexingJob derives durable stop evidence from a legacy job timestamp', async () => {
+        const queuedAt = '2026-08-02T07:59:00.000Z';
+        let recordedTransitionAt: string | undefined;
+        const result = await stopIndexingJob('acme/api', 'main', {
+            getIndexingQueue: async () => ({
+                getJobs: async () => [{
+                    id: 'legacy-queued-job',
+                    timestamp: Date.parse(queuedAt),
+                    data: { repository: 'acme/api', baseBranch: 'main' },
+                    getState: async () => 'waiting',
+                    remove: async () => undefined,
+                }],
+            } as never),
+            createLegacyIndexingRunIdForJob: () => 'legacy-queued-run',
+            requestIndexingCancellation: async () => undefined,
+            updateRepositoryStatus: async () => ({
+                runId: 'legacy-queued-run',
+                transitionAt: '2026-08-02T08:00:00.000Z',
+                applied: false,
+            }),
+            recordSkippedIndexingRun: async (_repository, _branch, run) => {
+                recordedTransitionAt = run.transitionAt;
+                return { ...run, applied: true };
+            },
+            publishIndexingStatus: async () => undefined,
+        });
+
+        assert.strictEqual(recordedTransitionAt, queuedAt);
+        assert.deepStrictEqual(result.removedQueuedRuns, [{
+            branch: 'main',
+            runId: 'legacy-queued-run',
+            transitionAt: queuedAt,
+        }]);
+    });
+
     test('stopIndexingJob preserves a terminal result that beats active cancellation', async () => {
         let skippedRunWrites = 0;
         let publications = 0;

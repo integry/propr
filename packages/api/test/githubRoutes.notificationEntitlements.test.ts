@@ -455,6 +455,44 @@ test('a fresh login generation replaces an older active generation', async () =>
   }
 });
 
+test('an older session cannot invalidate a newer login generation', async () => {
+  const middleware = createNotificationEntitlementRefreshMiddleware(database);
+  try {
+    await middleware.activate('generation-race-user', 'older-generation');
+    await middleware.activate('generation-race-user', 'newer-generation');
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    await database('notification_repository_entitlements').insert({
+      user_id: 'generation-race-user',
+      repository: 'acme/private',
+      verified_at: now,
+      expires_at: expiresAt,
+    });
+    await database('notification_repository_entitlement_snapshots').insert({
+      user_id: 'generation-race-user',
+      verified_at: now,
+      expires_at: expiresAt,
+    });
+
+    await middleware.invalidate('generation-race-user', 'older-generation');
+
+    assert.equal(await database('notification_repository_entitlements')
+      .where({ user_id: 'generation-race-user' }).count({ count: '*' }).first()
+      .then(row => Number(row?.count)), 1);
+    assert.equal(await database('notification_repository_entitlement_snapshots')
+      .where({ user_id: 'generation-race-user' }).count({ count: '*' }).first()
+      .then(row => Number(row?.count)), 1);
+    assert.deepEqual(await database('notification_repository_entitlement_refresh_leases')
+      .where({ user_id: 'generation-race-user' })
+      .first('auth_generation', 'invalidated_at'), {
+      auth_generation: 'newer-generation',
+      invalidated_at: null,
+    });
+  } finally {
+    await middleware.close();
+  }
+});
+
 test('repeated authenticated activation does not rotate an active entitlement fence', async () => {
   const middleware = createNotificationEntitlementRefreshMiddleware(database);
   try {

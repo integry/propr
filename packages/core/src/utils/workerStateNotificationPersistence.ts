@@ -76,9 +76,12 @@ export async function persistIssueRefNotificationEnrichment(input: {
   state: TaskStateData;
   issueRefPatch: Partial<IssueRef>;
   transitionAt: string;
+  transitionKey?: string;
   changeKey: string;
 }): Promise<Record<string, unknown>> {
-  const { database, taskId, state, issueRefPatch, transitionAt, changeKey } = input;
+  const {
+    database, taskId, state, issueRefPatch, transitionAt, transitionKey, changeKey,
+  } = input;
   const durablePrNumber = typeof state.issueRef.pullRequestNumber === 'number'
     ? state.issueRef.pullRequestNumber
     : typeof state.issueRef.prNumber === 'number' ? state.issueRef.prNumber : undefined;
@@ -95,9 +98,12 @@ export async function persistIssueRefNotificationEnrichment(input: {
       taskUpdate.pr_number = durablePrNumber ?? null;
     }
     await transaction('tasks').where({ task_id: taskId }).update(taskUpdate);
-    const historyRow = await transaction('task_history').select('history_id')
-      .where({ task_id: taskId, state: state.state, timestamp: transitionAt })
-      .orderBy('history_id', 'desc').first() as { history_id?: number } | undefined;
+    const historyQuery = transaction('task_history').select('history_id')
+      .where({ task_id: taskId });
+    if (transitionKey) historyQuery.where({ transition_key: transitionKey });
+    else historyQuery.where({ state: state.state, timestamp: transitionAt });
+    const historyRow = await historyQuery.orderBy('history_id', 'desc')
+      .first() as { history_id?: number } | undefined;
     const publicationMetadata = {
       issueRefUpdated: true,
       updatedFields: Object.keys(issueRefPatch),
@@ -129,15 +135,19 @@ export async function persistHistoryMetadataNotificationEnrichment(input: {
   historyIndex: number;
   metadata: Record<string, unknown>;
   transitionAt: string;
+  transitionKey?: string;
   changeKey: string;
 }): Promise<Record<string, unknown>> {
   const {
-    database, taskId, state, historyState, historyIndex, metadata, transitionAt, changeKey,
+    database, taskId, state, historyState, historyIndex, metadata,
+    transitionAt, transitionKey, changeKey,
   } = input;
   return database.transaction(async (transaction) => {
-    const historyRow = await transaction('task_history').select('history_id', 'metadata')
-      .where({ task_id: taskId, state: historyState, timestamp: transitionAt })
-      .orderBy('history_id', 'desc').first() as {
+    const historyQuery = transaction('task_history').select('history_id', 'metadata')
+      .where({ task_id: taskId });
+    if (transitionKey) historyQuery.where({ transition_key: transitionKey });
+    else historyQuery.where({ state: historyState, timestamp: transitionAt });
+    const historyRow = await historyQuery.orderBy('history_id', 'desc').first() as {
         history_id?: number;
         metadata?: unknown;
       } | undefined;

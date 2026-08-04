@@ -64,42 +64,60 @@ export async function activateNotificationRepositoryEntitlements(
     return;
   }
   const expiresAt = new Date(0).toISOString();
-  await database(ENTITLEMENT_REFRESH_LEASE_TABLE).insert({
-    user_id: userId,
-    lease_token: REGISTRATION_TOKEN,
-    fencing_token: 1,
-    expires_at: expiresAt,
-    retry_after: null,
-    invalidated_at: null,
-    auth_generation: generation,
-  }).onConflict('user_id').merge({
-    lease_token: REGISTRATION_TOKEN,
-    fencing_token: database.raw(`${ENTITLEMENT_REFRESH_LEASE_TABLE}.fencing_token + 1`),
-    expires_at: expiresAt,
-    retry_after: null,
-    invalidated_at: null,
-    auth_generation: generation,
-  }).where((staleGeneration) => staleGeneration
-    .whereNull('auth_generation')
-    .orWhereNot('auth_generation', generation));
-  const activated = await database(ENTITLEMENT_REFRESH_LEASE_TABLE)
-    .where({ user_id: userId, auth_generation: generation })
-    .whereNull('invalidated_at')
-    .first('user_id');
-  if (!activated) throw new Error('Authenticated session generation has already been invalidated');
+  await database.transaction(async (transaction) => {
+    await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE).insert({
+      user_id: userId,
+      lease_token: REGISTRATION_TOKEN,
+      fencing_token: 1,
+      expires_at: expiresAt,
+      retry_after: null,
+      invalidated_at: null,
+      auth_generation: generation,
+    }).onConflict('user_id').merge({
+      lease_token: REGISTRATION_TOKEN,
+      fencing_token: transaction.raw(
+        `${ENTITLEMENT_REFRESH_LEASE_TABLE}.fencing_token + 1`
+      ),
+      expires_at: expiresAt,
+      retry_after: null,
+      invalidated_at: null,
+      auth_generation: generation,
+    }).where((staleGeneration) => staleGeneration
+      .whereNull('auth_generation')
+      .orWhereNot('auth_generation', generation));
+    const activated = await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE)
+      .where({ user_id: userId, auth_generation: generation })
+      .whereNull('invalidated_at')
+      .first('user_id');
+    if (!activated) {
+      throw new Error('Authenticated session generation has already been invalidated');
+    }
+  });
 }
 
 export async function invalidateNotificationRepositoryEntitlements(
   database: Knex,
   userId: string,
   authGeneration: string
-): Promise<void> {
+): Promise<boolean> {
   const generation = requireAuthGeneration(authGeneration);
   try {
     const hasRefreshLeases = await database.schema.hasTable(ENTITLEMENT_REFRESH_LEASE_TABLE);
     const hasTombstones = hasRefreshLeases
       && await supportsEntitlementInvalidationTombstones(database);
-    await database.transaction(async (transaction) => {
+    return await database.transaction(async (transaction) => {
+      if (hasTombstones) {
+        const current = await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE)
+          .where({ user_id: userId })
+          .forUpdate()
+          .first('auth_generation') as { auth_generation?: unknown } | undefined;
+        const currentGeneration = typeof current?.auth_generation === 'string'
+          ? current.auth_generation.trim()
+          : '';
+        // A later login owns both the entitlement snapshot and the refresh
+        // fence. A delayed logout from an older session must not revoke it.
+        if (currentGeneration && currentGeneration !== generation) return false;
+      }
       await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
       await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
       if (hasTombstones) {
@@ -122,10 +140,13 @@ export async function invalidateNotificationRepositoryEntitlements(
           retry_after: null,
           invalidated_at: invalidatedAt,
           auth_generation: generation,
-        });
+        }).where((matchingGeneration) => matchingGeneration
+          .whereNull('auth_generation')
+          .orWhere('auth_generation', generation));
       } else if (hasRefreshLeases) {
         await transaction(ENTITLEMENT_REFRESH_LEASE_TABLE).where({ user_id: userId }).delete();
       }
+      return true;
     });
   } catch (error) {
     logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },

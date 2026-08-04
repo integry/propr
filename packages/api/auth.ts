@@ -23,33 +23,17 @@ export interface AuthLifecycleHooks {
     updateNotificationCredential?: (userId: string, accessToken: string) => void;
 }
 
-async function invalidateRequestEntitlements(
+function invalidateRequestEntitlements(
     req: Request,
     lifecycleHooks: AuthLifecycleHooks
-): Promise<void> {
+): void {
     const userId = req.user?.id;
     if (!userId || !lifecycleHooks.invalidateNotificationEntitlements) return;
-    await lifecycleHooks.invalidateNotificationEntitlements(userId, getSessionAuthGeneration(req));
-}
-
-async function invalidateBeforeSessionCleanup(
-    req: Request,
-    res: Response,
-    lifecycleHooks: AuthLifecycleHooks
-): Promise<boolean> {
-    try {
-        await invalidateRequestEntitlements(req, lifecycleHooks);
-        return true;
-    } catch (error) {
+    const authGeneration = getSessionAuthGeneration(req);
+    void lifecycleHooks.invalidateNotificationEntitlements(userId, authGeneration).catch((error) => {
         logger.error({ error: error instanceof Error ? error.message : String(error) },
             'Failed to invalidate notification entitlements during session cleanup');
-        res.status(503).json({
-            error: 'Session cleanup unavailable',
-            code: 'AUTH_CLEANUP_UNAVAILABLE',
-            message: 'Authorization cleanup could not be persisted. Please retry.'
-        });
-        return false;
-    }
+    });
 }
 
 export function getSessionCookieDomain(): string | undefined {
@@ -195,7 +179,7 @@ export function setupAuth(
                 // Reject logins from users not on the access whitelist, before a
                 // session is usable. (No-op when no whitelist is configured.)
                 if (!isUserWhitelisted(req.user?.username)) {
-                    if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+                    invalidateRequestEntitlements(req, lifecycleHooks);
                     req.logout(() => {
                         req.session.destroy(() => {
                             clearSessionCookie(res);
@@ -255,7 +239,7 @@ export function setupAuth(
             return;
         }
 
-        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        invalidateRequestEntitlements(req, lifecycleHooks);
         req.logout((err) => {
             if (err) {
                 logger.error({ error: err.message }, 'Passport logout failed');
@@ -306,13 +290,14 @@ async function authenticateSessionRequest(
     lifecycleHooks: AuthLifecycleHooks
 ): Promise<void> {
     if (req.user?.githubAuthInvalid) {
-        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        invalidateRequestEntitlements(req, lifecycleHooks);
         await clearSessionForReauth(req);
+        clearSessionCookie(res);
         respondGitHubReauthRequired(res);
         return;
     }
     if (!isUserWhitelisted(req.user?.username)) {
-        if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
+        invalidateRequestEntitlements(req, lifecycleHooks);
         req.logout(() => {
             req.session.destroy(() => {
                 clearSessionCookie(res);
@@ -346,10 +331,9 @@ async function authenticateExpiredSession(
 ): Promise<void> {
     const refreshResult = await refreshGitHubTokenWithResult(req, true);
     if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
-        if (req.user?.githubAuthInvalid) {
-            if (!await invalidateBeforeSessionCleanup(req, res, lifecycleHooks)) return;
-            await clearSessionForReauth(req);
-        }
+        invalidateRequestEntitlements(req, lifecycleHooks);
+        await clearSessionForReauth(req);
+        clearSessionCookie(res);
         respondGitHubReauthRequired(res);
         return;
     }

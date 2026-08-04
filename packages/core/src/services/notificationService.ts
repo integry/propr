@@ -264,6 +264,36 @@ async function unreadCount(database: Database, userId: string): Promise<number> 
     return count;
 }
 
+function buildEnrichedNotificationEvent<K extends NotificationKind>(
+    stored: NotificationEvent<K>,
+    input: CreateNotificationEventInput<K>
+): NotificationEvent<K> {
+    const mergedTarget = { ...stored.target, ...input.target };
+    const mergedMetadata = input.metadata === undefined && stored.metadata === undefined
+        ? undefined
+        : { ...(stored.metadata ?? {}), ...(input.metadata ?? {}) };
+    const hasRicherPresentation = JSON.stringify(mergedTarget) !== JSON.stringify(stored.target)
+        || JSON.stringify(mergedMetadata) !== JSON.stringify(stored.metadata);
+    const enrichedAction = hasRicherPresentation
+        ? input.action ?? stored.action
+        : stored.action;
+    return parseNotificationEvent({
+        id: stored.id,
+        deduplicationKey: input.deduplicationKey,
+        kind: input.kind,
+        severity: input.severity ?? 'info',
+        target: mergedTarget,
+        title: hasRicherPresentation ? input.title : stored.title,
+        body: hasRicherPresentation ? input.body : stored.body,
+        ...(enrichedAction === undefined ? {} : { action: enrichedAction }),
+        ...(mergedMetadata === undefined ? {} : { metadata: mergedMetadata }),
+        occurredAt: input.occurredAt === undefined
+            ? stored.occurredAt
+            : normalizeISO8601Timestamp(input.occurredAt),
+        createdAt: stored.createdAt
+    }) as NotificationEvent<K>;
+}
+
 export class NotificationService {
     private readonly database: Knex;
     private readonly now: () => TimestampInput;
@@ -350,6 +380,52 @@ export class NotificationService {
         const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
         await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
         return storedEvent;
+    }
+
+    /**
+     * Create an event or safely enrich the mutable presentation fields of the
+     * event already stored under the same durable projection identity.
+     */
+    async createOrEnrichNotificationEventInTransaction<K extends NotificationKind>(
+        transaction: Knex.Transaction,
+        input: CreateNotificationEventInput<K>,
+        recipients: readonly NotificationRecipient[] = input.recipients ?? []
+    ): Promise<NotificationEvent<K>> {
+        const stored = await this.createNotificationEventInTransaction(
+            transaction,
+            input,
+            recipients
+        );
+        const requestedId = input.eventId ?? input.id;
+        if (requestedId !== undefined && requestedId !== stored.id) {
+            throw new Error('Notification enrichment identity resolved to a different event');
+        }
+        const enriched = buildEnrichedNotificationEvent(stored, input);
+        if (stored.deduplicationKey !== enriched.deduplicationKey
+            || stored.kind !== enriched.kind
+            || stored.severity !== enriched.severity
+            || stored.occurredAt !== enriched.occurredAt) {
+            throw new Error('Notification enrichment cannot change durable event identity');
+        }
+        if (stored.title === enriched.title
+            && stored.body === enriched.body
+            && JSON.stringify(stored.target) === JSON.stringify(enriched.target)
+            && JSON.stringify(stored.action) === JSON.stringify(enriched.action)
+            && JSON.stringify(stored.metadata) === JSON.stringify(enriched.metadata)) {
+            return stored;
+        }
+        await transaction('notification_events').where({ event_id: stored.id }).update({
+            target_json: JSON.stringify(enriched.target),
+            title: enriched.title,
+            body: enriched.body,
+            action_json: enriched.action === undefined ? null : JSON.stringify(enriched.action),
+            metadata_json: enriched.metadata === undefined ? null : JSON.stringify(enriched.metadata)
+        });
+        const enrichedRow = await transaction<NotificationEventRow>('notification_events')
+            .where({ event_id: stored.id })
+            .first();
+        if (!enrichedRow) throw new Error('Enriched notification event could not be read');
+        return toNotificationEvent(enrichedRow) as NotificationEvent<K>;
     }
 
     async assignNotificationRecipients(

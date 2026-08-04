@@ -4,6 +4,10 @@ export const INDEXING_FAILED_JOB_RETENTION = { age: 7 * 24 * 60 * 60, count: 1_0
 /** Fallback window in case promotion after durable producer acceptance fails. */
 export const INDEXING_JOB_ACCEPTANCE_DELAY_MS = 60_000;
 
+export function normalizeIndexingQueueBranch(branch?: string): string {
+  return branch?.trim() || 'HEAD';
+}
+
 export function createIndexingRunIdentity(now: Date = new Date()): {
   runId: string;
   transitionAt: string;
@@ -16,8 +20,9 @@ export function createIndexingQueueDeduplicationId(
   fullName: string,
   branch: string = 'HEAD'
 ): string {
+  const normalizedBranch = normalizeIndexingQueueBranch(branch);
   const digest = createHash('sha256')
-    .update(`${fullName.trim().toLowerCase()}\0${branch}`)
+    .update(`${fullName.trim().toLowerCase()}\0${normalizedBranch}`)
     .digest('hex');
   return `index-repository-${digest}`;
 }
@@ -28,7 +33,10 @@ export function createIndexingQueueJobId(
   branch: string = 'HEAD',
   runId?: string
 ): string {
-  const deduplicationId = createIndexingQueueDeduplicationId(fullName, branch);
+  const deduplicationId = createIndexingQueueDeduplicationId(
+    fullName,
+    normalizeIndexingQueueBranch(branch)
+  );
   return runId ? `${deduplicationId}-${runId}` : deduplicationId;
 }
 
@@ -42,7 +50,8 @@ export function createLegacyIndexingRunIdForJob(
   if (normalizedJobId.length === 0) {
     throw new TypeError('Indexing queue job ID must be non-blank');
   }
+  const normalizedBranch = normalizeIndexingQueueBranch(branch);
   return `legacy-job-${createHash('sha256')
-    .update(`${fullName.trim().toLowerCase()}\0${branch}\0${normalizedJobId}`)
+    .update(`${fullName.trim().toLowerCase()}\0${normalizedBranch}\0${normalizedJobId}`)
     .digest('hex')}`;
 }

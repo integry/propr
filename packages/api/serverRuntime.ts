@@ -91,15 +91,28 @@ export async function initializeServerRedis(
   redisClient.on('error', (error) => logger.error({
     error: error instanceof Error ? error.message : String(error),
   }, 'API Redis client error'));
-  await redisClient.connect();
-  const connection = { ...runtimeConfig.options };
-  const taskQueue = new Queue(
-    process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor',
-    { connection }
-  );
-  const runtimeBuildQueue = new Queue(AGENT_RUNTIME_BUILD_QUEUE_NAME, { connection });
-  await runtimeBuildQueue.setGlobalConcurrency(1);
-  return { redisClient: redisClient as RedisClientType, taskQueue, runtimeBuildQueue };
+  let taskQueue: Queue | undefined;
+  let runtimeBuildQueue: Queue | undefined;
+  try {
+    await redisClient.connect();
+    const connection = { ...runtimeConfig.options };
+    taskQueue = new Queue(
+      process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor',
+      { connection }
+    );
+    runtimeBuildQueue = new Queue(AGENT_RUNTIME_BUILD_QUEUE_NAME, { connection });
+    await runtimeBuildQueue.setGlobalConcurrency(1);
+    return { redisClient: redisClient as RedisClientType, taskQueue, runtimeBuildQueue };
+  } catch (error) {
+    await Promise.allSettled([
+      ...(runtimeBuildQueue ? [runtimeBuildQueue.close()] : []),
+      ...(taskQueue ? [taskQueue.close()] : []),
+    ]);
+    if (redisClient.isOpen) {
+      try { await redisClient.quit(); } catch { await redisClient.disconnect().catch(() => undefined); }
+    }
+    throw error;
+  }
 }
 
 export function createNotificationProjectionLease(
@@ -114,6 +127,9 @@ export function createNotificationProjectionLease(
 }> {
   if (!isNotificationTimerDelay(operationTimeoutMs)) {
     throw new TypeError('notification Redis operation timeout must be a schedulable positive integer');
+  }
+  if (!isNotificationTimerDelay(ttlMs)) {
+    throw new TypeError('notification Redis lease TTL must be a schedulable positive integer');
   }
   const key = `notification:projection-lease:${name}`;
   const acquireScript = "return redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') and 1 or 0";

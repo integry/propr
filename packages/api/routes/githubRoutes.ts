@@ -80,17 +80,12 @@ export async function handleAuthError(
   // Token refresh failed, clear the session to force re-login
   logger.warn('GitHub token refresh failed; clearing session for re-authentication');
   const userId = req.user?.id;
-  try {
-    if (userId) await invalidateEntitlements?.(userId, getSessionAuthGeneration(req));
-  } catch (error) {
-    logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
-      'Could not persist repository notification access invalidation');
-    res.status(503).json({
-      error: 'Session cleanup unavailable',
-      code: 'AUTH_CLEANUP_UNAVAILABLE',
-      message: 'Authorization cleanup could not be persisted. Please retry.',
+  const authGeneration = userId ? getSessionAuthGeneration(req) : undefined;
+  if (userId && authGeneration) {
+    void invalidateEntitlements?.(userId, authGeneration).catch((error) => {
+      logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },
+        'Could not persist repository notification access invalidation');
     });
-    return;
   }
 
   await new Promise<void>((resolve) => {
@@ -116,8 +111,9 @@ export async function handleAuthError(
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   const { redisClient, taskQueue, db } = deps;
   const invalidateEntitlements = deps.invalidateNotificationEntitlements
-    ?? ((userId: string, authGeneration: string) =>
-      invalidateNotificationRepositoryEntitlements(db, userId, authGeneration));
+    ?? (async (userId: string, authGeneration: string) => {
+      await invalidateNotificationRepositoryEntitlements(db, userId, authGeneration);
+    });
   const refreshNotificationEntitlements = deps.refreshNotificationEntitlements
     ?? refreshNotificationRepositoryEntitlements;
   const listNotificationRepositories = deps.listNotificationRepositories

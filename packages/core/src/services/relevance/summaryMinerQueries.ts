@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- indexing persistence and its run-state invariants share one boundary */
 import { randomUUID } from 'node:crypto';
 import { db } from '../../db/connection.js';
 
@@ -324,7 +325,10 @@ export async function recordSkippedIndexingRun(
         applied: existingTerminal.status === 'idle'
       };
     }
-    let transitionAt = new Date().toISOString();
+    const requestedTransitionTime = Date.parse(indexingRun.transitionAt);
+    let transitionAt = Number.isFinite(requestedTransitionTime)
+      ? new Date(requestedTransitionTime).toISOString()
+      : new Date().toISOString();
     if (repository?.indexing_run_id === indexingRun.runId
         && repository.indexing_transition_at
         && transitionAt <= repository.indexing_transition_at) {

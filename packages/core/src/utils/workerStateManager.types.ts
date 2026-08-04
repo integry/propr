@@ -67,6 +67,8 @@ export interface TaskStateData {
     prResult?: PRResult;
     /** Identity of the latest history transition represented by this Redis state. */
     currentTransitionKey?: string;
+    /** Monotonic SQLite history ID used for compare-and-set Redis projection. */
+    currentTransitionSequence?: number;
     /** Content identity used to recognize a retry after Redis already advanced. */
     currentTransitionFingerprint?: string;
 }

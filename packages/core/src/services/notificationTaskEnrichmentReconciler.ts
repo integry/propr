@@ -1,6 +1,11 @@
 import type { Knex } from 'knex';
-import { normalizeISO8601Timestamp, type TaskUpdatePayload } from '@propr/shared';
-import logger from '../utils/logger.js';
+import type { TaskUpdatePayload } from '@propr/shared';
+import {
+    logMalformedReconciliationTimestamp,
+    normalizedReconciliationTimestamp,
+    parseReconciliationMetadata,
+    reconciliationPublicationTimestamp
+} from './notificationProjectionReconciliationValues.js';
 
 interface TaskEnrichmentRow {
     change_id: number;
@@ -21,33 +26,6 @@ interface ReconcileTaskEnrichmentsOptions {
     project: (payload: TaskUpdatePayload) => Promise<'completed' | 'deferred'>;
     advanceCheckpoint: (cursor: number) => Promise<void>;
     deferProjection: (cursor: number, payload: TaskUpdatePayload) => Promise<boolean>;
-}
-
-function parseMetadata(value: unknown): Record<string, unknown> {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        return value as Record<string, unknown>;
-    }
-    if (typeof value !== 'string') return {};
-    try {
-        const parsed: unknown = JSON.parse(value);
-        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? parsed as Record<string, unknown>
-            : {};
-    } catch {
-        return {};
-    }
-}
-
-function normalizedTimestamp(value: unknown): string {
-    if (typeof value !== 'string' && typeof value !== 'number' && !(value instanceof Date)) {
-        throw new TypeError('durable task-enrichment timestamp is invalid');
-    }
-    return normalizeISO8601Timestamp(value);
-}
-
-function publicationTimestamp(now: string | number | Date, changedAt: string): string {
-    const current = normalizeISO8601Timestamp(now);
-    return current >= changedAt ? current : changedAt;
 }
 
 /** Replays metadata changes without changing the original terminal transition identity. */
@@ -73,15 +51,15 @@ export async function reconcileTaskNotificationEnrichments(
         let transitionAt: string;
         let changedAt: string;
         try {
-            transitionAt = normalizedTimestamp(row.transition_at);
-            changedAt = normalizedTimestamp(row.changed_at);
+            transitionAt = normalizedReconciliationTimestamp(row.transition_at);
+            changedAt = normalizedReconciliationTimestamp(row.changed_at);
         } catch (error) {
-            logger.warn({
-                source: 'task-notification-enrichments',
-                identity: row.change_id,
-                value: `${String(row.transition_at)} / ${String(row.changed_at)}`.slice(0, 128),
-                error: error instanceof Error ? error.message : String(error)
-            }, 'Skipping malformed durable notification transition and advancing its checkpoint');
+            logMalformedReconciliationTimestamp(
+                'task-notification-enrichments',
+                row.change_id,
+                `${String(row.transition_at)} / ${String(row.changed_at)}`,
+                error
+            );
             await options.advanceCheckpoint(row.change_id);
             cursor = row.change_id;
             continue;
@@ -91,9 +69,9 @@ export async function reconcileTaskNotificationEnrichments(
             eventType: 'task:update',
             taskId: row.task_id,
             state: row.state,
-            timestamp: publicationTimestamp(options.now(), changedAt),
+            timestamp: reconciliationPublicationTimestamp(options.now(), changedAt),
             metadata: {
-                ...parseMetadata(row.metadata),
+                ...parseReconciliationMetadata(row.metadata),
                 transitionAt,
                 notificationReconciliation: true,
                 ...(Number.isSafeInteger(transitionSequence) && transitionSequence > 0

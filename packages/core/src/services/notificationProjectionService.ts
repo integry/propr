@@ -371,7 +371,7 @@ export class NotificationProjectionService {
         recipients: string[],
         transaction: Knex.Transaction
     ): Promise<void> {
-        await this.notifications.createNotificationEventInTransaction(transaction, {
+        await this.notifications.createOrEnrichNotificationEventInTransaction(transaction, {
             deduplicationKey: buildProjectionDeduplicationKey(
                 'task', context.taskId, 'failed', transition.timestamp, transition.sequence
             ),
@@ -393,7 +393,7 @@ export class NotificationProjectionService {
         recipients: string[],
         transaction: Knex.Transaction
     ): Promise<void> {
-        await this.notifications.createNotificationEventInTransaction(transaction, {
+        await this.notifications.createOrEnrichNotificationEventInTransaction(transaction, {
             deduplicationKey: buildProjectionDeduplicationKey(
                 'task', context.taskId, 'completed', transition.timestamp, transition.sequence
             ),
@@ -416,7 +416,7 @@ export class NotificationProjectionService {
         transaction: Knex.Transaction
     ): Promise<void> {
         if (context.prNumber === undefined) return;
-        await this.notifications.createNotificationEventInTransaction(transaction, {
+        await this.notifications.createOrEnrichNotificationEventInTransaction(transaction, {
             deduplicationKey: buildProjectionDeduplicationKey(
                 'review', context.taskId, 'completed', transition.timestamp, transition.sequence
             ),
@@ -445,7 +445,7 @@ export class NotificationProjectionService {
     ): Promise<void> {
         const prUrl = safePullRequestUrl(context);
         if (context.prNumber === undefined || prUrl === undefined) return;
-        await this.notifications.createNotificationEventInTransaction(transaction, {
+        await this.notifications.createOrEnrichNotificationEventInTransaction(transaction, {
             deduplicationKey: buildProjectionDeduplicationKey(
                 'pull-request',
                 `${context.repository}#${context.prNumber}`,

@@ -1,6 +1,10 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
-import { getNotificationRepositoryEntitlementTtlMs, logger } from '@propr/core';
+import {
+  getNotificationRepositoryEntitlementTtlMs,
+  logger,
+  withNotificationDeadline,
+} from '@propr/core';
 import {
   loadRecoverableEntitlementCredentials,
   type RecoveredEntitlementCredential,
@@ -11,6 +15,7 @@ import {
   ENTITLEMENT_REFRESH_LEASE_TABLE,
   invalidateNotificationRepositoryEntitlements,
 } from './notificationEntitlementFencing.js';
+import { createSessionAuthGeneration } from '../authSessionGeneration.js';
 export {
   activateNotificationRepositoryEntitlements,
   ensureEntitlementRefreshRegistration,
@@ -21,9 +26,11 @@ const REFRESH_RETRY_DELAY_MS = 60_000;
 const MAX_SCHEDULED_REFRESHES = 1_000;
 const MAX_SCHEDULED_REFRESHES_ENV = 'NOTIFICATION_ENTITLEMENT_MAX_SCHEDULED_REFRESHES';
 const RECOVERY_CONCURRENCY = 4;
+const REFRESH_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 interface ScheduledRefresh {
   accessToken: string;
+  authGeneration?: string;
   timer?: EntitlementRefreshTimer;
   controller?: AbortController;
   registrationEstablished: boolean;
@@ -51,7 +58,10 @@ interface ScheduledEntitlementRefreshOptions {
   maxScheduledRefreshes?: number;
   timerScheduler?: EntitlementRefreshTimerScheduler;
   ensureRegistration?: typeof ensureEntitlementRefreshRegistration;
-  loadRecoveryCredentials?: (database: Knex) => Promise<RecoveredEntitlementCredential[]>;
+  loadRecoveryCredentials?: (
+    database: Knex,
+    maxCredentials: number
+  ) => Promise<RecoveredEntitlementCredential[]>;
 }
 
 const DEFAULT_TIMER_SCHEDULER: EntitlementRefreshTimerScheduler = {
@@ -85,7 +95,7 @@ export interface NotificationEntitlementRefreshMiddleware {
   activate(userId: string, authGeneration: string): Promise<void>;
   updateCredential(userId: string, accessToken: string): void;
   recover(): Promise<void>;
-  close(): void;
+  close(): Promise<void>;
 }
 
 function getMaxScheduledRefreshes(): number {
@@ -105,15 +115,35 @@ export function createScheduledEntitlementRefreshMiddleware(
   options: ScheduledEntitlementRefreshOptions = {}
 ): NotificationEntitlementRefreshMiddleware {
   const scheduled = new Map<string, ScheduledRefresh>();
+  const activeAuthGenerations = new Map<string, string>();
   const maxScheduledRefreshes = options.maxScheduledRefreshes ?? getMaxScheduledRefreshes();
   const timerScheduler = options.timerScheduler ?? DEFAULT_TIMER_SCHEDULER;
   const ensureRegistration = options.ensureRegistration ?? ensureEntitlementRefreshRegistration;
   const loadRecoveryCredentials = options.loadRecoveryCredentials
-    ?? loadRecoverableEntitlementCredentials;
+    ?? ((recoveryDatabase, maxCredentials) => loadRecoverableEntitlementCredentials(
+      recoveryDatabase,
+      { maxCredentials }
+    ));
   if (!Number.isSafeInteger(maxScheduledRefreshes) || maxScheduledRefreshes <= 0) {
     throw new TypeError('maxScheduledRefreshes must be a positive safe integer');
   }
   let closed = false;
+  const activeRefreshes = new Set<Promise<void>>();
+
+  const rememberAuthGeneration = (userId: string, authGeneration: string): void => {
+    const entry = scheduled.get(userId);
+    if (entry) {
+      entry.authGeneration = authGeneration;
+      activeAuthGenerations.delete(userId);
+      return;
+    }
+    activeAuthGenerations.delete(userId);
+    activeAuthGenerations.set(userId, authGeneration);
+    if (activeAuthGenerations.size > maxScheduledRefreshes) {
+      const oldestUserId = activeAuthGenerations.keys().next().value as string | undefined;
+      if (oldestUserId) activeAuthGenerations.delete(oldestUserId);
+    }
+  };
 
   const removeEntry = (userId: string, entry: ScheduledRefresh): void => {
     if (scheduled.get(userId) === entry) scheduled.delete(userId);
@@ -148,6 +178,16 @@ export function createScheduledEntitlementRefreshMiddleware(
     }
   };
 
+  const startRefresh = (userId: string, entry: ScheduledRefresh): Promise<void> => {
+    const operation = runRefresh(userId, entry);
+    activeRefreshes.add(operation);
+    void operation.then(
+      () => activeRefreshes.delete(operation),
+      () => activeRefreshes.delete(operation)
+    );
+    return operation;
+  };
+
   const schedule = (
     userId: string,
     accessToken: string,
@@ -158,6 +198,9 @@ export function createScheduledEntitlementRefreshMiddleware(
     const previous = scheduled.get(userId);
     if (previous) {
       previous.accessToken = accessToken;
+      const pendingGeneration = activeAuthGenerations.get(userId);
+      if (pendingGeneration) previous.authGeneration = pendingGeneration;
+      activeAuthGenerations.delete(userId);
       if (retry !== undefined) previous.retry = retry;
       if (registrationEstablished !== undefined) {
         previous.registrationEstablished = registrationEstablished;
@@ -182,9 +225,11 @@ export function createScheduledEntitlementRefreshMiddleware(
     }
     const entry: ScheduledRefresh = {
       accessToken,
+      authGeneration: activeAuthGenerations.get(userId),
       retry: retry ?? false,
       registrationEstablished: retainedRegistration,
     };
+    activeAuthGenerations.delete(userId);
     scheduled.set(userId, entry);
     armTimer(userId, entry);
   };
@@ -206,7 +251,7 @@ export function createScheduledEntitlementRefreshMiddleware(
             removeEntry(userId, entry);
             return;
           }
-          void runRefresh(userId, entry);
+          void startRefresh(userId, entry);
         })
         .catch((error) => {
           logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -256,6 +301,10 @@ export function createScheduledEntitlementRefreshMiddleware(
     const alreadyScheduled = scheduled.has(userId);
     schedule(userId, accessToken);
     const entry = scheduled.get(userId)!;
+    if (typeof req.sessionID === 'string' && req.sessionID.trim()) {
+      entry.authGeneration = createSessionAuthGeneration(req.sessionID);
+      activeAuthGenerations.delete(userId);
+    }
     const refreshImmediately = req.path !== '/github/repos';
     if (alreadyScheduled) {
       next();
@@ -267,7 +316,7 @@ export function createScheduledEntitlementRefreshMiddleware(
         if (!registered) {
           removeEntry(userId, entry);
         } else if (refreshImmediately) {
-          void runRefresh(userId, entry);
+          void startRefresh(userId, entry);
         }
       })
       .catch((error) => {
@@ -282,20 +331,38 @@ export function createScheduledEntitlementRefreshMiddleware(
     next();
   };
   middleware.invalidate = async (userId: string, authGeneration: string): Promise<void> => {
+    const generation = authGeneration.trim();
     const entry = scheduled.get(userId);
-    if (entry) removeEntry(userId, entry);
-    await invalidateNotificationRepositoryEntitlements(database, userId, authGeneration);
+    const activeGeneration = entry?.authGeneration ?? activeAuthGenerations.get(userId);
+    if (activeGeneration === generation) {
+      activeAuthGenerations.delete(userId);
+      if (entry) removeEntry(userId, entry);
+    }
+    const invalidated = await invalidateNotificationRepositoryEntitlements(
+      database,
+      userId,
+      generation
+    );
+    // Recovered/legacy schedules may not yet have an in-memory generation.
+    // Remove those only after the durable generation check accepted the logout.
+    if (invalidated && activeGeneration === undefined) {
+      const entry = scheduled.get(userId);
+      if (entry) removeEntry(userId, entry);
+    }
   };
-  middleware.activate = (userId: string, authGeneration: string): Promise<void> =>
-    activateNotificationRepositoryEntitlements(database, userId, authGeneration);
+  middleware.activate = async (userId: string, authGeneration: string): Promise<void> => {
+    await activateNotificationRepositoryEntitlements(database, userId, authGeneration);
+    if (!closed) rememberAuthGeneration(userId, authGeneration.trim());
+  };
   middleware.updateCredential = (userId: string, accessToken: string): void => {
     const entry = scheduled.get(userId);
     if (entry && accessToken) entry.accessToken = accessToken;
   };
   middleware.recover = async (): Promise<void> => {
-    const credentials = await loadRecoveryCredentials(database);
-    if (closed) return;
     const available = Math.max(0, maxScheduledRefreshes - scheduled.size);
+    if (closed || available === 0) return;
+    const credentials = await loadRecoveryCredentials(database, available);
+    if (closed) return;
     const retained = credentials.slice(0, available);
     let skipped = credentials.length - retained.length;
     if (skipped > 0) {
@@ -313,16 +380,30 @@ export function createScheduledEntitlementRefreshMiddleware(
         schedule(credential.userId, credential.accessToken, false, true);
         const entry = scheduled.get(credential.userId);
         if (!entry) return;
+        if (credential.authGeneration) entry.authGeneration = credential.authGeneration;
         recovered++;
-        await runRefresh(credential.userId, entry);
+        await startRefresh(credential.userId, entry);
       }));
     }
     logger.info({ recovered, skipped }, 'Recovered repository entitlement refresh schedules');
   };
-  middleware.close = (): void => {
+  middleware.close = async (): Promise<void> => {
     closed = true;
     for (const [userId, entry] of scheduled) removeEntry(userId, entry);
     scheduled.clear();
+    activeAuthGenerations.clear();
+    try {
+      await withNotificationDeadline(
+        Promise.allSettled([...activeRefreshes]),
+        REFRESH_SHUTDOWN_TIMEOUT_MS,
+        'draining repository entitlement refreshes'
+      );
+    } catch (error) {
+      logger.warn({
+        activeRefreshes: activeRefreshes.size,
+        error: error instanceof Error ? error.message : String(error),
+      }, 'Timed out draining repository entitlement refreshes');
+    }
   };
   return middleware;
 }

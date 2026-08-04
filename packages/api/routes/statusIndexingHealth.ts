@@ -15,6 +15,8 @@ export interface IndexingHealth {
   service: ServiceStatus;
 }
 
+export const INDEXING_WORKER_MAX_FUTURE_SKEW_MS = 60_000;
+
 export async function loadRepositoryIndexingStatus(
   database = coreDb
 ): Promise<ServiceStatus | undefined> {
@@ -60,7 +62,10 @@ export function resolveIndexingWorkerStatus(
 ): ServiceStatus {
   if (!heartbeat) return 'disconnected';
   const observedAt = Number(heartbeat);
-  return Number.isFinite(observedAt) && currentTime - observedAt < INDEXING_WORKER_HEARTBEAT_STALE_MS
+  const age = currentTime - observedAt;
+  return Number.isFinite(observedAt)
+    && age >= -INDEXING_WORKER_MAX_FUTURE_SKEW_MS
+    && age < INDEXING_WORKER_HEARTBEAT_STALE_MS
     ? 'connected'
     : 'disconnected';
 }

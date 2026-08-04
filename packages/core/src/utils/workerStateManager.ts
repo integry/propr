@@ -105,8 +105,9 @@ export class WorkerStateManager {
         if (!stateJson) return null;
 
         const state: TaskStateData = JSON.parse(stateJson);
-        const transitionAt = state.history.findLast(entry => entry.state === state.state)?.timestamp
-            ?? state.updatedAt;
+        const transitionEntry = state.history.findLast(entry => entry.state === state.state);
+        const transitionAt = transitionEntry?.timestamp ?? state.updatedAt;
+        const transitionKey = transitionEntry?.transitionKey ?? state.currentTransitionKey;
         const changeKey = buildTaskEnrichmentKey({
             taskId,
             kind: 'issue-ref',
@@ -126,6 +127,7 @@ export class WorkerStateManager {
                 state,
                 issueRefPatch,
                 transitionAt,
+                transitionKey,
                 changeKey,
             });
         } catch (error) {
@@ -200,6 +202,7 @@ export class WorkerStateManager {
 
         if (historyIndex >= 0) {
             const transitionAt = state.history[historyIndex].timestamp;
+            const transitionKey = state.history[historyIndex].transitionKey;
             const changeKey = buildTaskEnrichmentKey({
                 taskId,
                 kind: 'history-metadata',
@@ -221,6 +224,7 @@ export class WorkerStateManager {
                         historyIndex,
                         metadata,
                         transitionAt,
+                        transitionKey,
                         changeKey,
                     });
             } catch (error) {

@@ -13,6 +13,8 @@ import { up as hardenNotificationFollowup } from '../src/db/migrations/202608030
 import { up as addTaskNotificationEnrichments } from '../src/db/migrations/20260803040000_add_task_notification_enrichments.js';
 import { up as hardenProjectionRetries } from '../src/db/migrations/20260803050000_harden_projection_retries_and_indexing_terminals.js';
 import { up as scheduleProjectionRetries } from '../src/db/migrations/20260804010000_schedule_notification_projection_retries.js';
+import { up as allowNotificationEventEnrichment }
+    from '../src/db/migrations/20260804050000_allow_notification_event_enrichment.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
 import { NotificationProjectionCheckpointStore } from '../src/services/notificationProjectionCheckpointStore.js';
@@ -185,6 +187,7 @@ beforeEach(async () => {
     await addTaskNotificationEnrichments(database);
     await hardenProjectionRetries(database);
     await scheduleProjectionRetries(database);
+    await allowNotificationEventEnrichment(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -334,7 +337,11 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         await database.raw('DROP TRIGGER fail_pr_attention_notification');
 
         await projection.projectTaskUpdate(payload);
-        assert.deepEqual((await events()).map(event => event.kind).sort(), ['pull_request', 'task']);
+        const enrichedEvents = await events();
+        assert.deepEqual(enrichedEvents.map(event => event.kind).sort(), ['pull_request', 'task']);
+        const taskEvent = enrichedEvents.find(event => event.kind === 'task');
+        assert.equal(JSON.parse(String(taskEvent?.target_json)).prNumber, 1720);
+        assert.equal(JSON.parse(String(taskEvent?.metadata_json)).prNumber, 1720);
     });
 
     test('uses the review kind for completed reviews and does not emit implementation completion', async () => {
@@ -1214,6 +1221,40 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
                 completed_at: '2026-08-02T08:31:00.000Z'
             }
         );
+    });
+
+    test('does not let liveness queued behind a terminal projection reopen task activity', async () => {
+        await seedPlanAndTask();
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'processing',
+            timestamp: EVENT_TIME
+        });
+        const terminalAt = '2026-08-02T08:30:00.000Z';
+        await projection.projectTaskUpdate({
+            eventType: 'task:update',
+            taskId: 'task-1',
+            state: 'completed',
+            timestamp: terminalAt
+        });
+        await projection.projectTaskHeartbeat({
+            eventType: 'task:live:update',
+            taskId: 'task-1',
+            events: [],
+            todos: [],
+            currentTask: 'late progress',
+            tokenUsage: null,
+            timestamp: '2026-08-02T08:31:00.000Z'
+        });
+
+        assert.deepEqual(await database('notification_source_activity')
+            .where({ activity_type: 'task', activity_key: 'task-1' })
+            .first('status', 'last_activity_at', 'completed_at'), {
+            status: 'completed',
+            last_activity_at: terminalAt,
+            completed_at: terminalAt
+        });
     });
 
     test('checkpoints cancelled tasks without emitting completion notifications', async () => {

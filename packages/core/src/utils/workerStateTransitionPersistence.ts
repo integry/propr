@@ -21,6 +21,11 @@ export interface DurableTaskHistoryRow {
   transition_key: string;
 }
 
+export interface PersistedTaskTransition extends DurableTaskHistoryRow {
+  /** False when a previously accepted terminal transition fenced this write. */
+  applied: boolean;
+}
+
 function canonicalValue(value: unknown): unknown {
   if (value === undefined) return { $undefined: true };
   if (typeof value === 'number' && !Number.isFinite(value)) return { $number: String(value) };
@@ -128,7 +133,11 @@ export async function persistTaskCreation(input: {
   taskId: string;
   transitionKey: string;
   fallbackTimestamp: string;
-}): Promise<{ task: DurableTaskRow; history: DurableTaskHistoryRow }> {
+}): Promise<{
+  task: DurableTaskRow;
+  history: DurableTaskHistoryRow;
+  histories: DurableTaskHistoryRow[];
+}> {
   return input.database.transaction(async (transaction) => {
     await transaction('tasks').insert(input.taskData).onConflict('task_id').ignore();
     await transaction('task_history').insert({
@@ -142,10 +151,21 @@ export async function persistTaskCreation(input: {
       .first(
         'history_id', 'state', 'timestamp', 'reason', 'metadata', 'transition_key'
       ) as Record<string, unknown> | undefined;
+    const historyRows = await transaction('task_history')
+      .where({ task_id: input.taskId })
+      .orderBy('history_id', 'asc')
+      .select(
+        'history_id', 'state', 'timestamp', 'reason', 'metadata', 'transition_key'
+      ) as Array<Record<string, unknown>>;
     if (!task) throw new Error('Durable task row could not be read after persistence');
     return {
       task,
       history: parseHistoryRow(history, input.fallbackTimestamp, input.transitionKey),
+      histories: historyRows.map((row) => parseHistoryRow(
+        row,
+        input.fallbackTimestamp,
+        typeof row.transition_key === 'string' ? row.transition_key : input.transitionKey
+      )),
     };
   });
 }
@@ -156,17 +176,36 @@ export async function persistTaskTransition(input: {
   taskId: string;
   transitionKey: string;
   fallbackTimestamp: string;
-}): Promise<DurableTaskHistoryRow> {
+}): Promise<PersistedTaskTransition> {
   return input.database.transaction(async (transaction) => {
     await transaction('task_history').insert({
       ...input.historyData,
       transition_key: input.transitionKey,
-    }).onConflict(['task_id', 'transition_key']).ignore();
+    }).onConflict().ignore();
     const history = await transaction('task_history')
       .where({ task_id: input.taskId, transition_key: input.transitionKey })
       .first(
         'history_id', 'state', 'timestamp', 'reason', 'metadata', 'transition_key'
       ) as Record<string, unknown> | undefined;
-    return parseHistoryRow(history, input.fallbackTimestamp, input.transitionKey);
+    if (history) {
+      return {
+        ...parseHistoryRow(history, input.fallbackTimestamp, input.transitionKey),
+        applied: true,
+      };
+    }
+    const terminal = await transaction('task_history')
+      .where({ task_id: input.taskId })
+      .whereRaw("lower(state) in ('completed', 'failed', 'cancelled')")
+      .orderBy('history_id', 'asc')
+      .first(
+        'history_id', 'state', 'timestamp', 'reason', 'metadata', 'transition_key'
+      ) as Record<string, unknown> | undefined;
+    if (!terminal) {
+      throw new Error('Durable task transition was rejected without a terminal winner');
+    }
+    return {
+      ...parseHistoryRow(terminal, input.fallbackTimestamp, input.transitionKey),
+      applied: false,
+    };
   });
 }

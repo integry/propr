@@ -368,7 +368,10 @@ interface NotificationEntitlementRefreshMiddlewareOptions {
   maxScheduledRefreshes?: number;
   timerScheduler?: EntitlementRefreshTimerScheduler;
   ensureRegistration?: (database: Knex, userId: string) => Promise<boolean>;
-  loadRecoveryCredentials?: (database: Knex) => Promise<RecoveredEntitlementCredential[]>;
+  loadRecoveryCredentials?: (
+    database: Knex,
+    maxCredentials: number
+  ) => Promise<RecoveredEntitlementCredential[]>;
 }
 
 /** Schedules authorization refresh without adding GitHub latency to API traffic. */

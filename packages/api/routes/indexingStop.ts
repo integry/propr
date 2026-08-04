@@ -80,7 +80,7 @@ async function prepareJobStop(
 
 async function persistJobStop(
   context: {
-    job: { data: IndexingJobData };
+    job: { data: IndexingJobData; timestamp?: number };
     runId: string | undefined;
     repository: string;
     branch: string;
@@ -91,12 +91,21 @@ async function persistJobStop(
   let transition = await deps.updateRepositoryStatus(repository, 'idle', branch, {
     ...(runId ? { runId } : {}),
   });
+  const producerTransitionAt = job.data.transitionAt;
+  const producerDate = producerTransitionAt === undefined
+    ? undefined : new Date(producerTransitionAt);
+  const jobDate = new Date(Number(job.timestamp));
+  const transitionAt = producerDate && Number.isFinite(producerDate.getTime())
+    ? producerDate.toISOString()
+    : Number.isFinite(jobDate.getTime()) && jobDate.getTime() > 0
+      ? jobDate.toISOString()
+      : undefined;
   // A job can appear before its producer/worker ownership write. Preserve a
   // run-scoped terminal record, unless completed/failed history already won.
-  if (!transition.applied && runId && job.data.transitionAt) {
+  if (!transition.applied && runId && transitionAt) {
     transition = await deps.recordSkippedIndexingRun(repository, branch, {
       runId,
-      transitionAt: job.data.transitionAt,
+      transitionAt,
     });
   }
   return transition;
