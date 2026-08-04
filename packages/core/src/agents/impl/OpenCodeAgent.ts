@@ -121,10 +121,12 @@ export class OpenCodeAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, signal, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
-        const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const suffix = responseFormat === 'json'
+            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
+            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         const analysisWorkspace = this.ensureAnalysisWorkspace();
         const analysisConfigPath = this.createAnalysisConfigSnapshot();
@@ -134,7 +136,7 @@ export class OpenCodeAgent implements Agent {
             const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, configPath: analysisConfigPath, dataPath: analysisDataPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData: analysisPrompt, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId, signal })
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);

@@ -17,6 +17,7 @@ export interface RunningTaskContainer { id: string; name: string; }
 
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
+    signal?: AbortSignal;
     /** Resolve with buffered output on timeout so implementation jobs can publish partial work. */
     preserveOutputOnTimeout?: boolean;
     onSessionId?: (sessionId: string, conversationId?: string) => void; onContainerId?: (containerId: string, containerName: string) => void;
@@ -184,7 +185,7 @@ function setupAbortChecker({ taskId, abortedRef, child, containerIdRef, namedCon
                 else logger.warn({ taskId, containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container on abort');
             }
             child.kill('SIGTERM');
-            setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+            setTimeout(() => { if (child.exitCode === null) child.kill('SIGKILL'); }, 5000);
             await clearAbortSignal(taskId);
         }
     }, 2000);
@@ -233,7 +234,7 @@ export async function findRunningDockerContainerForTask(
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, signal } = options;
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(args) : null;
         const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
@@ -251,6 +252,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
         const messageTimestamps = new Map<string, string>();
+        let timeoutForceKillHandle: ReturnType<typeof setTimeout> | undefined;
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
             const containerToStop = state.containerId.value || namedContainer;
@@ -262,9 +264,30 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 });
             }
             child.kill('SIGTERM');
-            setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+            timeoutForceKillHandle = setTimeout(() => {
+                if (child.exitCode === null) child.kill('SIGKILL');
+            }, 5000);
         }, timeout);
         const abortCheckInterval = taskId ? setupAbortChecker({ taskId, abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer }) : null;
+        let signalForceKillHandle: ReturnType<typeof setTimeout> | undefined;
+        const abortHandler = () => {
+            if (state.aborted.value) return;
+            state.aborted.value = true;
+            const containerToStop = state.containerId.value || namedContainer;
+            if (containerToStop) {
+                setImmediate(() => {
+                    void stopDockerContainer(containerToStop, 10).then((stopResult) => {
+                        if (!stopResult.success) logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after cancellation');
+                    });
+                });
+            }
+            child.kill('SIGTERM');
+            signalForceKillHandle = setTimeout(() => {
+                if (child.exitCode === null) child.kill('SIGKILL');
+            }, 5000);
+        };
+        signal?.addEventListener('abort', abortHandler, { once: true });
+        if (signal?.aborted) abortHandler();
 
         const getRedisOutput = () => {
             const primaryOutput = streamStderrToRedis ? `${stderr}${stdout ? `\n${stdout}` : ''}` : stdout;
@@ -295,7 +318,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            if (timeoutForceKillHandle) clearTimeout(timeoutForceKillHandle);
+            if (signalForceKillHandle) clearTimeout(signalForceKillHandle);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
+            signal?.removeEventListener('abort', abortHandler);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
             if (state.timedOut) {
                 const timeoutMessage = `Command timed out after ${timeout}ms`;
@@ -312,7 +338,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
         });
         child.on('error', (error: Error) => {
             clearTimeout(timeoutHandle);
+            if (timeoutForceKillHandle) clearTimeout(timeoutForceKillHandle);
+            if (signalForceKillHandle) clearTimeout(signalForceKillHandle);
             if (abortCheckInterval) clearInterval(abortCheckInterval);
+            signal?.removeEventListener('abort', abortHandler);
             if (redisState.interval) clearInterval(redisState.interval);
             if (redisState.client) redisState.client.quit().catch(() => {});
             reject(error);

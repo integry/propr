@@ -2,9 +2,9 @@ import { posix } from 'node:path';
 import type { PrSnapshotFile } from './types.js';
 
 const GENERATED_DIRECTORIES = /(^|\/)(dist|build|coverage|vendor|third_party|node_modules|generated)(\/|$)/i;
-const LOCKFILE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|composer\.lock|poetry\.lock|cargo\.lock|gemfile\.lock)$/i;
+const LOCKFILE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|composer\.lock|poetry\.lock|uv\.lock|pipfile\.lock|cargo\.lock|gemfile\.lock|go\.sum|package\.resolved|gradle\.lockfile)$/i;
 const GENERATED_NAME = /\.min\.(js|css)$|\.(generated|gen)\.[cm]?[jt]sx?$|\.snap$/i;
-const TEST_PATH = /(^|\/)(tests?|spec|__tests__)(\/|$)|\.(test|spec)\.[^.]+$|_test\.[^.]+$/i;
+const TEST_PATH = /(^|\/)(tests?|spec|__tests__)(\/|$)|\.(test|spec)\.[^.]+$|_test\.[^.]+$|(^|\/)test_[^/]+\.py$/i;
 const SOURCE_PATH = /\.(?:[cm]?[jt]sx?|py|go|rs|rb|php|java|kt|kts|cs|cpp|cc|cxx|c|h|hpp|swift|scala|vue|svelte)$/i;
 const SPECIAL_DEPENDENCY = /(^|\/)(migrations?|schema|schemas|types?)(\/|$)|(^|\/)(types?|schema)\.[cm]?[jt]s$|\.(sql|prisma|proto|d\.ts)$/i;
 const SECRET_PATH = /(^|\/)(\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)|credentials?(?:\.[^.]+)?\.json|service[-_]?account(?:\.[^.]+)?\.json|secrets?\.ya?ml)$|\.(pem|p12|pfx|key)$/i;
@@ -28,7 +28,12 @@ export function addedSplitPatchText(file: PrSnapshotFile): string {
 export function isSecretBearingSplitFile(file: PrSnapshotFile): boolean {
   const pathLooksSecret = SECRET_PATH.test(file.filename)
     && !/\.env\.(example|sample|template)$|(^|\/)\.env\.example$/i.test(file.filename);
-  const changedContent = file.headContent ?? addedSplitPatchText(file);
+  // Partial GitHub patches are never treated as complete scanning evidence. The
+  // safety assessment rejects incomplete contents before publication; this
+  // fallback only preserves best-effort detection for callers of this helper.
+  const changedContent = file.contentComplete && file.headContent !== null
+    ? file.headContent
+    : addedSplitPatchText(file);
   return pathLooksSecret || SECRET_CONTENT.test(changedContent);
 }
 

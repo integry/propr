@@ -1,4 +1,4 @@
-import type { Agent } from '../../agents/types.js';
+import type { AnalysisResult, AnalyzeOptions } from '../../agents/types.js';
 
 /** A repository containing the source pull request head. */
 export interface PrSplitRepository {
@@ -29,11 +29,12 @@ export interface PrSnapshotFile {
   deletions: number;
   changes: number;
   patch: string | null;
+  /** True only when applying the patch to baseContent exactly reconstructs headContent. */
+  patchComplete: boolean;
   sha: string | null;
   /**
-   * Contents at the captured current base SHA and head SHA. `baseContent` is
-   * deliberately not described as the unified-diff preimage: GitHub builds PR
-   * diffs from a merge base, which can differ after the base branch advances.
+   * Contents at the captured merge-base SHA (falling back to baseSha only when
+   * GitHub cannot report a merge base) and immutable head SHA.
    */
   baseContent: string | null;
   headContent: string | null;
@@ -183,7 +184,13 @@ export type SplitCandidateJudge = (
   input: SplitPlannerJudgementInput,
 ) => Promise<unknown>;
 
-export type SplitPlannerAgent = Pick<Agent, 'analyze'>;
+/** Agent seam that must propagate planner cancellation to its underlying request. */
+export interface SplitPlannerAgent {
+  analyze(
+    prompt: string,
+    options: AnalyzeOptions & { signal: AbortSignal },
+  ): Promise<AnalysisResult>;
+}
 
 export interface SplitPlannerOptions {
   instruction?: string;
@@ -193,6 +200,15 @@ export interface SplitPlannerOptions {
   agent?: SplitPlannerAgent;
   /** Optional shorter deadline for judgement; the service maximum still applies. */
   judgementTimeoutMs?: number;
+}
+
+/** Immutable source coordinates required to reproduce the captured PR delta. */
+export interface SplitPlanSourceDiff {
+  targetRepository: string;
+  headRepository: string;
+  baseSha: string;
+  headSha: string;
+  mergeBaseSha: string | null;
 }
 
 /** The complete analysis result consumed by the later branch/publication layer. */
@@ -206,6 +222,8 @@ export interface SplitPlan {
   safeToCreatePr: boolean;
   failureReason: string | null;
   selectionReason: string;
-  /** Publication must apply these files from the source PR; no rewrite is planned. */
+  /** Publication must use these immutable coordinates, not moving branch refs. */
+  sourceDiff: SplitPlanSourceDiff;
+  /** Publication must reconstruct selected file deltas at sourceDiff SHAs; no rewrite is planned. */
   preserveSourceDiff: true;
 }

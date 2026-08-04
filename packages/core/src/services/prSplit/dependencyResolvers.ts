@@ -7,6 +7,7 @@ interface ImportAliasRule {
   targetPrefix: string;
   targetSuffix: string;
   wildcard: boolean;
+  appliesWithin: string;
 }
 
 interface WorkspacePackage {
@@ -27,6 +28,14 @@ interface SpecifierAdapter {
   supports: RegExp;
   patterns: readonly RegExp[];
 }
+
+export interface LanguageDependencyAnalysis {
+  incompleteReasons: string[];
+  filesRequiringCompleteConfigDiscovery: Set<string>;
+  bestEffortFiles: Set<string>;
+}
+
+type RepositoryVersion = 'base' | 'head';
 
 const RESOLVABLE_EXTENSIONS = [
   '.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs', '.py', '.go', '.rs',
@@ -57,15 +66,19 @@ const SPECIFIER_ADAPTERS: readonly SpecifierAdapter[] = [
   },
   {
     supports: /\.rb$/i,
-    patterns: [/\b(?:require_relative|load)\s*\(?\s*['"]([^'"]+)['"]/g],
+    patterns: [/\b(?:require_relative|require|load)\s*\(?\s*['"]([^'"]+)['"]/g],
   },
   {
     supports: /\.php$/i,
     patterns: [/\b(?:include|include_once|require|require_once)\s*\(?\s*['"]([^'"]+)['"]/g, /^\s*use\s+([\\\w]+)/gm],
   },
   {
-    supports: /\.(?:java|kt|kts|cs|swift|scala)$/i,
+    supports: /\.(?:java|kt|kts|swift|scala)$/i,
     patterns: [/^\s*import\s+([\w.*]+)/gm],
+  },
+  {
+    supports: /\.cs$/i,
+    patterns: [/^\s*(?:global\s+)?using\s+(?:static\s+)?(?:[A-Za-z_]\w*\s*=\s*)?([\w.]+)\s*;/gm],
   },
   {
     supports: /\.(?:c|cc|cpp|cxx|h|hpp)$/i,
@@ -73,75 +86,127 @@ const SPECIFIER_ADAPTERS: readonly SpecifierAdapter[] = [
   },
 ];
 
-function repositoryAnalysisFiles(snapshot: PrSnapshot): Array<{
+function repositoryAnalysisFiles(snapshot: PrSnapshot, version: RepositoryVersion): Array<{
   path: string;
   content: string | null;
   contentComplete: boolean;
 }> {
   const files = new Map(snapshot.repositoryFiles.map(file => [file.path, file]));
   for (const changed of snapshot.changedFiles) {
-    if (changed.status === 'removed' || changed.headContent === null) continue;
-    files.set(changed.filename, {
-      path: changed.filename,
-      content: changed.headContent,
-      contentComplete: changed.contentComplete,
-    });
+    files.delete(changed.filename);
+    if (changed.previousFilename) files.delete(changed.previousFilename);
+    const isHead = version === 'head';
+    const path = isHead ? changed.filename : (changed.previousFilename ?? changed.filename);
+    const content = isHead ? changed.headContent : changed.baseContent;
+    const absent = isHead
+      ? changed.status === 'removed'
+      : changed.status === 'added' || changed.status === 'copied';
+    if (absent || content === null) continue;
+    files.set(path, { path, content, contentComplete: changed.contentComplete });
   }
-  const analysisFiles = [...files.values()];
-  for (const changed of snapshot.changedFiles) {
-    if (changed.baseContent === null
-      || !/(^|\/)(?:package\.json|tsconfig(?:\.[^/]+)?\.json|jsconfig\.json)$/i.test(changed.filename)) continue;
-    analysisFiles.push({
-      path: changed.previousFilename ?? changed.filename,
-      content: changed.baseContent,
-      contentComplete: changed.contentComplete,
-    });
-  }
-  return analysisFiles;
+  return [...files.values()];
 }
 
-function configuredImportAliases(snapshot: PrSnapshot): ImportAliasRule[] {
-  return repositoryAnalysisFiles(snapshot).flatMap((file) => {
-    if (!/(^|\/)(?:tsconfig(?:\.[^/]+)?|jsconfig)\.json$/i.test(file.path)
-      || !file.contentComplete
-      || !file.content) return [];
-    try {
-      const withoutComments = file.content
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '')
-        .replace(/,\s*([}\]])/g, '$1');
-      const parsed = JSON.parse(withoutComments) as {
-        compilerOptions?: { baseUrl?: unknown; paths?: unknown };
-      };
-      const options = parsed.compilerOptions;
-      if (!options || typeof options.paths !== 'object' || options.paths === null) return [];
-      const baseUrl = typeof options.baseUrl === 'string' ? options.baseUrl : '.';
-      return Object.entries(options.paths).flatMap(([pattern, targets]) => {
-        if (!Array.isArray(targets)) return [];
-        const wildcard = pattern.indexOf('*');
-        const matchPrefix = wildcard >= 0 ? pattern.slice(0, wildcard) : pattern;
-        const matchSuffix = wildcard >= 0 ? pattern.slice(wildcard + 1) : '';
-        return targets.flatMap((target) => {
-          if (typeof target !== 'string') return [];
-          const targetWildcard = target.indexOf('*');
-          const resolvedTarget = posix.normalize(posix.join(posix.dirname(file.path), baseUrl, target));
-          return [{
-            matchPrefix,
-            matchSuffix,
-            targetPrefix: targetWildcard >= 0
-              ? resolvedTarget.slice(0, resolvedTarget.indexOf('*'))
-              : resolvedTarget,
-            targetSuffix: targetWildcard >= 0
-              ? resolvedTarget.slice(resolvedTarget.indexOf('*') + 1)
-              : '',
-            wildcard: wildcard >= 0,
-          }];
-        });
-      });
-    } catch {
-      return [];
+function stripJsonc(value: string): string {
+  let output = '';
+  let quote = '';
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    const next = value[index + 1];
+    if (quote) {
+      output += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = '';
+      continue;
     }
+    if (character === '"') {
+      quote = character;
+      output += character;
+      continue;
+    }
+    if (character === '/' && next === '/') {
+      while (index < value.length && value[index] !== '\n') index += 1;
+      output += '\n';
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      index += 2;
+      while (index < value.length && !(value[index] === '*' && value[index + 1] === '/')) {
+        if (value[index] === '\n') output += '\n';
+        index += 1;
+      }
+      index += 1;
+      continue;
+    }
+    output += character;
+  }
+  return output.replace(/,\s*([}\]])/g, '$1');
+}
+
+function aliasRules(
+  pattern: string,
+  targets: unknown,
+  directory: string,
+  baseUrl = '.',
+): ImportAliasRule[] {
+  if (!Array.isArray(targets)) return [];
+  const wildcard = pattern.indexOf('*');
+  return targets.flatMap((target) => {
+    if (typeof target !== 'string') return [];
+    const targetWildcard = target.indexOf('*');
+    const resolvedTarget = posix.normalize(posix.join(directory, baseUrl, target));
+    return [{
+      matchPrefix: wildcard >= 0 ? pattern.slice(0, wildcard) : pattern,
+      matchSuffix: wildcard >= 0 ? pattern.slice(wildcard + 1) : '',
+      targetPrefix: targetWildcard >= 0
+        ? resolvedTarget.slice(0, resolvedTarget.indexOf('*'))
+        : resolvedTarget,
+      targetSuffix: targetWildcard >= 0
+        ? resolvedTarget.slice(resolvedTarget.indexOf('*') + 1)
+        : '',
+      wildcard: wildcard >= 0,
+      appliesWithin: directory,
+    }];
   });
+}
+
+function configuredImportAliases(files: ReturnType<typeof repositoryAnalysisFiles>): {
+  rules: ImportAliasRule[];
+  errors: string[];
+} {
+  const rules: ImportAliasRule[] = [];
+  const errors: string[] = [];
+  for (const file of files) {
+    const isTsConfig = /(^|\/)(?:tsconfig(?:\.[^/]+)?|jsconfig)\.json$/i.test(file.path);
+    const isPackage = posix.basename(file.path) === 'package.json';
+    if (!isTsConfig && !isPackage) continue;
+    if (!file.contentComplete || !file.content) continue;
+    try {
+      const parsed = JSON.parse(isTsConfig ? stripJsonc(file.content) : file.content) as {
+        compilerOptions?: { baseUrl?: unknown; paths?: unknown };
+        imports?: unknown;
+      };
+      const directory = posix.dirname(file.path);
+      if (isTsConfig) {
+        const options = parsed.compilerOptions;
+        if (options && typeof options.paths === 'object' && options.paths !== null) {
+          const baseUrl = typeof options.baseUrl === 'string' ? options.baseUrl : '.';
+          for (const [pattern, targets] of Object.entries(options.paths)) {
+            rules.push(...aliasRules(pattern, targets, directory, baseUrl));
+          }
+        }
+      } else if (typeof parsed.imports === 'object' && parsed.imports !== null) {
+        for (const [pattern, targets] of Object.entries(parsed.imports)) {
+          rules.push(...aliasRules(pattern, packageTargets(targets), directory));
+        }
+      }
+    } catch (error) {
+      errors.push(`Import configuration ${file.path} could not be parsed: ${(error as Error).message}`);
+    }
+  }
+  return { rules, errors };
 }
 
 function packageTargets(value: unknown): string[] {
@@ -151,12 +216,17 @@ function packageTargets(value: unknown): string[] {
   return Object.values(value).flatMap(packageTargets);
 }
 
-function workspacePackages(snapshot: PrSnapshot): WorkspacePackage[] {
-  return repositoryAnalysisFiles(snapshot).flatMap((file) => {
-    if (posix.basename(file.path) !== 'package.json' || !file.contentComplete || !file.content) return [];
+function workspacePackages(files: ReturnType<typeof repositoryAnalysisFiles>): {
+  packages: WorkspacePackage[];
+  errors: string[];
+} {
+  const packages: WorkspacePackage[] = [];
+  const errors: string[] = [];
+  for (const file of files) {
+    if (posix.basename(file.path) !== 'package.json' || !file.contentComplete || !file.content) continue;
     try {
       const parsed = JSON.parse(file.content) as Record<string, unknown>;
-      if (typeof parsed.name !== 'string' || !parsed.name.trim()) return [];
+      if (typeof parsed.name !== 'string' || !parsed.name.trim()) continue;
       const directory = posix.dirname(file.path);
       const entrypoints = new Map<string, string[]>();
       const exportsValue = parsed.exports;
@@ -172,18 +242,24 @@ function workspacePackages(snapshot: PrSnapshot): WorkspacePackage[] {
       if (rootTargets.length > 0) {
         entrypoints.set('.', [...(entrypoints.get('.') ?? []), ...rootTargets]);
       }
-      return [{ name: parsed.name.trim(), directory, entrypoints }];
-    } catch {
-      return [];
+      packages.push({ name: parsed.name.trim(), directory, entrypoints });
+    } catch (error) {
+      errors.push(`Workspace manifest ${file.path} could not be parsed: ${(error as Error).message}`);
     }
-  });
+  }
+  return { packages, errors };
 }
 
 function configuredBases(context: ImportResolutionContext): string[] {
-  return context.importAliases.flatMap((rule) => {
-    if (!rule.wildcard) return context.specifier === rule.matchPrefix ? [rule.targetPrefix] : [];
-    if (!context.specifier.startsWith(rule.matchPrefix)
-      || !context.specifier.endsWith(rule.matchSuffix)) return [];
+  const matches = context.importAliases.filter(rule => (rule.appliesWithin === '.'
+      || context.fromFile.startsWith(`${rule.appliesWithin}/`))
+    && (rule.wildcard
+      ? context.specifier.startsWith(rule.matchPrefix)
+        && context.specifier.endsWith(rule.matchSuffix)
+      : context.specifier === rule.matchPrefix));
+  const nearestDepth = Math.max(-1, ...matches.map(rule => rule.appliesWithin.length));
+  return matches.filter(rule => rule.appliesWithin.length === nearestDepth).flatMap((rule) => {
+    if (!rule.wildcard) return [rule.targetPrefix];
     const matched = context.specifier.slice(
       rule.matchPrefix.length,
       context.specifier.length - rule.matchSuffix.length || undefined,
@@ -229,7 +305,7 @@ function resolveChangedImport(context: ImportResolutionContext): string[] {
     .replace(/\\/g, '/')
     .replace(/^@\//, '')
     .replace(/^~\//, '')
-    .replace(/\/\*$/, '');
+    .replace(/(?:\/\*|\.\*)$/, '');
   const relative = specifier.startsWith('.')
     || specifier.startsWith('self::')
     || specifier.startsWith('super::');
@@ -262,7 +338,13 @@ function resolveChangedImport(context: ImportResolutionContext): string[] {
   const suffixMatches = [...changedPathAliases.entries()]
     .filter(([path]) => suffixes.some(suffix => `/${path}`.endsWith(suffix))
       || (/\.go$/i.test(fromFile) && bases.some(candidate =>
-        `/${posix.dirname(path)}`.endsWith(`/${candidate}`) && /\.go$/i.test(path))))
+        `/${posix.dirname(path)}`.endsWith(`/${candidate}`) && /\.go$/i.test(path)))
+      || (/\.(?:java|kt|kts)$/i.test(fromFile) && specifier.endsWith('.*')
+        && bases.some(candidate => `/${posix.dirname(path)}`.endsWith(`/${candidate}`))
+        && /\.(?:java|kt|kts)$/i.test(path))
+      || (/\.cs$/i.test(fromFile)
+        && bases.some(candidate => `/${posix.dirname(path)}`.endsWith(`/${candidate}`))
+        && /\.cs$/i.test(path)))
     .map(([, currentPath]) => currentPath);
   return [...new Set(suffixMatches)];
 }
@@ -286,35 +368,82 @@ function referencedSpecifiers(filename: string, content: string): string[] {
   ])];
 }
 
+function isNonRelativeJavaScriptSpecifier(filename: string, specifier: string): boolean {
+  return /\.(?:[cm]?[jt]sx?|vue|svelte)$/i.test(filename)
+    && !specifier.startsWith('.')
+    && !specifier.startsWith('/');
+}
+
+const BEST_EFFORT_LANGUAGE = /\.(?:go|rs|rb|php|java|kt|kts|cs|cpp|cc|cxx|c|h|hpp|swift|scala)$/i;
+
+function hasDynamicJavaScriptDependency(filename: string, content: string): boolean {
+  return /\.(?:[cm]?[jt]sx?|vue|svelte)$/i.test(filename)
+    && /\b(?:import|require)\s*\(\s*[^'"\s)]/.test(content);
+}
+
 /** Resolve supported language imports to changed paths on both sides of the PR. */
 export function addLanguageImportDependencies(
   snapshot: PrSnapshot,
   addCompanions: (left: string, right: string) => void,
-): void {
+): LanguageDependencyAnalysis {
   const changedPathAliases = new Map<string, string>();
   for (const file of snapshot.changedFiles) {
     changedPathAliases.set(file.filename, file.filename);
     if (file.previousFilename) changedPathAliases.set(file.previousFilename, file.filename);
   }
-  const importAliases = configuredImportAliases(snapshot);
-  const packages = workspacePackages(snapshot);
+  const versionContexts = new Map<RepositoryVersion, {
+    importAliases: ImportAliasRule[];
+    packages: WorkspacePackage[];
+  }>();
+  const incompleteReasons: string[] = [];
+  for (const version of ['base', 'head'] as const) {
+    const files = repositoryAnalysisFiles(snapshot, version);
+    const aliases = configuredImportAliases(files);
+    const workspaces = workspacePackages(files);
+    incompleteReasons.push(
+      ...aliases.errors.map(reason => `${version} ${reason}`),
+      ...workspaces.errors.map(reason => `${version} ${reason}`),
+    );
+    versionContexts.set(version, {
+      importAliases: aliases.rules,
+      packages: workspaces.packages,
+    });
+  }
+  const filesRequiringCompleteConfigDiscovery = new Set<string>();
+  const bestEffortFiles = new Set<string>();
   for (const file of snapshot.changedFiles) {
     const versions = [
-      { path: file.filename, content: file.headContent },
-      { path: file.previousFilename ?? file.filename, content: file.baseContent },
+      { name: 'head' as const, path: file.filename, content: file.headContent },
+      { name: 'base' as const, path: file.previousFilename ?? file.filename, content: file.baseContent },
     ];
+    if (BEST_EFFORT_LANGUAGE.test(file.filename)
+      || versions.some(version => version.content !== null
+        && hasDynamicJavaScriptDependency(version.path, version.content))) {
+      bestEffortFiles.add(file.filename);
+    }
     for (const version of versions) {
       if (version.content === null) continue;
-      for (const specifier of referencedSpecifiers(version.path, version.content)) {
+      const specifiers = referencedSpecifiers(version.path, version.content);
+      if (specifiers.some(specifier => isNonRelativeJavaScriptSpecifier(version.path, specifier))) {
+        filesRequiringCompleteConfigDiscovery.add(file.filename);
+      }
+      const context = versionContexts.get(version.name);
+      if (!context) continue;
+      for (const specifier of specifiers) {
         const dependencies = resolveChangedImport({
           fromFile: version.path,
           specifier,
           changedPathAliases,
-          importAliases,
-          packages,
+          importAliases: context.importAliases,
+          packages: context.packages,
         });
         for (const dependency of dependencies) addCompanions(file.filename, dependency);
       }
     }
   }
+  return {
+    incompleteReasons: [...new Set(incompleteReasons)].sort(),
+    filesRequiringCompleteConfigDiscovery,
+    bestEffortFiles,
+  };
 }

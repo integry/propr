@@ -187,7 +187,7 @@ export class VibeAgent implements Agent {
 
     // eslint-disable-next-line complexity
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, signal, responseFormat = 'text', suppressLlmLog } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         if (!effectiveModel) throw new NoDefaultModelConfiguredError();
@@ -226,7 +226,8 @@ export class VibeAgent implements Agent {
                 'vibe',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: timeoutMs ?? parseInt(process.env.VIBE_ANALYSIS_TIMEOUT_MS || '1800000', 10),
-                    taskId
+                    taskId,
+                    signal
                 })
             );
             const executionTimeMs = Date.now() - startTime;

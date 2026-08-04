@@ -41,6 +41,7 @@ interface SnapshotBudget extends PrSnapshotResourceLimits {
   requests: number;
   retainedBytes: number;
   deadline: number;
+  controller: AbortController;
 }
 
 interface RepositoryCoordinates {
@@ -79,7 +80,7 @@ const DETAIL_CONCURRENCY = 6;
 const MAX_REPOSITORY_CONFIG_FILES = 500;
 const MAX_ANALYSIS_FILE_BYTES = 1_000_000;
 const DEFAULT_RESOURCE_LIMITS: PrSnapshotResourceLimits = {
-  maxRequests: 750,
+  maxRequests: 7_000,
   maxRetainedBytes: 32 * 1024 * 1024,
   maxElapsedMs: 120_000,
 };
@@ -133,18 +134,25 @@ function isExpectedUnavailable(error: unknown): boolean {
   return status === 404 || status === 409 || status === 422;
 }
 
-function createBudget(limits: Partial<PrSnapshotResourceLimits> | undefined): SnapshotBudget {
+function normalizedResourceLimits(
+  limits: Partial<PrSnapshotResourceLimits> | undefined,
+): PrSnapshotResourceLimits {
   const normalized = { ...DEFAULT_RESOURCE_LIMITS, ...limits };
   for (const [name, value] of Object.entries(normalized)) {
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new RangeError(`${name} must be a positive safe integer`);
     }
   }
+  return normalized;
+}
+
+function createBudget(limits: PrSnapshotResourceLimits, deadline: number): SnapshotBudget {
   return {
-    ...normalized,
+    ...limits,
     requests: 0,
     retainedBytes: 0,
-    deadline: Date.now() + normalized.maxElapsedMs,
+    deadline,
+    controller: new AbortController(),
   };
 }
 
@@ -154,6 +162,9 @@ async function budgetedRequest(
   route: string,
   parameters: Record<string, unknown>,
 ): Promise<PrSnapshotGitHubResponse> {
+  if (budget.controller.signal.aborted) {
+    throw new SnapshotResourceLimitError('PR snapshot attempt was cancelled');
+  }
   if (budget.requests >= budget.maxRequests) {
     throw new SnapshotResourceLimitError(`PR snapshot request budget exceeded (${budget.maxRequests})`);
   }
@@ -164,12 +175,19 @@ async function budgetedRequest(
   budget.requests += 1;
   let timeout: NodeJS.Timeout | undefined;
   try {
+    const requestOptions = isRecord(parameters.request) ? parameters.request : {};
     return await Promise.race([
-      octokit.request(route, parameters),
+      octokit.request(route, {
+        ...parameters,
+        request: { ...requestOptions, signal: budget.controller.signal },
+      }),
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new SnapshotResourceLimitError(
-          `PR snapshot time budget exceeded (${budget.maxElapsedMs}ms)`,
-        )), remaining);
+        timeout = setTimeout(() => {
+          budget.controller.abort();
+          reject(new SnapshotResourceLimitError(
+            `PR snapshot time budget exceeded (${budget.maxElapsedMs}ms)`,
+          ));
+        }, remaining);
       }),
     ]);
   } finally {
@@ -177,14 +195,17 @@ async function budgetedRequest(
   }
 }
 
-function retainText(budget: SnapshotBudget, value: string, description: string): void {
-  const bytes = Buffer.byteLength(value, 'utf8');
+function retainBytes(budget: SnapshotBudget, bytes: number, description: string): void {
   if (budget.retainedBytes + bytes > budget.maxRetainedBytes) {
     throw new SnapshotResourceLimitError(
       `PR snapshot retained-byte budget exceeded while reading ${description} (${budget.maxRetainedBytes} bytes)`,
     );
   }
   budget.retainedBytes += bytes;
+}
+
+function retainText(budget: SnapshotBudget, value: string, description: string): void {
+  retainBytes(budget, Buffer.byteLength(value, 'utf8'), description);
 }
 
 function nullableString(value: unknown): string | null {
@@ -221,11 +242,68 @@ function normalizeFile(value: unknown): PrSnapshotFile {
     deletions: nonNegativeInteger(file.deletions),
     changes: nonNegativeInteger(file.changes),
     patch: nullableString(file.patch),
+    patchComplete: false,
     sha: nullableString(file.sha)?.toLowerCase() ?? null,
     baseContent: null,
     headContent: null,
     contentComplete: false,
   };
+}
+
+function normalizedLines(value: string): string[] {
+  return value.replace(/\r\n/g, '\n').split('\n');
+}
+
+function patchReconstructsHead(file: PrSnapshotFile): boolean {
+  if (!file.patch || !file.contentComplete) return false;
+  const base = normalizedLines(file.baseContent ?? '');
+  const expectedHead = (file.headContent ?? '').replace(/\r\n/g, '\n');
+  const patchLines = file.patch.replace(/\r\n/g, '\n').split('\n');
+  const output: string[] = [];
+  let baseCursor = 0;
+  let sawHunk = false;
+  for (let index = 0; index < patchLines.length; index += 1) {
+    const header = patchLines[index].match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (!header) continue;
+    sawHunk = true;
+    const oldStart = Number(header[1]);
+    const oldCount = header[2] === undefined ? 1 : Number(header[2]);
+    const newCount = header[4] === undefined ? 1 : Number(header[4]);
+    const hunkStart = oldStart === 0 ? 0 : oldStart - 1;
+    if (hunkStart < baseCursor || hunkStart > base.length) return false;
+    output.push(...base.slice(baseCursor, hunkStart));
+    baseCursor = hunkStart;
+    let consumed = 0;
+    let produced = 0;
+    while (index + 1 < patchLines.length && !patchLines[index + 1].startsWith('@@')) {
+      const line = patchLines[index + 1];
+      if (line.startsWith('\\ No newline at end of file')) {
+        index += 1;
+        continue;
+      }
+      if (!/^[- +]/.test(line)) break;
+      index += 1;
+      const text = line.slice(1);
+      if (line.startsWith(' ')) {
+        if (base[baseCursor] !== text) return false;
+        output.push(text);
+        baseCursor += 1;
+        consumed += 1;
+        produced += 1;
+      } else if (line.startsWith('-')) {
+        if (base[baseCursor] !== text) return false;
+        baseCursor += 1;
+        consumed += 1;
+      } else {
+        output.push(text);
+        produced += 1;
+      }
+    }
+    if (consumed !== oldCount || produced !== newCount) return false;
+  }
+  if (!sawHunk) return false;
+  output.push(...base.slice(baseCursor));
+  return output.join('\n') === expectedHead;
 }
 
 function normalizeRepository(value: unknown): PrSplitRepository | null {
@@ -465,12 +543,13 @@ async function enrichChangedFileContents(
         })
         : Promise.resolve({ content: null, complete: true }),
     ]);
-    return {
+    const enriched: PrSnapshotFile = {
       ...file,
       baseContent: base.content,
       headContent: head.content,
       contentComplete: base.complete && head.complete,
     };
+    return { ...enriched, patchComplete: patchReconstructsHead(enriched) };
   });
 }
 
@@ -487,6 +566,12 @@ async function readRepositoryFiles(
     });
     const data = requiredRecord(response.data, 'repository tree');
     if (!Array.isArray(data.tree)) return { files: [], treeComplete: false };
+    for (const entry of data.tree) {
+      if (isRecord(entry) && typeof entry.path === 'string') {
+        retainText(reader.budget, entry.path, 'repository tree path');
+      }
+    }
+    retainBytes(reader.budget, data.tree.length * 64, 'repository tree metadata');
     const paths = [...new Set(data.tree.flatMap((entry) => {
       if (!isRecord(entry) || entry.type !== 'blob' || typeof entry.path !== 'string') return [];
       return REPOSITORY_CONFIG_PATH.test(entry.path) ? [entry.path] : [];
@@ -517,7 +602,6 @@ async function readRepositoryFiles(
 function assertSnapshotListLimits(
   expectedFileCount: number,
   expectedCommitCount: number,
-  budget: SnapshotBudget,
 ): void {
   if (expectedFileCount > MAX_PR_FILES) {
     throw new Error(`Pull request has ${expectedFileCount} changed files; GitHub exposes at most ${MAX_PR_FILES} files for reliable snapshot analysis`);
@@ -525,10 +609,20 @@ function assertSnapshotListLimits(
   if (expectedCommitCount > MAX_PR_COMMITS) {
     throw new Error(`Pull request has ${expectedCommitCount} commits; GitHub exposes at most ${MAX_PR_COMMITS} commits for reliable snapshot analysis`);
   }
-  const worstCaseMinimumRequests = (expectedFileCount * 2) + expectedCommitCount + 6;
-  if (budget.requests + worstCaseMinimumRequests > budget.maxRequests) {
+}
+
+function assertSnapshotRequestCapacity(
+  files: readonly PrSnapshotFile[],
+  expectedCommitCount: number,
+  budget: SnapshotBudget,
+): void {
+  const contentRequests = files.reduce((total, file) => total
+    + Number(file.status !== 'added' && file.status !== 'copied')
+    + Number(file.status !== 'removed'), 0);
+  const minimumRemainingRequests = contentRequests + expectedCommitCount + 4;
+  if (budget.requests + minimumRemainingRequests > budget.maxRequests) {
     throw new SnapshotResourceLimitError(
-      `Pull request requires at least ${worstCaseMinimumRequests} additional API requests, exceeding the aggregate snapshot budget of ${budget.maxRequests}`,
+      `Pull request requires at least ${minimumRemainingRequests} additional API requests after applying file statuses, exceeding the snapshot-attempt budget of ${budget.maxRequests}`,
     );
   }
 }
@@ -557,7 +651,7 @@ async function readMergeBaseSha(
   }
 }
 
-async function readSnapshotAttempt(
+async function readSnapshotAttemptBody(
   request: Omit<ReadPrSnapshotRequest, 'octokit' | 'resourceLimits'>,
   octokit: PrSnapshotClient,
   budget: SnapshotBudget,
@@ -580,7 +674,18 @@ async function readSnapshotAttempt(
   const headSha = requiredString(head.sha, 'head.sha').toLowerCase();
   const expectedFileCount = requiredNonNegativeInteger(metadata.changed_files, 'changed_files');
   const expectedCommitCount = requiredNonNegativeInteger(metadata.commits, 'commits');
-  assertSnapshotListLimits(expectedFileCount, expectedCommitCount, budget);
+  for (const [description, value] of [
+    ['pull request title', metadata.title],
+    ['pull request body', metadata.body],
+    ['base ref', base.ref],
+    ['base sha', base.sha],
+    ['head ref', head.ref],
+    ['head sha', head.sha],
+  ] as const) {
+    if (typeof value === 'string') retainText(budget, value, description);
+  }
+  retainBytes(budget, 512, 'pull request metadata');
+  assertSnapshotListLimits(expectedFileCount, expectedCommitCount);
 
   const targetRepository = { owner: request.owner, repo: request.repo };
   const sourceHeadRepository = normalizeRepository(head.repo);
@@ -594,7 +699,7 @@ async function readSnapshotAttempt(
     headRepository,
   };
 
-  let collection: [unknown[], unknown[], PrSnapshotGitHubResponse];
+  let collection: [unknown[], unknown[], PrSnapshotGitHubResponse, string | null];
   try {
     collection = await Promise.all([
       readAllPages(octokit, budget, 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files', parameters),
@@ -603,6 +708,7 @@ async function readSnapshotAttempt(
         ...parameters,
         mediaType: { format: 'diff' },
       }),
+      readMergeBaseSha(reader, baseSha, headSha),
     ]);
   } catch (error) {
     const status = errorStatus(error);
@@ -611,7 +717,7 @@ async function readSnapshotAttempt(
     }
     throw error;
   }
-  const [rawFiles, rawCommits, diffResponse] = collection;
+  const [rawFiles, rawCommits, diffResponse, mergeBaseSha] = collection;
 
   if (rawFiles.length !== expectedFileCount) {
     throw new SnapshotConsistencyError(`GitHub returned ${rawFiles.length} of ${expectedFileCount} changed files while the PR was moving`);
@@ -620,21 +726,31 @@ async function readSnapshotAttempt(
     throw new SnapshotConsistencyError(`GitHub returned ${rawCommits.length} of ${expectedCommitCount} commits while the PR was moving`);
   }
   const normalizedFiles = rawFiles.map(normalizeFile);
+  assertSnapshotRequestCapacity(normalizedFiles, expectedCommitCount, budget);
   for (const file of normalizedFiles) {
+    retainText(budget, file.filename, 'changed file path');
+    if (file.previousFilename) retainText(budget, file.previousFilename, 'previous changed file path');
     if (file.patch !== null) retainText(budget, file.patch, `patch for ${file.filename}`);
   }
+  retainBytes(budget, normalizedFiles.length * 256, 'normalized changed-file metadata');
   const [changedFiles, repositoryContext] = await Promise.all([
-    enrichChangedFileContents(reader, normalizedFiles, { baseSha, headSha }),
+    enrichChangedFileContents(reader, normalizedFiles, {
+      baseSha: mergeBaseSha ?? baseSha,
+      headSha,
+    }),
     readRepositoryFiles(reader, headSha),
   ]);
   const commits = await readCommitDetails(reader, rawCommits);
-  for (const commit of commits) retainText(budget, commit.message, `commit ${commit.sha}`);
+  for (const commit of commits) {
+    retainText(budget, commit.sha, 'commit sha');
+    retainText(budget, commit.message, `commit ${commit.sha}`);
+    for (const path of commit.files) retainText(budget, path, `commit ${commit.sha} file path`);
+  }
+  retainBytes(budget, commits.length * 256, 'normalized commit metadata');
   if (typeof diffResponse.data !== 'string') {
     throw new Error('GitHub pull request diff response was not text');
   }
   retainText(budget, diffResponse.data, 'unified diff');
-
-  const mergeBaseSha = await readMergeBaseSha(reader, baseSha, headSha);
 
   const verificationResponse = await budgetedRequest(
     octokit,
@@ -680,15 +796,31 @@ async function readSnapshotAttempt(
     && verificationCommitCount === expectedCommitCount };
 }
 
+async function readSnapshotAttempt(
+  request: Omit<ReadPrSnapshotRequest, 'octokit' | 'resourceLimits'>,
+  octokit: PrSnapshotClient,
+  budget: SnapshotBudget,
+): Promise<{ snapshot: PrSnapshot; stable: boolean }> {
+  try {
+    return await readSnapshotAttemptBody(request, octokit, budget);
+  } catch (error) {
+    budget.controller.abort();
+    throw error;
+  }
+}
+
 async function readSnapshot(requestInput: ReadPrSnapshotRequest): Promise<PrSnapshot> {
   const request = normalizeRequest(requestInput);
   const octokit = requestInput.octokit ?? await getAuthenticatedOctokit();
-  const budget = createBudget(requestInput.resourceLimits);
+  const limits = normalizedResourceLimits(requestInput.resourceLimits);
+  const deadline = Date.now() + limits.maxElapsedMs;
   let consistencyFailure: Error | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const budget = createBudget(limits, deadline);
     try {
       const result = await readSnapshotAttempt(request, octokit, budget);
       if (result.stable) return result.snapshot;
+      budget.controller.abort();
       consistencyFailure = new SnapshotConsistencyError(
         'Pull request base, head, file count, or commit count changed while collecting the snapshot',
       );

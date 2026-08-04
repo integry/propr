@@ -10,7 +10,7 @@ import type {
 } from './types.js';
 
 const VALIDATION_WORDS = /\b(test|lint|build|check|typecheck|verify|pytest|rspec)\b/i;
-const TEST_PATH = /(^|\/)(tests?|spec|__tests__)(\/|$)|\.(test|spec)\.[^.]+$|_test\.[^.]+$/i;
+const TEST_PATH = /(^|\/)(tests?|spec|__tests__)(\/|$)|\.(test|spec)\.[^.]+$|_test\.[^.]+$|(^|\/)test_[^/]+\.py$/i;
 const SUPPORTED_PACKAGE_SCRIPTS = ['test', 'lint', 'build', 'check', 'typecheck', 'verify'] as const;
 
 type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
@@ -86,6 +86,19 @@ function packageManager(
   manifest: PrSnapshotRepositoryFile,
   files: readonly PrSnapshotRepositoryFile[],
 ): PackageManager {
+  if (manifest.contentComplete && manifest.content) {
+    try {
+      const parsed = JSON.parse(manifest.content) as { packageManager?: unknown };
+      if (typeof parsed.packageManager === 'string') {
+        const declared = parsed.packageManager.split('@', 1)[0];
+        if (declared === 'npm' || declared === 'pnpm' || declared === 'yarn' || declared === 'bun') {
+          return declared;
+        }
+      }
+    } catch {
+      // Script parsing will separately withhold commands from an invalid manifest.
+    }
+  }
   const path = manifest.path;
   const directories: string[] = [];
   let directory = posix.dirname(path);
@@ -94,11 +107,15 @@ function packageManager(
     if (directory === '.') break;
     directory = posix.dirname(directory);
   }
-  const has = (name: RegExp): boolean => directories.some(candidate => files.some(file =>
-    posix.dirname(file.path) === candidate && name.test(posix.basename(file.path))));
-  if (has(/^pnpm-lock\.yaml$/i)) return 'pnpm';
-  if (has(/^yarn\.lock$/i)) return 'yarn';
-  if (has(/^bun\.lockb?$/i)) return 'bun';
+  for (const candidate of directories) {
+    const names = files
+      .filter(file => posix.dirname(file.path) === candidate)
+      .map(file => posix.basename(file.path));
+    if (names.some(name => /^pnpm-lock\.yaml$/i.test(name))) return 'pnpm';
+    if (names.some(name => /^yarn\.lock$/i.test(name))) return 'yarn';
+    if (names.some(name => /^bun\.lockb?$/i.test(name))) return 'bun';
+    if (names.some(name => /^(?:package-lock\.json|npm-shrinkwrap\.json)$/i.test(name))) return 'npm';
+  }
   return 'npm';
 }
 
@@ -111,7 +128,7 @@ function packageScriptCommand(manager: PackageManager, script: string): string {
 
 function addHint(hints: ValidationHint[], command: string, details: HintDetails): void {
   const normalized = command
-    .replace(/\p{Cc}/gu, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 240);
@@ -124,7 +141,11 @@ function addHint(hints: ValidationHint[], command: string, details: HintDetails)
   ) return;
   hints.push({
     command: normalized,
-    reason: details.reason,
+    reason: details.reason.normalize('NFKC')
+      .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1_000),
     source: details.source,
     relatedFiles: [...new Set(details.relatedFiles)].sort(),
     workingDirectory,
@@ -174,33 +195,38 @@ function javascriptHints(
   hints: ValidationHint[],
 ): void {
   const javascriptFiles = selectedFiles.filter(file => /\.[cm]?[jt]sx?$/i.test(file.filename));
-  const byManifest = new Map<string, PrSnapshotFile[]>();
+  const manifests = configs.filter(candidate => /(^|\/)package\.json$/i.test(candidate.path));
+  const scriptCache = new Map(manifests.map(manifest => [manifest.path, parsedPackageScripts(manifest)]));
+  const byManifestAndScript = new Map<string, { manifest: PrSnapshotRepositoryFile; script: string; files: PrSnapshotFile[] }>();
   for (const file of javascriptFiles) {
-    const manifest = nearestFile(file.filename, configs, candidate => /(^|\/)package\.json$/i.test(candidate.path));
-    if (!manifest) continue;
-    byManifest.set(manifest.path, [...(byManifest.get(manifest.path) ?? []), file]);
-  }
-  for (const [manifestPath, related] of byManifest) {
-    const manifest = configs.find(file => file.path === manifestPath);
-    if (!manifest) continue;
-    const scripts = parsedPackageScripts(manifest);
-    const manager = packageManager(manifest, configs);
-    const directory = posix.dirname(manifest.path);
     const desired = new Set<string>();
-    if (related.some(file => TEST_PATH.test(file.filename))) desired.add('test');
-    if (related.some(file => /\.[cm]?tsx?$/i.test(file.filename))) desired.add('typecheck');
-    for (const script of SUPPORTED_PACKAGE_SCRIPTS) {
-      if (scripts.has(script) && (desired.has(script) || script === 'test' || script === 'lint')) {
-        addHint(hints, packageScriptCommand(manager, script), {
-          reason: `Allowlisted script declared in the scripts object of ${manifest.path}`,
-          source: 'package-script',
-          relatedFiles: related.map(file => file.filename),
-          workingDirectory: directory,
-          confidence: 'high',
-          executable: true,
-        });
-      }
+    if (TEST_PATH.test(file.filename)) desired.add('test');
+    if (/\.[cm]?tsx?$/i.test(file.filename)) desired.add('typecheck');
+    for (const script of ['test', 'lint', 'build', 'check', 'verify']) desired.add(script);
+    const ancestors = manifests
+      .filter(manifest => isWithinDirectory(file.filename, posix.dirname(manifest.path)))
+      .sort((left, right) => posix.dirname(right.path).length - posix.dirname(left.path).length);
+    for (const script of SUPPORTED_PACKAGE_SCRIPTS.filter(name => desired.has(name))) {
+      const manifest = ancestors.find(candidate => scriptCache.get(candidate.path)?.has(script));
+      if (!manifest) continue;
+      const key = `${manifest.path}\0${script}`;
+      const existing = byManifestAndScript.get(key);
+      byManifestAndScript.set(key, {
+        manifest,
+        script,
+        files: [...(existing?.files ?? []), file],
+      });
     }
+  }
+  for (const { manifest, script, files: related } of byManifestAndScript.values()) {
+    addHint(hints, packageScriptCommand(packageManager(manifest, configs), script), {
+      reason: `Allowlisted script declared in the scripts object of ${manifest.path}`,
+      source: 'package-script',
+      relatedFiles: related.map(file => file.filename),
+      workingDirectory: posix.dirname(manifest.path),
+      confidence: 'high',
+      executable: true,
+    });
   }
 }
 

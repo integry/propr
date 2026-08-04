@@ -136,5 +136,6 @@ export type {
   SplitCandidateJudge,
   SplitPlannerAgent,
   SplitPlannerOptions,
+  SplitPlanSourceDiff,
   SplitPlan,
 } from './types.js';

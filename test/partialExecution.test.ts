@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { describe, test } from 'node:test';
 import {
+    ExecutionAbortedError,
     executeDockerCommand,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
@@ -47,6 +48,17 @@ function partialClaudeResult(reason: 'timeout' | 'max_turns'): ClaudeCodeRespons
 }
 
 describe('partial agent execution', () => {
+    test('terminates an underlying analysis process when its abort signal fires', async () => {
+        const controller = new AbortController();
+        const running = executeDockerCommand(process.execPath, [
+            '-e',
+            'setInterval(() => {}, 1000);',
+        ], { timeout: 5_000, signal: controller.signal });
+        setTimeout(() => controller.abort(), 20);
+
+        await assert.rejects(running, ExecutionAbortedError);
+    });
+
     test('preserves buffered output when the execution deadline is reached', async () => {
         const result = await executeDockerCommand(process.execPath, [
             '-e',
