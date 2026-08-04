@@ -1,6 +1,5 @@
 import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
-import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
@@ -9,48 +8,18 @@ import {
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 import { scanNonTerminalTaskStates } from './workerStateEnumeration.js';
+import {
+    applyTaskStateUpdate,
+    canTransitionTaskState,
+    COMPARE_AND_SET_TASK_STATE_SCRIPT,
+    CREATE_FENCED_TASK_STATE_SCRIPT,
+    MAX_CAS_ATTEMPTS,
+    persistTaskStateCreation,
+    persistTaskStateUpdate,
+    waitForCASRetry,
+} from './workerStatePersistence.js';
 
 export { TaskStates, type TaskState, type IssueRef };
-
-const COMPARE_AND_SET_TASK_STATE_SCRIPT = `
-if redis.call('get', KEYS[1]) ~= ARGV[1] then
-    return 0
-end
-redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
-return 1
-`;
-
-const CREATE_FENCED_TASK_STATE_SCRIPT = `
-if redis.call('get', KEYS[2]) ~= ARGV[1] then
-    return 0
-end
-redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
-return 1
-`;
-
-const MAX_CAS_ATTEMPTS = 8;
-const MAX_CAS_BACKOFF_MS = 25;
-
-const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
-    TaskStates.COMPLETED,
-    TaskStates.FAILED,
-    TaskStates.CANCELLED,
-]);
-
-function canTransitionTaskState(
-    currentState: TaskState,
-    newState: TaskState,
-    metadata: UpdateMetadata,
-): boolean {
-    if (!TERMINAL_TASK_STATES.has(currentState)) return true;
-    return metadata.isRetry === true && !TERMINAL_TASK_STATES.has(newState);
-}
-
-interface PersistedTaskStateTransition {
-    previousState: TaskState;
-    newState: TaskState;
-    metadata: UpdateMetadata;
-}
 
 /**
  * Worker state manager for persistent task state tracking
@@ -125,39 +94,7 @@ export class WorkerStateManager {
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`, state: TaskStates.PENDING
         }, 'Task state created');
 
-        try {
-            // Validate repository name components before storing
-            const repoOwner = issueRef.repoOwner ?? 'unknown';
-            const repoName = issueRef.repoName ?? 'unknown';
-            const repository = `${repoOwner}/${repoName}`;
-            const taskData = {
-                task_id: taskId, job_id: null, correlation_id: state.correlationId,
-                repository,
-                issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
-                model_name: issueRef.modelName ?? null, created_at: state.createdAt,
-                initial_job_data: JSON.stringify(issueRef)
-            };
-            await db('tasks').insert(taskData).onConflict('task_id').ignore();
-            const historyData = {
-                task_id: taskId, state: TaskStates.PENDING,
-                timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
-            };
-            await db('task_history').insert(historyData);
-            correlatedLogger.debug({ taskId }, 'Task state persisted to database');
-
-            // Publish real-time event for task creation
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: TaskStates.PENDING,
-                repository,
-                issueNumber: issueRef.number,
-                version: state.version,
-                updatedAt: state.updatedAt,
-            });
-        } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
-        }
+        await persistTaskStateCreation(state);
         return state;
     }
 
@@ -187,7 +124,7 @@ export class WorkerStateManager {
             if (!canTransitionTaskState(state.state, newState, metadata)) return state;
 
             const previousState = state.state;
-            this.applyTaskStateUpdate(state, newState, metadata);
+            applyTaskStateUpdate(state, newState, metadata);
             const updated = await this.redis.eval(
                 COMPARE_AND_SET_TASK_STATE_SCRIPT,
                 1,
@@ -197,13 +134,13 @@ export class WorkerStateManager {
                 JSON.stringify(state),
             );
             if (Number(updated) !== 1) {
-                await this.waitForCASRetry(attempt);
+                await waitForCASRetry(attempt);
                 continue;
             }
 
             await this.enqueueTaskStatePersistence(
                 taskId,
-                () => this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
+                () => persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
             );
             return state;
         }
@@ -233,7 +170,7 @@ export class WorkerStateManager {
         if (!canTransitionTaskState(state.state, newState, metadata)) return null;
 
         const previousState = state.state;
-        this.applyTaskStateUpdate(state, newState, metadata);
+        applyTaskStateUpdate(state, newState, metadata);
         const updated = await this.redis.eval(
             COMPARE_AND_SET_TASK_STATE_SCRIPT,
             1,
@@ -246,38 +183,9 @@ export class WorkerStateManager {
 
         await this.enqueueTaskStatePersistence(
             taskId,
-            () => this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
+            () => persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
         );
         return state;
-    }
-
-    private applyTaskStateUpdate(state: TaskStateData, newState: TaskState, metadata: UpdateMetadata): void {
-        const previousState = state.state;
-        state.state = newState;
-        state.updatedAt = new Date().toISOString();
-        state.version = (state.version ?? 0) + 1;
-        state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
-
-        if (metadata.error) {
-            state.lastError = { message: metadata.error.message, category: metadata.error.category ?? 'unknown', timestamp: new Date().toISOString() };
-        }
-        if (metadata.worktreeInfo) state.worktreeInfo = metadata.worktreeInfo;
-        if (metadata.claudeResult) {
-            state.claudeResult = { success: metadata.claudeResult.success, sessionId: metadata.claudeResult.sessionId, executionTime: metadata.claudeResult.executionTime };
-        }
-        if (metadata.prResult) state.prResult = metadata.prResult;
-
-        state.history.push({
-            state: newState, timestamp: new Date().toISOString(),
-            reason: metadata.reason ?? `State changed from ${previousState}`,
-            metadata: metadata.historyMetadata ?? {}
-        });
-    }
-
-    private async waitForCASRetry(attempt: number): Promise<void> {
-        const exponentialCap = Math.min(MAX_CAS_BACKOFF_MS, 2 ** attempt);
-        const delayMs = Math.floor(Math.random() * (exponentialCap + 1));
-        if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
     private async enqueueTaskStatePersistence(taskId: string, operation: () => Promise<void>): Promise<void> {
@@ -288,57 +196,6 @@ export class WorkerStateManager {
             await current;
         } finally {
             if (this.persistenceTails.get(taskId) === current) this.persistenceTails.delete(taskId);
-        }
-    }
-
-    private async persistTaskStateUpdate(
-        taskId: string,
-        state: TaskStateData,
-        transition: PersistedTaskStateTransition,
-    ): Promise<void> {
-        const { previousState, newState, metadata } = transition;
-        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId, issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            previousState, newState, attempts: state.attempts
-        }, 'Task state updated');
-
-        const historyTimestamp = state.history.at(-1)?.timestamp ?? state.updatedAt;
-        const historyData = {
-            task_id: taskId, state: newState, timestamp: historyTimestamp,
-            reason: metadata.reason ?? `State changed from ${previousState}`,
-            metadata: JSON.stringify({
-                ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
-                stateVersion: state.version ?? 0, stateUpdatedAt: state.updatedAt,
-                error: metadata.error, worktreeInfo: metadata.worktreeInfo,
-                claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
-            })
-        };
-        try {
-            await db('task_history').insert(historyData);
-            correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
-        } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
-        }
-
-        try {
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: newState,
-                previousState,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issueNumber: state.issueRef.number,
-                version: state.version,
-                updatedAt: state.updatedAt,
-                metadata: {
-                    attempts: state.attempts,
-                    reason: metadata.reason
-                }
-            });
-        } catch (error) {
-            correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish task state update event');
         }
     }
 
@@ -387,7 +244,7 @@ export class WorkerStateManager {
             );
             if (Number(updated) === 1) break;
             state = null;
-            await this.waitForCASRetry(attempt);
+            await waitForCASRetry(attempt);
         }
         if (!state) {
             throw new Error(`Task issue reference update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
@@ -487,7 +344,7 @@ export class WorkerStateManager {
                 JSON.stringify(state),
             );
             if (Number(updated) !== 1) {
-                await this.waitForCASRetry(attempt);
+                await waitForCASRetry(attempt);
                 continue;
             }
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);

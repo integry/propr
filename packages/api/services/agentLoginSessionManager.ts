@@ -8,7 +8,6 @@ import {
 } from '@propr/shared';
 import type { AgentConfig } from '@propr/core';
 import {
-  AGENT_LOGIN_TERMINAL,
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
   isAgentLoginComplete,
@@ -16,19 +15,20 @@ import {
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
+import {
+  buildDockerAttachCommand,
+  sanitizeTerminalChunk,
+  type TerminalSanitizerState,
+} from './agentLoginTerminal.js';
 
 export { AgentLoginInputError } from './agentLoginDocker.js';
+export { buildDockerAttachCommand } from './agentLoginTerminal.js';
 
 const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_LENGTH = 128 * 1024;
 const MAX_INPUT_LENGTH = 4096;
-const MAX_CONTROL_STRING_LENGTH = 16 * 1024;
 const DEFAULT_PROVIDER_COMPLETION_POLL_MS = 500;
-
-type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
-  | 'control_string' | 'control_string_escape';
-type EscapeSequenceState = Exclude<TerminalEscapeState, 'text'>;
 
 export type AgentLoginSessionStatus = 'starting' | 'running' | 'succeeded'
   | 'failed' | 'cancelled' | 'timed_out';
@@ -39,12 +39,6 @@ const TERMINAL_STATUSES = new Set<AgentLoginSessionStatus>([
   'cancelled',
   'timed_out',
 ]);
-const CONTROL_STRING_STARTS = new Set([']', 'P', 'X', '^', '_']);
-const C1_CONTROL_STRING_STARTS = new Set(['\u0090', '\u0098', '\u009d', '\u009e', '\u009f']);
-const CSI_FINAL_CHARACTER = /[\u0040-\u007e]/u;
-const ESCAPE_INTERMEDIATE_CHARACTER = /[\u0020-\u002f]/u;
-const UNSAFE_CONTROL_RANGES = [[0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1a], [0x1c, 0x1f], [0x7f, 0x9f]];
-
 export interface AgentLoginSessionSnapshot {
   id: string;
   agentId: string;
@@ -58,7 +52,7 @@ export interface AgentLoginSessionSnapshot {
   error?: string;
 }
 
-interface AgentLoginSession extends AgentLoginSessionSnapshot {
+interface AgentLoginSession extends AgentLoginSessionSnapshot, TerminalSanitizerState {
   owner: string;
   credentialPath: string;
   containerName: string;
@@ -68,11 +62,6 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   providerCompletionTimeout?: ReturnType<typeof setTimeout>;
   providerLoginInitiallyComplete?: boolean;
   cleanupStarted?: boolean;
-  escapeState: TerminalEscapeState;
-  controlStringKind?: string;
-  controlStringBuffer: string;
-  emittedTerminalLinks: Set<string>;
-  outputEndedWithCarriageReturn?: boolean;
 }
 
 export interface DockerCommandResult {
@@ -118,12 +107,6 @@ function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
   });
 }
 
-export function buildDockerAttachCommand(args: string[]): string {
-  const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-  const dockerCommand = ['docker', ...args].map(shellQuote).join(' ');
-  return `stty rows ${AGENT_LOGIN_TERMINAL.rows} cols ${AGENT_LOGIN_TERMINAL.columns}; exec ${dockerCommand}`;
-}
-
 function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
   const command = buildDockerAttachCommand(args);
   // Docker refuses to attach a container TTY when its own stdin is a pipe.
@@ -145,136 +128,6 @@ function isTerminal(status: AgentLoginSessionStatus): boolean {
 function normalizeScope(value: string): string {
   const normalized = value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 128);
   return normalized || 'propr';
-}
-
-const ESCAPE_TRANSITIONS: Record<
-  EscapeSequenceState,
-  (value: string) => TerminalEscapeState
-> = {
-  escape: value => {
-    if (value === '[') return 'csi';
-    if (CONTROL_STRING_STARTS.has(value)) return 'control_string';
-    return ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text';
-  },
-  escape_intermediate: value => (
-    ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text'
-  ),
-  csi: value => CSI_FINAL_CHARACTER.test(value) ? 'text' : 'csi',
-  control_string: value => {
-    if (value === '\u0007' || value === '\u009c') return 'text';
-    return value === '\u001b' ? 'control_string_escape' : 'control_string';
-  },
-  control_string_escape: value => {
-    if (value === '\\' || value === '\u009c') return 'text';
-    return value === '\u001b' ? 'control_string_escape' : 'control_string';
-  },
-};
-
-function startEscapeSequence(value: string): EscapeSequenceState | undefined {
-  if (value === '\u001b') return 'escape';
-  if (value === '\u009b') return 'csi';
-  if (C1_CONTROL_STRING_STARTS.has(value)) return 'control_string';
-  return undefined;
-}
-
-function isUnsafeControlCharacter(value: string): boolean {
-  const code = value.charCodeAt(0);
-  return UNSAFE_CONTROL_RANGES.some(([start, end]) => code >= start && code <= end);
-}
-
-function startControlString(session: AgentLoginSession, kind: string): void {
-  session.controlStringKind = kind;
-  session.controlStringBuffer = '';
-}
-
-function appendControlString(session: AgentLoginSession, value: string): void {
-  if (session.controlStringBuffer.length >= MAX_CONTROL_STRING_LENGTH) {
-    session.controlStringKind = undefined;
-    session.controlStringBuffer = '';
-    return;
-  }
-  session.controlStringBuffer += value;
-}
-
-function finishControlString(session: AgentLoginSession): string {
-  const kind = session.controlStringKind;
-  const payload = session.controlStringBuffer;
-  session.controlStringKind = undefined;
-  session.controlStringBuffer = '';
-
-  // OSC 8 hyperlinks carry the complete target separately from the rendered
-  // label. Full-screen CLIs can wrap or truncate that label, so preserve one
-  // validated HTTP(S) target as plain text for the browser to linkify. All
-  // other OSC/DCS payloads remain stripped from the output.
-  if (kind !== ']') return '';
-  const match = payload.match(/^8;[^;]*;(https?:\/\/[^\u0000-\u0020\u007f]+)$/u);
-  const target = match?.[1];
-  if (!target || session.emittedTerminalLinks.has(target)) return '';
-  try {
-    const parsed = new URL(target);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
-  } catch {
-    return '';
-  }
-  session.emittedTerminalLinks.add(target);
-  return `\n${target}\n`;
-}
-
-function sanitizeTerminalChunk(session: AgentLoginSession, chunk: string): string {
-  let sanitized = '';
-  for (const value of chunk) {
-    const state = session.escapeState;
-    if (state !== 'text') {
-      if (state === 'escape' && CONTROL_STRING_STARTS.has(value)) {
-        startControlString(session, value);
-        session.escapeState = 'control_string';
-        continue;
-      }
-      if (state === 'control_string') {
-        if (value === '\u0007' || value === '\u009c') {
-          sanitized += finishControlString(session);
-          session.escapeState = 'text';
-        } else if (value === '\u001b') {
-          session.escapeState = 'control_string_escape';
-        } else {
-          appendControlString(session, value);
-        }
-        continue;
-      }
-      if (state === 'control_string_escape') {
-        if (value === '\\' || value === '\u009c') {
-          sanitized += finishControlString(session);
-          session.escapeState = 'text';
-        } else {
-          appendControlString(session, value);
-          session.escapeState = value === '\u001b' ? 'control_string_escape' : 'control_string';
-        }
-        continue;
-      }
-      session.escapeState = ESCAPE_TRANSITIONS[state](value);
-      continue;
-    }
-    const escapeState = startEscapeSequence(value);
-    if (escapeState) {
-      if (escapeState === 'control_string') {
-        startControlString(session, value === '\u009d' ? ']' : value);
-      }
-      session.escapeState = escapeState;
-      continue;
-    }
-    if (value === '\r') {
-      sanitized += '\n';
-      session.outputEndedWithCarriageReturn = true;
-      continue;
-    }
-    if (value === '\n' && session.outputEndedWithCarriageReturn) {
-      session.outputEndedWithCarriageReturn = false;
-      continue;
-    }
-    session.outputEndedWithCarriageReturn = false;
-    if (!isUnsafeControlCharacter(value)) sanitized += value;
-  }
-  return sanitized;
 }
 
 export class AgentLoginSessionManager {

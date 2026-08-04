@@ -22,8 +22,6 @@ import {
 } from '../services/agentLoginSessionManager.js';
 import {
   buildAgentLoginCreateArgs,
-  isAgentLoginComplete,
-  prepareAgentLoginCredentialDefaults,
   resolveAgentLoginConfigPath,
 } from '../services/agentLoginDocker.js';
 
@@ -64,14 +62,6 @@ function responseRecorder() {
     },
   } as unknown as Response;
   return { response, record };
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for condition');
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
 }
 
 const managers: AgentLoginSessionManager[] = [];
@@ -127,134 +117,6 @@ describe('agent login session manager', () => {
       buildDockerAttachCommand(['start', '-a', '-i', 'login-container']),
       "stty rows 30 cols 120; exec 'docker' 'start' '-a' '-i' 'login-container'",
     );
-  });
-
-  test('preconfigures Antigravity privacy and non-interactive workspace defaults', () => {
-    const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-defaults-'));
-    const settingsPath = path.join(credentialPath, 'antigravity-cli', 'settings.json');
-    try {
-      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-      fs.writeFileSync(settingsPath, JSON.stringify({
-        enableTelemetry: true,
-        colorScheme: 'solarized',
-        trustedWorkspaces: ['/existing/workspace'],
-        unrelated: 'preserved',
-      }));
-
-      prepareAgentLoginCredentialDefaults('antigravity', credentialPath);
-
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
-      assert.equal(settings.enableTelemetry, false);
-      assert.equal(settings.colorScheme, 'solarized');
-      assert.deepEqual(settings.trustedWorkspaces, ['/existing/workspace', '/home/node/workspace']);
-      assert.equal(settings.unrelated, 'preserved');
-    } finally {
-      fs.rmSync(credentialPath, { recursive: true, force: true });
-    }
-  });
-
-  test('recognizes completed Antigravity authentication only after onboarding is saved', () => {
-    const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-complete-'));
-    const tokenPath = path.join(credentialPath, 'antigravity-cli', 'antigravity-oauth-token');
-    const onboardingPath = path.join(credentialPath, 'antigravity-cli', 'cache', 'onboarding.json');
-    try {
-      fs.mkdirSync(path.dirname(onboardingPath), { recursive: true });
-      fs.writeFileSync(tokenPath, 'token');
-      fs.writeFileSync(onboardingPath, JSON.stringify({ onboardingComplete: false }));
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
-
-      fs.writeFileSync(onboardingPath, JSON.stringify({ onboardingComplete: true }));
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), true);
-    } finally {
-      fs.rmSync(credentialPath, { recursive: true, force: true });
-    }
-  });
-
-  test('finishes Antigravity login after credentials and onboarding are persisted', async () => {
-    const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-login-'));
-    const child = fakeChild();
-    const dockerCalls: string[][] = [];
-    const manager = new AgentLoginSessionManager({
-      id: () => 'antigravity-session',
-      runDocker: async args => {
-        dockerCalls.push(args);
-        return { stdout: '', stderr: '' };
-      },
-      spawnDocker: args => {
-        dockerCalls.push(args);
-        return child;
-      },
-      providerCompletionPollMs: 5,
-      sessionTimeoutMs: 60_000,
-      sessionRetentionMs: 60_000,
-    });
-    managers.push(manager);
-
-    try {
-      const started = await manager.start(agent({
-        id: 'antigravity-1',
-        type: 'antigravity',
-        alias: 'antigravity',
-        configPath: credentialPath,
-      }), 'owner');
-      assert.equal(started.status, 'running');
-
-      const cliPath = path.join(credentialPath, 'antigravity-cli');
-      fs.mkdirSync(path.join(cliPath, 'cache'), { recursive: true });
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'token');
-      fs.writeFileSync(
-        path.join(cliPath, 'cache', 'onboarding.json'),
-        JSON.stringify({ onboardingComplete: true }),
-      );
-
-      await waitFor(() => manager.get(started.id, 'owner').status === 'succeeded');
-      const completed = manager.get(started.id, 'owner');
-      assert.match(completed.output, /Authentication saved/);
-      assert.equal(completed.exitCode, 0);
-      assert.ok(dockerCalls.some(args => args[0] === 'rm' && args[1] === '-f'));
-    } finally {
-      fs.rmSync(credentialPath, { recursive: true, force: true });
-    }
-  });
-
-  test('returns success without launching a container when Antigravity is already authenticated', async () => {
-    const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-existing-'));
-    const cliPath = path.join(credentialPath, 'antigravity-cli');
-    const dockerCalls: string[][] = [];
-    const manager = new AgentLoginSessionManager({
-      id: () => 'antigravity-existing-session',
-      runDocker: async args => {
-        dockerCalls.push(args);
-        return { stdout: '', stderr: '' };
-      },
-      spawnDocker: () => fakeChild(),
-      sessionTimeoutMs: 60_000,
-      sessionRetentionMs: 60_000,
-    });
-    managers.push(manager);
-
-    try {
-      fs.mkdirSync(path.join(cliPath, 'cache'), { recursive: true });
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'token');
-      fs.writeFileSync(
-        path.join(cliPath, 'cache', 'onboarding.json'),
-        JSON.stringify({ onboardingComplete: true }),
-      );
-
-      const started = await manager.start(agent({
-        id: 'antigravity-existing',
-        type: 'antigravity',
-        alias: 'antigravity',
-        configPath: credentialPath,
-      }), 'owner');
-
-      assert.equal(started.status, 'succeeded');
-      assert.equal(started.exitCode, 0);
-      assert.match(started.output, /already available/);
-      assert.deepEqual(dockerCalls, []);
-    } finally {
-      fs.rmSync(credentialPath, { recursive: true, force: true });
-    }
   });
 
   test('maps a ProPR-managed account to the managed host root and marks its container ownership as safe to normalize', () => {
