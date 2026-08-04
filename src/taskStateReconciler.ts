@@ -23,7 +23,7 @@ export interface ReconciliationRedis {
 
 export type ReconciliationStateManager = Pick<
     WorkerStateManager,
-    'getNonTerminalTasks' | 'getTaskState' | 'updateTaskState'
+    'getNonTerminalTasks' | 'getTaskState' | 'updateTaskStateIfCurrent'
 >;
 
 export interface TaskReconciliationSummary {
@@ -56,10 +56,7 @@ interface ReconciliationContext {
 
 const RELEASE_OWNED_PR_LOCK_SCRIPT = `
 local current = redis.call('get', KEYS[1])
-if not current then
-    return 0
-end
-if current == ARGV[1] or string.sub(current, 1, string.len(ARGV[1]) + 1) == ARGV[1] .. ':' then
+if current == ARGV[1] then
     return redis.call('del', KEYS[1])
 end
 return 0
@@ -69,7 +66,7 @@ function asJobResult(value: unknown): JobResult {
     if (value && typeof value === 'object' && typeof (value as { status?: unknown }).status === 'string') {
         return value as JobResult;
     }
-    return { status: 'complete' };
+    throw new Error('Completed PR comment job has no valid result status');
 }
 
 function taskAgeMs(task: TaskStateData, now: number): number {
@@ -77,26 +74,24 @@ function taskAgeMs(task: TaskStateData, now: number): number {
     return Number.isFinite(updatedAt) ? Math.max(0, now - updatedAt) : Number.POSITIVE_INFINITY;
 }
 
-function isPRTask(task: TaskStateData): boolean {
-    return task.taskId.startsWith('pr-comments')
-        || task.taskId.startsWith('merge-conflict')
-        || /^\d+$/.test(task.taskId);
+function isPRCommentTask(task: TaskStateData): boolean {
+    return task.issueRef.type === 'pr_comment';
 }
 
 async function clearOwnedPRLock(
     task: TaskStateData,
     redis: ReconciliationRedis,
 ): Promise<boolean> {
-    if (!isPRTask(task)) return false;
+    if (!isPRCommentTask(task)) return false;
     const { repoOwner, repoName, number } = task.issueRef;
-    if (!repoOwner || !repoName || !Number.isFinite(number) || !task.correlationId) return false;
+    if (!repoOwner || !repoName || !Number.isFinite(number) || !task.prProcessingLockToken) return false;
 
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${number}`;
     const released = await redis.eval(
         RELEASE_OWNED_PR_LOCK_SCRIPT,
         1,
         lockKey,
-        task.correlationId,
+        task.prProcessingLockToken,
     );
     return Number(released) === 1;
 }
@@ -167,10 +162,15 @@ async function handleQueuedState(
     const { options, summary } = context;
     if (!['waiting', 'delayed', 'prioritized', 'waiting-children'].includes(queueState)) return false;
     if (task.state !== TaskStates.PENDING) {
-        await options.stateManager.updateTaskState(task.taskId, TaskStates.PENDING, {
-            reason: `Task recovered in BullMQ ${queueState} state`,
-            historyMetadata: { recovered: true, queueState },
-        });
+        await options.stateManager.updateTaskStateIfCurrent(
+            task.taskId,
+            { state: task.state, updatedAt: task.updatedAt },
+            TaskStates.PENDING,
+            {
+                reason: `Task recovered in BullMQ ${queueState} state`,
+                historyMetadata: { recovered: true, queueState },
+            },
+        );
     }
     summary.queued++;
     return true;
@@ -216,7 +216,9 @@ export async function reconcileStaleTaskStates(
     const staleAfterMs = options.staleAfterMs ?? DEFAULT_TASK_RECONCILIATION_STALE_MS;
     const now = (options.now ?? Date.now)();
     const findRunningContainer = options.findRunningContainer ?? findRunningDockerContainerForTask;
-    const tasks = await options.stateManager.getNonTerminalTasks();
+    const tasks = (await options.stateManager.getNonTerminalTasks({
+        taskTypes: ['pr_comment'],
+    })).filter(isPRCommentTask);
     const summary: TaskReconciliationSummary = {
         scanned: tasks.length,
         fresh: 0,

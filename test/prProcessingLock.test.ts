@@ -3,13 +3,15 @@ import { describe, mock, test } from 'node:test';
 import {
     acquirePRProcessingLock,
     DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS,
+    MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS,
     PR_PROCESSING_LOCK_TTL_SECONDS,
 } from '../src/jobs/prProcessingLock.js';
 
 describe('PR processing lock lease', () => {
     test('uses a short renewable lease by default', async () => {
         assert.equal(DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS, 120);
-        assert.ok(PR_PROCESSING_LOCK_TTL_SECONDS >= 60);
+        assert.equal(MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS, 90);
+        assert.ok(PR_PROCESSING_LOCK_TTL_SECONDS >= MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS);
 
         const set = mock.fn(async () => 'OK');
         const acquired = await acquirePRProcessingLock({ set } as never, 'lock:key', 'owner-token');

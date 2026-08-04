@@ -3,11 +3,13 @@ import type { Redis } from 'ioredis';
 
 export const PR_PROCESSING_LOCK_RENEW_INTERVAL_MS = 30 * 1000;
 export const DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS = 2 * 60;
+export const MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS = Math.ceil(
+    (PR_PROCESSING_LOCK_RENEW_INTERVAL_MS * 3) / 1000,
+);
 
 function readLockTtlSeconds(): number {
     const configured = Number(process.env.PR_PROCESSING_LOCK_TTL_SECONDS);
-    const minimumSafeTtl = Math.ceil((PR_PROCESSING_LOCK_RENEW_INTERVAL_MS * 2) / 1000);
-    if (!Number.isFinite(configured) || configured < minimumSafeTtl) {
+    if (!Number.isFinite(configured) || configured < MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS) {
         return DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS;
     }
     return Math.floor(configured);

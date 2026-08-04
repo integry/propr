@@ -8,13 +8,14 @@ after(async () => { await closeConnection(); });
 function task(taskId: string, state: TaskStateData['state']): TaskStateData {
     return {
         taskId,
-        issueRef: { number: 1738, repoOwner: 'integry', repoName: 'propr' },
+        issueRef: { number: 1738, repoOwner: 'integry', repoName: 'propr', type: 'pr_comment' },
         correlationId: `correlation-${taskId}`,
         state,
         createdAt: '2026-08-04T00:00:00.000Z',
         updatedAt: '2026-08-04T00:00:00.000Z',
         attempts: 0,
         history: [{ state, timestamp: '2026-08-04T00:00:00.000Z', reason: 'test' }],
+        prProcessingLockToken: `correlation-${taskId}:attempt-token`,
     };
 }
 
@@ -26,8 +27,15 @@ function stateManager(tasks: TaskStateData[]) {
         updates,
         getNonTerminalTasks: async () => [...states.values()],
         getTaskState: async (taskId: string) => states.get(taskId) ?? null,
-        updateTaskState: async (taskId: string, state: TaskStateData['state'], metadata: UpdateMetadata = {}) => {
+        updateTaskStateIfCurrent: async (
+            taskId: string,
+            expectation: Pick<TaskStateData, 'state' | 'updatedAt'>,
+            state: TaskStateData['state'],
+            metadata: UpdateMetadata = {},
+        ) => {
             const current = states.get(taskId)!;
+            if (current.state !== expectation.state) return null;
+            if (expectation.updatedAt && current.updatedAt !== expectation.updatedAt) return null;
             const next = { ...current, state };
             states.set(taskId, next);
             updates.push({ taskId, state, metadata });
@@ -157,5 +165,132 @@ describe('task state reconciliation', () => {
 
         assert.equal(summary.fresh, 1);
         assert.equal(getJob.mock.calls.length, 0);
+    });
+
+    test('does not reconcile a task owned by another queue subsystem', async () => {
+        const unrelated = task('task-import-1', TaskStates.PROCESSING);
+        unrelated.issueRef.type = 'task_import';
+        const manager = stateManager([unrelated]);
+        const getJob = mock.fn(async () => undefined);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: { getJob, toKey: (type: string) => type },
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(summary.scanned, 0);
+        assert.equal(manager.updates.length, 0);
+        assert.equal(getJob.mock.calls.length, 0);
+    });
+
+    test('does not overwrite cancellation while recovering a queued task', async () => {
+        const queued = task('pr-comments-cancel-race', TaskStates.PROCESSING);
+        const manager = stateManager([queued]);
+        const queueWithCancellation = {
+            getJob: async () => ({
+                getState: async () => {
+                    manager.states.set(queued.taskId, { ...queued, state: TaskStates.CANCELLED });
+                    return 'delayed';
+                },
+            }),
+            toKey: (type: string) => type,
+        };
+
+        await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queueWithCancellation,
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(queued.taskId)?.state, TaskStates.CANCELLED);
+        assert.equal(manager.updates.length, 0);
+    });
+
+    test('does not rewrite a replacement attempt that reached the same state', async () => {
+        const queued = task('pr-comments-replacement-race', TaskStates.PROCESSING);
+        const manager = stateManager([queued]);
+        const replacementUpdatedAt = '2026-08-04T00:09:00.000Z';
+        const queueWithReplacement = {
+            getJob: async () => ({
+                getState: async () => {
+                    manager.states.set(queued.taskId, {
+                        ...queued,
+                        updatedAt: replacementUpdatedAt,
+                        prProcessingLockToken: 'replacement-attempt-token',
+                    });
+                    return 'delayed';
+                },
+            }),
+            toKey: (type: string) => type,
+        };
+
+        await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queueWithReplacement,
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(queued.taskId)?.state, TaskStates.PROCESSING);
+        assert.equal(manager.states.get(queued.taskId)?.updatedAt, replacementUpdatedAt);
+        assert.equal(manager.updates.length, 0);
+    });
+
+    test('allows only one of two concurrent reconcilers to terminalize a task', async () => {
+        const interrupted = task('pr-comments-concurrent', TaskStates.PROCESSING);
+        const manager = stateManager([interrupted]);
+        const options = {
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        };
+
+        const summaries = await Promise.all([
+            reconcileStaleTaskStates(options),
+            reconcileStaleTaskStates(options),
+        ]);
+
+        assert.equal(manager.updates.length, 1);
+        assert.equal(manager.states.get(interrupted.taskId)?.state, TaskStates.FAILED);
+        assert.equal(summaries.reduce((total, summary) => total + summary.interrupted, 0), 1);
+    });
+
+    test('releases only the exact lease token recorded for the abandoned attempt', async () => {
+        const abandoned = task('pr-comments-old-attempt', TaskStates.PROCESSING);
+        abandoned.correlationId = 'shared-correlation';
+        abandoned.prProcessingLockToken = 'shared-correlation:old-attempt';
+        const successorToken = 'shared-correlation:live-successor';
+        const manager = stateManager([abandoned]);
+        const evalMock = mock.fn(async (
+            _script: string,
+            _numberOfKeys: number,
+            _lockKey: string,
+            requestedToken: string,
+        ) => requestedToken === successorToken ? 1 : 0);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: evalMock, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(evalMock.mock.calls[0].arguments[3], 'shared-correlation:old-attempt');
+        assert.notEqual(evalMock.mock.calls[0].arguments[3], successorToken);
+        assert.equal(summary.locksCleared, 0);
     });
 });

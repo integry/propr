@@ -2,14 +2,27 @@ import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
 
 // Mock Redis
+const mockRedisGet = mock.fn(async (_key: string) => null as string | null);
 const mockRedisInstance = {
     setex: mock.fn(async () => 'OK'),
-    get: mock.fn(async () => null),
+    get: mockRedisGet,
     on: mock.fn(),
     quit: mock.fn(async () => {}),
     keys: mock.fn(async () => []),
     scan: mock.fn(async () => ['0', []] as [string, string[]]),
-    del: mock.fn(async () => 1)
+    del: mock.fn(async () => 1),
+    eval: mock.fn(async () => 1),
+    pipeline: mock.fn(() => {
+        const keys: string[] = [];
+        const pipeline = {
+            get: (key: string) => {
+                keys.push(key);
+                return pipeline;
+            },
+            exec: async () => Promise.all(keys.map(async key => [null, await mockRedisGet(key)])),
+        };
+        return pipeline;
+    }),
 };
 
 await mock.module('ioredis', {
@@ -100,9 +113,15 @@ test('getNonTerminalTasks scans Redis without including terminal states', async 
         history: [],
     };
     const completed = { ...pending, taskId: 'completed-task', state: TaskStates.COMPLETED };
+    mockRedisInstance.pipeline.mock.resetCalls();
+    mockRedisInstance.get.mock.resetCalls();
     mockRedisInstance.scan.mock.mockImplementation(async () => [
         '0',
-        [`${TEST_KEY_PREFIX}pending-task`, `${TEST_KEY_PREFIX}completed-task`],
+        [
+            `${TEST_KEY_PREFIX}pending-task`,
+            `${TEST_KEY_PREFIX}pending-task`,
+            `${TEST_KEY_PREFIX}completed-task`,
+        ],
     ]);
     mockRedisInstance.get.mock.mockImplementation(async key => (
         key.endsWith('pending-task') ? JSON.stringify(pending) : JSON.stringify(completed)
@@ -112,6 +131,8 @@ test('getNonTerminalTasks scans Redis without including terminal states', async 
     const result = await stateManager.getNonTerminalTasks();
 
     assert.deepStrictEqual(result.map(task => task.taskId), ['pending-task']);
+    assert.strictEqual(mockRedisInstance.pipeline.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.get.mock.calls.length, 2);
 });
 
 test('createTaskState creates state with correct structure', async () => {
@@ -2769,6 +2790,54 @@ test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
     // The result depends on exact timing, but should not throw
     assert.ok(cleanedCount >= 0, 'Should return valid count');
 
+    await stateManager.close();
+});
+
+test('updateTaskStateIfCurrent loses atomically to a concurrent cancellation', async () => {
+    const processing: TaskStateData = {
+        taskId: 'task-cas-race',
+        issueRef: { number: 625, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-cas-race',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        attempts: 0,
+        history: [],
+    };
+    let stored = JSON.stringify(processing);
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (
+        _script: string,
+        _numberOfKeys: number,
+        _key: string,
+        expectedJson: string,
+    ) => {
+        stored = JSON.stringify({
+            ...processing,
+            state: TaskStates.CANCELLED,
+            updatedAt: '2026-08-04T00:02:00.000Z',
+        });
+        return stored === expectedJson ? 1 : 0;
+    });
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+
+    const result = await stateManager.updateTaskStateIfCurrent(
+        processing.taskId,
+        { state: TaskStates.PROCESSING, updatedAt: processing.updatedAt },
+        TaskStates.COMPLETED,
+        { reason: 'worker completed' },
+    );
+
+    assert.strictEqual(result, null);
+    assert.strictEqual(JSON.parse(stored).state, TaskStates.CANCELLED);
+    assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
     await stateManager.close();
 });
 

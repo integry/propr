@@ -57,6 +57,11 @@ const connectionOptions: RedisOptions = {
     lazyConnect: true,
 };
 
+/** Shared Redis settings for worker-side auxiliary connections. */
+export function getRedisConnectionOptions(overrides: RedisOptions = {}): RedisOptions {
+    return { ...connectionOptions, ...overrides };
+}
+
 // Lazy-initialized Redis connection and queues
 let redisConnection: Redis | null = null;
 let _issueQueue: Queue<IssueJobData | CommentJobData> | null = null;
@@ -76,7 +81,7 @@ export const INDEXING_QUEUE_NAME = process.env.INDEXING_QUEUE_NAME || 'indexing-
 async function ensureInitialized(): Promise<void> {
     if (isInitialized) return;
 
-    redisConnection = new Redis(connectionOptions);
+    redisConnection = new Redis(getRedisConnectionOptions());
 
     redisConnection.on('connect', () => {
         logger.info('Successfully connected to Redis for BullMQ.');

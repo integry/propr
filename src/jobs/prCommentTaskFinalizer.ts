@@ -1,7 +1,7 @@
 import type { JobResult, TaskState, WorkerStateManager } from '@propr/core';
 import { TaskStates } from '@propr/core';
 
-type TaskStateStore = Pick<WorkerStateManager, 'getTaskState' | 'updateTaskState'>;
+type TaskStateStore = Pick<WorkerStateManager, 'getTaskState' | 'updateTaskStateIfCurrent'>;
 
 const TERMINAL_STATES: ReadonlySet<TaskState> = new Set([
     TaskStates.COMPLETED,
@@ -39,32 +39,59 @@ export async function finalizePRCommentTaskResult(
         pullRequestNumber: typeof result.pullRequestNumber === 'number' ? result.pullRequestNumber : null,
     };
 
-    if (result.status === 'cancelled') {
-        await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, {
-            reason: reason ? `Task cancelled: ${reason}` : 'Task cancelled',
-            historyMetadata,
-        });
-        return true;
+    switch (result.status) {
+        case 'cancelled':
+            return Boolean(await stateManager.updateTaskStateIfCurrent(
+                taskId,
+                { state: task.state, updatedAt: task.updatedAt },
+                TaskStates.CANCELLED,
+                {
+                    reason: reason ? `Task cancelled: ${reason}` : 'Task cancelled',
+                    historyMetadata,
+                },
+            ));
+        case 'rescheduled':
+        case 'requeued':
+            return Boolean(await stateManager.updateTaskStateIfCurrent(
+                taskId,
+                { state: task.state, updatedAt: task.updatedAt },
+                TaskStates.CANCELLED,
+                {
+                    reason: reason
+                        ? `Task attempt ${result.status}: ${reason}`
+                        : `Task attempt ${result.status}`,
+                    historyMetadata: { ...historyMetadata, superseded: true },
+                },
+            ));
+        case 'failed':
+            return Boolean(await stateManager.updateTaskStateIfCurrent(
+                taskId,
+                { state: task.state, updatedAt: task.updatedAt },
+                TaskStates.FAILED,
+                {
+                    reason: reason ? `Task failed: ${reason}` : 'Task failed',
+                    error: { message: reason ?? 'PR comment job returned a failed outcome', category: 'worker' },
+                    historyMetadata,
+                },
+            ));
+        case 'complete':
+        case 'partial':
+        case 'skipped':
+            return Boolean(await stateManager.updateTaskStateIfCurrent(
+                taskId,
+                { state: task.state, updatedAt: task.updatedAt },
+                TaskStates.COMPLETED,
+                {
+                    reason: result.status === 'skipped'
+                        ? `Task skipped: ${reason ?? 'no work required'}`
+                        : reason ?? `Task finished with outcome: ${result.status}`,
+                    historyMetadata,
+                    commitHash: typeof result.commit === 'string' ? result.commit : undefined,
+                },
+            ));
+        default:
+            throw new Error(`Unknown PR comment job result status: ${result.status}`);
     }
-
-    if (result.status === 'rescheduled' || result.status === 'requeued') {
-        await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, {
-            reason: reason
-                ? `Task attempt ${result.status}: ${reason}`
-                : `Task attempt ${result.status}`,
-            historyMetadata: { ...historyMetadata, superseded: true },
-        });
-        return true;
-    }
-
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: result.status === 'skipped'
-            ? `Task skipped: ${reason ?? 'no work required'}`
-            : reason ?? `Task finished with outcome: ${result.status}`,
-        historyMetadata,
-        commitHash: typeof result.commit === 'string' ? result.commit : undefined,
-    });
-    return true;
 }
 
 /** Marks a failed BullMQ attempt terminal if the processor did not already do so. */
@@ -76,10 +103,14 @@ export async function finalizePRCommentTaskFailure(
     const task = await stateManager.getTaskState(taskId);
     if (!task || isTerminalTaskState(task.state)) return false;
 
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, {
-        reason: `Worker job failed: ${error.message}`,
-        error: { message: error.message, category: 'worker' },
-        historyMetadata: { outcome: 'failed' },
-    });
-    return true;
+    return Boolean(await stateManager.updateTaskStateIfCurrent(
+        taskId,
+        { state: task.state, updatedAt: task.updatedAt },
+        TaskStates.FAILED,
+        {
+            reason: `Worker job failed: ${error.message}`,
+            error: { message: error.message, category: 'worker' },
+            historyMetadata: { outcome: 'failed' },
+        },
+    ));
 }

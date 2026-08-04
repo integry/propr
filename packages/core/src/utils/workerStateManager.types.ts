@@ -59,10 +59,25 @@ export interface TaskStateData {
     updatedAt: string;
     attempts: number;
     history: HistoryEntry[];
+    /** Exact renewable lease token owned by this PR-comment attempt. */
+    prProcessingLockToken?: string;
     lastError?: LastError;
     worktreeInfo?: WorktreeInfo;
     claudeResult?: ClaudeResultSummary;
     prResult?: PRResult;
+}
+
+export interface CreateTaskStateOptions {
+    prProcessingLockToken?: string;
+}
+
+export interface NonTerminalTaskFilter {
+    taskTypes?: string[];
+}
+
+export interface TaskStateExpectation {
+    state: TaskState;
+    updatedAt?: string;
 }
 
 export interface CancellationMetadata {

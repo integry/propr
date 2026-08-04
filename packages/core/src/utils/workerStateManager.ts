@@ -4,11 +4,27 @@ import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
-    type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
+    type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions,
+    type CreateTaskStateOptions, type NonTerminalTaskFilter, type TaskStateExpectation
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
+import { scanNonTerminalTaskStates } from './workerStateEnumeration.js';
 
 export { TaskStates, type TaskState, type IssueRef };
+
+const COMPARE_AND_SET_TASK_STATE_SCRIPT = `
+if redis.call('get', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
+return 1
+`;
+
+interface PersistedTaskStateTransition {
+    previousState: TaskState;
+    newState: TaskState;
+    metadata: UpdateMetadata;
+}
 
 /**
  * Worker state manager for persistent task state tracking
@@ -40,12 +56,20 @@ export class WorkerStateManager {
      * @param correlationId - Correlation ID for tracking
      * @returns Task state data
      */
-    async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
+    async createTaskState(
+        taskId: string,
+        issueRef: IssueRef,
+        correlationId: string | null = null,
+        options: CreateTaskStateOptions = {},
+    ): Promise<TaskStateData> {
         const state: TaskStateData = {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
             state: TaskStates.PENDING, createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(), attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+            history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }],
+            ...(options.prProcessingLockToken
+                ? { prProcessingLockToken: options.prProcessingLockToken }
+                : {}),
         };
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
@@ -103,6 +127,48 @@ export class WorkerStateManager {
 
         const state: TaskStateData = JSON.parse(stateJson);
         const previousState = state.state;
+        this.applyTaskStateUpdate(state, newState, metadata);
+        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        await this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata });
+        return state;
+    }
+
+    /**
+     * Atomically updates a task only while it remains in the expected state.
+     * A concurrent cancellation or processor transition makes this a no-op.
+     */
+    async updateTaskStateIfCurrent(
+        taskId: string,
+        expectation: TaskStateExpectation,
+        newState: TaskState,
+        metadata: UpdateMetadata = {},
+    ): Promise<TaskStateData | null> {
+        const key = this.getTaskKey(taskId);
+        const stateJson = await this.redis.get(key);
+        if (!stateJson) return null;
+
+        const state: TaskStateData = JSON.parse(stateJson);
+        if (state.state !== expectation.state) return null;
+        if (expectation.updatedAt && state.updatedAt !== expectation.updatedAt) return null;
+
+        const previousState = state.state;
+        this.applyTaskStateUpdate(state, newState, metadata);
+        const updated = await this.redis.eval(
+            COMPARE_AND_SET_TASK_STATE_SCRIPT,
+            1,
+            key,
+            stateJson,
+            this.stateExpiry,
+            JSON.stringify(state),
+        );
+        if (Number(updated) !== 1) return null;
+
+        await this.persistTaskStateUpdate(taskId, state, { previousState, newState, metadata });
+        return state;
+    }
+
+    private applyTaskStateUpdate(state: TaskStateData, newState: TaskState, metadata: UpdateMetadata): void {
+        const previousState = state.state;
         state.state = newState;
         state.updatedAt = new Date().toISOString();
         state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
@@ -121,8 +187,14 @@ export class WorkerStateManager {
             reason: metadata.reason ?? `State changed from ${previousState}`,
             metadata: metadata.historyMetadata ?? {}
         });
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+    }
 
+    private async persistTaskStateUpdate(
+        taskId: string,
+        state: TaskStateData,
+        transition: PersistedTaskStateTransition,
+    ): Promise<void> {
+        const { previousState, newState, metadata } = transition;
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId, issueNumber: state.issueRef.number,
@@ -159,7 +231,6 @@ export class WorkerStateManager {
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
         }
-        return state;
     }
 
     /**
@@ -344,34 +415,8 @@ export class WorkerStateManager {
      * Gets all tasks that have not reached a terminal state. Used by the worker
      * reconciler to repair state after an unclean restart.
      */
-    async getNonTerminalTasks(): Promise<TaskStateData[]> {
-        const pattern = `${this.keyPrefix}*`;
-        const keys: string[] = [];
-        let cursor = '0';
-        do {
-            const [nextCursor, batch] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-            cursor = nextCursor;
-            keys.push(...batch);
-        } while (cursor !== '0');
-        const nonTerminalTasks: TaskStateData[] = [];
-        const nonTerminalStates: TaskState[] = [
-            TaskStates.PENDING,
-            TaskStates.PROCESSING,
-            TaskStates.CLAUDE_EXECUTION,
-            TaskStates.POST_PROCESSING,
-        ];
-
-        for (const key of keys) {
-            try {
-                const stateJson = await this.redis.get(key);
-                if (!stateJson) continue;
-                const state: TaskStateData = JSON.parse(stateJson);
-                if (nonTerminalStates.includes(state.state)) nonTerminalTasks.push(state);
-            } catch (error) {
-                logger.warn({ key, error: (error as Error).message }, 'Failed to parse task state during reconciliation scan');
-            }
-        }
-        return nonTerminalTasks;
+    async getNonTerminalTasks(filter: NonTerminalTaskFilter = {}): Promise<TaskStateData[]> {
+        return scanNonTerminalTaskStates(this.redis, this.keyPrefix, filter);
     }
 
     /**

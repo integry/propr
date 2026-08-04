@@ -350,12 +350,12 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     const close = async (): Promise<void> => {
+        await taskStateRecovery.close();
         await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await worker.close();
-        await taskStateRecovery.close();
         await runtimeBuildWorker.close();
     };
 

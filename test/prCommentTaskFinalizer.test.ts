@@ -27,7 +27,14 @@ function stateManager(initialState: TaskStateData) {
     return {
         updates,
         getTaskState: async () => current,
-        updateTaskState: async (_taskId: string, state: TaskStateData['state'], metadata: UpdateMetadata = {}) => {
+        updateTaskStateIfCurrent: async (
+            _taskId: string,
+            expectation: Pick<TaskStateData, 'state' | 'updatedAt'>,
+            state: TaskStateData['state'],
+            metadata: UpdateMetadata = {},
+        ) => {
+            if (current.state !== expectation.state) return null;
+            if (expectation.updatedAt && current.updatedAt !== expectation.updatedAt) return null;
             updates.push({ state, metadata });
             current = { ...current, state };
             return current;
@@ -83,5 +90,47 @@ describe('PR comment task finalization', () => {
         assert.equal(changed, true);
         assert.equal(manager.updates[0].state, TaskStates.FAILED);
         assert.equal(manager.updates[0].metadata.error?.message, 'worker exited');
+    });
+
+    test('maps an explicit failed result to failed instead of completed', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'failed',
+            reason: 'review generation failed',
+        });
+
+        assert.equal(changed, true);
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+        assert.equal(manager.updates[0].metadata.error?.message, 'review generation failed');
+    });
+
+    test('rejects an unknown completed-job outcome', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+
+        await assert.rejects(
+            finalizePRCommentTaskResult('task-1', manager as never, { status: 'compelete' }),
+            /Unknown PR comment job result status: compelete/,
+        );
+        assert.equal(manager.updates.length, 0);
+    });
+
+    test('does not overwrite a cancellation that wins the finalization race', async () => {
+        let current = task(TaskStates.PROCESSING);
+        const manager = {
+            getTaskState: async () => current,
+            updateTaskStateIfCurrent: async (
+                _taskId: string,
+                expectation: Pick<TaskStateData, 'state' | 'updatedAt'>,
+            ) => {
+                current = { ...current, state: TaskStates.CANCELLED };
+                return current.state === expectation.state ? current : null;
+            },
+        };
+
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, { status: 'complete' });
+
+        assert.equal(changed, false);
+        assert.equal(current.state, TaskStates.CANCELLED);
     });
 });
