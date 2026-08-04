@@ -171,10 +171,10 @@ function createSchemaDatabase(filename = ':memory:'): Knex {
   });
 }
 
-function createMigrationRunnerDatabase(): Knex {
+function createMigrationRunnerDatabase(filename = ':memory:'): Knex {
   return knex({
     client: 'better-sqlite3',
-    connection: { filename: ':memory:' },
+    connection: { filename },
     useNullAsDefault: true,
     migrations: { directory: migrationsDirectory },
     pool: {
@@ -3529,6 +3529,14 @@ describe('notification migration runner compatibility', { concurrency: false }, 
         key: 'legacy-trigger-regression',
         value: JSON.stringify({ enabled: false }),
       });
+      await db('system_configs').insert({
+        key: 'user_repo_prefs_legacy-user',
+        value: JSON.stringify({
+          'Octo-Org/repo.name': { hidden: false },
+          'owner--name/repo': { hidden: false },
+          'owner/repo:name': { hidden: false },
+        }),
+      });
       await db.raw(`
         CREATE TABLE legacy_system_config_updates (
           config_key TEXT NOT NULL
@@ -3549,6 +3557,12 @@ describe('notification migration runner compatibility', { concurrency: false }, 
       assert.strictEqual(upgradeMigrations[0], notificationMigrationName);
       assert.ok(upgradeMigrations.includes(notificationMigrationName));
       assert.strictEqual(await db.schema.hasTable('push_delivery_attempts'), true);
+      assert.deepStrictEqual(
+        await db('notification_repository_subscriptions')
+          .where({ user_id: 'legacy-user' })
+          .select('repository', 'hidden'),
+        [{ repository: 'octo-org/repo.name', hidden: 0 }],
+      );
       await db('system_configs')
         .where({ key: 'legacy-trigger-regression' })
         .update({ value: JSON.stringify({ enabled: true }) });
@@ -3563,6 +3577,58 @@ describe('notification migration runner compatibility', { concurrency: false }, 
       assert.deepStrictEqual(repeatedMigrations, []);
     } finally {
       await db.destroy();
+    }
+  });
+
+  test('upgrades an existing database and restores its pre-upgrade rollback backup', async () => {
+    const temporaryDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'propr-notification-upgrade-rollback-'),
+    );
+    const databasePath = path.join(temporaryDirectory, 'propr.sqlite');
+    const backupPath = path.join(temporaryDirectory, 'pre-upgrade.sqlite');
+    const migrationNames = fs.readdirSync(migrationsDirectory)
+      .filter((name) => name.endsWith('.js'))
+      .sort();
+    const notificationMigrationIndex = migrationNames.indexOf(notificationMigrationName);
+    let migrationDatabase: Knex | undefined;
+    try {
+      migrationDatabase = createMigrationRunnerDatabase(databasePath);
+      for (const migrationName of migrationNames.slice(0, notificationMigrationIndex)) {
+        await migrationDatabase.migrate.up({ name: migrationName });
+      }
+      await migrationDatabase('system_configs').insert({
+        key: 'pre-upgrade-state',
+        value: JSON.stringify({ retained: true }),
+      });
+      await migrationDatabase.destroy();
+      migrationDatabase = undefined;
+      fs.copyFileSync(databasePath, backupPath);
+
+      migrationDatabase = createMigrationRunnerDatabase(databasePath);
+      await migrationDatabase.migrate.latest();
+      assert.strictEqual(
+        await migrationDatabase.schema.hasTable('notification_instance_user_eligibility'),
+        true,
+      );
+      assert.strictEqual(
+        await migrationDatabase.schema.hasColumn('notification_events', 'enrichment_sequence'),
+        true,
+      );
+      await migrationDatabase.destroy();
+      migrationDatabase = undefined;
+
+      fs.copyFileSync(backupPath, databasePath);
+      migrationDatabase = createMigrationRunnerDatabase(databasePath);
+      assert.strictEqual(await migrationDatabase.schema.hasTable('notification_events'), false);
+      const restoredConfig = await migrationDatabase('system_configs')
+        .where({ key: 'pre-upgrade-state' })
+        .first();
+      assert.strictEqual(restoredConfig.key, 'pre-upgrade-state');
+      assert.strictEqual(restoredConfig.value, JSON.stringify({ retained: true }));
+      assert.strictEqual(typeof restoredConfig.updated_at, 'string');
+    } finally {
+      await migrationDatabase?.destroy();
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
     }
   });
 });

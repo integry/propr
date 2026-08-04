@@ -221,6 +221,9 @@ export async function invalidateNotificationRepositoryEntitlements(
       }
       await transaction('notification_repository_entitlements').where({ user_id: userId }).delete();
       await transaction('notification_repository_entitlement_snapshots').where({ user_id: userId }).delete();
+      if (await transaction.schema.hasTable('notification_instance_user_eligibility')) {
+        await transaction('notification_instance_user_eligibility').where({ user_id: userId }).delete();
+      }
       if (hasTombstones) {
         const invalidatedAt = new Date().toISOString();
         const expiresAt = new Date(0).toISOString();

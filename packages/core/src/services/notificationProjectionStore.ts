@@ -436,6 +436,13 @@ export class NotificationProjectionStore {
         return this.recipients.getKnownRecipients();
     }
 
+    async filterCurrentlyEligibleRecipients(
+        candidates: readonly string[],
+        database: ProjectionDatabase = this.database
+    ): Promise<string[]> {
+        return this.recipients.filterCurrentlyEligible(candidates, database);
+    }
+
     async filterCurrentlyEntitled(
         repository: string,
         candidates: readonly string[],

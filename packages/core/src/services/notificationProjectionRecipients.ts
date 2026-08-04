@@ -1,9 +1,10 @@
 import type { Knex } from 'knex';
+import { getGithubUserWhitelist } from '@propr/shared';
 import type { TaskProjectionContext } from './notificationProjectionStore.js';
 import { getNotificationRepositoryEntitlementTtlMs } from './notificationRepositoryAccess.js';
 
 type ProjectionDatabase = Knex | Knex.Transaction;
-const CACHE_TTL_MS = 60_000;
+const INSTANCE_ELIGIBILITY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // Leave ample room for the repository and expiry bindings under SQLite's
 // commonly configured placeholder limits.
 const ENTITLEMENT_LOOKUP_CHUNK_SIZE = 200;
@@ -19,11 +20,6 @@ function uniqueStrings(values: readonly unknown[]): string[] {
     }))];
 }
 
-interface CachedValue<T> {
-    expiresAt: number;
-    value: T;
-}
-
 export interface ProjectionRecipientResolution {
     recipients: string[];
     /** At least one candidate has no current authorization snapshot yet. */
@@ -36,7 +32,6 @@ function repositoryKey(repository: string): string {
 
 export class NotificationProjectionRecipients {
     private readonly schemaCapabilities = new Map<string, Promise<boolean>>();
-    private knownRecipientsCache?: CachedValue<string[]>;
 
     constructor(
         private readonly database: Knex,
@@ -124,33 +119,45 @@ export class NotificationProjectionRecipients {
     }
 
     async getKnownRecipients(): Promise<string[]> {
-        const nowMs = new Date(this.now()).getTime();
-        if (this.knownRecipientsCache && this.knownRecipientsCache.expiresAt > nowMs) {
-            return [...this.knownRecipientsCache.value];
+        return this.loadCurrentlyEligible(undefined, this.database);
+    }
+
+    async filterCurrentlyEligible(
+        candidates: readonly string[],
+        database: ProjectionDatabase = this.database
+    ): Promise<string[]> {
+        const userIds = uniqueStrings(candidates);
+        return userIds.length === 0 ? [] : this.loadCurrentlyEligible(userIds, database);
+    }
+
+    private async loadCurrentlyEligible(
+        userIds: readonly string[] | undefined,
+        database: ProjectionDatabase
+    ): Promise<string[]> {
+        if (!await this.hasTable('notification_instance_user_eligibility', database)) return [];
+        const cutoff = new Date(
+            new Date(this.now()).getTime() - INSTANCE_ELIGIBILITY_MAX_AGE_MS
+        ).toISOString();
+        const allowlist = new Set(getGithubUserWhitelist().map((value) => value.toLowerCase()));
+        const eligible: string[] = [];
+        const load = async (ids?: readonly string[]): Promise<void> => {
+            const query = database('notification_instance_user_eligibility')
+                .select('user_id', 'github_username')
+                .where('last_authorized_at', '>', cutoff);
+            if (ids) query.whereIn('user_id', ids);
+            const rows = await query as Array<{ user_id: string; github_username: string }>;
+            eligible.push(...rows.filter((row) => allowlist.size === 0
+                || allowlist.has(row.github_username.trim().toLowerCase()))
+                .map((row) => row.user_id));
+        };
+        if (userIds === undefined) {
+            await load();
+        } else {
+            for (let offset = 0; offset < userIds.length; offset += ENTITLEMENT_LOOKUP_CHUNK_SIZE) {
+                await load(userIds.slice(offset, offset + ENTITLEMENT_LOOKUP_CHUNK_SIZE));
+            }
         }
-        const tables = [
-            ['task_drafts', 'user_id'],
-            ['notification_preferences', 'user_id'],
-            ['notification_preference_settings', 'user_id'],
-            ['repo_todos', 'user_id'],
-            ['push_subscriptions', 'user_id'],
-            ['notification_user_states', 'user_id']
-        ] as const;
-        const scans = tables.map(async ([table, column]) => {
-            if (!await this.hasTable(table)) return [];
-            const rows = await this.database(table).distinct(column) as Array<Record<string, unknown>>;
-            return rows.map((row) => row[column]);
-        });
-        const entitlementScan = this.hasTable('notification_repository_entitlements').then(async (present) => {
-            if (!present) return [];
-            const rows = await this.database('notification_repository_entitlements')
-                .distinct('user_id')
-                .where('expires_at', '>', new Date(this.now()).toISOString()) as Array<{ user_id: string }>;
-            return rows.map((row) => row.user_id);
-        });
-        const recipients = uniqueStrings((await Promise.all([...scans, entitlementScan])).flat());
-        this.knownRecipientsCache = { value: recipients, expiresAt: nowMs + CACHE_TTL_MS };
-        return [...recipients];
+        return uniqueStrings(eligible);
     }
 
     private async resolveCurrentlyEntitled(

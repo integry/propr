@@ -4,17 +4,26 @@ import { createSessionAuthGeneration } from '../authSessionGeneration.js';
 import { createSessionRedisClient } from '../serverRuntime.js';
 
 const LEASE_TABLE = 'notification_repository_entitlement_refresh_leases';
+const GENERATION_TABLE = 'notification_repository_entitlement_generations';
 const SESSION_PREFIX = 'propr:session:';
 const SESSION_SCAN_BATCH_SIZE = 100;
 const DEFAULT_MAX_SCANNED_SESSIONS = 10_000;
 const DEFAULT_RECOVERY_OPERATION_TIMEOUT_MS = 5_000;
 const DEFAULT_RECOVERY_TOTAL_TIMEOUT_MS = 15_000;
 
+export interface RecoveredEntitlementSessionCredential {
+  accessToken: string;
+  sessionExpiresAt: number;
+  authGeneration: string;
+}
+
 export interface RecoveredEntitlementCredential {
   userId: string;
   accessToken: string;
   sessionExpiresAt: number;
   authGeneration?: string;
+  /** Every live session retained for logout fallback after restart. */
+  sessionCredentials?: readonly RecoveredEntitlementSessionCredential[];
 }
 
 interface StoredSession {
@@ -47,7 +56,8 @@ function parseStoredSession(value: string): StoredSession | undefined {
   }
 }
 
-function sessionCredential(session: StoredSession): RecoveredEntitlementCredential | undefined {
+function sessionCredential(session: StoredSession): Omit<RecoveredEntitlementCredential,
+  'authGeneration'> | undefined {
   if (typeof session.passport?.user !== 'object' || session.passport.user === null) {
     return undefined;
   }
@@ -63,7 +73,14 @@ function sessionCredential(session: StoredSession): RecoveredEntitlementCredenti
     : undefined;
 }
 
-async function loadEligibleUserGenerations(database: Knex): Promise<Map<string, string | null>> {
+interface EligibleUserGenerations {
+  scheduledAuthGeneration: string | null;
+  activeAuthGenerations: Set<string> | null;
+}
+
+async function loadEligibleUserGenerations(
+  database: Knex
+): Promise<Map<string, EligibleUserGenerations>> {
   if (!await database.schema.hasTable(LEASE_TABLE)) return new Map();
   const hasAuthGeneration = await database.schema.hasColumn(LEASE_TABLE, 'auth_generation');
   const query = database(LEASE_TABLE).select(
@@ -74,12 +91,34 @@ async function loadEligibleUserGenerations(database: Knex): Promise<Map<string, 
     query.whereNull('invalidated_at');
   }
   const rows = await query as Array<{ user_id: string; auth_generation?: unknown }>;
-  return new Map(rows.map(row => [
+  const eligible = new Map<string, EligibleUserGenerations>(rows.map(row => [
     row.user_id,
-    typeof row.auth_generation === 'string' && row.auth_generation.trim()
-      ? row.auth_generation
-      : null,
+    {
+      scheduledAuthGeneration: typeof row.auth_generation === 'string'
+        && row.auth_generation.trim() ? row.auth_generation.trim() : null,
+      activeAuthGenerations: null,
+    },
   ]));
+  if (!await database.schema.hasTable(GENERATION_TABLE)) return eligible;
+  const generations = await database(GENERATION_TABLE)
+    .select('user_id', 'auth_generation')
+    .whereNull('invalidated_at') as Array<{ user_id: string; auth_generation: unknown }>;
+  for (const entry of eligible.values()) entry.activeAuthGenerations = new Set();
+  for (const row of generations) {
+    const generation = typeof row.auth_generation === 'string'
+      ? row.auth_generation.trim()
+      : '';
+    const entry = eligible.get(row.user_id);
+    if (entry && generation) entry.activeAuthGenerations?.add(generation);
+  }
+  for (const [userId, entry] of eligible) {
+    if (entry.activeAuthGenerations?.size === 0
+        || (entry.scheduledAuthGeneration
+          && !entry.activeAuthGenerations?.has(entry.scheduledAuthGeneration))) {
+      eligible.delete(userId);
+    }
+  }
+  return eligible;
 }
 
 /** Rebuilds restart-safe schedules without persisting OAuth credentials in SQLite. */
@@ -94,10 +133,7 @@ export async function loadRecoverableEntitlementCredentials(
     'notification entitlement recovery credential limit'
   );
   const maxScannedSessions = positiveSafeInteger(
-    options.maxScannedSessions ?? Math.min(
-      DEFAULT_MAX_SCANNED_SESSIONS,
-      Math.max(SESSION_SCAN_BATCH_SIZE, maxCredentials * 10)
-    ),
+    options.maxScannedSessions ?? DEFAULT_MAX_SCANNED_SESSIONS,
     'notification entitlement recovery scan limit'
   );
   const operationTimeoutMs = options.operationTimeoutMs
@@ -111,7 +147,7 @@ export async function loadRecoverableEntitlementCredentials(
   client.on('error', (error) => logger.warn({
     error: error instanceof Error ? error.message : String(error),
   }, 'Session Redis error during notification entitlement recovery'));
-  const credentials = new Map<string, RecoveredEntitlementCredential>();
+  const credentials = new Map<string, Map<string, RecoveredEntitlementSessionCredential>>();
   try {
     await withNotificationDeadline(
       client.connect(),
@@ -142,23 +178,35 @@ export async function loadRecoverableEntitlementCredentials(
             const session = parseStoredSession(stored);
             const credential = session ? sessionCredential(session) : undefined;
             if (!credential || !eligibleGenerations.has(credential.userId)) continue;
-            const expectedGeneration = eligibleGenerations.get(credential.userId);
+            const eligibility = eligibleGenerations.get(credential.userId)!;
             const sessionId = keys[index].slice(SESSION_PREFIX.length);
             const sessionGeneration = sessionId
               ? createSessionAuthGeneration(sessionId)
               : undefined;
-            if (expectedGeneration && sessionGeneration !== expectedGeneration) {
+            if (!sessionGeneration
+                || (eligibility.activeAuthGenerations !== null
+                  && !eligibility.activeAuthGenerations.has(sessionGeneration))
+                || (eligibility.activeAuthGenerations === null
+                  && eligibility.scheduledAuthGeneration
+                  && sessionGeneration !== eligibility.scheduledAuthGeneration)) {
               continue;
             }
-            credential.authGeneration = expectedGeneration ?? sessionGeneration;
-            const current = credentials.get(credential.userId);
+            let userCredentials = credentials.get(credential.userId);
+            if (!userCredentials) {
+              userCredentials = new Map();
+              credentials.set(credential.userId, userCredentials);
+            }
+            const current = userCredentials.get(sessionGeneration);
             if (!current || current.sessionExpiresAt < credential.sessionExpiresAt) {
-              credentials.set(credential.userId, credential);
+              userCredentials.set(sessionGeneration, {
+                accessToken: credential.accessToken,
+                sessionExpiresAt: credential.sessionExpiresAt,
+                authGeneration: sessionGeneration,
+              });
             }
           }
         }
-      } while (cursor !== 0 && scanned < maxScannedSessions
-        && credentials.size < maxCredentials);
+      } while (cursor !== 0 && scanned < maxScannedSessions);
     })(), totalTimeoutMs, 'recovering notification entitlement sessions');
   } catch (error) {
     logger.warn({ error: error instanceof Error ? error.message : String(error) },
@@ -177,7 +225,18 @@ export async function loadRecoverableEntitlementCredentials(
       }
     }
   }
-  return [...credentials.values()].sort(
+  const recovered = [...credentials].flatMap(([userId, userCredentials]) => {
+    const eligibility = eligibleGenerations.get(userId);
+    if (!eligibility) return [];
+    const sessions = [...userCredentials.values()].sort(
+      (left, right) => right.sessionExpiresAt - left.sessionExpiresAt
+    );
+    const scheduled = eligibility.scheduledAuthGeneration
+      ? userCredentials.get(eligibility.scheduledAuthGeneration)
+      : sessions[0];
+    return scheduled ? [{ ...scheduled, userId, sessionCredentials: sessions }] : [];
+  });
+  return recovered.sort(
     (left, right) => right.sessionExpiresAt - left.sessionExpiresAt
   ).slice(0, maxCredentials);
 }

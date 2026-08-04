@@ -1,3 +1,4 @@
+import { MAX_CANONICAL_TIMESTAMP_EPOCH_MS } from '@propr/shared';
 import logger from '../utils/logger.js';
 import {
     NotificationProjectionService,
@@ -33,7 +34,14 @@ function positiveIntegerEnv(name: string, fallback: number, timerDelay = false):
 }
 
 export function getNotificationStalledAfterMs(): number {
-    return positiveIntegerEnv('NOTIFICATION_STALLED_AFTER_MS', DEFAULT_NOTIFICATION_STALLED_AFTER_MS);
+    const name = 'NOTIFICATION_STALLED_AFTER_MS';
+    const stalledAfterMs = positiveIntegerEnv(name, DEFAULT_NOTIFICATION_STALLED_AFTER_MS);
+    if (Date.now() - stalledAfterMs >= -MAX_CANONICAL_TIMESTAMP_EPOCH_MS) {
+        return stalledAfterMs;
+    }
+    logger.warn({ name, value: process.env[name] },
+        'Ignoring notification stall threshold outside the supported Date range');
+    return DEFAULT_NOTIFICATION_STALLED_AFTER_MS;
 }
 
 export function getNotificationStalledCheckIntervalMs(): number {
@@ -85,8 +93,11 @@ export class NotificationStalledDetector {
         this.timeoutRetryDelayMs = options.timeoutRetryDelayMs ?? this.intervalMs;
         this.now = options.now ?? (() => new Date());
         this.acquireLease = options.acquireLease;
-        if (!Number.isSafeInteger(this.stalledAfterMs) || this.stalledAfterMs <= 0) {
-            throw new TypeError('stalledAfterMs must be a positive safe integer');
+        const nowMs = new Date(this.now()).getTime();
+        if (!Number.isSafeInteger(this.stalledAfterMs) || this.stalledAfterMs <= 0
+            || !Number.isFinite(nowMs)
+            || nowMs - this.stalledAfterMs < -MAX_CANONICAL_TIMESTAMP_EPOCH_MS) {
+            throw new TypeError('stalledAfterMs must produce a supported Date cutoff');
         }
         for (const [name, value] of [
             ['intervalMs', this.intervalMs],

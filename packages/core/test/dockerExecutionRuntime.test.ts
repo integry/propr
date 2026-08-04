@@ -109,6 +109,24 @@ test('Redis streaming cleanup closes the client when its final write fails', asy
     assert.equal(quitCalls, 1);
 });
 
+test('Redis streaming cleanup force-disconnects operations that miss their deadlines', async () => {
+    let disconnectCalls = 0;
+    const client = {
+        setex: async () => new Promise<never>(() => undefined),
+        quit: async () => undefined,
+        disconnect: () => { disconnectCalls++; }
+    };
+
+    await cleanupRedisStreaming({
+        client: client as never,
+        interval: null,
+        pendingWrite: new Promise<void>(() => undefined),
+        operationTimeoutMs: 5
+    }, 'task-timeout', false, 'final output');
+
+    assert.ok(disconnectCalls >= 2);
+});
+
 test('abort escalation kills a child that ignores SIGTERM', async () => {
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), 200);

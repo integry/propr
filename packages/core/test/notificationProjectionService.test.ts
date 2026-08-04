@@ -16,6 +16,10 @@ import { up as hardenProjectionRetries } from '../src/db/migrations/202608030500
 import { up as scheduleProjectionRetries } from '../src/db/migrations/20260804010000_schedule_notification_projection_retries.js';
 import { up as allowNotificationEventEnrichment }
     from '../src/db/migrations/20260804050000_allow_notification_event_enrichment.js';
+import { up as versionNotificationEventEnrichment }
+    from '../src/db/migrations/20260804070000_version_notification_event_enrichment.js';
+import { up as addNotificationInstanceEligibility }
+    from '../src/db/migrations/20260804080000_add_notification_instance_eligibility.js';
 import { NotificationProjectionService } from '../src/services/notificationProjectionService.js';
 import { NotificationProjectionRecipients } from '../src/services/notificationProjectionRecipients.js';
 import { NotificationProjectionCheckpointStore } from '../src/services/notificationProjectionCheckpointStore.js';
@@ -27,7 +31,9 @@ import {
 } from '../src/services/notificationProjectionReconciliationValues.js';
 import { NotificationService } from '../src/services/notificationService.js';
 import {
+    DEFAULT_NOTIFICATION_STALLED_AFTER_MS,
     DEFAULT_NOTIFICATION_STALLED_CHECK_INTERVAL_MS,
+    getNotificationStalledAfterMs,
     getNotificationStalledCheckIntervalMs,
     NotificationStalledDetector
 } from '../src/services/notificationStalledDetector.js';
@@ -148,6 +154,11 @@ async function seedPlanAndTask(options: {
         hidden: false,
         updated_at: EVENT_TIME
     });
+    await database('notification_instance_user_eligibility').insert({
+        user_id: 'user-1',
+        github_username: 'user-one',
+        last_authorized_at: SERVICE_TIME
+    }).onConflict('user_id').ignore();
     await database('task_drafts').insert({
         draft_id: 'draft-1',
         repository: 'integry/propr',
@@ -194,6 +205,8 @@ beforeEach(async () => {
     await hardenProjectionRetries(database);
     await scheduleProjectionRetries(database);
     await allowNotificationEventEnrichment(database);
+    await versionNotificationEventEnrichment(database);
+    await addNotificationInstanceEligibility(database);
     projection = new NotificationProjectionService({
         database,
         now: () => SERVICE_TIME,
@@ -1599,7 +1612,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         assert.equal((await checkpoints.loadRetries(10)).length, 1);
     });
 
-    test('discards projection retries after the terminal attempt limit', async () => {
+    test('retains projection retries after the former terminal attempt limit', async () => {
         const checkpoints = new NotificationProjectionCheckpointStore(database, () => SERVICE_TIME);
         await checkpoints.enqueueRetry('terminal-task-history', 'exhausted', {
             eventType: 'task:update', taskId: 'exhausted', state: 'failed', timestamp: EVENT_TIME
@@ -1609,10 +1622,13 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
             .update({ attempt_count: 167 });
         const [retry] = await checkpoints.loadRetries(1);
 
-        assert.equal(await checkpoints.markRetryDeferred(retry), false);
-        assert.equal(await database('notification_projection_retries')
+        assert.equal(await checkpoints.markRetryDeferred(retry), true);
+        assert.deepEqual(await database('notification_projection_retries')
             .where({ transition_key: 'exhausted' })
-            .count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+            .first('attempt_count', 'next_attempt_at'), {
+            attempt_count: 168,
+            next_attempt_at: '2026-08-02T17:00:00.000Z'
+        });
     });
 
     test('does not delete a replacement payload when an older retry completes', async () => {
@@ -1926,6 +1942,15 @@ describe('system notification projection', { concurrency: false }, () => {
             user_id: 'user-2',
             notification_kind: 'system_failure'
         });
+        await database('notification_instance_user_eligibility').insert([
+            { user_id: 'user-2', github_username: 'user-two', last_authorized_at: SERVICE_TIME },
+            { user_id: 'polling-user', github_username: 'polling', last_authorized_at: SERVICE_TIME },
+            {
+                user_id: 'different-polling-user',
+                github_username: 'different-polling',
+                last_authorized_at: SERVICE_TIME
+            }
+        ]);
         const systemProjection = new NotificationSystemProjection({ database });
 
         await systemProjection.projectSnapshot({
@@ -1953,6 +1978,43 @@ describe('system notification projection', { concurrency: false }, () => {
                 updated_at: '2026-08-02T08:01:00.000Z'
             }
         );
+    });
+
+    test('excludes historical and currently deauthorized users from system outages', async () => {
+        const previousWhitelist = process.env.GITHUB_USER_WHITELIST;
+        process.env.GITHUB_USER_WHITELIST = 'eligible-user';
+        try {
+            await database('notification_preferences').insert([
+                { user_id: 'historical-user', notification_kind: 'system_failure' },
+                { user_id: 'removed-user', notification_kind: 'system_failure' }
+            ]);
+            await database('notification_instance_user_eligibility').insert([
+                {
+                    user_id: 'eligible-id',
+                    github_username: 'eligible-user',
+                    last_authorized_at: SERVICE_TIME
+                },
+                {
+                    user_id: 'removed-user',
+                    github_username: 'removed-user',
+                    last_authorized_at: SERVICE_TIME
+                }
+            ]);
+            const systemProjection = new NotificationSystemProjection({ database });
+
+            await systemProjection.projectSnapshot(
+                { redis: 'disconnected', timestamp: EVENT_TIME },
+                ['historical-user', 'removed-user']
+            );
+
+            assert.deepEqual(
+                await database('notification_user_states').pluck('user_id'),
+                ['eligible-id']
+            );
+        } finally {
+            if (previousWhitelist === undefined) delete process.env.GITHUB_USER_WHITELIST;
+            else process.env.GITHUB_USER_WHITELIST = previousWhitelist;
+        }
     });
 
     test('rolls back a system transition when its outage notification fails', async () => {
@@ -2159,6 +2221,21 @@ describe('notification projection schedulers', { concurrency: false }, () => {
                 if (value === undefined) delete process.env[name];
                 else process.env[name] = value;
             }
+        }
+    });
+
+    test('rejects stall thresholds outside the JavaScript Date range', () => {
+        const previous = process.env.NOTIFICATION_STALLED_AFTER_MS;
+        try {
+            process.env.NOTIFICATION_STALLED_AFTER_MS = String(Number.MAX_SAFE_INTEGER);
+            assert.equal(getNotificationStalledAfterMs(), DEFAULT_NOTIFICATION_STALLED_AFTER_MS);
+            assert.throws(() => new NotificationStalledDetector({
+                stalledAfterMs: Number.MAX_SAFE_INTEGER,
+                now: () => SERVICE_TIME
+            }), /supported Date cutoff/);
+        } finally {
+            if (previous === undefined) delete process.env.NOTIFICATION_STALLED_AFTER_MS;
+            else process.env.NOTIFICATION_STALLED_AFTER_MS = previous;
         }
     });
 

@@ -194,11 +194,18 @@ export class NotificationSystemProjection {
             ? await this.store.getKnownRecipients()
             : [];
         if (!shouldContinue()) return;
-        const requestedUserIds = new Set(recipients.map((recipient) =>
+        const explicitlyRequestedUserIds = recipients.map((recipient) =>
             typeof recipient === 'string' ? recipient : recipient.userId
-        ));
+        );
+        const eligibleRequestedUserIds = new Set(
+            await this.store.filterCurrentlyEligibleRecipients(explicitlyRequestedUserIds)
+        );
+        const eligibleRequestedRecipients = recipients.filter((recipient) =>
+            eligibleRequestedUserIds.has(typeof recipient === 'string' ? recipient : recipient.userId)
+        );
+        const requestedUserIds = new Set(eligibleRequestedUserIds);
         const requestedRecipients = [
-            ...recipients,
+            ...eligibleRequestedRecipients,
             ...knownRecipients.filter((userId) => !requestedUserIds.has(userId))
         ];
         await this.database.transaction(async (transaction) => {

@@ -30,9 +30,14 @@ Service images and the unified agent image are pinned to the release version of 
 
 A safe upgrade, in order:
 
-1. Take a [backup](#backups) — at minimum the SQLite database and `.env`.
-2. Update the control plane and restart (the flows above); persistent state in `data/`, `repos/`, and the Redis volume is unaffected.
-3. From a source checkout, apply pending [database migrations](#database-migrations) with `npm run db:migrate`.
+1. Stop every API, daemon, worker, analysis-worker, and indexing-worker replica so no old process can write while the schema changes.
+2. Take a [backup](#backups) — at minimum the SQLite database (including any WAL state) and `.env`.
+3. Update the control plane and apply pending [database migrations](#database-migrations) with `npm run db:migrate` while the services remain stopped.
+4. Start API replicas first and wait for `/api/status` to report healthy. The API owns notification reconciliation, entitlement-session recovery, and system/stall sampling.
+5. Start the daemon and indexing-worker, then worker and analysis-worker replicas. This keeps event producers behind the migrated database and the ready notification consumer.
+6. Start or refresh the UI last.
+
+Do not run old and new service versions together during this migration series. Notification event enrichment and entitlement session generations rely on the new columns and fencing rules, while terminal task-history cleanup is intentionally irreversible. A service-image rollback therefore requires stopping the stack and restoring the pre-upgrade SQLite backup; running Knex `down` migrations is not a data rollback for cleaned terminal history.
 
 After the upgrade, the API's public `/api/compatibility` endpoint reports the stack version and the API/UI compatibility contract — the hosted UI checks it before login and stops at a clear version-mismatch screen rather than running against an incompatible stack. `/api/status` includes the same metadata for authenticated diagnostics.
 
@@ -47,7 +52,7 @@ The unified agent image replaces the older per-agent image families. After confi
 
 Only `gh` has a latest-version fallback (its repo drops old releases); every other pin fails the build hard, so treat a failing agent-image build in CI as a signal to refresh pins rather than a transient error.
 
-**Rollback:** re-pin the previous version (`npm install -g propr-cli@<previous>`, or the previous launcher image) and restart from the runtime directory. Treat database migrations as forward-only in practice: the Knex migrations define `down` steps, but no packaged command runs them — `npm run db:migrate` only applies `migrate:latest` — so the reliable way to roll back the database is restoring the SQLite backup taken in step 1.
+**Rollback:** stop all replicas, restore the SQLite backup taken before migration, re-pin the previous version (`npm install -g propr-cli@<previous>`, or the previous launcher image), then start API, daemon/indexing-worker, worker/analysis-worker, and UI in that order. Treat database migrations as forward-only in practice: the Knex migrations define `down` steps, but no packaged command runs them — `npm run db:migrate` only applies `migrate:latest` — and terminal-history cleanup cannot be reconstructed by a schema downgrade.
 
 ## Database Migrations
 

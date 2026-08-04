@@ -138,7 +138,11 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     const userId = req.user?.id;
     if (!userId) return true;
     try {
-      await invalidateEntitlements(userId, getSessionAuthGeneration(req));
+      await withNotificationDeadline(
+        invalidateEntitlements(userId, getSessionAuthGeneration(req)),
+        AUTH_ENTITLEMENT_INVALIDATION_TIMEOUT_MS,
+        'persisting notification entitlement invalidation for GitHub route'
+      );
       return true;
     } catch (error) {
       logger.warn({ userId, error: error instanceof Error ? error.message : String(error) },

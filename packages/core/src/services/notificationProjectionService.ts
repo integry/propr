@@ -187,6 +187,10 @@ export class NotificationProjectionService {
         if (!context) return 'completed';
         const activityStatus = taskActivityStatus(payload.state);
         const safeMetadata = safeTaskMetadata(context, activityStatus, transition.timestamp);
+        const enrichmentSequence = positiveSequence(
+            payload.metadata?.notificationEnrichmentSequence
+        ) ?? 0;
+        const notificationTransition = { ...transition, enrichmentSequence };
 
         // Heartbeats and non-terminal transitions do not perform recipient scans.
         if (!isTerminalActivity(activityStatus)) {
@@ -226,15 +230,19 @@ export class NotificationProjectionService {
             // This repairs equal-timestamp enrichment and any prior failed attempt.
             if (resolution.recipients.length > 0) {
                 if (activityStatus === 'failed') {
-                    await this.createTaskFailure(context, transition, resolution.recipients, transaction);
+                    await this.createTaskFailure(
+                        context, notificationTransition, resolution.recipients, transaction
+                    );
                 } else if (context.commandMode === 'review') {
-                    await this.createReviewCompletion(context, transition, resolution.recipients, transaction);
+                    await this.createReviewCompletion(
+                        context, notificationTransition, resolution.recipients, transaction
+                    );
                 } else {
                     await this.createImplementationCompletion(
-                        context, transition, resolution.recipients, transaction
+                        context, notificationTransition, resolution.recipients, transaction
                     );
                     await this.createPullRequestAttention(
-                        context, transition, resolution.recipients, transaction
+                        context, notificationTransition, resolution.recipients, transaction
                     );
                 }
             }
@@ -367,7 +375,7 @@ export class NotificationProjectionService {
 
     private async createTaskFailure(
         context: TaskProjectionContext,
-        transition: TaskTransitionIdentity,
+        transition: TaskTransitionIdentity & { enrichmentSequence: number },
         recipients: string[],
         transaction: Knex.Transaction
     ): Promise<void> {
@@ -383,13 +391,14 @@ export class NotificationProjectionService {
             action: taskAction(context.taskId),
             metadata: safeTaskMetadata(context, 'failed', transition.timestamp),
             occurredAt: transition.timestamp,
+            enrichmentSequence: transition.enrichmentSequence,
             recipients
         });
     }
 
     private async createImplementationCompletion(
         context: TaskProjectionContext,
-        transition: TaskTransitionIdentity,
+        transition: TaskTransitionIdentity & { enrichmentSequence: number },
         recipients: string[],
         transaction: Knex.Transaction
     ): Promise<void> {
@@ -405,13 +414,14 @@ export class NotificationProjectionService {
             action: taskAction(context.taskId),
             metadata: safeTaskMetadata(context, 'completed', transition.timestamp),
             occurredAt: transition.timestamp,
+            enrichmentSequence: transition.enrichmentSequence,
             recipients
         });
     }
 
     private async createReviewCompletion(
         context: TaskProjectionContext,
-        transition: TaskTransitionIdentity,
+        transition: TaskTransitionIdentity & { enrichmentSequence: number },
         recipients: string[],
         transaction: Knex.Transaction
     ): Promise<void> {
@@ -433,13 +443,14 @@ export class NotificationProjectionService {
             action: taskAction(context.taskId),
             metadata: safeTaskMetadata(context, 'completed', transition.timestamp),
             occurredAt: transition.timestamp,
+            enrichmentSequence: transition.enrichmentSequence,
             recipients
         });
     }
 
     private async createPullRequestAttention(
         context: TaskProjectionContext,
-        transition: TaskTransitionIdentity,
+        transition: TaskTransitionIdentity & { enrichmentSequence: number },
         recipients: string[],
         transaction: Knex.Transaction
     ): Promise<void> {
@@ -469,6 +480,7 @@ export class NotificationProjectionService {
                 transitionAt: transition.timestamp
             },
             occurredAt: transition.timestamp,
+            enrichmentSequence: transition.enrichmentSequence,
             recipients
         });
     }

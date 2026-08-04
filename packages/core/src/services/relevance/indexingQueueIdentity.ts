@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { normalizeGithubRepositoryIdentity } from '@propr/shared';
 
 export const INDEXING_FAILED_JOB_RETENTION = { age: 7 * 24 * 60 * 60, count: 1_000 } as const;
 /** Fallback window in case promotion after durable producer acceptance fails. */
@@ -20,9 +21,13 @@ export function createIndexingQueueDeduplicationId(
   fullName: string,
   branch: string = 'HEAD'
 ): string {
+  const normalizedRepository = normalizeGithubRepositoryIdentity(fullName);
+  if (!normalizedRepository) {
+    throw new TypeError('Indexing queue repository must be a GitHub owner/name identity');
+  }
   const normalizedBranch = normalizeIndexingQueueBranch(branch);
   const digest = createHash('sha256')
-    .update(`${fullName.trim().toLowerCase()}\0${normalizedBranch}`)
+    .update(`${normalizedRepository}\0${normalizedBranch}`)
     .digest('hex');
   return `index-repository-${digest}`;
 }

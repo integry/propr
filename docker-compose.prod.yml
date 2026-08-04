@@ -185,6 +185,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS: ${NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS:-3600000}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
+      HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
+      VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-/root/.vibe}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
       DB_FILENAME: /usr/src/app/data/propr.sqlite
       INDEXING_SCAN_INTERVAL_MS: ${INDEXING_SCAN_INTERVAL_MS:-300000}
@@ -197,6 +200,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - propr-sqlite-data:/usr/src/app/data
+      - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
+      - ${HOST_VIBE_DIR:-/root/.vibe}:${VIBE_CONFIG_PATH:-/root/.vibe}:ro
     depends_on:
       redis:
         condition: service_healthy

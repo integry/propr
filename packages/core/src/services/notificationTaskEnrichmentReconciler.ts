@@ -74,6 +74,7 @@ export async function reconcileTaskNotificationEnrichments(
                 ...parseReconciliationMetadata(row.metadata),
                 transitionAt,
                 notificationReconciliation: true,
+                notificationEnrichmentSequence: row.change_id,
                 ...(Number.isSafeInteger(transitionSequence) && transitionSequence > 0
                     ? { transitionSequence }
                     : {})

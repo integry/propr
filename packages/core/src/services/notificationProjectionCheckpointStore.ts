@@ -12,7 +12,6 @@ const CHECKPOINT_TABLE = 'notification_projection_checkpoints';
 const RETRY_TABLE = 'notification_projection_retries';
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_CAP_MS = 60 * 60 * 1_000;
-const MAX_PROJECTION_RETRY_ATTEMPTS = 168;
 const NUMERIC_CHECKPOINTS = new Set<NotificationProjectionCheckpointSource>([
     'terminal-task-history',
     'task-notification-enrichments',
@@ -148,20 +147,17 @@ export class NotificationProjectionCheckpointStore {
         }));
     }
 
-    /** Returns false after the retry reaches the terminal attempt policy. */
+    /** Durably retains unresolved work at the capped cadence until it succeeds. */
     async markRetryDeferred(retry: NotificationProjectionRetry): Promise<boolean> {
         if (!await this.hasTable(RETRY_TABLE)) return false;
         const updatedAt = normalizeISO8601Timestamp(this.now());
-        const attemptCount = Math.min(Number.MAX_SAFE_INTEGER, retry.attemptCount + 1);
-        if (!Number.isSafeInteger(attemptCount)
-            || attemptCount >= MAX_PROJECTION_RETRY_ATTEMPTS) {
-            await this.deleteRetry(retry);
-            return false;
-        }
+        const attemptCount = Number.isFinite(retry.attemptCount) && retry.attemptCount >= 0
+            ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(retry.attemptCount) + 1)
+            : 1;
         const exponent = Math.min(30, Math.max(0, attemptCount - 1));
         const delayMs = Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_BASE_MS * (2 ** exponent));
         const nextAttemptAt = normalizeISO8601Timestamp(Date.parse(updatedAt) + delayMs);
-        await this.database(RETRY_TABLE)
+        const updated = await this.database(RETRY_TABLE)
             .where({
                 source: retry.source,
                 transition_key: retry.transitionKey,
@@ -172,7 +168,7 @@ export class NotificationProjectionCheckpointStore {
                 next_attempt_at: nextAttemptAt,
                 updated_at: updatedAt
             });
-        return true;
+        return updated === 1;
     }
 
     async deleteRetry(retry: NotificationProjectionRetry): Promise<void> {

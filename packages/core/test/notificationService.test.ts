@@ -23,6 +23,8 @@ import { up } from '../src/db/migrations/20260802000000_create_notification_sche
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as allowNotificationEventEnrichment }
     from '../src/db/migrations/20260804050000_allow_notification_event_enrichment.js';
+import { up as versionNotificationEventEnrichment }
+    from '../src/db/migrations/20260804070000_version_notification_event_enrichment.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -88,6 +90,7 @@ beforeEach(async () => {
     await up(database);
     await addPreferenceApis(database);
     await allowNotificationEventEnrichment(database);
+    await versionNotificationEventEnrichment(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -121,6 +124,7 @@ describe('notification service', { concurrency: false }, () => {
                 ...baseInput,
                 title: 'Improved title',
                 body: 'Improved body',
+                enrichmentSequence: 1,
                 action: { type: 'navigate', label: 'Open task', href: '/tasks/presentation-task' }
             })
         );
@@ -154,12 +158,55 @@ describe('notification service', { concurrency: false }, () => {
                 ...baseInput,
                 severity: undefined,
                 target: { ...baseInput.target, prNumber: 1734 },
+                enrichmentSequence: 1,
                 body: 'Pull request is ready'
             })
         );
 
         assert.equal(enriched.severity, 'warning');
         assert.deepEqual(enriched.target, { ...baseInput.target, prNumber: 1734 });
+    });
+
+    test('does not let a stale enrichment replace newer presentation fields', async () => {
+        const baseInput = {
+            eventId: 'monotonic-enrichment',
+            deduplicationKey: 'monotonic-enrichment',
+            kind: 'task' as const,
+            target: {
+                type: 'task' as const,
+                repository: 'integry/propr',
+                taskId: 'monotonic-task'
+            },
+            title: 'Initial title',
+            body: 'Initial body',
+            occurredAt: '2026-08-02T08:00:00.000Z'
+        };
+        await service.createNotificationEvent(baseInput);
+        await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                title: 'Newest title',
+                body: 'Newest body',
+                enrichmentSequence: 2,
+                action: { type: 'navigate', label: 'Open latest', href: '/tasks/monotonic-task' }
+            })
+        );
+
+        const stale = await database.transaction(transaction =>
+            service.createOrEnrichNotificationEventInTransaction(transaction, {
+                ...baseInput,
+                title: 'Stale title',
+                body: 'Stale body',
+                enrichmentSequence: 1,
+                action: { type: 'navigate', label: 'Open stale', href: '/tasks/stale' }
+            })
+        );
+
+        assert.equal(stale.title, 'Newest title');
+        assert.equal(stale.body, 'Newest body');
+        assert.deepEqual(stale.action, {
+            type: 'navigate', label: 'Open latest', href: '/tasks/monotonic-task'
+        });
     });
 
     test('rejects retargeting enrichment before assigning new recipients', async () => {
@@ -192,7 +239,7 @@ describe('notification service', { concurrency: false }, () => {
             database('notification_events').where({ event_id: baseInput.eventId }).update({
                 target_json: JSON.stringify({ ...baseInput.target, taskId: 'other-task' })
             }),
-            /notification event identity is immutable/
+            /notification event identity is immutable|notification enrichment sequence cannot regress/
         );
     });
 

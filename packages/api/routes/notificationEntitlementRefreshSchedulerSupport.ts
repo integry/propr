@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
-import { logger } from '@propr/core';
+import { logger, recordNotificationInstanceEligibility } from '@propr/core';
 import type { RecoveredEntitlementCredential }
   from './notificationEntitlementSessionRecovery.js';
 import {
@@ -10,7 +10,7 @@ import {
 
 const MAX_SCHEDULED_REFRESHES = 1_000;
 const MAX_SCHEDULED_REFRESHES_ENV = 'NOTIFICATION_ENTITLEMENT_MAX_SCHEDULED_REFRESHES';
-const MAX_SESSION_CREDENTIALS_PER_USER = 32;
+const ELIGIBILITY_WRITE_INTERVAL_MS = 60_000;
 
 export interface RefreshInput {
   userId: string;
@@ -62,6 +62,37 @@ export function getMaxScheduledRefreshes(): number {
   return MAX_SCHEDULED_REFRESHES;
 }
 
+export function recordCurrentNotificationInstanceEligibility(options: {
+  database: Knex;
+  userId: string;
+  githubUsername: string;
+  recordedAt: Map<string, number>;
+  capacity: number;
+}): void {
+  const observedAt = Date.now();
+  if (observedAt - (options.recordedAt.get(options.userId) ?? 0)
+      < ELIGIBILITY_WRITE_INTERVAL_MS) return;
+  options.recordedAt.delete(options.userId);
+  options.recordedAt.set(options.userId, observedAt);
+  if (options.recordedAt.size > options.capacity) {
+    const oldestUserId = options.recordedAt.keys().next().value as string | undefined;
+    if (oldestUserId) options.recordedAt.delete(oldestUserId);
+  }
+  void recordNotificationInstanceEligibility({
+    database: options.database,
+    userId: options.userId,
+    githubUsername: options.githubUsername,
+    observedAt,
+  }).catch((error) => {
+    if (options.recordedAt.get(options.userId) === observedAt) {
+      options.recordedAt.delete(options.userId);
+    }
+    logger.warn({ userId: options.userId,
+      error: error instanceof Error ? error.message : String(error) },
+    'Failed to record current notification instance eligibility');
+  });
+}
+
 export async function hasEntitlementRefreshRegistration(options: {
   database: Knex;
   userId: string;
@@ -100,10 +131,19 @@ export function rememberEntitlementSessionCredential(
 ): void {
   entry.credentials.delete(authGeneration);
   entry.credentials.set(authGeneration, accessToken);
-  if (entry.credentials.size <= MAX_SESSION_CREDENTIALS_PER_USER) return;
-  const oldestFallback = [...entry.credentials.keys()]
-    .find(generation => generation !== entry.authGeneration);
-  if (oldestFallback) entry.credentials.delete(oldestFallback);
+}
+
+export function rememberRecoveredEntitlementSessionCredentials(
+  entry: { authGeneration?: string; credentials: Map<string, string> },
+  recovered: RecoveredEntitlementCredential
+): void {
+  for (const credential of recovered.sessionCredentials ?? []) {
+    rememberEntitlementSessionCredential(
+      entry,
+      credential.authGeneration,
+      credential.accessToken
+    );
+  }
 }
 
 export function updateEntitlementSessionCredential(

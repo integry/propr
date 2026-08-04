@@ -1,15 +1,14 @@
 import type { Knex } from 'knex';
-import { normalizeISO8601Timestamp } from '@propr/shared';
+import {
+    normalizeGithubRepositoryIdentity,
+    normalizeISO8601Timestamp
+} from '@propr/shared';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { isNotificationTimerDelay } from './notificationSchedulerTiming.js';
 
 export const DEFAULT_NOTIFICATION_REPOSITORY_ENTITLEMENT_TTL_MS = 60 * 60 * 1000;
 
-// GitHub owners are 1-39 alphanumeric/hyphen characters without leading,
-// trailing, or consecutive hyphens. Repository names are at most 100 of the
-// characters GitHub preserves in canonical full_name values.
-const REPOSITORY_PATTERN = /^(?![^/]*--)[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9._-]{1,100}$/;
 const INSERT_CHUNK_SIZE = 200;
 type RepositoryAccessDatabase = Knex | Knex.Transaction;
 
@@ -36,10 +35,7 @@ function normalizedUserId(value: string): string {
 }
 
 export function normalizeNotificationRepositoryIdentity(value: string): string | undefined {
-    const repository = value.trim().toLowerCase();
-    return repository.length <= 255 && REPOSITORY_PATTERN.test(repository)
-        ? repository
-        : undefined;
+    return normalizeGithubRepositoryIdentity(value);
 }
 
 function normalizedRepositories(values: readonly string[]): string[] {

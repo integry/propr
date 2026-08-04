@@ -14,6 +14,8 @@ import { up as fenceSessionGenerations }
   from '../../core/src/db/migrations/20260804020000_fence_notification_session_generations.js';
 import { up as retainSessionGenerations }
   from '../../core/src/db/migrations/20260804060000_retain_notification_entitlement_generations.js';
+import { up as backfillSessionGenerations }
+  from '../../core/src/db/migrations/20260804090000_backfill_notification_entitlement_generations.js';
 import { createNotificationEntitlementRefreshMiddleware }
   from '../routes/notificationEntitlementRefresh.js';
 import type { EntitlementRefreshTimerScheduler }
@@ -339,6 +341,28 @@ test('restart recovery rebuilds durable session schedules with bounded concurren
   } finally {
     middleware.close();
   }
+});
+
+test('upgrade backfill makes a current lease generation recoverable', async () => {
+  const authGeneration = createSessionAuthGeneration('pre-generation-table-session');
+  await database('notification_repository_entitlement_refresh_leases').insert({
+    user_id: 'pre-generation-user',
+    lease_token: 'registration',
+    fencing_token: 1,
+    expires_at: new Date(0).toISOString(),
+    retry_after: null,
+    invalidated_at: null,
+    auth_generation: authGeneration,
+  });
+
+  await backfillSessionGenerations(database);
+
+  assert.deepEqual(await database('notification_repository_entitlement_generations')
+    .where({ user_id: 'pre-generation-user' })
+    .first('auth_generation', 'invalidated_at'), {
+    auth_generation: authGeneration,
+    invalidated_at: null,
+  });
 });
 
 test('closing entitlement middleware aborts retained OAuth work', async () => {

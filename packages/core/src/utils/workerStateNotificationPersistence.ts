@@ -57,9 +57,9 @@ async function appendTaskNotificationEnrichment(
     changeKey: string;
     metadata: Record<string, unknown>;
   }
-): Promise<void> {
-  if (!await transaction.schema.hasTable('task_notification_enrichments')) return;
-  await transaction('task_notification_enrichments').insert({
+): Promise<number | undefined> {
+  if (!await transaction.schema.hasTable('task_notification_enrichments')) return undefined;
+  const inserted = await transaction('task_notification_enrichments').insert({
     task_id: input.taskId,
     state: input.state,
     transition_history_id: input.transitionSequence ?? null,
@@ -67,7 +67,16 @@ async function appendTaskNotificationEnrichment(
     changed_at: input.changedAt,
     change_key: input.changeKey,
     metadata: JSON.stringify(input.metadata)
-  }).onConflict(['task_id', 'change_key']).ignore();
+  }, ['change_id']).onConflict(['task_id', 'change_key']).ignore() as Array<{
+    change_id?: unknown;
+  }>;
+  const insertedId = Number(inserted[0]?.change_id);
+  if (Number.isSafeInteger(insertedId) && insertedId > 0) return insertedId;
+  const existing = await transaction('task_notification_enrichments')
+    .where({ task_id: input.taskId, change_key: input.changeKey })
+    .first('change_id') as { change_id?: unknown } | undefined;
+  const existingId = Number(existing?.change_id);
+  return Number.isSafeInteger(existingId) && existingId > 0 ? existingId : undefined;
 }
 
 export async function persistIssueRefNotificationEnrichment(input: {
@@ -114,7 +123,7 @@ export async function persistIssueRefNotificationEnrichment(input: {
       ...(durablePrNumber === undefined ? {} : { prNumber: durablePrNumber }),
       ...(typeof state.issueRef.prUrl === 'string' ? { prUrl: state.issueRef.prUrl } : {})
     };
-    await appendTaskNotificationEnrichment(transaction, {
+    const notificationEnrichmentSequence = await appendTaskNotificationEnrichment(transaction, {
       taskId,
       state: state.state,
       transitionAt,
@@ -123,7 +132,11 @@ export async function persistIssueRefNotificationEnrichment(input: {
       changeKey,
       metadata: publicationMetadata
     });
-    return publicationMetadata;
+    return {
+      ...publicationMetadata,
+      ...(notificationEnrichmentSequence === undefined
+        ? {} : { notificationEnrichmentSequence })
+    };
   });
 }
 
@@ -177,7 +190,7 @@ export async function persistHistoryMetadataNotificationEnrichment(input: {
       ...(prNumber === undefined ? {} : { prNumber }),
       ...(prUrl === undefined ? {} : { prUrl })
     };
-    await appendTaskNotificationEnrichment(transaction, {
+    const notificationEnrichmentSequence = await appendTaskNotificationEnrichment(transaction, {
       taskId,
       state: historyState,
       transitionAt,
@@ -186,6 +199,10 @@ export async function persistHistoryMetadataNotificationEnrichment(input: {
       changeKey,
       metadata: publicationMetadata
     });
-    return publicationMetadata;
+    return {
+      ...publicationMetadata,
+      ...(notificationEnrichmentSequence === undefined
+        ? {} : { notificationEnrichmentSequence })
+    };
   });
 }

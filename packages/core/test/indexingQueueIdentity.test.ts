@@ -24,3 +24,12 @@ test('indexing queue identities normalize whitespace and the default branch', ()
     createLegacyIndexingRunIdForJob('integry/propr', 'main', 'job-1')
   );
 });
+
+test('indexing queue identities use the canonical GitHub repository grammar', () => {
+  for (const repository of ['owner--name/repo', 'owner/repo:name', 'owner-only']) {
+    assert.throws(
+      () => createIndexingQueueDeduplicationId(repository),
+      /GitHub owner\/name identity/
+    );
+  }
+});

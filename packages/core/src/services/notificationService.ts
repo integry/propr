@@ -79,6 +79,8 @@ export type CreateNotificationEventInput<
     action?: NotificationAction;
     metadata?: JsonObject;
     occurredAt?: TimestampInput;
+    /** Monotonic durable change ID for mutable presentation enrichment. */
+    enrichmentSequence?: number;
     /** Trusted producer-selected recipients, snapshotted with this event. */
     recipients?: readonly NotificationRecipient[];
 } : never;
@@ -107,6 +109,7 @@ interface NotificationEventRow {
     metadata_json: string | null;
     occurred_at: string;
     created_at: string;
+    enrichment_sequence: number;
 }
 
 interface NotificationRow extends NotificationEventRow {
@@ -185,6 +188,14 @@ function validateNotificationInput<T>(parser: () => T): T {
     } catch (error) {
         return asNotificationValidationError(error);
     }
+}
+
+function enrichmentSequence(value: number | undefined): number {
+    const sequence = value ?? 0;
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+        throw new TypeError('notification enrichmentSequence must be a non-negative safe integer');
+    }
+    return sequence;
 }
 
 function assertIdentifier(value: string, path: string): void {
@@ -354,6 +365,7 @@ export class NotificationService {
         }
 
         const createdAt = normalizeISO8601Timestamp(this.now());
+        const eventEnrichmentSequence = enrichmentSequence(input.enrichmentSequence);
         const event = parseNotificationEvent({
             id: input.eventId ?? input.id ?? this.generateId(),
             deduplicationKey: input.deduplicationKey,
@@ -383,7 +395,8 @@ export class NotificationService {
                 action_json: event.action === undefined ? null : JSON.stringify(event.action),
                 metadata_json: event.metadata === undefined ? null : JSON.stringify(event.metadata),
                 occurred_at: event.occurredAt,
-                created_at: event.createdAt
+                created_at: event.createdAt,
+                enrichment_sequence: eventEnrichmentSequence
             })
             .onConflict('deduplication_key')
             .ignore();
@@ -425,19 +438,27 @@ export class NotificationService {
             throw new Error('Notification enrichment cannot change durable event identity');
         }
         await this.assignRecipients(transaction, stored, normalizeRecipients(recipients));
-        if (stored.title === enriched.title
-            && stored.body === enriched.body
-            && JSON.stringify(stored.target) === JSON.stringify(enriched.target)
-            && JSON.stringify(stored.action) === JSON.stringify(enriched.action)
-            && JSON.stringify(stored.metadata) === JSON.stringify(enriched.metadata)) {
+        const requestedSequence = enrichmentSequence(input.enrichmentSequence);
+        const storedSequenceRow = await transaction<NotificationEventRow>('notification_events')
+            .where({ event_id: stored.id })
+            .first('enrichment_sequence');
+        const storedSequence = Number(storedSequenceRow?.enrichment_sequence);
+        if (!Number.isSafeInteger(storedSequence) || storedSequence < 0) {
+            throw new Error('Stored notification enrichment sequence is invalid');
+        }
+        if (requestedSequence <= storedSequence) {
             return stored;
         }
-        await transaction('notification_events').where({ event_id: stored.id }).update({
+        await transaction('notification_events')
+            .where({ event_id: stored.id })
+            .where('enrichment_sequence', '<', requestedSequence)
+            .update({
             target_json: JSON.stringify(enriched.target),
             title: enriched.title,
             body: enriched.body,
             action_json: enriched.action === undefined ? null : JSON.stringify(enriched.action),
-            metadata_json: enriched.metadata === undefined ? null : JSON.stringify(enriched.metadata)
+            metadata_json: enriched.metadata === undefined ? null : JSON.stringify(enriched.metadata),
+            enrichment_sequence: requestedSequence
         });
         const enrichedRow = await transaction<NotificationEventRow>('notification_events')
             .where({ event_id: stored.id })

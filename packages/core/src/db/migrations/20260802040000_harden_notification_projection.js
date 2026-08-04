@@ -1,5 +1,6 @@
+import { normalizeGithubRepositoryIdentity } from '@propr/shared';
+
 const SOURCE_TOUCH_TRIGGER = 'notification_source_activity_touch_updated_at';
-const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 
 function sourceManagedTimestamp() {
   return `CASE
@@ -44,9 +45,9 @@ async function backfillRepositorySubscriptions(knex) {
     const userId = row.key.slice('user_repo_prefs_'.length).trim();
     if (!userId || userId.length > 255) continue;
     for (const [repository, preference] of Object.entries(parsePreferenceMap(row.value))) {
-      const normalizedRepository = repository.trim().toLowerCase();
-      if (normalizedRepository.length > 255 || !REPOSITORY_PATTERN.test(normalizedRepository)
-          || !preference || typeof preference !== 'object' || Array.isArray(preference)) continue;
+      const normalizedRepository = normalizeGithubRepositoryIdentity(repository);
+      if (normalizedRepository === undefined || !preference
+          || typeof preference !== 'object' || Array.isArray(preference)) continue;
       subscriptions.push({
         user_id: userId,
         repository: normalizedRepository,

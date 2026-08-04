@@ -70,6 +70,20 @@ export const NOTIFICATION_PAYLOAD_LIMITS = {
   metadataNodes: 256,
 } as const;
 
+/** Canonical GitHub owner/name grammar shared by clients, services, and migrations. */
+export const GITHUB_REPOSITORY_IDENTITY_PATTERN_SOURCE =
+  '^(?![^/]*--)[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?/[a-z0-9._-]{1,100}$';
+const GITHUB_REPOSITORY_IDENTITY_PATTERN = new RegExp(
+  GITHUB_REPOSITORY_IDENTITY_PATTERN_SOURCE,
+  'i',
+);
+
+export function normalizeGithubRepositoryIdentity(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const repository = value.trim().toLowerCase();
+  return GITHUB_REPOSITORY_IDENTITY_PATTERN.test(repository) ? repository : undefined;
+}
+
 /** Normalize a Date-compatible value before writing it to the database. */
 export function normalizeISO8601Timestamp(
   value: string | number | Date,
@@ -698,8 +712,7 @@ function parseRepository(value: unknown, path: string): string {
     false,
     NOTIFICATION_PAYLOAD_LIMITS.repositoryBytes,
   );
-  if (!/^(?![^/]*--)[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9._-]{1,100}$/i
-    .test(repository)) {
+  if (normalizeGithubRepositoryIdentity(repository) === undefined) {
     return invalid(path, 'a repository in owner/name form');
   }
   return repository;

@@ -17,6 +17,8 @@ import {
   DEFAULT_TIMER_SCHEDULER,
   getMaxScheduledRefreshes,
   hasEntitlementRefreshRegistration,
+  recordCurrentNotificationInstanceEligibility,
+  rememberRecoveredEntitlementSessionCredentials,
   rememberEntitlementSessionCredential,
   updateEntitlementSessionCredential,
   type EntitlementRefreshTimer,
@@ -65,7 +67,7 @@ export function createScheduledEntitlementRefreshMiddleware(
   options: ScheduledEntitlementRefreshOptions = {}
 ): NotificationEntitlementRefreshMiddleware {
   const scheduled = new Map<string, ScheduledRefresh>();
-  const activeAuthGenerations = new Map<string, string>();
+  const activeAuthGenerations = new Map<string, string>(), eligibilityRecordedAt = new Map<string, number>();
   const maxScheduledRefreshes = options.maxScheduledRefreshes ?? getMaxScheduledRefreshes();
   const timerScheduler = options.timerScheduler ?? DEFAULT_TIMER_SCHEDULER;
   const ensureRegistration = options.ensureRegistration ?? ensureEntitlementRefreshRegistration;
@@ -290,6 +292,14 @@ export function createScheduledEntitlementRefreshMiddleware(
       next();
       return;
     }
+    const githubUsername = req.user?.username;
+    if (githubUsername) {
+      recordCurrentNotificationInstanceEligibility({
+        database, userId, githubUsername,
+        recordedAt: eligibilityRecordedAt,
+        capacity: maxScheduledRefreshes,
+      });
+    }
     const alreadyScheduled = scheduled.has(userId);
     const authGeneration = typeof req.sessionID === 'string' && req.sessionID.trim()
       ? createSessionAuthGeneration(req.sessionID)
@@ -381,6 +391,7 @@ export function createScheduledEntitlementRefreshMiddleware(
         });
         const entry = scheduled.get(credential.userId);
         if (!entry) return;
+        rememberRecoveredEntitlementSessionCredentials(entry, credential);
         recovered++;
         await startRefresh(credential.userId, entry);
       }));
@@ -392,6 +403,7 @@ export function createScheduledEntitlementRefreshMiddleware(
     for (const [userId, entry] of scheduled) removeEntry(userId, entry);
     scheduled.clear();
     activeAuthGenerations.clear();
+    eligibilityRecordedAt.clear();
     try {
       await withNotificationDeadline(
         Promise.allSettled([...activeRefreshes]),

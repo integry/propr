@@ -43,6 +43,8 @@ export type {
   NotificationProjectionOutcome,
   NotificationProjectionServiceOptions
 } from './services/notificationProjectionService.js';
+export { recordNotificationInstanceEligibility }
+  from './services/notificationInstanceEligibility.js';
 export {
   DEFAULT_NOTIFICATION_INDEXING_TRANSITION_RETENTION_MS,
   getNotificationIndexingTransitionRetentionMs

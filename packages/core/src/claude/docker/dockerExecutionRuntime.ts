@@ -2,9 +2,11 @@ import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'child
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
+import { withNotificationDeadline } from '../../services/notificationSchedulerTiming.js';
 
 const TASK_LIVENESS_HEARTBEAT_MS = 30_000;
 const MAX_JSON_LINE_BUFFER_CHARS = 1024 * 1024;
+const REDIS_STREAMING_CLEANUP_TIMEOUT_MS = 5_000;
 const ANSI_REGEX = new RegExp(
     '[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b)
     + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]',
@@ -244,30 +246,56 @@ export function createTaskProgressReporter(taskId: string): () => void {
 }
 
 export async function cleanupRedisStreaming(
-    state: Pick<RedisStreamingState, 'client' | 'interval' | 'pendingWrite'>,
+    state: Pick<RedisStreamingState, 'client' | 'interval' | 'pendingWrite'> & {
+        operationTimeoutMs?: number;
+    },
     taskId: string | undefined,
     stripAnsi: boolean | undefined,
     stdout: string
 ): Promise<void> {
+    const operationTimeoutMs = state.operationTimeoutMs ?? REDIS_STREAMING_CLEANUP_TIMEOUT_MS;
     if (state.interval) clearInterval(state.interval);
-    if (state.pendingWrite) await state.pendingWrite;
     const client = state.client;
+    if (state.pendingWrite) {
+        try {
+            await withNotificationDeadline(
+                state.pendingWrite,
+                operationTimeoutMs,
+                'draining Redis output stream write',
+                () => client?.disconnect()
+            );
+        } catch (err) {
+            logger.debug({ error: (err as Error).message },
+                'Failed to drain Redis streaming write');
+        }
+    }
     if (client) {
         try {
             if (taskId) {
-                await client.setex(
-                    `agent:output:${taskId}`,
-                    3600,
-                    stripAnsi ? stripAnsiCodes(stdout) : stdout
+                await withNotificationDeadline(
+                    client.setex(
+                        `agent:output:${taskId}`,
+                        3600,
+                        stripAnsi ? stripAnsiCodes(stdout) : stdout
+                    ),
+                    operationTimeoutMs,
+                    'writing final Redis output stream',
+                    () => client.disconnect()
                 );
             }
         } catch (err) {
             logger.debug({ error: (err as Error).message }, 'Failed to cleanup Redis streaming');
         } finally {
             try {
-                await client.quit();
+                await withNotificationDeadline(
+                    client.quit(),
+                    operationTimeoutMs,
+                    'closing Redis output stream client',
+                    () => client.disconnect()
+                );
             } catch (err) {
                 logger.debug({ error: (err as Error).message }, 'Failed to close Redis streaming client');
+                client.disconnect();
             }
         }
     }

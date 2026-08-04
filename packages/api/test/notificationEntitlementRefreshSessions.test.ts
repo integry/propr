@@ -19,6 +19,8 @@ import { createNotificationEntitlementRefreshMiddleware }
   from '../routes/notificationEntitlementRefresh.js';
 import type { EntitlementRefreshTimerScheduler }
   from '../routes/notificationEntitlementRefreshScheduler.js';
+import { rememberEntitlementSessionCredential }
+  from '../routes/notificationEntitlementRefreshSchedulerSupport.js';
 
 let database: Knex;
 
@@ -111,6 +113,69 @@ test('logging out the newest session resumes refreshes with an older live creden
   } finally {
     await middleware.close();
   }
+});
+
+test('restart recovery retains an older live credential for logout fallback', async () => {
+  const userId = 'restart-fallback-user';
+  const olderGeneration = createSessionAuthGeneration('restart-fallback-older');
+  const newerGeneration = createSessionAuthGeneration('restart-fallback-newer');
+  const registration = createNotificationEntitlementRefreshMiddleware(database);
+  await registration.activate(userId, olderGeneration);
+  await registration.activate(userId, newerGeneration);
+  await registration.close();
+  await addFreshSnapshot(userId);
+
+  const refreshedTokens: string[] = [];
+  let markFallbackRefreshed!: () => void;
+  const fallbackRefreshed = new Promise<void>(resolve => { markFallbackRefreshed = resolve; });
+  const timers = createManualTimers();
+  const middleware = createNotificationEntitlementRefreshMiddleware(database, {
+    timerScheduler: timers.scheduler,
+    loadRecoveryCredentials: async () => [{
+      userId,
+      accessToken: 'newer-token',
+      authGeneration: newerGeneration,
+      sessionExpiresAt: Date.now() + 60_000,
+      sessionCredentials: [
+        {
+          accessToken: 'older-token',
+          authGeneration: olderGeneration,
+          sessionExpiresAt: Date.now() + 50_000,
+        },
+        {
+          accessToken: 'newer-token',
+          authGeneration: newerGeneration,
+          sessionExpiresAt: Date.now() + 60_000,
+        },
+      ],
+    }],
+    refresh: async ({ accessToken }) => {
+      refreshedTokens.push(accessToken);
+      if (accessToken === 'older-token') markFallbackRefreshed();
+      return true;
+    },
+  });
+  try {
+    await middleware.recover();
+    await middleware.invalidate(userId, newerGeneration);
+    assert.equal(timers.runNext(), true);
+    await fallbackRefreshed;
+    assert.deepEqual(refreshedTokens, ['newer-token', 'older-token']);
+  } finally {
+    await middleware.close();
+  }
+});
+
+test('retains every observed fallback credential for a scheduled user', () => {
+  const entry = {
+    authGeneration: 'generation-39',
+    credentials: new Map<string, string>(),
+  };
+  for (let index = 0; index < 40; index++) {
+    rememberEntitlementSessionCredential(entry, `generation-${index}`, `token-${index}`);
+  }
+  assert.equal(entry.credentials.size, 40);
+  assert.equal(entry.credentials.get('generation-0'), 'token-0');
 });
 
 test('a schedule cannot refresh through a generation owned by another replica', async () => {

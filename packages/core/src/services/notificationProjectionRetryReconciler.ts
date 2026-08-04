@@ -74,14 +74,14 @@ export async function reconcileNotificationProjectionRetries(
             }, 'Durable notification projection retry failed; deferring it');
             if (!await options.checkpoints.markRetryDeferred(retry)) {
                 logger.error({ source: retry.source, transitionKey: retry.transitionKey },
-                    'Discarded durable notification projection retry after maximum attempts');
+                    'Could not persist durable notification projection retry deferral');
             }
             continue;
         }
         if (outcome === 'deferred') {
             if (!await options.checkpoints.markRetryDeferred(retry)) {
                 logger.error({ source: retry.source, transitionKey: retry.transitionKey },
-                    'Discarded deferred notification projection after maximum attempts');
+                    'Could not persist deferred notification projection retry');
             }
             continue;
         }
