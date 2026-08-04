@@ -7,6 +7,8 @@ export {
   authorizeSplitRequester,
 } from './authorization.js';
 export type {
+  PrSplitGitHubResponse,
+  PrSplitRequestClient,
   SplitAuthorizedPermission,
   SplitAuthorizationRequest,
   SplitAuthorizationResult,
@@ -14,14 +16,19 @@ export type {
 
 export {
   ACTIVE_SPLIT_OPERATION_STATUSES,
+  DEFAULT_SPLIT_OPERATION_LEASE_MS,
+  STALE_SPLIT_OPERATION_ERROR,
   TERMINAL_SPLIT_OPERATION_STATUSES,
   SPLIT_OPERATION_STATUSES,
+  buildSplitOperationEventKey,
   buildSplitOperationDedupeKey,
   isActiveSplitOperationStatus,
   isTerminalSplitOperationStatus,
   createOrGetPrSplitOperation,
   getActivePrSplitOperation,
   getPrSplitOperation,
+  heartbeatPrSplitOperation,
+  recoverStalePrSplitOperations,
   updatePrSplitOperationStatus,
 } from './operationStore.js';
 export type {
@@ -29,11 +36,12 @@ export type {
   PrSplitOperation,
   CreatePrSplitOperationInput,
   CreatePrSplitOperationResult,
+  SplitEventKeyInput,
   SplitDedupeKeyInput,
   UpdatePrSplitOperationStatusOptions,
 } from './operationStore.js';
 
-export { handlePrSplitComment } from './intake.js';
+export { handlePrSplitComment, isPrSplitExecutionEnabled } from './intake.js';
 export type {
   PrSplitIntakeDependencies,
   PrSplitIntakeResult,
