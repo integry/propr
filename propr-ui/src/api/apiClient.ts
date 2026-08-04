@@ -106,16 +106,29 @@ const throwUnauthorizedResponse = (data: ApiErrorBody | null): never => {
 const isSafePublicError = (data: ApiErrorBody | null): boolean =>
   typeof data?.code === 'string' && SAFE_PUBLIC_ERROR_CODES.has(data.code);
 
-const isReplayableApiRequest = (input: RequestInfo | URL, init?: RequestInit): boolean => {
+export interface ApiFetchOptions {
+  /** Only enable when the route guarantees TOKEN_REFRESHED is returned before side effects. */
+  replayMutationAfterTokenRefresh?: boolean;
+}
+
+const isReplayableApiRequest = (
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  options: ApiFetchOptions
+): boolean => {
   const method = (init?.method ?? (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')).toUpperCase();
   if (typeof Request !== 'undefined' && input instanceof Request && (input.body || input.bodyUsed)) return false;
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true;
-  return typeof init?.body === 'string';
+  return options.replayMutationAfterTokenRefresh === true && typeof init?.body === 'string';
 };
 
-export const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+export const apiFetch = async (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  options: ApiFetchOptions = {}
+): Promise<Response> => {
   const response = await fetch(input, init);
-  if (isReplayableApiRequest(input, init) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
+  if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
   return response;
 };
 

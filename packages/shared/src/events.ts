@@ -59,6 +59,8 @@ export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
 /** Generation trace snapshot carried in draft update payloads */
 export interface DraftUpdateGenerationTrace {
   steps: Array<{ name: string; status: StepStatus; data?: Record<string, unknown> }>;
+  /** Generation run that owns this trace snapshot. */
+  runId?: string;
   error?: string;
   failedAt?: string;
 }
@@ -70,6 +72,8 @@ export interface DraftUpdatePayload {
   step: string;
   status: StepStatus;
   timestamp: string;
+  /** Generation run that emitted this update. */
+  runId?: string;
   /** Step-specific data (e.g., progress percentage, file counts) */
   data?: Record<string, unknown>;
   /** Current draft status — allows the UI to react without fetching */

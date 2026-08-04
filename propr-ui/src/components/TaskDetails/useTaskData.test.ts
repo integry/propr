@@ -58,7 +58,7 @@ describe('incremental task live updates', () => {
     expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toHaveLength(2);
   });
 
-  it('keeps repeated legacy output at different timestamps while deduplicating resends', () => {
+  it('uses timestamp and occurrence index to preserve repeated legacy output while deduplicating resends', () => {
     const firstEvent = {
       type: 'thought' as const,
       content: 'Repeated output',
@@ -73,10 +73,9 @@ describe('incremental task live updates', () => {
       ],
     };
 
-    expect(mergeIncrementalLiveDetails({ ...previous, events: [] }, payload).events).toEqual([
-      firstEvent,
-      { ...firstEvent, timestamp: '2026-08-03T00:00:01.000Z' },
-    ]);
+    const firstMerge = mergeIncrementalLiveDetails({ ...previous, events: [] }, payload);
+    expect(firstMerge.events).toEqual(payload.events);
+    expect(mergeIncrementalLiveDetails(firstMerge, payload).events).toEqual(payload.events);
   });
 
   it('uses tool-use IDs without dropping the matching tool result', () => {

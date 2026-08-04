@@ -96,6 +96,15 @@ export async function prepareAgentsUpdate(
   const processedAgents: AgentConfig[] = [];
   for (const agent of normalizedAgents) {
     const processedAgent = { ...agent };
+    const agentType = agent.type as AgentType;
+    if (!agent.enabled) {
+      // Disabled agents do not affect the unified bundle. Preserve a previously
+      // resolved version when available and avoid making unrelated settings
+      // writes depend on registry availability for an inactive agent.
+      processedAgent.cliVersionResolved ||= AGENT_DEFAULT_VERSIONS[agentType];
+      processedAgents.push(processedAgent);
+      continue;
+    }
     if (agent.cliVersionType) {
       const versionType = agent.cliVersionType as CliVersionType;
       if (requiresExplicitVersionSpec(versionType) && !hasVersionSpec(agent.cliVersion)) {
@@ -105,7 +114,6 @@ export async function prepareAgentsUpdate(
         };
       }
       try {
-        const agentType = agent.type as AgentType;
         processedAgent.cliVersionResolved = await preparationDeps.resolveVersion(
           agentType,
           versionType,
@@ -121,7 +129,6 @@ export async function prepareAgentsUpdate(
         };
       }
     } else {
-      const agentType = agent.type as AgentType;
       processedAgent.cliVersionType = 'default';
       processedAgent.cliVersionResolved = AGENT_DEFAULT_VERSIONS[agentType];
     }

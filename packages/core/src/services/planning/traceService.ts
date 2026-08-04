@@ -54,6 +54,7 @@ export function buildDraftUpdateTraceSnapshot(trace: ParsedGenerationTrace): Dra
         ...(sanitizedData ? { data: sanitizedData } : {})
       };
     }),
+    ...(typeof trace.runId === 'string' ? { runId: trace.runId } : {}),
     ...(typeof trace.error === 'string' ? { error: trace.error } : {}),
     ...(typeof trace.failedAt === 'string' ? { failedAt: trace.failedAt } : {})
   };
@@ -111,6 +112,7 @@ async function updateTraceWithOptions(options: UpdateTraceOptions): Promise<Gene
   const eventPublisher = getEventPublisher();
   const published = await eventPublisher.publishDraftUpdate({
     draftId,
+    ...(expectedRunId ? { runId: expectedRunId } : {}),
     step,
     status,
     data: sanitizeDraftUpdateStepData(data),

@@ -1,5 +1,15 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import { db } from '@propr/core';
+import type { FlatRequest } from '../requestTypes.js';
+
+interface SummaryPathParams {
+  owner: string;
+  repo: string;
+  path?: string[];
+}
+
+export const SUMMARY_TREE_ROUTE_PATH = '/api/summaries/:owner/:repo/tree/*path';
+export const SUMMARY_PATH_ROUTE_PATH = '/api/summaries/:owner/:repo/summary/*path';
 
 interface SummaryEntry {
   name: string;
@@ -34,9 +44,9 @@ function getRepositoryPrefix(owner: string, repo: string): string {
  * Get immediate children of a directory path in the repository.
  * Returns directory tree entries with their summaries.
  */
-async function getDirectoryTree(req: Request, res: Response): Promise<void> {
+async function getDirectoryTree(req: Request<SummaryPathParams>, res: Response): Promise<void> {
   const { owner, repo } = req.params;
-  const pathParam = req.params[0] || ''; // Catch-all for nested paths
+  const pathParam = req.params.path?.join('/') ?? '';
   const repository = `${owner}/${repo}`;
   const basePath = pathParam ? pathParam.replace(/^\/+|\/+$/g, '') : '';
   const repoPrefix = getRepositoryPrefix(owner, repo);
@@ -133,9 +143,9 @@ async function getDirectoryTree(req: Request, res: Response): Promise<void> {
 /**
  * Get summary for a specific file or directory path.
  */
-async function getPathSummary(req: Request, res: Response): Promise<void> {
+async function getPathSummary(req: Request<SummaryPathParams>, res: Response): Promise<void> {
   const { owner, repo } = req.params;
-  const pathParam = req.params[0] || '';
+  const pathParam = req.params.path?.join('/') ?? '';
   const repository = `${owner}/${repo}`;
   const filePath = pathParam.replace(/^\/+|\/+$/g, '');
   const repoPrefix = getRepositoryPrefix(owner, repo);
@@ -197,7 +207,7 @@ async function getPathSummary(req: Request, res: Response): Promise<void> {
 /**
  * Get indexing status for a repository.
  */
-async function getIndexingStatus(req: Request, res: Response): Promise<void> {
+async function getIndexingStatus(req: FlatRequest, res: Response): Promise<void> {
   const { owner, repo } = req.params;
   const repository = `${owner}/${repo}`;
   const repoPrefix = getRepositoryPrefix(owner, repo);

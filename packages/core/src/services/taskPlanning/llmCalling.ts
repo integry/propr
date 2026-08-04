@@ -8,7 +8,7 @@ import { parseLlmJson, JsonParseError } from '../../utils/jsonUtils.js';
 import logger from '../../utils/logger.js';
 import { estimateLlmDuration } from '../../utils/llmEstimation.js';
 import {
-  updateTrace, updateTraceForRun, validatePromptTokens, CLAUDE_CODE_OVERHEAD, PlanningFailedError, getModelHardLimit, getRawInputCharLimit
+  updateTraceForRun, validatePromptTokens, CLAUDE_CODE_OVERHEAD, PlanningFailedError, getModelHardLimit, getRawInputCharLimit
 } from '../planning/index.js';
 import { enforceGranularity } from './granularity.js';
 import type { Plan } from '../../claude/prompts/plannerPrompts.js';
@@ -83,11 +83,7 @@ export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPl
     isHistoricalEstimate: estimation.isHistoricalEstimate,
     sampleCount: estimation.sampleCount
   };
-  if (runId) {
-    await updateTraceForRun(draftId, 'llm', 'in_progress', { expectedRunId: runId, data: traceData });
-  } else {
-    await updateTrace(draftId, 'llm', 'in_progress', traceData);
-  }
+  await updateTraceForRun(draftId, 'llm', 'in_progress', { expectedRunId: runId, data: traceData });
 
   const issueRef = { number: 0, repoOwner: repository.split('/')[0] || 'unknown', repoName: repository.split('/')[1] || 'unknown' };
   // Build metadata for LLM log tracking

@@ -27,9 +27,10 @@ export function isLogFilesData(value: unknown): value is LogFilesData {
   }
   const hasLogFiles = Array.isArray(value.logFiles);
   const hasError = typeof value.error === 'string' && value.error.trim().length > 0;
-  const hasLegacyFiles = typeof value.sessionId === 'string'
+  const hasSessionId = typeof value.sessionId === 'string'
     && value.sessionId.trim().length > 0
-    && isRecord(value.files);
+  const hasLegacyFiles = hasSessionId && isRecord(value.files);
+  if (isRecord(value.files) && !hasSessionId) return false;
   return hasLogFiles || hasError || hasLegacyFiles;
 }
 

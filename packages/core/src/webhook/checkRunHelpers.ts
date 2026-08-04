@@ -378,6 +378,8 @@ export interface PRAutoMergeInfo {
     isDraft: boolean;
     baseBranch: string;
     headBranch: string;
+    mergeable: boolean | null;
+    mergeableState: string;
 }
 
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
@@ -548,6 +550,10 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
+        const mergeable = typeof prResponse.data.mergeable === 'boolean' ? prResponse.data.mergeable : null;
+        const mergeableState = typeof prResponse.data.mergeable_state === 'string'
+            ? prResponse.data.mergeable_state
+            : 'unknown';
 
         return {
             hasLabel,
@@ -557,7 +563,9 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             ultrafixStateUnavailable: ultrafixState?.unavailable === true,
             isDraft,
             baseBranch,
-            headBranch
+            headBranch,
+            mergeable,
+            mergeableState
         };
     } catch (error) {
         logger.warn({
@@ -574,7 +582,9 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
             ultrafixStateUnavailable: false,
             isDraft: false,
             baseBranch: '',
-            headBranch: ''
+            headBranch: '',
+            mergeable: null,
+            mergeableState: 'unknown'
         };
     }
 }

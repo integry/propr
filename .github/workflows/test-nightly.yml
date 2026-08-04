@@ -116,60 +116,38 @@ jobs:
 
           exit $E2E_EXIT_CODE
 
+      - name: Sanitize failure diagnostics
+        if: always()
+        env:
+          GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
+          PROPR_E2E_API_URL_TO_REDACT: ${{ secrets.PROPR_E2E_API_URL }}
+          PROPR_E2E_TOKEN_TO_REDACT: ${{ secrets.PROPR_E2E_TOKEN }}
+        run: |
+          node scripts/sanitize-ci-output.mjs test_output.txt test_output.sanitized.txt
+          node scripts/sanitize-ci-output.mjs e2e_output.txt e2e_output.sanitized.txt
+
+      - name: Remove raw failure diagnostics
+        if: always()
+        run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt" "$GITHUB_WORKSPACE/e2e_output.txt"
+
+      - name: Upload sanitized failure diagnostics
+        if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: nightly-test-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test_output.sanitized.txt
+            e2e_output.sanitized.txt
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Create Failure Issue
         if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        env:
-          PROPR_E2E_API_URL_TO_REDACT: ${{ secrets.PROPR_E2E_API_URL }}
-          PROPR_E2E_TOKEN_TO_REDACT: ${{ secrets.PROPR_E2E_TOKEN }}
         with:
           script: |
-            const fs = require('fs');
             const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
             const date = new Date().toISOString().split('T')[0];
-
-            const redactOutput = (value) => {
-              let redacted = String(value);
-              const knownSecrets = [
-                process.env.PROPR_E2E_API_URL_TO_REDACT,
-                process.env.PROPR_E2E_TOKEN_TO_REDACT,
-              ].filter(secret => secret && secret.length > 0);
-              for (const secret of knownSecrets) {
-                redacted = redacted.split(secret).join('[REDACTED]');
-              }
-              const credentialPatterns = [
-                [/(\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|token)?\s*)[^\s,;]+/gi, '$1[REDACTED]'],
-                [/(\bPROPR_E2E_TOKEN\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]'],
-                [/(["'](?:access_?token|api_?key|client_?secret|password)["']\s*:\s*["'])[^"']+(["'])/gi, '$1[REDACTED]$2'],
-                [/\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]'],
-                [/(https?:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi, '$1[REDACTED]@'],
-              ];
-              for (const [pattern, replacement] of credentialPatterns) {
-                redacted = redacted.replace(pattern, replacement);
-              }
-              return redacted.replace(/~~~/g, '~~\u200b~');
-            };
-
-            let testOutput = '';
-            try { testOutput = fs.readFileSync('test_output.txt', 'utf8'); }
-            catch (e) { testOutput = 'Test output file not available.'; }
-
-            let e2eOutput = '';
-            try { e2eOutput = fs.readFileSync('e2e_output.txt', 'utf8'); }
-            catch (e) { e2eOutput = 'E2E output file not available or not run.'; }
-
-            // Log masking only protects the Actions log. Redact again before
-            // sending captured process output through the Issues API.
-            testOutput = redactOutput(testOutput);
-            e2eOutput = redactOutput(e2eOutput);
-
-            // Truncate outputs if too long
-            if (testOutput.length > 30000) {
-              testOutput = testOutput.substring(0, 30000) + "\n\n...(truncated)";
-            }
-            if (e2eOutput.length > 30000) {
-              e2eOutput = e2eOutput.substring(0, 30000) + "\n\n...(truncated)";
-            }
 
             const outcomes = {
               install: '${{ steps.install.outcome }}',
@@ -193,25 +171,7 @@ jobs:
               `**Live E2E configuration:** ${outcomes.e2eConfig}`,
               `**Live E2E tests:** ${outcomes.e2eTests}`,
               '',
-              '### Full Test Suite Output',
-              '',
-              '<details>',
-              '<summary>View Test Output</summary>',
-              '',
-              '~~~text',
-              testOutput,
-              '~~~',
-              '</details>',
-              '',
-              '### E2E Test Output',
-              '',
-              '<details>',
-              '<summary>View E2E Output</summary>',
-              '',
-              '~~~text',
-              e2eOutput,
-              '~~~',
-              '</details>',
+              'Sanitized process output is available in the `nightly-test-output` artifact on the workflow run.',
               '',
               `**[View Workflow Run](${runUrl})**`,
             ].join('\n');
@@ -248,10 +208,6 @@ jobs:
               });
               console.log(`Created issue #${issue.data.number}`);
             }
-
-      - name: Remove captured test output
-        if: always()
-        run: rm -f -- "$GITHUB_WORKSPACE/test_output.txt" "$GITHUB_WORKSPACE/e2e_output.txt"
 
       - name: Fail Job
         if: steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'

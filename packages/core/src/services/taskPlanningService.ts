@@ -9,7 +9,7 @@ import logger from '../utils/logger.js';
 import { PathValidationService } from './pathValidationService.js';
 import type { Knex } from 'knex';
 import {
-  updateTrace, updateTraceForRun, parseGenerationTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
+  updateTraceForRun, parseGenerationTrace, buildDraftUpdateTraceSnapshot, findFilesForPlan, parseContextConfig, checkoutBaseBranch, truncateToSentences
 } from './planning/index.js';
 import { getEventPublisher } from '../utils/eventPublisher.js';
 import { loadSettings } from '../config/configManager.js';
@@ -38,28 +38,29 @@ const BUDGET_SAFETY_FACTOR = 0.85;
 function updateGenerationTrace(
   draftId: string,
   step: string,
-  status: Parameters<typeof updateTrace>[2],
-  options: { runId?: string; data?: Record<string, unknown> },
+  status: Parameters<typeof updateTraceForRun>[2],
+  options: { runId: string; data?: Record<string, unknown> },
 ) {
-  return options.runId
-    ? updateTraceForRun(draftId, step, status, { expectedRunId: options.runId, data: options.data })
-    : updateTrace(draftId, step, status, options.data);
+  return updateTraceForRun(draftId, step, status, { expectedRunId: options.runId, data: options.data });
 }
 
 interface GenerationCompletionOptions {
   database: Knex;
   draftId: string;
-  runId?: string;
+  runId: string;
   expectedTrace: string;
   updates: Record<string, unknown>;
 }
 
 export async function persistGenerationCompletion(options: GenerationCompletionOptions): Promise<boolean> {
   const { database, draftId, runId, expectedTrace, updates } = options;
-  if (runId && parseGenerationTrace(expectedTrace).runId !== runId) return false;
+  if (parseGenerationTrace(expectedTrace).runId !== runId) return false;
 
-  let query = database('task_drafts').where({ draft_id: draftId });
-  if (runId) query = query.where({ status: 'generating', generation_trace: expectedTrace });
+  const query = database('task_drafts').where({
+    draft_id: draftId,
+    status: 'generating',
+    generation_trace: expectedTrace,
+  });
   return Number(await query.update(updates)) === 1;
 }
 
@@ -197,7 +198,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
       name: truncateToSentences(draft.initial_prompt), updated_at: db.fn.now()
     }
   });
-  if (runId && !completed) {
+  if (!completed) {
     throw new Error(`Planner generation run ${runId} is no longer active`);
   }
 
@@ -205,6 +206,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
   const eventPublisher = getEventPublisher();
   const published = await eventPublisher.publishDraftUpdate({
     draftId,
+    runId,
     step: 'complete',
     status: 'completed',
     draftStatus: 'review',

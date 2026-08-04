@@ -94,6 +94,23 @@ describe("release validation", () => {
     assert.ok(errors.some((error) => error.includes("@propr/core must depend on @propr/shared@^1.2.3")));
   });
 
+  it("rejects internal dependencies missing from workspace discovery", () => {
+    const input = validInput();
+    input.packages[1].internalDependencies["@propr/missing"] = "^1.2.3";
+
+    assert.ok(validateRelease(input).some((error) =>
+      error.includes("@propr/api depends on undiscovered internal package @propr/missing")
+    ));
+  });
+
+  it("allows explicitly external @propr dependencies", () => {
+    const input = validInput();
+    input.packages[1].internalDependencies["@propr/external-sdk"] = "^9.0.0";
+    input.externalInternalDependencies = ["@propr/external-sdk"];
+
+    assert.deepEqual(validateRelease(input), []);
+  });
+
   it("rejects SemVer build metadata because it cannot be used in Docker tags", () => {
     const input = validInput();
     input.tag = "v1.2.3+build.1";

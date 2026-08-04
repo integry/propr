@@ -946,6 +946,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -980,6 +982,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1057,6 +1061,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'different-sha-456' }, // Different SHA
                         body: ''
@@ -1088,6 +1094,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1114,6 +1122,36 @@ describe('handleCheckRunEvent', () => {
         assert.ok(mergeCall, 'Should merge when SHA matches');
     });
 
+    test('does not merge after one successful check while GitHub still reports required checks blocked', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        labels: [{ name: 'auto-merge' }],
+                        draft: false,
+                        mergeable: false,
+                        mergeable_state: 'blocked',
+                        base: { ref: 'main' },
+                        head: { ref: 'feature', sha: 'abc123sha' },
+                        body: ''
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) {
+                return { data: { check_runs: [{ name: 'Unrelated fast check', status: 'completed', conclusion: 'success' }] } };
+            }
+            return { data: {} };
+        });
+
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+
+        const mergeCall = mockOctokit.request.mock.calls.find((call: { arguments: [string] }) =>
+            call.arguments[0].includes('merge')
+        );
+        assert.strictEqual(mergeCall, undefined);
+    });
+
     test('handles errors gracefully without throwing', async () => {
         resetMocks();
         mockOctokit.request.mock.mockImplementation(async () => {
@@ -1137,6 +1175,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1177,6 +1217,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1247,6 +1289,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: '800-epic-short-name-x7y', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1281,6 +1325,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
                         body: ''
@@ -1315,6 +1361,8 @@ describe('handleCheckRunEvent', () => {
                     data: {
                         labels: [{ name: 'auto-merge' }],
                         draft: false,
+                        mergeable: true,
+                        mergeable_state: 'clean',
                         base: { ref: 'main' },
                         head: {
                             ref: 'feature',
@@ -1363,6 +1411,8 @@ describe('shouldAutoMergePR', () => {
         isDraft?: boolean;
         baseBranch?: string;
         headBranch?: string;
+        mergeable?: boolean | null;
+        mergeableState?: string;
     }): PRMergeContext {
         const {
             owner = 'test-owner',
@@ -1376,7 +1426,9 @@ describe('shouldAutoMergePR', () => {
             ultrafixStateUnavailable = false,
             isDraft = false,
             baseBranch = 'main',
-            headBranch = 'feature-branch'
+            headBranch = 'feature-branch',
+            mergeable = true,
+            mergeableState = 'clean'
         } = options;
 
         return {
@@ -1392,7 +1444,9 @@ describe('shouldAutoMergePR', () => {
                 ultrafixStateUnavailable,
                 isDraft,
                 baseBranch,
-                headBranch
+                headBranch,
+                mergeable,
+                mergeableState
             },
             log: mockLogger.withCorrelation('test-correlation')
         };

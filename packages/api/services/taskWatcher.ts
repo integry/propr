@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { TASK_LIVE_UPDATE, type TaskLiveUpdatePayload } from '@propr/shared';
 import { parseConversationFile } from './conversationParser.js';
 import { parseRedisOutput } from './redisOutputParser.js';
+import { withStableLiveEventIds } from './liveEventIds.js';
 import { resolveConfigPath } from '@propr/core';
 import { findAgentConfigForTask, findExecutionStartTimestampForTask } from './taskWatcherLookup.js';
 
@@ -35,6 +36,9 @@ export interface TaskWatcherDeps {
   redisClient: RedisClientType;
   db: Knex;
 }
+
+/** Add a stable ID based on the event's absolute position in the parsed stream. */
+export { withStableLiveEventIds } from './liveEventIds.js';
 
 /**
  * TaskWatcherManager handles watching Claude log files and broadcasting updates.
@@ -316,7 +320,14 @@ export class TaskWatcherManager {
       const result = await parseConversationFile(conversationPath);
 
       // Determine which events to send
-      let eventsToSend = result.events;
+      const stableEvents = withStableLiveEventIds({
+        taskId: this.normalizeTaskId(taskId),
+        source: 'conversation',
+        events: result.events,
+        totalEventCount: result.totalEventCount,
+        executionNamespace: watcherInfo.sessionId,
+      });
+      let eventsToSend = stableEvents;
 
       if (isInitial) {
         // Initial subscription: send full event history (already limited by parser)
@@ -334,7 +345,7 @@ export class TaskWatcherManager {
           // Calculate new events: we want events from lastSentCount to totalCount
           // Since result.events might be limited, we need to be careful
           const newEventCount = totalCount - lastSentCount;
-          eventsToSend = result.events.slice(-newEventCount);
+          eventsToSend = stableEvents.slice(-newEventCount);
           console.log(`[TaskWatcher] Incremental update for task ${taskId}: sending ${eventsToSend.length} new events (${lastSentCount} -> ${totalCount})`);
         }
       }
@@ -424,13 +435,20 @@ export class TaskWatcherManager {
       const result = parseRedisOutput(lines, { executionStartTimestamp });
 
       // Determine which events to send
-      let eventsToSend = result.events;
+      const stableEvents = withStableLiveEventIds({
+        taskId: this.normalizeTaskId(taskId),
+        source: 'redis',
+        events: result.events,
+        totalEventCount: result.totalEventCount,
+        executionNamespace: executionStartTimestamp ?? watcherInfo.sessionId,
+      });
+      let eventsToSend = stableEvents;
       if (!isInitial) {
         const lastSentCount = watcherInfo.lastSentEventCount;
         const totalCount = result.totalEventCount;
         if (totalCount > lastSentCount) {
           const newEventCount = totalCount - lastSentCount;
-          eventsToSend = result.events.slice(-newEventCount);
+          eventsToSend = stableEvents.slice(-newEventCount);
           console.log(`[TaskWatcher] Redis update for task ${taskId}: sending ${eventsToSend.length} new events`);
         } else {
           eventsToSend = [];

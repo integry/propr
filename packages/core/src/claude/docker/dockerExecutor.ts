@@ -35,6 +35,10 @@ interface AbortCheckerOptions {
     namedContainer: string | null;
 }
 
+interface AbortCheckerHandle {
+    close(): Promise<void>;
+}
+
 interface PlannerAbortContext {
     draftId: string;
     runId: string;
@@ -63,9 +67,11 @@ export function runWithPlannerAbortContext<T>(
     return plannerAbortContext.run({ draftId, runId }, operation);
 }
 
-function plannerAbortSignalKeyForTask(taskId: string): string {
+export function plannerAbortSignalKeyForTask(taskId: string): string {
     const context = plannerAbortContext.getStore();
-    return buildPlannerAbortSignalKey(taskId, context?.draftId === taskId ? context.runId : undefined);
+    return context
+        ? buildPlannerAbortSignalKey(context.draftId, context.runId)
+        : buildPlannerAbortSignalKey(taskId);
 }
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
@@ -108,17 +114,21 @@ export async function checkAbortSignal(
 ): Promise<boolean> {
     const redis = factory();
     try {
-        // Check both worker abort signal (for task execution) and planner abort signal (for plan generation)
-        const [workerAbort, plannerAbort] = await Promise.all([
-            redis.get(`worker:abort:${taskId}`),
-            redis.get(plannerAbortKey)
-        ]);
-        return workerAbort !== null || plannerAbort !== null;
+        return await readAbortSignal(redis, taskId, plannerAbortKey);
     } catch (error) {
         throw new Error(`Abort state unavailable for task ${taskId}`, { cause: error });
     } finally {
         await closeAbortRedis(redis);
     }
+}
+
+async function readAbortSignal(redis: AbortRedisClient, taskId: string, plannerAbortKey: string): Promise<boolean> {
+    // Check both worker abort signal (for task execution) and planner abort signal (for plan generation)
+    const [workerAbort, plannerAbort] = await Promise.all([
+        redis.get(`worker:abort:${taskId}`),
+        redis.get(plannerAbortKey)
+    ]);
+    return workerAbort !== null || plannerAbort !== null;
 }
 
 /**
@@ -218,6 +228,15 @@ export async function clearWorkerAbortSignal(
     }
 }
 
+async function clearWorkerAbortSignalWithClient(taskId: string, redis: AbortRedisClient): Promise<void> {
+    try {
+        await redis.del(`worker:abort:${taskId}`);
+        logger.debug({ taskId }, 'Cleared worker abort signal from Redis');
+    } catch (err) {
+        logger.warn({ taskId, error: (err as Error).message }, 'Failed to clear worker abort signal from Redis');
+    }
+}
+
 function resolveDockerPath(command: string): string {
     if (command !== 'docker') return command;
     const paths = ['/usr/bin/docker', '/usr/local/bin/docker', '/bin/docker'];
@@ -228,8 +247,23 @@ function resolveDockerPath(command: string): string {
     return 'docker';
 }
 
-function setupAbortChecker({ taskId, plannerAbortKey, abortedRef, child, containerIdRef, namedContainer }: AbortCheckerOptions): ReturnType<typeof setInterval> {
+const PLANNER_ABORT_LOOKUP_FAILURE_LIMIT = 2;
+
+/**
+ * Planner cancellation fails closed after sustained Redis unavailability. One
+ * isolated read failure is tolerated because the next two-second poll can
+ * recover; any successful read resets the consecutive-failure count.
+ */
+export function shouldTerminateAfterAbortLookupFailure(plannerAbortKey: string, consecutiveFailures: number): boolean {
+    return plannerAbortKey.includes(':run:') && consecutiveFailures >= PLANNER_ABORT_LOOKUP_FAILURE_LIMIT;
+}
+
+function setupAbortChecker({ taskId, plannerAbortKey, abortedRef, child, containerIdRef, namedContainer }: AbortCheckerOptions): AbortCheckerHandle {
+    const redis = createAbortRedis();
     let pollInFlight = false;
+    let active = true;
+    let consecutiveLookupFailures = 0;
+    let closePromise: Promise<void> | null = null;
     const terminateExecution = async (message: string): Promise<void> => {
         if (abortedRef.value || child.killed) return;
         abortedRef.value = true;
@@ -242,21 +276,36 @@ function setupAbortChecker({ taskId, plannerAbortKey, abortedRef, child, contain
         }
         child.kill('SIGTERM');
         setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
-        await clearWorkerAbortSignal(taskId);
+        // Clearing the worker marker is cleanup, so never delay termination on
+        // a Redis connection that may be the reason this execution failed closed.
+        await clearWorkerAbortSignalWithClient(taskId, redis);
     };
-    return setInterval(() => {
+    const interval = setInterval(() => {
         if (pollInFlight) return;
         pollInFlight = true;
         void (async () => {
-            const shouldAbort = await checkAbortSignal(taskId, plannerAbortKey);
+            const shouldAbort = await readAbortSignal(redis, taskId, plannerAbortKey);
+            consecutiveLookupFailures = 0;
             if (shouldAbort) await terminateExecution('Abort signal detected, terminating execution');
         })().catch(async error => {
+            if (!active) return;
+            consecutiveLookupFailures += 1;
             logger.error({ taskId, plannerAbortKey, error: (error as Error).message }, 'Abort state unavailable; cancellation cannot be verified');
-            if (plannerAbortKey.includes(':run:')) {
+            if (shouldTerminateAfterAbortLookupFailure(plannerAbortKey, consecutiveLookupFailures)) {
                 await terminateExecution('Planner abort state unavailable, terminating execution fail closed');
             }
         }).finally(() => { pollInFlight = false; });
     }, 2000);
+    return {
+        close: async () => {
+            closePromise ??= (async () => {
+                active = false;
+                clearInterval(interval);
+                await closeAbortRedis(redis);
+            })();
+            await closePromise;
+        }
+    };
 }
 
 function getDockerRunContainerName(args: string[]): string | null {
@@ -334,7 +383,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
         }, timeout);
         const plannerAbortKey = taskId ? plannerAbortSignalKeyForTask(taskId) : null;
-        const abortCheckInterval = taskId && plannerAbortKey
+        const abortChecker = taskId && plannerAbortKey
             ? setupAbortChecker({ taskId, plannerAbortKey, abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer })
             : null;
 
@@ -367,7 +416,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
-            if (abortCheckInterval) clearInterval(abortCheckInterval);
+            if (abortChecker) await abortChecker.close();
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
             if (state.timedOut) {
                 const timeoutMessage = `Command timed out after ${timeout}ms`;
@@ -382,9 +431,9 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (state.aborted.value) { reject(new ExecutionAbortedError()); return; }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
         });
-        child.on('error', (error: Error) => {
+        child.on('error', async (error: Error) => {
             clearTimeout(timeoutHandle);
-            if (abortCheckInterval) clearInterval(abortCheckInterval);
+            if (abortChecker) await abortChecker.close();
             if (redisState.interval) clearInterval(redisState.interval);
             if (redisState.client) redisState.client.quit().catch(() => {});
             reject(error);

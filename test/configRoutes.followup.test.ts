@@ -923,6 +923,34 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(resolveVersionMock.mock.calls.length, 1);
     });
 
+    test('prepareAgentsUpdate does not resolve versions for disabled agents', async () => {
+        const resolveVersionMock = mock.fn(async () => {
+            throw new Error('registry unavailable');
+        });
+        const result = await prepareAgentsUpdate([
+            {
+                id: 'disabled-agent',
+                alias: 'disabled-custom',
+                type: 'claude',
+                enabled: false,
+                dockerImage: 'old:image',
+                configPath: '/tmp/claude-disabled',
+                supportedModels: [],
+                cliVersionType: 'custom',
+                cliVersion: 'github:example/claude-fork',
+                cliVersionResolved: 'github:example/claude-fork#resolved',
+            },
+        ], {
+            resolveVersion: resolveVersionMock,
+            computeContentHash: () => 'content-hash',
+            generateAgentBundleImageTag: () => 'propr/agent:test',
+        });
+
+        assert.strictEqual(result.error, undefined);
+        assert.strictEqual(resolveVersionMock.mock.calls.length, 0);
+        assert.strictEqual(result.processedAgents?.[0].cliVersionResolved, 'github:example/claude-fork#resolved');
+    });
+
     test('prepareAgentsUpdate does not mislabel local TypeErrors as registry outages', async () => {
         const result = await prepareAgentsUpdate([
             {
@@ -1644,6 +1672,47 @@ describe('config route follow-up helpers', () => {
             committed: true,
             lock_lost_after_commit: true,
         });
+    });
+
+    test('withConfigLock reports committed state when the final ownership check first detects replacement', async () => {
+        let currentLockValue: string | null = null;
+        let renewalCalls = 0;
+        const redisClient = {
+            set: mock.fn(async (_key: string, value: string) => {
+                currentLockValue = value;
+                return 'OK';
+            }),
+            eval: mock.fn(async (_script: string, options: { arguments: string[] }) => {
+                const [lockValue, timeoutSeconds] = options.arguments;
+                if (timeoutSeconds === undefined) {
+                    if (currentLockValue === lockValue) currentLockValue = null;
+                    return 1;
+                }
+                renewalCalls += 1;
+                if (renewalCalls === 1) currentLockValue = 'replacement-owner';
+                return 0;
+            }),
+        };
+
+        const result = await withConfigLock(
+            redisClient as never,
+            'config:test:lock',
+            async lock => {
+                lock.markCommitted();
+                return { status: 200, body: { success: true } };
+            },
+            { renewalIntervalMs: 0 },
+        );
+
+        assert.strictEqual(renewalCalls, 1);
+        assert.strictEqual(result.status, 409);
+        assert.deepStrictEqual(result.body, {
+            success: true,
+            warning: 'Configuration changes were committed, but the update lock was lost afterward. Verify the current configuration before retrying.',
+            committed: true,
+            lock_lost_after_commit: true,
+        });
+        assert.strictEqual(currentLockValue, 'replacement-owner');
     });
 
     test('parseClaudeOutputToConversationResult preserves usage on assistant lines with content', () => {

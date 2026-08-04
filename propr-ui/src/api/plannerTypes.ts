@@ -21,6 +21,13 @@ export interface GenerationTrace extends Omit<DraftUpdateGenerationTrace, 'steps
   steps: GenerationStep[];
 }
 
+export interface GenerationStartResponse {
+  success: true;
+  status: 'generating';
+  message: string;
+  runId: string;
+}
+
 export interface PlannerAttachment {
   id: string;
   originalName: string;
