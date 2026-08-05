@@ -10,7 +10,6 @@ import type { AgentConfig } from '@propr/core';
 import { closeConnection, shutdownQueue } from '@propr/core';
 import {
   isAgentLoginComplete,
-  prepareAgentLoginCredentialDefaults,
 } from '../services/agentLoginDocker.js';
 import { AgentLoginSessionManager } from '../services/agentLoginSessionManager.js';
 
@@ -58,31 +57,23 @@ after(async () => {
 });
 
 describe('Antigravity agent login', () => {
-  test('preconfigures privacy and non-interactive workspace defaults', () => {
-    const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-defaults-'));
-    const settingsPath = path.join(credentialPath, 'antigravity-cli', 'settings.json');
-    try {
-      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-      fs.writeFileSync(settingsPath, JSON.stringify({
-        enableTelemetry: true,
-        colorScheme: 'solarized',
-        trustedWorkspaces: ['/existing/workspace'],
-        unrelated: 'preserved',
-      }));
+  test('prepares login defaults inside the container after ownership normalization', () => {
+    const entrypoint = fs.readFileSync(
+      new URL('../../../scripts/antigravity-entrypoint.sh', import.meta.url),
+      'utf8',
+    );
+    const ownershipRepair = entrypoint.indexOf('prepare_antigravity_config_dir "$antigravity_config_dir"');
+    const loginDefaults = entrypoint.indexOf('prepare_antigravity_login_defaults "$antigravity_config_dir"');
+    const dropPrivileges = entrypoint.indexOf('exec su-exec node env HOME=/home/node');
 
-      prepareAgentLoginCredentialDefaults('antigravity', credentialPath);
-
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
-      assert.equal(settings.enableTelemetry, false);
-      assert.equal(settings.colorScheme, 'solarized');
-      assert.deepEqual(settings.trustedWorkspaces, ['/existing/workspace', '/home/node/workspace']);
-      assert.equal(settings.unrelated, 'preserved');
-    } finally {
-      fs.rmSync(credentialPath, { recursive: true, force: true });
-    }
+    assert.ok(ownershipRepair >= 0);
+    assert.ok(loginDefaults > ownershipRepair);
+    assert.ok(dropPrivileges > loginDefaults);
+    assert.match(entrypoint, /settings\.enableTelemetry = false/);
+    assert.match(entrypoint, /trustedWorkspaces\.push\('\/home\/node\/workspace'\)/);
   });
 
-  test('recognizes completed authentication only after onboarding is saved', () => {
+  test('recognizes only non-empty, unexpired authentication after onboarding is saved', () => {
     const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-complete-'));
     const tokenPath = path.join(credentialPath, 'antigravity-cli', 'antigravity-oauth-token');
     const onboardingPath = path.join(credentialPath, 'antigravity-cli', 'cache', 'onboarding.json');
@@ -93,6 +84,18 @@ describe('Antigravity agent login', () => {
       assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
 
       fs.writeFileSync(onboardingPath, JSON.stringify({ onboardingComplete: true }));
+      assert.equal(isAgentLoginComplete('antigravity', credentialPath), true);
+
+      fs.writeFileSync(tokenPath, '');
+      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
+
+      fs.writeFileSync(tokenPath, '{malformed');
+      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
+
+      fs.writeFileSync(tokenPath, JSON.stringify({ access_token: 'expired', expires_at: '2000-01-01T00:00:00.000Z' }));
+      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
+
+      fs.writeFileSync(tokenPath, JSON.stringify({ credentials: { access_token: 'nested-token' } }));
       assert.equal(isAgentLoginComplete('antigravity', credentialPath), true);
     } finally {
       fs.rmSync(credentialPath, { recursive: true, force: true });
@@ -146,7 +149,7 @@ describe('Antigravity agent login', () => {
     }
   });
 
-  test('returns success without a container when already authenticated', async () => {
+  test('revalidates existing authentication through an explicit provider login', async () => {
     const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-existing-'));
     const cliPath = path.join(credentialPath, 'antigravity-cli');
     const dockerCalls: string[][] = [];
@@ -156,7 +159,10 @@ describe('Antigravity agent login', () => {
         dockerCalls.push(args);
         return { stdout: '', stderr: '' };
       },
-      spawnDocker: () => fakeChild(),
+      spawnDocker: args => {
+        dockerCalls.push(args);
+        return fakeChild();
+      },
       sessionTimeoutMs: 60_000,
       sessionRetentionMs: 60_000,
     });
@@ -177,10 +183,12 @@ describe('Antigravity agent login', () => {
         configPath: credentialPath,
       }), 'owner');
 
-      assert.equal(started.status, 'succeeded');
-      assert.equal(started.exitCode, 0);
-      assert.match(started.output, /already available/);
-      assert.deepEqual(dockerCalls, []);
+      assert.equal(started.status, 'running');
+      assert.match(started.output, /will be revalidated/);
+      assert.deepEqual(dockerCalls[0], ['image', 'inspect', 'propr/agent:test']);
+      assert.equal(dockerCalls[1][0], 'create');
+      assert.ok(dockerCalls[1].includes('PROPR_AGENT_LOGIN=1'));
+      assert.deepEqual(dockerCalls[2], ['start', '-a', '-i', 'propr-agent-login-antigravity-existing-session']);
     } finally {
       fs.rmSync(credentialPath, { recursive: true, force: true });
     }

@@ -11,7 +11,6 @@ import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
   isAgentLoginComplete,
-  prepareAgentLoginCredentialDefaults,
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
@@ -210,14 +209,17 @@ export class AgentLoginSessionManager {
         // Materialize the isolated bind source explicitly. The provider
         // entrypoint then normalizes ownership of the mounted leaf before
         // dropping privileges and writing credential files.
-        mkdirSync(credentialPath, { recursive: true, mode: 0o755 });
+        try {
+          mkdirSync(credentialPath, { recursive: true, mode: 0o755 });
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'EACCES' && code !== 'EPERM') throw error;
+          // The root-started login container repairs an existing bind source.
+        }
       }
-      prepareAgentLoginCredentialDefaults(agent.type, credentialPath);
       session.providerLoginInitiallyComplete = isAgentLoginComplete(agent.type, credentialPath);
       if (session.providerLoginInitiallyComplete) {
-        this.appendOutput(session, 'Antigravity authentication is already available.\n');
-        this.finish(session, 'succeeded', 0);
-        return this.snapshot(session);
+        this.appendOutput(session, 'Existing Antigravity authentication will be revalidated by the provider.\n');
       }
       const image = resolveAgentLoginImage(agent);
       const createArgs = buildAgentLoginCreateArgs(

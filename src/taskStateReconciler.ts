@@ -91,6 +91,13 @@ function throwIfAborted(signal?: AbortSignal): void {
     signal?.throwIfAborted();
 }
 
+function completedResultMatchesAttempt(task: TaskStateData, result: unknown): boolean {
+    if (task.prProcessingLockToken === undefined) return true;
+    if (!result || typeof result !== 'object') return false;
+    return (result as { prProcessingLockToken?: unknown }).prProcessingLockToken
+        === task.prProcessingLockToken;
+}
+
 async function clearOwnedPRLock(
     task: TaskStateData,
     redis: ReconciliationRedis,
@@ -137,13 +144,14 @@ async function finalizeCompletedJob(
     summary: TaskReconciliationSummary,
 ): Promise<void> {
     throwIfAborted(options.signal);
+    const lockCleared = await clearOwnedPRLock(task, options.redis, options.signal);
+    throwIfAborted(options.signal);
     const finalized = await finalizePRCommentTaskResult(task.taskId, options.stateManager, job.returnvalue, {
         expectation: taskStateExpectation(task),
     });
     if (!finalized) return;
     summary.finalized++;
-    throwIfAborted(options.signal);
-    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
+    if (lockCleared) summary.locksCleared++;
 }
 
 async function finalizeFailedJob(
@@ -153,13 +161,14 @@ async function finalizeFailedJob(
     summary: TaskReconciliationSummary,
 ): Promise<void> {
     throwIfAborted(options.signal);
+    const lockCleared = await clearOwnedPRLock(task, options.redis, options.signal);
+    throwIfAborted(options.signal);
     const finalized = await finalizePRCommentTaskFailure(task.taskId, options.stateManager, new Error(message), {
         expectation: taskStateExpectation(task),
     });
     if (!finalized) return;
     summary.interrupted++;
-    throwIfAborted(options.signal);
-    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
+    if (lockCleared) summary.locksCleared++;
 }
 
 async function handleTerminalQueueState(
@@ -170,6 +179,7 @@ async function handleTerminalQueueState(
 ): Promise<boolean> {
     const { options, summary, findRunningContainer } = context;
     if (queueState === 'completed' && job) {
+        if (!completedResultMatchesAttempt(task, job.returnvalue)) return true;
         const parsed = parsePRCommentJobResult(job.returnvalue);
         if (!parsed) {
             const returnedStatus = job.returnvalue

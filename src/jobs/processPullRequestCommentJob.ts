@@ -20,7 +20,7 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
-    handleJobError, cleanupJob, toClaudeResult
+    handleJobError, cleanupJobBeforeStoppingHeartbeat, buildPRCommentWorktreeDirName, toClaudeResult
 } from './prCommentJobUtils.js';
 import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
@@ -169,7 +169,7 @@ function checkTerminalStateAfterExecution(
         throw new Error(`Task already in terminal state: ${currentState.state}`);
     }
     if (currentState?.prProcessingLockToken !== expectedLockToken) {
-        throw new Error('PR processing attempt was superseded by a newer attempt');
+        throw new SupersededTaskAttemptError(taskId);
     }
 }
 
@@ -256,8 +256,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     await ensureGitRepository(correlatedLogger);
     state.localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: `pr-${pullRequestNumber}-followup-${timestamp}`, owner: repoOwner, repoName });
+    state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: buildPRCommentWorktreeDirName(pullRequestNumber, lockToken), owner: repoOwner, repoName });
     correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName }, 'Created worktree from existing PR branch');
 
     const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
@@ -331,12 +330,13 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     }, lockToken);
 
     const postResult = await handlePostExecution(
-        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken: lockToken, assertLease },
+        {
+            state, job, taskId, stateManager, context, unprocessedReviewComments, llm,
+            redisClient, prProcessingLockToken: lockToken, assertLease,
+            beforeCompletion: () => handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken: lockToken, assertLease }),
+        },
         taskUrl,
     );
-
-    await assertLease();
-    await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken: lockToken, assertLease });
 
     return { status: postResult.partial ? 'partial' : 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
@@ -423,11 +423,9 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
             const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease }));
-            await assertLease();
             return { ...result, prProcessingLockToken: lockToken };
         }
         const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken, assertLease }));
-        await assertLease();
         return { ...result, prProcessingLockToken: lockToken };
     } catch (error) {
         if (error instanceof PRProcessingLeaseLostError || error instanceof SupersededTaskAttemptError) {
@@ -446,7 +444,6 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         if (!(error instanceof UsageLimitError)) throw error;
         return { status: 'requeued', reason: 'usage_limit', prProcessingLockToken: lockToken };
     } finally {
-        await stopLockHeartbeat();
-        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
+        await cleanupJobBeforeStoppingHeartbeat({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient }, stopLockHeartbeat);
     }
 }

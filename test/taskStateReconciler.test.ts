@@ -431,6 +431,7 @@ describe('task state reconciliation', () => {
             queue: queue({}),
             redis: {
                 eval: async () => {
+                    assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.PROCESSING);
                     attempts++;
                     if (attempts === 1) throw new Error('temporary Redis failure');
                     return 1;
@@ -446,6 +447,39 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
         assert.equal(summary.locksCleared, 1);
         assert.equal(summary.interrupted, 1);
+    });
+
+    test('keeps failed lock cleanup non-terminal so a later reconciliation can retry it', async () => {
+        const abandoned = task('pr-comments-lock-cleanup-deferred', TaskStates.PROCESSING);
+        const manager = stateManager([abandoned]);
+        const failingSummary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: {
+                eval: async () => { throw new Error('Redis unavailable'); },
+                pttl: async () => -2,
+            },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.PROCESSING);
+        assert.equal(failingSummary.errors, 1);
+        assert.equal(failingSummary.interrupted, 0);
+
+        const recoveredSummary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: async () => 1, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
+        assert.equal(recoveredSummary.locksCleared, 1);
+        assert.equal(recoveredSummary.interrupted, 1);
     });
 
     test('terminalizes an invalid completed result as a diagnostic failure', async () => {

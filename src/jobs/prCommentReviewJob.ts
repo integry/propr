@@ -419,6 +419,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.length - successCount;
 
+    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken, assertLease });
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
 
     await assertLease();
@@ -435,7 +436,6 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     }, prProcessingLockToken);
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
-    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken, assertLease });
 
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }

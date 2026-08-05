@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import { closeEventPublisher } from '../packages/core/src/utils/eventPublisher.js';
 import { TaskStates, WorkerStateManager } from '../packages/core/src/utils/workerStateManager.js';
+import { CREATE_FENCED_TASK_STATE_SCRIPT } from '../packages/core/src/utils/workerStatePersistence.js';
 import type { TaskStateData } from '../packages/core/src/utils/workerStateManager.types.js';
 
 after(async () => {
@@ -74,6 +75,77 @@ test('real Redis CAS permits only one guarded terminal transition', { timeout: 5
     } finally {
         await redis.del(key);
         await manager.close();
+        await redis.quit();
+    }
+});
+
+test('fenced task revisions remain monotonic after the expiring state is recreated', { timeout: 5000 }, async t => {
+    const redis = new Redis({
+        host: process.env.REDIS_HOST ?? '127.0.0.1',
+        port: Number(process.env.REDIS_PORT ?? 6379),
+        connectTimeout: 500,
+        maxRetriesPerRequest: 1,
+        enableReadyCheck: false,
+        retryStrategy: () => null,
+        lazyConnect: true,
+    });
+    redis.on('error', () => {});
+    try {
+        await redis.connect();
+    } catch {
+        redis.disconnect();
+        t.skip('Redis is not available for the integration assertion');
+        return;
+    }
+
+    const prefix = `test:worker-state-revision:${randomUUID()}`;
+    const stateKey = `${prefix}:state`;
+    const revisionKey = `${prefix}:revision`;
+    const lockKey = `${prefix}:lock`;
+    const lockToken = 'owned-attempt';
+    const initial = {
+        taskId: 'recreated-task',
+        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: randomUUID(),
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        version: 1,
+        attempts: 0,
+        history: [],
+        prProcessingLockToken: lockToken,
+    };
+
+    try {
+        await redis.set(lockKey, lockToken, 'EX', 60);
+        const firstVersion = await redis.eval(
+            CREATE_FENCED_TASK_STATE_SCRIPT,
+            3,
+            stateKey,
+            lockKey,
+            revisionKey,
+            lockToken,
+            60,
+            JSON.stringify(initial),
+        );
+        await redis.del(stateKey);
+        const recreatedVersion = await redis.eval(
+            CREATE_FENCED_TASK_STATE_SCRIPT,
+            3,
+            stateKey,
+            lockKey,
+            revisionKey,
+            lockToken,
+            60,
+            JSON.stringify(initial),
+        );
+
+        assert.equal(Number(firstVersion), 1);
+        assert.equal(Number(recreatedVersion), 2);
+        const recreated = JSON.parse((await redis.get(stateKey))!) as TaskStateData;
+        assert.equal(recreated.version, 2);
+    } finally {
+        await redis.del(stateKey, revisionKey, lockKey);
         await redis.quit();
     }
 });

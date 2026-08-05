@@ -1,4 +1,5 @@
 import { db } from '../db/connection.js';
+import type { Redis } from 'ioredis';
 import { getEventPublisher } from './eventPublisher.js';
 import logger from './logger.js';
 import { hashTaskAttemptToken } from './taskAttemptGeneration.js';
@@ -17,18 +18,37 @@ redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
 return 1
 `;
 
+export const CREATE_TASK_STATE_SCRIPT = `
+local version = tonumber(redis.call('get', KEYS[2])) or 0
+local current = redis.call('get', KEYS[1])
+if current then
+    local decoded, existing = pcall(cjson.decode, current)
+    if decoded and tonumber(existing.version) and tonumber(existing.version) > version then
+        version = tonumber(existing.version)
+    end
+end
+version = version + 1
+redis.call('set', KEYS[2], version)
+local next = cjson.decode(ARGV[2])
+next.version = version
+redis.call('setex', KEYS[1], ARGV[1], cjson.encode(next))
+return version
+`;
+
 export const CREATE_FENCED_TASK_STATE_SCRIPT = `
 if redis.call('get', KEYS[2]) ~= ARGV[1] then
     return 0
 end
-local version = 1
+local version = tonumber(redis.call('get', KEYS[3])) or 0
 local current = redis.call('get', KEYS[1])
 if current then
     local decoded, existing = pcall(cjson.decode, current)
-    if decoded and tonumber(existing.version) then
-        version = tonumber(existing.version) + 1
+    if decoded and tonumber(existing.version) and tonumber(existing.version) > version then
+        version = tonumber(existing.version)
     end
 end
+version = version + 1
+redis.call('set', KEYS[3], version)
 local next = cjson.decode(ARGV[3])
 next.version = version
 redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
@@ -43,6 +63,33 @@ const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
     TaskStates.FAILED,
     TaskStates.CANCELLED,
 ]);
+
+interface CreateTaskStateRecordOptions {
+    stateKey: string;
+    revisionKey: string;
+    stateExpiry: number;
+    state: TaskStateData;
+    prProcessingLockToken?: string;
+    prProcessingLockKey?: string;
+}
+
+export async function createTaskStateRecord(
+    redis: Pick<InstanceType<typeof Redis>, 'eval'>,
+    options: CreateTaskStateRecordOptions,
+): Promise<number> {
+    const { stateKey, revisionKey, stateExpiry, state } = options;
+    if (options.prProcessingLockToken && options.prProcessingLockKey) {
+        return Number(await redis.eval(
+            CREATE_FENCED_TASK_STATE_SCRIPT, 3,
+            stateKey, options.prProcessingLockKey, revisionKey,
+            options.prProcessingLockToken, stateExpiry, JSON.stringify(state),
+        ));
+    }
+    return Number(await redis.eval(
+        CREATE_TASK_STATE_SCRIPT, 2,
+        stateKey, revisionKey, stateExpiry, JSON.stringify(state),
+    ));
+}
 
 export interface PersistedTaskStateTransition {
     previousState: TaskState;
@@ -101,32 +148,50 @@ export async function waitForCASRetry(attempt: number): Promise<void> {
     if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
-export async function persistTaskStateCreation(state: TaskStateData): Promise<void> {
+interface PersistTaskStateCreationOptions {
+    /** Fenced PR attempts cannot proceed without their SQL generation row. */
+    requireDatabase?: boolean;
+}
+
+export async function persistTaskStateCreation(
+    state: TaskStateData,
+    options: PersistTaskStateCreationOptions = {},
+): Promise<void> {
     const taskId = state.taskId;
     const correlatedLogger = logger.withCorrelation(state.correlationId);
+    const repoOwner = state.issueRef.repoOwner ?? 'unknown';
+    const repoName = state.issueRef.repoName ?? 'unknown';
+    const repository = `${repoOwner}/${repoName}`;
+    const taskData = {
+        task_id: taskId,
+        job_id: null,
+        correlation_id: state.correlationId,
+        repository,
+        issue_number: state.issueRef.number,
+        task_type: state.issueRef.type ?? 'issue',
+        model_name: state.issueRef.modelName ?? null,
+        created_at: state.createdAt,
+        initial_job_data: JSON.stringify(state.issueRef),
+        attempt_generation: state.prProcessingLockToken
+            ? hashTaskAttemptToken(state.prProcessingLockToken)
+            : null,
+    };
     try {
-        const repoOwner = state.issueRef.repoOwner ?? 'unknown';
-        const repoName = state.issueRef.repoName ?? 'unknown';
-        const repository = `${repoOwner}/${repoName}`;
-        const taskData = {
-            task_id: taskId,
-            job_id: null,
-            correlation_id: state.correlationId,
-            repository,
-            issue_number: state.issueRef.number,
-            task_type: state.issueRef.type ?? 'issue',
-            model_name: state.issueRef.modelName ?? null,
-            created_at: state.createdAt,
-            initial_job_data: JSON.stringify(state.issueRef),
-            attempt_generation: state.prProcessingLockToken
-                ? hashTaskAttemptToken(state.prProcessingLockToken)
-                : null,
-        };
         await db('tasks').insert(taskData).onConflict('task_id').merge({
             correlation_id: taskData.correlation_id,
             initial_job_data: taskData.initial_job_data,
             attempt_generation: taskData.attempt_generation,
         });
+    } catch (error) {
+        correlatedLogger.error(
+            { error: (error as Error).message, taskId },
+            'Failed to persist task generation to database',
+        );
+        if (options.requireDatabase) throw error;
+        return;
+    }
+
+    try {
         await db('task_history').insert({
             task_id: taskId,
             state: TaskStates.PENDING,
@@ -134,8 +199,15 @@ export async function persistTaskStateCreation(state: TaskStateData): Promise<vo
             reason: 'Task created',
             metadata: JSON.stringify({}),
         });
-        correlatedLogger.debug({ taskId }, 'Task state persisted to database');
+    } catch (error) {
+        correlatedLogger.error(
+            { error: (error as Error).message, taskId },
+            'Failed to persist initial task history to database',
+        );
+    }
+    correlatedLogger.debug({ taskId }, 'Task state persisted to database');
 
+    try {
         const eventPublisher = getEventPublisher();
         await eventPublisher.publishTaskUpdate({
             taskId,
@@ -146,9 +218,9 @@ export async function persistTaskStateCreation(state: TaskStateData): Promise<vo
             updatedAt: state.updatedAt,
         });
     } catch (error) {
-        correlatedLogger.error(
+        correlatedLogger.warn(
             { error: (error as Error).message, taskId },
-            'Failed to persist task state to database',
+            'Failed to publish initial task state update event',
         );
     }
 }

@@ -1,6 +1,7 @@
 import { AGENT_LOGIN_TERMINAL } from './agentLoginDocker.js';
 
 const MAX_CONTROL_STRING_LENGTH = 16 * 1024;
+const MAX_EMITTED_TERMINAL_LINKS = 128;
 
 export type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
   | 'control_string' | 'control_string_escape';
@@ -66,13 +67,23 @@ function startControlString(session: TerminalSanitizerState, kind: string): void
   session.controlStringBuffer = '';
 }
 
-function appendControlString(session: TerminalSanitizerState, value: string): void {
+function appendControlString(
+  session: TerminalSanitizerState,
+  value: string,
+  nextState: TerminalEscapeState,
+): void {
   if (session.controlStringBuffer.length >= MAX_CONTROL_STRING_LENGTH) {
     session.controlStringKind = undefined;
     session.controlStringBuffer = '';
+    session.escapeState = 'text';
     return;
   }
   session.controlStringBuffer += value;
+  session.escapeState = nextState;
+}
+
+function controlStringEscapeState(value: string): TerminalEscapeState {
+  return value === '\u001b' ? 'control_string_escape' : 'control_string';
 }
 
 function terminalLinkTarget(payload: string): string | undefined {
@@ -105,6 +116,10 @@ function finishControlString(session: TerminalSanitizerState): string {
   } catch {
     return '';
   }
+  if (session.emittedTerminalLinks.size >= MAX_EMITTED_TERMINAL_LINKS) {
+    const oldest = session.emittedTerminalLinks.values().next().value;
+    if (oldest !== undefined) session.emittedTerminalLinks.delete(oldest);
+  }
   session.emittedTerminalLinks.add(target);
   return `\n${target}\n`;
 }
@@ -126,7 +141,7 @@ export function sanitizeTerminalChunk(session: TerminalSanitizerState, chunk: st
         } else if (value === '\u001b') {
           session.escapeState = 'control_string_escape';
         } else {
-          appendControlString(session, value);
+          appendControlString(session, value, 'control_string');
         }
         continue;
       }
@@ -135,8 +150,7 @@ export function sanitizeTerminalChunk(session: TerminalSanitizerState, chunk: st
           sanitized += finishControlString(session);
           session.escapeState = 'text';
         } else {
-          appendControlString(session, value);
-          session.escapeState = value === '\u001b' ? 'control_string_escape' : 'control_string';
+          appendControlString(session, value, controlStringEscapeState(value));
         }
         continue;
       }

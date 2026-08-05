@@ -13,7 +13,7 @@ import {
     applyTaskStateUpdate,
     canTransitionTaskState,
     COMPARE_AND_SET_TASK_STATE_SCRIPT,
-    CREATE_FENCED_TASK_STATE_SCRIPT,
+    createTaskStateRecord,
     MAX_CAS_ATTEMPTS,
     persistTaskStateCreation,
     persistTaskStateUpdate,
@@ -28,6 +28,7 @@ export { TaskStates, SupersededTaskAttemptError, type TaskState, type IssueRef }
 export class WorkerStateManager {
     private redis: InstanceType<typeof Redis>;
     private keyPrefix: string;
+    private revisionKeyPrefix: string;
     private stateExpiry: number;
     private nonTerminalScanCursors = new Map<string, string>();
     private persistenceTails = new Map<string, Promise<void>>();
@@ -41,6 +42,7 @@ export class WorkerStateManager {
             ...options.redis
         });
         this.keyPrefix = options.keyPrefix ?? 'worker:state:';
+        this.revisionKeyPrefix = options.revisionKeyPrefix ?? `revision:${this.keyPrefix}`;
         this.stateExpiry = options.stateExpiry ?? 7 * 24 * 3600;
         this.redis.on('error', (error: Error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
@@ -73,30 +75,22 @@ export class WorkerStateManager {
                 : {}),
         };
         const key = this.getTaskKey(taskId);
-        if (options.prProcessingLockToken && options.prProcessingLockKey) {
-            const createdVersion = await this.redis.eval(
-                CREATE_FENCED_TASK_STATE_SCRIPT,
-                2,
-                key,
-                options.prProcessingLockKey,
-                options.prProcessingLockToken,
-                this.stateExpiry,
-                JSON.stringify(state),
-            );
-            if (Number(createdVersion) < 1) {
-                throw new Error(`PR processing attempt no longer owns its lease for taskId: ${taskId}`);
-            }
-            state.version = Number(createdVersion);
-        } else {
-            await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        const revisionKey = `${this.revisionKeyPrefix}${taskId}`;
+        const createdVersion = await createTaskStateRecord(this.redis, {
+            stateKey: key, revisionKey, stateExpiry: this.stateExpiry, state,
+            ...options,
+        });
+        if (options.prProcessingLockToken && createdVersion < 1) {
+            throw new Error(`PR processing attempt no longer owns its lease for taskId: ${taskId}`);
         }
+        state.version = createdVersion;
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId, issueNumber: issueRef.number,
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`, state: TaskStates.PENDING
         }, 'Task state created');
 
-        await persistTaskStateCreation(state);
+        await persistTaskStateCreation(state, { requireDatabase: options.prProcessingLockToken !== undefined });
         return state;
     }
 

@@ -80,6 +80,46 @@ prepare_antigravity_config_dir() {
 prepare_antigravity_config_dir "$antigravity_config_dir" "1" || true
 prepare_antigravity_config_dir "/home/node/.antigravity" "0" >/dev/null 2>&1 || true
 
+prepare_antigravity_login_defaults() {
+    local config_dir="$1"
+    local settings_path="$config_dir/antigravity-cli/settings.json"
+
+    node - "$settings_path" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const settingsPath = process.argv[2];
+let settings = {};
+try {
+    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('settings must contain a JSON object');
+    }
+    settings = parsed;
+} catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+}
+settings.enableTelemetry = false;
+if (typeof settings.colorScheme !== 'string') settings.colorScheme = 'terminal';
+const trustedWorkspaces = Array.isArray(settings.trustedWorkspaces)
+    ? settings.trustedWorkspaces.filter(value => typeof value === 'string')
+    : [];
+if (!trustedWorkspaces.includes('/home/node/workspace')) {
+    trustedWorkspaces.push('/home/node/workspace');
+}
+settings.trustedWorkspaces = trustedWorkspaces;
+fs.mkdirSync(path.dirname(settingsPath), { recursive: true, mode: 0o755 });
+fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+NODE
+
+    if [ "$(id -u)" = "0" ]; then
+        chown -R node:node "$config_dir"
+    fi
+}
+
+if [ "${PROPR_AGENT_LOGIN:-0}" = "1" ]; then
+    prepare_antigravity_login_defaults "$antigravity_config_dir"
+fi
+
 if [ -d "$antigravity_config_dir" ]; then
     auth_files=$(find "$antigravity_config_dir" -maxdepth 3 -type f \( -iname '*auth*' -o -iname '*oauth*' -o -iname '*credential*' -o -iname '*token*' \) 2>/dev/null | head -n 1)
     if [ -n "$auth_files" ]; then

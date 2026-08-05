@@ -59,6 +59,8 @@ interface PostExecutionParams {
     redisClient: Redis;
     prProcessingLockToken: string;
     assertLease: () => Promise<void>;
+    /** Runs fenced continuation work immediately before terminal completion. */
+    beforeCompletion: () => Promise<void>;
 }
 
 interface UndoContextParams {
@@ -132,7 +134,7 @@ export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'comple
 }
 
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
-    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken, assertLease } = params;
+    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken, assertLease, beforeCompletion } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
     requirePostExecutionState(state);
@@ -162,7 +164,9 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
     }
 
+    await beforeCompletion();
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
+    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
 
     await assertLease();
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
@@ -177,6 +181,5 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         }
     }, prProcessingLockToken);
 
-    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
     return { commitHash: commitResult?.commitHash, partial };
 }

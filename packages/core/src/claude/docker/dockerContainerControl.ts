@@ -1,20 +1,53 @@
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import logger from '../../utils/logger.js';
+
+const DOCKER_PATH = '/usr/bin/docker';
+const CONTAINER_IDENTIFIER_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
+const MAX_STOP_TIMEOUT_SECONDS = 300;
+
+function validateStopRequest(containerId: string, timeoutSeconds: number): string | undefined {
+    if (!containerId) return 'No container ID provided';
+    if (!CONTAINER_IDENTIFIER_PATTERN.test(containerId)) return 'Invalid Docker container identifier';
+    if (!Number.isInteger(timeoutSeconds)
+        || timeoutSeconds < 0
+        || timeoutSeconds > MAX_STOP_TIMEOUT_SECONDS) {
+        return `Docker stop timeout must be an integer between 0 and ${MAX_STOP_TIMEOUT_SECONDS} seconds`;
+    }
+    return undefined;
+}
+
+function runDocker(args: string[], timeout: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+        execFile(
+            DOCKER_PATH,
+            args,
+            { encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 },
+            (error, stdout, stderr) => {
+                if (!error) {
+                    resolve(stdout);
+                    return;
+                }
+                const detail = (stderr || stdout || error.message).trim();
+                reject(new Error(detail || error.message, { cause: error }));
+            },
+        );
+    });
+}
 
 /** Gracefully stops a Docker container, then force-kills it when necessary. */
 export async function stopDockerContainer(
     containerId: string,
     timeoutSeconds: number = 10,
 ): Promise<{ success: boolean; error?: string }> {
-    if (!containerId) return { success: false, error: 'No container ID provided' };
+    const validationError = validateStopRequest(containerId, timeoutSeconds);
+    if (validationError) return { success: false, error: validationError };
 
     logger.info({ containerId, timeoutSeconds }, 'Attempting to stop Docker container');
     try {
         try {
-            const statusOutput = execSync(
-                `/usr/bin/docker ps -a --filter "id=${containerId}" --format "{{.Status}}"`,
-                { encoding: 'utf8', timeout: 5000 },
-            ).trim();
+            const statusOutput = (await runDocker([
+                'ps', '-a', '--filter', `id=${containerId}`, '--format', '{{.Status}}',
+            ], 5000)).trim();
             if (!statusOutput) {
                 logger.info({ containerId }, 'Container no longer exists');
                 return { success: true };
@@ -28,19 +61,16 @@ export async function stopDockerContainer(
         }
 
         try {
-            execSync(`/usr/bin/docker stop -t ${timeoutSeconds} ${containerId}`, {
-                encoding: 'utf8',
-                timeout: (timeoutSeconds + 5) * 1000,
-            });
+            await runDocker(
+                ['stop', '-t', String(timeoutSeconds), containerId],
+                (timeoutSeconds + 5) * 1000,
+            );
             logger.info({ containerId }, 'Docker container stopped gracefully');
             return { success: true };
         } catch (stopError) {
             logger.warn({ containerId, error: (stopError as Error).message }, 'Graceful stop failed, attempting force kill');
             try {
-                execSync(`/usr/bin/docker kill ${containerId}`, {
-                    encoding: 'utf8',
-                    timeout: 10000,
-                });
+                await runDocker(['kill', containerId], 10000);
                 logger.info({ containerId }, 'Docker container force killed');
                 return { success: true };
             } catch (killError) {

@@ -14,7 +14,7 @@ import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.j
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
-import { releasePRProcessingLock } from './prProcessingLock.js';
+import { assertPRProcessingLock, releasePRProcessingLock } from './prProcessingLock.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -300,11 +300,20 @@ export interface CleanupOptions {
     correlatedLogger: Logger; redisClient: Redis;
 }
 
+export function buildPRCommentWorktreeDirName(pullRequestNumber: number, lockToken: string): string {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const attemptSlug = lockToken.split(':').at(-1)?.replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 48)
+        || 'attempt';
+    return `pr-${pullRequestNumber}-followup-${timestamp}-${attemptSlug}`;
+}
+
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
-    const releasedLock = await releasePRProcessingLock(redisClient, lockKey, lockToken);
-    if (releasedLock) {
-        correlatedLogger.debug('Released PR processing lock');
+    try {
+        await assertPRProcessingLock(redisClient, lockKey, lockToken);
+    } catch {
+        correlatedLogger.info('Skipping worktree cleanup because this attempt no longer owns the PR lease');
+        return;
     }
 
     if (localRepoPath && worktreeInfo) {
@@ -315,6 +324,10 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
         }
     }
 
+    const releasedLock = await releasePRProcessingLock(redisClient, lockKey, lockToken);
+    if (releasedLock) {
+        correlatedLogger.debug('Released PR processing lock after cleaning attempt resources');
+    }
     if (!releasedLock) return;
 
     try {
@@ -334,6 +347,17 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
         }
     } catch (pendingCheckError) {
         correlatedLogger.warn({ error: (pendingCheckError as Error).message }, 'Failed to check/queue pending comments');
+    }
+}
+
+export async function cleanupJobBeforeStoppingHeartbeat(
+    options: CleanupOptions,
+    stopLockHeartbeat: () => Promise<void>,
+): Promise<void> {
+    try {
+        await cleanupJob(options);
+    } finally {
+        await stopLockHeartbeat();
     }
 }
 

@@ -34,11 +34,13 @@ await mock.module('ioredis', {
 });
 
 // Mock database with proper chain methods
-const mockDbTasksInsert = mock.fn(() => ({
+const mockDbTasksMerge = mock.fn(async () => [1]);
+const defaultMockDbTasksInsert = () => ({
     onConflict: mock.fn(() => ({
-        merge: mock.fn(async () => [1])
+        merge: mockDbTasksMerge
     }))
-}));
+});
+const mockDbTasksInsert = mock.fn(defaultMockDbTasksInsert);
 
 const mockDbHistoryInsert = mock.fn(async () => [1]);
 
@@ -217,6 +219,8 @@ test('getNonTerminalTasks maintains independent cursors for task-type filters', 
 test('createTaskState creates state with correct structure', async () => {
     // Reset mocks
     mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
     mockPublishTaskUpdate.mock.resetCalls();
 
     const stateManager = new WorkerStateManager({
@@ -256,7 +260,8 @@ test('createTaskState creates state with correct structure', async () => {
 
 test('createTaskState stores state in Redis with TTL', async () => {
     // Reset mocks
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -272,14 +277,15 @@ test('createTaskState stores state in Redis with TTL', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    // Verify Redis setex was called with correct TTL
-    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 1);
-    const setexCall = mockRedisInstance.setex.mock.calls[0];
-    assert.strictEqual(setexCall.arguments[0], `${TEST_KEY_PREFIX}${taskId}`);
-    assert.strictEqual(setexCall.arguments[1], TEST_STATE_EXPIRY);
+    // Verify the atomic creation script received a persistent revision key and TTL.
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
+    const createCall = mockRedisInstance.eval.mock.calls[0];
+    assert.strictEqual(createCall.arguments[2], `${TEST_KEY_PREFIX}${taskId}`);
+    assert.strictEqual(createCall.arguments[3], `revision:${TEST_KEY_PREFIX}${taskId}`);
+    assert.strictEqual(createCall.arguments[4], TEST_STATE_EXPIRY);
 
     // Verify the stored state is valid JSON with correct structure
-    const storedState = JSON.parse(setexCall.arguments[2] as string) as TaskStateData;
+    const storedState = JSON.parse(createCall.arguments[5] as string) as TaskStateData;
     assert.strictEqual(storedState.taskId, taskId);
     assert.strictEqual(storedState.state, TaskStates.PENDING);
     assert.strictEqual(storedState.issueRef.number, 100);
@@ -288,7 +294,8 @@ test('createTaskState stores state in Redis with TTL', async () => {
 });
 
 test('createTaskState uses default TTL when not specified', async () => {
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX
@@ -304,9 +311,9 @@ test('createTaskState uses default TTL when not specified', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    const setexCall = mockRedisInstance.setex.mock.calls[0];
+    const createCall = mockRedisInstance.eval.mock.calls[0];
     const defaultTTL = 7 * 24 * 3600; // 7 days in seconds
-    assert.strictEqual(setexCall.arguments[1], defaultTTL);
+    assert.strictEqual(createCall.arguments[4], defaultTTL);
 
     await stateManager.close();
 });
@@ -476,7 +483,6 @@ test('createTaskState handles database error gracefully', async () => {
     mockCorrelatedLogger.error.mock.resetCalls();
 
     // Make db throw an error by replacing the mock temporarily
-    const originalInsert = mockDbTasksInsert.mock.mockImplementation;
     mockDbTasksInsert.mock.mockImplementation(() => {
         throw new Error('Database connection failed');
     });
@@ -504,13 +510,14 @@ test('createTaskState handles database error gracefully', async () => {
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
 
     // Restore original mock
-    mockDbTasksInsert.mock.mockImplementation(originalInsert);
+    mockDbTasksInsert.mock.mockImplementation(defaultMockDbTasksInsert);
 
     await stateManager.close();
 });
 
 test('createTaskState generates unique task keys', async () => {
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -528,11 +535,11 @@ test('createTaskState generates unique task keys', async () => {
     await stateManager.createTaskState(taskId1, issueRef);
     await stateManager.createTaskState(taskId2, issueRef);
 
-    const setexCalls = mockRedisInstance.setex.mock.calls;
-    assert.strictEqual(setexCalls.length, 2);
+    const createCalls = mockRedisInstance.eval.mock.calls;
+    assert.strictEqual(createCalls.length, 2);
 
-    const key1 = setexCalls[0].arguments[0];
-    const key2 = setexCalls[1].arguments[0];
+    const key1 = createCalls[0].arguments[2];
+    const key2 = createCalls[1].arguments[2];
 
     assert.notStrictEqual(key1, key2, 'Keys should be unique');
     assert.strictEqual(key1, `${TEST_KEY_PREFIX}${taskId1}`);
@@ -542,7 +549,8 @@ test('createTaskState generates unique task keys', async () => {
 });
 
 test('createTaskState stores valid JSON in Redis', async () => {
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -560,8 +568,8 @@ test('createTaskState stores valid JSON in Redis', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    const setexCall = mockRedisInstance.setex.mock.calls[0];
-    const storedJson = setexCall.arguments[2] as string;
+    const createCall = mockRedisInstance.eval.mock.calls[0];
+    const storedJson = createCall.arguments[5] as string;
 
     // Should not throw when parsing
     let parsed: TaskStateData | undefined;
@@ -3126,6 +3134,34 @@ test('fenced task recreation continues after the previous task revision', async 
     );
 
     assert.strictEqual(created.version, 8);
+    await stateManager.close();
+});
+
+test('fenced creation fails closed when its SQL generation cannot be persisted', async () => {
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
+    mockDbTasksMerge.mock.resetCalls();
+    mockDbTasksMerge.mock.mockImplementationOnce(async () => {
+        throw new Error('database unavailable');
+    });
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+
+    await assert.rejects(
+        stateManager.createTaskState(
+            'task-required-generation',
+            { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+            'replacement-correlation',
+            {
+                prProcessingLockToken: 'replacement-token',
+                prProcessingLockKey: 'lock:pr:owner:repo:631',
+            },
+        ),
+        /database unavailable/,
+    );
+
     await stateManager.close();
 });
 
