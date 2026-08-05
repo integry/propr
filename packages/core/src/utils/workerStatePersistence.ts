@@ -33,6 +33,10 @@ return {1, next_version}
 
 export const CREATE_TASK_STATE_SCRIPT = `
 local version = tonumber(redis.call('get', KEYS[2])) or 0
+local minimum_version = tonumber(ARGV[4]) or 0
+if minimum_version > version then
+    version = minimum_version
+end
 local current = redis.call('get', KEYS[1])
 if current then
     local decoded, existing = pcall(cjson.decode, current)
@@ -53,6 +57,10 @@ if redis.call('get', KEYS[2]) ~= ARGV[1] then
     return 0
 end
 local version = tonumber(redis.call('get', KEYS[3])) or 0
+local minimum_version = tonumber(ARGV[5]) or 0
+if minimum_version > version then
+    version = minimum_version
+end
 local current = redis.call('get', KEYS[1])
 if current then
     local decoded, existing = pcall(cjson.decode, current)
@@ -95,6 +103,8 @@ interface CreateTaskStateRecordOptions {
     stateExpiry: number;
     revisionExpiry: number;
     state: TaskStateData;
+    /** Durable SQL fence used when Redis revision retention has elapsed. */
+    minimumVersion?: number;
     prProcessingLockToken?: string;
     prProcessingLockKey?: string;
 }
@@ -109,11 +119,13 @@ export async function createTaskStateRecord(
             CREATE_FENCED_TASK_STATE_SCRIPT, 3,
             stateKey, options.prProcessingLockKey, revisionKey,
             options.prProcessingLockToken, stateExpiry, JSON.stringify(state), revisionExpiry,
+            ...(options.minimumVersion !== undefined ? [options.minimumVersion] : []),
         ));
     }
     return Number(await redis.eval(
         CREATE_TASK_STATE_SCRIPT, 2,
         stateKey, revisionKey, stateExpiry, JSON.stringify(state), revisionExpiry,
+        ...(options.minimumVersion !== undefined ? [options.minimumVersion] : []),
     ));
 }
 
@@ -222,6 +234,21 @@ export async function waitForCASRetry(attempt: number): Promise<void> {
 interface PersistTaskStateCreationOptions {
     /** Fenced PR attempts cannot proceed without their SQL generation row. */
     requireDatabase?: boolean;
+}
+
+/** Reads the permanent SQL generation fence before recreating expiring Redis state. */
+export async function loadPersistedTaskStateRevision(taskId: string): Promise<number> {
+    const row = await db('tasks')
+        .select('attempt_generation_version')
+        .where({ task_id: taskId })
+        .first() as { attempt_generation_version?: unknown } | undefined;
+    if (row?.attempt_generation_version === null
+        || row?.attempt_generation_version === undefined) return 0;
+    const version = Number(row.attempt_generation_version);
+    if (!Number.isSafeInteger(version) || version < 0) {
+        throw new Error(`Invalid persisted task generation revision for taskId: ${taskId}`);
+    }
+    return version;
 }
 
 export async function persistTaskStateCreation(

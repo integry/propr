@@ -15,8 +15,10 @@ import {
     areChecksReadyForUltrafix,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
+    getUltrafixStateKey,
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
+import { authorizeUltrafixContinuation } from './ultrafixLeaseTransitions.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import type {
     UltrafixContinuationParams,
@@ -142,12 +144,22 @@ export async function enqueueNextStep(
 ): Promise<void> {
     const { owner, repo, pullRequestNumber, ultrafixMeta, correlatedLogger } = params;
     const nextCorrelationId = generateCorrelationId();
-    const jobId = `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${Date.now()}`;
+    const continuationSlug = (params.continuationId ?? `${params.completedAction}-${pullRequestNumber}`)
+        .replace(/[^a-zA-Z0-9_-]/g, '-');
+    const jobId = `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${nextAction}-${continuationSlug}`;
     const commandMode = nextAction === 'review' ? 'review' as const : 'fix' as const;
     const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel
         ? [ultrafixMeta.reviewModel]
         : undefined;
 
+    if (params.mutationLease) {
+        await authorizeUltrafixContinuation(params.redisClient, {
+            stateKey: getUltrafixStateKey(owner, repo, pullRequestNumber),
+            continuationId: `${params.continuationId ?? params.completedAction}:${nextAction}`,
+        }, params.mutationLease);
+    } else {
+        await params.assertLease?.();
+    }
     await issueQueue.add('processPullRequestComment', {
         pullRequestNumber,
         repoOwner: owner,

@@ -61,6 +61,15 @@ function isPublicationStage(value: unknown): value is PRCommentPublicationStage 
         && (PR_COMMENT_PUBLICATION_STAGES as readonly string[]).includes(value);
 }
 
+function isValidCompletionComment(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const comment = value as Partial<PRCommentPublicationCheckpoint['completionComment']>;
+    return Number.isSafeInteger(comment.id)
+        && Number(comment.id) > 0
+        && typeof comment.body === 'string'
+        && (comment.htmlUrl === undefined || typeof comment.htmlUrl === 'string');
+}
+
 function isPublicationCheckpoint(value: unknown): value is PRCommentPublicationCheckpoint {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const checkpoint = value as Partial<PRCommentPublicationCheckpoint>;
@@ -71,11 +80,9 @@ function isPublicationCheckpoint(value: unknown): value is PRCommentPublicationC
         || typeof checkpoint.branchName !== 'string'
         || !Array.isArray(checkpoint.reviewCommentIds)
         || !checkpoint.reviewCommentIds.every(id => Number.isSafeInteger(id) && id > 0)
-        || !checkpoint.completionComment
-        || typeof checkpoint.completionComment !== 'object'
-        || !Number.isSafeInteger(checkpoint.completionComment.id)
-        || checkpoint.completionComment.id <= 0
-        || typeof checkpoint.completionComment.body !== 'string'
+        || !isValidCompletionComment(checkpoint.completionComment)
+        || (checkpoint.terminationReason !== undefined
+            && typeof checkpoint.terminationReason !== 'string')
         || !isRecoverableRemoteOutcome(checkpoint.result)) {
         return false;
     }

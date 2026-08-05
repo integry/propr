@@ -118,19 +118,72 @@ async function findExecutionContainers(
     return containers;
 }
 
-async function removeExecutionContainers(containers: Set<string>, deadline: number): Promise<void> {
+async function removeExecutionContainers(containers: Set<string>, deadline: number): Promise<Set<string>> {
+    const failed = new Set<string>();
     for (const container of containers) {
         if (!CONTAINER_IDENTIFIER_PATTERN.test(container)) continue;
         const removalBudgetMs = Math.min(2000, deadline - Date.now());
-        if (removalBudgetMs <= 0) break;
+        if (removalBudgetMs <= 0) {
+            failed.add(container);
+            continue;
+        }
         try {
             await runDocker(['rm', '-f', container], removalBudgetMs);
         } catch (error) {
             const message = (error as Error).message;
             if (!message.includes('No such container') && !message.includes('No such object')) {
+                failed.add(container);
                 logger.warn({ containerId: container, error: message }, 'Failed to remove Docker container after execution ownership loss');
             }
         }
+    }
+    return failed;
+}
+
+async function retryExecutionContainerRemoval(
+    options: DockerExecutionTeardownOptions,
+    attempts: number,
+    retryDelayMs: number,
+    deadline: number,
+): Promise<void> {
+    let discoveryAttempts = 0;
+    let failedRemovals = new Set<string>();
+    while (Date.now() < deadline
+        && (discoveryAttempts < attempts || failedRemovals.size > 0)) {
+        const containers = new Set(failedRemovals);
+        if (discoveryAttempts < attempts) {
+            const inspectionBudgetMs = Math.min(1000, deadline - Date.now());
+            if (inspectionBudgetMs <= 0) break;
+            const discovered = await findExecutionContainers(options, inspectionBudgetMs);
+            discoveryAttempts++;
+            // A failed daemon query cannot discover a creation race. Known
+            // failed removals remain directly retryable by identifier.
+            if (!discovered && containers.size === 0) break;
+            for (const container of discovered ?? []) containers.add(container);
+        }
+
+        if (containers.size > 0) {
+            failedRemovals = await removeExecutionContainers(containers, deadline);
+            if (failedRemovals.size === 0) return;
+        }
+
+        if (discoveryAttempts < attempts || failedRemovals.size > 0) {
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) break;
+            const failureRetryDelayMs = failedRemovals.size > 0
+                ? Math.max(50, retryDelayMs)
+                : retryDelayMs;
+            if (failureRetryDelayMs > 0) {
+                await waitForRetry(Math.min(failureRetryDelayMs, remainingMs));
+            }
+        }
+    }
+    if (failedRemovals.size > 0) {
+        logger.error({
+            containerIds: [...failedRemovals],
+            taskId: options.taskId,
+            attemptGeneration: options.attemptGeneration,
+        }, 'Docker execution teardown deadline expired before all containers were removed');
     }
 }
 
@@ -151,24 +204,7 @@ export async function teardownDockerExecution(
     const deadline = Date.now() + deadlineMs;
     const hasGenerationFence = Boolean(options.taskId && options.attemptGeneration);
     if (!hasGenerationFence && !options.containerId && !options.containerName) return;
-
-    for (let attempt = 0; attempt < attempts; attempt++) {
-        const inspectionBudgetMs = Math.min(1000, deadline - Date.now());
-        if (inspectionBudgetMs <= 0) break;
-        const containers = await findExecutionContainers(options, inspectionBudgetMs);
-        // Retrying a failed daemon query only multiplies the abort delay.
-        if (!containers) break;
-        await removeExecutionContainers(containers, deadline);
-        // A retry is useful only while the generation-labelled container may
-        // still be racing with creation. Once discovered, teardown is done.
-        if (containers.size > 0) break;
-
-        if (attempt + 1 < attempts && retryDelayMs > 0) {
-            const remainingMs = deadline - Date.now();
-            if (remainingMs <= 0) break;
-            await waitForRetry(Math.min(retryDelayMs, remainingMs));
-        }
-    }
+    await retryExecutionContainerRemoval(options, attempts, retryDelayMs, deadline);
 }
 
 /** Gracefully stops a Docker container, then force-kills it when necessary. */

@@ -55,17 +55,23 @@ export async function loadDurableTaskRevision(
     get(revisionKey),
     get(stateKey),
   ]);
-  const revision = revisionValue === null ? Number.NaN : Number(revisionValue);
+  const isValidRevision = (value: number): boolean => (
+    Number.isSafeInteger(value) && value >= 0
+  );
+  const parsedRevision = revisionValue === null ? Number.NaN : Number(revisionValue);
+  const revision = isValidRevision(parsedRevision) ? parsedRevision : Number.NaN;
   let stateRevision = Number.NaN;
   if (stateValue) {
     try {
       const parsed = JSON.parse(stateValue) as { version?: unknown };
-      stateRevision = typeof parsed.version === 'number' ? parsed.version : Number.NaN;
+      stateRevision = typeof parsed.version === 'number' && isValidRevision(parsed.version)
+        ? parsed.version
+        : Number.NaN;
     } catch {
       // A malformed/partially-written state cannot seed event ordering.
     }
   }
-  const versions = [revision, stateRevision].filter(Number.isFinite);
+  const versions = [revision, stateRevision].filter(isValidRevision);
   return versions.length > 0 ? Math.max(...versions) : undefined;
 }
 

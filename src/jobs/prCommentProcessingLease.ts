@@ -1,4 +1,4 @@
-import type { Job } from 'bullmq';
+import type { Job, JobsOptions } from 'bullmq';
 import type { Logger } from 'pino';
 import { issueQueue, type CommentJobData } from '@propr/core';
 import type { Redis } from 'ioredis';
@@ -11,7 +11,22 @@ export async function requeuePRCommentJobWithoutLease(
 ): Promise<void> {
     const requeuedData = { ...job.data };
     delete requeuedData.prProcessingLockToken;
-    await issueQueue.add(job.name, requeuedData, { delay });
+    const sourceJobId = job.id
+        ?? `pr-comments-${job.data.repoOwner}-${job.data.repoName}-${job.data.pullRequestNumber}-${job.data.correlationId}`;
+    const preservedOptions: JobsOptions = {
+        jobId: `${sourceJobId}-lease-requeue`,
+        delay,
+        ...(job.opts.priority !== undefined && { priority: job.opts.priority }),
+        ...(job.opts.attempts !== undefined && { attempts: job.opts.attempts }),
+        ...(job.opts.backoff !== undefined && { backoff: job.opts.backoff }),
+        ...(job.opts.lifo !== undefined && { lifo: job.opts.lifo }),
+        ...(job.opts.removeOnComplete !== undefined && { removeOnComplete: job.opts.removeOnComplete }),
+        ...(job.opts.removeOnFail !== undefined && { removeOnFail: job.opts.removeOnFail }),
+        ...(job.opts.keepLogs !== undefined && { keepLogs: job.opts.keepLogs }),
+        ...(job.opts.stackTraceLimit !== undefined && { stackTraceLimit: job.opts.stackTraceLimit }),
+        ...(job.opts.sizeLimit !== undefined && { sizeLimit: job.opts.sizeLimit }),
+    };
+    await issueQueue.add(job.name, requeuedData, preservedOptions);
 }
 
 export async function acquirePRCommentProcessingLock(

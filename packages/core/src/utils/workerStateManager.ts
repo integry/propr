@@ -28,7 +28,7 @@ import {
     compareAndSetTaskStateRecord,
     createTaskStateRecord,
     deleteTaskStateIfAttempt,
-    MAX_CAS_ATTEMPTS,
+    loadPersistedTaskStateRevision, MAX_CAS_ATTEMPTS,
     persistTaskStateCreation,
     persistTaskStateUpdate,
     waitForCASRetry,
@@ -101,10 +101,12 @@ export class WorkerStateManager {
         };
         const key = this.getTaskKey(taskId);
         const revisionKey = `${this.revisionKeyPrefix}${taskId}`;
+        const minimumVersion = options.prProcessingLockToken ? await loadPersistedTaskStateRevision(taskId) : undefined;
         const createdVersion = await createTaskStateRecord(this.redis, {
             stateKey: key, revisionKey, stateExpiry: this.stateExpiry,
             revisionExpiry: this.revisionExpiry,
             state,
+            minimumVersion,
             ...options,
         });
         if (options.prProcessingLockToken && createdVersion < 1) {

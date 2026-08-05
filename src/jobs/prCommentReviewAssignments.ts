@@ -11,6 +11,14 @@ export async function resolveReviewAssignments(
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
     const assignments: ReviewAssignment[] = [];
+    const resolvedAssignments = new Set<string>();
+
+    const addAssignment = (assignment: ReviewAssignment): void => {
+        const key = `${assignment.agentAlias}\u0000${assignment.model}`;
+        if (resolvedAssignments.has(key)) return;
+        resolvedAssignments.add(key);
+        assignments.push(assignment);
+    };
 
     let modelsToReview: string[];
     if (requestedModels && requestedModels.length > 0) {
@@ -37,10 +45,10 @@ export async function resolveReviewAssignments(
         try {
             if (modelLabel === 'default') {
                 const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-                assignments.push({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
+                addAssignment({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
             } else {
                 const resolution = await resolveLlmLabel(modelLabel);
-                assignments.push({ agentAlias: resolution.agentAlias, model: resolution.model, label: modelLabel });
+                addAssignment({ agentAlias: resolution.agentAlias, model: resolution.model, label: modelLabel });
             }
         } catch (resolveError) {
             correlatedLogger.warn({ modelLabel, error: (resolveError as Error).message }, 'Failed to resolve review model, skipping');
@@ -49,7 +57,7 @@ export async function resolveReviewAssignments(
 
     if (assignments.length === 0) {
         const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-        assignments.push({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
+        addAssignment({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
     }
     return assignments;
 }

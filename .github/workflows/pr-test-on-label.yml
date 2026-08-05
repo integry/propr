@@ -160,6 +160,7 @@ jobs:
                 : 'Validation did not complete successfully.';
             let output = 'Output file not available.';
             try { output = fs.readFileSync('test_output.sanitized.txt', 'utf8'); } catch {}
+            output = output.replace(/~~~/g, '~~\u200b~');
             if (output.length > 60000) output = output.substring(0, 60000) + '\n\n...(truncated)';
             const marker = '<!-- propr-full-test-results -->';
             const body = [

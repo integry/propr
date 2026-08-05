@@ -28,7 +28,7 @@ export async function checkUltrafixReadiness(
         const checksPassing = await areAllChecksPassing(repoOwner, repoName, headSha);
         if (checksPassing) { correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks passing, proceeding'); return true; }
         correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks not passing, deferring');
-        await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction: job.data.commandMode as 'review' | 'fix', savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed' });
+        await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction: job.data.commandMode as 'review' | 'fix', savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed', continuationId: job.id });
         return false;
     } catch (err) {
         correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: error checking CI, proceeding anyway');
@@ -38,18 +38,25 @@ export async function checkUltrafixReadiness(
 
 export async function handleUltrafixContinuation(
     action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; prProcessingLockToken?: string; assertLease?: () => Promise<void> }
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; prProcessingLockToken: string; assertLease: () => Promise<void> }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
     const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken, assertLease } = params;
     try {
-        await assertLease?.();
+        await assertLease();
         const continuationResult = await continueUltrafixLoop({
             owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
             ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
             currentJobId: job.id,
+            continuationId: taskId,
+            mutationLease: {
+                lockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
+                lockToken: prProcessingLockToken,
+                assertLease,
+            },
+            assertLease,
         });
-        await assertLease?.();
+        await assertLease();
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
         await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), {
             correlatedLogger,
@@ -57,8 +64,9 @@ export async function handleUltrafixContinuation(
         });
     } catch (contErr) {
         if (contErr instanceof SupersededTaskAttemptError) throw contErr;
-        await assertLease?.();
+        await assertLease();
         correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
+        throw contErr;
     }
 }
 

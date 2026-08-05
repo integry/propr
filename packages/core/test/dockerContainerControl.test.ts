@@ -185,3 +185,25 @@ test('does not retry label queries when the Docker daemon is unavailable', async
     assert.equal(dockerCalls.length, 1);
     assert.equal(dockerCalls[0]?.timeout, 1000);
 });
+
+test('retries a failed forced removal until the container is gone', async () => {
+    responses.push(
+        { error: null, stdout: 'container-one\n', stderr: '' },
+        { error: new Error('daemon refused removal'), stdout: '', stderr: 'daemon refused removal' },
+        { error: null, stdout: '', stderr: '' },
+    );
+
+    await teardownDockerExecution({
+        taskId: 'task-1748',
+        attemptGeneration: 'generation-hash',
+        attempts: 1,
+        retryDelayMs: 0,
+        deadlineMs: 500,
+    });
+
+    assert.deepEqual(dockerCalls.map(call => call.args), [
+        ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash'],
+        ['rm', '-f', 'container-one'],
+        ['rm', '-f', 'container-one'],
+    ]);
+});

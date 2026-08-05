@@ -8,7 +8,7 @@ import {
 } from './workerStateManager.types.js';
 
 type StateEnumerationRedis = Pick<InstanceType<typeof Redis>, 'pipeline' | 'scan'>;
-type StateMaintenanceRedis = Pick<InstanceType<typeof Redis>, 'del' | 'get' | 'keys'>;
+type StateMaintenanceRedis = Pick<InstanceType<typeof Redis>, 'del' | 'pipeline' | 'scan'>;
 
 export interface NonTerminalTaskScanResult {
     tasks: TaskStateData[];
@@ -47,6 +47,43 @@ export function isPRCommentTaskState(state: TaskStateData): boolean {
 function matchesTaskType(state: TaskStateData, taskTypes: Set<string>): boolean {
     if (state.issueRef.type !== undefined) return taskTypes.has(state.issueRef.type);
     return taskTypes.has('pr_comment') && isPRCommentTaskState(state);
+}
+
+function taskStateMatchesRedisKey(state: TaskStateData, key: string, keyPrefix: string): boolean {
+    return key.startsWith(keyPrefix) && state.taskId === key.slice(keyPrefix.length);
+}
+
+async function readTaskStateBatch(
+    redis: Pick<InstanceType<typeof Redis>, 'pipeline'>,
+    keys: string[],
+    keyPrefix: string,
+    operation: string,
+): Promise<Array<{ key: string; state: TaskStateData }>> {
+    if (keys.length === 0) return [];
+    const pipeline = redis.pipeline();
+    for (const key of keys) pipeline.get(key);
+    const results = await pipeline.exec();
+    const records: Array<{ key: string; state: TaskStateData }> = [];
+    for (let index = 0; index < keys.length; index++) {
+        const key = keys[index];
+        const [error, value] = results?.[index] ?? [];
+        if (error) {
+            logger.warn({ key, error: error.message }, `Failed to read task state during ${operation}`);
+            continue;
+        }
+        if (typeof value !== 'string') continue;
+        try {
+            const state = JSON.parse(value) as TaskStateData;
+            if (!taskStateMatchesRedisKey(state, key, keyPrefix)) {
+                logger.warn({ key, taskId: state.taskId }, `Ignoring task state whose taskId does not match its Redis key during ${operation}`);
+                continue;
+            }
+            records.push({ key, state });
+        } catch (parseError) {
+            logger.warn({ key, error: (parseError as Error).message }, `Failed to parse task state during ${operation}`);
+        }
+    }
+    return records;
 }
 
 /** Incrementally scans and pipelines state reads without trusting SCAN uniqueness. */
@@ -99,6 +136,10 @@ export async function scanNonTerminalTaskStates(
             if (typeof value !== 'string') continue;
             try {
                 const state: TaskStateData = JSON.parse(value);
+                if (!taskStateMatchesRedisKey(state, keys[index], keyPrefix)) {
+                    logger.warn({ key: keys[index], taskId: state.taskId }, 'Ignoring task state whose taskId does not match its Redis key during reconciliation scan');
+                    continue;
+                }
                 if (!nonTerminalStates.includes(state.state)) continue;
                 if (taskTypes && !matchesTaskType(state, taskTypes)) continue;
                 nonTerminalTasks.push(state);
@@ -140,23 +181,26 @@ export async function getProcessingTaskStates(
     redis: StateMaintenanceRedis,
     keyPrefix: string,
 ): Promise<TaskStateData[]> {
-    const keys = await redis.keys(`${keyPrefix}*`);
     const processingTasks: TaskStateData[] = [];
     const processingStates: TaskState[] = [
         TaskStates.PROCESSING,
         TaskStates.CLAUDE_EXECUTION,
         TaskStates.POST_PROCESSING,
     ];
-    for (const key of keys) {
-        try {
-            const stateJson = await redis.get(key);
-            if (!stateJson) continue;
-            const state: TaskStateData = JSON.parse(stateJson);
+    const seenKeys = new Set<string>();
+    let cursor = '0';
+    do {
+        const [nextCursor, scannedKeys] = await redis.scan(cursor, 'MATCH', `${keyPrefix}*`, 'COUNT', 100);
+        cursor = nextCursor;
+        const keys = scannedKeys.filter(key => {
+            if (seenKeys.has(key)) return false;
+            seenKeys.add(key);
+            return true;
+        });
+        for (const { state } of await readTaskStateBatch(redis, keys, keyPrefix, 'recovery scan')) {
             if (processingStates.includes(state.state)) processingTasks.push(state);
-        } catch (error) {
-            logger.warn({ key, error: (error as Error).message }, 'Failed to parse task state during recovery scan');
         }
-    }
+    } while (cursor !== '0');
     return processingTasks;
 }
 
@@ -166,29 +210,36 @@ export async function cleanupOldTaskStates(
     _revisionKeyPrefix: string,
     maxAge: number,
 ): Promise<number> {
-    const keys = await redis.keys(`${keyPrefix}*`);
     const cutoffTime = Date.now() - (maxAge * 1000);
     const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     let cleanedCount = 0;
-    for (const key of keys) {
-        try {
-            const stateJson = await redis.get(key);
-            if (!stateJson) continue;
-            const state: TaskStateData = JSON.parse(stateJson);
-            if (!cleanupStates.includes(state.state)) continue;
-            const updatedAt = new Date(state.updatedAt).getTime();
-            if (updatedAt >= cutoffTime) continue;
-            // The revision is a longer-lived monotonic fence. Deleting it with
-            // the expiring state lets a recreated task restart at version 1,
-            // which live socket caches and SQL generation checks can reject as
-            // stale. Its own revisionExpiry bounds retention.
-            await redis.del(key);
-            cleanedCount++;
-            logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
-        } catch (error) {
-            logger.warn({ key, error: (error as Error).message }, 'Failed to cleanup task state');
+    const seenKeys = new Set<string>();
+    let cursor = '0';
+    do {
+        const [nextCursor, scannedKeys] = await redis.scan(cursor, 'MATCH', `${keyPrefix}*`, 'COUNT', 100);
+        cursor = nextCursor;
+        const keys = scannedKeys.filter(key => {
+            if (seenKeys.has(key)) return false;
+            seenKeys.add(key);
+            return true;
+        });
+        for (const { key, state } of await readTaskStateBatch(redis, keys, keyPrefix, 'task-state cleanup')) {
+            try {
+                if (!cleanupStates.includes(state.state)) continue;
+                const updatedAt = new Date(state.updatedAt).getTime();
+                if (updatedAt >= cutoffTime) continue;
+                // The revision is a longer-lived monotonic fence. Deleting it with
+                // the expiring state lets a recreated task restart at version 1,
+                // which live socket caches and SQL generation checks can reject as
+                // stale. Its own revisionExpiry bounds retention.
+                await redis.del(key);
+                cleanedCount++;
+                logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
+            } catch (error) {
+                logger.warn({ key, error: (error as Error).message }, 'Failed to cleanup task state');
+            }
         }
-    }
-    logger.info({ cleanedCount, totalKeys: keys.length, maxAge }, 'Task state cleanup completed');
+    } while (cursor !== '0');
+    logger.info({ cleanedCount, totalKeys: seenKeys.size, maxAge }, 'Task state cleanup completed');
     return cleanedCount;
 }

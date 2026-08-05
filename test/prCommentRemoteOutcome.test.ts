@@ -142,3 +142,24 @@ test('requires a commit hash for a pre-push publication checkpoint', async () =>
 
     assert.equal(loaded, null);
 });
+
+test('rejects malformed optional publication checkpoint fields', async () => {
+    const checkpoint = {
+        kind: 'implementation-publication',
+        stage: 'branch_pushed',
+        prProcessingAttemptGeneration: 'generation-new',
+        result: { status: 'complete', prProcessingAttemptGeneration: 'generation-new' },
+        branchName: 'feature-branch',
+        completionComment: { id: 42, body: 'completed' },
+        reviewCommentIds: [],
+    };
+    for (const malformed of [
+        { ...checkpoint, completionComment: { ...checkpoint.completionComment, htmlUrl: 42 } },
+        { ...checkpoint, terminationReason: { reason: 'timeout' } },
+    ]) {
+        const loaded = await loadPRCommentPublicationCheckpoint({
+            get: async () => JSON.stringify(malformed),
+        }, 'task-1748');
+        assert.equal(loaded, null);
+    }
+});

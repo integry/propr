@@ -7,13 +7,15 @@ import {
     type SpawnedExecutionState,
 } from './dockerExecutionOwnership.js';
 
-interface AbortCheckerOptions {
+export interface AbortCheckerOptions {
     taskId: string;
     plannerAbortKey: string;
     child: ChildProcess;
     state: SpawnedExecutionState;
     namedContainer: string | null;
     attemptGeneration?: string;
+    redisFactory?: AbortRedisFactory;
+    pollIntervalMs?: number;
 }
 
 export interface AbortCheckerHandle {
@@ -146,12 +148,15 @@ export function setupAbortChecker({
     state,
     namedContainer,
     attemptGeneration,
+    redisFactory = createAbortRedis,
+    pollIntervalMs = 2000,
 }: AbortCheckerOptions): AbortCheckerHandle {
-    const redis = createAbortRedis();
+    const redis = redisFactory();
     let pollInFlight = false;
     let active = true;
     let consecutiveLookupFailures = 0;
     let closePromise: Promise<void> | null = null;
+    let pollPromise: Promise<void> | null = null;
     const terminateExecution = async (message: string): Promise<void> => {
         if (state.aborted.value) return;
         logger.info({ taskId, containerId: state.containerId.value || namedContainer }, message);
@@ -165,8 +170,9 @@ export function setupAbortChecker({
     const interval = setInterval(() => {
         if (pollInFlight) return;
         pollInFlight = true;
-        void (async () => {
+        pollPromise = (async () => {
             const shouldAbort = await readAbortSignal(redis, taskId, plannerAbortKey);
+            if (!active) return;
             consecutiveLookupFailures = 0;
             if (shouldAbort) await terminateExecution('Abort signal detected, terminating execution');
         })().catch(async error => {
@@ -176,13 +182,17 @@ export function setupAbortChecker({
             if (shouldTerminateAfterAbortLookupFailure(plannerAbortKey, consecutiveLookupFailures)) {
                 await terminateExecution('Planner abort state unavailable, terminating execution fail closed');
             }
-        }).finally(() => { pollInFlight = false; });
-    }, 2000);
+        }).finally(() => {
+            pollInFlight = false;
+            pollPromise = null;
+        });
+    }, pollIntervalMs);
     return {
         close: async () => {
             closePromise ??= (async () => {
                 active = false;
                 clearInterval(interval);
+                await pollPromise;
                 await closeAbortRedis(redis);
             })();
             await closePromise;

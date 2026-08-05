@@ -7,6 +7,10 @@
  */
 
 import type { Redis } from 'ioredis';
+import {
+    recordUltrafixActionWithLease,
+    type UltrafixMutationLease,
+} from './ultrafixLeaseTransitions.js';
 
 // --- Interfaces ---
 
@@ -37,6 +41,10 @@ export interface UltrafixLoopState {
     lastAction: UltrafixAction | null;
     /** ISO timestamp of last action */
     lastActionTimestamp: string | null;
+    /** Publication tasks whose completed actions have already been recorded. */
+    handledContinuationIds?: string[];
+    /** Continuation deliveries atomically authorized by a live PR lease. */
+    scheduledContinuationIds?: string[];
     /** Whether the loop is currently active */
     active: boolean;
     /** Terminal result once the loop has stopped. */
@@ -85,6 +93,8 @@ export interface UltrafixDeferredContinuation {
     nextAction: UltrafixAction;
     savedAt: string;
     reason: string;
+    /** Stable source identifier used for idempotent follow-up enqueueing. */
+    continuationId?: string;
     /** UltrafixMeta to pass to the next job when resuming */
     ultrafixMeta?: import('@propr/core').UltrafixCommandMeta;
 }
@@ -123,6 +133,8 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         fixCount: 0,
         lastAction: null,
         lastActionTimestamp: null,
+        handledContinuationIds: [],
+        scheduledContinuationIds: [],
         active: true,
         completionStatus: null,
         completionReason: null,
@@ -230,14 +242,30 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
 /**
  * Record that an action was completed and advance the cycle count if appropriate.
  */
-export async function recordAction(redis: Redis, params: { owner: string; repo: string; pr: number; action: UltrafixAction }): Promise<UltrafixLoopState | null> {
+export async function recordAction(
+    redis: Redis,
+    params: { owner: string; repo: string; pr: number; action: UltrafixAction; continuationId?: string },
+    lease?: UltrafixMutationLease,
+): Promise<UltrafixLoopState | null> {
     const { owner, repo, pr, action } = params;
+    if (lease) {
+        const stateJson = await recordUltrafixActionWithLease(redis, {
+            stateKey: getUltrafixStateKey(owner, repo, pr), action, continuationId: params.continuationId,
+        }, lease);
+        return stateJson ? JSON.parse(stateJson) as UltrafixLoopState : null;
+    }
     const state = await loadState(redis, owner, repo, pr);
     if (!state) return null;
+    if (params.continuationId
+        && state.handledContinuationIds?.includes(params.continuationId)) return state;
 
     const { reviewCount, fixCount } = getActionCounts(state);
     state.lastAction = action;
     state.lastActionTimestamp = new Date().toISOString();
+    if (params.continuationId
+        && !state.handledContinuationIds?.includes(params.continuationId)) {
+        state.handledContinuationIds = [...(state.handledContinuationIds ?? []), params.continuationId];
+    }
 
     state.reviewCount = reviewCount + (action === 'review' ? 1 : 0);
     state.fixCount = fixCount + (action === 'fix' ? 1 : 0);

@@ -53,4 +53,13 @@ describe('SocketService task update ordering', () => {
     ]);
     assert.equal(revision, 9);
   });
+
+  test('ignores negative, fractional, and unsafe durable revisions', async () => {
+    for (const malformed of ['-1', '1.5', String(Number.MAX_SAFE_INTEGER + 1)]) {
+      const revision = await loadDurableTaskRevision(async key => (
+        key.startsWith('revision:') ? malformed : JSON.stringify({ version: Number(malformed) })
+      ), 'task-malformed');
+      assert.equal(revision, undefined);
+    }
+  });
 });

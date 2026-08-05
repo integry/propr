@@ -451,3 +451,51 @@ test('commit-hash persistence failures leave the stage retryable', async () => {
         commitHashFailure = undefined;
     }
 });
+
+test('Ultrafix continuation failures do not advance the publication checkpoint', async () => {
+    const stages: string[] = [];
+    const continuationFailure = new Error('queue unavailable');
+    await assert.rejects(
+        resumePRCommentPublication({
+            kind: 'implementation-publication',
+            stage: 'review_comments_processed',
+            prProcessingAttemptGeneration: 'hash:old-attempt',
+            result: {
+                status: 'complete',
+                commit: 'commit-abc',
+                prProcessingAttemptGeneration: 'hash:old-attempt',
+                claudeResult: { success: true },
+            },
+            branchName: 'branch',
+            completionComment: { id: 2, body: 'complete', htmlUrl: 'https://example.test/comment' },
+            reviewCommentIds: [],
+        }, {
+            job: { data: { commandMode: 'fix' } },
+            taskId: 'task-continuation-retry',
+            stateManager: { updateTaskState: async () => {} },
+            context: {
+                pullRequestNumber: 1748,
+                repoOwner: 'integry',
+                repoName: 'propr',
+                correlatedLogger: { info: () => {}, warn: () => {} },
+            },
+            llm: null,
+            redisClient: {
+                eval: async (...args: unknown[]) => {
+                    if (typeof args[6] === 'string') {
+                        const value = JSON.parse(args[6]) as { stage?: string };
+                        if (value.stage) stages.push(value.stage);
+                    }
+                    return 1;
+                },
+            },
+            prProcessingLockToken: 'new-attempt',
+            assertLease: async () => {},
+            beforeCompletion: async () => { throw continuationFailure; },
+            signal: new AbortController().signal,
+        } as never),
+        error => error === continuationFailure,
+    );
+
+    assert.deepEqual(stages, ['review_comments_processed']);
+});

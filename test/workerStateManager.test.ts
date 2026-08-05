@@ -50,12 +50,16 @@ const defaultMockDbTasksInsert = () => ({
     }))
 });
 const mockDbTasksInsert = mock.fn(defaultMockDbTasksInsert);
+const mockDbTasksFirst = mock.fn(async () => undefined as { attempt_generation_version?: unknown } | undefined);
+const mockDbTasksSelect = mock.fn(() => ({
+    where: mock.fn(() => ({ first: mockDbTasksFirst })),
+}));
 
 const mockDbHistoryInsert = mock.fn(async () => [1]);
 
 const mockDb = (tableName: string) => {
     if (tableName === 'tasks') {
-        return { insert: mockDbTasksInsert };
+        return { insert: mockDbTasksInsert, select: mockDbTasksSelect };
     }
     if (tableName === 'task_history') {
         return { insert: mockDbHistoryInsert };
@@ -113,6 +117,10 @@ import type { IssueRef, TaskStateData } from '../packages/core/src/utils/workerS
 const TEST_KEY_PREFIX = 'test:worker:state:';
 const TEST_STATE_EXPIRY = 3600; // 1 hour for testing
 
+function mockMaintenanceScan(keys: string[]): void {
+    mockRedisInstance.scan.mock.mockImplementation(async () => ['0', keys]);
+}
+
 test('getNonTerminalTasks scans Redis without including terminal states', async () => {
     const pending = {
         taskId: 'pending-task',
@@ -145,6 +153,27 @@ test('getNonTerminalTasks scans Redis without including terminal states', async 
     assert.deepStrictEqual(result.map(task => task.taskId), ['pending-task']);
     assert.strictEqual(mockRedisInstance.pipeline.mock.calls.length, 1);
     assert.strictEqual(mockRedisInstance.get.mock.calls.length, 2);
+});
+
+test('getNonTerminalTasks rejects a state stored under another task ID', async () => {
+    const state = {
+        taskId: 'different-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'correlation',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    mockRedisInstance.scan.mock.mockImplementation(async () => ['0', [`${TEST_KEY_PREFIX}expected-task`]]);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(state));
+    mockLogger.warn.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    assert.deepStrictEqual(await stateManager.getNonTerminalTasks(), []);
+    assert.match(mockLogger.warn.mock.calls[0].arguments[1], /does not match its Redis key/);
+    await stateManager.close();
 });
 
 test('getNonTerminalTasks safely includes legacy PR-comment records without a type', async () => {
@@ -332,6 +361,28 @@ test('getNonTerminalTaskPage reports whether the rotating SCAN cycle is complete
     assert.deepStrictEqual(first, { tasks: [], scanComplete: false });
     assert.deepStrictEqual(second.tasks.map(task => task.taskId), [processing.taskId]);
     assert.strictEqual(second.scanComplete, true);
+    await stateManager.close();
+});
+
+test('getProcessingTasks uses SCAN and pipelined reads for legacy recovery', async () => {
+    const processing: TaskStateData = {
+        taskId: 'processing-maintenance-task',
+        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: 'maintenance-scan',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    mockMaintenanceScan([`${TEST_KEY_PREFIX}${processing.taskId}`]);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(processing));
+    mockRedisInstance.pipeline.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    assert.deepStrictEqual(await stateManager.getProcessingTasks(), [processing]);
+    assert.strictEqual(mockRedisInstance.pipeline.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.at(-1)?.arguments[2], `${TEST_KEY_PREFIX}*`);
     await stateManager.close();
 });
 
@@ -2406,7 +2457,7 @@ test('cleanupOldTasks removes tasks older than maxAge', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-completed']);
+    mockMaintenanceScan(['test:worker:state:task-old-completed']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldCompletedTask));
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.debug.mock.resetCalls();
@@ -2442,7 +2493,7 @@ test('cleanupOldTasks skips tasks within maxAge', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: recentTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-recent-completed']);
+    mockMaintenanceScan(['test:worker:state:task-recent-completed']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(recentCompletedTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2474,7 +2525,7 @@ test('cleanupOldTasks skips PROCESSING state tasks even if old', async () => {
         history: [{ state: TaskStates.PROCESSING, timestamp: oldTime, reason: 'Processing' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-processing']);
+    mockMaintenanceScan(['test:worker:state:task-old-processing']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldProcessingTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2506,7 +2557,7 @@ test('cleanupOldTasks skips PENDING state tasks even if old', async () => {
         history: [{ state: TaskStates.PENDING, timestamp: oldTime, reason: 'Created' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-pending']);
+    mockMaintenanceScan(['test:worker:state:task-old-pending']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldPendingTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2538,7 +2589,7 @@ test('cleanupOldTasks skips CLAUDE_EXECUTION state tasks even if old', async () 
         history: [{ state: TaskStates.CLAUDE_EXECUTION, timestamp: oldTime, reason: 'Claude execution' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-claude-exec']);
+    mockMaintenanceScan(['test:worker:state:task-old-claude-exec']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldClaudeExecTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2570,7 +2621,7 @@ test('cleanupOldTasks skips POST_PROCESSING state tasks even if old', async () =
         history: [{ state: TaskStates.POST_PROCESSING, timestamp: oldTime, reason: 'Post-processing' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-post-proc']);
+    mockMaintenanceScan(['test:worker:state:task-old-post-proc']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldPostProcTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2603,7 +2654,7 @@ test('cleanupOldTasks removes old FAILED tasks', async () => {
         lastError: { message: 'Some error', category: 'unknown', timestamp: oldTime }
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-failed']);
+    mockMaintenanceScan(['test:worker:state:task-old-failed']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldFailedTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2634,7 +2685,7 @@ test('cleanupOldTasks removes old CANCELLED tasks', async () => {
         history: [{ state: TaskStates.CANCELLED, timestamp: oldTime, reason: 'Cancelled by user' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-cancelled']);
+    mockMaintenanceScan(['test:worker:state:task-old-cancelled']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldCancelledTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2652,7 +2703,7 @@ test('cleanupOldTasks removes old CANCELLED tasks', async () => {
 });
 
 test('cleanupOldTasks handles corrupted JSON gracefully', async () => {
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-corrupted']);
+    mockMaintenanceScan(['test:worker:state:task-corrupted']);
     mockRedisInstance.get.mock.mockImplementation(async () => 'this is not valid JSON {{{');
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.warn.mock.resetCalls();
@@ -2691,7 +2742,7 @@ test('cleanupOldTasks uses custom maxAge parameter', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: twoHoursAgo, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-custom-maxage']);
+    mockMaintenanceScan(['test:worker:state:task-custom-maxage']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2723,7 +2774,7 @@ test('cleanupOldTasks skips task when maxAge is longer than task age', async () 
         history: [{ state: TaskStates.COMPLETED, timestamp: twoHoursAgo, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-longer-maxage']);
+    mockMaintenanceScan(['test:worker:state:task-longer-maxage']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2788,7 +2839,7 @@ test('cleanupOldTasks handles multiple tasks with mixed states and ages', async 
         }
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => Object.keys(tasks));
+    mockMaintenanceScan(Object.keys(tasks));
     mockRedisInstance.get.mock.mockImplementation(async (key: string) => {
         const task = tasks[key];
         return task ? JSON.stringify(task) : null;
@@ -2812,7 +2863,7 @@ test('cleanupOldTasks handles multiple tasks with mixed states and ages', async 
 });
 
 test('cleanupOldTasks returns 0 when no keys exist', async () => {
-    mockRedisInstance.keys.mock.mockImplementation(async () => []);
+    mockMaintenanceScan([]);
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.info.mock.resetCalls();
 
@@ -2830,7 +2881,7 @@ test('cleanupOldTasks returns 0 when no keys exist', async () => {
 });
 
 test('cleanupOldTasks skips keys with null values', async () => {
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:null-task']);
+    mockMaintenanceScan(['test:worker:state:null-task']);
     mockRedisInstance.get.mock.mockImplementation(async () => null);
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2860,7 +2911,7 @@ test('cleanupOldTasks logs debug message for each cleaned task', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-debug-log']);
+    mockMaintenanceScan(['test:worker:state:task-debug-log']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.debug.mock.resetCalls();
@@ -2897,7 +2948,7 @@ test('cleanupOldTasks logs info message with summary', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-summary-log']);
+    mockMaintenanceScan(['test:worker:state:task-summary-log']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.info.mock.resetCalls();
@@ -2924,8 +2975,8 @@ test('cleanupOldTasks logs info message with summary', async () => {
 });
 
 test('cleanupOldTasks uses key prefix pattern for searching', async () => {
-    mockRedisInstance.keys.mock.resetCalls();
-    mockRedisInstance.keys.mock.mockImplementation(async () => []);
+    mockRedisInstance.scan.mock.resetCalls();
+    mockMaintenanceScan([]);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -2934,9 +2985,9 @@ test('cleanupOldTasks uses key prefix pattern for searching', async () => {
 
     await stateManager.cleanupOldTasks();
 
-    // Verify keys was called with correct pattern
-    assert.strictEqual(mockRedisInstance.keys.mock.calls.length, 1);
-    assert.strictEqual(mockRedisInstance.keys.mock.calls[0].arguments[0], `${TEST_KEY_PREFIX}*`);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[0].arguments[1], 'MATCH');
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[0].arguments[2], `${TEST_KEY_PREFIX}*`);
 
     await stateManager.close();
 });
@@ -2954,7 +3005,7 @@ test('cleanupOldTasks handles Redis errors during delete gracefully', async () =
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-del-error']);
+    mockMaintenanceScan(['test:worker:state:task-del-error']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.mockImplementation(async () => {
         throw new Error('Redis delete failed');
@@ -2996,7 +3047,7 @@ test('cleanupOldTasks determines age based on updatedAt not createdAt', async ()
         history: [{ state: TaskStates.COMPLETED, timestamp: recentUpdated, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-updated-recently']);
+    mockMaintenanceScan(['test:worker:state:task-updated-recently']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -3028,7 +3079,7 @@ test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: exactlyMaxAge, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-exact-boundary']);
+    mockMaintenanceScan(['test:worker:state:task-exact-boundary']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -3300,6 +3351,26 @@ test('fenced task recreation continues after the previous task revision', async 
     );
 
     assert.strictEqual(created.version, 8);
+    await stateManager.close();
+});
+
+test('fenced task recreation seeds an expired Redis revision from SQL', async () => {
+    mockDbTasksFirst.mock.mockImplementationOnce(async () => ({ attempt_generation_version: 12 }));
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (...args: unknown[]) => Number(args[9]) + 1);
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const created = await stateManager.createTaskState(
+        'task-sql-revision-seed',
+        { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        'replacement-correlation',
+        { prProcessingLockToken: 'replacement-token', prProcessingLockKey: 'lock:pr:owner:repo:631' },
+    );
+
+    assert.strictEqual(mockRedisInstance.eval.mock.calls[0].arguments[9], 12);
+    assert.strictEqual(created.version, 13);
+    const merged = mockDbTasksMerge.mock.calls.at(-1)?.arguments[0] as Record<string, unknown>;
+    assert.strictEqual(merged.attempt_generation_version, 13);
     await stateManager.close();
 });
 
