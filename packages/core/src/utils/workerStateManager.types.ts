@@ -57,6 +57,8 @@ export interface TaskStateData {
     state: TaskState;
     createdAt: string;
     updatedAt: string;
+    /** Monotonically increasing revision used to order concurrent updates and events. */
+    version?: number;
     attempts: number;
     history: HistoryEntry[];
     lastError?: LastError;
@@ -70,6 +72,18 @@ export interface TaskStateExpectation {
     createdAt: string;
     updatedAt: string;
     correlationId: string;
+    version?: number;
+}
+
+export interface TaskStatePublicationResult {
+    historyPersisted: boolean;
+    eventPublished: boolean;
+    errors: string[];
+}
+
+export interface TaskStateUpdateResult {
+    state: TaskStateData;
+    publication: TaskStatePublicationResult;
 }
 
 export interface CancellationMetadata {

@@ -2,13 +2,14 @@ import {
     TaskStates,
     taskStateExpectation,
     type JobResult,
+    type TaskStatePublicationResult,
     type TaskState,
     type UpdateMetadata,
     type WorkerStateManager,
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 
-const MAX_FINALIZATION_ATTEMPTS = 3;
+const MAX_FINALIZATION_ATTEMPTS = 5;
 const TERMINAL_STATES = new Set<TaskState>([
     TaskStates.COMPLETED,
     TaskStates.FAILED,
@@ -17,24 +18,56 @@ const TERMINAL_STATES = new Set<TaskState>([
 
 type TaskStateStore = Pick<
     WorkerStateManager,
-    'getTaskState' | 'updateTaskStateIfCurrent'
+    'getTaskState' | 'updateTaskStateIfCurrentDetailed'
 >;
+
+export type PRCommentTaskFinalizationOutcome =
+    | 'finalized'
+    | 'partial_publication'
+    | 'already_terminal'
+    | 'retry_pending'
+    | 'task_missing';
+
+export interface PRCommentTaskFinalizationResult {
+    outcome: PRCommentTaskFinalizationOutcome;
+    stateChanged: boolean;
+    publication?: TaskStatePublicationResult;
+}
+
+export class PRCommentTaskFinalizationConflictError extends Error {
+    constructor(taskId: string) {
+        super(`PR comment task finalization conflicted ${MAX_FINALIZATION_ATTEMPTS} times for task ${taskId}`);
+        this.name = 'PRCommentTaskFinalizationConflictError';
+    }
+}
 
 interface FinalTransition {
     state: TaskState;
     metadata: UpdateMetadata;
 }
 
-function resultReason(result: JobResult): string | undefined {
-    return typeof result.reason === 'string' ? result.reason : undefined;
+function sanitizedProcessorText(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim()
+        ? sanitizeErrorMessage(value)
+        : undefined;
+}
+
+function publicationSucceeded(publication: TaskStatePublicationResult): boolean {
+    return publication.historyPersisted && publication.eventPublished;
+}
+
+async function waitForFinalizationRetry(attempt: number): Promise<void> {
+    const delayMs = 10 * (2 ** attempt);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
 function completedTransition(result: JobResult | undefined): FinalTransition {
     const status = result?.status;
-    const reason = result ? resultReason(result) : undefined;
+    const safeStatus = sanitizedProcessorText(status);
+    const reason = result ? sanitizedProcessorText(result.reason) : undefined;
     const historyMetadata = {
         finalizedBy: 'bullmq_completed',
-        jobResultStatus: status ?? null,
+        jobResultStatus: safeStatus ?? null,
         jobResultReason: reason ?? null,
     };
 
@@ -47,7 +80,7 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
                 state: TaskStates.COMPLETED,
                 metadata: {
                     reason: status === 'skipped'
-                        ? `PR comment job skipped${reason ? `: ${reason}` : ''}`
+                        ? sanitizeErrorMessage(`PR comment job skipped${reason ? `: ${reason}` : ''}`)
                         : 'PR comment job completed',
                     historyMetadata,
                 },
@@ -58,7 +91,7 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
             return {
                 state: TaskStates.CANCELLED,
                 metadata: {
-                    reason: `PR comment job ${status}${reason ? `: ${reason}` : ''}`,
+                    reason: sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
                     historyMetadata,
                 },
             };
@@ -66,7 +99,7 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
             return failedTransition(reason ?? 'PR comment job returned a failed result', 'bullmq_completed');
         default: {
             const diagnostic = status
-                ? `Unexpected PR comment job result status: ${status}`
+                ? `Unexpected PR comment job result status: ${safeStatus ?? '[invalid]'}`
                 : 'PR comment job completed without a result status';
             return failedTransition(diagnostic, 'bullmq_completed');
         }
@@ -89,26 +122,40 @@ async function applyFinalTransition(
     taskId: string,
     transition: FinalTransition,
     stateManager: TaskStateStore,
-): Promise<boolean> {
+): Promise<PRCommentTaskFinalizationResult> {
     for (let attempt = 0; attempt < MAX_FINALIZATION_ATTEMPTS; attempt++) {
         const current = await stateManager.getTaskState(taskId);
-        if (!current || TERMINAL_STATES.has(current.state)) return false;
-        const updated = await stateManager.updateTaskStateIfCurrent(
+        if (!current) return { outcome: 'task_missing', stateChanged: false };
+        if (TERMINAL_STATES.has(current.state)) {
+            return { outcome: 'already_terminal', stateChanged: false };
+        }
+        const updated = await stateManager.updateTaskStateIfCurrentDetailed(
             taskId,
             taskStateExpectation(current),
             transition.state,
             transition.metadata,
         );
-        if (updated) return true;
+        if (updated) {
+            return {
+                outcome: publicationSucceeded(updated.publication)
+                    ? 'finalized'
+                    : 'partial_publication',
+                stateChanged: true,
+                publication: updated.publication,
+            };
+        }
+        if (attempt < MAX_FINALIZATION_ATTEMPTS - 1) {
+            await waitForFinalizationRetry(attempt);
+        }
     }
-    return false;
+    throw new PRCommentTaskFinalizationConflictError(taskId);
 }
 
 export async function finalizeCompletedPRCommentTask(
     taskId: string,
     result: JobResult | undefined,
     stateManager: TaskStateStore,
-): Promise<boolean> {
+): Promise<PRCommentTaskFinalizationResult> {
     return applyFinalTransition(taskId, completedTransition(result), stateManager);
 }
 
@@ -116,7 +163,7 @@ export async function finalizeFailedPRCommentTask(
     taskId: string,
     error: Error,
     stateManager: TaskStateStore,
-): Promise<boolean> {
+): Promise<PRCommentTaskFinalizationResult> {
     return applyFinalTransition(
         taskId,
         failedTransition(error.message, 'bullmq_failed'),

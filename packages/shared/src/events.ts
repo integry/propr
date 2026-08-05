@@ -44,8 +44,24 @@ export interface TaskUpdatePayload {
   repository?: string;
   issueNumber?: number;
   timestamp: string;
+  /** Monotonic task-state revision; consumers must ignore lower revisions. */
+  version?: number;
   /** Additional metadata about the state change */
   metadata?: Record<string, unknown>;
+}
+
+/** Returns true when an incoming task event is provably newer than the last event seen. */
+export function isNewerTaskUpdate(
+  latest: TaskUpdatePayload | undefined,
+  incoming: TaskUpdatePayload
+): boolean {
+  if (!latest) return true;
+  if (typeof incoming.version === 'number' && typeof latest.version === 'number') {
+    return incoming.version > latest.version;
+  }
+  if (typeof latest.version === 'number') return false;
+  if (typeof incoming.version === 'number') return true;
+  return Date.parse(incoming.timestamp) > Date.parse(latest.timestamp);
 }
 
 /** Known draft statuses used across the backend/frontend event contract */

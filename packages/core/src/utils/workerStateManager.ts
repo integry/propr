@@ -5,14 +5,29 @@ import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
+    type TaskStateUpdateResult,
     type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 import {
     buildTaskStateTransition,
+    buildTaskStateMutation,
+    compareAndSetTaskStateData,
     compareAndSetTaskState,
     publishTaskStateTransition,
 } from './workerStateTransition.js';
+
+const MAX_ATOMIC_UPDATE_ATTEMPTS = 8;
+const TERMINAL_TASK_STATES = new Set<TaskState>([
+    TaskStates.COMPLETED,
+    TaskStates.FAILED,
+    TaskStates.CANCELLED,
+]);
+
+async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
+    const delayMs = Math.min(5 * (2 ** attempt), 100);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+}
 
 export { TaskStates, type TaskState, type IssueRef };
 
@@ -47,11 +62,12 @@ export class WorkerStateManager {
      * @returns Task state data
      */
     async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
+        const timestamp = new Date().toISOString();
         const state: TaskStateData = {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
-            state: TaskStates.PENDING, createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(), attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }]
+            state: TaskStates.PENDING, createdAt: timestamp,
+            updatedAt: timestamp, version: 1, attempts: 0,
+            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }]
         };
         const key = this.getTaskKey(taskId);
         await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
@@ -87,7 +103,9 @@ export class WorkerStateManager {
                 taskId,
                 state: TaskStates.PENDING,
                 repository,
-                issueNumber: issueRef.number
+                issueNumber: issueRef.number,
+                timestamp: state.updatedAt,
+                version: state.version,
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
@@ -104,14 +122,33 @@ export class WorkerStateManager {
      */
     async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-        const current = JSON.parse(stateJson) as TaskStateData;
-        const transition = buildTaskStateTransition(current, newState, metadata);
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(transition.state));
-        await publishTaskStateTransition(taskId, transition, metadata);
-        return transition.state;
+            const current = JSON.parse(stateJson) as TaskStateData;
+            if (TERMINAL_TASK_STATES.has(current.state)
+                && current.state !== newState
+                && !metadata.isRetry) {
+                logger.warn({ taskId, currentState: current.state, requestedState: newState },
+                    'Ignored state transition from a terminal task');
+                return current;
+            }
+
+            const transition = buildTaskStateTransition(current, newState, metadata);
+            const updated = await compareAndSetTaskStateData(this.redis, {
+                key,
+                stateExpiry: this.stateExpiry,
+                currentJson: stateJson,
+                state: transition.state,
+            });
+            if (updated) {
+                await publishTaskStateTransition(taskId, transition, metadata);
+                return transition.state;
+            }
+            await waitForAtomicUpdateRetry(attempt);
+        }
+        throw new Error(`Task state update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /**
@@ -124,6 +161,24 @@ export class WorkerStateManager {
         newState: TaskState,
         metadata: UpdateMetadata = {},
     ): Promise<TaskStateData | null> {
+        const result = await this.updateTaskStateIfCurrentDetailed(
+            taskId,
+            expectation,
+            newState,
+            metadata,
+        );
+        return result?.state ?? null;
+    }
+
+    /**
+     * Conditional state update with explicit database/event publication status.
+     */
+    async updateTaskStateIfCurrentDetailed(
+        taskId: string,
+        expectation: TaskStateExpectation,
+        newState: TaskState,
+        metadata: UpdateMetadata = {},
+    ): Promise<TaskStateUpdateResult | null> {
         const transition = await compareAndSetTaskState(this.redis, {
             key: this.getTaskKey(taskId),
             stateExpiry: this.stateExpiry,
@@ -132,8 +187,8 @@ export class WorkerStateManager {
             metadata,
         });
         if (!transition) return null;
-        await publishTaskStateTransition(taskId, transition, metadata);
-        return transition.state;
+        const publication = await publishTaskStateTransition(taskId, transition, metadata);
+        return { state: transition.state, publication };
     }
 
     /**
@@ -156,39 +211,53 @@ export class WorkerStateManager {
      */
     async updateIssueRef(taskId: string, issueRefPatch: Partial<IssueRef>): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) return null;
+        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) return null;
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        state.issueRef = { ...state.issueRef, ...issueRefPatch };
-        state.updatedAt = new Date().toISOString();
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-
-        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId,
-            issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            updatedFields: Object.keys(issueRefPatch)
-        }, 'Task issue reference updated');
-
-        try {
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: state.state,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issueNumber: state.issueRef.number,
-                metadata: {
-                    issueRefUpdated: true,
-                    updatedFields: Object.keys(issueRefPatch)
-                }
+            const current = JSON.parse(stateJson) as TaskStateData;
+            const state = buildTaskStateMutation(current, next => {
+                next.issueRef = { ...next.issueRef, ...issueRefPatch };
             });
-        } catch (error) {
-            correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
-        }
+            const updated = await compareAndSetTaskStateData(this.redis, {
+                key,
+                stateExpiry: this.stateExpiry,
+                currentJson: stateJson,
+                state,
+            });
+            if (!updated) {
+                await waitForAtomicUpdateRetry(attempt);
+                continue;
+            }
 
-        return state;
+            const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
+            correlatedLogger.info({
+                taskId,
+                issueNumber: state.issueRef.number,
+                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                updatedFields: Object.keys(issueRefPatch),
+                version: state.version,
+            }, 'Task issue reference updated');
+
+            try {
+                await getEventPublisher().publishTaskUpdate({
+                    taskId,
+                    state: state.state,
+                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                    issueNumber: state.issueRef.number,
+                    timestamp: state.updatedAt,
+                    version: state.version,
+                    metadata: {
+                        issueRefUpdated: true,
+                        updatedFields: Object.keys(issueRefPatch)
+                    }
+                });
+            } catch (error) {
+                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
+            }
+            return state;
+        }
+        throw new Error(`Task issue reference update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /**
@@ -226,27 +295,46 @@ export class WorkerStateManager {
      */
     async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+            const stateJson = await this.redis.get(key);
+            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        const historyIndex = state.history.findLastIndex(h => h.state === historyState);
+            const current = JSON.parse(stateJson) as TaskStateData;
+            const historyIndex = current.history.findLastIndex(h => h.state === historyState);
+            if (historyIndex < 0) {
+                logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
+                return current;
+            }
 
-        if (historyIndex >= 0) {
-            state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
-            state.updatedAt = new Date().toISOString();
-            await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+            const state = buildTaskStateMutation(current, next => {
+                next.history[historyIndex].metadata = {
+                    ...next.history[historyIndex].metadata,
+                    ...metadata,
+                };
+            });
+            const updated = await compareAndSetTaskStateData(this.redis, {
+                key,
+                stateExpiry: this.stateExpiry,
+                currentJson: stateJson,
+                state,
+            });
+            if (!updated) {
+                await waitForAtomicUpdateRetry(attempt);
+                continue;
+            }
+
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
+            correlatedLogger.debug({ taskId, historyState, metadata, version: state.version }, 'Updated history metadata');
 
             // Publish real-time event for metadata update so UI can refresh
             try {
-                const eventPublisher = getEventPublisher();
-                await eventPublisher.publishTaskUpdate({
+                await getEventPublisher().publishTaskUpdate({
                     taskId,
                     state: state.state,
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
+                    timestamp: state.updatedAt,
+                    version: state.version,
                     metadata: {
                         metadataUpdate: true,
                         updatedFields: Object.keys(metadata)
@@ -255,10 +343,9 @@ export class WorkerStateManager {
             } catch (error) {
                 correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
             }
-        } else {
-            logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
+            return state;
         }
-        return state;
+        throw new Error(`Task history metadata update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /**
@@ -383,7 +470,7 @@ export class WorkerStateManager {
      * Closes Redis connection
      */
     async close(): Promise<void> {
-        await this.redis.quit();
+        this.redis.disconnect();
     }
 }
 

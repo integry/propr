@@ -4,16 +4,19 @@ import type { Job } from 'bullmq';
 import type { JobResult, WorkerStateManager } from '@propr/core';
 import type { MainJobData, MainWorker } from '../src/workerFactory.js';
 
-const finalizeCompletedPRCommentTask = mock.fn(async () => true);
-const finalizeFailedPRCommentTask = mock.fn(async () => true);
+const finalizedResult = { outcome: 'finalized' as const, stateChanged: true };
+const finalizeCompletedPRCommentTask = mock.fn(async () => finalizedResult);
+const finalizeFailedPRCommentTask = mock.fn(async () => finalizedResult);
 const logInfo = mock.fn();
 const logError = mock.fn();
+const logWarn = mock.fn();
+const logDebug = mock.fn();
 
 await mock.module('../src/jobs/prCommentTaskFinalizer.js', {
     namedExports: { finalizeCompletedPRCommentTask, finalizeFailedPRCommentTask },
 });
 await mock.module('@propr/core', {
-    namedExports: { logger: { info: logInfo, error: logError } },
+    namedExports: { logger: { info: logInfo, error: logError, warn: logWarn, debug: logDebug } },
 });
 
 const { attachPRCommentTaskStateFinalizers } = await import('../src/jobs/prCommentTaskStateFinalizers.js');
@@ -41,11 +44,18 @@ function createWorkerHarness() {
     };
 }
 
-function makeJob(getState: () => Promise<string>, name = 'processPullRequestComment') {
+function makeJob(
+    getState: () => Promise<string>,
+    name = 'processPullRequestComment',
+    options: { attempts?: number; removeOnFail?: boolean } = { attempts: 3 },
+    attemptsMade = 1,
+) {
     return {
         id: 'task-123',
         name,
         getState,
+        opts: options,
+        attemptsMade,
     } as unknown as Job<MainJobData>;
 }
 
@@ -79,4 +89,69 @@ test('failed hook ignores retryable attempts and finalizes exhausted jobs', asyn
 
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
     assert.equal(finalizeFailedPRCommentTask.mock.calls[0].arguments[1].message, 'exhausted');
+});
+
+test('failed hook finalizes an exhausted job from retry metadata without a state lookup', async () => {
+    finalizeFailedPRCommentTask.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
+    const getState = mock.fn(async () => { throw new Error('job was removed'); });
+
+    harness.emit('failed', makeJob(getState, 'processPullRequestComment', { attempts: 3 }, 3), new Error('exhausted'));
+    await finalizers.close();
+
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
+    assert.equal(getState.mock.calls.length, 0);
+});
+
+test('failed hook handles jobs removed immediately on failure', async () => {
+    finalizeFailedPRCommentTask.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
+
+    harness.emit(
+        'failed',
+        makeJob(async () => 'unknown', 'processPullRequestComment', { attempts: 3, removeOnFail: true }, 1),
+        new Error('unrecoverable'),
+    );
+    await finalizers.close();
+
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
+});
+
+test('failed hook retries a transient job-state lookup error', async () => {
+    finalizeFailedPRCommentTask.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
+    let attempts = 0;
+
+    harness.emit('failed', makeJob(async () => {
+        attempts++;
+        if (attempts === 1) throw new Error('transient Redis error');
+        return 'failed';
+    }), new Error('exhausted'));
+    await finalizers.close();
+
+    assert.equal(attempts, 2);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
+});
+
+test('close stops waiting after the configured finalizer drain deadline', async () => {
+    const originalImplementation = finalizeCompletedPRCommentTask.mock.mockImplementation;
+    finalizeCompletedPRCommentTask.mock.mockImplementation(async () => new Promise(() => {}));
+    logError.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const finalizers = attachPRCommentTaskStateFinalizers(
+        harness.worker,
+        {} as WorkerStateManager,
+        { drainTimeoutMs: 20 },
+    );
+
+    harness.emit('completed', makeJob(async () => 'completed'), { status: 'complete' });
+    const startedAt = Date.now();
+    await finalizers.close();
+
+    assert.ok(Date.now() - startedAt < 500);
+    assert.ok(logError.mock.calls.some(call => call.arguments[1]?.toString().includes('Timed out draining')));
+    finalizeCompletedPRCommentTask.mock.mockImplementation(originalImplementation);
 });

@@ -3,6 +3,7 @@ import type {
     TaskState,
     TaskStateData,
     TaskStateExpectation,
+    TaskStatePublicationResult,
     UpdateMetadata,
 } from './workerStateManager.types.js';
 import { db } from '../db/connection.js';
@@ -29,6 +30,7 @@ export function taskStateExpectation(task: TaskStateData): TaskStateExpectation 
         createdAt: task.createdAt,
         updatedAt: task.updatedAt,
         correlationId: task.correlationId,
+        version: task.version,
     };
 }
 
@@ -36,7 +38,24 @@ function matchesExpectation(task: TaskStateData, expectation: TaskStateExpectati
     return task.state === expectation.state
         && task.createdAt === expectation.createdAt
         && task.updatedAt === expectation.updatedAt
-        && task.correlationId === expectation.correlationId;
+        && task.correlationId === expectation.correlationId
+        && (task.version ?? 0) === (expectation.version ?? 0);
+}
+
+function nextUpdatedAt(): string {
+    return new Date().toISOString();
+}
+
+export function buildTaskStateMutation(
+    current: TaskStateData,
+    mutate: (state: TaskStateData, timestamp: string) => void,
+): TaskStateData {
+    const state = structuredClone(current);
+    const timestamp = nextUpdatedAt();
+    state.updatedAt = timestamp;
+    state.version = (current.version ?? 0) + 1;
+    mutate(state, timestamp);
+    return state;
 }
 
 export function buildTaskStateTransition(
@@ -44,31 +63,50 @@ export function buildTaskStateTransition(
     newState: TaskState,
     metadata: UpdateMetadata,
 ): TaskStateTransition {
-    const now = new Date().toISOString();
-    const state: TaskStateData = structuredClone(current);
-    const previousState = state.state;
+    const previousState = current.state;
     const reason = metadata.reason ?? `State changed from ${previousState}`;
-    state.state = newState;
-    state.updatedAt = now;
-    state.attempts = metadata.isRetry ? state.attempts + 1 : state.attempts;
+    const state = buildTaskStateMutation(current, (next, timestamp) => {
+        next.state = newState;
+        next.attempts = metadata.isRetry ? next.attempts + 1 : next.attempts;
 
-    if (metadata.error) {
-        state.lastError = {
-            message: metadata.error.message,
-            category: metadata.error.category ?? 'unknown',
-            timestamp: now,
-        };
-    }
-    if (metadata.worktreeInfo) state.worktreeInfo = metadata.worktreeInfo;
-    if (metadata.claudeResult) state.claudeResult = { ...metadata.claudeResult };
-    if (metadata.prResult) state.prResult = metadata.prResult;
-    state.history.push({
-        state: newState,
-        timestamp: now,
-        reason,
-        metadata: metadata.historyMetadata ?? {},
+        if (metadata.error) {
+            next.lastError = {
+                message: metadata.error.message,
+                category: metadata.error.category ?? 'unknown',
+                timestamp,
+            };
+        }
+        if (metadata.worktreeInfo) next.worktreeInfo = metadata.worktreeInfo;
+        if (metadata.claudeResult) next.claudeResult = { ...metadata.claudeResult };
+        if (metadata.prResult) next.prResult = metadata.prResult;
+        next.history.push({
+            state: newState,
+            timestamp,
+            reason,
+            metadata: metadata.historyMetadata ?? {},
+        });
     });
     return { state, previousState, reason };
+}
+
+export async function compareAndSetTaskStateData(
+    redis: Pick<InstanceType<typeof Redis>, 'eval'>,
+    options: {
+        key: string;
+        stateExpiry: number;
+        currentJson: string;
+        state: TaskStateData;
+    },
+): Promise<boolean> {
+    const updated = await redis.eval(
+        COMPARE_AND_SET_TASK_STATE_SCRIPT,
+        1,
+        options.key,
+        options.currentJson,
+        options.stateExpiry,
+        JSON.stringify(options.state),
+    );
+    return Number(updated) === 1;
 }
 
 export async function compareAndSetTaskState(
@@ -87,22 +125,20 @@ export async function compareAndSetTaskState(
     if (!matchesExpectation(current, options.expectation)) return null;
 
     const transition = buildTaskStateTransition(current, options.newState, options.metadata);
-    const updated = await redis.eval(
-        COMPARE_AND_SET_TASK_STATE_SCRIPT,
-        1,
-        options.key,
+    const updated = await compareAndSetTaskStateData(redis, {
+        key: options.key,
+        stateExpiry: options.stateExpiry,
         currentJson,
-        options.stateExpiry,
-        JSON.stringify(transition.state),
-    );
-    return Number(updated) === 1 ? transition : null;
+        state: transition.state,
+    });
+    return updated ? transition : null;
 }
 
 export async function publishTaskStateTransition(
     taskId: string,
     transition: TaskStateTransition,
     metadata: UpdateMetadata,
-): Promise<void> {
+): Promise<TaskStatePublicationResult> {
     const { state, previousState, reason } = transition;
     const correlatedLogger = logger.withCorrelation(state.correlationId);
     correlatedLogger.info({
@@ -113,6 +149,12 @@ export async function publishTaskStateTransition(
         newState: state.state,
         attempts: state.attempts,
     }, 'Task state updated');
+
+    const publication: TaskStatePublicationResult = {
+        historyPersisted: false,
+        eventPublished: false,
+        errors: [],
+    };
 
     try {
         await db('task_history').insert({
@@ -131,20 +173,46 @@ export async function publishTaskStateTransition(
                 commitHash: metadata.commitHash,
             }),
         });
+        publication.historyPersisted = true;
         correlatedLogger.debug({ taskId, newState: state.state }, 'Task state update persisted to database');
+    } catch (error) {
+        publication.errors.push(`history: ${(error as Error).message}`);
+        correlatedLogger.error({
+            error: (error as Error).message,
+            taskId,
+            version: state.version,
+        }, 'Failed to persist task state update to database');
+    }
 
-        await getEventPublisher().publishTaskUpdate({
+    try {
+        publication.eventPublished = await getEventPublisher().publishTaskUpdate({
             taskId,
             state: state.state,
             previousState,
             repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
             issueNumber: state.issueRef.number,
+            timestamp: state.updatedAt,
+            version: state.version,
             metadata: { attempts: state.attempts, reason: metadata.reason },
         });
+        if (!publication.eventPublished) publication.errors.push('event: publisher returned false');
     } catch (error) {
+        publication.errors.push(`event: ${(error as Error).message}`);
         correlatedLogger.error({
             error: (error as Error).message,
             taskId,
-        }, 'Failed to persist task state update to database');
+            version: state.version,
+        }, 'Failed to publish task state update event');
     }
+
+    if (!publication.historyPersisted || !publication.eventPublished) {
+        correlatedLogger.error({
+            taskId,
+            version: state.version,
+            historyPersisted: publication.historyPersisted,
+            eventPublished: publication.eventPublished,
+            errors: publication.errors,
+        }, 'Task state changed in Redis but publication was only partially successful');
+    }
+    return publication;
 }
