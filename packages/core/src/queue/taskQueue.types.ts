@@ -182,8 +182,8 @@ export interface JobResult {
     status: string;
     claudeResult?: ClaudeResult;
     correlationId?: string;
-    /** Generation fence copied from the PR-processing attempt that produced this result. */
-    prProcessingLockToken?: string;
+    /** One-way generation fence for the PR-processing attempt that produced this result. */
+    prProcessingAttemptGeneration?: string;
     [key: string]: unknown;
 }
 

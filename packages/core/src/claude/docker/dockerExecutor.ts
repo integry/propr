@@ -49,6 +49,12 @@ interface PlannerAbortContext {
     runId: string;
 }
 
+interface ExecutionOwnershipContext {
+    signal: AbortSignal;
+    /** One-way identifier for the PR attempt that owns this container. */
+    attemptGeneration?: string;
+}
+
 export interface AbortRedisClient {
     get(key: string): Promise<string | null>;
     del(key: string): Promise<unknown>;
@@ -59,7 +65,7 @@ export interface AbortRedisClient {
 export type AbortRedisFactory = () => AbortRedisClient;
 
 const plannerAbortContext = new AsyncLocalStorage<PlannerAbortContext>();
-const executionAbortContext = new AsyncLocalStorage<AbortSignal>();
+const executionOwnershipContext = new AsyncLocalStorage<ExecutionOwnershipContext>();
 
 export function buildPlannerAbortSignalKey(draftId: string, runId?: string): string {
     return runId ? `planner:abort:${draftId}:run:${runId}` : `planner:abort:${draftId}`;
@@ -73,8 +79,12 @@ export function runWithPlannerAbortContext<T>(
     return plannerAbortContext.run({ draftId, runId }, operation);
 }
 
-export function runWithExecutionAbortSignal<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
-    return executionAbortContext.run(signal, operation);
+export function runWithExecutionAbortSignal<T>(
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+    attemptGeneration?: string,
+): Promise<T> {
+    return executionOwnershipContext.run({ signal, attemptGeneration }, operation);
 }
 
 export function plannerAbortSignalKeyForTask(taskId: string): string {
@@ -274,22 +284,36 @@ function abortSpawnedExecution(
 }
 
 /**
- * Finds a running agent container by the task-id suffix used by every agent
- * container name. This survives worker/Redis restarts because Docker remains
- * the source of truth for an execution that is still active.
+ * Finds a running agent container by exact task/attempt labels when a
+ * generation is supplied. Legacy callers retain the task-id name-suffix
+ * lookup. This survives worker/Redis restarts because Docker remains the
+ * source of truth for an execution that is still active.
  */
 export async function findRunningDockerContainerForTask(
     taskId: string,
+    attemptGenerationOrExecutor?: string | typeof executeDockerCommand,
     executor: typeof executeDockerCommand = executeDockerCommand,
 ): Promise<RunningTaskContainer | null> {
+    const attemptGeneration = typeof attemptGenerationOrExecutor === 'string'
+        ? attemptGenerationOrExecutor
+        : undefined;
+    const commandExecutor = typeof attemptGenerationOrExecutor === 'function'
+        ? attemptGenerationOrExecutor
+        : executor;
     const shortTaskId = taskId.slice(-8);
     if (!shortTaskId) return null;
     const escapedSuffix = shortTaskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const filters = attemptGeneration
+        ? [
+            '--filter', `label=propr.task.id=${taskId}`,
+            '--filter', `label=propr.task.attempt-generation=${attemptGeneration}`,
+        ]
+        : ['--filter', `name=${escapedSuffix}$`];
 
     try {
-        const result = await executor('docker', [
+        const result = await commandExecutor('docker', [
             'ps',
-            '--filter', `name=${escapedSuffix}$`,
+            ...filters,
             '--format', '{{.ID}}:{{.Names}}',
         ], { timeout: 10000 });
         if (result.exitCode !== 0) {
@@ -328,13 +352,39 @@ function spawnCommandProcess(
     return child;
 }
 
+export function addTaskAttemptLabelsToDockerArgs(
+    args: string[],
+    taskId: string | undefined,
+    attemptGeneration: string | undefined,
+): string[] {
+    if (args[0] !== 'run' || !taskId || !attemptGeneration) return args;
+    return [
+        'run',
+        '--label', `propr.task.id=${taskId}`,
+        '--label', `propr.task.attempt-generation=${attemptGeneration}`,
+        ...args.slice(1),
+    ];
+}
+
+function resolveExecutionArgs(
+    command: string,
+    args: string[],
+    taskId: string | undefined,
+    attemptGeneration: string | undefined,
+): string[] {
+    if (command !== 'docker') return args;
+    return addTaskAttemptLabelsToDockerArgs(args, taskId, attemptGeneration);
+}
+
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
-        const executionSignal = options.signal ?? executionAbortContext.getStore();
+        const ownershipContext = executionOwnershipContext.getStore();
+        const executionSignal = options.signal ?? ownershipContext?.signal;
+        const executionArgs = resolveExecutionArgs(command, args, taskId, ownershipContext?.attemptGeneration);
         const executablePath = resolveDockerPath(command);
-        const namedContainer = command === 'docker' ? getDockerRunContainerName(args) : null;
-        const child = spawnCommandProcess(executablePath, args, cwd, stdinData);
+        const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
+        const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);
 
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };

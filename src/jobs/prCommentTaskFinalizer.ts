@@ -6,7 +6,7 @@ import type {
     UpdateMetadata,
     WorkerStateManager,
 } from '@propr/core';
-import { TaskStates } from '@propr/core';
+import { hashTaskAttemptToken, TaskStates } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 
 type TaskStateStore = Pick<WorkerStateManager, 'getTaskState' | 'updateTaskStateIfCurrent'>;
@@ -160,6 +160,25 @@ export function taskStateExpectation(task: TaskStateData): TaskStateExpectation 
     };
 }
 
+function finalizationAttemptMatches(
+    values: {
+        expectationToken?: string;
+        optionToken?: string;
+        resultGeneration?: string;
+        expectedToken?: string;
+        requiresMatchingToken: boolean;
+    },
+): boolean {
+    const { expectationToken, optionToken, resultGeneration, expectedToken, requiresMatchingToken } = values;
+    if (requiresMatchingToken && expectationToken !== undefined) {
+        const expectedGeneration = optionToken
+            ? hashTaskAttemptToken(optionToken)
+            : resultGeneration;
+        if (expectedGeneration !== hashTaskAttemptToken(expectationToken)) return false;
+    }
+    return expectedToken === undefined || expectationToken === expectedToken;
+}
+
 async function resolveFinalizationExpectation(
     taskId: string,
     stateManager: TaskStateStore,
@@ -172,17 +191,22 @@ async function resolveFinalizationExpectation(
     const resultToken = typeof resultRecord?.prProcessingLockToken === 'string'
         ? resultRecord.prProcessingLockToken
         : undefined;
+    const resultGeneration = typeof resultRecord?.prProcessingAttemptGeneration === 'string'
+        ? resultRecord.prProcessingAttemptGeneration
+        : resultToken ? hashTaskAttemptToken(resultToken) : undefined;
     const expectedToken = options.prProcessingLockToken ?? (completedResult ? resultToken : undefined);
     const requiresMatchingToken = completedResult !== undefined
         || options.prProcessingLockToken !== undefined
         || options.expectation === undefined;
     // Once a task has an attempt generation, an unfenced old BullMQ event must
     // never be allowed to finalize whichever attempt happens to be current.
-    if (requiresMatchingToken
-        && expectation.prProcessingLockToken !== undefined
-        && expectedToken !== expectation.prProcessingLockToken) return null;
-    if (expectedToken !== undefined
-        && expectation.prProcessingLockToken !== expectedToken) return null;
+    if (!finalizationAttemptMatches({
+        expectationToken: expectation.prProcessingLockToken,
+        optionToken: options.prProcessingLockToken,
+        resultGeneration,
+        expectedToken,
+        requiresMatchingToken,
+    })) return null;
     return options.expectation ?? taskStateExpectation(expectation as TaskStateData);
 }
 

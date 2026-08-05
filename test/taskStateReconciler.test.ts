@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, describe, mock, test } from 'node:test';
-import { closeConnection, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
+import { closeConnection, hashTaskAttemptToken, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
 import { reconcileStaleTaskStates } from '../src/taskStateReconciler.js';
 
 after(async () => { await closeConnection(); });
@@ -54,6 +54,7 @@ function queue(states: Record<string, { state: string; returnvalue?: unknown; fa
             if (!value) return undefined;
             const returnvalue = value.returnvalue !== null && typeof value.returnvalue === 'object'
                 && (value.returnvalue as { prProcessingLockToken?: unknown }).prProcessingLockToken === undefined
+                && (value.returnvalue as { prProcessingAttemptGeneration?: unknown }).prProcessingAttemptGeneration === undefined
                 ? {
                     ...value.returnvalue as Record<string, unknown>,
                     prProcessingLockToken: `correlation-${taskId}:attempt-token`,
@@ -207,6 +208,31 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(completing.taskId)?.state, TaskStates.COMPLETED);
         assert.equal(summary.finalized, 1);
         assert.equal(summary.interrupted, 0);
+    });
+
+    test('accepts a one-way attempt generation in a completed result', async () => {
+        const completed = task('pr-comments-hashed-result', TaskStates.CLAUDE_EXECUTION);
+        const manager = stateManager([completed]);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({
+                [completed.taskId]: {
+                    state: 'completed',
+                    returnvalue: {
+                        status: 'complete',
+                        prProcessingAttemptGeneration: hashTaskAttemptToken(completed.prProcessingLockToken!),
+                    },
+                },
+            }),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(completed.taskId)?.state, TaskStates.COMPLETED);
+        assert.equal(summary.finalized, 1);
     });
 
     test('reconciles a legacy PR-comment state without issueRef.type', async () => {
@@ -386,6 +412,62 @@ describe('task state reconciliation', () => {
         assert.equal(summary.finalized, 0);
     });
 
+    test('does not stop a successor container when state changes during Docker lookup', async () => {
+        const scanned = task('pr-comments-container-generation-race', TaskStates.CLAUDE_EXECUTION);
+        scanned.version = 4;
+        const manager = stateManager([scanned]);
+        const successor = {
+            ...scanned,
+            updatedAt: '2026-08-04T00:05:00.000Z',
+            version: 5,
+            prProcessingLockToken: 'successor-attempt-token',
+        };
+        const stopContainer = mock.fn(async () => ({ success: true }));
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({
+                [scanned.taskId]: { state: 'completed', returnvalue: { status: 'complete' } },
+            }),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => {
+                manager.states.set(scanned.taskId, successor);
+                return { id: 'successor-container', name: 'agent-successor' };
+            },
+            stopContainer,
+        });
+
+        assert.equal(stopContainer.mock.calls.length, 0);
+        assert.equal(manager.states.get(scanned.taskId)?.prProcessingLockToken, 'successor-attempt-token');
+        assert.equal(summary.containersStopped, 0);
+        assert.equal(summary.finalized, 0);
+    });
+
+    test('terminalizes a mismatched completed result after all matching liveness is gone', async () => {
+        const abandoned = task('pr-comments-mismatched-result-abandoned', TaskStates.PROCESSING);
+        const manager = stateManager([abandoned]);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({
+                [abandoned.taskId]: {
+                    state: 'completed',
+                    returnvalue: { status: 'rescheduled', prProcessingLockToken: 'obsolete-attempt-token' },
+                },
+            }),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /different or unknown task attempt/);
+        assert.equal(summary.interrupted, 1);
+    });
+
     test('does not finalize or release the current lease for a stale completed result token', async () => {
         const current = task('pr-comments-stale-result-token', TaskStates.PROCESSING);
         const manager = stateManager([current]);
@@ -408,7 +490,7 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(current.taskId)?.state, TaskStates.PROCESSING);
         assert.equal(summary.finalized, 0);
         assert.equal(summary.locksCleared, 0);
-        assert.equal(evalMock.mock.calls.length, 0);
+        assert.equal(evalMock.mock.calls.length, 1);
     });
 
     test('treats an implausible future timestamp as stale', async () => {

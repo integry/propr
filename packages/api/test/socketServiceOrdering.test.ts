@@ -15,7 +15,7 @@ describe('SocketService task update ordering', () => {
     assert.equal(shouldBroadcastTaskUpdate(5, undefined), false);
   });
 
-  test('drops older revisions and permits the current or a newer revision', () => {
+  test('drops older revisions but permits seeded equality and newer revisions', () => {
     assert.equal(shouldBroadcastTaskUpdate(5, 4), false);
     assert.equal(shouldBroadcastTaskUpdate(5, 5), true);
     assert.equal(shouldBroadcastTaskUpdate(5, 6), true);

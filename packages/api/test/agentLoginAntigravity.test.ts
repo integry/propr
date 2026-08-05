@@ -135,7 +135,7 @@ describe('Antigravity agent login', () => {
         dockerCalls.push(args);
         return child;
       },
-      providerCompletionPollMs: 5,
+      providerCompletionPollMs: 20,
       sessionTimeoutMs: 60_000,
       sessionRetentionMs: 60_000,
     });
@@ -182,7 +182,7 @@ describe('Antigravity agent login', () => {
         dockerCalls.push(args);
         return fakeChild();
       },
-      providerCompletionPollMs: 5,
+      providerCompletionPollMs: 20,
       sessionTimeoutMs: 60_000,
       sessionRetentionMs: 60_000,
     });
@@ -209,6 +209,10 @@ describe('Antigravity agent login', () => {
       assert.equal(dockerCalls[1][0], 'create');
       assert.ok(dockerCalls[1].includes('PROPR_AGENT_LOGIN=1'));
       assert.deepEqual(dockerCalls[2], ['start', '-a', '-i', 'propr-agent-login-antigravity-existing-session']);
+
+      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'transient-token-fragment');
+      await new Promise(resolve => setTimeout(resolve, 25));
+      assert.equal(manager.get(started.id, 'owner').status, 'running');
 
       fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'refreshed-token');
       await waitFor(() => manager.get(started.id, 'owner').status === 'succeeded');

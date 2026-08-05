@@ -34,7 +34,16 @@ await mock.module('ioredis', {
 });
 
 // Mock database with proper chain methods
-const mockDbTasksMerge = mock.fn(async () => [1]);
+const mockDbTasksReturning = mock.fn(async () => [{ task_id: 'task-id' }]);
+const mockDbTasksWhere = mock.fn((predicate: (query: {
+    whereNull: (column: string) => { orWhere: (column: string, operator: string, value: number) => void };
+}) => void) => {
+    predicate({
+        whereNull: () => ({ orWhere: () => {} }),
+    });
+    return { returning: mockDbTasksReturning };
+});
+const mockDbTasksMerge = mock.fn(() => ({ where: mockDbTasksWhere }));
 const defaultMockDbTasksInsert = () => ({
     onConflict: mock.fn(() => ({
         merge: mockDbTasksMerge
@@ -213,6 +222,60 @@ test('getNonTerminalTasks maintains independent cursors for task-type filters', 
 
     assert.strictEqual(mockRedisInstance.scan.mock.calls[0].arguments[0], '0');
     assert.strictEqual(mockRedisInstance.scan.mock.calls[1].arguments[0], '0');
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks strictly bounds oversized SCAN pages and preserves unread keys', async () => {
+    const base: TaskStateData = {
+        taskId: 'scan-task-1',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'scan',
+        state: TaskStates.COMPLETED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const values = new Map<string, TaskStateData>([
+        [`${TEST_KEY_PREFIX}scan-task-1`, base],
+        [`${TEST_KEY_PREFIX}scan-task-2`, { ...base, taskId: 'scan-task-2' }],
+        [`${TEST_KEY_PREFIX}scan-task-3`, { ...base, taskId: 'scan-task-3', state: TaskStates.PROCESSING }],
+        [`${TEST_KEY_PREFIX}scan-task-4`, { ...base, taskId: 'scan-task-4' }],
+        [`${TEST_KEY_PREFIX}scan-task-5`, { ...base, taskId: 'scan-task-5' }],
+    ]);
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async () => ['17', [...values.keys()]]);
+    mockRedisInstance.get.mock.resetCalls();
+    mockRedisInstance.get.mock.mockImplementation(async key => JSON.stringify(values.get(key)));
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const first = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+    const second = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+
+    assert.deepStrictEqual(first, []);
+    assert.deepStrictEqual(second.map(value => value.taskId), ['scan-task-3']);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.get.mock.calls.length, 4);
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks caps empty SCAN pages and resumes from the saved cursor', async () => {
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async (cursor: string) => {
+        if (cursor === '0') return ['17', []];
+        if (cursor === '17') return ['19', []];
+        return ['0', []];
+    });
+    mockRedisInstance.get.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 2);
+
+    await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 3);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[2].arguments[0], '19');
+    assert.strictEqual(mockRedisInstance.get.mock.calls.length, 0);
     await stateManager.close();
 });
 
@@ -3144,11 +3207,37 @@ test('fenced task recreation continues after the previous task revision', async 
     await stateManager.close();
 });
 
+test('fenced creation rejects a SQL row owned by a newer Redis revision', async () => {
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 8);
+    mockDbTasksMerge.mock.resetCalls();
+    mockDbTasksWhere.mock.resetCalls();
+    mockDbTasksReturning.mock.resetCalls();
+    mockDbTasksReturning.mock.mockImplementationOnce(async () => []);
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    await assert.rejects(
+        stateManager.createTaskState(
+            'task-stale-sql-generation',
+            { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+            'stale-correlation',
+            { prProcessingLockToken: 'stale-token', prProcessingLockKey: 'lock:pr:owner:repo:631' },
+        ),
+        /newer task generation is already persisted/,
+    );
+
+    const merged = mockDbTasksMerge.mock.calls[0].arguments[0] as Record<string, unknown>;
+    assert.strictEqual(merged.attempt_generation_version, 8);
+    assert.strictEqual(mockDbTasksWhere.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    await stateManager.close();
+});
+
 test('fenced creation fails closed when its SQL generation cannot be persisted', async () => {
     mockRedisInstance.eval.mock.resetCalls();
     mockRedisInstance.eval.mock.mockImplementation(async () => 1);
-    mockDbTasksMerge.mock.resetCalls();
-    mockDbTasksMerge.mock.mockImplementationOnce(async () => {
+    mockDbTasksReturning.mock.resetCalls();
+    mockDbTasksReturning.mock.mockImplementationOnce(async () => {
         throw new Error('database unavailable');
     });
     const stateManager = new WorkerStateManager({

@@ -38,6 +38,9 @@ export function shouldBroadcastTaskUpdate(
 ): boolean {
   if (latestVersion === undefined) return true;
   if (incomingVersion === undefined) return false;
+  // Equality is intentional: the cache may have been seeded from durable
+  // state before the corresponding pub/sub event arrives. This can rebroadcast
+  // a true duplicate, but dropping equality would lose that first live event.
   return incomingVersion >= latestVersion;
 }
 

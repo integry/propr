@@ -13,6 +13,13 @@ type StateMaintenanceRedis = Pick<InstanceType<typeof Redis>, 'del' | 'get' | 'k
 export interface NonTerminalTaskScanResult {
     tasks: TaskStateData[];
     nextCursor: string;
+    /** Unread keys from a SCAN page that exceeded this invocation's bound. */
+    pendingKeys: string[];
+}
+
+export interface NonTerminalTaskScanPosition {
+    cursor: string;
+    pendingKeys: string[];
 }
 
 /**
@@ -47,7 +54,7 @@ export async function scanNonTerminalTaskStates(
     redis: StateEnumerationRedis,
     keyPrefix: string,
     filter: NonTerminalTaskFilter,
-    initialCursor = '0',
+    position: NonTerminalTaskScanPosition = { cursor: '0', pendingKeys: [] },
 ): Promise<NonTerminalTaskScanResult> {
     const seenKeys = new Set<string>();
     const nonTerminalTasks: TaskStateData[] = [];
@@ -59,17 +66,27 @@ export async function scanNonTerminalTaskStates(
     ];
     const taskTypes = filter.taskTypes ? new Set(filter.taskTypes) : null;
     const limit = Math.max(1, filter.limit ?? Number.POSITIVE_INFINITY);
-    let cursor = initialCursor;
-    do {
-        const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', `${keyPrefix}*`, 'COUNT', 100);
-        cursor = nextCursor;
-        const keys = batch.filter(key => {
-            if (seenKeys.has(key)) return false;
+    // A finite result limit is also the hard bound on Redis values inspected.
+    // SCAN's COUNT is only a hint, so excess keys from a page are retained by
+    // WorkerStateManager and consumed before advancing the cursor again.
+    const inspectionLimit = limit;
+    const pageLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : Number.POSITIVE_INFINITY;
+    let inspectedKeys = 0;
+    let inspectedPages = 0;
+    let cursor = position.cursor;
+    const readKeys = async (batch: string[]): Promise<string[]> => {
+        const remaining = inspectionLimit - inspectedKeys;
+        const keys: string[] = [];
+        const overflow: string[] = [];
+        for (const key of batch) {
+            if (seenKeys.has(key)) continue;
             seenKeys.add(key);
-            return true;
-        });
-        if (keys.length === 0) continue;
+            if (keys.length < remaining) keys.push(key);
+            else overflow.push(key);
+        }
+        if (keys.length === 0) return overflow;
 
+        inspectedKeys += keys.length;
         const pipeline = redis.pipeline();
         for (const key of keys) pipeline.get(key);
         const results = await pipeline.exec();
@@ -89,13 +106,34 @@ export async function scanNonTerminalTaskStates(
                 logger.warn({ key: keys[index], error: (error as Error).message }, 'Failed to parse task state during reconciliation scan');
             }
         }
-        // Finish the Redis SCAN page so no keys from the returned cursor page
-        // are skipped. COUNT is a hint, so a page can be slightly over limit.
-        if (nonTerminalTasks.length >= limit) {
-            return { tasks: nonTerminalTasks, nextCursor: cursor };
+        return overflow;
+    };
+
+    if (position.pendingKeys.length > 0) {
+        const pendingKeys = await readKeys(position.pendingKeys);
+        if (pendingKeys.length > 0 || inspectedKeys >= inspectionLimit || nonTerminalTasks.length >= limit) {
+            return { tasks: nonTerminalTasks, nextCursor: cursor, pendingKeys };
+        }
+        // A zero cursor paired with pending keys represents the final page of
+        // the previous SCAN cycle. Finish it without starting that cycle over.
+        if (cursor === '0') return { tasks: nonTerminalTasks, nextCursor: cursor, pendingKeys: [] };
+    }
+
+    do {
+        const remaining = inspectionLimit - inspectedKeys;
+        const count = Number.isFinite(remaining) ? Math.max(1, Math.min(100, remaining)) : 100;
+        const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', `${keyPrefix}*`, 'COUNT', count);
+        inspectedPages++;
+        cursor = nextCursor;
+        const pendingKeys = await readKeys(batch);
+        if (pendingKeys.length > 0
+            || inspectedKeys >= inspectionLimit
+            || inspectedPages >= pageLimit
+            || nonTerminalTasks.length >= limit) {
+            return { tasks: nonTerminalTasks, nextCursor: cursor, pendingKeys };
         }
     } while (cursor !== '0');
-    return { tasks: nonTerminalTasks, nextCursor: cursor };
+    return { tasks: nonTerminalTasks, nextCursor: cursor, pendingKeys: [] };
 }
 
 export async function getProcessingTaskStates(

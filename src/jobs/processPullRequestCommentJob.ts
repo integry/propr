@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { logger, runWithExecutionAbortSignal, SupersededTaskAttemptError } from '@propr/core';
+import { hashTaskAttemptToken, logger, runWithExecutionAbortSignal, SupersededTaskAttemptError } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
@@ -353,6 +353,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
     const lockToken = createPRProcessingLockToken(correlationId);
+    const attemptGeneration = hashTaskAttemptToken(lockToken);
     const leaseController = new AbortController();
     const loseLease = (error: PRProcessingLeaseLostError): void => {
         if (!leaseController.signal.aborted) leaseController.abort(error);
@@ -373,11 +374,18 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
     job.data.prProcessingLockToken = lockToken;
+    try {
+        await job.updateData({ ...job.data });
+    } catch (error) {
+        await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        correlatedLogger.error({ taskId, error: (error as Error).message }, 'Failed to persist PR attempt generation to BullMQ job data');
+        throw error;
+    }
 
     if (!await stopAbandonedPRTaskContainer(taskId, correlatedLogger)) {
         await issueQueue.add(job.name, job.data, { delay: 60000 });
         await releasePRProcessingLock(redisClient, lockKey, lockToken);
-        return { status: 'rescheduled', reason: 'orphan_container_stop_failed' };
+        return { status: 'rescheduled', reason: 'orphan_container_stop_failed', prProcessingAttemptGeneration: attemptGeneration };
     }
 
     const stopLockHeartbeat = startPRProcessingLockHeartbeat({
@@ -421,11 +429,11 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     try {
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
-            const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease }));
-            return { ...result, prProcessingLockToken: lockToken };
+            const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease }), attemptGeneration);
+            return { ...result, prProcessingAttemptGeneration: attemptGeneration };
         }
-        const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken, assertLease }));
-        return { ...result, prProcessingLockToken: lockToken };
+        const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken, assertLease }), attemptGeneration);
+        return { ...result, prProcessingAttemptGeneration: attemptGeneration };
     } catch (error) {
         if (error instanceof PRProcessingLeaseLostError || error instanceof SupersededTaskAttemptError) {
             if (error instanceof SupersededTaskAttemptError) {
@@ -438,10 +446,10 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {
-            return { status: 'cancelled', reason: 'user_cancelled', prProcessingLockToken: lockToken };
+            return { status: 'cancelled', reason: 'user_cancelled', prProcessingAttemptGeneration: attemptGeneration };
         }
         if (!(error instanceof UsageLimitError)) throw error;
-        return { status: 'requeued', reason: 'usage_limit', prProcessingLockToken: lockToken };
+        return { status: 'requeued', reason: 'usage_limit', prProcessingAttemptGeneration: attemptGeneration };
     } finally {
         await cleanupJobBeforeStoppingHeartbeat({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient }, stopLockHeartbeat);
     }

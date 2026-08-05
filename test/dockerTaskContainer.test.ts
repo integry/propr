@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert';
 import {
+    addTaskAttemptLabelsToDockerArgs,
     findRunningDockerContainerForTask,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
@@ -36,6 +37,36 @@ describe('running Docker task container lookup', () => {
         );
 
         assert.strictEqual(container, null);
+    });
+
+    test('uses exact task and attempt-generation labels for fenced lookup', async () => {
+        let receivedArgs: string[] = [];
+        await findRunningDockerContainerForTask(
+            'pr-comments-propr-gitfix-1734-96957312',
+            'generation-hash',
+            async (_command, args) => {
+                receivedArgs = args;
+                return result('');
+            },
+        );
+
+        assert.ok(receivedArgs.includes('label=propr.task.id=pr-comments-propr-gitfix-1734-96957312'));
+        assert.ok(receivedArgs.includes('label=propr.task.attempt-generation=generation-hash'));
+        assert.ok(!receivedArgs.some(arg => arg.startsWith('name=')));
+    });
+
+    test('adds attempt labels to every protected Docker run', () => {
+        const args = addTaskAttemptLabelsToDockerArgs(
+            ['run', '--rm', '--name', 'agent-task', 'agent-image'],
+            'task-1748',
+            'generation-hash',
+        );
+
+        assert.deepStrictEqual(args.slice(0, 5), [
+            'run',
+            '--label', 'propr.task.id=task-1748',
+            '--label', 'propr.task.attempt-generation=generation-hash',
+        ]);
     });
 
     test('fails open when Docker inspection is unavailable', async () => {

@@ -28,6 +28,7 @@ const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_LENGTH = 128 * 1024;
 const MAX_INPUT_LENGTH = 4096;
 const DEFAULT_PROVIDER_COMPLETION_POLL_MS = 500;
+const REQUIRED_PROVIDER_COMPLETION_STABLE_POLLS = 3;
 
 export type AgentLoginSessionStatus = 'starting' | 'running' | 'succeeded'
   | 'failed' | 'cancelled' | 'timed_out';
@@ -61,6 +62,8 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot, TerminalSanitizer
   providerCompletionTimeout?: ReturnType<typeof setTimeout>;
   providerLoginInitiallyComplete?: boolean;
   initialCredentialFingerprint?: string;
+  providerCompletionFingerprint?: string;
+  providerCompletionStablePolls?: number;
   cleanupStarted?: boolean;
 }
 
@@ -393,7 +396,22 @@ export class AgentLoginSessionManager {
           if (isTerminal(session.status)) return;
           const credentialsChanged = completion.fingerprint !== undefined
             && completion.fingerprint !== session.initialCredentialFingerprint;
-          if (completion.complete && (!session.providerLoginInitiallyComplete || credentialsChanged)) {
+          const isCompletionCandidate = completion.complete
+            && (!session.providerLoginInitiallyComplete || credentialsChanged)
+            && completion.fingerprint !== undefined;
+          if (isCompletionCandidate) {
+            if (completion.fingerprint === session.providerCompletionFingerprint) {
+              session.providerCompletionStablePolls = (session.providerCompletionStablePolls ?? 0) + 1;
+            } else {
+              session.providerCompletionFingerprint = completion.fingerprint;
+              session.providerCompletionStablePolls = 1;
+            }
+          } else {
+            session.providerCompletionFingerprint = undefined;
+            session.providerCompletionStablePolls = 0;
+          }
+          if (isCompletionCandidate
+            && (session.providerCompletionStablePolls ?? 0) >= REQUIRED_PROVIDER_COMPLETION_STABLE_POLLS) {
             this.appendOutput(session, '\nAuthentication saved. Closing the provider prompt…\n');
             this.finish(session, 'succeeded', 0);
             session.process?.kill();

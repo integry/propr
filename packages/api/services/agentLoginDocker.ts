@@ -135,11 +135,22 @@ export async function inspectAgentLoginCompletion(
 ): Promise<AgentLoginCompletion> {
   if (type !== 'antigravity') return { complete: false };
   try {
-    const [tokenFile, onboardingFile] = await Promise.all([
-      readBoundedFile(path.join(credentialPath, ANTIGRAVITY_TOKEN_PATH), MAX_ANTIGRAVITY_TOKEN_LENGTH),
-      readBoundedFile(path.join(credentialPath, ANTIGRAVITY_ONBOARDING_PATH), MAX_ANTIGRAVITY_ONBOARDING_LENGTH),
-    ]);
+    const tokenPath = path.join(credentialPath, ANTIGRAVITY_TOKEN_PATH);
+    const onboardingPath = path.join(credentialPath, ANTIGRAVITY_ONBOARDING_PATH);
+    const tokenFile = await readBoundedFile(tokenPath, MAX_ANTIGRAVITY_TOKEN_LENGTH);
+    const onboardingFile = await readBoundedFile(onboardingPath, MAX_ANTIGRAVITY_ONBOARDING_LENGTH);
     if (!tokenFile || !onboardingFile) return { complete: false };
+    // Providers write these files independently. Re-read both serially and
+    // reject a snapshot if either changed while it was being inspected; the
+    // session manager additionally requires the resulting fingerprint to stay
+    // stable across multiple polls before terminating the provider process.
+    const verifiedTokenFile = await readBoundedFile(tokenPath, MAX_ANTIGRAVITY_TOKEN_LENGTH);
+    const verifiedOnboardingFile = await readBoundedFile(onboardingPath, MAX_ANTIGRAVITY_ONBOARDING_LENGTH);
+    if (!verifiedTokenFile || !verifiedOnboardingFile
+      || verifiedTokenFile.fingerprintPart !== tokenFile.fingerprintPart
+      || verifiedOnboardingFile.fingerprintPart !== onboardingFile.fingerprintPart) {
+      return { complete: false };
+    }
     const fingerprint = createHash('sha256')
       .update(tokenFile.fingerprintPart)
       .update('\0')

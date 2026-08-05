@@ -246,13 +246,29 @@ export async function persistTaskStateCreation(
         attempt_generation: state.prProcessingLockToken
             ? hashTaskAttemptToken(state.prProcessingLockToken)
             : null,
+        attempt_generation_version: state.prProcessingLockToken
+            ? state.version ?? 0
+            : null,
     };
     try {
-        await db('tasks').insert(taskData).onConflict('task_id').merge({
+        const upsert = db('tasks').insert(taskData).onConflict('task_id').merge({
             correlation_id: taskData.correlation_id,
             initial_job_data: taskData.initial_job_data,
             attempt_generation: taskData.attempt_generation,
+            attempt_generation_version: taskData.attempt_generation_version,
         });
+        if (state.prProcessingLockToken) {
+            const persisted = await upsert
+                .where(query => query
+                    .whereNull('attempt_generation_version')
+                    .orWhere('attempt_generation_version', '<', taskData.attempt_generation_version))
+                .returning('task_id');
+            if (Array.isArray(persisted) && persisted.length === 0) {
+                throw new Error(`A newer task generation is already persisted for taskId: ${taskId}`);
+            }
+        } else {
+            await upsert;
+        }
     } catch (error) {
         correlatedLogger.error(
             { error: (error as Error).message, taskId },

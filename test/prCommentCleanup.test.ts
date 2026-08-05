@@ -7,6 +7,8 @@ const releaseLease = mock.fn(async () => true);
 const findRunningDockerContainerForTask = mock.fn(async () => null as { id: string; name: string } | null);
 const stopDockerContainer = mock.fn(async () => ({ success: true }));
 
+class PRProcessingLeaseLostError extends Error {}
+
 await mock.module('@propr/core', {
     namedExports: {
         cleanupWorktree,
@@ -34,6 +36,7 @@ await mock.module('@propr/core', {
 await mock.module('../src/jobs/prProcessingLock.js', {
     namedExports: {
         assertPRProcessingLock: assertLease,
+        PRProcessingLeaseLostError,
         releasePRProcessingLock: releaseLease,
     },
 });
@@ -117,11 +120,34 @@ test('stops an abandoned task container before allowing a successor attempt', as
 
 test('removes its generation-specific worktree after lease ownership has been lost', async () => {
     assertLease.mock.mockImplementationOnce(async () => {
-        throw new Error('lease lost');
+        throw new PRProcessingLeaseLostError('lease lost');
     });
 
     await cleanupJob(cleanupOptions());
 
+    assert.equal(cleanupWorktree.mock.calls.length, 1);
+    assert.equal(releaseLease.mock.calls.length, 0);
+});
+
+test('retries a transient Redis ownership check before releasing and queuing pending work', async () => {
+    assertLease.mock.mockImplementationOnce(async () => {
+        throw new Error('Redis temporarily unavailable');
+    });
+
+    await cleanupJob(cleanupOptions());
+
+    assert.equal(assertLease.mock.calls.length, 2);
+    assert.equal(releaseLease.mock.calls.length, 1);
+});
+
+test('fails cleanup durably after repeated Redis ownership-check errors', async () => {
+    assertLease.mock.mockImplementation(async () => {
+        throw new Error('Redis unavailable');
+    });
+
+    await assert.rejects(cleanupJob(cleanupOptions()), /Redis unavailable/);
+
+    assert.equal(assertLease.mock.calls.length, 3);
     assert.equal(cleanupWorktree.mock.calls.length, 1);
     assert.equal(releaseLease.mock.calls.length, 0);
 });

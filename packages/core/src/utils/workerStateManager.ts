@@ -50,7 +50,7 @@ export class WorkerStateManager {
     private revisionKeyPrefix: string;
     private stateExpiry: number;
     private revisionExpiry: number;
-    private nonTerminalScanCursors = new Map<string, string>();
+    private nonTerminalScanPositions = new Map<string, { cursor: string; pendingKeys: string[] }>();
     private persistenceTails = new Map<string, Promise<void>>();
 
     constructor(options: WorkerStateManagerOptions = {}) {
@@ -445,13 +445,17 @@ export class WorkerStateManager {
         const cursorKey = filter.taskTypes?.length
             ? [...filter.taskTypes].sort().join(',')
             : '*';
+        const position = this.nonTerminalScanPositions.get(cursorKey);
         const result = await scanNonTerminalTaskStates(
             this.redis,
             this.keyPrefix,
             filter,
-            this.nonTerminalScanCursors.get(cursorKey) ?? '0',
+            position,
         );
-        this.nonTerminalScanCursors.set(cursorKey, result.nextCursor);
+        this.nonTerminalScanPositions.set(cursorKey, {
+            cursor: result.nextCursor,
+            pendingKeys: result.pendingKeys,
+        });
         return result.tasks;
     }
 

@@ -15,7 +15,11 @@ import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.j
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
-import { assertPRProcessingLock, releasePRProcessingLock } from './prProcessingLock.js';
+import {
+    assertPRProcessingLock,
+    PRProcessingLeaseLostError,
+    releasePRProcessingLock,
+} from './prProcessingLock.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -335,11 +339,23 @@ export async function stopAbandonedPRTaskContainer(taskId: string, correlatedLog
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
     let ownsLease = true;
-    try {
-        await assertPRProcessingLock(redisClient, lockKey, lockToken);
-    } catch {
-        ownsLease = false;
-        correlatedLogger.info('Cleaning the generation-specific worktree after this attempt lost the PR lease');
+    let ownershipCheckError: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            await assertPRProcessingLock(redisClient, lockKey, lockToken);
+            ownershipCheckError = undefined;
+            break;
+        } catch (error) {
+            if (error instanceof PRProcessingLeaseLostError) {
+                ownsLease = false;
+                correlatedLogger.info('Cleaning the generation-specific worktree after this attempt lost the PR lease');
+                break;
+            }
+            ownershipCheckError = error;
+            if (attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+            }
+        }
     }
 
     if (localRepoPath && worktreeInfo) {
@@ -350,6 +366,13 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
         }
     }
 
+    if (ownershipCheckError && ownsLease) {
+        // Do not turn an unverified cleanup into a successful BullMQ result.
+        // Throwing leaves the job on its configured retry path, which is the
+        // durable recovery mechanism for pending comments during Redis faults.
+        correlatedLogger.warn({ error: (ownershipCheckError as Error).message }, 'Could not verify PR lease ownership during cleanup; deferring cleanup finalization');
+        throw ownershipCheckError;
+    }
     if (!ownsLease) return;
 
     const releasedLock = await releasePRProcessingLock(redisClient, lockKey, lockToken);

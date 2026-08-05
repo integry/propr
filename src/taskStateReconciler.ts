@@ -1,6 +1,7 @@
 import type { TaskStateData, WorkerStateManager } from '@propr/core';
 import {
     findRunningDockerContainerForTask,
+    hashTaskAttemptToken,
     isPRCommentTaskState,
     logger,
     stopDockerContainer,
@@ -102,8 +103,16 @@ function throwIfAborted(signal?: AbortSignal): void {
 function completedResultMatchesAttempt(task: TaskStateData, result: unknown): boolean {
     if (task.prProcessingLockToken === undefined) return true;
     if (!result || typeof result !== 'object') return false;
-    return (result as { prProcessingLockToken?: unknown }).prProcessingLockToken
-        === task.prProcessingLockToken;
+    const record = result as {
+        prProcessingAttemptGeneration?: unknown;
+        prProcessingLockToken?: unknown;
+    };
+    if (typeof record.prProcessingAttemptGeneration === 'string') {
+        return record.prProcessingAttemptGeneration === hashTaskAttemptToken(task.prProcessingLockToken);
+    }
+    // Accept results produced during a rolling upgrade, but never emit the raw
+    // token in new BullMQ return values.
+    return record.prProcessingLockToken === task.prProcessingLockToken;
 }
 
 async function clearOwnedPRLock(
@@ -164,14 +173,56 @@ async function hasLiveAttempt(
     return Number(currentAttempt) === 1;
 }
 
+async function hasMatchingPRLease(
+    task: TaskStateData,
+    redis: ReconciliationRedis,
+): Promise<boolean> {
+    if (!task.prProcessingLockToken) return false;
+    const { repoOwner, repoName, number } = task.issueRef;
+    if (!repoOwner || !repoName || !Number.isFinite(number)) return false;
+    const currentAttempt = await redis.eval(
+        ASSERT_OWNED_PR_LOCK_SCRIPT,
+        1,
+        `lock:pr:${repoOwner}:${repoName}:${number}`,
+        task.prProcessingLockToken,
+    );
+    return Number(currentAttempt) === 1;
+}
+
+function taskMatchesExpectation(current: TaskStateData | null, scanned: TaskStateData): boolean {
+    if (!current) return false;
+    const expectation = taskStateExpectation(scanned);
+    return current.state === expectation.state
+        && current.updatedAt === expectation.updatedAt
+        && current.version === expectation.version
+        && current.prProcessingLockToken === expectation.prProcessingLockToken;
+}
+
+async function findGenerationSpecificContainer(
+    task: TaskStateData,
+    context: ReconciliationContext,
+): Promise<Awaited<ReturnType<typeof findRunningDockerContainerForTask>>> {
+    if (!task.prProcessingLockToken) return null;
+    return context.findRunningContainer(
+        task.taskId,
+        hashTaskAttemptToken(task.prProcessingLockToken),
+    );
+}
+
 async function stopAbandonedTaskContainer(
     task: TaskStateData,
     context: ReconciliationContext,
 ): Promise<void> {
-    const { options, summary, findRunningContainer, stopContainer } = context;
+    const { options, summary, stopContainer } = context;
     throwIfAborted(options.signal);
-    const container = await findRunningContainer(task.taskId);
+    const container = await findGenerationSpecificContainer(task, context);
     if (!container) return;
+    throwIfAborted(options.signal);
+    // The label prevents a successor's container from matching, while this
+    // final read closes the window in which the scanned Redis state itself was
+    // replaced before the destructive operation.
+    const current = await options.stateManager.getTaskState(task.taskId);
+    if (!taskMatchesExpectation(current, task)) return;
     throwIfAborted(options.signal);
     const result = await stopContainer(container.id, 10);
     if (!result.success) {
@@ -222,7 +273,22 @@ async function handleTerminalQueueState(
 ): Promise<boolean> {
     const { options, summary } = context;
     if (queueState === 'completed' && job) {
-        if (!completedResultMatchesAttempt(task, job.returnvalue)) return true;
+        if (!completedResultMatchesAttempt(task, job.returnvalue)) {
+            // A legacy/tokenless or stale completion may describe a previous
+            // BullMQ execution. Keep the scanned attempt only while there is
+            // affirmative generation-specific liveness; otherwise make the
+            // stranded state terminal so reconciliation cannot no-op forever.
+            if (await hasLiveBullLock(task.taskId, options.queue, options.redis)) return true;
+            if (await hasMatchingPRLease(task, options.redis)) return true;
+            if (await findGenerationSpecificContainer(task, context)) return true;
+            await finalizeFailedJob(
+                task,
+                'Completed BullMQ result belongs to a different or unknown task attempt',
+                options,
+                summary,
+            );
+            return true;
+        }
         const parsed = parsePRCommentJobResult(job.returnvalue);
         if (!parsed) {
             const returnedStatus = job.returnvalue
